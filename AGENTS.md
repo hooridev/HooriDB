@@ -42,6 +42,7 @@ With `-Dargs="--script <file> --out <folder>"` the app runs a script instead of 
 - How an app is made with it: a state object and a function from that state to a tree of elements. Handlers change the state, and the view is built again after each input. There are no observable properties and no listeners.
 - Components of its kit take the theme as their first parameter and read only its tokens. Views here do the same: no colour, size or font of their own where the theme has a token. The app's own colour, for its icon and mark, is `HooriDb.COLOUR`.
 - HooriDB is the framework's first real app. Where the framework lacks something or does something wrong, say so, with the smallest case that shows it, instead of building around it here; such things are fixed in the framework.
+- Sort each such finding before reporting it. General: any app made with the framework would meet it; it is reported upstream to the framework, and the work here that waits for it is linked to the report. Specific to HooriDB: it makes sense only in a database tool; it is built here from the kit's parts, and if that needs a hook in the framework, the hook is the general wish.
 
 ## How the code is written
 
