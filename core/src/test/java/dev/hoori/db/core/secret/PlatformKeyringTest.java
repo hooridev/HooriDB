@@ -26,10 +26,12 @@ class PlatformKeyringTest {
     Keyring keyring = Keyring.find();
     SecretStore store =
         assertInstanceOf(Keyring.Available.class, keyring, keyring::toString).store();
-    String key = "test-" + UUID.randomUUID();
+    UUID key = UUID.randomUUID();
     char[] first = "first pä$$wörd €𝄞".toCharArray();
     char[] second = "second".toCharArray();
     try {
+      assertFalse(store.read(key).isPresent(), "a secret is there before it was stored");
+      store.delete(key);
       store.store(key, first);
       assertSecret(first, store.read(key));
       store.store(key, second);

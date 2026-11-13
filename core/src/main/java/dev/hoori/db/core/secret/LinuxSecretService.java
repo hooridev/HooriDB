@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Secrets in the Secret Service of the desktop, through libsecret. */
 final class LinuxSecretService implements SecretStore {
@@ -48,16 +49,21 @@ final class LinuxSecretService implements SecretStore {
       sequenceLayout(7, ADDRESS).withName("reserved1to7"));
 
   private static final int SECRET_SERVICE_OPEN_SESSION = 1 << 1;
+  // Locked items match a search too, and without SECRET_SEARCH_ALL it stops at the first one.
+  private static final int SECRET_SEARCH_NONE = 0;
   private static final long ERROR_CODE = 4;
   private static final long ERROR_MESSAGE = 8;
 
   private final MemorySegment schema;
   private final MethodHandle serviceGet;
+  private final MemorySegment objectUnrefSymbol;
   private final MethodHandle objectUnref;
+  private final MethodHandle listFreeFull;
   private final MethodHandle errorFree;
   private final MethodHandle storeSync;
   private final MethodHandle lookupSync;
   private final MethodHandle clearSync;
+  private final MethodHandle searchSync;
   private final MethodHandle passwordFree;
 
   /** The service, or why there is none; asks it over D-Bus whether it is there. */
@@ -82,8 +88,10 @@ final class LinuxSecretService implements SecretStore {
     serviceGet = linker.downcallHandle(
         lib.findOrThrow("secret_service_get_sync"),
         FunctionDescriptor.of(ADDRESS, JAVA_INT, ADDRESS, ADDRESS));
-    objectUnref = linker.downcallHandle(
-        lib.findOrThrow("g_object_unref"), FunctionDescriptor.ofVoid(ADDRESS));
+    objectUnrefSymbol = lib.findOrThrow("g_object_unref");
+    objectUnref = linker.downcallHandle(objectUnrefSymbol, FunctionDescriptor.ofVoid(ADDRESS));
+    listFreeFull = linker.downcallHandle(
+        lib.findOrThrow("g_list_free_full"), FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
     errorFree =
         linker.downcallHandle(lib.findOrThrow("g_error_free"), FunctionDescriptor.ofVoid(ADDRESS));
     // The variadic functions take the one attribute as arguments, where the ...v ones would
@@ -102,6 +110,11 @@ final class LinuxSecretService implements SecretStore {
         lib.findOrThrow("secret_password_clear_sync"),
         FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS),
         Linker.Option.firstVariadicArg(3));
+    searchSync = linker.downcallHandle(
+        lib.findOrThrow("secret_password_search_sync"),
+        FunctionDescriptor.of(
+            ADDRESS, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS),
+        Linker.Option.firstVariadicArg(4));
     passwordFree = linker.downcallHandle(
         lib.findOrThrow("secret_password_free"), FunctionDescriptor.ofVoid(ADDRESS));
 
@@ -116,12 +129,12 @@ final class LinuxSecretService implements SecretStore {
   }
 
   @Override
-  public void store(String key, char[] secret) throws IOException {
+  public void store(UUID key, char[] secret) throws IOException {
     try (Arena call = Arena.ofConfined()) {
       MemorySegment password = utf8(secret, call);
       try {
         MemorySegment error = call.allocate(ADDRESS);
-        call(
+        int stored = (int) call(
             storeSync,
             schema,
             MemorySegment.NULL,
@@ -130,9 +143,13 @@ final class LinuxSecretService implements SecretStore {
             MemorySegment.NULL,
             error,
             call.allocateFrom(ATTRIBUTE),
-            call.allocateFrom(key),
+            call.allocateFrom(key.toString()),
             MemorySegment.NULL);
         check(error);
+        if (stored == 0) {
+          throw new IOException(
+              "Secret Service did not store the secret; the keyring may be locked");
+        }
       } finally {
         password.fill((byte) 0);
       }
@@ -140,7 +157,7 @@ final class LinuxSecretService implements SecretStore {
   }
 
   @Override
-  public Optional<char[]> read(String key) throws IOException {
+  public Optional<char[]> read(UUID key) throws IOException {
     try (Arena call = Arena.ofConfined()) {
       MemorySegment error = call.allocate(ADDRESS);
       MemorySegment password = (MemorySegment) call(
@@ -149,10 +166,12 @@ final class LinuxSecretService implements SecretStore {
           MemorySegment.NULL,
           error,
           call.allocateFrom(ATTRIBUTE),
-          call.allocateFrom(key),
+          call.allocateFrom(key.toString()),
           MemorySegment.NULL);
       check(error);
       if (password.equals(MemorySegment.NULL)) {
+        // Also null when the entry is there but its collection stayed locked.
+        throwIfFound(key, "The keyring is locked; the secret cannot be read");
         return Optional.empty();
       }
       MemorySegment bytes = cString(password);
@@ -166,7 +185,7 @@ final class LinuxSecretService implements SecretStore {
   }
 
   @Override
-  public void delete(String key) throws IOException {
+  public void delete(UUID key) throws IOException {
     try (Arena call = Arena.ofConfined()) {
       MemorySegment error = call.allocate(ADDRESS);
       call(
@@ -175,9 +194,31 @@ final class LinuxSecretService implements SecretStore {
           MemorySegment.NULL,
           error,
           call.allocateFrom(ATTRIBUTE),
-          call.allocateFrom(key),
+          call.allocateFrom(key.toString()),
           MemorySegment.NULL);
       check(error);
+    }
+    // Clearing skips entries in locked collections and says so with no error.
+    throwIfFound(key, "The keyring is locked; the secret is still stored");
+  }
+
+  private void throwIfFound(UUID key, String message) throws IOException {
+    try (Arena call = Arena.ofConfined()) {
+      MemorySegment error = call.allocate(ADDRESS);
+      MemorySegment items = (MemorySegment) call(
+          searchSync,
+          schema,
+          SECRET_SEARCH_NONE,
+          MemorySegment.NULL,
+          error,
+          call.allocateFrom(ATTRIBUTE),
+          call.allocateFrom(key.toString()),
+          MemorySegment.NULL);
+      check(error);
+      if (!items.equals(MemorySegment.NULL)) {
+        call(listFreeFull, items, objectUnrefSymbol);
+        throw new IOException(message);
+      }
     }
   }
 
@@ -206,7 +247,7 @@ final class LinuxSecretService implements SecretStore {
     throw new IOException("Secret Service: " + message + " (code " + code + ")");
   }
 
-  static String label(String key) {
+  static String label(UUID key) {
     return "HooriDB " + key;
   }
 

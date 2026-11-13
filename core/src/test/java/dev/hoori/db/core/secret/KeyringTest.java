@@ -15,6 +15,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -50,8 +51,10 @@ class KeyringTest {
 
   @Test
   void entriesAreMarkedAsHooriDbs() {
-    assertEquals("HooriDB:abc", WindowsCredentials.target("abc"));
-    assertEquals("HooriDB abc", LinuxSecretService.label("abc"));
+    // A UUID has one spelling, so Windows' case-insensitive target names cannot alias two keys.
+    UUID key = UUID.fromString("0F8FAD5B-D9CB-469F-A165-70867728950E");
+    assertEquals("HooriDB:0f8fad5b-d9cb-469f-a165-70867728950e", WindowsCredentials.target(key));
+    assertEquals("HooriDB 0f8fad5b-d9cb-469f-a165-70867728950e", LinuxSecretService.label(key));
     assertEquals("dev.hoori.db.Secret", LinuxSecretService.SCHEMA);
   }
 

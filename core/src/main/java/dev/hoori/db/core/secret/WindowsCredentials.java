@@ -22,6 +22,7 @@ import java.lang.invoke.MethodHandle;
 import java.nio.ByteOrder;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Secrets as generic credentials of Windows Credential Manager, through advapi32. */
 final class WindowsCredentials implements SecretStore {
@@ -92,7 +93,7 @@ final class WindowsCredentials implements SecretStore {
   }
 
   @Override
-  public void store(String key, char[] secret) throws IOException {
+  public void store(UUID key, char[] secret) throws IOException {
     try (Arena call = Arena.ofConfined()) {
       MemorySegment blob = utf16(secret, call);
       try {
@@ -113,7 +114,7 @@ final class WindowsCredentials implements SecretStore {
   }
 
   @Override
-  public Optional<char[]> read(String key) throws IOException {
+  public Optional<char[]> read(UUID key) throws IOException {
     try (Arena call = Arena.ofConfined()) {
       MemorySegment error = call.allocate(state);
       MemorySegment out = call.allocate(ADDRESS);
@@ -140,7 +141,7 @@ final class WindowsCredentials implements SecretStore {
   }
 
   @Override
-  public void delete(String key) throws IOException {
+  public void delete(UUID key) throws IOException {
     try (Arena call = Arena.ofConfined()) {
       MemorySegment error = call.allocate(state);
       if ((int) call(credDelete, error, wide(target(key), call), CRED_TYPE_GENERIC, 0) == 0) {
@@ -156,7 +157,7 @@ final class WindowsCredentials implements SecretStore {
     return new IOException(function + " failed with Windows error " + code);
   }
 
-  static String target(String key) {
+  static String target(UUID key) {
     return "HooriDB:" + key;
   }
 
