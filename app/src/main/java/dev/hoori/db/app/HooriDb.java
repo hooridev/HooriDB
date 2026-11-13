@@ -1,12 +1,7 @@
 package dev.hoori.db.app;
 
-import static com.rethinkj.ui.El.col;
-import static com.rethinkj.ui.kit.EmptyState.emptyState;
-import static com.rethinkj.ui.kit.TitleBar.titleBar;
-
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Colors;
-import com.rethinkj.ui.El;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.AppIcon;
 import com.rethinkj.ui.kit.Symbol;
@@ -19,7 +14,7 @@ import com.rethinkj.ui.window.WindowIcon;
 import com.rethinkj.ui.window.WindowLoop;
 import java.io.IOException;
 
-/** The app: its state, its view and its window. */
+/** The app's name and colour, and its window. */
 public final class HooriDb {
 
   static final String NAME = "HooriDB";
@@ -27,17 +22,23 @@ public final class HooriDb {
   /** The app's own colour, for its icon and its mark in the title bar. */
   static final int COLOUR = Colors.rgb(0x0F766E);
 
-  App<HooriDb> app; // whose window says whether it is maximized
+  private HooriDb() {}
+
+  /** The app over a new state, with the text rendering that a script's images are made with. */
+  static App<State> app() {
+    App<State> app = new App<>(new State(), Frame::view);
+    app.state().app = app;
+    // A script's images must not depend on the platform they were made on.
+    app.textRendering(TextRendering.LINUX);
+    return app;
+  }
 
   /**
    * Opens the window, or with {@code --script <file> --out <folder>} runs the script without one
    * and writes its images and element trees.
    */
   public static void main(String[] args) throws IOException {
-    App<HooriDb> app = new App<>(new HooriDb(), HooriDb::view);
-    app.state().app = app;
-    // A script's images must not depend on the platform they were made on.
-    app.textRendering(TextRendering.LINUX);
+    App<State> app = app();
     if (Script.handle(args, app)) {
       return;
     }
@@ -54,23 +55,5 @@ public final class HooriDb {
         WindowLoop.run(window, app, presenter);
       }
     });
-  }
-
-  static El view(HooriDb s) {
-    Theme t = Theme.DARK;
-    return col()
-        .wFull()
-        .hFull()
-        .fill(t.surface().window())
-        .child(titleBar(t, NAME, COLOUR, s.app != null && s.app.windowMaximized()))
-        .child(col()
-            .grow(1)
-            .center()
-            .child(emptyState(
-                t,
-                Symbol.DATABASE,
-                "No connections yet",
-                "Connections to your databases will be listed here.",
-                null)));
   }
 }
