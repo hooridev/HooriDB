@@ -1,5 +1,9 @@
 package dev.hoori.db.core.connection;
 
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -30,6 +34,31 @@ public record ConnectionProfile(
   public static ConnectionProfile of(Provider provider) {
     return new ConnectionProfile(
         UUID.randomUUID(), "", provider, "", provider.defaultPort(), "", "", true);
+  }
+
+  /**
+   * Whether TLS is on by default for the host: off for a local one, which seldom has TLS set up,
+   * and on for everything else. Judged from the text alone; no name is resolved.
+   */
+  public static boolean tlsByDefault(String host) {
+    // Locale.ROOT, and not equalsIgnoreCase, which takes "localhoſt" for "localhost".
+    var name = host.toLowerCase(Locale.ROOT);
+    if (name.equals("localhost") || name.endsWith(".localhost")) {
+      return false;
+    }
+    InetAddress address;
+    try {
+      address = InetAddress.ofLiteral(host);
+    } catch (IllegalArgumentException notALiteral) {
+      return true;
+    }
+    var local = address.isLoopbackAddress()
+        || address.isLinkLocalAddress()
+        // For IPv6 this would also take the deprecated site-local fec0::/10.
+        || address instanceof Inet4Address && address.isSiteLocalAddress()
+        // Unique local fc00::/7, which no is...Address method covers.
+        || address instanceof Inet6Address && (address.getAddress()[0] & 0xfe) == 0xfc;
+    return !local;
   }
 
   public ConnectionProfile withName(String name) {
