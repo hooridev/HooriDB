@@ -48,10 +48,26 @@
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- The real servers of core's tests, for the app's tests of its seam to them. -->
+    <dependency>
+      <groupId>dev.hoori.db</groupId>
+      <artifactId>hooridb-core</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
     <plugins>
+      <plugin>
+        <!-- The JDBC drivers for the tests against real servers; see the root POM. -->
+        <artifactId>maven-dependency-plugin</artifactId>
+      </plugin>
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>

@@ -35,36 +35,17 @@
   <build>
     <plugins>
       <plugin>
-        <!-- The JDBC drivers for the tests against real servers, into a folder of their own: on
-             the class path they would bypass the class loader that the app loads them in. -->
+        <!-- The JDBC drivers for the tests against real servers; see the root POM. -->
         <artifactId>maven-dependency-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <!-- TestServer and the sample schemas, for the app's tests against real servers. -->
+        <artifactId>maven-jar-plugin</artifactId>
         <executions>
           <execution>
-            <id>jdbc-drivers</id>
-            <phase>generate-test-resources</phase>
             <goals>
-              <goal>copy</goal>
+              <goal>test-jar</goal>
             </goals>
-            <configuration>
-              <outputDirectory>${project.build.directory}/jdbc-drivers</outputDirectory>
-              <artifactItems>
-                <artifactItem>
-                  <groupId>org.postgresql</groupId>
-                  <artifactId>postgresql</artifactId>
-                  <version>${test.postgresql.version}</version>
-                </artifactItem>
-                <artifactItem>
-                  <groupId>org.mariadb.jdbc</groupId>
-                  <artifactId>mariadb-java-client</artifactId>
-                  <version>${test.mariadb.version}</version>
-                </artifactItem>
-                <artifactItem>
-                  <groupId>com.mysql</groupId>
-                  <artifactId>mysql-connector-j</artifactId>
-                  <version>${test.mysql.version}</version>
-                </artifactItem>
-              </artifactItems>
-            </configuration>
           </execution>
         </executions>
       </plugin>
@@ -73,12 +54,6 @@
         <configuration>
           <!-- The keyring's tests call native code from the class path, an unnamed module. -->
           <argLine>--enable-native-access=ALL-UNNAMED</argLine>
-          <systemPropertyVariables>
-            <hooridb.test.drivers>${project.build.directory}/jdbc-drivers</hooridb.test.drivers>
-            <hooridb.test.postgresql.version>${test.postgresql.version}</hooridb.test.postgresql.version>
-            <hooridb.test.mariadb.version>${test.mariadb.version}</hooridb.test.mariadb.version>
-            <hooridb.test.mysql.version>${test.mysql.version}</hooridb.test.mysql.version>
-          </systemPropertyVariables>
         </configuration>
       </plugin>
     </plugins>
