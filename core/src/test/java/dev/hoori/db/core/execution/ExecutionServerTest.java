@@ -184,7 +184,7 @@ class ExecutionServerTest {
       assertTrue(connection.getAutoCommit());
       if (provider == Provider.POSTGRESQL) {
         assertEquals(0, selectLong(connection, "SELECT count(*) FROM pg_cursors WHERE name <> ''"));
-        assertEquals(Transaction.NONE, Drivers.transaction(provider, connection));
+        assertEquals(Transaction.NONE, Drivers.transaction(connection));
       }
       assertEquals(List.of(List.of(42L)), rows(run(connection, provider, "SELECT 42")));
       execution.close();
@@ -396,8 +396,11 @@ class ExecutionServerTest {
       assertTrue(execution.next(5).more());
       var portion = interrupted(() -> execution.next(10_000), () -> Thread.sleep(300));
       assertEquals(Failure.Kind.CANCELLED, failure(portion.results()).kind());
+      assertTrue(portion.elapsed().toMillis() > 0, portion.elapsed().toString());
       assertTrue(connection.getAutoCommit());
-      assertEquals(Transaction.NONE, portion.transaction());
+      assertEquals(
+          provider == Provider.POSTGRESQL ? Transaction.NONE : Transaction.UNKNOWN,
+          portion.transaction());
       assertEquals(List.of(List.of(1L)), rows(run(connection, provider, "SELECT 1")));
     }
   }
@@ -416,7 +419,7 @@ class ExecutionServerTest {
         assertTrue(execution.next(5).more());
         var portion = interrupted(() -> execution.next(10_000), () -> Thread.sleep(300));
         assertEquals(Failure.Kind.CANCELLED, failure(portion.results()).kind());
-        assertEquals(pg ? Transaction.FAILED : Transaction.OPEN, portion.transaction());
+        assertEquals(pg ? Transaction.FAILED : Transaction.UNKNOWN, portion.transaction());
         if (pg) {
           var aborted = failure(run(connection, provider, "SELECT 1"));
           assertEquals("25P02", aborted.state());
@@ -468,7 +471,7 @@ class ExecutionServerTest {
         var failed =
             new Execution(connection, provider, "INSERT INTO committed VALUES (2)").next(1);
         assertEquals(Failure.Kind.CONSTRAINT, failure(failed.results()).kind());
-        assertEquals(pg ? Transaction.FAILED : Transaction.OPEN, failed.transaction());
+        assertEquals(pg ? Transaction.FAILED : Transaction.UNKNOWN, failed.transaction());
         connection.rollback();
         var streamed = new Execution(connection, provider, million(provider));
         var first = streamed.next(10);
@@ -575,7 +578,7 @@ class ExecutionServerTest {
     return results;
   }
 
-  private static List<List<Object>> rows(List<Result> results) {
+  static List<List<Object>> rows(List<Result> results) {
     var all = new ArrayList<List<Object>>();
     for (var result : results) {
       all.addAll(assertInstanceOf(Result.Rows.class, result).rows());
@@ -583,11 +586,11 @@ class ExecutionServerTest {
     return all;
   }
 
-  private static Failure failure(List<Result> results) {
+  static Failure failure(List<Result> results) {
     return assertInstanceOf(Failure.class, results.getLast(), results.toString());
   }
 
-  private static <T> T only(List<T> items) {
+  static <T> T only(List<T> items) {
     assertEquals(1, items.size(), items.toString());
     return items.getFirst();
   }
@@ -611,7 +614,7 @@ class ExecutionServerTest {
     return Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
   }
 
-  private static long selectLong(Connection connection, String sql) throws SQLException {
+  static long selectLong(Connection connection, String sql) throws SQLException {
     try (var statement = connection.createStatement();
         var rows = statement.executeQuery(sql)) {
       rows.next();
@@ -619,7 +622,7 @@ class ExecutionServerTest {
     }
   }
 
-  private static void execute(Connection connection, String... statements) throws SQLException {
+  static void execute(Connection connection, String... statements) throws SQLException {
     try (var statement = connection.createStatement()) {
       for (var sql : statements) {
         statement.execute(sql);

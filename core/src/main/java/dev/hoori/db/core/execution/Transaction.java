@@ -1,11 +1,11 @@
 package dev.hoori.db.core.execution;
 
 /**
- * Whether the connection is in a transaction after a portion, as the driver last heard from the
- * server, without asking it. PostgreSQL tells all three states after every message. MariaDB and
- * MySQL tell only whether one is open, and only when a statement ends well: a failure leaves the
- * state from before, which is right but for a deadlock or a lock wait timeout that rolled the
- * transaction back.
+ * Whether the connection is in a transaction after a portion, as far as that is known without
+ * asking the server. pgjdbc keeps PostgreSQL's state from every message of the server, unless the
+ * connection is closed. MariaDB and MySQL tell it only when a statement's last result ended well;
+ * while rows are still to come, and after a failure or a cancel, it is {@link #UNKNOWN}, as a
+ * deadlock, for one, rolls the transaction back without a word.
  */
 public enum Transaction {
   /** No transaction is open: with auto-commit, the statement's work is committed. */
@@ -14,6 +14,6 @@ public enum Transaction {
   OPEN,
   /** PostgreSQL's transaction failed: it takes nothing more but a rollback. */
   FAILED,
-  /** The driver does not say, as one that this code does not know. */
+  /** Not known: not said since the statement began, or by a driver this code does not know. */
   UNKNOWN
 }
