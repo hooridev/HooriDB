@@ -251,22 +251,48 @@ class DriversTest {
   }
 
   @Test
-  void aYoungVersionIsWarnedOf() throws Exception {
+  void aYoungVersionIsWarnedOfWithWhatItsDriverLineSays() throws Exception {
     var app = app();
     run(
         app,
-        START + NEW_SHOP + choose(YOUNG) + "snap young\n" + choose("Recommended")
-            + "snap recommended\n");
+        START + NEW_SHOP + choose(YOUNG) + "await\nframe\nsnap young\n" + choose("Recommended")
+            + "await\nframe\nsnap recommended\n");
     String young = tree("young");
-    // The field's warning: it stays valid, and the warning stands under it.
+    // The field's warning, which stays valid: the driver's line and the age, under the field.
+    var said = "PostgreSQL JDBC " + YOUNG + ", not downloaded yet (" + FakeDrivers.SIZE
+        + ", from Maven Central). Only 1 day old: recommended after 3 days, once a bad release"
+        + " would be withdrawn.";
     var box = line(young, "#driver-version");
-    assertTrue(
-        box.contains("warning=\"Version " + YOUNG + " is 1 day old. HooriDB recommends a"
-            + " release only once it has been out for 3 days"),
-        box);
+    assertTrue(box.contains("warning=\"" + said), box);
     assertFalse(box.contains("invalid"), box);
+    float text = TestConnectionTest.top(young, "text \"" + said);
+    assertTrue(TestConnectionTest.top(young, "#driver-version") < text, young);
+    assertTrue(text < TestConnectionTest.top(young, "#host"), young);
+    assertTrue(line(young, "label=\"warning\"").contains(" 432,"), "at the field's start");
     assertFalse(young.contains("role=note"), young);
-    assertFalse(line(tree("recommended"), "#driver-version").contains("warning="));
+    var recommended = tree("recommended");
+    assertFalse(line(recommended, "#driver-version").contains("warning="), recommended);
+    assertTrue(
+        recommended.contains("\"PostgreSQL JDBC 42.7.14, not downloaded yet ("), recommended);
+  }
+
+  /**
+   * What failed has to be said: the help says it, and no warning hides it. No step leads there yet,
+   * as a failed list leaves no version too new, so the test sets the failure.
+   */
+  @Test
+  void aFailureToSayWinsOverTheAgeOfAYoungVersion() throws Exception {
+    var app = app();
+    run(app, START + NEW_SHOP + choose(YOUNG) + "await\nframe\n");
+    app.state().dialog.versions.failed = new IOException("denied");
+    app.invalidate();
+    run(app, "frame\nsnap failed\n");
+    String failed = tree("failed");
+    assertFalse(line(failed, "#driver-version").contains("warning="), failed);
+    assertTrue(
+        failed.contains("\"PostgreSQL JDBC " + YOUNG + ", not downloaded yet (" + FakeDrivers.SIZE
+            + ", from Maven Central)\\nThe drivers folder could not be read"),
+        failed);
   }
 
   /** A release below the recommended one can be the newest: its own date tells its age. */
@@ -284,9 +310,7 @@ class DriversTest {
     repository.dating.countDown();
     run(app, SETTLE + "snap lower\n");
     String lower = tree("lower");
-    assertTrue(
-        line(lower, "#driver-version").contains("warning=\"Version " + LOWER + " is 1 day old."),
-        lower);
+    assertTrue(line(lower, "#driver-version").contains(". Only 1 day old: "), lower);
     assertFalse(lower.contains("Looking up when"), lower);
   }
 

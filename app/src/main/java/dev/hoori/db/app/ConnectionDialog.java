@@ -439,7 +439,7 @@ final class ConnectionDialog {
                         open ? v -> provider(s, v) : null)),
                 field("Driver", driverVersion(t, s, open))
                     .help(driverHelp(s))
-                    .warning(youngWarning()),
+                    .warning(youngWarning(s)),
                 Form.row(
                     field(
                             "Host",
@@ -592,18 +592,22 @@ final class ConnectionDialog {
     return line;
   }
 
-  /** What to think of a version chosen that is too new to be recommended, or null. */
-  private String youngWarning() {
+  /**
+   * The driver's line with what to think of a version chosen that is too new to be recommended, as
+   * the warning replaces the help; null where it is not too new, or where a lookup or the list
+   * failed, which the help says instead.
+   */
+  private String youngWarning(State s) {
     var chosen = editing.value().driverVersion();
-    if (!versions.young(chosen)) {
+    if (!versions.young(chosen)
+        || probe.fetch.lookup instanceof Fetch.Missing
+        || s.drivers != null && versions.problem(s.drivers) != null) {
       return null;
     }
     var age = versions.age(chosen);
-    return "Version " + chosen + " is " + (age == null ? "very new" : age)
-        + ". HooriDB recommends a release only once it has been out for "
-        + DriverStore.WAITING_PERIOD.toDays()
-        + " days, as a bad release is usually withdrawn within days. Choose Recommended unless"
-        + " this connection needs this version.";
+    return probe.line(s) + ". " + (age == null ? "Very new" : "Only " + age)
+        + ": recommended after " + DriverStore.WAITING_PERIOD.toDays()
+        + " days, once a bad release would be withdrawn.";
   }
 
   /** Which driver, and whether it is there; and what keeps the list of versions from showing. */
