@@ -12,6 +12,7 @@ import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Checkbox;
 import com.rethinkj.ui.kit.Dialog;
+import com.rethinkj.ui.kit.HuePicker;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
@@ -1129,8 +1130,11 @@ final class Catalogue {
   // Also while connected: a colour changes neither the connection nor its tabs.
   private static List<Menu.Item> colours(State s, ConnectionProfile p) {
     return Colours.CHOICES.stream()
-        .map(
-            c -> Menu.item(Colours.label(c), () -> s.put(p.withColour(c))).checked(c == p.colour()))
+        .map(c -> {
+          var item =
+              Menu.item(Colours.label(c), () -> s.put(p.withColour(c))).checked(c == p.colour());
+          return c == null ? item : item.leading(t -> HuePicker.swatch(t, Colours.hue(c)));
+        })
         .toList();
   }
 
