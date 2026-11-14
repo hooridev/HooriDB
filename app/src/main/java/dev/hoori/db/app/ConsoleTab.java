@@ -48,6 +48,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
@@ -125,6 +126,7 @@ final class ConsoleTab implements Tab {
   private Output reading; // the result whose rows it has
   private final ArrayDeque<String> queue = new ArrayDeque<>(); // the run's statements still to run
   private Work work; // the statement, the rows or the switch under way, or null
+  private Future<?> call; // its call on the lane
   private String running; // the statement under way, or the one whose rows are read
   boolean waiting; // for the tree's connection, which the session is opened from
   boolean stranded; // the tree's connection failed while it waited: Try again goes on
@@ -282,14 +284,15 @@ final class ConsoleTab implements Tab {
     running = sql;
     var held = new AtomicReference<Servers.Run>();
     open = held;
-    var call = lane.submit(link -> {
+    var asked = lane.submit(link -> {
       var run = link.run(sql);
       held.set(run);
       return run.next(PORTION);
     });
+    call = asked;
     work = s.app.background(
         "run a statement",
-        () -> Lane.await(call),
+        () -> Lane.await(asked),
         portion -> {
           work = null;
           ran(s, sql, portion);
@@ -481,10 +484,11 @@ final class ConsoleTab implements Tab {
     }
     var held = open;
     var sql = running;
-    var call = lane.submit(link -> held.get().next(PORTION)); // leave() clears it only after this
+    var asked = lane.submit(link -> held.get().next(PORTION)); // leave() clears it only after this
+    call = asked;
     work = s.app.background(
         "read rows",
-        () -> Lane.await(call),
+        () -> Lane.await(asked),
         portion -> {
           work = null;
           int before = outputs.size();
@@ -516,8 +520,7 @@ final class ConsoleTab implements Tab {
     if (work == null) {
       return;
     }
-    work.cancel(); // interrupts the call on the lane, which core turns into a cancel
-    work = null;
+    stop();
     queue.clear();
     leave(); // the statement may have finished its portion, which then never arrives
     if (switching != null) {
@@ -553,13 +556,14 @@ final class ConsoleTab implements Tab {
     leave();
     switching = name;
     running = "Database " + name;
-    var call = lane.submit(link -> {
+    var asked = lane.submit(link -> {
       link.use(name);
       return name;
     });
+    call = asked;
     work = s.app.background(
         "switch the database",
-        () -> Lane.await(call),
+        () -> Lane.await(asked),
         done -> {
           work = null;
           switching = null;
@@ -573,11 +577,21 @@ final class ConsoleTab implements Tab {
         });
   }
 
+  /**
+   * Gives up the work and its call on the lane, which core turns into a cancel on the server where
+   * it runs. The call is cancelled itself, as a work cancelled before it began to wait for it would
+   * leave it to run.
+   */
+  private void stop() {
+    work.cancel();
+    work = null;
+    call.cancel(true);
+  }
+
   /** The tree's connection was disconnected: what the console began ends with it. */
   void end() {
     if (work != null) {
-      work.cancel();
-      work = null;
+      stop();
     }
     queue.clear();
     waiting = false;
@@ -970,8 +984,11 @@ final class ConsoleTab implements Tab {
 
   /** "Ran in 12 ms · 3 rows": the last run's time on the server, and its rows. */
   String status() {
-    if (took == null) {
+    if (took == null || statements == 0 && !cancelled && problem == null) {
       return connected() ? "Connected" : "";
+    }
+    if (statements == 0 && !cancelled) {
+      return "Not run"; // the session could not be opened
     }
     var ms = took.toMillis() + " ms";
     var text = new StringBuilder();

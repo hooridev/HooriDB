@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.Future;
+import java.util.function.LongPredicate;
 
 /**
  * A table's rows in a tab. They are read in pages, on the lane of the table's connection, as the
@@ -91,7 +92,17 @@ final class TableTab implements Tab {
   record Failure(Problem problem, String detail) {}
 
   /** A page asked for: its work, its call on the lane, and for what it was asked. */
-  record Asked(Work work, Lane lane, Future<?> call, Lane.Priority priority) {}
+  record Asked(Work work, Lane lane, Future<?> call, Lane.Priority priority) {
+
+    /**
+     * Gives the page up: the call too, which a work cancelled before it began to wait would leave
+     * on the lane.
+     */
+    void cancel() {
+      work.cancel();
+      call.cancel(true);
+    }
+  }
 
   /** The most rows a grid shows: it counts them in an int. */
   static final int GRID_ROWS = Integer.MAX_VALUE;
@@ -220,12 +231,7 @@ final class TableTab implements Tab {
     }
     long top = first / PAGE;
     long bottom = last / PAGE;
-    for (var entry : List.copyOf(reading.entrySet())) {
-      if (entry.getKey() < top - AROUND || entry.getKey() > bottom + AROUND) {
-        entry.getValue().work().cancel();
-        reading.remove(entry.getKey());
-      }
-    }
+    giveUp(page -> page < top - AROUND || page > bottom + AROUND);
     for (long page = top; page <= bottom; page++) {
       var asked = reading.get(page);
       if (asked != null && asked.priority() != Lane.Priority.VIEW) {
@@ -313,12 +319,7 @@ final class TableTab implements Tab {
         counted(s);
       }
       pages.keySet().removeIf(p -> p * PAGE >= rows);
-      for (var entry : List.copyOf(reading.entrySet())) {
-        if (ending || entry.getKey() * PAGE >= rows) {
-          entry.getValue().work().cancel();
-          reading.remove(entry.getKey());
-        }
-      }
+      giveUp(p -> ending || p * PAGE >= rows);
     } else if (from + PAGE > rows || from + PAGE == rows && counted != Counted.EXACT) {
       rows = from + PAGE;
       counted = Counted.AT_LEAST;
@@ -465,6 +466,7 @@ final class TableTab implements Tab {
    * connection it was read on ends, whose work ends with it.
    */
   void stop() {
+    giveUp(page -> true);
     if (opening != null) {
       opening.cancel();
       opening = null;
@@ -473,8 +475,23 @@ final class TableTab implements Tab {
       counting.cancel();
       counting = null;
     }
-    reading.values().forEach(a -> a.work().cancel());
-    reading.clear();
+  }
+
+  /**
+   * Gives up the pages asked for that the test picks. Those that wait leave their lane before any
+   * is cancelled: a cancel of the read that runs lets the lane go on at once, to the next that waits.
+   */
+  private void giveUp(LongPredicate which) {
+    var gone = new ArrayList<Asked>();
+    for (var it = reading.entrySet().iterator(); it.hasNext(); ) {
+      var entry = it.next();
+      if (which.test(entry.getKey())) {
+        gone.add(entry.getValue());
+        it.remove();
+      }
+    }
+    gone.forEach(asked -> asked.lane().drop(asked.call()));
+    gone.forEach(Asked::cancel);
   }
 
   @Override

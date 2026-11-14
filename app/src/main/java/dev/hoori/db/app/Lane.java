@@ -141,6 +141,13 @@ final class Lane {
     }
   }
 
+  /** Takes a call that still waits off the lane, so that it never runs; one that runs stays. */
+  void drop(Future<?> call) {
+    if (call instanceof Task<?> task) {
+      thread.getQueue().remove(task);
+    }
+  }
+
   /** A call as it waits on the lane, by its priority and then in the order asked. */
   private static final class Task<T> extends FutureTask<T> implements Comparable<Task<?>> {
     private Priority priority; // changed only while out of the queue

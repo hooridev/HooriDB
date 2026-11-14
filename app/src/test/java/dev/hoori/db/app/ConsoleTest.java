@@ -348,6 +348,7 @@ class ConsoleTest {
     assertTrue(window.contains("role=button label=\"Enter password…\""), window);
     assertFalse(line(window, "#run ").contains("busy"), window);
     assertTrue(line(window, "#cancel").contains("disabled"), window);
+    assertFalse(status(window).contains("Ran"), window);
     servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogueTest.PG_OUTLINE, PASSWORD);
     c.run(
         app,
