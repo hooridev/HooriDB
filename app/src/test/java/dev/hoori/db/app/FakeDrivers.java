@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.HashMap;
@@ -133,23 +134,59 @@ final class FakeDrivers implements Repository {
   }
 
   private FakeDrivers publish(Driver driver, boolean rightChecksum) throws Exception {
+    return publish(driver, VERSION, PUBLISHED, rightChecksum);
+  }
+
+  /** Puts a version of the made-up PostgreSQL driver into the repository, published then. */
+  FakeDrivers publish(String version, Instant published) throws Exception {
+    return publish(DRIVER, version, published, true);
+  }
+
+  private FakeDrivers publish(
+      Driver driver, String version, Instant published, boolean rightChecksum) throws Exception {
     var dir = root.resolve(driver.group().replace('.', '/'))
         .resolve(driver.artifact())
-        .resolve(VERSION);
+        .resolve(version);
     Files.createDirectories(dir);
     var bytes = jar(driver);
-    var file = dir.resolve(driver.artifact() + "-" + VERSION + ".jar");
+    var file = dir.resolve(driver.artifact() + "-" + version + ".jar");
     Files.write(file, bytes);
-    Files.setLastModifiedTime(file, FileTime.from(PUBLISHED));
+    Files.setLastModifiedTime(file, FileTime.from(published));
     var sum = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     Files.writeString(
         dir.resolve(file.getFileName() + ".sha256"), rightChecksum ? sum : "0".repeat(64));
+    var versions = new StringBuilder();
+    try (var entries = Files.list(dir.getParent())) {
+      entries
+          .filter(Files::isDirectory)
+          .forEach(v -> versions.append("<version>").append(v.getFileName()).append("</version>"));
+    }
     Files.writeString(
         dir.getParent().resolve("maven-metadata.xml"),
-        "<?xml version=\"1.0\"?><metadata><versioning><versions><version>" + VERSION
-            + "</version></versions></versioning></metadata>",
+        "<?xml version=\"1.0\"?><metadata><versioning><versions>" + versions
+            + "</versions></versioning></metadata>",
         StandardCharsets.UTF_8);
     return this;
+  }
+
+  /**
+   * Makes the version's folder read-only, so that its file cannot be deleted, as Windows keeps a
+   * loaded driver's file; false where the file system cannot, or the test runs as root.
+   */
+  static boolean lock(Path drivers, String version) throws IOException {
+    var dir = drivers.resolve(DRIVER.group()).resolve(DRIVER.artifact()).resolve(version);
+    if (!dir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+      return false;
+    }
+    Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-xr-xr-x"));
+    return !Files.isWritable(dir);
+  }
+
+  static void unlock(Path drivers, String version) throws IOException {
+    var dir = drivers.resolve(DRIVER.group()).resolve(DRIVER.artifact()).resolve(version);
+    if (Files.exists(dir) && dir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+      Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwxr-xr-x"));
+    }
   }
 
   /** The JAR of a class of the driver's name that is a driver and connects nowhere. */

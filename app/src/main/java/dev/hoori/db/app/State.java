@@ -56,6 +56,7 @@ final class State {
   private final Map<UUID, char[]> passwords = new HashMap<>();
   Node selected; // the selected node of the catalogue, or null
   ConnectionDialog dialog; // null while closed
+  DriversDialog driverList; // the Drivers dialog, null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
   // Its deletion runs: it waits for the keyring to be found, then for its password to go.
   boolean removing;
@@ -353,6 +354,9 @@ final class State {
     if (dialog != null) {
       // A test or a download can always be done again: closing cancels them instead of waiting.
       dialog.probe.stop();
+    }
+    if (driverList != null) {
+      driverList.close(this); // a download can be done again
     }
     if (quitAnyway && !keyringBusy() && saving == null) {
       closeAll();

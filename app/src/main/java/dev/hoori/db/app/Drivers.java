@@ -30,6 +30,10 @@ final class Drivers {
   private record Waiter(Consumer<LoadedDriver> then, Consumer<Exception> failed) {}
 
   private final Map<Version, LoadedDriver> loaded = new HashMap<>();
+  // The version last looked up as the recommended one of each driver.
+  private final Map<Driver, String> recommended = new HashMap<>();
+  // Loaded versions that were deleted since: closed with the others, as a connection may use one.
+  private final List<LoadedDriver> deleted = new ArrayList<>();
   // The loads under way, with whoever waits for each; one load per driver and version at a time.
   private final Map<Version, List<Waiter>> loading = new HashMap<>();
 
@@ -75,14 +79,27 @@ final class Drivers {
         error -> loading.remove(key).forEach(w -> w.failed().accept(error)));
   }
 
-  /** A version of the driver loaded in this session, or null while there is none. */
-  LoadedDriver loaded(Driver driver) {
-    for (var entry : loaded.entrySet()) {
-      if (entry.getKey().driver().equals(driver)) {
-        return entry.getValue();
-      }
+  /** The version is the driver's recommended one now. */
+  void recommend(Driver driver, String version) {
+    recommended.put(driver, version);
+  }
+
+  /**
+   * The version of the driver loaded in this session, or null while it is not; for a null version
+   * the one last looked up as recommended.
+   */
+  LoadedDriver loaded(Driver driver, String version) {
+    var v = version != null ? version : recommended.get(driver);
+    return v == null ? null : loaded.get(new Version(driver, v));
+  }
+
+  /** The version was deleted: it is loaded again, from a new download, when it is needed. */
+  void forget(Driver driver, String version) {
+    var gone = loaded.remove(new Version(driver, version));
+    if (gone != null) {
+      deleted.add(gone);
     }
-    return null;
+    recommended.remove(driver, version);
   }
 
   /**
@@ -93,7 +110,11 @@ final class Drivers {
     for (var driver : loaded.values()) {
       driver.close();
     }
+    for (var driver : deleted) {
+      driver.close();
+    }
     loaded.clear();
+    deleted.clear();
   }
 
   /** Where the version's file is downloaded from. */

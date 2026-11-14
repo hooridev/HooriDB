@@ -193,8 +193,11 @@ class TestConnectionTest {
         frame
         snap offline
         """);
-    assertTrue(tree("offline")
-        .contains("\"MySQL Connector/J, not downloaded yet (Maven Central cannot be reached)\""));
+    assertTrue(
+        tree("offline")
+            .contains(
+                "\"MySQL Connector/J, not downloaded yet (Maven Central cannot be reached)\\n"),
+        tree("offline"));
     repository.offline = false;
     downloaded();
     repository.offline = true;
@@ -207,7 +210,7 @@ class TestConnectionTest {
         """);
     assertTrue(tree("downloaded-offline")
         .contains("\"PostgreSQL JDBC 42.7.14, downloaded (Maven Central cannot be reached to look"
-            + " for a newer one)\""));
+            + " for a newer one)\\nIts versions could not be read."));
     repository.offline = false;
     run(app, """
         press role=radio label="MySQL"
@@ -294,7 +297,7 @@ class TestConnectionTest {
         new Case(
             Failure.NO_SUCH_DATABASE,
             "#database",
-            "role=combobox",
+            "#tls",
             "The server has no database named shop, or this user may not open it.",
             "No such database",
             null),
@@ -316,7 +319,7 @@ class TestConnectionTest {
             "#host"),
         new Case(
             Failure.TLS_UNAVAILABLE,
-            "role=combobox",
+            "#tls",
             null,
             "The server offers no TLS. Off connects without it, and password and data go over the"
                 + " network as they are.",
@@ -324,7 +327,7 @@ class TestConnectionTest {
             null),
         new Case(
             Failure.CERTIFICATE_REJECTED,
-            "role=combobox",
+            "#tls",
             null,
             "The server's certificate is not trusted, or not for db.example.com. Encrypted accepts"
                 + " it, without verifying the server.",
