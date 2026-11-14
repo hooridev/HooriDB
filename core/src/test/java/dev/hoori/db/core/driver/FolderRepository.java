@@ -1,6 +1,8 @@
 package dev.hoori.db.core.driver;
 
 import java.io.ByteArrayInputStream;
+import java.io.EOFException;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.ProtocolException;
@@ -26,6 +28,7 @@ public final class FolderRepository implements Repository {
   final List<String> opened = new CopyOnWriteArrayList<>();
   final List<String> asked = new CopyOnWriteArrayList<>();
   final Set<String> malformed = new HashSet<>();
+  final Set<String> breakingOff = new HashSet<>(); // answered, then cut off after half the body
   boolean offline;
   boolean refusing; // answers every request with a server error
   // Runs once a file is read and before it is returned, as a server between two packets.
@@ -49,6 +52,21 @@ public final class FolderRepository implements Repository {
     opened.add(path);
     var bytes = Files.readAllBytes(root.resolve(path));
     served.accept(path);
+    if (breakingOff.contains(path)) {
+      var half = new ByteArrayInputStream(bytes, 0, bytes.length / 2);
+      return new Response(
+          new FilterInputStream(half) {
+            @Override
+            public int read(byte[] b, int off, int len) throws IOException {
+              int n = super.read(b, off, len);
+              if (n < 0) {
+                throw new EOFException("cut off");
+              }
+              return n;
+            }
+          },
+          bytes.length);
+    }
     return new Response(new ByteArrayInputStream(bytes), bytes.length);
   }
 

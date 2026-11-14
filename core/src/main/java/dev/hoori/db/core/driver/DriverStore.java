@@ -92,18 +92,32 @@ public final class DriverStore {
     void update(long done, long total);
   }
 
+  /** The room left on the disk of a folder, in bytes; tests hand a store one of their own. */
+  @FunctionalInterface
+  interface Space {
+    Space DISK = folder -> Files.getFileStore(folder).getUsableSpace();
+
+    long usable(Path folder) throws IOException;
+  }
+
   private final Path folder;
   private final Repository repository;
   private final long maxSize;
+  private final Space space;
 
   public DriverStore(Path folder, Repository repository) {
-    this(folder, repository, MAX_DRIVER_SIZE);
+    this(folder, repository, MAX_DRIVER_SIZE, Space.DISK);
   }
 
   DriverStore(Path folder, Repository repository, long maxSize) {
+    this(folder, repository, maxSize, Space.DISK);
+  }
+
+  DriverStore(Path folder, Repository repository, long maxSize, Space space) {
     this.folder = folder;
     this.repository = repository;
     this.maxSize = maxSize;
+    this.space = space;
   }
 
   /** The versions the repository has of the driver, newest first. */
@@ -256,7 +270,7 @@ public final class DriverStore {
     }
     var dir = jar.getParent();
     Path temporary = null;
-    long needed = 1 << 20; // the file's length once it is known
+    long needed = 1 << 20; // a megabyte, and the file's length once it is known
     try {
       Files.createDirectories(dir.getParent());
       // Its name starts with a dot, which no version does, so nothing lists or loads it.
@@ -264,10 +278,13 @@ public final class DriverStore {
       var part = temporary.resolve(jar.getFileName());
       var sha256 = digest("SHA-256");
       var sha1 = digest("SHA-1");
-      try (var response = remote(path, () -> repository.open(path));
-          var out = Files.newOutputStream(part)) {
-        needed = Math.max(needed, response.length());
-        copy(path, response, out, maxSize, progress, sha256, sha1);
+      try (var response = remote(path, () -> repository.open(path))) {
+        if (response.length() > 0) {
+          needed = response.length();
+        }
+        try (var out = Files.newOutputStream(part)) {
+          copy(path, response, out, maxSize, progress, sha256, sha1);
+        }
       }
       var recorded = HexFormat.of().formatHex(sha256.digest());
       var actual = bySha256 ? recorded : HexFormat.of().formatHex(sha1.digest());
@@ -345,20 +362,26 @@ public final class DriverStore {
   }
 
   /**
-   * Deletes the version from the folder; a download in progress is not disturbed. On Windows, a
-   * loaded version cannot be deleted, since its file is open: it fails with {@link
-   * DriverException.Failure#STORAGE} and the version stays as it was, downloaded and usable.
+   * Deletes the version from the folder; a download in progress is not disturbed. It fails only
+   * while nothing has changed, with {@link DriverException.Failure#STORAGE}: the version stays as
+   * it was, downloaded and usable, as a loaded one does on Windows, whose file is open. Once its
+   * file is gone the version is gone, and what is left of its folder is removed as far as it can
+   * be.
    */
   public void delete(Driver driver, String version) throws DriverException {
     var jar = jar(driver, version);
     checkCancelled(file(driver, version));
     try {
-      // Without its file a folder is not a version, which no one lists or loads; what is left is
-      // removed after it, and a failure there leaves only names that start with a dot.
       Files.deleteIfExists(jar);
-      discard(jar.getParent());
     } catch (IOException e) {
       throw storage(e);
+    }
+    // Without its file a folder is not a version, which no one lists or loads, and a download of
+    // the version replaces it.
+    try {
+      discard(jar.getParent());
+    } catch (IOException leftOver) {
+      // The record beside the file stays, in a folder that holds no version.
     }
   }
 
@@ -517,7 +540,7 @@ public final class DriverStore {
       try {
         n = response.body().read(buffer);
       } catch (IOException e) {
-        throw network(path, e);
+        throw broken(path, e);
       }
       if (n < 0) {
         return;
@@ -567,14 +590,25 @@ public final class DriverStore {
     return new DriverException(answeredBadly ? UNAVAILABLE : NO_NETWORK, path, e);
   }
 
+  // Once the repository has answered, a response that breaks off is its failure, not the network's
+  // absence.
+  private static DriverException broken(String path, IOException e) {
+    if (Thread.currentThread().isInterrupted()) {
+      return new DriverException(CANCELLED, path, e);
+    }
+    return e instanceof ProtocolException
+        ? new DriverException(INVALID_RESPONSE, path, e)
+        : new DriverException(UNAVAILABLE, path, e);
+  }
+
   // Java does not say why a write failed, so a disk with less room than the file is taken as why.
-  private static boolean full(Path dir, long needed) {
+  private boolean full(Path dir, long needed) {
     var existing = dir.toAbsolutePath();
     while (existing != null && !Files.exists(existing)) {
       existing = existing.getParent();
     }
     try {
-      return existing != null && Files.getFileStore(existing).getUsableSpace() < needed;
+      return existing != null && space.usable(existing) < needed;
     } catch (IOException unknown) {
       return false;
     }
