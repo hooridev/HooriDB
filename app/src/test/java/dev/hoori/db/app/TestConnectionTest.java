@@ -151,7 +151,9 @@ class TestConnectionTest {
   /** That the text shows below the field and above the next one, and the field is invalid. */
   static void at(String tree, String field, String next, String text) {
     assertTrue(line(tree, field).contains("invalid"), field + " is invalid in\n" + tree);
-    float y = top(tree, "\"" + text + "\"");
+    // The field's own line names its error too, so the note is looked for after it.
+    String fieldLine = line(tree, field);
+    float y = top(tree.substring(tree.indexOf(fieldLine) + fieldLine.length()), "\"" + text + "\"");
     assertTrue(top(tree, field) < y, text + " below " + field);
     if (next != null) {
       assertTrue(y < top(tree, next), text + " above " + next);
