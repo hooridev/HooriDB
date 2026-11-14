@@ -27,6 +27,7 @@ public final class FolderRepository implements Repository {
   final List<String> asked = new CopyOnWriteArrayList<>();
   final Set<String> malformed = new HashSet<>();
   boolean offline;
+  boolean refusing; // answers every request with a server error
   // Runs once a file is read and before it is returned, as a server between two packets.
   Consumer<String> served = path -> {};
 
@@ -38,6 +39,9 @@ public final class FolderRepository implements Repository {
   public Response open(String path) throws IOException {
     if (offline) {
       throw new ConnectException("offline");
+    }
+    if (refusing) {
+      throw new Refused("The repository answered 503 for " + path);
     }
     if (malformed.contains(path)) {
       throw new ProtocolException("malformed");
@@ -52,6 +56,9 @@ public final class FolderRepository implements Repository {
   public Optional<Instant> published(String path) throws IOException {
     if (offline) {
       throw new ConnectException("offline");
+    }
+    if (refusing) {
+      throw new Refused("The repository answered 503 for " + path);
     }
     asked.add(path);
     return Optional.of(Files.getLastModifiedTime(root.resolve(path)).toInstant());

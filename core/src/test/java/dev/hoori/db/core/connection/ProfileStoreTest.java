@@ -55,9 +55,10 @@ class ProfileStoreTest {
           "shop/€",
           "ünïcode user",
           Tls.OFF,
-          Colour.RED),
+          Colour.RED,
+          null),
       new ConnectionProfile(
-          UUID.randomUUID(), "", Provider.MYSQL, "", 0, "", "", Tls.ENCRYPTED, null),
+          UUID.randomUUID(), "", Provider.MYSQL, "", 0, "", "", Tls.ENCRYPTED, null, "8.4.0"),
       new ConnectionProfile(
           UUID.randomUUID(),
           "{\"x\": 1}",
@@ -67,7 +68,8 @@ class ProfileStoreTest {
           "x",
           "y",
           Tls.VERIFIED,
-          Colour.GREY));
+          Colour.GREY,
+          "3.5.1"));
 
   @TempDir
   Path folder;
@@ -112,7 +114,9 @@ class ProfileStoreTest {
     withColour.add("colour");
     var profiles = root.get("profiles");
     assertEquals(withColour, Set.copyOf(profiles.get(0).propertyNames()));
-    assertEquals(fields, Set.copyOf(profiles.get(1).propertyNames()), "no colour, no field");
+    var withDriver = new java.util.HashSet<>(fields);
+    withDriver.add("driverVersion");
+    assertEquals(withDriver, Set.copyOf(profiles.get(1).propertyNames()), "no colour, no field");
   }
 
   @Test
@@ -149,6 +153,12 @@ class ProfileStoreTest {
   void aFileWithoutColoursLoadsWithNone() throws IOException {
     write(VALID.getBytes(UTF_8));
     assertEquals(null, new ProfileStore(folder).load().getFirst().colour());
+  }
+
+  @Test
+  void aFileWithoutADriverVersionLoadsWithTheRecommendedOne() throws IOException {
+    write(VALID.getBytes(UTF_8));
+    assertEquals(null, new ProfileStore(folder).load().getFirst().driverVersion());
   }
 
   @Test
@@ -191,6 +201,12 @@ class ProfileStoreTest {
         broken(VALID.replace("\"off\"", "\"off\", \"colour\": \"crimson\""), "\"colour\" is not a"),
         broken(VALID.replace("\"off\"", "\"off\", \"colour\": \"RED\""), "\"colour\" is not a"),
         broken(VALID.replace("\"off\"", "\"off\", \"colour\": null"), "\"colour\" is not text"),
+        broken(
+            VALID.replace("\"off\"", "\"off\", \"driverVersion\": \"../1\""),
+            "\"driverVersion\" is not a version"),
+        broken(
+            VALID.replace("\"off\"", "\"off\", \"driverVersion\": 42"),
+            "\"driverVersion\" is not text"),
         broken(VALID.replace(PROFILE, PROFILE + "," + PROFILE), "profile 2 has the id"),
         // "ÿ" in Latin-1 is a byte that UTF-8 never has.
         Arguments.of(VALID.replace("Local", "Lÿcal").getBytes(ISO_8859_1), "not valid JSON"));
@@ -227,7 +243,8 @@ class ProfileStoreTest {
         VALID.replace("\"version\": 1", "\"version\": \"s3cret\""),
         VALID.replace("0f8fad5b-d9cb-469f", "s3cret"),
         VALID.replace("postgresql", "s3cret"),
-        VALID.replace("\"off\"", "\"off\", \"colour\": \"s3cret\""));
+        VALID.replace("\"off\"", "\"off\", \"colour\": \"s3cret\""),
+        VALID.replace("\"off\"", "\"off\", \"driverVersion\": \"s3cret/\""));
     for (var content : broken) {
       write(content.getBytes(UTF_8));
       var failure =

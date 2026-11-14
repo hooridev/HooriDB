@@ -168,7 +168,8 @@ final class State {
         profile.database(),
         profile.user(),
         profile.tls(),
-        profile.colour());
+        profile.colour(),
+        profile.driverVersion());
     var list = new ArrayList<>(profiles);
     list.add(list.indexOf(profile) + 1, copy);
     profiles = List.copyOf(list);

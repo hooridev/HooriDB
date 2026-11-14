@@ -10,8 +10,10 @@ import static dev.hoori.db.core.driver.DriverException.Failure.NOT_FOUND;
 import static dev.hoori.db.core.driver.DriverException.Failure.NO_CHECKSUM;
 import static dev.hoori.db.core.driver.DriverException.Failure.NO_NETWORK;
 import static dev.hoori.db.core.driver.DriverException.Failure.NO_RECOMMENDATION;
+import static dev.hoori.db.core.driver.DriverException.Failure.NO_SPACE;
 import static dev.hoori.db.core.driver.DriverException.Failure.STORAGE;
 import static dev.hoori.db.core.driver.DriverException.Failure.TOO_LARGE;
+import static dev.hoori.db.core.driver.DriverException.Failure.UNAVAILABLE;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -22,6 +24,8 @@ import java.net.MalformedURLException;
 import java.net.ProtocolException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -49,8 +53,8 @@ import org.xml.sax.helpers.DefaultHandler;
 /**
  * Drivers downloaded from a repository into a folder, with a sub-folder per artifact and version
  * such as {@code org.postgresql/postgresql/42.7.14/}. A version's folder is complete or absent: a
- * download fills a temporary folder and renames it into place, and a delete renames it away before
- * removing it. Its file has matched the repository's checksum, which is recorded beside it and
+ * download fills a temporary folder and renames it into place, and a delete removes its file first,
+ * so that a file that cannot be deleted, as one that is open on Windows, leaves it whole. Its file has matched the repository's checksum, which is recorded beside it and
  * checked again before the file is loaded. What is downloaded works without a network. Every
  * method blocks; interrupting the thread cancels it with {@link DriverException.Failure#CANCELLED}
  * and leaves the thread interrupted, except while a driver's own class initialisation runs during
@@ -146,9 +150,10 @@ public final class DriverStore {
    * release is usually noticed and withdrawn within days, so a younger one is never recommended,
    * though it can still be downloaded by name. Only the newest few releases are asked for their
    * date; when none of them qualifies, this fails with {@link
-   * DriverException.Failure#NO_RECOMMENDATION}. When the repository cannot be reached, this is the
-   * newest stable version that is downloaded and matches its record, and {@link
-   * DriverException.Failure#NO_NETWORK} only when there is none.
+   * DriverException.Failure#NO_RECOMMENDATION}. When the repository cannot be reached or fails,
+   * this is the newest stable version that is downloaded and matches its record, and {@link
+   * DriverException.Failure#NO_NETWORK} or {@link DriverException.Failure#UNAVAILABLE} only when
+   * there is none.
    */
   public Recommended recommended(Driver driver, Instant now, Duration waitingPeriod)
       throws DriverException {
@@ -175,7 +180,7 @@ public final class DriverStore {
       }
       throw new DriverException(NO_RECOMMENDATION, base(driver));
     } catch (DriverException e) {
-      if (e.failure() != NO_NETWORK) {
+      if (e.failure() != NO_NETWORK && e.failure() != UNAVAILABLE) {
         throw e;
       }
       // A version on disk was either recommended when it was downloaded or chosen on purpose,
@@ -227,6 +232,7 @@ public final class DriverStore {
     }
     var dir = jar.getParent();
     Path temporary = null;
+    long needed = 1 << 20; // the file's length once it is known
     try {
       Files.createDirectories(dir.getParent());
       // Its name starts with a dot, which no version does, so nothing lists or loads it.
@@ -236,6 +242,7 @@ public final class DriverStore {
       var sha1 = digest("SHA-1");
       try (var response = remote(path, () -> repository.open(path));
           var out = Files.newOutputStream(part)) {
+        needed = Math.max(needed, response.length());
         copy(path, response, out, maxSize, progress, sha256, sha1);
       }
       var recorded = HexFormat.of().formatHex(sha256.digest());
@@ -248,7 +255,11 @@ public final class DriverStore {
       checkCancelled(path);
       publish(temporary, dir, jar);
     } catch (IOException e) {
-      throw storage(e);
+      throw full(dir, needed) ? new DriverException(NO_SPACE, path, e) : storage(e);
+    } catch (DriverException e) {
+      throw e.failure() == STORAGE && full(dir, needed)
+          ? new DriverException(NO_SPACE, path, e)
+          : e;
     } finally {
       deleteTree(temporary);
     }
@@ -298,13 +309,17 @@ public final class DriverStore {
 
   /**
    * Deletes the version from the folder; a download in progress is not disturbed. On Windows, a
-   * loaded version cannot be deleted, since its file is open.
+   * loaded version cannot be deleted, since its file is open: it fails with {@link
+   * DriverException.Failure#STORAGE} and the version stays as it was, downloaded and usable.
    */
   public void delete(Driver driver, String version) throws DriverException {
-    var dir = jar(driver, version).getParent();
+    var jar = jar(driver, version);
     checkCancelled(file(driver, version));
     try {
-      discard(dir);
+      // Without its file a folder is not a version, which no one lists or loads; what is left is
+      // removed after it, and a failure there leaves only names that start with a dot.
+      Files.deleteIfExists(jar);
+      discard(jar.getParent());
     } catch (IOException e) {
       throw storage(e);
     }
@@ -507,9 +522,25 @@ public final class DriverStore {
     if (Thread.currentThread().isInterrupted()) {
       return new DriverException(CANCELLED, path, e);
     }
-    return e instanceof ProtocolException
-        ? new DriverException(INVALID_RESPONSE, path, e)
-        : new DriverException(NO_NETWORK, path, e);
+    if (e instanceof ProtocolException) {
+      return new DriverException(INVALID_RESPONSE, path, e);
+    }
+    boolean answeredBadly = e instanceof Repository.Refused
+        || e instanceof HttpTimeoutException && !(e instanceof HttpConnectTimeoutException);
+    return new DriverException(answeredBadly ? UNAVAILABLE : NO_NETWORK, path, e);
+  }
+
+  // Java does not say why a write failed, so a disk with less room than the file is taken as why.
+  private static boolean full(Path dir, long needed) {
+    var existing = dir.toAbsolutePath();
+    while (existing != null && !Files.exists(existing)) {
+      existing = existing.getParent();
+    }
+    try {
+      return existing != null && Files.getFileStore(existing).getUsableSpace() < needed;
+    } catch (IOException unknown) {
+      return false;
+    }
   }
 
   private static DriverException storage(IOException e) {

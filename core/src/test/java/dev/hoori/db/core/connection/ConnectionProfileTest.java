@@ -38,7 +38,16 @@ class ConnectionProfileTest {
         .withColour(Colour.TEAL);
     assertEquals(
         new ConnectionProfile(
-            p.id(), "Shop", Provider.MYSQL, "db", 3307, "shop", "app", Tls.VERIFIED, Colour.TEAL),
+            p.id(),
+            "Shop",
+            Provider.MYSQL,
+            "db",
+            3307,
+            "shop",
+            "app",
+            Tls.VERIFIED,
+            Colour.TEAL,
+            null),
         q);
     assertEquals(null, p.colour());
     assertEquals("", p.name());
@@ -49,12 +58,24 @@ class ConnectionProfileTest {
   @Test
   void equalFieldsAreEqual() {
     var id = UUID.randomUUID();
-    var a = new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null);
-    var b = new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null);
+    var a =
+        new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null);
+    var b =
+        new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null);
     assertEquals(a, b);
     assertEquals(a.hashCode(), b.hashCode());
     assertNotEquals(a, b.withUser("v"));
     assertNotEquals(a, b.withColour(Colour.RED));
+    assertNotEquals(a, b.withDriverVersion("42.7.10"));
+  }
+
+  @Test
+  void aDriverVersionMustBeOneHooriDbAccepts() {
+    var p = ConnectionProfile.of(Provider.POSTGRESQL);
+    assertEquals(null, p.driverVersion(), "recommended");
+    assertEquals("42.7.10", p.withDriverVersion("42.7.10").driverVersion());
+    org.junit.jupiter.api.Assertions.assertThrows(
+        IllegalArgumentException.class, () -> p.withDriverVersion("../42"));
   }
 
   @ParameterizedTest

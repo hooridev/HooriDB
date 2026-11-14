@@ -5,13 +5,17 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import dev.hoori.db.core.driver.DriverException.Failure;
 import dev.hoori.db.core.driver.DriverStore.Recommended;
 import dev.hoori.db.core.driver.FolderRepository.Sum;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -385,6 +389,40 @@ class DriverStoreTest {
     store.delete(DRIVER, "7.0.0");
     assertEquals(List.of("1.0.0"), store.downloaded(DRIVER));
     assertFalse(Files.exists(storage.resolve("dev.hoori.fake/fake-jdbc/1.1.0")));
+  }
+
+  /** As a loaded JAR on Windows, which stays open until the app ends. */
+  @Test
+  void aVersionWhoseFileCannotBeDeletedStaysWholeAndUsable() throws Exception {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+    repository.publish(DRIVER, "1.0.0", FakeDriver.jar("1", temp), Sum.SHA256, NOW);
+    store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+    var dir = storage.resolve("dev.hoori.fake/fake-jdbc/1.0.0");
+    var permissions = Files.getPosixFilePermissions(dir);
+    Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-xr-xr-x"));
+    try {
+      assumeFalse(Files.isWritable(dir), "not as root");
+      assertFailure(Failure.STORAGE, () -> store.delete(DRIVER, "1.0.0"));
+      assertEquals(List.of("1.0.0"), store.downloaded(DRIVER));
+      repository.offline = true;
+      store.load(DRIVER, "1.0.0").close();
+    } finally {
+      Files.setPosixFilePermissions(dir, permissions);
+    }
+    store.delete(DRIVER, "1.0.0");
+    assertEquals(List.of(), store.downloaded(DRIVER));
+  }
+
+  @Test
+  void aRepositoryThatAnswersWithAnErrorIsUnavailable() throws Exception {
+    repository.publish(DRIVER, "1.0.0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(10)));
+    repository.refusing = true;
+    assertFailure(Failure.UNAVAILABLE, () -> store.versions(DRIVER));
+    assertFailure(Failure.UNAVAILABLE, () -> store.recommended(DRIVER, NOW));
+    repository.refusing = false;
+    store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+    repository.refusing = true;
+    assertEquals(new Recommended("1.0.0", true), store.recommended(DRIVER, NOW));
   }
 
   @Test

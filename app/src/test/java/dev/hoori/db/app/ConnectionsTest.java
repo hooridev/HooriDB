@@ -444,7 +444,8 @@ class ConnectionsTest {
             copy.database(),
             copy.user(),
             copy.tls(),
-            copy.colour()));
+            copy.colour(),
+            copy.driverVersion()));
   }
 
   @Test
