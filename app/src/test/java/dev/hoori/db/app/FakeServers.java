@@ -60,16 +60,21 @@ import java.util.concurrent.atomic.AtomicInteger;
  * calls. A held statement that is interrupted ends as core's does: with a cancelled failure, the
  * thread left interrupted. Each portion took {@link #TOOK}.
  *
- * <p>Each connection keeps a transaction as the servers do. {@code BEGIN}, {@code START
- * TRANSACTION}, {@code COMMIT} and {@code ROLLBACK} are known statements without results that open
- * and end it; with auto-commit off any other statement opens it, and on MariaDB and MySQL one that
- * begins with {@code CREATE}, {@code ALTER} or {@code DROP} commits it. On PostgreSQL a failure or
- * a cancel within it fails it, and then every statement but a commit or a rollback fails as
- * PostgreSQL's do; on MariaDB and MySQL it stays open, and a portion says it as core's do: not
- * after a failure or a cancel, nor while rows are still to come. Turning auto-commit on commits
- * it, and a change of auto-commit notes {@code autocommit <host> on} or {@code off} among the
- * calls. Asking for it is keyed {@code transaction <host>}. After a statement that fails as a lost
- * connection, a portion does not know it, as core's on a closed connection.
+ * <p>Each connection keeps a transaction and auto-commit as the servers do. {@code BEGIN}, {@code
+ * START TRANSACTION}, {@code COMMIT} and {@code ROLLBACK} are known statements without results; so
+ * are, on MariaDB and MySQL, {@code SET autocommit=0} and {@code =1}, of which the second commits
+ * what is open, and {@code SET completion_type=1}, after which a COMMIT or ROLLBACK begins the next
+ * transaction at once. With auto-commit off any other statement that ends well opens one, as does
+ * one that {@link #begins} says begins one by itself, as a procedure may. On MariaDB and MySQL one
+ * that begins with {@code CREATE}, {@code ALTER} or {@code DROP} commits it, also where it fails,
+ * and a deadlock ({@link #deadlock}) rolls it back; another failure leaves it open, a failed COMMIT
+ * or ROLLBACK among them. On PostgreSQL a failure or a cancel within it fails it, and then every
+ * statement but a COMMIT, which rolls back, or a ROLLBACK fails as PostgreSQL's do; a failed COMMIT
+ * ends it. A portion says it as core's do: on MariaDB and MySQL not after a failure or a cancel,
+ * nor while rows are still to come, and nowhere after a lost connection. Turning auto-commit on
+ * commits what is open, which notes {@code commit by auto-commit <host>} among the calls; a change
+ * notes {@code autocommit <host> on} or {@code off}. Asking for it is keyed {@code transaction
+ * <host>}.
  */
 final class FakeServers implements Servers {
 
@@ -106,6 +111,38 @@ final class FakeServers implements Servers {
     statements.put(sql, new Answer(List.copyOf(results), List.of(messages)));
     return this;
   }
+
+  /** The statement no longer gives what {@link #statement} said, as the server changed. */
+  void forget(String sql) {
+    statements.remove(sql);
+  }
+
+  private final java.util.Set<String> beginning = ConcurrentHashMap.newKeySet();
+
+  /** The statement begins a transaction by itself and leaves it open, as a procedure may. */
+  FakeServers begins(String sql) {
+    beginning.add(sql);
+    return this;
+  }
+
+  /** MariaDB's and MySQL's deadlock, which rolls the whole transaction back. */
+  static Failure deadlock() {
+    return new Failure(
+        Failure.Kind.OTHER,
+        "Deadlock found when trying to get lock; try restarting transaction",
+        "40001",
+        DEADLOCK,
+        0,
+        "",
+        0,
+        0,
+        "",
+        "",
+        "",
+        "");
+  }
+
+  static final int DEADLOCK = 1213;
 
   /** Rows of the columns, given as {@code name: type}, made up from their position. */
   static Result.Rows made(long count, String... columns) {
@@ -268,6 +305,7 @@ final class FakeServers implements Servers {
     private boolean manual;
     private Transaction transaction = Transaction.NONE;
     private boolean lost; // a statement said the connection is gone: nothing is known of it
+    private boolean chain; // MariaDB's and MySQL's completion_type=1
 
     // What the server holds now, which a test may change between two reads.
     private Outline root() {
@@ -467,6 +505,11 @@ final class FakeServers implements Servers {
       var word = sql.strip().split("\\s+", 2)[0].toUpperCase(Locale.ROOT);
       boolean ends = word.equals("COMMIT") || word.equals("ROLLBACK");
       boolean pg = made.provider() == Provider.POSTGRESQL;
+      var setting = pg ? "" : sql.replace(" ", "").toLowerCase(Locale.ROOT);
+      boolean known = ends
+          || word.equals("BEGIN")
+          || word.equals("START")
+          || setting.matches("setautocommit=[01]|setcompletion_type=[01]");
       var answer = pg && transaction == Transaction.FAILED && !ends
           ? new Answer(
               List.of(new Failure(
@@ -486,7 +529,7 @@ final class FakeServers implements Servers {
               List.of())
           : statements.getOrDefault(
               sql,
-              ends || word.equals("BEGIN") || word.equals("START")
+              known
                   ? new Answer(List.of(new Result.Count(0)), List.of())
                   : new Answer(
                       List.of(serverError(
@@ -519,18 +562,14 @@ final class FakeServers implements Servers {
               }
               return new Portion(List.of(cancelled), List.of(), false, TOOK, said(false, true));
             }
-            boolean failed =
-                !answer.results().isEmpty() && answer.results().getLast() instanceof Failure;
-            lost = failed
-                && ((Failure) answer.results().getLast()).kind() == Failure.Kind.CONNECTION_LOST;
-            if (key.startsWith("run ")) {
-              transaction = switch (word) {
-                case "BEGIN", "START" -> Transaction.OPEN;
-                case "COMMIT", "ROLLBACK" -> Transaction.NONE;
-                case "CREATE", "ALTER", "DROP" ->
-                  pg ? opened(failed, pg) : Transaction.NONE; // DDL commits on MariaDB and MySQL
-                default -> opened(failed, pg);
-              };
+            var failure =
+                !answer.results().isEmpty() && answer.results().getLast() instanceof Failure f
+                    ? f
+                    : null;
+            boolean failed = failure != null;
+            lost = failed && failure.kind() == Failure.Kind.CONNECTION_LOST;
+            if (key.startsWith("run ") && !lost) {
+              transaction = after(word, setting, sql, failure, pg);
             }
             var out = new ArrayList<Result>();
             boolean more = false;
@@ -570,11 +609,46 @@ final class FakeServers implements Servers {
       };
     }
 
-    // The transaction after a statement within it, or one that begins it with auto-commit off.
-    private Transaction opened(boolean failed, boolean pg) {
-      return failed && pg && (manual || transaction == Transaction.OPEN)
-          ? Transaction.FAILED
-          : !failed && manual ? Transaction.OPEN : transaction;
+    // The transaction as the server leaves it after the statement, with its auto-commit.
+    private Transaction after(
+        String word, String setting, String sql, Failure failure, boolean pg) {
+      boolean failed = failure != null;
+      if (beginning.contains(sql)) {
+        return Transaction.OPEN;
+      }
+      if (!failed && setting.startsWith("setautocommit=")) {
+        boolean on = setting.endsWith("1");
+        manual = !on;
+        return on ? Transaction.NONE : transaction; // turned on, it commits
+      }
+      if (!failed && setting.startsWith("setcompletion_type=")) {
+        chain = setting.endsWith("1");
+        return transaction;
+      }
+      switch (word) {
+        case "BEGIN", "START" -> {
+          return failed ? transaction : Transaction.OPEN;
+        }
+        case "COMMIT", "ROLLBACK" -> {
+          if (!failed) {
+            return chain ? Transaction.OPEN : Transaction.NONE;
+          }
+          return pg && word.equals("COMMIT") ? Transaction.NONE : transaction;
+        }
+        case "CREATE", "ALTER", "DROP" -> {
+          if (!pg) {
+            return Transaction.NONE; // committed before it runs, also where it fails
+          }
+        }
+        default -> {}
+      }
+      if (failed) {
+        if (pg) {
+          return manual || transaction == Transaction.OPEN ? Transaction.FAILED : transaction;
+        }
+        return failure.code() == DEADLOCK ? Transaction.NONE : transaction;
+      }
+      return manual ? Transaction.OPEN : transaction;
     }
 
     // What a portion says of the transaction, as core's do.
@@ -589,10 +663,16 @@ final class FakeServers implements Servers {
       if (this.manual != manual) {
         calls.add("autocommit " + host + (manual ? " off" : " on"));
         this.manual = manual;
-        if (!manual) {
-          transaction = Transaction.NONE; // committed as auto-commit is turned on
+        if (!manual && transaction != Transaction.NONE) {
+          calls.add("commit by auto-commit " + host); // JDBC commits as auto-commit is turned on
+          transaction = Transaction.NONE;
         }
       }
+    }
+
+    @Override
+    public Boolean autoCommit() {
+      return lost ? null : !manual;
     }
 
     @Override

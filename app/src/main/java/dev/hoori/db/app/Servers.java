@@ -21,6 +21,7 @@ import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.OptionalLong;
 
@@ -83,6 +84,13 @@ interface Servers {
 
     /** The connection's transaction as the server has it now, as {@link Transaction#of}. */
     Transaction transaction() throws QueryException;
+
+    /**
+     * Whether auto-commit is on, as the driver has it from the server after the last statement
+     * that ended: MariaDB Connector/J and MySQL Connector/J follow a {@code SET autocommit} the
+     * user ran. Asks nothing of the server; null where the driver cannot say, as once closed.
+     */
+    Boolean autoCommit();
 
     /** Closes it; a failure to close is not reported. */
     void close();
@@ -175,6 +183,15 @@ interface Servers {
     @Override
     public Transaction transaction() throws QueryException {
       return Transaction.of(connection, provider);
+    }
+
+    @Override
+    public Boolean autoCommit() {
+      try {
+        return connection.getAutoCommit();
+      } catch (SQLException | RuntimeException e) {
+        return null;
+      }
     }
 
     @Override

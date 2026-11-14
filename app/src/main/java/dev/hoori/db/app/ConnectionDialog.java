@@ -202,6 +202,14 @@ final class ConnectionDialog {
     }
     var profile = editing.value();
     var id = profile.id();
+    // A change but of the colour ends the consoles' sessions: they ask first, before anything is
+    // written, so that Cancel leaves it all as it was.
+    var before = s.profile(id);
+    if (before != null
+        && !before.withColour(profile.colour()).equals(profile)
+        && s.asks(s.consoles(id), "the changed connection is saved", () -> save(s))) {
+      return;
+    }
     var secrets = s.secrets();
     boolean keep = savePassword && secrets != null;
     boolean inKeyring = Boolean.TRUE.equals(stored);

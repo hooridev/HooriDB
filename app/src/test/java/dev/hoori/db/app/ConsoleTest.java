@@ -236,14 +236,19 @@ class ConsoleTest {
   }
 
   @Test
-  void closingTheTabWhileAStatementRunsCancelsItAndEndsItsConnection() throws Exception {
+  void closingTheTabWhileAStatementRunsAsksThenCancelsItAndEndsItsConnection() throws Exception {
     var app = console(SHOP);
     c.run(app, type(COUNT + ";") + RUN);
     var key = "run " + PG + " " + ORDERS;
     servers.hold(key);
     c.run(app, type("\n" + ORDERS) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
-    c.run(app, "press #close-0\nframe\nframe\nsnap closed\n");
+    // What runs may have begun a transaction: the console asks, and Rollback cancels it first.
+    c.run(app, "press #close-0\nframe\nadvance 1\nframe\nsnap asked\n");
+    assertTrue(
+        c.tree("asked").contains("role=dialog label=\"Roll back the transaction?\""),
+        c.tree("asked"));
+    c.run(app, "press #answer-rollback\nframe\n" + SETTLE + "snap closed\n");
     eventually(() -> servers.interrupted.contains(key));
     // The console's connection closes; the tree's stays.
     eventually(() -> servers.closed.contains(PG + "/shop"));

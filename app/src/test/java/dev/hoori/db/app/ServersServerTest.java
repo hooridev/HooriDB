@@ -16,6 +16,7 @@ import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -264,6 +265,132 @@ class ServersServerTest {
       assertEquals(2L, ((Number) value(watcher, "SELECT count(*) FROM seam_tx")).longValue());
     } finally {
       lane.submit(drop).get(20, TimeUnit.SECONDS);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /** A statement as the console runs it on its lane: its portion, and the auto-commit after. */
+  static ConsoleTab.Ran statement(Lane lane, String sql, boolean fresh, ConsoleTab.Mode mode)
+      throws Exception {
+    return lane.submit(link -> {
+          var held = new AtomicReference<Servers.Run>();
+          var ran = ConsoleTab.start(link, sql, fresh, mode, held);
+          held.get().close();
+          return ran;
+        })
+        .get(20, TimeUnit.SECONDS);
+  }
+
+  static ConsoleTab.Ended end(Lane lane, String sql) throws Exception {
+    return lane.submit(link -> ConsoleTab.finish(link, sql)).get(20, TimeUnit.SECONDS);
+  }
+
+  static long count(Servers.Link link, String table) {
+    return ((Number) value(link, "SELECT count(*) FROM " + table)).longValue();
+  }
+
+  /** The review's first finding: a rollback after SET autocommit=0 rolls back, in Auto. */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void theConsoleNeverTurnsAutoCommitOnUnderATransaction(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      statement(lane, "DROP TABLE IF EXISTS seam_auto", true, ConsoleTab.Mode.AUTO);
+      statement(lane, "CREATE TABLE seam_auto (id integer)", false, ConsoleTab.Mode.AUTO);
+      for (var sql : List.of("START TRANSACTION", "INSERT INTO seam_auto VALUES (1)")) {
+        statement(lane, sql, false, ConsoleTab.Mode.AUTO);
+      }
+      var set = statement(lane, "SET autocommit=0", false, ConsoleTab.Mode.AUTO);
+      assertEquals(false, set.autoCommit(), "the driver follows the server, as the mode does");
+      assertEquals(Transaction.OPEN, set.portion().transaction());
+      // The Rollback button's call, then a typed ROLLBACK: neither commits first.
+      var rolledBack = end(lane, ConsoleTab.ROLLBACK);
+      assertEquals(Transaction.NONE, rolledBack.portion().transaction());
+      assertEquals(0L, count(watcher, "seam_auto"));
+      statement(lane, "INSERT INTO seam_auto VALUES (2)", false, ConsoleTab.Mode.MANUAL);
+      assertEquals(
+          Transaction.NONE,
+          statement(lane, "ROLLBACK", false, ConsoleTab.Mode.MANUAL).portion().transaction());
+      assertEquals(0L, count(watcher, "seam_auto"));
+    } finally {
+      statement(lane, "SET autocommit=1", false, ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE seam_auto", false, ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /** The review's second finding: a COMMIT is not sent into what a cancel left failed. */
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void commitAfterACancelGoesOnlyIntoATransactionTheServerSaysIsOpen(Provider provider)
+      throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      statement(lane, "DROP TABLE IF EXISTS seam_cancel", true, ConsoleTab.Mode.AUTO);
+      statement(lane, "CREATE TABLE seam_cancel (id integer)", false, ConsoleTab.Mode.AUTO);
+      lane.submit(link -> ConsoleTab.setMode(link, true, false)).get(20, TimeUnit.SECONDS);
+      statement(lane, "INSERT INTO seam_cancel VALUES (1)", false, ConsoleTab.Mode.MANUAL);
+      var slow = lane.submit(link -> link.run(sleep(provider, 30)).next(10));
+      Thread.sleep(500);
+      slow.cancel(true); // as the console's Cancel does
+      var ended = end(lane, ConsoleTab.COMMIT);
+      if (pg) {
+        // PostgreSQL would have answered the COMMIT by rolling back, without an error.
+        assertEquals(Transaction.FAILED, ended.before());
+        assertEquals(null, ended.portion());
+        end(lane, ConsoleTab.ROLLBACK);
+        assertEquals(0L, count(watcher, "seam_cancel"));
+      } else {
+        assertEquals(Transaction.OPEN, ended.before());
+        assertEquals(Transaction.NONE, ended.portion().transaction());
+        assertEquals(1L, count(watcher, "seam_cancel"));
+      }
+    } finally {
+      lane.submit(link -> ConsoleTab.setMode(link, false, false)).get(20, TimeUnit.SECONDS);
+      statement(lane, "DROP TABLE seam_cancel", false, ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /** The review's tenth finding: after the user's COMMIT the server's next one holds nothing. */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aTransactionChainedAfterCommitIsEmptyAndAutoCommitEndsIt(Provider provider)
+      throws Exception {
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      statement(lane, "DROP TABLE IF EXISTS seam_chain", true, ConsoleTab.Mode.AUTO);
+      statement(lane, "CREATE TABLE seam_chain (id integer)", false, ConsoleTab.Mode.AUTO);
+      statement(lane, "SET SESSION completion_type = 1", false, ConsoleTab.Mode.AUTO);
+      lane.submit(link -> ConsoleTab.setMode(link, true, false)).get(20, TimeUnit.SECONDS);
+      statement(lane, "INSERT INTO seam_chain VALUES (1)", false, ConsoleTab.Mode.MANUAL);
+      var committed = end(lane, ConsoleTab.COMMIT);
+      assertEquals(Transaction.OPEN, committed.before());
+      assertEquals(Transaction.OPEN, committed.portion().transaction(), "chained at once");
+      assertEquals(1L, count(watcher, "seam_chain"));
+      // Not where it is not known to be empty; where it is, auto-commit goes on and ends it.
+      var refused = lane.submit(link -> ConsoleTab.setMode(link, false, false)).get();
+      assertFalse(refused.done());
+      var switched = lane.submit(link -> ConsoleTab.setMode(link, false, true)).get();
+      assertTrue(switched.done());
+      assertEquals(Transaction.NONE, switched.now());
+    } finally {
+      statement(lane, "SET SESSION completion_type = 0", false, ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE seam_chain", false, ConsoleTab.Mode.AUTO);
       lane.close();
       watcher.close();
     }

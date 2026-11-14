@@ -205,10 +205,14 @@ final class State {
     }
     profiles = List.copyOf(list);
     selected = new Node.Connection(profile.id());
-    // A colour alone leaves a connection connected; its tabs take it.
+    // A colour alone leaves a connection connected, and its consoles' sessions; its tabs take it.
     boolean colour = old != null && old.withColour(profile.colour()).equals(profile);
     if (!colour || !catalogue.active(profile.id())) {
       catalogue.drop(this, profile.id()); // what failed before the change is out of date
+    }
+    if (!colour) {
+      // Their sessions were opened with what changed; the save asked them first.
+      consoles(profile.id()).forEach(ConsoleTab::end);
     }
     persist();
   }
@@ -225,6 +229,9 @@ final class State {
    */
   void delete() {
     var profile = deleting;
+    if (asks(consoles(profile.id()), name(profile) + " is deleted", this::delete)) {
+      return;
+    }
     removing = true;
     removeError = null;
     if (keyring == null) {
@@ -355,11 +362,10 @@ final class State {
    * written, so that no password is in the keyring for a connection that is not saved.
    */
   void requestClose() {
-    // A console's open transaction first: its answer comes back here, or the window stays open.
-    for (var console : consoles(null)) {
-      if (console.asks(this, ConsoleTab.Then.QUIT, null)) {
-        return;
-      }
+    // The consoles first: their answers come back here, and Cancel gives up closing.
+    if (asks(consoles(null), "HooriDB closes", this::requestClose)) {
+      quitting = false;
+      return;
     }
     if (dialog != null) {
       // A test or a download can always be done again: closing cancels them instead of waiting.
@@ -449,11 +455,34 @@ final class State {
     tabs.add(tabs.main(), tabs.main().tabs().size(), new ConsoleTab(id, database(profile)));
   }
 
-  /** The user closes a tab: a console with an open transaction asks first. */
+  /**
+   * The one guard of every way out that would end consoles' sessions or their transactions: the
+   * first of the consoles where something may be open ({@link ConsoleTab#atStake}) asks in its
+   * window what becomes of it, and {@code then} runs again once that is settled, where it asks the
+   * next one. True while one asks, and the caller goes no further; Cancel leaves it all as it was.
+   */
+  boolean asks(List<ConsoleTab> consoles, String before, Runnable then) {
+    for (var console : consoles) {
+      if (console.atStake()) {
+        console.ask(this, new ConsoleTab.Asked(before, then));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** The user closes a tab, by its cross or Control+W: a console asks first. */
   private void closeTab(TabGroups.Group<Tab> group, int index) {
     if (!(group.tabs().get(index) instanceof ConsoleTab x
-        && x.asks(this, ConsoleTab.Then.CLOSE, null))) {
+        && asks(List.of(x), "the console closes", () -> closeTab(x)))) {
       tabs.close(group, index);
+    }
+  }
+
+  private void closeTab(Tab tab) {
+    var group = tabs.groupOf(tab);
+    if (group != null) {
+      closeTab(group, group.tabs().indexOf(tab));
     }
   }
 
@@ -488,14 +517,6 @@ final class State {
   /** The connection ended: what its tabs asked of it ends too, and what they read stays. */
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
-  }
-
-  /**
-   * The user disconnected the connection, or gave up connecting it: its consoles' sessions end
-   * too. A connection that was lost, or is connected anew, leaves them, as they are their own.
-   */
-  void dropped(UUID id) {
-    consoles(id).forEach(ConsoleTab::end);
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -649,6 +670,11 @@ final class State {
   }
 
   private void closeAll() {
+    // Again, as a console may have begun something while the connections were saved.
+    if (asks(consoles(null), "HooriDB closes", this::requestClose)) {
+      quitting = false;
+      return;
+    }
     consoles(null).forEach(ConsoleTab::close);
     catalogue.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {

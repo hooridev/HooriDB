@@ -101,9 +101,9 @@ final class Frame {
             new Tabs.Tab(s.title(x))
                 .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE)
                 .hue(Colours.hue(s.colour(x.id)));
-          // An open transaction is changes not yet committed: the tab's dot.
+          // What may be open is changes not yet committed: the tab's dot.
           case ConsoleTab x ->
-            new Tabs.Tab(s.title(x), true, x.open(), Symbol.CODE, Colours.hue(s.colour(x.id)));
+            new Tabs.Tab(s.title(x), true, x.atStake(), Symbol.CODE, Colours.hue(s.colour(x.id)));
         },
         tab -> switch (tab) {
           case null ->

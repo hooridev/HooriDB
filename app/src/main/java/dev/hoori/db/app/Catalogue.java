@@ -107,9 +107,7 @@ final class Catalogue {
   /** What the question before an edit or a delete of a connected connection leads to. */
   enum Then {
     EDIT,
-    DELETE,
-    /** Disconnect alone, which asks only where a console's transaction is open. */
-    DISCONNECT
+    DELETE
   }
 
   record Disconnecting(ConnectionProfile profile, Then then) {}
@@ -765,21 +763,38 @@ final class Catalogue {
     }
   }
 
-  /** Disconnect: cancels what runs, closes its connections in the background, folds its node. */
+  /**
+   * Disconnect: cancels what runs, closes its connections in the background, folds its node, and
+   * ends its consoles' sessions, after their questions where something may be open in them.
+   */
   void disconnect(State s, UUID id) {
+    disconnect(s, id, () -> {});
+  }
+
+  private void disconnect(State s, UUID id, Runnable then) {
+    var profile = s.profile(id);
+    var name = profile == null ? "the connection" : State.name(profile);
+    if (s.asks(s.consoles(id), name + " disconnects", () -> disconnect(s, id, then))) {
+      return;
+    }
     var live = lives.get(id);
     boolean was = live != null && live.phase instanceof Connected;
     drop(s, id);
+    s.consoles(id).forEach(ConsoleTab::end);
     if (was) {
       s.tell("Disconnected from " + State.name(live.profile));
     }
+    then.run();
   }
 
-  /** Forgets the connection: what runs is cancelled and its connections closed; no word of it. */
+  /**
+   * Forgets the tree's connection: what runs is cancelled and its connections closed; no word of
+   * it. Its consoles' sessions are their own and stay; a console that waited for it says why.
+   */
   void drop(State s, UUID id) {
     end(lives.remove(id));
     s.ended(id);
-    s.dropped(id);
+    s.unconnected(id);
     open.removeIf(n -> n.id().equals(id));
     if (s.selected != null && s.selected.id().equals(id)) {
       s.selected = new Node.Connection(id);
@@ -867,24 +882,18 @@ final class Catalogue {
 
   /** Edit or Delete on a connection: asks to disconnect first while it is connected. */
   void change(State s, ConnectionProfile profile, Then then) {
-    boolean transaction = s.consoles(profile.id()).stream().anyMatch(ConsoleTab::open);
-    if (then == Then.DISCONNECT && !transaction) {
-      disconnect(s, profile.id());
-      return;
-    }
-    if (active(profile.id()) || transaction) {
+    if (active(profile.id())) {
       disconnecting = new Disconnecting(profile, then);
       return;
     }
-    drop(s, profile.id());
-    go(s, profile, then);
+    // Its consoles' sessions end too, as their connection changes or goes.
+    disconnect(s, profile.id(), () -> go(s, profile, then));
   }
 
   private static void go(State s, ConnectionProfile profile, Then then) {
     switch (then) {
       case EDIT -> s.edit(profile);
       case DELETE -> s.askDelete(profile);
-      case DISCONNECT -> {}
     }
   }
 
@@ -892,8 +901,7 @@ final class Catalogue {
   void disconnectAndGo(State s) {
     var d = disconnecting;
     disconnecting = null;
-    disconnect(s, d.profile().id());
-    go(s, d.profile(), d.then());
+    disconnect(s, d.profile().id(), () -> go(s, d.profile(), d.then()));
   }
 
   /** Copy name: the node's own name, without its type. */
@@ -1187,9 +1195,7 @@ final class Catalogue {
         yield List.of(
             Menu.item("New console", () -> s.openConsole(n.id())).icon(Symbol.CODE),
             Menu.separator(),
-            Menu.item(
-                    "Disconnect",
-                    active(n.id()) ? () -> change(s, s.profile(n.id()), Then.DISCONNECT) : null)
+            Menu.item("Disconnect", active(n.id()) ? () -> disconnect(s, n.id()) : null)
                 .icon(Symbol.PLUG_DISCONNECTED),
             refresh,
             copy,
@@ -1259,13 +1265,7 @@ final class Catalogue {
         "To edit it, HooriDB disconnects it first. If its server or database changes, its"
             + " open tabs close.";
       case DELETE -> "To delete it, HooriDB disconnects it first.";
-      case DISCONNECT -> "";
     };
-    // A console's connection ends with it, and its open transaction: said before it happens.
-    if (s.consoles(d.profile().id()).stream().anyMatch(ConsoleTab::open)) {
-      what += (what.isEmpty() ? "" : " ")
-          + "A console of it has a transaction open, which the server then rolls back.";
-    }
     El disconnect = button(t, PRIMARY, "Disconnect", () -> disconnectAndGo(s));
     return Dialog.dialog(
         t,

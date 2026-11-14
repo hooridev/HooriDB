@@ -26,13 +26,17 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.catalog.CatalogException;
+import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,7 +49,14 @@ class ConsoleTransactionTest {
 
   static final String DDL = "CREATE TABLE notes (id int)";
   static final String KILL = "SELECT pg_terminate_backend(pg_backend_pid())";
-  static final String MANUAL = "press role=radio label=\"Manual\"\nframe\n";
+  // On an open session the switch asks the server first.
+  static final String MANUAL = "press role=radio label=\"Manual\"\nframe\n" + SETTLE;
+  static final String CALL = "CALL report()"; // begins a transaction, and gives 250 rows
+  static final String DEADLOCKED = "UPDATE stock SET n = n - 1 WHERE id = 7";
+  static final String CHAIN = "SET completion_type=1";
+  static final String COMMITTING = "run " + PG + " COMMIT";
+  static final String EXIT = "press role=menuitem label=\"File\"\nframe\nadvance 0.3\nframe\n"
+      + "press role=menuitem label=\"Exit\"\nframe\nadvance 1\nframe\n";
   static final String OPENED = "advance 1\nframe\n"; // a dialog fades in, or out
 
   @TempDir
@@ -62,6 +73,9 @@ class ConsoleTransactionTest {
     c = k.c;
     servers = k.servers
         .statement(DDL, List.of(new Result.Count(0)))
+        .statement(CALL, List.of(FakeServers.made(250, "id: bigint")))
+        .begins(CALL)
+        .statement(DEADLOCKED, List.of(FakeServers.deadlock()))
         .statement(
             KILL,
             List.of(FakeServers.serverError(
@@ -79,6 +93,11 @@ class ConsoleTransactionTest {
     c.run(app, MANUAL + type(PAY) + RUN);
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
     return app;
+  }
+
+  /** How many times the server was asked for the transaction. */
+  long probes(String host) {
+    return servers.calls.stream().filter(("transaction " + host)::equals).count();
   }
 
   static String badge(String tree) {
@@ -303,17 +322,24 @@ class ConsoleTransactionTest {
   }
 
   @Test
-  void disconnectingSaysTheTransactionIsRolledBack() throws Exception {
+  void disconnectingAsksAndCancelLeavesItConnected() throws Exception {
     var app = open(SHOP);
     c.run(app, menu("shop-prod", "Disconnect") + OPENED + "snap asked\n");
     String asked = c.tree("asked");
-    assertTrue(asked.contains("role=dialog label=\"Disconnect shop-prod?\""), asked);
-    assertTrue(asked.contains("which the server then rolls back"), asked);
+    assertTrue(asked.contains("role=dialog label=\"Commit the transaction?\""), asked);
+    assertTrue(asked.contains("before shop-prod disconnects."), asked);
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.state().catalogue.connected(SHOP.id()));
+    assertEquals(Transaction.OPEN, k.tab(app).transaction);
+    assertTrue(servers.closed.isEmpty(), servers.closed.toString());
     c.run(
-        app, "press role=button label=\"Disconnect\"\nframe\n" + OPENED + SETTLE + "snap ended\n");
-    String ended = c.tree("ended");
-    assertTrue(line(ended, "#problem").contains("Transaction rolled back"), ended);
-    assertTrue(badge(ended).contains("No transaction"), ended);
+        app,
+        menu("shop-prod", "Disconnect") + OPENED + "press #answer-rollback\nframe\n" + OPENED
+            + SETTLE + "snap ended\n");
+    assertTrue(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
+    assertFalse(app.state().catalogue.connected(SHOP.id()));
+    assertFalse(k.tab(app).connected());
+    assertFalse(c.tree("ended").contains("role=dialog"), c.tree("ended"));
     eventually(() -> servers.closed.contains(PG + "/shop"));
   }
 
@@ -332,6 +358,439 @@ class ConsoleTransactionTest {
     var auto = k.console(SHOP);
     c.run(auto, type(KILL) + RUN + "snap autoLost\n");
     assertFalse(c.tree("autoLost").contains("open transaction"), c.tree("autoLost"));
+  }
+
+  // The review's findings, each as it was met, and what goes with them.
+
+  /** 1: the console never turns auto-commit on under a transaction; the mode follows the server. */
+  @Test
+  void aRollbackAfterSetAutocommitRollsBackAndTheModeFollowsTheServer() throws Exception {
+    var app = k.console(INVENTORY);
+    c.run(
+        app,
+        type("START TRANSACTION;\n" + PAY + ";\nSET autocommit=0") + RUN_ALL + "snap manual\n");
+    String manual = c.tree("manual");
+    assertTrue(line(manual, "role=radio label=\"Manual\"").contains("checked"), manual);
+    assertTrue(badge(manual).contains("Transaction open"), manual);
+    c.run(app, type(";\nROLLBACK") + RUN + "snap rolledBack\n");
+    assertFalse(servers.calls.contains("commit by auto-commit " + MARIA), servers.calls.toString());
+    assertTrue(badge(c.tree("rolledBack")).contains("No transaction"), c.tree("rolledBack"));
+    // So with Run all, and with the Rollback button.
+    c.run(
+        app,
+        "key A control\n" + "type \"START TRANSACTION; " + PAY + "; SET autocommit=0\"\n"
+            + RUN_ALL + "press role=button label=\"Rollback\"\nframe\n" + SETTLE
+            + "snap button\n");
+    assertFalse(servers.calls.contains("commit by auto-commit " + MARIA), servers.calls.toString());
+    assertTrue(line(c.tree("button"), "#said").contains("Rolled back"), c.tree("button"));
+  }
+
+  /** 2: after a cancel, Commit waits for the server's word, and is not sent into a failed one. */
+  @Test
+  void commitIsNotOfferedBeforeTheServerSaysWhatACancelLeft() throws Exception {
+    var app = open(SHOP);
+    var key = "run " + PG + " " + ORDERS;
+    servers.hold(key);
+    var probe = servers.hold("transaction " + PG);
+    c.run(app, type(";\n" + ORDERS) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    // The cancelled call ends; the question to the server is held.
+    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    eventually(() -> servers.calls.contains("transaction " + PG));
+    c.run(
+        app,
+        "frame\nsnap asking\npress role=button label=\"Commit\"\nframe\nkey C control shift\n"
+            + "frame\n");
+    String asking = c.tree("asking");
+    assertTrue(line(asking, "#commit").contains("disabled"), asking);
+    assertFalse(line(asking, "#rollback").contains("disabled"), "the safe way out: " + asking);
+    probe.countDown();
+    c.run(app, SETTLE + "snap failed\n");
+    String failed = c.tree("failed");
+    assertFalse(servers.calls.contains(COMMITTING), servers.calls.toString());
+    assertTrue(badge(failed).contains("Transaction failed"), failed);
+    assertTrue(line(failed, "#commit").contains("disabled"), failed);
+    assertFalse(failed.contains("Committed"), failed);
+  }
+
+  /** 2: on the lane too, a COMMIT goes only into a transaction the server says is open. */
+  @Test
+  void aCommitIsNotSentIntoAFailedTransaction() throws Exception {
+    var link = servers.open(SHOP, ConnectionsTest.PASSWORD.toCharArray(), null);
+    link.manual(true);
+    link.run(PAY).next(1);
+    link.run(MISSING).next(1);
+    assertEquals(Transaction.FAILED, link.transaction());
+    var ended = ConsoleTab.finish(link, ConsoleTab.COMMIT);
+    assertEquals(Transaction.FAILED, ended.before());
+    assertEquals(null, ended.portion());
+    assertFalse(servers.calls.contains(COMMITTING), servers.calls.toString());
+  }
+
+  /** 3: closing while Commit runs waits for its answer, and queues no rollback behind it. */
+  @Test
+  void closingWhileCommitRunsWaitsForItsOutcome() throws Exception {
+    var app = open(SHOP);
+    var gate = servers.hold(COMMITTING);
+    c.run(app, "press role=button label=\"Commit\"\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(COMMITTING));
+    c.run(
+        app,
+        "press role=button label=\"Commit\"\nframe\npress #close-0\nframe\n" + OPENED
+            + "snap waiting\n");
+    String waiting = c.tree("waiting");
+    assertTrue(waiting.contains("role=dialog label=\"Waiting for the commit\""), waiting);
+    assertFalse(waiting.contains("#answer-rollback"), waiting);
+    assertTrue(line(waiting, "#cancel").contains("disabled"), "a commit runs to its end");
+    gate.countDown();
+    c.run(app, SETTLE);
+    assertEquals(1, servers.calls.stream().filter(COMMITTING::equals).count());
+    assertFalse(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
+    assertTrue(app.state().consoles(null).isEmpty());
+  }
+
+  /** 3: a commit whose connection was lost is said to be unknown, before the way out goes on. */
+  @Test
+  void aCommitWhoseConnectionWasLostHasAnUnknownOutcome() throws Exception {
+    servers.statement(
+        "COMMIT",
+        List.of(
+            FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "server closed the connection")));
+    var app = open(SHOP);
+    var gate = servers.hold(COMMITTING);
+    c.run(app, "press role=button label=\"Commit\"\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(COMMITTING));
+    c.run(app, "press #close-0\nframe\n" + OPENED);
+    gate.countDown();
+    c.run(app, SETTLE + OPENED + "snap unknown\n");
+    String unknown = c.tree("unknown");
+    assertTrue(
+        unknown.contains("role=dialog label=\"The commit's outcome is not known\""), unknown);
+    assertTrue(unknown.contains("may or may not have taken effect"), unknown);
+    assertFalse(unknown.contains("Committed"), unknown);
+    assertEquals(1, app.state().consoles(null).size(), "it waits for the user to read it");
+    c.run(app, "press #answer-continue\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.state().consoles(null).isEmpty());
+    // Without a question, the console says it.
+    var again = open(SHOP);
+    c.run(again, "press role=button label=\"Commit\"\nframe\n" + SETTLE + "snap said\n");
+    String said = c.tree("said");
+    assertTrue(line(said, "#problem").contains("The commit's outcome is not known"), said);
+    assertFalse(said.contains("\"Committed\""), said);
+  }
+
+  /** 4: a first Manual statement that still runs may have begun a transaction. */
+  @Test
+  void closingWhileTheFirstManualStatementRunsAsks() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN + MANUAL);
+    var key = "run " + PG + " " + PAY;
+    var gate = servers.hold(key);
+    c.run(app, type("\n" + PAY) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    c.run(app, "press #close-0\nframe\n" + OPENED + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains("role=dialog label=\"Roll back the transaction?\""), asked);
+    assertTrue(asked.contains("A statement still runs on shop-prod: shop"), asked);
+    assertFalse(asked.contains("#answer-commit"), asked);
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED);
+    gate.countDown();
+    c.run(app, SETTLE + "snap stayed\n");
+    assertEquals(1, app.state().consoles(null).size());
+    assertEquals(Transaction.OPEN, k.tab(app).transaction);
+    // Exit asks the same, while it runs.
+    servers.hold("run " + PG + " " + COUNT);
+    c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\nframe\n" + EXIT + "snap exit\n");
+    assertTrue(c.tree("exit").contains("once it has ended with nothing open, HooriDB closes."));
+  }
+
+  /** 5: rows still to come on MariaDB leave the transaction unknown, also in Auto. */
+  @Test
+  void aProcedureWhoseRowsAreStillToComeMayHaveATransactionOpen() throws Exception {
+    var app = k.console(INVENTORY);
+    c.run(app, type(CALL) + RUN + "snap reading\n");
+    String reading = c.tree("reading");
+    assertTrue(badge(reading).contains("Transaction may be open"), reading);
+    assertTrue(line(reading, "#commit").contains("disabled"), reading);
+    assertFalse(line(reading, "#rollback").contains("disabled"), reading);
+    c.run(app, "press #close-0\nframe\n" + OPENED + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains("A transaction may be open on inventory"), asked);
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED);
+    // Read to the end, the server says it.
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE + "snap read\n");
+    assertTrue(badge(c.tree("read")).contains("Transaction open"), c.tree("read"));
+  }
+
+  /** 6: a question to the server that fails leaves the connection and an unknown transaction. */
+  @Test
+  void aFailedProbeLeavesTheConnectionAndTheTransactionUnknown() throws Exception {
+    var app = open(INVENTORY);
+    servers.fail(
+        "transaction " + MARIA, FakeServers.queryFailure(QueryException.Failure.CANCELLED));
+    c.run(app, type(";\n" + MISSING) + RUN + "snap unknown\n");
+    String unknown = c.tree("unknown");
+    assertTrue(badge(unknown).contains("Transaction may be open"), unknown);
+    assertTrue(line(unknown, "#commit").contains("disabled"), unknown);
+    assertFalse(line(unknown, "#rollback").contains("disabled"), unknown);
+    assertTrue(k.tab(app).connected());
+    assertTrue(servers.closed.isEmpty(), servers.closed.toString());
+    servers.heal("transaction " + MARIA);
+    c.run(app, "press role=button label=\"Rollback\"\nframe\n" + SETTLE + "snap rolledBack\n");
+    assertTrue(badge(c.tree("rolledBack")).contains("No transaction"), c.tree("rolledBack"));
+  }
+
+  /** 6: a probe that fails late does not end the session of what ran after it. */
+  @Test
+  void aProbeThatFailsLateLeavesTheNextStatementsTransaction() throws Exception {
+    var app = open(INVENTORY);
+    var probe = servers.hold("transaction " + MARIA);
+    long asked = probes(MARIA);
+    c.run(app, type(";\n" + MISSING) + "key Enter control\nframe\nawait\nframe\n");
+    eventually(() -> probes(MARIA) > asked); // held: what the statement left is asked
+    // The next statement waits behind the probe on the lane.
+    c.run(app, type(";\n" + PAY) + "key Enter control\nframe\nframe\n");
+    servers.fail("transaction " + MARIA, FakeServers.queryFailure(QueryException.Failure.OTHER));
+    probe.countDown();
+    c.run(app, SETTLE + "snap after\n");
+    assertTrue(badge(c.tree("after")).contains("Transaction open"), c.tree("after"));
+    assertTrue(k.tab(app).connected());
+    assertTrue(servers.closed.isEmpty(), servers.closed.toString());
+  }
+
+  /** 7: the tree's connection is not the console's: a colour while it is lost ends nothing. */
+  @Test
+  void aColourWhileTheTreeIsLostLeavesTheConsoleAlone() throws Exception {
+    var app = open(SHOP);
+    servers.fail(
+        "tables " + PG + "/shop.public",
+        FakeServers.notRead(CatalogException.Failure.CONNECTION_LOST));
+    c.run(app, CatalogueTest.open("shop") + SETTLE + CatalogueTest.open("public") + SETTLE);
+    assertFalse(app.state().catalogue.active(SHOP.id()), "the tree's connection is lost");
+    app.state().put(SHOP.withColour(Colour.RED));
+    // And as the tree's connection is given up, as when its password is not given.
+    app.state().catalogue.drop(app.state(), SHOP.id());
+    c.run(app, "frame\n" + SETTLE + "snap coloured\n");
+    String coloured = c.tree("coloured");
+    assertFalse(coloured.contains("role=dialog"), coloured);
+    assertTrue(k.tab(app).connected());
+    assertEquals(Transaction.OPEN, k.tab(app).transaction);
+  }
+
+  /** 8: an Exit that waits for a save asks again once it has, and Cancel keeps HooriDB open. */
+  @Test
+  void anExitThatWaitedForASaveAsksAndCancelKeepsItOpen() throws Exception {
+    var app = k.console(SHOP);
+    var window = "window \"shop-prod: shop\"\n";
+    c.run(
+        app,
+        type(COUNT + ";") + RUN + MANUAL
+            + "press role=tab label=\"shop-prod: shop\" right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n");
+    // A new connection, whose password the keyring holds: HooriDB closes once it is saved.
+    c.secrets.gate = new CountDownLatch(1);
+    c.run(
+        app,
+        "window main\n" + ConnectionsTest.NEW_SHOP.replace("New connection", "Add connection")
+            + "key Enter\nframe\nclose\nframe\n");
+    assertFalse(app.windows().all().isEmpty());
+    // Meanwhile the console, in its own window, begins a transaction; the exit asked nothing.
+    c.run(app, window + type("\n" + PAY) + "key Enter control\nframe\n");
+    eventually(() -> servers.calls.contains("run " + PG + " " + PAY));
+    c.secrets.gate.countDown();
+    c.run(app, SETTLE + window + OPENED + "snap asked\n");
+    assertFalse(app.windows().all().isEmpty());
+    String asked = c.tree("shop-prod-shop-asked");
+    assertTrue(asked.contains("before HooriDB closes."), asked);
+    c.run(app, window + "press #answer-cancel\nframe\n" + OPENED + SETTLE + SETTLE);
+    assertFalse(app.windows().all().isEmpty());
+    assertEquals(Transaction.OPEN, k.tab(app).transaction);
+    assertFalse(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
+  }
+
+  /** 9: the switch the question asked about goes on to its own database once nothing is open. */
+  @Test
+  void aSwitchAskedWhileTheServerWasAskedGoesToItsDatabase() throws Exception {
+    var app = open(INVENTORY);
+    var probe = servers.hold("transaction " + MARIA);
+    long asked = probes(MARIA);
+    c.run(app, type(";\n" + DEADLOCKED) + "key Enter control\nframe\nawait\nframe\n");
+    eventually(() -> probes(MARIA) > asked); // held: what the statement left is asked
+    c.run(
+        app,
+        "frame\npress #database\nframe\n" + OPENED
+            + "press role=menuitem label=\"inventory\"\nframe\n" + OPENED + "snap asked\n");
+    assertTrue(c.tree("asked").contains("before it switches to inventory."), c.tree("asked"));
+    probe.countDown(); // the deadlock rolled it back: nothing is open
+    c.run(app, SETTLE + OPENED + "snap switched\n");
+    assertTrue(servers.calls.contains("use " + MARIA + " inventory"), servers.calls.toString());
+    assertTrue(tabs(c.tree("switched")).startsWith("inventory: inventory,"), c.tree("switched"));
+    assertFalse(c.tree("switched").contains("role=dialog"), c.tree("switched"));
+  }
+
+  /** 10: with chained completion, the user's Commit or Rollback still lets the way out go on. */
+  @Test
+  void aTransactionTheServerChainsAfterTheAnswerDoesNotHoldTheTabOpen() throws Exception {
+    for (var answer : List.of("commit", "rollback")) {
+      var app = k.console(INVENTORY);
+      c.run(app, type(CHAIN) + RUN + MANUAL + type(";\n" + PAY) + RUN);
+      assertEquals(Transaction.OPEN, k.tab(app).transaction);
+      c.run(
+          app,
+          "press #close-0\nframe\n" + OPENED + "press #answer-" + answer + "\nframe\n" + OPENED
+              + SETTLE);
+      assertTrue(app.state().consoles(null).isEmpty(), answer);
+    }
+    // And Exit, and the switch to Auto, whose auto-commit then ends the empty one.
+    var app = k.console(INVENTORY);
+    c.run(app, type(CHAIN) + RUN + MANUAL + type(";\n" + PAY) + RUN);
+    c.run(
+        app,
+        "press role=radio label=\"Auto\"\nframe\n" + OPENED + "press #answer-commit\nframe\n"
+            + OPENED + SETTLE + "snap auto\n");
+    assertTrue(
+        line(c.tree("auto"), "role=radio label=\"Auto\"").contains("checked"), c.tree("auto"));
+    assertTrue(servers.calls.contains("autocommit " + MARIA + " on"), servers.calls.toString());
+    c.run(app, type(";\n" + PAY) + RUN + EXIT);
+    assertTrue(app.windows().all().isEmpty());
+  }
+
+  @Test
+  void aFailedCommitKeepsTheTransactionForAnotherTryOrARollback() throws Exception {
+    servers.statement(
+        "COMMIT", List.of(FakeServers.serverError(Failure.Kind.OTHER, "Error writing file")));
+    var app = open(INVENTORY);
+    c.run(app, "press role=button label=\"Commit\"\nframe\n" + SETTLE + "snap failed\n");
+    String failed = c.tree("failed");
+    assertTrue(near(failed, "#problem").contains("Error writing file"), failed);
+    assertTrue(badge(failed).contains("Transaction open"), failed);
+    assertFalse(failed.contains("\"Committed\""), failed);
+    assertFalse(line(failed, "#commit").contains("disabled"), failed);
+    servers.forget("COMMIT");
+    c.run(app, "press role=button label=\"Commit\"\nframe\n" + SETTLE + "snap committed\n");
+    assertTrue(line(c.tree("committed"), "#said").contains("Committed"), c.tree("committed"));
+    // Failed, then rolled back.
+    servers.statement(
+        "COMMIT", List.of(FakeServers.serverError(Failure.Kind.OTHER, "Error writing file")));
+    c.run(
+        app,
+        "press #sql\n" + RUN + "press role=button label=\"Commit\"\nframe\n" + SETTLE
+            + "press role=button label=\"Rollback\"\nframe\n" + SETTLE + "snap rolledBack\n");
+    String rolledBack = c.tree("rolledBack");
+    assertTrue(line(rolledBack, "#said").contains("Rolled back"), rolledBack);
+    assertTrue(badge(rolledBack).contains("No transaction"), rolledBack);
+  }
+
+  @Test
+  void aCommitThatPostgresqlRefusesEndsTheTransactionWithoutCommitted() throws Exception {
+    servers.statement(
+        "COMMIT",
+        List.of(FakeServers.serverError(
+            Failure.Kind.CONSTRAINT, "insert or update violates foreign key constraint")));
+    var app = open(SHOP);
+    c.run(app, "press role=button label=\"Commit\"\nframe\n" + SETTLE + "snap refused\n");
+    String refused = c.tree("refused");
+    assertTrue(line(refused, "#problem").contains("A constraint was violated"), refused);
+    assertTrue(badge(refused).contains("No transaction"), refused);
+    assertFalse(refused.contains("\"Committed\""), refused);
+  }
+
+  @Test
+  void commitRunsOnceAndNotWhileAStatementRuns() throws Exception {
+    var app = open(SHOP);
+    var gate = servers.hold(COMMITTING);
+    c.run(
+        app,
+        "press role=button label=\"Commit\"\nframe\nframe\npress role=button label=\"Commit\"\n"
+            + "frame\nkey C control shift\nframe\nkey R control shift\nframe\n");
+    eventually(() -> servers.calls.contains(COMMITTING));
+    gate.countDown();
+    c.run(app, SETTLE);
+    assertEquals(1, servers.calls.stream().filter(COMMITTING::equals).count());
+    assertFalse(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
+    // While a statement runs, neither.
+    c.run(app, "press #sql\n" + RUN);
+    servers.hold("run " + PG + " " + COUNT);
+    c.run(
+        app,
+        type(";\n" + COUNT) + "key Enter control\nframe\nframe\n"
+            + "press role=button label=\"Commit\"\nframe\nkey C control shift\nframe\n"
+            + "press role=button label=\"Rollback\"\nframe\n");
+    assertEquals(1, servers.calls.stream().filter(COMMITTING::equals).count());
+    assertFalse(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
+    servers.openAll();
+    c.run(app, SETTLE);
+  }
+
+  @Test
+  void exitAsksEachConsoleAndCancelAtAnyKeepsItAllOpen() throws Exception {
+    var app = open(SHOP);
+    c.run(app, menu("shop-prod", "New console") + MANUAL + type(PAY) + RUN);
+    var consoles = app.state().consoles(null);
+    assertEquals(2, consoles.size());
+    assertEquals(Transaction.OPEN, consoles.get(1).transaction);
+    // The first answers Commit; the second Cancel.
+    c.run(app, EXIT + "snap first\n");
+    assertTrue(c.tree("first").contains("shop-prod: shop (1) has a transaction"), c.tree("first"));
+    c.run(app, "press #answer-commit\nframe\n" + OPENED + SETTLE + OPENED + "snap second\n");
+    assertTrue(
+        c.tree("second").contains("shop-prod: shop (2) has a transaction"), c.tree("second"));
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE);
+    assertFalse(app.windows().all().isEmpty());
+    assertEquals(Transaction.NONE, consoles.get(0).transaction);
+    assertEquals(Transaction.OPEN, consoles.get(1).transaction);
+    c.run(app, EXIT + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.windows().all().isEmpty());
+    assertEquals(1, servers.calls.stream().filter(COMMITTING::equals).count());
+  }
+
+  @Test
+  void editingTheConnectionAsksItsConsolesFirst() throws Exception {
+    var app = open(SHOP);
+    var edit =
+        menu("shop-prod", "Edit…") + "press role=button label=\"Disconnect\"\nframe\n" + OPENED;
+    c.run(app, edit + "snap asked\n");
+    assertTrue(c.tree("asked").contains("before shop-prod disconnects."), c.tree("asked"));
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE + "snap stayed\n");
+    assertTrue(app.state().catalogue.connected(SHOP.id()));
+    assertEquals(null, app.state().dialog, "no edit before the console's answer");
+    assertEquals(Transaction.OPEN, k.tab(app).transaction);
+    c.run(app, edit + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.state().dialog != null, "the edit goes on");
+    assertFalse(k.tab(app).connected());
+    // A colour leaves the console's session as it is.
+    var coloured = open(SHOP);
+    coloured.state().put(SHOP.withColour(Colour.BLUE));
+    c.run(coloured, "frame\n" + SETTLE);
+    assertTrue(k.tab(coloured).connected());
+    assertEquals(Transaction.OPEN, k.tab(coloured).transaction);
+  }
+
+  @Test
+  void deletingTheConnectionAsksItsConsolesFirst() throws Exception {
+    var app = open(SHOP);
+    c.run(
+        app,
+        menu("shop-prod", "Delete…") + "press role=button label=\"Disconnect\"\nframe\n" + OPENED
+            + "snap asked\n");
+    assertTrue(c.tree("asked").contains("before shop-prod disconnects."), c.tree("asked"));
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE);
+    assertEquals(null, app.state().deleting);
+    assertEquals(1, app.state().profiles.size());
+    assertEquals(Transaction.OPEN, k.tab(app).transaction);
+  }
+
+  @Test
+  void aFailedDdlInsideTheTransactionHasCommittedOnMariaDb() throws Exception {
+    servers.statement(
+        "CREATE TABLE stock (id int)",
+        List.of(FakeServers.serverError(Failure.Kind.OTHER, "Table 'stock' already exists")));
+    var app = open(INVENTORY);
+    c.run(app, type(";\nCREATE TABLE stock (id int)") + RUN + "snap ddl\n");
+    String ddl = c.tree("ddl");
+    assertTrue(servers.calls.contains("transaction " + MARIA), servers.calls.toString());
+    assertTrue(badge(ddl).contains("No transaction"), ddl);
+    assertTrue(line(ddl, "#commit").contains("disabled"), ddl);
   }
 
   /**
@@ -356,6 +815,42 @@ class ConsoleTransactionTest {
         out);
     for (var name : List.of(
         "console-auto", "console-manual", "console-open", "console-question", "console-failed")) {
+      assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
+    }
+  }
+
+  /** The pictures of what is not known, light and dark, as {@link #pictures}. */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void picturesOfWhatIsNotKnown(String look) throws Exception {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    var out = Files.createDirectories(Path.of(review));
+    var theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    var maria = k.console(INVENTORY);
+    maria.state().theme = theme;
+    Script.run(
+        type(CALL) + RUN + "snap console-may-be-open-" + look + "\npress #close-0\nframe\n" + OPENED
+            + "snap console-may-be-open-question-" + look + "\n",
+        maria,
+        out);
+    servers.statement(
+        "COMMIT",
+        List.of(
+            FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "server closed the connection")));
+    var pg = open(SHOP);
+    pg.state().theme = theme;
+    var gate = servers.hold(COMMITTING);
+    Script.run("press role=button label=\"Commit\"\nframe\nframe\n", pg, out);
+    eventually(() -> servers.calls.contains(COMMITTING));
+    Script.run("press #close-0\nframe\n" + OPENED + "snap console-waiting-" + look + "\n", pg, out);
+    gate.countDown();
+    Script.run(SETTLE + OPENED + "snap console-unknown-outcome-" + look + "\n", pg, out);
+    for (var name : List.of(
+        "console-may-be-open",
+        "console-may-be-open-question",
+        "console-waiting",
+        "console-unknown-outcome")) {
       assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
     }
   }
