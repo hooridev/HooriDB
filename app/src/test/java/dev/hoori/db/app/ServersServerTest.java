@@ -15,6 +15,7 @@ import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -220,6 +221,35 @@ class ServersServerTest {
       assertEquals(1L, ((Number) value(watcher, sessions)).longValue());
       lane.close(); // as closing the console's tab does
       eventually(() -> ((Number) value(watcher, sessions)).longValue() == 0);
+    } finally {
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  // PostgreSQL streams such a statement in a transaction core opens, which a close must not undo.
+  @Test
+  void closingKeepsWhatAStatementChangedThoughItsRowsWereNotAllRead() throws Exception {
+    var server = TestServer.of(Provider.POSTGRESQL);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS kept",
+          "CREATE TABLE kept (id integer, done boolean NOT NULL DEFAULT false)",
+          "INSERT INTO kept SELECT n FROM generate_series(1, 1000) n")) {
+        var setup = watcher.run(sql);
+        setup.next(1);
+        setup.close();
+      }
+      var read = lane.submit(link -> rows(link.run(
+                  "WITH changed AS (UPDATE kept SET done = true RETURNING id) SELECT id FROM changed")
+              .next(200))
+          .size());
+      assertEquals(200, read.get(20, TimeUnit.SECONDS));
+      lane.close(); // as closing the console's tab does: the statement's rows are never read on
+      eventually(() ->
+          ((Number) value(watcher, "SELECT count(*) FROM kept WHERE done")).longValue() == 1000);
     } finally {
       lane.close();
       watcher.close();
