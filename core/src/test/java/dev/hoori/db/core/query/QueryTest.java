@@ -271,6 +271,40 @@ class QueryTest {
   }
 
   @Test
+  void aStepNothingCanCancelThatEndsInTimeKeepsTheConnection() throws Exception {
+    var driver = new Driver();
+    var connection = driver.connection();
+    var started = new CountDownLatch(1);
+    var failure = interrupted(
+        () -> Query.run(connection, Provider.MARIADB, () -> {
+          started.countDown();
+          sleep(200); // as a switch of the database that the server answers soon after
+          return null;
+        }),
+        started);
+    assertEquals(Failure.CANCELLED, failure.failure());
+    assertFalse(connection.isClosed());
+    assertFalse(driver.aborted.get());
+  }
+
+  @Test
+  void aStepNothingCanCancelThatDoesNotEndIsGivenUp() throws Exception {
+    var driver = new Driver();
+    var connection = driver.connection();
+    var started = new CountDownLatch(1);
+    var failure = interrupted(
+        () -> Query.run(connection, Provider.MYSQL, () -> {
+          started.countDown();
+          driver.socket.read(); // a server that no longer answers
+          return null;
+        }),
+        started);
+    assertEquals(Failure.ABORTED, failure.failure());
+    assertTrue(connection.isClosed());
+    assertTrue(driver.aborted.get());
+  }
+
+  @Test
   void anInterruptAsTheResultArrivesStillCancels() throws Exception {
     // A cancel that finds the statement over, which an interrupt just before the result sends.
     var driver = new Driver() {

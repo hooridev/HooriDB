@@ -131,6 +131,17 @@ public final class Query {
   }
 
   /**
+   * Runs a step that nothing can stop on the server, such as a switch of the connection's
+   * database. An interrupt waits {@link #GRACE} for it to end, which leaves the connection usable,
+   * and gives the connection up after that; either way the caller cannot know whether the step
+   * took effect.
+   */
+  public static <T> T run(Connection connection, Provider provider, Step<T> step)
+      throws QueryException {
+    return run(connection, provider, () -> false, step, value -> false);
+  }
+
+  /**
    * Runs the step, with the given cancel in place of a statement's.
    *
    * @param stopped whether the step's value shows that the server stopped it, for a step that
