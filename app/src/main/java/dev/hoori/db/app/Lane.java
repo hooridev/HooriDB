@@ -73,23 +73,20 @@ final class Lane {
    * Opens the connection as the lane's first call, with a copy of the password, which is wiped
    * once the call ends, or by {@link #close} if it never starts.
    */
-  Future<Servers.Link> open(
-      Servers servers, ConnectionProfile profile, char[] password, LoadedDriver driver) {
+  void open(Servers servers, ConnectionProfile profile, char[] password, LoadedDriver driver) {
     char[] given = password.clone();
     copy = given;
-    Future<Servers.Link> call = run(Priority.VIEW, () -> {
+    opening = run(Priority.VIEW, () -> {
       try {
         link = servers.open(profile, given, driver);
         return link;
-      } catch (ConnectionException e) {
-        fail(e);
+      } catch (ConnectionException | RuntimeException e) {
+        fail(e); // the calls behind it fail as it did
         throw e;
       } finally {
         Arrays.fill(given, '\0');
       }
     });
-    opening = call;
-    return call;
   }
 
   /** Runs the call for what the user looks at, once the calls asked for before it have ended. */
@@ -236,7 +233,7 @@ final class Lane {
    * cancelled, interrupts the lane's thread in the call, which core turns into a cancel on the
    * server.
    */
-  static <T> T await(Future<T> call) throws Exception {
+  private static <T> T await(Future<T> call) throws Exception {
     try {
       return call.get();
     } catch (InterruptedException e) {

@@ -34,6 +34,7 @@ import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
@@ -118,6 +119,7 @@ final class ConsoleTab implements Tab {
   final Menu.State databases = new Menu.State();
   private Lane lane; // the session, or null until it is needed
   private char[] password; // its copy, which checks what the server says; wiped with the session
+  LoadedDriver driver; // the session's, from when it is opened until it is closed
   // The statement that may still have the session, from when it is asked to run until a portion
   // says it is over: set on the lane, so that it is closed also where its portion never arrives.
   private AtomicReference<Servers.Run> open;
@@ -208,6 +210,7 @@ final class ConsoleTab implements Tab {
     // A session open goes on, also after the tree lost its connection.
     if (lane == null && !s.catalogue.connected(id) && !s.catalogue.active(id)) {
       s.catalogue.connect(s, id); // as the tree connects: the driver, the password, the server
+      askHere(s);
     }
     stranded = false;
     outputs.removeIf(o -> !o.pinned);
@@ -263,7 +266,16 @@ final class ConsoleTab implements Tab {
     } else {
       s.catalogue.connect(s, id);
     }
+    askHere(s);
     follow(s);
+  }
+
+  /** What the tree's connection asks for, its password, it asks in this console's window. */
+  private void askHere(State s) {
+    var live = s.catalogue.live(id);
+    if (live != null) {
+      live.window = s.tabs.groupOf(this);
+    }
   }
 
   /** Runs the next statement of the run, on the session; its rows before are left as read. */
@@ -308,6 +320,7 @@ final class ConsoleTab implements Tab {
         return null;
       }
       lane = session.lane();
+      driver = session.driver();
       password = session.password();
     }
     return lane;
@@ -603,6 +616,7 @@ final class ConsoleTab implements Tab {
       lane.close(); // interrupts what runs, which core cancels, and closes the connection
       lane = null;
     }
+    driver = null;
     if (password != null) {
       Arrays.fill(password, '\0');
       password = null;

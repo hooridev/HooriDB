@@ -57,6 +57,9 @@ interface Servers {
     /** Of a schema, or of a database where the server has no schemas. */
     List<Table> tables(Container container) throws CatalogException;
 
+    /** Of every schema of the database that is not the system's, in one call. */
+    List<Table> allTables(Database database) throws CatalogException;
+
     List<Column> columns(Table table) throws CatalogException;
 
     /** The server's estimate of the table's rows, or empty where it has none, as {@link Rows}. */
@@ -105,6 +108,11 @@ interface Servers {
     @Override
     public List<Table> tables(Container container) throws CatalogException {
       return Catalog.tables(connection, provider, container);
+    }
+
+    @Override
+    public List<Table> allTables(Database database) throws CatalogException {
+      return Catalog.allTables(connection, provider, database);
     }
 
     @Override

@@ -36,11 +36,11 @@ class ServersServerTest {
   static Lane lane(TestServer server, String database) throws Exception {
     var lane = new Lane(e -> {});
     lane.open(
-            Servers.SERVER,
-            server.profile().withDatabase(database),
-            TestServer.password(),
-            server.driver())
-        .get(30, TimeUnit.SECONDS);
+        Servers.SERVER,
+        server.profile().withDatabase(database),
+        TestServer.password(),
+        server.driver());
+    lane.submit(link -> link).get(30, TimeUnit.SECONDS); // fails as the opening did
     return lane;
   }
 

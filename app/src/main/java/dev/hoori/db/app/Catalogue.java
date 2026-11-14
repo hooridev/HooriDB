@@ -19,11 +19,13 @@ import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
@@ -115,14 +117,18 @@ final class Catalogue {
   static final class Live {
     final ConnectionProfile profile; // as it was when opened
     Phase phase;
-    Work work; // the step under way: reading the password or connecting; or null
+    Work work; // reading the password, or null
+    Lane.Asked connecting; // the wait for the first connection, or null
     Handover handover; // the password on its way from the keyring, or null
     LoadedDriver driver;
+    // The tabs whose window asks for the password: a console's there; null for the main window.
+    TabGroups.Group<Tab> window;
     // While connected, for the connections to further databases; wiped when it ends.
     char[] password;
     Lane lane; // the first connection
     final Map<String, Lane> lanes = new HashMap<>(); // further connections, by database
     final Map<Node, Level> levels = new HashMap<>();
+    final Map<Node.OfDatabase, Scan> scans = new HashMap<>(); // go to table's reads, by database
     // The password dialog; the kit's field holds a String, which goes with the dialog.
     String typed = "";
     boolean revealed;
@@ -390,18 +396,16 @@ final class Catalogue {
     live.password = password;
     live.phase = new Connecting();
     live.lane = lane(s, live);
-    var opening = live.lane.open(servers, live.profile, password, live.driver);
-    // Its databases are asked for right behind it, on its lane: they need no answer before.
-    read(s, live, new Node.Connection(live.id()));
+    live.lane.open(servers, live.profile, password, live.driver);
     record Opened(ServerVersion version, String database) {}
-    live.work = s.app.background(
+    // Right behind the opening, which it fails as.
+    live.connecting = live.lane.ask(
+        s.app,
         "connect to " + State.name(live.profile),
-        () -> {
-          var link = Lane.await(opening);
-          return new Opened(link.version(), link.database());
-        },
+        Lane.Priority.VIEW,
+        link -> new Opened(link.version(), link.database()),
         opened -> {
-          live.work = null;
+          live.connecting = null;
           var provider = live.profile.provider();
           var version = opened.version();
           // Where a connection reads one database only, the others get connections of their own.
@@ -414,7 +418,7 @@ final class Catalogue {
           s.connected(live.id());
         },
         error -> {
-          live.work = null;
+          live.connecting = null;
           var checked = checked(live, error);
           var failure = checked instanceof ConnectionException e
               ? e.failure()
@@ -424,6 +428,8 @@ final class Catalogue {
           s.unconnected(live.id());
           s.tell(State.name(live.profile) + ": " + Words.title(failure));
         });
+    // Its databases are asked for right behind it, on its lane: they need no answer before.
+    read(s, live, new Node.Connection(live.id()));
   }
 
   /** Reads the children of the node on the connection that reads its database. */
@@ -490,6 +496,128 @@ final class Catalogue {
         });
   }
 
+  /** Go to table's read of a whole database: under way while it has work, else why it failed. */
+  static final class Scan {
+    Lane.Asked asked;
+    String failed;
+  }
+
+  /**
+   * Reads every table of the database that the tree has not read, without opening its node, in one
+   * call that waits behind what the tree and the tabs ask for ({@link Lane.Priority#AHEAD}): the
+   * database's schemas, and the tables of all of them that are not the system's. What the tree has
+   * read, or reads meanwhile, stays as it is. Go to table asks for it, and {@link #stop}s it when
+   * the palette closes; null where nothing is read, as the connection is not connected or the
+   * database is being read so already.
+   */
+  Scan scan(State s, Node.OfDatabase node) {
+    var live = lives.get(node.id());
+    if (live == null
+        || !(live.phase instanceof Connected c)
+        || live.scans.get(node) instanceof Scan x && x.asked != null) {
+      return null;
+    }
+    var database = node.database();
+    boolean schemas = c.schemas();
+    var lane = lane(s, live, database.name());
+    record Found(List<Schema> schemas, List<Table> tables) {}
+    var scan = new Scan();
+    live.scans.put(node, scan);
+    scan.asked = lane.ask(
+        s.app,
+        "read the tables of " + database.name(),
+        Lane.Priority.AHEAD,
+        link -> new Found(schemas ? link.schemas(database) : null, link.allTables(database)),
+        found -> {
+          if (live.scans.get(node) == scan) {
+            live.scans.remove(node);
+            fill(live, node, found.schemas(), found.tables());
+          }
+        },
+        error -> {
+          if (live.scans.get(node) != scan) {
+            return;
+          }
+          scan.asked = null;
+          var checked = checked(live, error);
+          if (checked instanceof ConnectionException) {
+            if (live.lanes.remove(database.name(), lane)) {
+              lane.close(); // the next read opens it again
+            }
+            scan.failed = "The database could not be opened";
+          } else if (checked instanceof CatalogException e
+              && e.failure() != CatalogException.Failure.CONNECTION_LOST
+              && e.failure() != CatalogException.Failure.ABORTED) {
+            scan.failed = title(e.failure());
+          } else {
+            live.scans.remove(node);
+            lose(s, live, detail(checked), discarded(checked));
+          }
+        });
+    return scan;
+  }
+
+  /** Ends the scan if it has not delivered: what it asked of its lane never runs or is cancelled. */
+  void stop(Node.OfDatabase node, Scan scan) {
+    var live = lives.get(node.id());
+    if (live != null && live.scans.get(node) == scan) {
+      live.scans.remove(node);
+      if (scan.asked != null) {
+        scan.asked.cancel();
+      }
+    }
+  }
+
+  /** Puts what a scan read where the tree has not read it. */
+  private static void fill(
+      Live live, Node.OfDatabase node, List<Schema> schemas, List<Table> tables) {
+    var id = live.id();
+    if (unread(live.levels.get(node))) {
+      live.levels.put(
+          node,
+          new Read(
+              schemas == null
+                  ? tables.stream().map(t -> (Node) new Node.OfTable(id, t)).toList()
+                  : schemas.stream().map(x -> (Node) new Node.OfSchema(id, x)).toList()));
+    }
+    if (schemas == null || !(live.levels.get(node) instanceof Read r)) {
+      return;
+    }
+    var bySchema = new HashMap<Schema, List<Node>>();
+    for (var table : tables) {
+      bySchema
+          .computeIfAbsent((Schema) table.container(), x -> new ArrayList<>())
+          .add(new Node.OfTable(id, table));
+    }
+    for (var child : r.children()) {
+      if (child instanceof Node.OfSchema x
+          && !x.schema().system()
+          && unread(live.levels.get(child))) {
+        live.levels.put(child, new Read(List.copyOf(bySchema.getOrDefault(x.schema(), List.of()))));
+      }
+    }
+  }
+
+  /**
+   * Takes the scans of databases at or below the node, or of the database the node is in, and adds
+   * what they asked for to what is given up.
+   */
+  private static void stopScans(Live live, Node node, List<Lane.Asked> gone) {
+    for (var entry : List.copyOf(live.scans.entrySet())) {
+      if (entry.getKey().within(node) || node.within(entry.getKey())) {
+        live.scans.remove(entry.getKey());
+        if (entry.getValue().asked != null) {
+          gone.add(entry.getValue().asked);
+        }
+      }
+    }
+  }
+
+  /** Whether a level is to be read: not asked for yet, or failed. */
+  static boolean unread(Level level) {
+    return level == null || level instanceof NotRead || level instanceof NotOpened;
+  }
+
   /**
    * The lane that reads the database's content: the first connection's, or where a connection
    * reads one database only, the database's own; null as the database stands for the first's.
@@ -526,8 +654,11 @@ final class Catalogue {
     return live != null && live.phase instanceof Connected;
   }
 
-  /** A console's session: its own connection, and a copy of the password, which it wipes. */
-  record Session(Lane lane, char[] password) {}
+  /**
+   * A console's session: its own connection, the driver it uses, and a copy of the password, which
+   * it wipes.
+   */
+  record Session(Lane lane, LoadedDriver driver, char[] password) {}
 
   /**
    * Opens a connection of the console's own to the database, with the password and driver the
@@ -543,7 +674,7 @@ final class Catalogue {
     var lane = new Lane(e -> {});
     var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
     lane.open(servers, profile, live.password, live.driver);
-    return new Session(lane, live.password.clone());
+    return new Session(lane, live.driver, live.password.clone());
   }
 
   /** The names of the connection's databases as the tree read them, or none where it has not. */
@@ -724,6 +855,7 @@ final class Catalogue {
     }
     forgetBelow(s, node);
     var gone = new ArrayList<Lane.Asked>();
+    stopScans(live, node, gone);
     for (var entry : List.copyOf(live.levels.entrySet())) {
       if (entry.getKey().within(node)) {
         if (entry.getValue() instanceof Reading r) {
@@ -814,11 +946,16 @@ final class Catalogue {
       live.handover = null;
     }
     var gone = new ArrayList<Lane.Asked>();
+    if (live.connecting != null) {
+      gone.add(live.connecting);
+      live.connecting = null;
+    }
     for (var level : live.levels.values()) {
       if (level instanceof Reading r) {
         gone.add(r.asked);
       }
     }
+    stopScans(live, new Node.Connection(live.id()), gone);
     Lane.cancel(gone);
     live.levels.clear();
     if (live.lane != null) {
@@ -1212,11 +1349,12 @@ final class Catalogue {
   }
 
   /** The dialog that asks something for the catalogue, or null: one at a time. */
-  El dialog(Theme t, State s) {
-    if (disconnecting != null) {
+  El dialog(Theme t, State s, TabGroups.Group<Tab> group) {
+    boolean main = group == s.tabs.main();
+    if (main && disconnecting != null) {
       return disconnectDialog(t, s);
     }
-    var fetch = asking();
+    var fetch = main ? asking() : null;
     if (fetch != null) {
       var want = want(fetch);
       Runnable stop = () -> stopFetch(s, want);
@@ -1228,7 +1366,11 @@ final class Catalogue {
       return Dialog.dialog(t, "Driver needed", content, buttons, stop);
     }
     for (var live : lives.values()) {
-      if (live.phase instanceof ForPassword) {
+      // In the window that asked, while it is open; else in the main one, where its tabs went.
+      var asked = live.window != null && s.tabs.groups().contains(live.window)
+          ? live.window
+          : s.tabs.main();
+      if (live.phase instanceof ForPassword && asked == group) {
         return passwordDialog(t, s, live);
       }
     }

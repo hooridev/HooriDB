@@ -13,6 +13,7 @@ import dev.hoori.db.core.connection.Provider;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -220,6 +221,52 @@ class CatalogServerTest {
             execute(connection, "DROP TABLE IF EXISTS " + qualified(provider, container, name));
           }
         }
+      }
+    }
+  }
+
+  /** All tables of a database in one call: those of each schema, as its own call reads them. */
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void allTablesOfADatabaseAreThoseOfEachSchemaInOneCall(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    try (var connection = open(server, TestServer.DATABASE)) {
+      if (provider != Provider.POSTGRESQL) {
+        assertEquals(
+            Catalog.tables(connection, provider, HOORI),
+            Catalog.allTables(connection, provider, HOORI));
+        return;
+      }
+      var other = new Schema(HOORI, "zz other", false);
+      var empty = new Schema(HOORI, "zz empty", false);
+      execute(
+          connection,
+          "CREATE SCHEMA " + provider.quote(other.name()),
+          "CREATE SCHEMA " + provider.quote(empty.name()),
+          "CREATE TABLE " + qualified(provider, other, "b") + " (id integer)",
+          "CREATE VIEW " + qualified(provider, other, "a") + " AS SELECT 1 AS one");
+      try {
+        var expected = new ArrayList<Table>();
+        for (var schema : Catalog.schemas(connection, provider, HOORI)) {
+          if (!schema.system()) {
+            expected.addAll(Catalog.tables(connection, provider, schema));
+          }
+        }
+        var all = Catalog.allTables(connection, provider, HOORI);
+        assertEquals(expected, all);
+        assertTrue(all.contains(new Table(other, "a", Kind.VIEW)), all.toString());
+        assertTrue(all.stream().noneMatch(t -> t.container().equals(empty)), all.toString());
+        assertTrue(
+            all.stream().noneMatch(t -> ((Schema) t.container()).name().startsWith("pg_")),
+            all.toString());
+        assertFailure(
+            Failure.WRONG_DATABASE,
+            () -> Catalog.allTables(connection, provider, new Database("postgres", false)));
+      } finally {
+        execute(
+            connection,
+            "DROP SCHEMA " + provider.quote(other.name()) + " CASCADE",
+            "DROP SCHEMA " + provider.quote(empty.name()));
       }
     }
   }

@@ -360,6 +360,28 @@ class ConsoleTest {
   }
 
   @Test
+  void aTornOffConsoleAsksForThePasswordInItsOwnWindow() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogueTest.PG_OUTLINE, "another");
+    var app = console(SHOP);
+    c.run(
+        app,
+        "press #tab-0 right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
+            + "window \"shop-prod: shop\"\n" + type(COUNT) + RUN
+            + "press role=button label=\"Enter password…\"\nframe\nadvance 1\nframe\nsnap asked\n");
+    String window = c.tree("shop-prod-shop-asked");
+    assertTrue(window.contains("role=dialog label=\"Password for shop-prod\""), window);
+    assertFalse(c.tree("asked").contains("role=dialog"), c.tree("asked"));
+    c.run(
+        app,
+        "window \"shop-prod: shop\"\npress #password\ntype \"another\"\n"
+            + "press role=button label=\"Connect\"\nframe\nadvance 1\nframe\n" + SETTLE
+            + "snap ran\n");
+    window = c.tree("shop-prod-shop-ran");
+    assertTrue(status(window).contains("\"Ran in 4 ms · 1 row\""), window);
+  }
+
+  @Test
   void aCancelledSwitchLeavesTheDatabaseTheConnectionIsOn() throws Exception {
     var app = console(INVENTORY);
     c.run(app, type(COUNT) + RUN);
