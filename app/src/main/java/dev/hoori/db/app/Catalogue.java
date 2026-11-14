@@ -861,8 +861,7 @@ final class Catalogue {
     if (live == null) {
       return null;
     }
-    // A connected connection's trouble is that of its databases' read, as for any other node.
-    if (node instanceof Node.Connection && !(live.phase instanceof Connected)) {
+    if (failedWhole(live, node)) {
       var p = live.profile;
       return switch (live.phase) {
         case Failed f -> {
@@ -900,6 +899,15 @@ final class Catalogue {
             false);
       case null, default -> null;
     };
+  }
+
+  /**
+   * Whether the node is a connection that failed as a whole, shown by a row of its own and the
+   * callout's actions. Any other node's failed read, a connected connection's databases too, shows
+   * in the tree's row of its failure, with its action.
+   */
+  private static boolean failedWhole(Live live, Node node) {
+    return node instanceof Node.Connection && !(live.phase instanceof Connected);
   }
 
   private static String join(String note, String detail) {
@@ -944,12 +952,15 @@ final class Catalogue {
     if (trouble == null) {
       return null;
     }
+    var live = lives.get(node.id());
     var actions = new ArrayList<El>();
     if (trouble.password()) {
-      var live = lives.get(node.id());
       actions.add(button(t, SECONDARY, "Enter password…", () -> askPassword(live)));
     }
-    actions.add(button(t, SECONDARY, "Try again", () -> retry(s, node)));
+    // The tree's row of a node's failed read has Try again itself.
+    if (failedWhole(live, node)) {
+      actions.add(button(t, SECONDARY, "Try again", () -> retry(s, node)));
+    }
     return Callout.callout(
         t, Callout.Kind.DANGER, trouble.title(), trouble.text(), actions.toArray(El[]::new));
   }
@@ -968,15 +979,33 @@ final class Catalogue {
       if (live == null) {
         return List.of();
       }
-      if (node instanceof Node.Connection && !(live.phase instanceof Connected)) {
+      if (failedWhole(live, node)) {
         return ended(live.phase) ? List.of(new Node.Problem(node)) : null;
       }
-      return switch (live.levels.get(node)) {
-        case Read r -> r.children();
-        case NotRead r -> List.of(new Node.Problem(node));
-        case NotOpened o -> List.of(new Node.Problem(node));
-        case Reading r -> null;
-        case null -> null;
+      return live.levels.get(node) instanceof Read r ? r.children() : null;
+    }
+
+    @Override
+    public Tree.Failure failure(Node node) {
+      var c = s.catalogue;
+      var live = c.lives.get(node.id());
+      if (live == null || failedWhole(live, node)) {
+        return null;
+      }
+      var level = live.levels.get(node);
+      if (!(level instanceof NotRead || level instanceof NotOpened)) {
+        return null;
+      }
+      return Tree.failure(c.problem(s, node).title()).action("Try again", () -> c.retry(s, node));
+    }
+
+    @Override
+    public boolean muted(Node node) {
+      return switch (node) {
+        case Node.OfDatabase n -> n.database().system();
+        case Node.OfSchema n -> n.schema().system();
+        case Node.OfTable n -> system(n.table());
+        default -> false;
       };
     }
 
@@ -1027,8 +1056,7 @@ final class Catalogue {
       };
     }
 
-    // shortcut: the kit's tree has no muted label, so only the icon of a system object is quieter;
-    // mute its name too once the tree can.
+    // A system object's icon is quieter too, as its name is muted.
     private El icon(Symbol symbol, boolean system) {
       return Icon.icon(t, symbol, system ? Icon.Variant.DISABLED : Icon.Variant.MUTED);
     }

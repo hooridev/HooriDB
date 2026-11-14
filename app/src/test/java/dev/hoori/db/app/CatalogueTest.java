@@ -592,6 +592,10 @@ class CatalogueTest {
     assertTrue(
         line(failed, "role=note").contains("label=\"The database could not be opened\""), failed);
     assertTrue(
+        line(failed, "role=treeitem label=\"The database could not be opened\"")
+            .contains(" invalid"),
+        failed);
+    assertTrue(
         failed.contains("The server has no database named postgres, or this user may not open it."),
         failed);
     List<String> end = rows(tree("end"));
