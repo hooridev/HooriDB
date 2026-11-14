@@ -143,6 +143,10 @@ class PaletteTest {
             + "press role=menuitem label=\"Command palette…\"\n" + SHOWN + "snap palette\n");
     var go = c.tree("go");
     assertTrue(line(go, "role=menuitem label=\"Next tab\"").contains("disabled"), go);
+    // Of its two keys, the first shows.
+    var next = ConnectionsTest.after(go, "role=menuitem label=\"Next tab\"");
+    next = next.substring(0, next.indexOf("role=menuitem label=\"Previous tab\""));
+    assertTrue(next.contains("\"Ctrl+Page Down\"") && !next.contains("Ctrl+Tab"), next);
     assertTrue(
         ConnectionsTest.after(go, "role=menuitem label=\"Connections\"").contains("\"Ctrl+0\""),
         go);
@@ -237,6 +241,7 @@ class PaletteTest {
             + "key Tab control\nframe\nsnap tab\n"
             + "key 1 control\nframe\nsnap content\n"
             + "key 0 control\nframe\nsnap tree\n"
+            + "key PageDown control\nframe\nsnap from-tree\n"
             + PALETTE + "type \"tab content\"\nframe\nkey Enter\n" + SHOWN + "snap from-palette\n");
     assertTrue(tabs(c.tree("console")).startsWith("shop-prod: shop"), c.tree("console"));
     assertEquals("", tabs(c.tree("closed")));
@@ -251,6 +256,8 @@ class PaletteTest {
         focused(content));
     var tree = c.tree("tree");
     assertTrue(focused(tree).contains("role=tree "), focused(tree));
+    // From the tree too, once: the kit's tabs take the key before the menu's item.
+    assertEquals("customers", active(c.tree("from-tree")));
     var fromPalette = c.tree("from-palette");
     assertTrue(focused(fromPalette).contains("role=grid"), focused(fromPalette));
   }
@@ -281,6 +288,9 @@ class PaletteTest {
             + SETTLE + "snap torn\n");
     assertEquals("orders", tabs(c.tree("torn")));
     assertEquals("customers,order_totals", tabs(c.tree("customers-torn")));
+    c.run(app, "key PageUp control\nframe\nsnap back\nkey Tab control\nframe\nsnap on\n");
+    assertEquals("customers", active(c.tree("customers-back")));
+    assertEquals("order_totals", active(c.tree("customers-on")));
     c.run(app, "key W control\nframe\n" + SETTLE + "snap closed\n");
     assertEquals("orders", tabs(c.tree("closed")));
     assertEquals("customers", tabs(c.tree("customers-closed")));

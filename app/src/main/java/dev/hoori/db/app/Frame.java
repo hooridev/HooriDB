@@ -91,13 +91,14 @@ final class Frame {
   }
 
   /**
-   * A window's keys: its menus' combinations, the palette's own while no dialog is open, and the
-   * tabs' also while the focus is outside them, as in the tree; none of the tabs' while empty.
+   * A window's keys: the tabs' first, also while the focus is outside them, as in the tree, so that
+   * they go through the tabs as inside them; then its menus' combinations, and the palette's own
+   * while no dialog is open. None of the tabs' while empty.
    */
   private static Predicate<Key> keys(
       Predicate<Key> menus, CommandPalette.State palette, boolean modal, El tabs) {
     Predicate<Key> keys = modal ? menus : menus.or(CommandPalette.keys(palette));
-    return tabs.onKey() == null ? keys : keys.or(tabs.onKey());
+    return tabs.onKey() == null ? keys : tabs.onKey().or(keys);
   }
 
   /** The window's command palette, over the commands of its menus and its tables after @. */
@@ -335,11 +336,13 @@ final class Frame {
                     .icon(Symbol.TABLE)
                     .shortcut(Key.CONTROL, "P"),
                 Menu.separator(),
-                // Control+Tab and Control+Shift+Tab do the same, through the kit's tabs.
+                // The kit's tabs take these keys first; Page Down shows, as it says the direction.
                 Menu.item("Next tab", several ? () -> s.nextTab(group, 1) : null)
-                    .shortcut(Key.CONTROL, "PageDown"),
+                    .shortcut(Key.CONTROL, "PageDown")
+                    .alsoShortcut(Key.CONTROL, "Tab"),
                 Menu.item("Previous tab", several ? () -> s.nextTab(group, -1) : null)
-                    .shortcut(Key.CONTROL, "PageUp"),
+                    .shortcut(Key.CONTROL, "PageUp")
+                    .alsoShortcut(Key.CONTROL | Key.SHIFT, "Tab"),
                 Menu.separator(),
                 Menu.item("Connections", tree ? () -> focusTree(s) : null)
                     .shortcut(Key.CONTROL, "0"),
