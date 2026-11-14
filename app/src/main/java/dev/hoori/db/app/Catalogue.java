@@ -126,6 +126,7 @@ final class Catalogue {
     Lane lane; // the first connection
     final Map<String, Lane> lanes = new HashMap<>(); // further connections, by database
     final Map<Node, Level> levels = new HashMap<>();
+    final Set<Node> wanted = new HashSet<>(); // databases whose schemas' tables are read once known
     // The password dialog; the kit's field holds a String, which goes with the dialog.
     String typed = "";
     boolean revealed;
@@ -469,12 +470,16 @@ final class Catalogue {
         children -> {
           if (live.levels.get(node) == reading) {
             live.levels.put(node, new Read(children));
+            if (live.wanted.remove(node)) {
+              readTables(s, (Node.OfDatabase) node);
+            }
           }
         },
         error -> {
           if (live.levels.get(node) != reading) {
             return;
           }
+          live.wanted.remove(node);
           var checked = checked(live, error);
           if (checked instanceof ConnectionException e) {
             // The next read opens it again.
@@ -490,6 +495,35 @@ final class Catalogue {
             lose(s, live, detail(checked), discarded(checked));
           }
         });
+  }
+
+  /**
+   * Reads the tables of the database that the tree has not read, without opening its node: the
+   * database, then each of its schemas that is not the system's. Go to table asks for it.
+   */
+  void readTables(State s, Node.OfDatabase node) {
+    var live = lives.get(node.id());
+    if (live == null || !(live.phase instanceof Connected)) {
+      return;
+    }
+    var level = live.levels.get(node);
+    if (unread(level)) {
+      live.wanted.add(node);
+      read(s, live, node);
+    } else if (level instanceof Read r) {
+      for (var child : r.children()) {
+        if (child instanceof Node.OfSchema x
+            && !x.schema().system()
+            && unread(live.levels.get(child))) {
+          read(s, live, child);
+        }
+      }
+    }
+  }
+
+  /** Whether a level is to be read: not asked for yet, or failed. */
+  static boolean unread(Level level) {
+    return level == null || level instanceof NotRead || level instanceof NotOpened;
   }
 
   /**

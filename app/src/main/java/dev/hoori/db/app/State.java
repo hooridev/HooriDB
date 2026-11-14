@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Work;
+import com.rethinkj.ui.kit.CommandPalette;
 import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.TabGroups;
@@ -24,6 +25,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 
 /** The app's state, which only the handlers change, on the app's thread. */
@@ -38,6 +40,8 @@ final class State {
   final MenuBar.State bar = new MenuBar.State();
   // The tabs of every window: the first window's, and those torn off into windows of their own.
   final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow).onClosed(Tab::close);
+  // The command palette of each window, by its tabs; it goes with the window.
+  private final Map<TabGroups.Group<Tab>, CommandPalette.State> palettes = new WeakHashMap<>();
   String message; // in the status line for a while, or null
   private int messages; // told so far
 
@@ -396,6 +400,11 @@ final class State {
    * whichever window; a table that became a view of its name, or the reverse, is read anew there.
    */
   void openTable(UUID id, Table table) {
+    openTable(id, table, tabs.main());
+  }
+
+  /** As {@link #openTable(UUID, Table)}, a new tab in the window of these tabs. */
+  void openTable(UUID id, Table table, TabGroups.Group<Tab> into) {
     for (var group : tabs.groups()) {
       for (int i = 0; i < group.tabs().size(); i++) {
         if (group.tabs().get(i) instanceof TableTab x
@@ -415,7 +424,7 @@ final class State {
       }
     }
     var tab = new TableTab(id, table);
-    tabs.add(tabs.main(), tabs.main().tabs().size(), tab);
+    tabs.add(into, into.tabs().size(), tab);
     tab.open(this, false);
   }
 
@@ -434,11 +443,51 @@ final class State {
 
   /** Opens a console on the connection, on the database its profile names. */
   void openConsole(UUID id) {
+    openConsole(id, tabs.main());
+  }
+
+  /** As {@link #openConsole(UUID)}, in the window of these tabs. */
+  void openConsole(UUID id, TabGroups.Group<Tab> group) {
     var profile = profile(id);
     if (profile == null) {
       return;
     }
-    tabs.add(tabs.main(), tabs.main().tabs().size(), new ConsoleTab(id, database(profile)));
+    tabs.add(group, group.tabs().size(), new ConsoleTab(id, database(profile)));
+  }
+
+  /**
+   * The connection a new console in the window is for: in the main window the one selected in the
+   * tree, else that of the window's active tab; null for none.
+   */
+  UUID consoleFor(TabGroups.Group<Tab> group) {
+    if (group == tabs.main() && selected != null) {
+      return selected.id();
+    }
+    return switch (group.activeTab()) {
+      case null -> null;
+      case TableTab x -> x.id;
+      case ConsoleTab x -> x.id;
+    };
+  }
+
+  /** The command palette of the window of these tabs. */
+  CommandPalette.State palette(TabGroups.Group<Tab> group) {
+    return palettes.computeIfAbsent(group, g -> new CommandPalette.State());
+  }
+
+  /** Closes the active tab of the window. */
+  void closeTab(TabGroups.Group<Tab> group) {
+    if (group.activeTab() != null) {
+      tabs.close(group, group.active());
+    }
+  }
+
+  /** Goes to the next tab of the window, or with -1 to the one before, around at the ends. */
+  void nextTab(TabGroups.Group<Tab> group, int step) {
+    int n = group.tabs().size();
+    if (n > 1) {
+      tabs.select(group, Math.floorMod(group.active() + step, n));
+    }
   }
 
   /** The consoles of every window, of the connection or of all where it is null. */

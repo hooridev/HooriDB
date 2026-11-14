@@ -12,6 +12,7 @@ import com.rethinkj.ui.Key;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
+import com.rethinkj.ui.kit.CommandPalette;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
@@ -37,16 +38,18 @@ final class Frame {
 
   static El view(State s) {
     Theme t = s.theme;
-    List<Menu.Item> menus = menus(s);
+    var main = s.tabs.main();
+    // One dialog at a time: what the catalogue asks waits for the others to close.
+    El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, main) : null;
+    boolean modal = s.dialog != null || s.deleting != null || asked != null || s.driverList != null;
+    List<Menu.Item> menus = menus(s, main, modal);
     El catalogue = catalogue(t, s).key("catalogue").label("Catalogue");
-    El tabs = tabs(s, s.tabs.main(), s.app).key("tabs");
-    // The menus' keys, and the tabs' keys also while the focus is outside them; none while empty.
-    Predicate<Key> keys = MenuBar.keys(s.bar, menus);
+    El tabs = tabs(s, main, s.app).key("tabs");
     El root = col()
         .wFull()
         .hFull()
         .fill(t.surface().window())
-        .onKey(tabs.onKey() == null ? keys : keys.or(tabs.onKey()))
+        .onKey(keys(MenuBar.keys(s.bar, menus), s.palette(main), modal, tabs))
         .onKeyUp(MenuBar.keysUp(s.bar, menus))
         .child(withMenus(
             t,
@@ -79,14 +82,27 @@ final class Frame {
       root.overlay(s.dialog.view(t, s)).overlay(s.dialog.question(t, s));
     }
     root.overlay(s.deleting == null ? null : deleteDialog(t, s));
-    // One dialog at a time: what the catalogue asks waits for the others to close.
-    El asked =
-        s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, s.tabs.main()) : null;
     root.overlay(asked);
     if (s.driverList != null && s.dialog == null && s.deleting == null && asked == null) {
       root.overlay(s.driverList.view(t, s)).overlay(s.driverList.question(t, s));
     }
-    return root;
+    return root.overlay(modal ? null : palette(s, main, menus));
+  }
+
+  /**
+   * A window's keys: its menus' combinations, the palette's own while no dialog is open, and the
+   * tabs' also while the focus is outside them, as in the tree; none of the tabs' while empty.
+   */
+  private static Predicate<Key> keys(
+      Predicate<Key> menus, CommandPalette.State palette, boolean modal, El tabs) {
+    Predicate<Key> keys = modal ? menus : menus.or(CommandPalette.keys(palette));
+    return tabs.onKey() == null ? keys : keys.or(tabs.onKey());
+  }
+
+  /** The window's command palette, over the commands of its menus and its tables after @. */
+  private static El palette(State s, TabGroups.Group<Tab> group, List<Menu.Item> menus) {
+    return CommandPalette.palette(
+        s.theme, s.palette(group), CommandPalette.commands(menus), List.of(GoTo.source(s, group)));
   }
 
   /** The tabs of a window, each with its content; the main window's empty one says what goes in. */
@@ -131,15 +147,17 @@ final class Frame {
   /** The window of tabs torn off: its title bar over its tabs, whose status lines they show. */
   static El window(State s, TabGroups.Group<Tab> group) {
     Theme t = s.theme;
-    @SuppressWarnings("unchecked") // every window runs an app of the state
-    App<State> app =
-        group.window() == null ? s.app : (App<State>) group.window().app();
+    App<State> app = app(s, group);
     El tabs = tabs(s, group, app).key("tabs");
+    // What a console of this window asked for, such as a password.
+    El asked = s.catalogue.dialog(t, s, group);
+    // The menus' commands without the bar, acting on this window's tabs.
+    List<Menu.Item> menus = menus(s, group, asked != null);
     return col()
         .wFull()
         .hFull()
         .fill(t.surface().window())
-        .onKey(tabs.onKey())
+        .onKey(keys(Menu.shortcuts(menus), s.palette(group), asked != null, tabs))
         .child(TitleBar.titleBar(
             t, title(s, group.activeTab()), HooriDb.COLOUR, app != null && app.windowMaximized()))
         .child(col()
@@ -147,8 +165,14 @@ final class Frame {
             .minSize(0, 0)
             .padding(0, t.space().m(), t.space().m(), t.space().m())
             .child(Card.flush(t, tabs.grow(1)).grow(1)))
-        // What a console of this window asked for, such as a password.
-        .overlay(s.catalogue.dialog(t, s, group));
+        .overlay(asked)
+        .overlay(asked != null ? null : palette(s, group, menus));
+  }
+
+  /** The app of the window of these tabs. */
+  @SuppressWarnings("unchecked") // every window runs an app of the state
+  private static App<State> app(State s, TabGroups.Group<Tab> group) {
+    return group.window() == null ? s.app : (App<State>) group.window().app();
   }
 
   /** The connections: waiting while they load, then a tree of them or the empty state. */
@@ -259,11 +283,18 @@ final class Frame {
   }
 
   /**
-   * Only what does something today: a new connection, a console on the selected connection, the
-   * drivers, quitting, and the themes.
+   * Only what does something today: a new connection, a console, the drivers, the tabs of the
+   * window, quitting, the palette, the themes, and where the focus goes. They are the commands of
+   * the palette too, and their keys act in the window of these tabs, with or without its bar.
+   *
+   * @param modal whether a dialog is open, which the palette waits for
    */
-  static List<Menu.Item> menus(State s) {
-    var selected = s.selected;
+  static List<Menu.Item> menus(State s, TabGroups.Group<Tab> group, boolean modal) {
+    var palette = s.palette(group);
+    var console = s.consoleFor(group);
+    Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
+    boolean several = group.tabs().size() > 1;
+    boolean tree = group == s.tabs.main() && s.loaded && !s.profiles.isEmpty();
     return List.of(
         Menu.submenu(
             "&File",
@@ -271,8 +302,9 @@ final class Frame {
                 Menu.item("New connection…", s.canChange() ? s::newConnection : null)
                     .icon(Symbol.ADD),
                 Menu.item(
-                        "New console", selected == null ? null : () -> s.openConsole(selected.id()))
-                    .icon(Symbol.CODE),
+                        "New console", console == null ? null : () -> s.openConsole(console, group))
+                    .icon(Symbol.CODE)
+                    .shortcut(Key.CONTROL, "N"),
                 Menu.item(
                     "Drivers…",
                     s.drivers == null
@@ -282,11 +314,79 @@ final class Frame {
                         ? null
                         : () -> s.driverList = DriversDialog.open(s)),
                 Menu.separator(),
+                Menu.item("Close tab", close).icon(Symbol.DISMISS).shortcut(Key.CONTROL, "W"),
+                Menu.separator(),
                 Menu.item("Exit", s::quit))),
         Menu.submenu(
             "&View",
             List.of(
-                themeItem(s, Theme.DARK, "Dark theme"), themeItem(s, Theme.LIGHT, "Light theme"))));
+                Menu.item("Command palette…", modal ? null : palette::open)
+                    .icon(Symbol.SEARCH)
+                    .shortcut(Key.CONTROL | Key.SHIFT, "P"),
+                Menu.separator(),
+                themeItem(s, Theme.DARK, "Dark theme"),
+                themeItem(s, Theme.LIGHT, "Light theme"))),
+        Menu.submenu(
+            "&Go",
+            List.of(
+                Menu.item("Go to table…", modal ? null : () -> palette.open(GoTo.PREFIX))
+                    .icon(Symbol.TABLE)
+                    .shortcut(Key.CONTROL, "P"),
+                Menu.separator(),
+                // Control+Tab and Control+Shift+Tab do the same, through the kit's tabs.
+                Menu.item("Next tab", several ? () -> s.nextTab(group, 1) : null)
+                    .shortcut(Key.CONTROL, "PageDown"),
+                Menu.item("Previous tab", several ? () -> s.nextTab(group, -1) : null)
+                    .shortcut(Key.CONTROL, "PageUp"),
+                Menu.separator(),
+                Menu.item("Connections", tree ? () -> focusTree(s) : null)
+                    .shortcut(Key.CONTROL, "0"),
+                Menu.item("Tab content", close == null ? null : () -> focusContent(s, group))
+                    .shortcut(Key.CONTROL, "1"))));
+  }
+
+  /** Gives the focus to the tree of connections. */
+  private static void focusTree(State s) {
+    El tree = find(s.app.tree(), e -> "connections".equals(e.key()) && e.isFocusable());
+    if (tree != null) {
+      s.app.focus(tree);
+    }
+  }
+
+  /**
+   * Gives the focus to the content of the window's active tab: its editor or grid, else the first
+   * element there that takes it.
+   */
+  // shortcut: not back to where the focus was in the content, as the kit cannot focus a region
+  // that way; upgrade when it can.
+  private static void focusContent(State s, TabGroups.Group<Tab> group) {
+    var app = app(s, group);
+    El panel = find(app.tree(), e -> "tabpanel".equals(e.role()));
+    if (panel == null) {
+      return;
+    }
+    El main = find(panel, e -> "sql".equals(e.key()) || "grid".equals(e.key()));
+    El target = main == null ? null : find(main, El::isFocusable);
+    if (target == null) {
+      target = find(panel, El::isFocusable);
+    }
+    if (target != null) {
+      app.focus(target);
+    }
+  }
+
+  /** The first element at or below this one, in tree order, that passes the test; or null. */
+  private static El find(El el, Predicate<El> test) {
+    if (el == null || test.test(el)) {
+      return el;
+    }
+    for (El child : el.children()) {
+      El found = find(child, test);
+      if (found != null) {
+        return found;
+      }
+    }
+    return null;
   }
 
   private static Menu.Item themeItem(State s, Theme theme, String name) {
