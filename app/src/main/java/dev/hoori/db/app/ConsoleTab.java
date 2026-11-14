@@ -618,6 +618,7 @@ final class ConsoleTab implements Tab {
   @Override
   public void close() {
     closed = true;
+    help.close();
     end();
   }
 
@@ -777,7 +778,7 @@ final class ConsoleTab implements Tab {
       return false;
     };
     editor.onKey(editor.onKey() == null ? keys : keys.or(editor.onKey()));
-    return help.editor(app, editor);
+    return help.editor(t, s, app, provider, editor);
   }
 
   /** The results of the last runs in tabs, with Messages; what went wrong above them. */

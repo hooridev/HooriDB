@@ -2,6 +2,9 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.kit.Completion;
+import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.sql.Statement;
 import java.util.ArrayList;
@@ -11,7 +14,8 @@ import java.util.Map;
 
 /**
  * What a console's editor shows beyond the kit's: the place of the last run's error, underlined
- * in the text it was sent from while that text stays as it was. Only the app's thread uses it.
+ * in the text it was sent from while that text stays as it was, and completions from what the tree
+ * read. Only the app's thread uses it.
  */
 final class ConsoleEditor {
 
@@ -24,9 +28,12 @@ final class ConsoleEditor {
   private Failure.Place underlined; // where in it, or null
   private El built; // the editor of the last build, and the app of its window
   private App<State> app;
+  private final Completion.State completion = new Completion.State();
+  private final Suggestions suggestions;
 
   ConsoleEditor(ConsoleTab tab) {
     this.tab = tab;
+    suggestions = new Suggestions(tab);
   }
 
   /**
@@ -71,14 +78,23 @@ final class ConsoleEditor {
     }
   }
 
-  /** Takes the editor as built, for the caret; the underline goes where the text has changed. */
-  El editor(App<State> app, El editor) {
+  /**
+   * The editor as built, with its completions; it is kept for the caret. The underline goes where
+   * the text has changed.
+   */
+  El editor(Theme t, State s, App<State> app, Provider provider, El editor) {
     if (marked != null && !marked.equals(tab.text)) {
       clear();
     }
     this.app = app;
     built = editor;
-    return editor;
+    return Completion.complete(
+        t, app, editor, tab.editor.caret(), completion, word -> suggestions.at(s, provider, word));
+  }
+
+  /** The console closes: the reads for its completions are given up. */
+  void close() {
+    suggestions.close();
   }
 
   /** What the editor underlines, in the whole text, or null; the kit's state does not say. */
