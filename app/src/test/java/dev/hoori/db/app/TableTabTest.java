@@ -17,6 +17,7 @@ import com.rethinkj.ui.App;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.LocalDate;
@@ -295,6 +296,8 @@ class TableTabTest {
     assertTrue(
         servers.calls.contains("read " + BIG + " 1000000-1000200"), servers.calls.toString());
     assertTrue(status(end).contains("\"1,000,000 rows\""), end);
+    // The empty read that proved the end is not the read the status line tells of.
+    assertTrue(line(end, "#read-status").contains("\"Read 200 rows in "), end);
     // Jumping around keeps no more than a few pages.
     for (long row : new long[] {100_000, 200_000, 300_000, 400_000, 600_000, 700_000, 0}) {
       c.run(app, scroll(row) + SETTLE);
@@ -436,13 +439,13 @@ class TableTabTest {
     var app = shop();
     var key = "read " + ORDERS + " 0-200";
     String[][] cases = {
-      {"42501", "Access denied", "The server does not let this user read orders."},
-      {"57014", "Cancelled", "The server cancelled the read."},
-      {"XX000", "Could not be read", "The server could not read orders."}
+      {"ACCESS_DENIED", "Access denied", "The server does not let this user read orders."},
+      {"CANCELLED", "Cancelled", "The server cancelled the read."},
+      {"OTHER", "Could not be read", "The server could not read orders."}
     };
     c.run(app, table("orders") + SETTLE);
     for (var x : cases) {
-      servers.fail(key, FakeServers.queryFailure(x[0]));
+      servers.fail(key, FakeServers.queryFailure(QueryException.Failure.valueOf(x[0])));
       c.run(app, "press #refresh\nframe\n" + SETTLE + "advance 1\nframe\nsnap " + x[0] + "\n");
       String tree = c.tree(x[0]);
       assertTrue(line(tree, "role=note").contains("label=\"" + x[1] + "\""), tree);
@@ -462,7 +465,7 @@ class TableTabTest {
     var app = shop();
     c.run(app, table("orders") + SETTLE);
     var key = "read " + ORDERS + " 600-800";
-    servers.fail(key, FakeServers.queryFailure("08006"));
+    servers.fail(key, FakeServers.queryFailure(QueryException.Failure.CONNECTION_LOST));
     c.run(app, scroll(600) + SETTLE + "advance 1\nframe\nsnap lost\n");
     String lost = c.tree("lost");
     assertEquals(List.of("shop-prod", "  Disconnected"), rows(lost));
@@ -481,7 +484,8 @@ class TableTabTest {
   void aDiscardedConnectionIsTreatedAsLost() throws Exception {
     var app = shop();
     c.run(app, table("orders") + SETTLE);
-    servers.fail("read " + ORDERS + " 0-200", FakeServers.aborted());
+    servers.fail(
+        "read " + ORDERS + " 0-200", FakeServers.queryFailure(QueryException.Failure.ABORTED));
     c.run(app, "press #refresh\nframe\n" + SETTLE + "advance 1\nframe\nsnap discarded\n");
     String discarded = c.tree("discarded");
     assertEquals(List.of("shop-prod", "  Disconnected"), rows(discarded));
@@ -601,5 +605,255 @@ class TableTabTest {
     assertEquals("columns " + PG + "/shop.public.customers", after.getFirst(), after.toString());
     assertTrue(after.contains("read " + BIG + " 5200-5400"), after.toString());
     assertFalse(servers.overlapped, "two calls ran at once on one connection");
+  }
+
+  // The connections: what a tab asks of one ends with it
+
+  /** A failure on its way when the connection ended is not checked against the next one's. */
+  @Test
+  void aFailureFromAConnectionThatEndedKeepsItsPasswordOut() throws Exception {
+    var app = shop();
+    c.run(app, table("orders") + SETTLE);
+    var key = "read " + ORDERS + " 0-200";
+    servers.dead = true; // the read answers once the gate opens, interrupted or not
+    var old = servers.hold(key);
+    servers.fail(
+        key,
+        QueryException.of(
+            QueryException.Failure.ACCESS_DENIED,
+            "the server repeats " + ConnectionsTest.PASSWORD));
+    app.state().rememberPassword(SHOP.id(), "another".toCharArray());
+    c.run(app, "advance 1\nframe\npress #refresh\nframe\n");
+    eventually(() -> servers.calls.stream().filter(key::equals).count() == 2);
+    // Disconnect, and connect again with the other password, whose opening waits and then fails,
+    // so that nothing read anew hides what the old failure left.
+    var opening = servers.hold("open " + PG + "/shop");
+    servers.fail(
+        "open " + PG + "/shop",
+        FakeServers.notConnected(dev.hoori.db.core.connect.ConnectionException.Failure.OTHER));
+    c.run(
+        app,
+        menu("shop-prod", "Disconnect")
+            + "press role=treeitem label=\"shop-prod\"\nkey Enter\nframe\n");
+    eventually(() -> servers.passwords.contains("another"));
+    old.countDown();
+    eventually(() -> servers.failed.contains(key));
+    Thread.sleep(300); // the old failure is handed to the app before the connection opens
+    servers.heal(key);
+    opening.countDown();
+    c.run(app, SETTLE + "snap after\n");
+    var failure = tab(app).failure;
+    assertTrue(
+        failure == null || !failure.detail().contains(ConnectionsTest.PASSWORD), "" + failure);
+    c.noPassword();
+  }
+
+  @Test
+  void anEditThatReachesAnotherServerClosesTheTabsAfterSayingSo() throws Exception {
+    var app = shop();
+    var s = app.state();
+    c.run(app, table("orders") + SETTLE + menu("shop-prod", "Edit…") + "snap asked\n");
+    assertTrue(
+        c.tree("asked").contains("If its server or database changes, its open tabs close."),
+        c.tree("asked"));
+    c.run(app, "key Escape\nframe\nadvance 1\nframe\n");
+    app.post(() -> s.put(s.profile(SHOP.id()).withName("shop-renamed")));
+    c.run(app, "await\nframe\n");
+    assertEquals(1, s.tables(null).size(), "a new name names the same tables");
+    app.post(() -> s.put(s.profile(SHOP.id()).withProvider(Provider.MYSQL).withPort(3306)));
+    c.run(app, "await\nframe\nsnap edited\n");
+    assertTrue(s.tables(null).isEmpty());
+    assertEquals("", tabs(c.tree("edited")));
+  }
+
+  /** A count the user stops ends the connection where core gave it up; the tree says so. */
+  @Test
+  void aConnectionGivenUpByAnyCallIsLostAlsoForTheCallsBehindIt() throws Exception {
+    servers.rows(BIG, 1_000_000, OptionalLong.of(1_000_000));
+    var app = shop();
+    c.run(app, table("big") + SETTLE);
+    var key = "count " + BIG;
+    servers.hold(key);
+    servers.fail(key, FakeServers.queryFailure(QueryException.Failure.ABORTED));
+    c.run(app, "advance 1\nframe\npress #count\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    c.run(app, open("customers") + "advance 1\nframe\npress #count\nframe\n" + SETTLE);
+    c.run(app, SETTLE + "snap lost\n");
+    String lost = c.tree("lost");
+    assertEquals(List.of("shop-prod", "  Disconnected"), rows(lost));
+    assertTrue(lost.contains("as the server did not stop a cancelled read"), lost);
+  }
+
+  // The paging and the count
+
+  @Test
+  void aTabClosedBeforeTheGridToldItsRowsReadsNothingMore() throws Exception {
+    servers.rows(BIG, 1000, OptionalLong.of(1000));
+    var app = shop();
+    c.run(app, table("big") + SETTLE);
+    var tab = tab(app);
+    int before = servers.calls.size();
+    // The grid tells the rows it built in the next frame, the one that closes the tab.
+    c.run(app, "scroll #rows row 600\nframe\npress #close-0\nframe\n" + SETTLE);
+    // Whatever was asked before the close, nothing reaches the closed tab, and nothing more is
+    // asked.
+    assertTrue(tab.pages.isEmpty() && tab.reading.isEmpty(), tab.pages.keySet().toString());
+    int closed = servers.calls.size();
+    tab.want(app.state(), 600, 630);
+    c.run(app, SETTLE);
+    assertEquals(
+        closed, servers.calls.size(), servers.calls.subList(before, closed).toString());
+  }
+
+  @Test
+  void aPageReadWhenTheTableEndedInItIsReadAgainOnceItGrew() throws Exception {
+    servers.rows(ORDERS, 50, OptionalLong.of(50));
+    var app = shop();
+    c.run(app, table("orders") + SETTLE);
+    servers.rows(ORDERS, 250, OptionalLong.of(50));
+    c.run(app, "advance 1\nframe\npress #count\nframe\n" + SETTLE + scroll(100) + SETTLE);
+    c.run(app, "snap grown\n");
+    String grown = c.tree("grown");
+    assertTrue(status(grown).contains("\"250 rows\""), grown);
+    assertTrue(cell(grown, 100, 0).contains("\"101\""), grown);
+  }
+
+  /** Refresh where the table no longer reaches, without an estimate, finds where it ends. */
+  @Test
+  void refreshBeyondTheNewEndFindsTheEnd() throws Exception {
+    servers.rows(BIG, 1000, OptionalLong.empty());
+    var app = shop();
+    c.run(app, table("big") + SETTLE);
+    for (long row : new long[] {199, 399, 500}) {
+      c.run(app, scroll(row) + SETTLE);
+    }
+    assertTrue(status(snapped(app, "far")).contains("At least"), c.tree("far"));
+    servers.rows(BIG, 350, OptionalLong.empty());
+    c.run(app, "advance 1\nframe\npress #refresh\nframe\n" + SETTLE + "snap refreshed\n");
+    String refreshed = c.tree("refreshed");
+    assertTrue(status(refreshed).contains("\"350 rows\""), refreshed);
+    assertTrue(cell(refreshed, 349, 0).contains("\"350\""), refreshed);
+  }
+
+  /** An estimate far too high is corrected by one count, not by a read per page. */
+  @Test
+  void anEstimateFarTooHighIsCorrectedInABoundedNumberOfReads() throws Exception {
+    servers.rows(BIG, 1000, OptionalLong.of(1_000_000));
+    var app = shop();
+    c.run(app, table("big") + SETTLE);
+    int before = servers.calls.size();
+    c.run(app, scroll(500_000) + SETTLE + SETTLE + "snap jumped\n");
+    var after = servers.calls.subList(before, servers.calls.size());
+    String jumped = c.tree("jumped");
+    assertTrue(status(jumped).contains("\"1,000 rows\""), jumped);
+    assertTrue(cell(jumped, 999, 0).contains("\"1000\""), jumped);
+    // The empty pages where the grid was, one count, and the pages at the end.
+    assertEquals(1, after.stream().filter(x -> x.startsWith("count")).count(), after.toString());
+    assertTrue(after.size() <= 7, after.toString());
+  }
+
+  @Test
+  void theCountOfAnOpeningDoesNotStopTheUsersCount() throws Exception {
+    servers.rows(ORDERS, 1000, OptionalLong.of(1000)); // small: counted on opening too
+    var app = shop();
+    var held = servers.hold("read " + ORDERS + " 0-200");
+    c.run(
+        app,
+        open("orders") + SETTLE + table("orders")
+            + "frame\nadvance 1\nframe\npress #count\nframe\n");
+    held.countDown();
+    c.run(app, SETTLE + "snap counted\n");
+    assertTrue(status(c.tree("counted")).contains("\"1,000 rows\""), c.tree("counted"));
+    assertEquals(
+        1, servers.calls.stream().filter(x -> x.equals("count " + ORDERS)).count());
+    assertFalse(servers.interrupted.contains("count " + ORDERS));
+  }
+
+  /** The row more that asks whether there are more is not counted as one that is there. */
+  @Test
+  void theRowThatAsksForMoreIsNotCounted() throws Exception {
+    var logs = PG + "/shop.public.logs";
+    servers.rows(logs, 200, OptionalLong.empty());
+    var app = shop();
+    c.run(app, table("logs") + SETTLE + "snap read\n");
+    assertTrue(status(c.tree("read")).contains("\"At least 200 rows\""), c.tree("read"));
+    assertTrue(line(c.tree("read"), "#rows ").contains("/201"), c.tree("read"));
+    c.run(app, scroll(199) + SETTLE + "snap end\n");
+    assertTrue(status(c.tree("end")).contains("\"200 rows\""), c.tree("end"));
+  }
+
+  // The lane
+
+  @Test
+  void aPageAskedForAheadGoesFirstOnceItIsInView() throws Exception {
+    servers.rows(BIG, 10_000, OptionalLong.of(10_000));
+    var app = shop();
+    c.run(app, table("big") + SETTLE);
+    var key = "read " + BIG + " 5000-5200";
+    var gate = servers.hold(key);
+    c.run(app, scroll(5050));
+    eventually(() -> servers.calls.contains(key));
+    // Behind the read in the server: the pages ahead, then the tree's columns; then the page
+    // ahead comes into view.
+    c.run(app, open("customers") + scroll(5250));
+    gate.countDown();
+    c.run(app, SETTLE);
+    var after = servers.calls.subList(servers.calls.indexOf(key) + 1, servers.calls.size());
+    assertEquals("read " + BIG + " 5200-5400", after.getFirst(), after.toString());
+    assertFalse(after.contains("read " + BIG + " 4800-5000"), "out of view: " + after);
+  }
+
+  // Tabs
+
+  @Test
+  void aTableReplacedByAViewOfItsNameKeepsItsTab() throws Exception {
+    var app = shop();
+    c.run(app, table("orders") + SETTLE);
+    servers.serve(
+        PG,
+        Provider.POSTGRESQL,
+        "16.4",
+        OUTLINE.replaceFirst("    orders\n      \\*id: bigint", "    @orders\n      *id: bigint"));
+    c.run(app, menu("public", "Refresh") + SETTLE + table("orders") + SETTLE + "snap view\n");
+    String view = c.tree("view");
+    assertEquals("orders", tabs(view));
+    assertTrue(line(view, "role=tab label=\"orders\"").contains("selected"), view);
+    assertEquals(dev.hoori.db.core.catalog.Table.Kind.VIEW, tab(app).table.kind());
+    assertTrue(view.substring(view.indexOf("#tab-0")).contains("label=\"eye\""), view);
+  }
+
+  @Test
+  void aRefusedCopySaysSoInTheWindowThatAskedForIt() throws Exception {
+    servers.rows(BIG, 1_000_000, OptionalLong.of(1_000_000));
+    var app = shop();
+    c.run(
+        app,
+        table("big") + SETTLE + "press #tab-0 right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
+            + "window \"big\"\npress #cell-0-0\nframe\nkey A control\nkey C control\nframe\n"
+            + "snap copied\n");
+    String window = c.tree("big-copied");
+    assertTrue(
+        window.contains("Only rows that were read can be copied; select fewer rows."), window);
+  }
+
+  // Values
+
+  @Test
+  void anOffsetKeepsItsSecondsAndZeroItsSign() {
+    assertEquals(
+        "01:02:03+00:00:30",
+        Cells.text(java.time.OffsetTime.of(1, 2, 3, 0, ZoneOffset.ofTotalSeconds(30))));
+    assertEquals(
+        "01:02:03+05:30",
+        Cells.text(java.time.OffsetTime.of(1, 2, 3, 0, ZoneOffset.ofHoursMinutes(5, 30))));
+    assertEquals("-0", Cells.text(-0.0));
+    assertEquals("-0", Cells.text(-0.0f));
+    assertEquals("0", Cells.text(0.0));
+  }
+
+  String snapped(App<State> app, String name) throws Exception {
+    c.run(app, "snap " + name + "\n");
+    return c.tree(name);
   }
 }

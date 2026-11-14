@@ -11,6 +11,7 @@ import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.nio.file.Path;
@@ -173,8 +174,20 @@ final class State {
     persist();
   }
 
-  /** Puts the profile in place of the one with its id, or at the end, and selects it. */
+  /**
+   * Puts the profile in place of the one with its id, or at the end, and selects it. Where it
+   * reaches another server or database now, the tabs of its tables close: their records name
+   * tables of the old one.
+   */
   void put(ConnectionProfile profile) {
+    var old = profile(profile.id());
+    if (old != null
+        && (old.provider() != profile.provider()
+            || !old.host().equals(profile.host())
+            || old.port() != profile.port()
+            || !database(old).equals(database(profile)))) {
+      closeTabs(profile.id());
+    }
     var list = new ArrayList<>(profiles);
     int at = indexOf(profile.id());
     if (at < 0) {
@@ -232,10 +245,7 @@ final class State {
     deleting = null;
     forgetPassword(profile.id());
     catalogue.drop(this, profile.id());
-    for (var tab : tables(profile.id())) {
-      var group = tabs.groupOf(tab);
-      tabs.close(group, group.tabs().indexOf(tab));
-    }
+    closeTabs(profile.id());
     profiles = profiles.stream().filter(p -> !p.id().equals(profile.id())).toList();
     if (selected != null && selected.id().equals(profile.id())) {
       selected = null;
@@ -368,14 +378,24 @@ final class State {
     }
   }
 
-  /** Opens the table's rows in a tab, or goes to the tab that has them, in whichever window. */
+  /**
+   * Opens the table's rows in a tab, or goes to the tab of its connection and qualified name, in
+   * whichever window; a table that became a view of its name, or the reverse, is read anew there.
+   */
   void openTable(UUID id, Table table) {
     for (var group : tabs.groups()) {
       for (int i = 0; i < group.tabs().size(); i++) {
-        if (group.tabs().get(i) instanceof TableTab x && x.id.equals(id) && x.table.equals(table)) {
+        if (group.tabs().get(i) instanceof TableTab x
+            && x.id.equals(id)
+            && x.table.container().equals(table.container())
+            && x.table.name().equals(table.name())) {
           tabs.select(group, i);
           if (group.window() != null) {
             group.window().raise();
+          }
+          if (!x.table.equals(table)) {
+            x.table = table;
+            x.open(this, true);
           }
           return;
         }
@@ -397,6 +417,24 @@ final class State {
       }
     }
     return all;
+  }
+
+  // PostgreSQL opens the database named after the user where none is given.
+  private static String database(ConnectionProfile p) {
+    return p.database().isBlank() && p.provider() == Provider.POSTGRESQL ? p.user() : p.database();
+  }
+
+  /** Closes the tabs of the connection, in every window. */
+  private void closeTabs(UUID id) {
+    for (var tab : tables(id)) {
+      var group = tabs.groupOf(tab);
+      tabs.close(group, group.tabs().indexOf(tab));
+    }
+  }
+
+  /** The connection ended: what its tabs asked of it ends too, and what they read stays. */
+  void ended(UUID id) {
+    tables(id).forEach(TableTab::stop);
   }
 
   /** The connection connected anew: its tabs read again what they showed. */

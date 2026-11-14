@@ -15,6 +15,7 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * One connection to a server, and the one thread that uses it: the calls asked for run there one
@@ -54,6 +55,15 @@ final class Lane {
   private volatile boolean broken; // whether it cannot be used, for the app's thread
   private Future<?> opening; // the first call, and the copy of the password it is given
   private char[] copy;
+  private final Consumer<Exception> lost; // told on the lane's thread when the connection is gone
+
+  /**
+   * @param lost told, on the lane's thread, that a call found the connection gone, whoever asked
+   *     for it and whether they still wait for it
+   */
+  Lane(Consumer<Exception> lost) {
+    this.lost = lost;
+  }
 
   /**
    * Opens the connection as the lane's first call, with a copy of the password, which is wiped
@@ -98,12 +108,14 @@ final class Lane {
         if (e.failure() == CatalogException.Failure.CONNECTION_LOST
             || e.failure() == CatalogException.Failure.ABORTED) {
           fail(e);
+          lost.accept(e);
         }
         throw e;
       } catch (QueryException e) {
         if (e.failure() == QueryException.Failure.CONNECTION_LOST
             || e.failure() == QueryException.Failure.ABORTED) {
           fail(e);
+          lost.accept(e);
         }
         throw e;
       }
@@ -116,9 +128,22 @@ final class Lane {
     return task;
   }
 
+  /**
+   * Takes a call that still waits as one of the higher priority, in the place it was asked in; a
+   * call that runs or has ended stays as it is.
+   */
+  void promote(Future<?> call, Priority priority) {
+    if (call instanceof Task<?> task
+        && task.priority.compareTo(priority) > 0
+        && thread.getQueue().remove(task)) {
+      task.priority = priority;
+      thread.getQueue().add(task);
+    }
+  }
+
   /** A call as it waits on the lane, by its priority and then in the order asked. */
   private static final class Task<T> extends FutureTask<T> implements Comparable<Task<?>> {
-    private final Priority priority;
+    private Priority priority; // changed only while out of the queue
     private final long order;
 
     Task(Callable<T> call, Priority priority, long order) {

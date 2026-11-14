@@ -37,8 +37,10 @@ final class Cells {
       .appendPattern("HH:mm:ss")
       .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true)
       .toFormatter();
-  private static final DateTimeFormatter OFFSET =
-      new DateTimeFormatterBuilder().append(TIME).appendOffset("+HH:mm", "+00").toFormatter();
+  private static final DateTimeFormatter OFFSET = new DateTimeFormatterBuilder()
+      .append(TIME)
+      .appendOffset("+HH:mm:ss", "+00")
+      .toFormatter();
   private static final DateTimeFormatter DATE_TIME = new DateTimeFormatterBuilder()
       .append(DateTimeFormatter.ISO_LOCAL_DATE)
       .appendLiteral(' ')
@@ -46,7 +48,7 @@ final class Cells {
       .toFormatter();
   private static final DateTimeFormatter DATE_TIME_OFFSET = new DateTimeFormatterBuilder()
       .append(DATE_TIME)
-      .appendOffset("+HH:mm", "+00")
+      .appendOffset("+HH:mm:ss", "+00")
       .toFormatter();
 
   private Cells() {}
@@ -135,7 +137,10 @@ final class Cells {
     }
     var decimal = new BigDecimal(shortest).stripTrailingZeros();
     int exponent = decimal.precision() - decimal.scale() - 1;
-    if (decimal.signum() == 0 || exponent >= -4 && exponent < 15) {
+    if (decimal.signum() == 0) {
+      return Double.compare(value, 0.0) < 0 ? "-0" : "0";
+    }
+    if (exponent >= -4 && exponent < 15) {
       return decimal.toPlainString();
     }
     var digits = decimal.unscaledValue().abs().toString();

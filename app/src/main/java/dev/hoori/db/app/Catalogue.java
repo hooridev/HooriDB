@@ -31,6 +31,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.query.QueryException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumMap;
@@ -77,8 +78,12 @@ final class Catalogue {
   record Failed(ConnectionException.Failure failure, String detail, boolean withPassword)
       implements Phase {}
 
-  /** The connection broke while it was open. */
-  record Lost(String detail) implements Phase {}
+  /**
+   * The connection broke while it was open.
+   *
+   * @param discarded whether core closed it, as the server did not stop a cancelled call
+   */
+  record Lost(String detail, boolean discarded) implements Phase {}
 
   /** A script run has no drivers. */
   record WithoutDrivers() implements Phase {}
@@ -198,6 +203,7 @@ final class Catalogue {
       return;
     }
     end(lives.remove(id));
+    s.ended(id);
     forgetBelow(s, new Node.Connection(id));
     open.add(new Node.Connection(id));
     var live = new Live(profile);
@@ -374,7 +380,7 @@ final class Catalogue {
   private void connect(State s, Live live, char[] password) {
     live.password = password;
     live.phase = new Connecting();
-    live.lane = new Lane();
+    live.lane = lane(s, live);
     var opening = live.lane.open(servers, live.profile, password, live.driver);
     // Its databases are asked for right behind it, on its lane: they need no answer before.
     read(s, live, new Node.Connection(live.id()));
@@ -440,7 +446,7 @@ final class Catalogue {
     if (call == null) {
       return;
     }
-    var lane = lane(live, database(node));
+    var lane = lane(s, live, database(node));
     var reading = new Reading();
     live.levels.put(node, reading);
     var asked = lane.submit(call);
@@ -468,7 +474,7 @@ final class Catalogue {
               && e.failure() != CatalogException.Failure.ABORTED) {
             live.levels.put(node, new NotRead(e.failure(), e.detail()));
           } else {
-            lose(s, live, detail(checked));
+            lose(s, live, detail(checked), discarded(checked));
           }
         });
   }
@@ -477,22 +483,30 @@ final class Catalogue {
    * The lane that reads the database's content: the first connection's, or where a connection
    * reads one database only, the database's own; null as the database stands for the first's.
    */
-  private Lane lane(Live live, String database) {
+  private Lane lane(State s, Live live, String database) {
     if (database == null) {
       return live.lane; // the databases themselves, read also while it opens
     }
     var c = (Connected) live.phase;
     return c.database() == null || database.equals(c.database())
         ? live.lane
-        : further(live, database);
+        : further(s, live, database);
   }
 
   /** The lane that reads the table's rows, or null while its connection is not connected. */
-  Lane lane(UUID id, Table table) {
+  Lane lane(State s, UUID id, Table table) {
     var live = lives.get(id);
     return live != null && live.phase instanceof Connected
-        ? lane(live, table.container().database().name())
+        ? lane(s, live, table.container().database().name())
         : null;
+  }
+
+  /**
+   * What the connection is now, while it lasts: a connection opened again is another, so that what
+   * was asked of the one before is told apart from what is asked of it. Null while closed.
+   */
+  Live live(UUID id) {
+    return lives.get(id);
   }
 
   /** Whether the connection is connected, so that its lanes can be used. */
@@ -521,30 +535,57 @@ final class Catalogue {
     }
   }
 
-  /** A failure's own words, withheld where they hold the password of the connection. */
-  String words(UUID id, String detail) {
-    var live = lives.get(id);
+  /**
+   * A failure's own words, withheld where they hold the password of the connection they came
+   * from, or where that connection has ended and its password is gone.
+   */
+  static String words(Live live, String detail) {
     return live == null || live.password == null || Probe.contains(detail, live.password)
         ? ConnectionException.WITHHELD
         : detail;
   }
 
-  /** A read elsewhere found the connection gone: it is closed, and its node says so. */
-  void lost(State s, UUID id, String detail) {
-    var live = lives.get(id);
-    if (live != null && live.phase instanceof Connected) {
-      lose(s, live, detail);
+  /** A call found the connection gone: it is closed, and its node says so; once, and only it. */
+  void lost(State s, Live live, String detail, boolean discarded) {
+    if (live != null && lives.get(live.id()) == live && live.phase instanceof Connected) {
+      lose(s, live, detail, discarded);
     }
   }
 
+  private static boolean discarded(Exception e) {
+    return e instanceof CatalogException c && c.failure() == CatalogException.Failure.ABORTED
+        || e instanceof QueryException q && q.failure() == QueryException.Failure.ABORTED;
+  }
+
+  /** Why the connection broke, in the words the tree and the tabs say it. */
+  static String why(Lost lost) {
+    return lost.discarded()
+        ? "The connection was closed, as the server did not stop a cancelled read."
+        : "The connection was lost: the server closed it, or the network to it failed.";
+  }
+
+  /** Why the connection broke while it was open, or null where it did not. */
+  Lost lost(UUID id) {
+    var live = lives.get(id);
+    return live != null && live.phase instanceof Lost l ? l : null;
+  }
+
+  /**
+   * A lane of the connection, which tells it when a call, anyone's, found the connection gone,
+   * also where whoever asked no longer waits.
+   */
+  private Lane lane(State s, Live live) {
+    return new Lane(e -> s.app.post(() -> lost(s, live, detail(checked(live, e)), discarded(e))));
+  }
+
   /** The connection to a further database, opened anew where it could not be or is gone. */
-  private Lane further(Live live, String database) {
+  private Lane further(State s, Live live, String database) {
     var lane = live.lanes.get(database);
     if (lane == null || lane.broken()) {
       if (lane != null) {
         lane.close();
       }
-      lane = new Lane();
+      lane = lane(s, live);
       lane.open(servers, live.profile.withDatabase(database), live.password, live.driver);
       live.lanes.put(database, lane);
     }
@@ -564,6 +605,18 @@ final class Catalogue {
       case ConnectionException e when e.failure() == ConnectionException.Failure.UNFIT -> e;
       case ConnectionException e -> withheld ? ConnectionException.of(e.failure(), shown) : e;
       case CatalogException e -> withheld ? CatalogException.of(e.failure(), shown) : e;
+      // A call of rows on the lane before failed it so; its kind of failure stays.
+      case QueryException e ->
+        CatalogException.of(
+            switch (e.failure()) {
+              case CONNECTION_LOST -> CatalogException.Failure.CONNECTION_LOST;
+              case ABORTED -> CatalogException.Failure.ABORTED;
+              case NOT_FOUND -> CatalogException.Failure.NOT_FOUND;
+              case ACCESS_DENIED -> CatalogException.Failure.ACCESS_DENIED;
+              case CANCELLED -> CatalogException.Failure.CANCELLED;
+              case COLUMNS_CHANGED, OTHER -> CatalogException.Failure.OTHER;
+            },
+            shown);
       default -> CatalogException.of(CatalogException.Failure.OTHER, shown);
     };
   }
@@ -572,6 +625,7 @@ final class Catalogue {
     return switch (error) {
       case ConnectionException e -> e.detail();
       case CatalogException e -> e.detail();
+      case QueryException e -> e.detail();
       default -> State.message(error);
     };
   }
@@ -595,9 +649,10 @@ final class Catalogue {
   }
 
   /** The connection broke: it is closed, and its node says so. */
-  private void lose(State s, Live live, String detail) {
+  private void lose(State s, Live live, String detail, boolean discarded) {
     end(live);
-    live.phase = new Lost(detail);
+    s.ended(live.id());
+    live.phase = new Lost(detail, discarded);
     var root = new Node.Connection(live.id());
     forgetBelow(s, root);
     s.tell(State.name(live.profile) + ": the connection was lost");
@@ -668,6 +723,7 @@ final class Catalogue {
   /** Forgets the connection: what runs is cancelled and its connections closed; no word of it. */
   void drop(State s, UUID id) {
     end(lives.remove(id));
+    s.ended(id);
     open.removeIf(n -> n.id().equals(id));
     if (s.selected != null && s.selected.id().equals(id)) {
       s.selected = new Node.Connection(id);
@@ -816,13 +872,7 @@ final class Catalogue {
               join(note, f.detail()),
               f.failure() == ConnectionException.Failure.LOGIN_REFUSED);
         }
-        case Lost l ->
-          new Trouble(
-              "Disconnected",
-              join(
-                  "The connection was lost: the server closed it, or the network to it failed.",
-                  l.detail()),
-              false);
+        case Lost l -> new Trouble("Disconnected", join(why(l), l.detail()), false);
         case WithoutDrivers w ->
           new Trouble(
               "No driver",
@@ -1072,7 +1122,9 @@ final class Catalogue {
     var d = disconnecting;
     String name = State.name(d.profile());
     String what = switch (d.then()) {
-      case EDIT -> "To edit it, HooriDB disconnects it first.";
+      case EDIT ->
+        "To edit it, HooriDB disconnects it first. If its server or database changes, its"
+            + " open tabs close.";
       case DELETE -> "To delete it, HooriDB disconnects it first.";
     };
     El disconnect = button(t, PRIMARY, "Disconnect", () -> disconnectAndGo(s));

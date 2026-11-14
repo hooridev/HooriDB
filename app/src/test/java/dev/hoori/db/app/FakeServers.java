@@ -15,12 +15,8 @@ import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.driver.LoadedDriver;
-import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
-import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
-import java.sql.Connection;
-import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -36,7 +32,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Made-up servers, by host: what they hold is written as an outline, each call can be held at a
@@ -68,6 +63,7 @@ final class FakeServers implements Servers {
   final List<String> passwords = new CopyOnWriteArrayList<>();
   final List<String> closed = new CopyOnWriteArrayList<>(); // the links closed, by database
   final List<String> interrupted = new CopyOnWriteArrayList<>();
+  final List<String> failed = new CopyOnWriteArrayList<>(); // the calls that failed as set
   volatile boolean overlapped; // two calls ran at once on one connection
   volatile boolean dead; // a gate ignores interrupts, as a server that no longer answers
   private final Map<String, Long> counts = new ConcurrentHashMap<>();
@@ -114,52 +110,9 @@ final class FakeServers implements Servers {
     return rows(path, rows.size(), OptionalLong.of(rows.size()));
   }
 
-  /** How core reports a server's failure of this SQL state, on a connection that is open. */
-  static QueryException queryFailure(String state) {
-    return Query.failure(open(), new SQLException("the server's words for " + state, state));
-  }
-
-  /**
-   * How core reports a connection it had to give up, as when a cancelled call did not end: such
-   * a call, which takes core's grace to give up on, once.
-   */
-  static QueryException aborted() {
-    var thrown = new AtomicReference<QueryException>();
-    var caller = Thread.ofVirtual().start(() -> {
-      var self = Thread.currentThread();
-      try {
-        Query.run(
-            open(),
-            Provider.POSTGRESQL,
-            () -> {},
-            () -> {
-              self.interrupt(); // a cancel that the server never obeys
-              try {
-                new CountDownLatch(1).await();
-              } catch (InterruptedException e) {
-                throw new SQLException("given up");
-              }
-              return null;
-            },
-            v -> false);
-      } catch (QueryException e) {
-        thrown.set(e);
-      }
-    });
-    try {
-      caller.join();
-    } catch (InterruptedException e) {
-      throw new IllegalStateException(e);
-    }
-    return thrown.get();
-  }
-
-  /** A connection that says it is open and does nothing. */
-  private static Connection open() {
-    return (Connection) Proxy.newProxyInstance(
-        FakeServers.class.getClassLoader(),
-        new Class<?>[] {Connection.class},
-        (proxy, method, args) -> method.getName().equals("isClosed") ? false : null);
+  /** A failure of a call on rows, as core reports it, with the server's words. */
+  static QueryException queryFailure(QueryException.Failure failure) {
+    return QueryException.of(failure, "the server's words for " + failure);
   }
 
   void openAll() {
@@ -205,12 +158,14 @@ final class FakeServers implements Servers {
         } catch (InterruptedException e) {
           interrupted.add(key);
           Thread.currentThread().interrupt();
-          throw cancelled;
+          // A failure the test set is how the cancel ended, as a connection given up.
+          throw failures.getOrDefault(key, cancelled);
         }
       }
     }
     var failure = failures.get(key);
     if (failure != null) {
+      failed.add(key);
       throw failure;
     }
   }
@@ -373,14 +328,17 @@ final class FakeServers implements Servers {
             container(t.container()) == null ? null : find(container(t.container()), t.name());
         var result = table == null ? null : call.call(table);
         try {
-          call(key, queryFailure("57014"));
+          call(key, queryFailure(QueryException.Failure.CANCELLED));
         } catch (QueryException e) {
           throw e;
         } catch (Exception e) {
-          throw queryFailure("XX000");
+          throw queryFailure(QueryException.Failure.OTHER);
         }
-        if (table == null || result == null) {
-          throw queryFailure(table == null ? "42P01" : "42703");
+        if (table == null) {
+          throw queryFailure(QueryException.Failure.NOT_FOUND);
+        }
+        if (result == null) {
+          throw queryFailure(QueryException.Failure.COLUMNS_CHANGED);
         }
         done.add(key);
         return result;
@@ -405,18 +363,17 @@ final class FakeServers implements Servers {
     public Page read(Table t, List<Column> columns, long from, long to) throws QueryException {
       var path = path(t);
       return rows("read " + path + " " + from + "-" + to, t, table -> {
-        var fields = new ArrayList<Field>();
-        for (var column : columns) {
-          var now = table.children().stream()
-              .map(line -> line.text().replaceFirst("^\\*", "").split(": ", 2))
-              .filter(parts -> parts[0].equals(column.name()))
-              .findFirst()
-              .orElse(null);
-          if (now == null) {
-            return null; // as the server says of a column that is gone
-          }
-          fields.add(new Field(column.name(), column.type(), kind(now[1])));
+        // As core reads: the columns given must be the table's now, by name, order and type.
+        var now = table.children().stream()
+            .map(line -> List.of(line.text().replaceFirst("^\\*", "").split(": ", 2)))
+            .toList();
+        var asked = columns.stream().map(c -> List.of(c.name(), c.type())).toList();
+        if (!now.equals(asked)) {
+          return null;
         }
+        var fields = columns.stream()
+            .map(c -> new Field(c.name(), c.type(), kind(c.type())))
+            .toList();
         var given = values.get(path);
         long count = given != null ? given.size() : counts.getOrDefault(path, 3L);
         var rows = new ArrayList<List<Object>>();
@@ -453,7 +410,7 @@ final class FakeServers implements Servers {
   }
 
   private interface RowsCall<T> {
-    /** Of the table as the server has it; null where a column it asks for is gone. */
+    /** Of the table as the server has it; null where its columns are not those asked with. */
     T call(Outline table) throws QueryException;
   }
 

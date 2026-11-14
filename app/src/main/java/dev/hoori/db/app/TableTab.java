@@ -36,6 +36,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
+import java.util.concurrent.Future;
 
 /**
  * A table's rows in a tab. They are read in pages, on the lane of the table's connection, as the
@@ -78,6 +79,7 @@ final class TableTab implements Tab {
   enum Problem {
     GONE,
     DENIED,
+    CHANGED,
     LOST,
     DISCARDED,
     UNOPENED,
@@ -88,22 +90,32 @@ final class TableTab implements Tab {
   /** @param detail the server's or the driver's words, withheld where they hold the password */
   record Failure(Problem problem, String detail) {}
 
+  /** A page asked for: its work, its call on the lane, and for what it was asked. */
+  record Asked(Work work, Lane lane, Future<?> call, Lane.Priority priority) {}
+
   final UUID id;
-  final Table table;
+  Table table; // its kind may change, as a table replaced by a view of its name
   List<Column> columns; // as the catalogue read them; null until then
   float[] widths; // of the columns, which the user may change
   private List<Field> fields; // as the last read gave them, which each page has to match
-  long rows; // as far as known, which the grid shows
+  long rows; // known to be there, or as estimated
+  private boolean more; // a row more in the grid, whose read says whether there are more
   Counted counted = Counted.ESTIMATED;
   final Map<Long, List<List<Object>>> pages = new HashMap<>(); // the rows read, by page
-  final Map<Long, Work> reading = new HashMap<>(); // the pages asked for
+  final Map<Long, Asked> reading = new HashMap<>(); // the pages asked for
   Work opening; // the columns, the estimate and the first page, or null
   Work counting; // the exact count, or null
+  // An empty page past what is known: the count says where the end is, and no page is read until
+  // then, so that finding it takes one read and not one per page.
+  private boolean ending;
+  private boolean closed;
   private int first; // the rows the grid built last
   private int last = -1;
   Failure failure; // why the last read failed, or null
-  long took = -1; // nanoseconds the last read took on the server, -1 before the first
-  int got; // rows of the last read
+  long took = -1; // nanoseconds the last read with rows took on the server, -1 before the first
+  int got; // rows of that read
+  String said; // what the tab says for a while in its status line, in its own window; or null
+  private int says;
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   final Menu.State menu = new Menu.State();
 
@@ -118,12 +130,13 @@ final class TableTab implements Tab {
    * in one call. The rows read before go; the place in view stays.
    */
   void open(State s, boolean anew) {
-    var lane = s.catalogue.lane(id, table);
+    var lane = closed ? null : s.catalogue.lane(s, id, table);
     if (lane == null) {
       return; // what was read stays, and the view says that it is not connected
     }
-    cancel();
+    stop();
     failure = null;
+    ending = false;
     pages.clear();
     if (columns == null) {
       columns = s.catalogue.columns(id, table);
@@ -132,6 +145,7 @@ final class TableTab implements Tab {
         rows = PAGE; // loading rows until the estimate comes
       }
     }
+    var live = s.catalogue.live(id);
     var known = anew ? null : columns;
     boolean recount = anew && counted == Counted.EXACT; // a refresh counts again what was counted
     var of = table;
@@ -155,19 +169,22 @@ final class TableTab implements Tab {
           }
           columns = opened.columns();
           fields = opened.page().fields();
-          rows = opened.estimate().orElse(0);
-          counted = opened.estimate().isPresent() ? Counted.ESTIMATED : Counted.AT_LEAST;
+          var estimate = opened.estimate();
+          // Without an estimate the place in view stands until its page says more.
+          rows = estimate.orElse(from);
+          more = false;
+          counted = estimate.isPresent() ? Counted.ESTIMATED : Counted.AT_LEAST;
           arrived(s, from / PAGE, opened.page(), opened.took());
           want(s, first, last);
-          var estimate = opened.estimate();
           if (counted != Counted.EXACT
               && (recount || estimate.isPresent() && estimate.getAsLong() < COUNT_BELOW)) {
-            count(s);
+            counted(s);
           }
         },
         error -> {
           opening = null;
-          failed(s, error, false);
+          // Columns the tree read may be old; those read just now are not worth a second try.
+          failed(s, error, !anew, live);
         });
   }
 
@@ -183,6 +200,11 @@ final class TableTab implements Tab {
     }
   }
 
+  /** The rows the grid shows: those known, and the one more that asks whether there are more. */
+  long shown() {
+    return rows + (more ? 1 : 0);
+  }
+
   /**
    * The grid built these rows: the pages they are on are read first, then one on each side, and
    * what is read for rows far from them is given up.
@@ -190,18 +212,24 @@ final class TableTab implements Tab {
   void want(State s, int first, int last) {
     this.first = first;
     this.last = last;
-    if (columns == null || opening != null || failure != null || last < first) {
+    if (closed || columns == null || opening != null || failure != null || ending || last < first) {
       return;
     }
     long top = first / PAGE;
     long bottom = last / PAGE;
     for (var entry : List.copyOf(reading.entrySet())) {
       if (entry.getKey() < top - AROUND || entry.getKey() > bottom + AROUND) {
-        entry.getValue().cancel();
+        entry.getValue().work().cancel();
         reading.remove(entry.getKey());
       }
     }
     for (long page = top; page <= bottom; page++) {
+      var asked = reading.get(page);
+      if (asked != null && asked.priority() != Lane.Priority.VIEW) {
+        // Asked for ahead, and in view now: it goes before what is asked for ahead still.
+        asked.lane().promote(asked.call(), Lane.Priority.VIEW);
+        reading.put(page, new Asked(asked.work(), asked.lane(), asked.call(), Lane.Priority.VIEW));
+      }
       read(s, page, Lane.Priority.VIEW);
     }
     // Without a primary key every read sorts the whole table, so one ahead would hold the lane as
@@ -214,65 +242,84 @@ final class TableTab implements Tab {
   }
 
   private void read(State s, long page, Lane.Priority priority) {
-    if (page < 0 || page * PAGE >= rows || pages.containsKey(page) || reading.containsKey(page)) {
+    if (page < 0 || page * PAGE >= shown() || reading.containsKey(page)) {
       return;
     }
-    var lane = s.catalogue.lane(id, table);
+    // A page read when the table seemed to end in it is read again for the rows now in range.
+    var have = pages.get(page);
+    if (have != null && have.size() >= Math.min(PAGE, rows - page * PAGE)) {
+      return;
+    }
+    var lane = s.catalogue.lane(s, id, table);
     if (lane == null) {
       return;
     }
+    var live = s.catalogue.live(id);
     var of = table;
     var with = columns;
     long from = page * PAGE;
     record Read(Page page, long took) {}
-    var asked = lane.submit(priority, link -> {
+    var call = lane.submit(priority, link -> {
       long start = System.nanoTime();
       var read = link.read(of, with, from, from + PAGE);
       return new Read(read, System.nanoTime() - start);
     });
     var work = s.app.background(
         "read rows of " + table.name(),
-        () -> Lane.await(asked),
+        () -> Lane.await(call),
         read -> {
           reading.remove(page);
           arrived(s, page, read.page(), read.took());
         },
         error -> {
           reading.remove(page);
-          failed(s, error, true);
+          failed(s, error, true, live);
         });
-    reading.put(page, work);
+    reading.put(page, new Asked(work, lane, call, priority));
   }
 
   /** A page came: it corrects the number of rows where it ends early or reaches beyond it. */
   private void arrived(State s, long page, Page read, long nanos) {
+    // On PostgreSQL the kinds are those of the read: one changed since the columns were read.
     if (!read.fields().equals(fields)) {
-      open(s, true); // the columns changed since they were read: the grid's no longer fit
+      open(s, true);
       return;
     }
-    took = nanos;
-    got = read.rows().size();
-    long from = page * PAGE;
-    if (got > 0) {
-      pages.put(page, read.rows());
+    int n = read.rows().size();
+    if (n > 0 || took < 0) {
+      took = nanos; // not the empty read that tells where the end is
+      got = n;
     }
-    if (got < PAGE) {
-      if (got > 0 || page == 0 || pages.containsKey(page - 1)) {
-        rows = from + got;
+    long from = page * PAGE;
+    if (n > 0) {
+      pages.put(page, read.rows());
+    } else {
+      pages.remove(page);
+    }
+    if (n < PAGE) {
+      var before = pages.get(page - 1);
+      if (n > 0 || page == 0 || before != null && before.size() == PAGE) {
+        rows = from + n;
         counted = Counted.EXACT;
-      } else if (rows > from) {
-        rows = from; // it ends before: the page before says where
+        more = false;
+      } else {
+        // Empty, and what is before it not read: the end is somewhere before.
+        rows = Math.min(rows, from);
+        more = false;
+        ending = true;
+        counted(s);
       }
       pages.keySet().removeIf(p -> p * PAGE >= rows);
       for (var entry : List.copyOf(reading.entrySet())) {
-        if (entry.getKey() * PAGE >= rows) {
-          entry.getValue().cancel();
+        if (ending || entry.getKey() * PAGE >= rows) {
+          entry.getValue().work().cancel();
           reading.remove(entry.getKey());
         }
       }
     } else if (from + PAGE > rows || from + PAGE == rows && counted != Counted.EXACT) {
-      rows = from + PAGE + 1; // a row more, so that the grid asks whether there are more
+      rows = from + PAGE;
       counted = Counted.AT_LEAST;
+      more = true;
     }
     keep();
   }
@@ -290,17 +337,32 @@ final class TableTab implements Tab {
     }
   }
 
-  /** Count rows: the exact number, on the lane behind the pages; again, it stops counting. */
+  /**
+   * Count rows: the exact number, on the lane behind the pages; again, it stops counting. Not
+   * while the count finds where the table ends.
+   */
   void count(State s) {
+    if (ending) {
+      return;
+    }
     if (counting != null) {
       counting.cancel();
       counting = null;
       return;
     }
-    var lane = s.catalogue.lane(id, table);
+    counted(s);
+  }
+
+  /** Makes sure the rows are counted: a count under way, whoever asked for it, goes on. */
+  private void counted(State s) {
+    if (closed || counting != null) {
+      return;
+    }
+    var lane = s.catalogue.lane(s, id, table);
     if (lane == null) {
       return;
     }
+    var live = s.catalogue.live(id);
     var of = table;
     var asked = lane.submit(Lane.Priority.COUNT, link -> link.count(of));
     counting = s.app.background(
@@ -308,24 +370,32 @@ final class TableTab implements Tab {
         () -> Lane.await(asked),
         n -> {
           counting = null;
+          ending = false;
           rows = n;
           counted = Counted.EXACT;
+          more = false;
           pages.keySet().removeIf(p -> p * PAGE >= n);
           want(s, first, last);
         },
         error -> {
           counting = null;
-          failed(s, error, false);
+          failed(s, error, false, live);
         });
   }
 
   /**
    * A read failed. A lane closed under it while connected, as by a refresh in the tree, is asked
-   * again; a lost connection marks the connection lost in the tree; a table not found by a page
-   * may have other columns now, so it is opened anew, which says whether it is gone.
+   * again; a lost connection marks the connection lost in the tree; a table not found, or whose
+   * columns changed, is opened anew where that may help, which says whether it is gone. The
+   * failure's words are checked against the password of the connection the read was asked of.
+   *
+   * @param again whether opening anew may help: not after the columns were just read
    */
-  private void failed(State s, Exception error, boolean page) {
-    cancel();
+  private void failed(State s, Exception error, boolean again, Catalogue.Live live) {
+    stop();
+    if (closed) {
+      return;
+    }
     if (error instanceof InterruptedException) {
       if (s.catalogue.connected(id)) {
         if (columns == null || fields == null) {
@@ -341,6 +411,7 @@ final class TableTab implements Tab {
         switch (e.failure()) {
           case NOT_FOUND -> Problem.GONE;
           case ACCESS_DENIED -> Problem.DENIED;
+          case COLUMNS_CHANGED -> Problem.CHANGED;
           case CONNECTION_LOST -> Problem.LOST;
           case ABORTED -> Problem.DISCARDED;
           case CANCELLED -> Problem.CANCELLED;
@@ -358,11 +429,11 @@ final class TableTab implements Tab {
       case ConnectionException e -> Problem.UNOPENED;
       default -> Problem.OTHER;
     };
-    if (problem == Problem.GONE && page) {
+    if (again && (problem == Problem.GONE || problem == Problem.CHANGED)) {
       open(s, true);
       return;
     }
-    var detail = s.catalogue.words(id, detail(error));
+    var detail = Catalogue.words(live, detail(error));
     if (error instanceof ConnectionException e) {
       var profile = s.profile(id);
       var note = profile == null
@@ -373,7 +444,7 @@ final class TableTab implements Tab {
     }
     failure = new Failure(problem, detail);
     if (problem == Problem.LOST || problem == Problem.DISCARDED) {
-      s.catalogue.lost(s, id, detail);
+      s.catalogue.lost(s, live, detail, problem == Problem.DISCARDED);
     }
   }
 
@@ -386,8 +457,11 @@ final class TableTab implements Tab {
     };
   }
 
-  /** Gives up what is under way; nothing of it arrives. */
-  private void cancel() {
+  /**
+   * Gives up what is under way; nothing of it arrives. What was read stays: also when the
+   * connection it was read on ends, whose work ends with it.
+   */
+  void stop() {
     if (opening != null) {
       opening.cancel();
       opening = null;
@@ -396,19 +470,31 @@ final class TableTab implements Tab {
       counting.cancel();
       counting = null;
     }
-    reading.values().forEach(Work::cancel);
+    reading.values().forEach(a -> a.work().cancel());
     reading.clear();
   }
 
   @Override
   public void close() {
-    cancel();
+    closed = true;
+    stop();
     pages.clear();
   }
 
   /** Whether anything of the tab is read now. */
   boolean busy() {
     return opening != null || !reading.isEmpty();
+  }
+
+  /** Says something in the tab's status line, in whichever window it is, for a while. */
+  void say(State s, String text) {
+    said = text;
+    int told = ++says;
+    s.app.after(State.MESSAGE_SECONDS, () -> {
+      if (says == told) {
+        said = null;
+      }
+    });
   }
 
   // The view
@@ -435,7 +521,7 @@ final class TableTab implements Tab {
                 SECONDARY,
                 Symbol.CALCULATOR,
                 counting == null ? "Count rows" : "Stop counting",
-                connected && columns != null ? () -> count(s) : null)
+                connected && columns != null && !ending ? () -> count(s) : null)
             .key("count"),
         button(
                 t,
@@ -465,17 +551,21 @@ final class TableTab implements Tab {
     } else {
       content.child(col().grow(1));
     }
-    return content.child(Card.footer(
-        t,
-        Label.label(t, Label.Variant.MUTED, rowsText()).key("rows-status").ellipsis(),
-        busy()
-            ? row()
-                .gap(t.space().s())
-                .align(Style.Align.CENTER)
-                .child(Progress.spinner(t).label("Reading"))
-                .child(Label.label(t, Label.Variant.MUTED, "Reading rows…"))
-                .key("read-status")
-            : Label.label(t, Label.Variant.MUTED, readText()).key("read-status")));
+    El read = busy()
+        ? row()
+            .gap(t.space().s())
+            .align(Style.Align.CENTER)
+            .child(Progress.spinner(t).label("Reading"))
+            .child(Label.label(t, Label.Variant.MUTED, "Reading rows…"))
+            .key("read-status")
+        : Label.label(t, Label.Variant.MUTED, readText()).key("read-status");
+    El rowsStatus =
+        Label.label(t, Label.Variant.MUTED, rowsText()).key("rows-status").ellipsis();
+    return content.child(
+        said == null
+            ? Card.footer(t, rowsStatus, read)
+            : Card.footer(
+                t, rowsStatus, Label.label(t, Label.Variant.MUTED, said).key("said"), read));
   }
 
   /** How many rows, and what the number rests on; empty before the first read. */
@@ -507,11 +597,8 @@ final class TableTab implements Tab {
     var name = table.name();
     if (!connected) {
       boolean connecting = s.catalogue.active(id);
-      String text = failure != null && failure.problem() == Problem.DISCARDED
-          ? "The connection was closed, as the server did not stop a cancelled read."
-          : failure != null && failure.problem() == Problem.LOST
-              ? "The connection was lost: the server closed it, or the network to it failed."
-              : "Its connection is closed.";
+      var lost = s.catalogue.lost(id);
+      String text = lost != null ? Catalogue.why(lost) : "Its connection is closed.";
       text += " What shows was read before, and may have changed since.";
       return Callout.callout(
           t,
@@ -530,6 +617,8 @@ final class TableTab implements Tab {
         new String[] {"Not found", name + " is no longer there, or this user may not see it."};
       case DENIED ->
         new String[] {"Access denied", "The server does not let this user read " + name + "."};
+      case CHANGED ->
+        new String[] {"Columns changed", "The columns of " + name + " changed while it was read."};
       case LOST ->
         new String[] {
           "Disconnected",
@@ -584,11 +673,11 @@ final class TableTab implements Tab {
         .rowNumbers()
         .copy(app.clipboard())
         .copyLimit(
-            100_000, copy -> s.tell("Only rows that were read can be copied; select fewer rows."))
+            100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
         .contextMenu(
             menu, List.of(Menu.item("Refresh", () -> open(s, true)).icon(Symbol.ARROW_CLOCKWISE)))
         .loading(this::loaded, (first, last) -> want(s, first, last));
-    return DataGrid.dataGrid(t, shown, (int) Math.min(rows, Integer.MAX_VALUE), options)
+    return DataGrid.dataGrid(t, shown, (int) Math.min(shown(), Integer.MAX_VALUE), options)
         .key("grid")
         .label("Rows of " + table.name());
   }
