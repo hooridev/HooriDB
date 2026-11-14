@@ -2,7 +2,7 @@
 
 A database manager for the desktop: connect to databases, browse their schemas, run queries, look at and edit data. It is written in Java and draws its windows with [rethinkj UI](https://ui.rethinkj.com), a native, GPU-rendered UI framework, whose first app it is.
 
-Status: a skeleton. The app opens a frameless window with its menus, an empty catalogue beside empty tabs, and a status line; nothing talks to a database yet.
+Status: early. The app opens a frameless window with its menus, the saved connections beside empty tabs, and a status line; connections can be created, edited, duplicated and deleted, with their passwords in the system keyring, but nothing talks to a database yet.
 
 - Later home: https://db.hoori.dev
 - Base package and Maven group: `dev.hoori.db`

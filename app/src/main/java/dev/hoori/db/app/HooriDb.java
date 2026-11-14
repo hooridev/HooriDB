@@ -12,7 +12,12 @@ import com.rethinkj.ui.window.SystemDialogs;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.WindowIcon;
 import com.rethinkj.ui.window.WindowLoop;
+import dev.hoori.db.core.AppFolders;
+import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.concurrent.Callable;
 
 /** The app's name and colour, and its window. */
 public final class HooriDb {
@@ -24,12 +29,19 @@ public final class HooriDb {
 
   private HooriDb() {}
 
-  /** The app over a new state, with the text rendering that a script's images are made with. */
-  static App<State> app() {
-    App<State> app = new App<>(new State(), Frame::view);
+  /**
+   * The app over a new state, with the text rendering that a script's images are made with. It
+   * starts loading the connections and looking up the keyring.
+   *
+   * @param folder where the connections are kept
+   * @param keyring finds the system keyring, off the app's thread
+   */
+  static App<State> app(Path folder, Callable<Keyring> keyring) {
+    App<State> app = new App<>(new State(folder, keyring), Frame::view);
     app.state().app = app;
     // A script's images must not depend on the platform they were made on.
     app.textRendering(TextRendering.LINUX);
+    app.state().start();
     return app;
   }
 
@@ -37,8 +49,8 @@ public final class HooriDb {
    * Opens the window, or with {@code --script <file> --out <folder>} runs the script without one
    * and writes its images and element trees.
    */
-  public static void main(String[] args) throws IOException {
-    App<State> app = app();
+  public static void main(String[] args) throws IOException, InterruptedException {
+    App<State> app = app(AppFolders.find().config(), Keyring::find);
     if (Script.handle(args, app)) {
       return;
     }
@@ -55,5 +67,8 @@ public final class HooriDb {
         WindowLoop.run(window, app, presenter);
       }
     });
+    // Work that runs when main returns is dropped, and a save of the connections among it.
+    app.await(Duration.ofSeconds(10));
+    app.state().saveWanted();
   }
 }
