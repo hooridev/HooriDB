@@ -124,6 +124,7 @@ final class ConnectionDialog {
     }
     versions = new Versions(p.provider());
     versions.read(s);
+    versions.date(s, p.driverVersion());
     probe.lookUp(s, p.provider(), p.driverVersion());
   }
 
@@ -132,6 +133,7 @@ final class ConnectionDialog {
       return;
     }
     editing.at(DRIVER_VERSION).set(version);
+    versions.date(s, version);
     probe.stop(); // a test or a download is for the other version
     probe.lookUp(s, editing.value().provider(), version);
   }
@@ -529,17 +531,6 @@ final class ConnectionDialog {
           }
           return false;
         });
-    if (versions.young(p.driverVersion())) {
-      var age = versions.age(p.driverVersion());
-      content.child(Callout.callout(
-          t,
-          Callout.Kind.WARNING,
-          "Version " + p.driverVersion() + " is " + (age == null ? "very new" : age),
-          "HooriDB recommends a release only once it has been out for "
-              + DriverStore.WAITING_PERIOD.toDays()
-              + " days, as a bad release is usually withdrawn within days. Choose Recommended"
-              + " unless this connection needs this version."));
-    }
     if (keyringError != null) {
       content.child(Callout.callout(
           t, Callout.Kind.DANGER, "The system keyring reported a problem", keyringError));
@@ -580,18 +571,38 @@ final class ConnectionDialog {
         .key("driver-version")
         .label("Driver version")
         .grow(1);
-    El field = row().wFull().gap(t.space().s()).align(Style.Align.CENTER).child(box);
-    if (versions.reading()) {
-      field.child(col().role("status").label("Reading the versions").child(Progress.spinner(t)));
+    El line = row().wFull().gap(t.space().s()).align(Style.Align.CENTER).child(box);
+    if (versions.reading() || versions.dating != null) {
+      var waiting = versions.dating != null
+          ? "Looking up when " + versions.dating + " was published"
+          : "Reading the versions";
+      line.child(col().role("status").label(waiting).child(Progress.spinner(t)));
     } else if (versions.problem(s.drivers) != null) {
-      field.child(Button.icon(
+      line.child(Button.icon(
           t,
           Button.Variant.GHOST,
           Symbol.ARROW_CLOCKWISE,
           "Read the versions again",
           () -> versions.read(s)));
     }
-    return field;
+    if (!versions.young(chosen)) {
+      return line;
+    }
+    // shortcut: a callout under the control, as the kit's form has no warning of a field of its
+    // own; use that once the kit has one.
+    var age = versions.age(chosen);
+    return col()
+        .wFull()
+        .gap(t.space().s())
+        .child(line)
+        .child(Callout.callout(
+            t,
+            Callout.Kind.WARNING,
+            "Version " + chosen + " is " + (age == null ? "very new" : age),
+            "HooriDB recommends a release only once it has been out for "
+                + DriverStore.WAITING_PERIOD.toDays()
+                + " days, as a bad release is usually withdrawn within days. Choose Recommended"
+                + " unless this connection needs this version."));
   }
 
   /** Which driver, and whether it is there; and what keeps the list of versions from showing. */

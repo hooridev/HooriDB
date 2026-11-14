@@ -13,6 +13,7 @@ import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.nio.file.Path;
@@ -487,6 +488,31 @@ final class State {
             600,
             options.frameless().minimumSize(480, 320).icon(HooriDb.ICON),
             window);
+  }
+
+  /**
+   * Who uses the version of the driver, by name: every connection from the moment its attempt to
+   * connect decided on the version until it ended, and a load of it under way. Each kind of
+   * connection that holds a driver answers here.
+   */
+  List<String> users(Driver driver, String version) {
+    var users = new ArrayList<>(catalogue.users(this, driver, version));
+    if (users.isEmpty() && drivers.loading(driver, version)) {
+      users.add("a connection being opened");
+    }
+    return users;
+  }
+
+  /**
+   * Claims the version for a delete, which no one may use or begin to use until {@code
+   * drivers.deleting(driver, version, false)}; false while someone uses it.
+   */
+  boolean claimForDelete(Driver driver, String version) {
+    if (!users(driver, version).isEmpty()) {
+      return false;
+    }
+    drivers.deleting(driver, version, true);
+    return true;
   }
 
   /** The colour of the connection, null for none or for a connection that is gone. */

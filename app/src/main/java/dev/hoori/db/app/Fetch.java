@@ -17,7 +17,7 @@ import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.DriverException;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.driver.LoadedDriver;
-import java.time.Instant;
+import java.nio.file.AccessDeniedException;
 import java.util.function.BiConsumer;
 
 /**
@@ -99,11 +99,12 @@ final class Fetch {
     }
     var driver = Driver.of(provider);
     var store = drivers.store;
+    var clock = drivers.clock;
     lookup = new Looking(provider);
     looking = s.app.background(
         "look up a driver",
         () -> {
-          var recommended = chosen == null ? store.recommended(driver, Instant.now()) : null;
+          var recommended = chosen == null ? store.recommended(driver, clock.instant()) : null;
           var version = chosen == null ? recommended.version() : chosen;
           boolean offline = recommended != null && recommended.offline();
           boolean there = store.downloaded(driver).contains(version);
@@ -223,9 +224,22 @@ final class Fetch {
           }
         },
         error -> {
-          if (stop == stops) {
-            step = new Failed(Stage.LOAD, error);
+          if (stop != stops) {
+            return;
           }
+          if (error instanceof DriverException e
+              && e.failure() == DriverException.Failure.NOT_DOWNLOADED) {
+            // Deleted since it was looked up: it is downloaded again, after asking.
+            var missing =
+                new Found(found.provider(), found.version(), found.offline(), false, found.size());
+            if (lookup instanceof Found f && f.equals(found)) {
+              lookup = missing;
+            }
+            agreed = false;
+            step = new Asking(missing);
+            return;
+          }
+          step = new Failed(Stage.LOAD, error);
         });
   }
 
@@ -294,12 +308,20 @@ final class Fetch {
             + " not used.";
       case INVALID_RESPONSE -> source + " answered with something HooriDB cannot read.";
       case STORAGE ->
-        "The drivers folder could not be read or written: "
-            + (e.getCause() == null ? e.getMessage() : State.message((Exception) e.getCause()));
+        "The drivers folder could not be read or written" + why(e)
+            + ". Check that HooriDB may write to it, then try again.";
       case NOT_DOWNLOADED -> "Its file is missing from the drivers folder.";
       case NOT_A_DRIVER -> "The file does not hold the driver.";
       case CANCELLED -> "It was cancelled.";
     };
+  }
+
+  /**
+   * Why the drivers folder failed, in HooriDB's words: the system's own text names the absolute
+   * path and is in the system's language.
+   */
+  static String why(DriverException e) {
+    return e.getCause() instanceof AccessDeniedException ? ": access was denied" : "";
   }
 
   /** The driver's name as its makers call it. */

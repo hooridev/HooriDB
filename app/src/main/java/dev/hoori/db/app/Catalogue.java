@@ -797,13 +797,25 @@ final class Catalogue {
     fetches.values().forEach(Fetch::close);
   }
 
-  /** The connections open now that use the version of the driver, by name. */
-  List<String> using(State s, Driver driver, String version) {
-    var loaded = s.drivers.loaded(driver, version);
+  /** The tree's connections that use the version of the driver or decided on it, by name. */
+  List<String> users(State s, Driver driver, String version) {
     return lives.values().stream()
-        .filter(live -> loaded != null && live.driver == loaded && !ended(live.phase))
+        .filter(live -> !ended(live.phase)
+            && Driver.of(live.profile.provider()).equals(driver)
+            && version.equals(version(s, live)))
         .map(live -> State.name(live.profile))
         .toList();
+  }
+
+  /** The version the connection decided on: its driver's, or the one its fetch found; or null. */
+  private String version(State s, Live live) {
+    if (live.driver != null) {
+      return s.drivers.version(live.driver);
+    }
+    var fetch = fetches.get(Want.of(live.profile));
+    return live.phase instanceof ForDriver && fetch != null && fetch.lookup instanceof Fetch.Found f
+        ? f.version()
+        : null;
   }
 
   /** Edit or Delete on a connection: asks to disconnect first while it is connected. */

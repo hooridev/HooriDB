@@ -82,12 +82,15 @@ final class DriversDialog {
     return dialog;
   }
 
-  /** Close and Escape: what runs is cancelled, as a download or a delete can be done again. */
+  /**
+   * Close and Escape: a download is cancelled, as it can be done again; a delete runs to its end,
+   * which gives the version free again.
+   */
   void close(State s) {
     for (var kind : kinds) {
       kind.versions.close();
-      if (kind.work != null) {
-        kind.work.cancel();
+      if (kind.download != null) {
+        cancel(kind);
       }
     }
     s.driverList = null;
@@ -157,12 +160,13 @@ final class DriversDialog {
     }
   }
 
-  /** Deletes the version asked about, unless a connection began to use it meanwhile. */
+  /**
+   * Deletes the version asked about, unless a connection began to use it meanwhile; from here until
+   * the delete ends, no connection begins to.
+   */
   void delete(State s) {
     var d = asking;
-    if (d == null
-        || removing
-        || !s.catalogue.using(s, d.kind().driver(), d.version()).isEmpty()) {
+    if (d == null || removing || !s.claimForDelete(d.kind().driver(), d.version())) {
       asking = null;
       return;
     }
@@ -182,6 +186,7 @@ final class DriversDialog {
           removing = false;
           asking = null;
           kind.work = null;
+          s.drivers.deleting(driver, version, false);
           s.drivers.forget(driver, version);
           kind.versions.read(s);
           s.tell(kind.name() + " " + version + " deleted");
@@ -190,6 +195,7 @@ final class DriversDialog {
           removing = false;
           asking = null;
           kind.work = null;
+          s.drivers.deleting(driver, version, false);
           kind.problem = new Problem(
               kind.name() + " " + version + " could not be deleted",
               notDeleted(s, driver, version, error),
@@ -207,9 +213,8 @@ final class DriversDialog {
           + " restarted.";
     }
     if (error instanceof DriverException e && e.failure() == DriverException.Failure.STORAGE) {
-      return "The drivers folder could not be changed: "
-          + (e.getCause() instanceof Exception cause ? State.message(cause) : e.getMessage())
-          + ". Check that it can be written, then try again.";
+      return "The drivers folder could not be changed" + Fetch.why(e)
+          + ". Check that HooriDB may write to it, then try again.";
     }
     return Fetch.text(error, s.drivers);
   }
@@ -258,7 +263,7 @@ final class DriversDialog {
     var problem = versions.failed != null ? versions.problem(s.drivers) : null;
     if (problem != null) {
       section.child(
-          Callout.callout(t, Callout.Kind.DANGER, "The drivers folder could not be read", problem));
+          Callout.callout(t, Callout.Kind.DANGER, kind.name() + " could not be listed", problem));
     }
     var p = kind.problem;
     if (p != null) {
@@ -285,7 +290,7 @@ final class DriversDialog {
     if (version.equals(kind.versions.recommended())) {
       notes.add("recommended");
     }
-    var users = s.catalogue.using(s, kind.driver(), version);
+    var users = s.users(kind.driver(), version);
     if (!users.isEmpty()) {
       notes.add("in use by " + String.join(", ", users) + ". Disconnect to delete it.");
     }
@@ -319,7 +324,10 @@ final class DriversDialog {
       note = null;
     }
     El box = ComboBox.items(
-            t, versions.values(kind.pick), kind.pick, versions::item, kind.box, v -> kind.pick = v)
+            t, versions.values(kind.pick), kind.pick, versions::item, kind.box, v -> {
+              kind.pick = v;
+              versions.date(s, v);
+            })
         .key("version-" + kind.provider.name())
         .label(kind.name() + " version")
         .w(t.size().field());

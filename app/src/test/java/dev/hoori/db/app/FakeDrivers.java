@@ -21,7 +21,9 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -42,13 +44,30 @@ final class FakeDrivers implements Repository {
   static final String VERSION = "42.7.14";
   static final Driver DRIVER = Driver.of(Provider.POSTGRESQL);
   static final Instant PUBLISHED = Instant.parse("2026-10-01T00:00:00Z");
+  /** What the drivers' clock says in every test, which ages count from. */
+  static final Instant NOW = Instant.parse("2026-11-14T12:00:00Z");
+  /** A file beside a driver's JAR in the drivers folder: its load waits while the file is there. */
+  static final String HOLD = "hold";
+
+  private static int jarOrFail() {
+    try {
+      return jar(DRIVER).length;
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
 
   private static final Map<Driver, byte[]> JARS = new HashMap<>(); // compiled once for all tests
+
+  /** The size of each made-up driver, as the app writes it. */
+  static final String SIZE = Fetch.size(jarOrFail());
 
   final Path root;
   volatile boolean offline;
   // Holds every file opened before it is served, until it opens.
   volatile CountDownLatch opening;
+  // Holds each question when a file was published, until it opens.
+  volatile CountDownLatch dating;
   // Holds a driver's file after its first half, until it opens.
   volatile CountDownLatch reading;
   // Opens once a driver's file has been read halfway: the transfer is under way.
@@ -60,7 +79,8 @@ final class FakeDrivers implements Repository {
 
   /** The drivers of an app, kept in the folder and downloaded from this repository. */
   Drivers drivers(Path folder) {
-    return new Drivers(folder, this, "Maven Central", MavenRepository.CENTRAL);
+    return new Drivers(
+        folder, this, "Maven Central", MavenRepository.CENTRAL, Clock.fixed(NOW, ZoneOffset.UTC));
   }
 
   @Override
@@ -81,9 +101,13 @@ final class FakeDrivers implements Repository {
   }
 
   @Override
-  public Optional<Instant> published(String path) throws IOException {
+  public Optional<Instant> published(String path) throws IOException, InterruptedException {
     if (offline) {
       throw new ConnectException("offline");
+    }
+    var gate = dating;
+    if (gate != null) {
+      gate.await();
     }
     return Optional.of(Files.getLastModifiedTime(root.resolve(path)).toInstant());
   }
@@ -203,7 +227,8 @@ final class FakeDrivers implements Repository {
     try {
       var src = Files.createDirectories(work.resolve("src").resolve(pkg.replace('.', '/')));
       var classes = Files.createDirectories(work.resolve("classes"));
-      var file = Files.writeString(src.resolve(simple + ".java"), """
+      var file =
+          Files.writeString(src.resolve(simple + ".java"), """
           package %s;
 
           import java.sql.*;
@@ -211,6 +236,20 @@ final class FakeDrivers implements Repository {
           import java.util.logging.Logger;
 
           public class %s implements java.sql.Driver {
+            // Its load waits while a file named hold lies beside its JAR, so that a test can
+            // hold it open.
+            static {
+              try {
+                var jar = java.nio.file.Path.of(
+                    %s.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+                while (java.nio.file.Files.exists(jar.resolveSibling("hold"))) {
+                  Thread.sleep(10);
+                }
+              } catch (Exception e) {
+                // Loaded from elsewhere, or interrupted: it goes on.
+              }
+            }
+
             public Connection connect(String url, Properties info) {
               return null;
             }
@@ -239,7 +278,7 @@ final class FakeDrivers implements Repository {
               throw new SQLFeatureNotSupportedException();
             }
           }
-          """.formatted(pkg, simple));
+          """.formatted(pkg, simple, simple));
       int status = ToolProvider.getSystemJavaCompiler()
           .run(null, null, null, "-d", classes.toString(), file.toString());
       if (status != 0) {

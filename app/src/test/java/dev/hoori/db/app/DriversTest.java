@@ -23,8 +23,8 @@ import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -41,6 +41,7 @@ class DriversTest {
 
   static final String OLD = "42.7.10";
   static final String YOUNG = "42.7.15";
+  static final String LOWER = "42.7.13"; // a maintenance release below the recommended one
 
   @TempDir
   Path dir;
@@ -57,14 +58,18 @@ class DriversTest {
     repository = new FakeDrivers(Files.createDirectories(dir.resolve("repository")))
         .publishAll()
         .publish(OLD, FakeDrivers.PUBLISHED.minus(Duration.ofDays(60)))
-        // A day and an hour ago, so that it is a day old wherever the clock is.
-        .publish(YOUNG, Instant.now().minus(Duration.ofHours(25)));
+        .publish(YOUNG, FakeDrivers.NOW.minus(Duration.ofHours(25)))
+        .publish(LOWER, FakeDrivers.NOW.minus(Duration.ofHours(30)));
   }
 
   @AfterEach
   void tearDown() throws Exception {
     FakeDrivers.unlock(drivers(), FakeDrivers.VERSION);
-    for (var gate : new CountDownLatch[] {server.gate, repository.reading, repository.opening}) {
+    unlockArtifact();
+    Files.deleteIfExists(jarFolder(OLD).resolve(FakeDrivers.HOLD));
+    for (var gate :
+        new CountDownLatch[] {server.gate, repository.reading, repository.opening, repository.dating
+        }) {
       if (gate != null) {
         gate.countDown();
       }
@@ -95,6 +100,31 @@ class DriversTest {
         servers);
     apps.add(app);
     return app;
+  }
+
+  Path jarFolder(String version) {
+    return drivers()
+        .resolve(FakeDrivers.DRIVER.group())
+        .resolve(FakeDrivers.DRIVER.artifact())
+        .resolve(version);
+  }
+
+  /** Makes the folder of all versions read-only, false where that cannot be done. */
+  boolean lockArtifact() throws IOException {
+    var artifact = jarFolder(OLD).getParent();
+    if (!artifact.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+      return false;
+    }
+    Files.setPosixFilePermissions(artifact, PosixFilePermissions.fromString("r-xr-xr-x"));
+    return !Files.isWritable(artifact);
+  }
+
+  void unlockArtifact() throws IOException {
+    var artifact = jarFolder(OLD).getParent();
+    if (Files.exists(artifact)
+        && artifact.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+      Files.setPosixFilePermissions(artifact, PosixFilePermissions.fromString("rwxr-xr-x"));
+    }
   }
 
   void downloaded(String... versions) throws Exception {
@@ -230,7 +260,30 @@ class DriversTest {
     String young = tree("young");
     assertTrue(young.contains("role=note label=\"Version " + YOUNG + " is 1 day old\""), young);
     assertTrue(young.contains("HooriDB recommends a release only once it has been out for 3 days"));
+    // Right under the field it belongs to, above the next one.
+    float note = TestConnectionTest.top(young, "role=note label=\"Version");
+    assertTrue(TestConnectionTest.top(young, "label=\"Driver version\"") < note, young);
+    assertTrue(note < TestConnectionTest.top(young, "#host"), young);
     assertFalse(tree("recommended").contains("role=note"), tree("recommended"));
+  }
+
+  /** A release below the recommended one can be the newest: its own date tells its age. */
+  @Test
+  void aLowerVersionPublishedYesterdayIsWarnedOf() throws Exception {
+    var app = app();
+    run(app, START + NEW_SHOP);
+    repository.dating = new CountDownLatch(1);
+    run(app, choose(LOWER) + "snap dating\n");
+    String dating = tree("dating");
+    assertTrue(
+        dating.contains("role=status label=\"Looking up when " + LOWER + " was published\""),
+        dating);
+    assertFalse(dating.contains("role=note"), dating);
+    repository.dating.countDown();
+    run(app, SETTLE + "snap lower\n");
+    String lower = tree("lower");
+    assertTrue(lower.contains("role=note label=\"Version " + LOWER + " is 1 day old\""), lower);
+    assertFalse(lower.contains("Looking up when"), lower);
   }
 
   @Test
@@ -243,8 +296,9 @@ class DriversTest {
     downloaded(FakeDrivers.VERSION, OLD);
     run(app, OPEN_DRIVERS + "snap listed\n");
     String listed = tree("listed");
-    assertTrue(block(listed, "\"42.7.14\"").contains("\"657 B, recommended\""), listed);
-    assertTrue(block(listed, "\"" + OLD + "\"").contains("\"657 B\""), listed);
+    assertTrue(
+        block(listed, "\"42.7.14\"").contains("\"" + FakeDrivers.SIZE + ", recommended\""), listed);
+    assertTrue(block(listed, "\"" + OLD + "\"").contains("\"" + FakeDrivers.SIZE + "\""), listed);
     assertEquals(2, listed.split("\"None downloaded\"").length - 1, listed);
     assertTrue(line(listed, "label=\"Download PostgreSQL JDBC\"").endsWith("disabled"), listed);
     assertTrue(listed.contains("\"42.7.14 is downloaded.\""), listed);
@@ -276,7 +330,8 @@ class DriversTest {
         frame
         """ + SETTLE + SETTLE + "snap done\n");
     String done = tree("done");
-    assertTrue(block(done, "\"42.7.14\"").contains("\"657 B, recommended\""), done);
+    assertTrue(
+        block(done, "\"42.7.14\"").contains("\"" + FakeDrivers.SIZE + ", recommended\""), done);
     assertEquals(List.of(FakeDrivers.VERSION), store().downloaded(FakeDrivers.DRIVER));
   }
 
@@ -354,7 +409,8 @@ class DriversTest {
     String used = tree("used");
     assertTrue(
         block(used, "\"" + OLD + "\"")
-            .contains("\"657 B, in use by shop-prod. Disconnect to delete it.\""),
+            .contains(
+                "\"" + FakeDrivers.SIZE + ", in use by shop-prod. Disconnect to delete it.\""),
         used);
     assertTrue(line(used, "label=\"Delete PostgreSQL JDBC 42.7.10\"").endsWith("disabled"), used);
     assertFalse(line(used, "label=\"Delete PostgreSQL JDBC 42.7.14\"").endsWith("disabled"));
@@ -399,11 +455,106 @@ class DriversTest {
     String failed = tree("failed");
     assertTrue(
         block(failed, "role=note label=\"PostgreSQL JDBC 42.7.10 could not be deleted\"")
-            .contains("Check that it can be written, then try again."),
+            .contains("Check that HooriDB may write to it, then try again."),
         failed);
+    assertFalse(failed.contains(dir.toString()), "no absolute path in\n" + failed);
     assertEquals(List.of(FakeDrivers.VERSION, OLD), store().downloaded(FakeDrivers.DRIVER));
-    assertTrue(block(failed, "\"42.7.14\"").contains("\"657 B, recommended\""), failed);
+    assertTrue(
+        block(failed, "\"42.7.14\"").contains("\"" + FakeDrivers.SIZE + ", recommended\""), failed);
     store().load(FakeDrivers.DRIVER, FakeDrivers.VERSION).close(); // still whole
+  }
+
+  /** A connection that decided on a version holds it while its driver still loads. */
+  @Test
+  void aVersionBeingLoadedCannotBeDeleted() throws Exception {
+    downloaded(FakeDrivers.VERSION, OLD);
+    var shop = CatalogueTest.SHOP.withDriverVersion(OLD);
+    var app = app(shop);
+    run(app, START);
+    app.state().rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
+    Files.writeString(jarFolder(OLD).resolve(FakeDrivers.HOLD), "");
+    // The lookup decides on the version; its load then waits at the hold.
+    run(app, CatalogueTest.open("shop-prod") + "await\nframe\n");
+    for (int i = 0; !app.state().drivers.loading(FakeDrivers.DRIVER, OLD); i++) {
+      assertTrue(i < 500, "the load began");
+      Thread.sleep(10);
+    }
+    // An await would wait for the load, so the Drivers dialog cannot show its rows meanwhile;
+    // it asks the same question.
+    assertEquals(List.of("shop-prod"), app.state().users(FakeDrivers.DRIVER, OLD));
+    assertFalse(app.state().claimForDelete(FakeDrivers.DRIVER, OLD), "the delete is refused");
+    assertEquals(List.of(), app.state().users(FakeDrivers.DRIVER, FakeDrivers.VERSION));
+    Files.delete(jarFolder(OLD).resolve(FakeDrivers.HOLD));
+    run(app, SETTLE + SETTLE);
+    var live = app.state().catalogue.lives.get(shop.id());
+    assertTrue(live.phase instanceof Catalogue.Connected, String.valueOf(live.phase));
+    assertEquals(List.of(FakeDrivers.VERSION, OLD), store().downloaded(FakeDrivers.DRIVER));
+  }
+
+  /** A connection that begins while a delete of its version runs asks to download it again. */
+  @Test
+  void aConnectionDuringADeleteAsksForTheDriver() throws Exception {
+    downloaded(OLD);
+    var shop = CatalogueTest.SHOP.withDriverVersion(OLD);
+    var app = app(shop);
+    run(app, START);
+    var s = app.state();
+    s.rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
+    assertTrue(s.claimForDelete(FakeDrivers.DRIVER, OLD));
+    run(app, CatalogueTest.open("shop-prod") + SETTLE + SETTLE + "snap asked\n");
+    String asked = tree("asked");
+    assertTrue(
+        line(asked, "role=note").contains("\"Download PostgreSQL JDBC " + OLD + "?\""), asked);
+    s.drivers.deleting(FakeDrivers.DRIVER, OLD, false); // the delete failed: the file is there
+    run(app, "press role=button label=\"Download\"\nframe\n" + SETTLE + SETTLE + SETTLE);
+    assertTrue(s.catalogue.lives.get(shop.id()).phase instanceof Catalogue.Connected);
+  }
+
+  /** Its file went, then its folder could not be renamed away: the version is gone, as it says. */
+  @Test
+  void aDeleteThatFailsAfterTheFileWentSaysItIsGone() throws Exception {
+    downloaded(FakeDrivers.VERSION, OLD);
+    var app = app();
+    run(app, START);
+    var s = app.state();
+    s.drivers.load(app, FakeDrivers.DRIVER, FakeDrivers.VERSION, d -> {}, e -> {});
+    run(app, SETTLE);
+    assumeTrue(lockArtifact(), "a folder can be read-only");
+    run(app, OPEN_DRIVERS + """
+        press role=button label="Delete PostgreSQL JDBC 42.7.14"
+        frame
+        advance 1
+        frame
+        press role=button label="Delete"
+        frame
+        """ + SETTLE + SETTLE + "snap gone\n");
+    String gone = tree("gone");
+    assertFalse(gone.contains("could not be deleted"), gone);
+    assertFalse(gone.contains("\"42.7.14\"\n"), gone);
+    assertTrue(gone.contains("\"PostgreSQL JDBC 42.7.14 deleted\""), gone);
+    assertEquals(List.of(OLD), store().downloaded(FakeDrivers.DRIVER));
+    assertEquals(null, s.drivers.loaded(FakeDrivers.DRIVER, FakeDrivers.VERSION));
+  }
+
+  /** The system's words name the absolute path; the dialog says what it is in HooriDB's. */
+  @Test
+  void anUnreadableFolderIsNamedWithoutItsPath() throws Exception {
+    downloaded(OLD);
+    var app = app();
+    run(app, START);
+    var artifact = jarFolder(OLD).getParent();
+    assumeTrue(artifact.getFileSystem().supportedFileAttributeViews().contains("posix"));
+    Files.setPosixFilePermissions(artifact, PosixFilePermissions.fromString("---------"));
+    assumeTrue(!Files.isReadable(artifact), "not as root");
+    run(app, OPEN_DRIVERS + "snap unreadable\n");
+    String unreadable = tree("unreadable");
+    assertTrue(
+        block(unreadable, "role=note label=\"PostgreSQL JDBC could not be listed\"")
+            .contains(
+                "The drivers folder could not be read: access was denied. Check that HooriDB may"
+                    + " read it, then try again."),
+        unreadable);
+    assertFalse(unreadable.contains(dir.toString()), "no absolute path in\n" + unreadable);
   }
 
   /**
