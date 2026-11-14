@@ -37,9 +37,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.jar.Attributes;
@@ -73,6 +75,14 @@ public final class DriverStore {
 
   /** The version to use, and whether it was chosen from what is downloaded, without a network. */
   public record Recommended(String version, boolean offline) {}
+
+  /**
+   * The stable versions that can be chosen, newest first; the recommended one among them, or null
+   * when none of the newest few qualifies; and when the versions newer than it were published, for
+   * those the repository gives a date.
+   */
+  public record Choices(
+      List<String> versions, String recommended, Map<String, Instant> published) {}
 
   /** How far a download is: bytes so far and in all, or -1 when that is not known. */
   @FunctionalInterface
@@ -158,27 +168,11 @@ public final class DriverStore {
   public Recommended recommended(Driver driver, Instant now, Duration waitingPeriod)
       throws DriverException {
     try {
-      var latest = now.minus(waitingPeriod);
-      var candidates = versions(driver).stream()
-          .filter(Maven::isStable)
-          .limit(MAX_CANDIDATES)
-          .toList();
-      for (var version : candidates) {
-        Optional<Instant> published;
-        try {
-          published = published(driver, version);
-        } catch (DriverException e) {
-          if (e.failure() == NOT_FOUND) {
-            continue;
-          }
-          throw e;
-        }
-        // Without a date, a version cannot be shown to have waited.
-        if (published.isPresent() && !published.get().isAfter(latest)) {
-          return new Recommended(version, false);
-        }
+      var choices = choices(driver, now, waitingPeriod);
+      if (choices.recommended() == null) {
+        throw new DriverException(NO_RECOMMENDATION, base(driver));
       }
-      throw new DriverException(NO_RECOMMENDATION, base(driver));
+      return new Recommended(choices.recommended(), false);
     } catch (DriverException e) {
       if (e.failure() != NO_NETWORK && e.failure() != UNAVAILABLE) {
         throw e;
@@ -192,6 +186,36 @@ public final class DriverStore {
       }
       throw e;
     }
+  }
+
+  /** The versions to choose from, with the default waiting period; it needs the repository. */
+  public Choices choices(Driver driver, Instant now) throws DriverException {
+    return choices(driver, now, WAITING_PERIOD);
+  }
+
+  private Choices choices(Driver driver, Instant now, Duration waitingPeriod)
+      throws DriverException {
+    var latest = now.minus(waitingPeriod);
+    // shortcut: pre-releases cannot be chosen; offer them when a user needs one.
+    var versions = versions(driver).stream().filter(Maven::isStable).toList();
+    var dates = new HashMap<String, Instant>();
+    for (var version : versions.subList(0, Math.min(MAX_CANDIDATES, versions.size()))) {
+      Optional<Instant> published;
+      try {
+        published = published(driver, version);
+      } catch (DriverException e) {
+        if (e.failure() == NOT_FOUND) {
+          continue;
+        }
+        throw e;
+      }
+      // Without a date, a version cannot be shown to have waited.
+      if (published.isPresent() && !published.get().isAfter(latest)) {
+        return new Choices(versions, version, Map.copyOf(dates));
+      }
+      published.ifPresent(date -> dates.put(version, date));
+    }
+    return new Choices(versions, null, Map.copyOf(dates));
   }
 
   /**
@@ -304,6 +328,19 @@ public final class DriverStore {
       throw storage(e);
     } catch (UncheckedIOException e) {
       throw storage(e.getCause());
+    }
+  }
+
+  /** The size in bytes of the version's downloaded file. */
+  public long sizeOnDisk(Driver driver, String version) throws DriverException {
+    var jar = jar(driver, version);
+    checkCancelled(file(driver, version));
+    try {
+      return Files.size(jar);
+    } catch (NoSuchFileException e) {
+      throw new DriverException(NOT_DOWNLOADED, file(driver, version), e);
+    } catch (IOException e) {
+      throw storage(e);
     }
   }
 

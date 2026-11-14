@@ -414,6 +414,22 @@ class DriverStoreTest {
   }
 
   @Test
+  void theChoicesSayWhichAreTooYoungToBeRecommended() throws Exception {
+    var young = NOW.minus(Duration.ofDays(1));
+    repository.publish(DRIVER, "1.0.0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(30)));
+    repository.publish(DRIVER, "1.1.0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(5)));
+    repository.publish(DRIVER, "1.2.0-rc1", BYTES, Sum.SHA256, young);
+    repository.publish(DRIVER, "1.2.0", BYTES, Sum.SHA256, young);
+    var choices = store.choices(DRIVER, NOW);
+    assertEquals(List.of("1.2.0", "1.1.0", "1.0.0"), choices.versions());
+    assertEquals("1.1.0", choices.recommended());
+    assertEquals(java.util.Map.of("1.2.0", young), choices.published());
+    store.download(DRIVER, "1.2.0", DriverStore.Progress.NONE);
+    assertEquals(BYTES.length, store.sizeOnDisk(DRIVER, "1.2.0"));
+    assertFailure(Failure.NOT_DOWNLOADED, () -> store.sizeOnDisk(DRIVER, "1.1.0"));
+  }
+
+  @Test
   void aRepositoryThatAnswersWithAnErrorIsUnavailable() throws Exception {
     repository.publish(DRIVER, "1.0.0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(10)));
     repository.refusing = true;
