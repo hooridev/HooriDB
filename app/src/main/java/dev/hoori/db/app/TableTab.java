@@ -93,6 +93,9 @@ final class TableTab implements Tab {
   /** A page asked for: its work, its call on the lane, and for what it was asked. */
   record Asked(Work work, Lane lane, Future<?> call, Lane.Priority priority) {}
 
+  /** The most rows a grid shows: it counts them in an int. */
+  static final int GRID_ROWS = Integer.MAX_VALUE;
+
   final UUID id;
   Table table; // its kind may change, as a table replaced by a view of its name
   List<Column> columns; // as the catalogue read them; null until then
@@ -581,6 +584,9 @@ final class TableTab implements Tab {
       case AT_LEAST -> "At least " + n;
       case EXACT -> n;
     };
+    if (rows > GRID_ROWS) {
+      text += " · the first " + String.format(Locale.ROOT, "%,d", GRID_ROWS) + " are shown";
+    }
     return counting == null ? text : text + " · counting…";
   }
 
@@ -679,7 +685,7 @@ final class TableTab implements Tab {
         .contextMenu(
             menu, List.of(Menu.item("Refresh", () -> open(s, true)).icon(Symbol.ARROW_CLOCKWISE)))
         .loading(this::loaded, (first, last) -> want(s, first, last));
-    return DataGrid.dataGrid(t, shown, (int) Math.min(shown(), Integer.MAX_VALUE), options)
+    return DataGrid.dataGrid(t, shown, (int) Math.min(shown(), GRID_ROWS), options)
         .key("grid")
         .label("Rows of " + table.name());
   }

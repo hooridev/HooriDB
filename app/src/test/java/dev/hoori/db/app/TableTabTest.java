@@ -837,6 +837,22 @@ class TableTabTest {
         window.contains("Only rows that were read can be copied; select fewer rows."), window);
   }
 
+  @Test
+  void rowsBeyondTheGridsLimitAreSaidToBeLeftOut() throws Exception {
+    var app = shop();
+    c.run(app, table("orders") + SETTLE);
+    var tab = tab(app);
+    tab.counted = TableTab.Counted.EXACT;
+    tab.rows = Integer.MAX_VALUE;
+    assertEquals("2,147,483,647 rows", tab.rowsText());
+    tab.rows = 3_000_000_000L;
+    assertEquals("3,000,000,000 rows · the first 2,147,483,647 are shown", tab.rowsText());
+    tab.counted = TableTab.Counted.ESTIMATED;
+    assertEquals(
+        "About 3,000,000,000 rows, as the server estimates · the first 2,147,483,647 are shown",
+        tab.rowsText());
+  }
+
   // Values
 
   @Test
