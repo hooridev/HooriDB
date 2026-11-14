@@ -39,6 +39,11 @@ public final class ProfileStore {
 
   private static final int VERSION = 1;
 
+  /** A larger file is refused unread; thousands of profiles are far below it. */
+  static final long MAX_SIZE = 16L << 20;
+
+  private static final Object SAVING = new Object();
+
   // The tree model with the field names spelt out here, so that renaming a component of the record
   // cannot change the file. Each field's node type is checked, so nothing is coerced.
   private static final JsonMapper JSON = JsonMapper.builder()
@@ -67,11 +72,27 @@ public final class ProfileStore {
    * understood is left as it is.
    */
   public List<ConnectionProfile> load() throws IOException {
+    var bytes = read();
+    return bytes == null ? List.of() : parse(bytes);
+  }
+
+  // The file's bytes, or null when there is no file.
+  private byte[] read() throws IOException {
+    try {
+      // Checked first, as a file of any size would be read into memory whole.
+      if (Files.size(file) > MAX_SIZE) {
+        throw unreadable("it is larger than " + (MAX_SIZE >> 20) + " MB");
+      }
+      return Files.readAllBytes(file);
+    } catch (NoSuchFileException missing) {
+      return null;
+    }
+  }
+
+  private List<ConnectionProfile> parse(byte[] bytes) throws UnreadableException {
     JsonNode root;
     try {
-      root = JSON.readTree(Files.readAllBytes(file));
-    } catch (NoSuchFileException missing) {
-      return List.of();
+      root = JSON.readTree(bytes);
     } catch (JacksonException malformed) {
       // Only the place: Jackson's own message quotes the text, and with it what a user typed.
       var at = malformed.getLocation();
@@ -93,8 +114,13 @@ public final class ProfileStore {
           + version.intValue()
           + "); update HooriDB to read it");
     }
-    if (!version.isInt() || version.intValue() != VERSION) {
-      throw unreadable("its version " + version + " is unknown");
+    // A value of the file goes into a message only where it is a number or was understood: a
+    // hand-edited file may hold anything, a password too.
+    if (!version.isInt()) {
+      throw unreadable("its version is not a whole number");
+    }
+    if (version.intValue() != VERSION) {
+      throw unreadable("its version " + version.intValue() + " is unknown");
     }
 
     // Fields this version does not know are ignored: a later HooriDB may add one without raising
@@ -131,9 +157,16 @@ public final class ProfileStore {
   /**
    * Replaces the file with the profiles, creating the folder if it is missing. A crash leaves the
    * old file or the new one, never a part of it. A file that {@link #load} cannot understand is
-   * kept as {@value #UNREADABLE} first, in place of an older copy.
+   * kept as {@value #UNREADABLE} first, in place of an older copy. One save runs at a time; which of
+   * two saves lands last is for the caller to order.
+   *
+   * @throws IllegalArgumentException if two of the profiles have the same id, which {@link #load}
+   *     would refuse
    */
   public void save(List<ConnectionProfile> profiles) throws IOException {
+    if (profiles.stream().map(ConnectionProfile::id).distinct().count() != profiles.size()) {
+      throw new IllegalArgumentException("Two profiles have the same id");
+    }
     var root = JSON.createObjectNode();
     root.put("version", VERSION);
     var list = root.putArray("profiles");
@@ -150,26 +183,40 @@ public final class ProfileStore {
     }
     var bytes = ByteBuffer.wrap(JSON.writeValueAsBytes(root));
 
-    Files.createDirectories(folder);
-    try {
-      load();
-    } catch (UnreadableException unreadable) {
-      Files.copy(file, folder.resolve(UNREADABLE), StandardCopyOption.REPLACE_EXISTING);
-    }
-    // In the same folder, so that the move is a rename on the same file system.
-    var temporary = Files.createTempFile(folder, FILE + ".", ".tmp");
-    try {
-      try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
-        while (bytes.hasRemaining()) {
-          channel.write(bytes);
+    // Two saves at once would each find the unreadable file, and the second would copy the first
+    // one's new file over the copy of it.
+    synchronized (SAVING) {
+      Files.createDirectories(folder);
+      byte[] old = null;
+      try {
+        old = read();
+        if (old != null) {
+          parse(old);
         }
-        // On disk before the rename, or a crash could leave the new name on an empty file.
-        channel.force(true);
+      } catch (UnreadableException unreadable) {
+        var copy = folder.resolve(UNREADABLE);
+        if (old == null) { // too large to have been read
+          Files.copy(file, copy, StandardCopyOption.REPLACE_EXISTING);
+        } else {
+          // The bytes that were refused, and not the file again, which may have changed since.
+          Files.write(copy, old);
+        }
       }
-      Files.move(
-          temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-    } finally {
-      Files.deleteIfExists(temporary);
+      // In the same folder, so that the move is a rename on the same file system.
+      var temporary = Files.createTempFile(folder, FILE + ".", ".tmp");
+      try {
+        try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+          while (bytes.hasRemaining()) {
+            channel.write(bytes);
+          }
+          // On disk before the rename, or a crash could leave the new name on an empty file.
+          channel.force(true);
+        }
+        Files.move(
+            temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } finally {
+        Files.deleteIfExists(temporary);
+      }
     }
   }
 
@@ -205,7 +252,7 @@ public final class ProfileStore {
     } catch (IllegalArgumentException notAUuid) {
       // Reported below.
     }
-    throw unreadable("in " + where + ", \"id\" is not a UUID: \"" + value + "\"");
+    throw unreadable("in " + where + ", \"id\" is not a UUID");
   }
 
   private Provider provider(JsonNode profile, String where) throws UnreadableException {
@@ -215,7 +262,7 @@ public final class ProfileStore {
         return provider;
       }
     }
-    throw unreadable(where + " is for \"" + value + "\", a database HooriDB does not know");
+    throw unreadable("in " + where + ", \"provider\" is not a database HooriDB knows");
   }
 
   private Tls tls(JsonNode profile, String where) throws UnreadableException {

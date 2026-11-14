@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -139,7 +140,7 @@ class ProfileStoreTest {
         broken(VALID.replace("\"port\"", "\"name\": \"again\", \"port\""), "not valid JSON"),
         broken(VALID.replace("\"version\": 1, ", ""), "has no version"),
         broken(VALID.replace("\"version\": 1", "\"version\": 2"), "newer HooriDB"),
-        broken(VALID.replace("\"version\": 1", "\"version\": \"1\""), "version \"1\" is unknown"),
+        broken(VALID.replace("\"version\": 1", "\"version\": \"1\""), "version is not a whole"),
         broken(VALID.replace("\"version\": 1", "\"version\": 0"), "version 0 is unknown"),
         broken(VALID.replace("\"profiles\"", "\"other\""), "\"profiles\" is missing"),
         broken(VALID.replace(PROFILE, "1"), "profile 1 is not a JSON object"),
@@ -148,8 +149,8 @@ class ProfileStoreTest {
         broken(VALID.replace("\"app\",", "7,"), "\"database\" is not text"),
         broken(VALID.replace("0f8fad5b-d9cb-469f", "nope"), "\"id\" is not a UUID"),
         broken(VALID.replace("0f8fad5b-d9cb-469f-a165-70867728950e", "1-2-3-4-5"), "not a UUID"),
-        broken(VALID.replace("postgresql", "oracle"), "\"oracle\", a database HooriDB does not"),
-        broken(VALID.replace("postgresql", "POSTGRESQL"), "\"POSTGRESQL\", a database"),
+        broken(VALID.replace("postgresql", "oracle"), "\"provider\" is not a database"),
+        broken(VALID.replace("postgresql", "POSTGRESQL"), "\"provider\" is not a database"),
         broken(VALID.replace("5432", "\"5432\""), "\"port\" is not a whole number"),
         broken(VALID.replace("5432", "5432.0"), "\"port\" is not a whole number"),
         broken(VALID.replace("5432", "99999999999"), "\"port\" is not a whole number"),
@@ -184,6 +185,43 @@ class ProfileStoreTest {
     store.save(PROFILES);
     assertEquals(PROFILES, store.load());
     assertArrayEquals(content, Files.readAllBytes(folder.resolve(ProfileStore.UNREADABLE)));
+  }
+
+  @Test
+  void aMessageNeverRepeatsWhatTheFileHolds() throws IOException {
+    var broken = List.of(
+        VALID.replace("\"version\": 1", "\"version\": \"s3cret\""),
+        VALID.replace("0f8fad5b-d9cb-469f", "s3cret"),
+        VALID.replace("postgresql", "s3cret"));
+    for (var content : broken) {
+      write(content.getBytes(UTF_8));
+      var failure =
+          assertThrows(ProfileStore.UnreadableException.class, new ProfileStore(folder)::load);
+      assertFalse(failure.getMessage().contains("s3cret"), failure.getMessage());
+    }
+  }
+
+  @Test
+  void aFileTooLargeIsRefusedUnreadAndKeptOnSave() throws IOException {
+    var content = new byte[(int) ProfileStore.MAX_SIZE + 1];
+    Arrays.fill(content, (byte) ' ');
+    write(content);
+    var store = new ProfileStore(folder);
+    var failure = assertThrows(ProfileStore.UnreadableException.class, store::load);
+    assertTrue(failure.getMessage().contains("larger than 16 MB"), failure.getMessage());
+    store.save(PROFILES);
+    assertEquals(PROFILES, store.load());
+    assertEquals(content.length, Files.size(folder.resolve(ProfileStore.UNREADABLE)));
+  }
+
+  @Test
+  void saveRefusesTwoProfilesWithOneIdAndLeavesTheFile() throws IOException {
+    var store = new ProfileStore(folder);
+    store.save(PROFILES);
+    var before = Files.readAllBytes(folder.resolve(ProfileStore.FILE));
+    var twice = List.of(PROFILES.getFirst(), PROFILES.getFirst());
+    assertThrows(IllegalArgumentException.class, () -> store.save(twice));
+    assertArrayEquals(before, Files.readAllBytes(folder.resolve(ProfileStore.FILE)));
   }
 
   private Path write(byte[] content) throws IOException {
