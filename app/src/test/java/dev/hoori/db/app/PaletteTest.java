@@ -276,6 +276,20 @@ class PaletteTest {
   }
 
   @Test
+  void goToATableOpenBehindAConsoleFocusesItsGrid() throws Exception {
+    var app = connected();
+    c.run(
+        app,
+        "press role=treeitem label=\"orders\"\nkey Enter\nframe\n" + SETTLE
+            + "key N control\nframe\n" + SETTLE + "snap console\n"
+            + GO_TO + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + "snap end\n");
+    assertTrue(focused(c.tree("console")).contains("#sql"), focused(c.tree("console")));
+    var end = c.tree("end");
+    assertEquals("orders", active(end));
+    assertTrue(focused(end).contains("role=grid"), focused(end));
+  }
+
+  @Test
   void typingInTheTreeFindsANodeAndLeavesItsKeysAlone() throws Exception {
     var app = connected();
     c.run(

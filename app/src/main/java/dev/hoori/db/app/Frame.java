@@ -365,17 +365,26 @@ final class Frame {
 
   /**
    * Gives the focus to the content of the window's active tab: a table's grid, else where it was
-   * there last, or the console's editor. The handler may just have made the tab active, in that
-   * window or another.
+   * there last, or the console's editor; as the window's last build shows them.
    */
   // shortcut: a table's grid, not where the focus was in its tab, as the kit takes the first
   // button there for a tab whose content never had the focus; leave it to the kit once a region
   // can name what it prefers without that element taking the focus when it appears.
-  static void focusContent(State s, TabGroups.Group<Tab> group) {
+  private static void focusContent(State s, TabGroups.Group<Tab> group) {
     var app = app(s, group);
     El panel = find(find(app.tree(), "tabs"), "panel");
     El grid = group.activeTab() instanceof TableTab ? find(panel, "grid") : null;
     focus(app, grid == null ? panel : grid);
+  }
+
+  /**
+   * Gives the focus to the content of the window's active tab once the window has built it anew: a
+   * handler, in that window or another, has just made the tab active.
+   */
+  static void focusContentSoon(State s, TabGroups.Group<Tab> group) {
+    var app = app(s, group);
+    app.invalidate();
+    app.after(0, () -> focusContent(s, group));
   }
 
   private static void focus(App<State> app, El el) {
