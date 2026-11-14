@@ -419,6 +419,39 @@ class DriversTest {
     assertSame(app.state().drivers.loaded(FakeDrivers.DRIVER, OLD), live.driver);
   }
 
+  @Test
+  void aVersionOnlyAConsoleUsesCannotBeDeleted() throws Exception {
+    downloaded(FakeDrivers.VERSION, OLD);
+    var shop = CatalogueTest.SHOP.withDriverVersion(OLD);
+    var app = app(shop);
+    run(app, START);
+    var s = app.state();
+    s.rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
+    run(
+        app,
+        CatalogueTest.menu("shop-prod", "New console") + SETTLE
+            + "press #sql\ntype \"SELECT 1\"\nkey Enter control\n" + CatalogueTest.SETTLE);
+    var console = s.consoles(null).getFirst();
+    // The console's own connection has the version the connection chose, as the tree's has.
+    assertSame(s.drivers.loaded(FakeDrivers.DRIVER, OLD), console.driver);
+    // The tree's connection is lost; the console's goes on, and holds the version alone.
+    s.catalogue.lost(s, s.catalogue.live(shop.id()), "gone", false);
+    assertTrue(s.catalogue.users(s, FakeDrivers.DRIVER, OLD).isEmpty());
+    run(app, OPEN_DRIVERS + "snap used\n");
+    String used = tree("used");
+    assertTrue(
+        block(used, "\"" + OLD + "\"")
+            .contains(
+                "\"" + FakeDrivers.SIZE + ", in use by shop-prod. Disconnect to delete it.\""),
+        used);
+    assertTrue(line(used, "label=\"Delete PostgreSQL JDBC 42.7.10\"").endsWith("disabled"), used);
+    assertFalse(s.claimForDelete(FakeDrivers.DRIVER, OLD), "the delete is refused");
+    // Another version for the connection ends the console's connection, as another host does.
+    s.put(shop.withDriverVersion(FakeDrivers.VERSION));
+    assertFalse(console.connected());
+    assertTrue(s.users(FakeDrivers.DRIVER, OLD).isEmpty());
+  }
+
   /** As on Windows, where a driver used since HooriDB started keeps its file open. */
   @Test
   void aDeleteThatFailsKeepsTheVersion() throws Exception {

@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -547,10 +548,21 @@ final class State {
   /**
    * Who uses the version of the driver, by name: every connection from the moment its attempt to
    * connect decided on the version until it ended, and a load of it under way. Each kind of
-   * connection that holds a driver answers here.
+   * connection that holds a driver answers here: the tree's, and each console's own from when it
+   * is opened, which may outlive the tree's, until it is closed.
    */
   List<String> users(Driver driver, String version) {
-    var users = new ArrayList<>(catalogue.users(this, driver, version));
+    var named = new LinkedHashSet<>(catalogue.users(this, driver, version));
+    for (var console : consoles(null)) {
+      var profile = profile(console.id);
+      if (console.driver != null
+          && profile != null
+          && Driver.of(profile.provider()).equals(driver)
+          && version.equals(drivers.version(console.driver))) {
+        named.add(name(profile));
+      }
+    }
+    var users = new ArrayList<>(named);
     if (users.isEmpty() && drivers.loading(driver, version)) {
       users.add("a connection being opened");
     }

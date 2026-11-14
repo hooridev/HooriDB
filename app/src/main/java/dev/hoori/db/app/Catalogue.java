@@ -19,6 +19,7 @@ import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tree;
@@ -118,6 +119,8 @@ final class Catalogue {
     Work work; // the step under way: reading the password or connecting; or null
     Handover handover; // the password on its way from the keyring, or null
     LoadedDriver driver;
+    // The tabs whose window asks for the password: a console's there; null for the main window.
+    TabGroups.Group<Tab> window;
     // While connected, for the connections to further databases; wiped when it ends.
     char[] password;
     Lane lane; // the first connection
@@ -525,8 +528,11 @@ final class Catalogue {
     return live != null && live.phase instanceof Connected;
   }
 
-  /** A console's session: its own connection, and a copy of the password, which it wipes. */
-  record Session(Lane lane, char[] password) {}
+  /**
+   * A console's session: its own connection, the driver it uses, and a copy of the password, which
+   * it wipes.
+   */
+  record Session(Lane lane, LoadedDriver driver, char[] password) {}
 
   /**
    * Opens a connection of the console's own to the database, with the password and driver the
@@ -542,7 +548,7 @@ final class Catalogue {
     var lane = new Lane(e -> {});
     var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
     lane.open(servers, profile, live.password, live.driver);
-    return new Session(lane, live.password.clone());
+    return new Session(lane, live.driver, live.password.clone());
   }
 
   /** The names of the connection's databases as the tree read them, or none where it has not. */
@@ -1207,11 +1213,12 @@ final class Catalogue {
   }
 
   /** The dialog that asks something for the catalogue, or null: one at a time. */
-  El dialog(Theme t, State s) {
-    if (disconnecting != null) {
+  El dialog(Theme t, State s, TabGroups.Group<Tab> group) {
+    boolean main = group == s.tabs.main();
+    if (main && disconnecting != null) {
       return disconnectDialog(t, s);
     }
-    var fetch = asking();
+    var fetch = main ? asking() : null;
     if (fetch != null) {
       var want = want(fetch);
       Runnable stop = () -> stopFetch(s, want);
@@ -1223,7 +1230,11 @@ final class Catalogue {
       return Dialog.dialog(t, "Driver needed", content, buttons, stop);
     }
     for (var live : lives.values()) {
-      if (live.phase instanceof ForPassword) {
+      // In the window that asked, while it is open; else in the main one, where its tabs went.
+      var asked = live.window != null && s.tabs.groups().contains(live.window)
+          ? live.window
+          : s.tabs.main();
+      if (live.phase instanceof ForPassword && asked == group) {
         return passwordDialog(t, s, live);
       }
     }

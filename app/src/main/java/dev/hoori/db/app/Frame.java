@@ -80,7 +80,8 @@ final class Frame {
     }
     root.overlay(s.deleting == null ? null : deleteDialog(t, s));
     // One dialog at a time: what the catalogue asks waits for the others to close.
-    El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s) : null;
+    El asked =
+        s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, s.tabs.main()) : null;
     root.overlay(asked);
     if (s.driverList != null && s.dialog == null && s.deleting == null && asked == null) {
       root.overlay(s.driverList.view(t, s)).overlay(s.driverList.question(t, s));
@@ -145,7 +146,9 @@ final class Frame {
             .grow(1)
             .minSize(0, 0)
             .padding(0, t.space().m(), t.space().m(), t.space().m())
-            .child(Card.flush(t, tabs.grow(1)).grow(1)));
+            .child(Card.flush(t, tabs.grow(1)).grow(1)))
+        // What a console of this window asked for, such as a password.
+        .overlay(s.catalogue.dialog(t, s, group));
   }
 
   /** The connections: waiting while they load, then a tree of them or the empty state. */
