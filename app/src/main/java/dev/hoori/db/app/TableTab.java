@@ -104,6 +104,8 @@ final class TableTab implements Tab {
   final Map<Long, Lane.Asked> reading = new HashMap<>(); // the pages asked for
   Lane.Asked opening; // the columns, the estimate and the first page, or null
   Lane.Asked counting; // the exact count, or null
+  // The count asked for while the table opened came first: it is newer than the opening's estimate.
+  private boolean countedFirst;
   // An empty page past what is known: the count says where the end is, and no page is read until
   // then, so that finding it takes one read and not one per page.
   private boolean ending;
@@ -136,6 +138,7 @@ final class TableTab implements Tab {
     stop();
     failure = null;
     ending = false;
+    countedFirst = false;
     pages.clear();
     if (columns == null) {
       columns = s.catalogue.columns(id, table);
@@ -170,10 +173,12 @@ final class TableTab implements Tab {
           columns = opened.columns();
           fields = opened.page().fields();
           var estimate = opened.estimate();
-          // Without an estimate the place in view stands until its page says more.
-          rows = estimate.orElse(from);
-          more = false;
-          counted = estimate.isPresent() ? Counted.ESTIMATED : Counted.AT_LEAST;
+          if (!countedFirst) {
+            // Without an estimate the place in view stands until its page says more.
+            rows = estimate.orElse(from);
+            more = false;
+            counted = estimate.isPresent() ? Counted.ESTIMATED : Counted.AT_LEAST;
+          }
           arrived(s, from / PAGE, opened.page(), opened.took());
           want(s, first, last);
           if (counted != Counted.EXACT
@@ -361,6 +366,7 @@ final class TableTab implements Tab {
         link -> link.count(of),
         n -> {
           counting = null;
+          countedFirst = opening != null;
           ending = false;
           rows = n;
           counted = Counted.EXACT;
