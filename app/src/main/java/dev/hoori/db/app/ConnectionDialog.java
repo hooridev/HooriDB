@@ -437,7 +437,9 @@ final class ConnectionDialog {
                         p.provider(),
                         Provider::displayName,
                         open ? v -> provider(s, v) : null)),
-                field("Driver", driverVersion(t, s, open)).help(driverHelp(s)),
+                field("Driver", driverVersion(t, s, open))
+                    .help(driverHelp(s))
+                    .warning(youngWarning()),
                 // Host and port on two rows: a test's note at the port would wrap in its width.
                 field(
                         "Host",
@@ -585,24 +587,21 @@ final class ConnectionDialog {
           "Read the versions again",
           () -> versions.read(s)));
     }
+    return line;
+  }
+
+  /** What to think of a version chosen that is too new to be recommended, or null. */
+  private String youngWarning() {
+    var chosen = editing.value().driverVersion();
     if (!versions.young(chosen)) {
-      return line;
+      return null;
     }
-    // shortcut: a callout under the control, as the kit's form has no warning of a field of its
-    // own; use that once the kit has one.
     var age = versions.age(chosen);
-    return col()
-        .wFull()
-        .gap(t.space().s())
-        .child(line)
-        .child(Callout.callout(
-            t,
-            Callout.Kind.WARNING,
-            "Version " + chosen + " is " + (age == null ? "very new" : age),
-            "HooriDB recommends a release only once it has been out for "
-                + DriverStore.WAITING_PERIOD.toDays()
-                + " days, as a bad release is usually withdrawn within days. Choose Recommended"
-                + " unless this connection needs this version."));
+    return "Version " + chosen + " is " + (age == null ? "very new" : age)
+        + ". HooriDB recommends a release only once it has been out for "
+        + DriverStore.WAITING_PERIOD.toDays()
+        + " days, as a bad release is usually withdrawn within days. Choose Recommended unless"
+        + " this connection needs this version.";
   }
 
   /** Which driver, and whether it is there; and what keeps the list of versions from showing. */

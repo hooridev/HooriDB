@@ -258,13 +258,15 @@ class DriversTest {
         START + NEW_SHOP + choose(YOUNG) + "snap young\n" + choose("Recommended")
             + "snap recommended\n");
     String young = tree("young");
-    assertTrue(young.contains("role=note label=\"Version " + YOUNG + " is 1 day old\""), young);
-    assertTrue(young.contains("HooriDB recommends a release only once it has been out for 3 days"));
-    // Right under the field it belongs to, above the next one.
-    float note = TestConnectionTest.top(young, "role=note label=\"Version");
-    assertTrue(TestConnectionTest.top(young, "label=\"Driver version\"") < note, young);
-    assertTrue(note < TestConnectionTest.top(young, "#host"), young);
-    assertFalse(tree("recommended").contains("role=note"), tree("recommended"));
+    // The field's warning: it stays valid, and the warning stands under it.
+    var box = line(young, "#driver-version");
+    assertTrue(
+        box.contains("warning=\"Version " + YOUNG + " is 1 day old. HooriDB recommends a"
+            + " release only once it has been out for 3 days"),
+        box);
+    assertFalse(box.contains("invalid"), box);
+    assertFalse(young.contains("role=note"), young);
+    assertFalse(line(tree("recommended"), "#driver-version").contains("warning="));
   }
 
   /** A release below the recommended one can be the newest: its own date tells its age. */
@@ -282,7 +284,9 @@ class DriversTest {
     repository.dating.countDown();
     run(app, SETTLE + "snap lower\n");
     String lower = tree("lower");
-    assertTrue(lower.contains("role=note label=\"Version " + LOWER + " is 1 day old\""), lower);
+    assertTrue(
+        line(lower, "#driver-version").contains("warning=\"Version " + LOWER + " is 1 day old."),
+        lower);
     assertFalse(lower.contains("Looking up when"), lower);
   }
 
