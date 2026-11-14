@@ -112,6 +112,23 @@ class ConsoleTest {
   }
 
   @Test
+  void aConsolesTabIsBusyWhileItsStatementRunsAlsoBehindAnotherTab() throws Exception {
+    var app = console(SHOP);
+    var held = servers.hold("run " + PG + " " + ORDERS);
+    c.run(
+        app,
+        type(ORDERS) + "key Enter control\nframe\n" + menu(SHOP.name(), "New console")
+            + "frame\nsnap behind\n");
+    String behind = c.tree("behind");
+    assertTrue(line(behind, "role=tab label=\"shop-prod: shop (1)\"").contains("busy"), behind);
+    assertFalse(line(behind, "role=tab label=\"shop-prod: shop (1)\"").contains("selected"));
+    assertFalse(line(behind, "role=tab label=\"shop-prod: shop (2)\"").contains("busy"), behind);
+    held.countDown();
+    c.run(app, SETTLE + "snap done\n");
+    assertFalse(line(c.tree("done"), "role=tab label=\"shop-prod: shop (1)\"").contains("busy"));
+  }
+
+  @Test
   void controlEnterRunsTheStatementAtTheCaretAlone() throws Exception {
     var app = console(RED);
     c.run(app, "snap empty\n");

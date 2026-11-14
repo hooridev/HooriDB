@@ -116,9 +116,13 @@ final class Frame {
           case TableTab x ->
             new Tabs.Tab(s.title(x))
                 .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE)
-                .hue(Colours.hue(s.colour(x.id)));
+                .hue(Colours.hue(s.colour(x.id)))
+                .busy(x.opening != null || x.counting != null);
           case ConsoleTab x ->
-            new Tabs.Tab(s.title(x)).icon(Symbol.CODE).hue(Colours.hue(s.colour(x.id)));
+            new Tabs.Tab(s.title(x))
+                .icon(Symbol.CODE)
+                .hue(Colours.hue(s.colour(x.id)))
+                .busy(x.busy());
         },
         tab -> switch (tab) {
           case null ->

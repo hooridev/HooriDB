@@ -164,11 +164,13 @@ class TableTabTest {
     assertTrue(line(loading, "#column-0").contains("label=\"id\""), loading);
     assertTrue(cell(loading, 0, 0).contains("\"…\""), loading);
     assertTrue(line(loading, "#refresh").contains("busy"), loading);
+    assertTrue(line(loading, "role=tab label=\"orders\"").contains("busy"), loading);
     assertTrue(loading.contains("role=progressbar label=\"Reading\""), loading);
     held.countDown();
     c.run(app, SETTLE + "snap opened\n");
     String opened = c.tree("opened");
     assertEquals("orders", tabs(opened));
+    assertFalse(line(opened, "role=tab label=\"orders\"").contains("busy"), opened);
     assertTrue(line(opened, "role=heading \"shop.public.orders\"").contains("level=3"), opened);
     // The columns: their names, the server's types, the key and the kind's icon.
     String id = c.tree("opened").substring(opened.indexOf("#column-0"));
