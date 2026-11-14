@@ -1,6 +1,7 @@
 package dev.hoori.db.core.execution;
 
 import dev.hoori.db.core.query.Query;
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Set;
@@ -74,8 +75,11 @@ public record Failure(
   private static final Set<Integer> MYSQL_TIMEOUT = Set.of(1969, 3024, 1205);
   // PostgreSQL's lock_not_available, of lock_timeout and NOWAIT.
   private static final String PG_LOCK_NOT_AVAILABLE = "55P03";
+  // MariaDB's and MySQL's syntax error, whose English message says where; a line beyond an int is
+  // none they write.
+  private static final int MYSQL_SYNTAX = 1064;
   private static final Pattern MYSQL_NEAR =
-      Pattern.compile(".* near '(.*)' at line (\\d+)", Pattern.DOTALL);
+      Pattern.compile(".*? to use near '(.*)' at line (\\d{1,9})", Pattern.DOTALL);
   private static final Pattern MARIADB_CONNECTION = Pattern.compile("^\\(conn=\\d+\\) ");
 
   static Failure cancelled() {
@@ -94,27 +98,30 @@ public record Failure(
     }
     var state = e.getSQLState() == null ? "" : e.getSQLState();
     var code = e.getErrorCode();
-    var kind = switch (Query.failure(connection, e).failure()) {
-      case CONNECTION_LOST, ABORTED -> Kind.CONNECTION_LOST;
-      case ACCESS_DENIED -> Kind.ACCESS_DENIED;
-      case NOT_FOUND -> Kind.INVALID;
-      // Not by the caller: PostgreSQL's statement timeout, or MariaDB's, which shares the state of
-      // an interrupted statement.
-      case CANCELLED ->
-        state.equals("57014") || MYSQL_TIMEOUT.contains(code) ? Kind.TIMEOUT : Kind.CANCELLED;
-      case OTHER -> {
-        if (state.startsWith("23") || code == MYSQL_CHECK) {
-          yield Kind.CONSTRAINT;
-        } else if (code == MYSQL_ROUTINE_DENIED) {
-          yield Kind.ACCESS_DENIED;
-        } else if (state.startsWith("42") || state.startsWith("3D") || state.startsWith("3F")) {
-          yield Kind.INVALID;
-        } else if (state.equals(PG_LOCK_NOT_AVAILABLE) || MYSQL_TIMEOUT.contains(code)) {
-          yield Kind.TIMEOUT;
-        }
-        yield Kind.OTHER;
-      }
-    };
+    var kind = transport(e)
+        ? Kind.CONNECTION_LOST
+        : switch (Query.failure(connection, e).failure()) {
+          case CONNECTION_LOST, ABORTED -> Kind.CONNECTION_LOST;
+          case ACCESS_DENIED -> Kind.ACCESS_DENIED;
+          case NOT_FOUND -> Kind.INVALID;
+          // Not by the caller: PostgreSQL's statement timeout, or MariaDB's, which shares the state
+          // of
+          // an interrupted statement.
+          case CANCELLED ->
+            state.equals("57014") || MYSQL_TIMEOUT.contains(code) ? Kind.TIMEOUT : Kind.CANCELLED;
+          case OTHER -> {
+            if (state.startsWith("23") || code == MYSQL_CHECK) {
+              yield Kind.CONSTRAINT;
+            } else if (code == MYSQL_ROUTINE_DENIED) {
+              yield Kind.ACCESS_DENIED;
+            } else if (state.startsWith("42") || state.startsWith("3D") || state.startsWith("3F")) {
+              yield Kind.INVALID;
+            } else if (state.equals(PG_LOCK_NOT_AVAILABLE) || MYSQL_TIMEOUT.contains(code)) {
+              yield Kind.TIMEOUT;
+            }
+            yield Kind.OTHER;
+          }
+        };
     var server = Drivers.serverError(e);
     if (server != null) {
       return new Failure(
@@ -133,7 +140,7 @@ public record Failure(
     }
     message = MARIADB_CONNECTION.matcher(message).replaceFirst("");
     var near = MYSQL_NEAR.matcher(message);
-    var syntax = state.startsWith("42") && near.matches();
+    var syntax = code == MYSQL_SYNTAX && near.matches();
     return new Failure(
         kind,
         message,
@@ -147,5 +154,16 @@ public record Failure(
         "",
         "",
         "");
+  }
+
+  // A driver that lost its stream may say so only in a cause, with a state of its own and the
+  // connection not yet closed, as MySQL Connector/J does with an EOFException.
+  private static boolean transport(Throwable thrown) {
+    for (var cause = thrown; cause != null; cause = cause.getCause()) {
+      if (cause instanceof IOException) {
+        return true;
+      }
+    }
+    return false;
   }
 }

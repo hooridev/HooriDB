@@ -429,10 +429,14 @@ public final class Rows {
   private static Read mysql(Provider provider, Source source, String catalogueType) {
     var type = catalogueType.toLowerCase(Locale.ROOT);
     UnaryOperator<String> asText = name -> "CAST(" + name + " AS CHAR)";
-    // MariaDB Connector/J's getString() moves a time out of a daylight saving gap of the JVM's
-    // zone, where its LocalDateTime does not; it has none for a zero date.
+    // Of a statement's result, MySQL Connector/J's getString() writes a time in its own way, and
+    // its getBytes() gives the server's text. MariaDB Connector/J's getBytes() refuses a time, and
+    // its getString() moves one out of a daylight saving gap of the JVM's zone, where its
+    // LocalDateTime does not; that has none for a zero date and fails on a zero month or day,
+    // which getString() then writes as the server does.
+    Text raw = provider == Provider.MYSQL ? Rows::ascii : ResultSet::getString;
     Text dateTime = provider == Provider.MYSQL
-        ? ResultSet::getString
+        ? Rows::ascii
         : (rows, index) -> {
           try {
             var local = rows.getObject(index, LocalDateTime.class);
@@ -464,8 +468,8 @@ public final class Rows {
       case "float" -> plain(source, Kind.DECIMAL, Float::valueOf);
       case "double", "real" -> plain(source, Kind.DECIMAL, Double::valueOf);
       // As the server writes them.
-      case "date" -> plain(source, Kind.DATE, asText, Rows::date);
-      case "time" -> plain(source, Kind.TIME, asText, Rows::time);
+      case "date" -> plain(source, Kind.DATE, asText, raw, Rows::date);
+      case "time" -> plain(source, Kind.TIME, asText, raw, Rows::time);
       case "datetime" -> plain(source, Kind.DATE_TIME, asText, dateTime, Rows::dateTime);
       // The server writes a timestamp in the session's zone; UNIX_TIMESTAMP() gives the moment it
       // stores, and 0 for a zero date, which no timestamp is otherwise. A statement's result has
@@ -566,8 +570,7 @@ public final class Rows {
 
   // One character more than the limit tells that there is more; the server counts characters, as
   // code points, where Java counts UTF-16 units. A NULL has no length, also where the start, such
-  // as concat()'s, is an empty text. A statement's result has the whole text, which is cut here
-  // and counted in UTF-8.
+  // as concat()'s, is an empty text. A statement's result has the whole text, which is cut here.
   private static Read text(Source source, Kind kind, UnaryOperator<String> start, String length) {
     if (source.sql() == null) {
       return whole(source, kind);
@@ -604,7 +607,7 @@ public final class Rows {
       var text = rows.getString(index);
       return text == null || text.codePointCount(0, text.length()) <= LIMIT
           ? text
-          : new Cut(text.substring(0, text.offsetByCodePoints(0, LIMIT)), utf8Length(text));
+          : new Cut(text.substring(0, text.offsetByCodePoints(0, LIMIT)), OptionalLong.empty());
     });
   }
 
@@ -612,7 +615,9 @@ public final class Rows {
     if (text == null || text.codePointCount(0, text.length()) <= LIMIT) {
       return text;
     }
-    return new Cut(text.substring(0, text.offsetByCodePoints(0, LIMIT)), rows.getLong(length));
+    return new Cut(
+        text.substring(0, text.offsetByCodePoints(0, LIMIT)),
+        OptionalLong.of(rows.getLong(length)));
   }
 
   private static Read binary(Source source, UnaryOperator<String> sql, String length) {
@@ -642,24 +647,6 @@ public final class Rows {
   private static String bit(ResultSet rows, int index) throws SQLException {
     var bytes = rows.getBytes(index);
     return bytes == null ? null : bytes.length == 1 && bytes[0] == 1 ? "1" : "0";
-  }
-
-  private static long utf8Length(String text) {
-    long length = 0;
-    for (var i = 0; i < text.length(); i++) {
-      var c = text.charAt(i);
-      if (c < 0x80) {
-        length += 1;
-      } else if (c < 0x800) {
-        length += 2;
-      } else if (Character.isHighSurrogate(c)) {
-        length += 4;
-        i++;
-      } else {
-        length += 3;
-      }
-    }
-    return length;
   }
 
   private static Object decimal(String text) {

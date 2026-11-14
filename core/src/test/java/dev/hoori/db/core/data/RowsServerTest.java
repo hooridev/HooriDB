@@ -35,6 +35,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.TimeZone;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -379,7 +380,8 @@ class RowsServerTest {
         var b = assertInstanceOf(Binary.class, rows.get(0).get(2));
         assertEquals(limit, b.length());
         assertFalse(b.cut());
-        assertEquals(new Cut(whole, 4L * (limit + 1)), rows.get(1).get(1));
+        assertEquals(
+            new Cut(whole, OptionalLong.of(4L * (limit + 1))), rows.get(1).get(1));
         b = assertInstanceOf(Binary.class, rows.get(1).get(2));
         assertTrue(b.cut());
         assertEquals(limit, b.bytes().length);
@@ -417,7 +419,7 @@ class RowsServerTest {
         var row = Rows.read(connection, provider, table, columns, 0, 1).rows().getFirst();
         var allocated = threads.getTotalThreadAllocatedBytes() - before;
 
-        assertEquals(new Cut("x".repeat(Rows.LIMIT), size), row.get(1));
+        assertEquals(new Cut("x".repeat(Rows.LIMIT), OptionalLong.of(size)), row.get(1));
         var b = assertInstanceOf(Binary.class, row.get(2));
         assertEquals(size, b.length());
         assertEquals("y".repeat(Rows.LIMIT), new String(b.bytes()));
@@ -699,7 +701,8 @@ class RowsServerTest {
                 connection, provider, table, columns(connection, provider, table), 0, 2)
             .rows();
         assertEquals(
-            new Cut("ab" + " ".repeat(Rows.LIMIT - 2), 5000), rows.get(0).get(1));
+            new Cut("ab" + " ".repeat(Rows.LIMIT - 2), OptionalLong.of(5000)),
+            rows.get(0).get(1));
         assertNull(rows.get(1).get(1));
       } finally {
         execute(connection, "DROP TABLE padded");

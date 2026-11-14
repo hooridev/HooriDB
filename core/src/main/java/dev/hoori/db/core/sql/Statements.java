@@ -76,6 +76,36 @@ public final class Statements {
     return list.isEmpty() ? Optional.empty() : Optional.of(list.getLast());
   }
 
+  /**
+   * The first word of the text's first statement, after any opening parentheses and the comments
+   * between them, as it is written; empty where the statement starts with anything else, or the
+   * text holds none.
+   */
+  public static String firstWord(String text, Provider provider) {
+    var scan = scan(text, provider);
+    if (scan.statements.isEmpty()) {
+      return "";
+    }
+    int n = text.length();
+    scan.i = scan.statements.getFirst().start();
+    while (scan.i < n) {
+      char c = text.charAt(scan.i);
+      if (whitespace(c) || c == '(') {
+        scan.i++;
+        continue;
+      }
+      int from = scan.i;
+      if (scan.token()) {
+        int to = from;
+        while (to < n && (tagStart(text.charAt(to)) || (to > from && digit(text.charAt(to))))) {
+          to++;
+        }
+        return text.substring(from, to);
+      }
+    }
+    return "";
+  }
+
   private static Statements scan(String text, Provider provider) {
     var scan = new Statements(text, provider);
     scan.run();
