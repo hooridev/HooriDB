@@ -12,7 +12,8 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
-import java.io.IOException;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -47,17 +48,22 @@ final class State {
   String loadError; // why the profiles could not be loaded, or null
   private boolean unreadable; // whether the file was there but could not be understood
   String saveError; // why the profiles could not be saved, or null
+  private boolean unsaved; // the list differs from what was last written
   Keyring keyring; // null while it is looked up
+  private boolean lookingForKeyring;
   // Passwords typed but not saved, for this session only.
   private final Map<UUID, char[]> passwords = new HashMap<>();
   UUID selected; // the selected connection's id, or null
   final Menu.State connectionMenu = new Menu.State();
   ConnectionDialog dialog; // null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
-  Work removing; // the password of the one being deleted on its way out of the keyring, or null
+  // Its deletion runs: it waits for the keyring to be found, then for its password to go.
+  boolean removing;
   String removeError; // why its password could not be removed, or null
   private Work saving; // the save of the profiles on its way, or null
   private boolean saveAgain; // the profiles changed while it ran
+  private boolean quitting; // the window closes once nothing is on its way and all is saved
+  private boolean quitAnyway; // the last save at the end failed and the user was told
 
   /**
    * @param folder where the profiles are kept
@@ -68,30 +74,65 @@ final class State {
     this.findKeyring = keyring;
   }
 
-  /** Loads the profiles and looks up the keyring. */
+  /** Loads the profiles, then looks up the keyring. */
   void start() {
+    load();
+  }
+
+  /** Loads the profiles again after a failure that left the file as it was. */
+  void reload() {
+    loaded = false;
+    loadError = null;
+    load();
+  }
+
+  private void load() {
     app.background(
         "load connections",
         store::load,
         list -> {
           profiles = list;
           loaded = true;
+          unreadable = false;
+          lookForKeyring();
         },
         error -> {
           loaded = true;
           loadError = message(error);
           unreadable = error instanceof ProfileStore.UnreadableException;
+          lookForKeyring();
         });
+  }
+
+  // After the load, so that the list does not wait for it and a script can await the load alone.
+  private void lookForKeyring() {
+    if (keyring != null || lookingForKeyring) {
+      return;
+    }
+    lookingForKeyring = true;
     app.background(
         "find the system keyring",
         findKeyring,
-        found -> {
-          keyring = found;
-          if (dialog != null) {
-            dialog.lookUp(this);
-          }
-        },
-        error -> keyring = new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, message(error)));
+        this::keyringFound,
+        error -> keyringFound(new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, message(error))));
+  }
+
+  private void keyringFound(Keyring found) {
+    keyring = found;
+    if (dialog != null) {
+      dialog.lookUp(this);
+    }
+    if (removing) {
+      delete();
+    }
+  }
+
+  /**
+   * Whether the list can change: not after a load that failed for a reason other than a file it
+   * could not understand, as a save would replace the file that is still there.
+   */
+  boolean canChange() {
+    return loaded && (loadError == null || unreadable);
   }
 
   /** The keyring's store, or null while there is none. */
@@ -146,17 +187,26 @@ final class State {
     removeError = null;
   }
 
-  /** Deletes the connection the dialog asks about, its password out of the keyring first. */
+  /**
+   * Deletes the connection the dialog asks about, its password out of the keyring first, once the
+   * keyring is known. Without a keyring it goes, and the status line says what may be left.
+   */
   void delete() {
     var profile = deleting;
+    removing = true;
+    removeError = null;
+    if (keyring == null) {
+      return; // keyringFound goes on
+    }
     var secrets = secrets();
     if (secrets == null) {
       deleted(profile);
+      tell("Without the system keyring, a password saved for " + name(profile)
+          + " could not be removed.");
       return;
     }
-    removeError = null;
     var id = profile.id();
-    removing = app.background(
+    app.background(
         "delete a password",
         () -> {
           secrets.delete(id);
@@ -164,13 +214,14 @@ final class State {
         },
         done -> deleted(profile),
         error -> {
-          removing = null;
+          removing = false;
           removeError = message(error);
+          keyringFailed();
         });
   }
 
   private void deleted(ConnectionProfile profile) {
-    removing = null;
+    removing = false;
     deleting = null;
     forgetPassword(profile.id());
     profiles = profiles.stream().filter(p -> !p.id().equals(profile.id())).toList();
@@ -180,13 +231,11 @@ final class State {
     persist();
   }
 
-  /** Closes the delete dialog, and lets the password stay. */
+  /** Closes the delete dialog, unless its deletion has begun: that one ends first. */
   void cancelDelete() {
-    if (removing != null) {
-      removing.cancel();
-      removing = null;
+    if (!removing) {
+      deleting = null;
     }
-    deleting = null;
   }
 
   /** Keeps a password for this session; the array is the state's now. */
@@ -207,11 +256,19 @@ final class State {
     return passwords.containsKey(id);
   }
 
+  /** A copy of the password kept for this session, for its caller to wipe; null for none. */
+  char[] rememberedCopy(UUID id) {
+    char[] kept = passwords.get(id);
+    return kept == null ? null : kept.clone();
+  }
+
   /**
    * Writes the profiles as they are now, off the app's thread. One save runs at a time: a change
-   * meanwhile saves again once it is done, with the list as it is then.
+   * meanwhile saves again once it is done, with the list as it is then. The list counts as unsaved
+   * until a write of it has succeeded.
    */
-  private void persist() {
+  void persist() {
+    unsaved = true;
     if (saving != null) {
       saveAgain = true;
       return;
@@ -225,38 +282,73 @@ final class State {
           return list;
         },
         done -> {
+          saving = null;
           saveError = null;
           if (loadError != null) { // the file is readable now
             loadError = null;
-            if (unreadable) {
-              tell(
-                  "The connections that could not be read were kept in " + ProfileStore.UNREADABLE);
-            }
+            tell("The connections that could not be read were kept in " + ProfileStore.UNREADABLE);
           }
-          saveNext();
+          if (saveAgain) {
+            saveAgain = false;
+            persist();
+            return;
+          }
+          unsaved = false;
+          settled();
         },
         error -> {
+          saving = null;
           saveError = message(error);
-          saveNext();
+          if (saveAgain) {
+            saveAgain = false;
+            persist();
+          } else if (quitting) {
+            quitting = false;
+            quitAnyway = true;
+            tell("HooriDB stayed open, as the connections could not be saved. Close it again to"
+                + " quit without them.");
+          }
         });
   }
 
-  private void saveNext() {
-    saving = null;
-    if (saveAgain) {
-      saveAgain = false;
-      persist();
-    }
+  /** Whether a change of the keyring runs, which no one may leave halfway. */
+  private boolean keyringBusy() {
+    return removing || dialog != null && dialog.changing;
   }
 
   /**
-   * For {@code main} once the window is closed and the work awaited: a save that was still wanted
-   * would otherwise never start, as no frame runs any more. Blocks on the disk.
+   * A request to close the window: it closes once what was begun has ended and the list is
+   * written, so that no password is in the keyring for a connection that is not saved.
    */
-  void saveWanted() throws IOException {
-    if (saveAgain) {
-      saveAgain = false;
-      store.save(profiles);
+  void requestClose() {
+    if (quitAnyway && !keyringBusy() && saving == null) {
+      closeAll();
+      return;
+    }
+    quitting = true;
+    if (keyringBusy() || saving != null || unsaved) {
+      tell("HooriDB closes once the connections are saved.");
+    }
+    settled();
+  }
+
+  /** What was on its way has ended: the window closes now if it was asked to. */
+  void settled() {
+    if (!quitting || keyringBusy() || saving != null) {
+      return;
+    }
+    if (unsaved) {
+      persist();
+      return;
+    }
+    closeAll();
+  }
+
+  /** The keyring refused a change: the window stays open, so that the user sees why. */
+  void keyringFailed() {
+    if (quitting) {
+      quitting = false;
+      tell("HooriDB stayed open, as the system keyring reported a problem.");
     }
   }
 
@@ -280,6 +372,13 @@ final class State {
   }
 
   static String message(Exception e) {
+    // A file system's own message is the bare path, or the reason without the file.
+    if (e instanceof FileSystemException f) {
+      String why = f.getReason() != null
+          ? f.getReason()
+          : e instanceof AccessDeniedException ? "access denied" : e.getClass().getSimpleName();
+      return f.getFile() + ": " + why;
+    }
     return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
   }
 
@@ -300,8 +399,12 @@ final class State {
     });
   }
 
-  /** Closes every window, which ends the app. */
+  /** File, Exit: as the window's close button. */
   void quit() {
+    requestClose();
+  }
+
+  private void closeAll() {
     for (Windows.Handle window : app.windows().all()) {
       window.close();
     }

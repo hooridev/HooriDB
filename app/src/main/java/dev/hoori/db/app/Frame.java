@@ -23,6 +23,7 @@ import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tree;
+import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import java.util.List;
 import java.util.function.Predicate;
@@ -76,6 +77,11 @@ final class Frame {
             t,
             s.message == null ? List.of() : List.of(StatusBar.text(t, s.message).key("message")),
             List.of()));
+    // The window closes once what was begun has ended and the connections are written.
+    Windows.Handle window = s.app == null ? null : s.app.windows().of(s.app);
+    if (window != null) {
+      window.onCloseRequest(s::requestClose);
+    }
     if (s.dialog != null) {
       root.overlay(s.dialog.view(t, s)).overlay(s.dialog.question(t, s));
     }
@@ -84,14 +90,23 @@ final class Frame {
 
   /** The connections: waiting while they load, then a tree of them or the empty state. */
   private static El catalogue(Theme t, State s) {
-    Runnable create = s.loaded ? s::newConnection : null;
+    Runnable create = s.canChange() ? s::newConnection : null;
     El problem = null;
     if (s.loadError != null) {
-      problem =
-          Callout.callout(t, Callout.Kind.DANGER, "Connections could not be read", s.loadError);
+      // A file that could not be read for another reason is still there: nothing may replace it.
+      problem = Callout.callout(
+          t,
+          Callout.Kind.DANGER,
+          "Connections could not be read",
+          s.loadError,
+          s.canChange() ? new El[0] : new El[] {tryAgain(t, s::reload)});
     } else if (s.saveError != null) {
-      problem =
-          Callout.callout(t, Callout.Kind.DANGER, "Connections could not be saved", s.saveError);
+      problem = Callout.callout(
+          t,
+          Callout.Kind.DANGER,
+          "Connections could not be saved",
+          s.saveError,
+          tryAgain(t, s::persist));
     }
     El body;
     if (!s.loaded) {
@@ -137,6 +152,10 @@ final class Frame {
         body);
   }
 
+  private static El tryAgain(Theme t, Runnable action) {
+    return button(t, Button.Variant.SECONDARY, "Try again", action);
+  }
+
   /** The context menu of a connection. */
   private static List<Menu.Item> items(State s, ConnectionProfile p) {
     if (p == null) {
@@ -155,7 +174,7 @@ final class Frame {
         Button.Variant.PRIMARY,
         "Delete",
         s::delete,
-        Button.options().tone(Button.Tone.DANGER).busy(s.removing != null));
+        Button.options().tone(Button.Tone.DANGER).busy(s.removing));
     El content = col()
         .gap(t.space().m())
         .child(label(t, "Delete the connection " + State.name(s.deleting) + "?"))
@@ -171,7 +190,9 @@ final class Frame {
         t,
         "Delete connection",
         content,
-        List.of(button(t, Button.Variant.SECONDARY, "Cancel", s::cancelDelete), delete),
+        List.of(
+            button(t, Button.Variant.SECONDARY, "Cancel", s.removing ? null : s::cancelDelete),
+            delete),
         s::cancelDelete);
   }
 
@@ -206,7 +227,8 @@ final class Frame {
         Menu.submenu(
             "&File",
             List.of(
-                Menu.item("New connection…", s.loaded ? s::newConnection : null).icon(Symbol.ADD),
+                Menu.item("New connection…", s.canChange() ? s::newConnection : null)
+                    .icon(Symbol.ADD),
                 Menu.separator(),
                 Menu.item("Exit", s::quit))),
         Menu.submenu(

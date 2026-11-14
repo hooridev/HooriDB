@@ -16,12 +16,12 @@ import dev.hoori.db.core.secret.SecretStore;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -34,10 +34,11 @@ class ConnectionsTest {
 
   final Secrets secrets = new Secrets();
 
-  /** A keyring in memory, which can be told to fail. */
+  /** A keyring in memory, which can be told to fail, or to hold its calls until a gate opens. */
   static final class Secrets implements SecretStore {
-    final Map<UUID, String> stored = new HashMap<>();
-    boolean fails;
+    final Map<UUID, String> stored = new ConcurrentHashMap<>();
+    volatile boolean fails;
+    volatile CountDownLatch gate;
 
     @Override
     public void store(UUID key, char[] secret) throws IOException {
@@ -58,6 +59,13 @@ class ConnectionsTest {
     }
 
     private void check() throws IOException {
+      if (gate != null) {
+        try {
+          gate.await();
+        } catch (InterruptedException e) {
+          throw new IOException(e);
+        }
+      }
       if (fails) {
         throw new IOException("The keyring is locked");
       }
@@ -73,11 +81,15 @@ class ConnectionsTest {
   }
 
   String run(App<State> app, String script) throws IOException {
-    // Each snap "end" once what closed has faded out.
-    String steps = "size 1200 760\nframe\nawait\nframe\nadvance 1\nframe\n"
-        + script.replace("snap end", "advance 1\nframe\nsnap end");
-    Script.run(steps, app, dir.resolve("out"));
-    return Files.readString(dir.resolve("out").resolve("end.tree.txt"));
+    // The connections load, then the keyring is found.
+    more(app, "size 1200 760\nframe\nawait\nframe\nawait\nframe\nadvance 1\nframe\n" + script);
+    Path end = dir.resolve("out").resolve("end.tree.txt");
+    return Files.exists(end) ? Files.readString(end) : null;
+  }
+
+  /** Goes on with an app that a script has run before. */
+  void more(App<State> app, String script) throws IOException {
+    Script.run(script.replace("snap end", "advance 1\nframe\nsnap end"), app, dir.resolve("out"));
   }
 
   String tree(String snap) throws IOException {
@@ -310,7 +322,7 @@ class ConnectionsTest {
     assertTrue(line(edit, "role=dialog").contains("label=\"Edit connection\""), edit);
     assertTrue(line(edit, "#host").contains("\"db.example.com\""), edit);
     assertTrue(line(edit, "role=combobox").contains("label=\"Encrypted, server verified\""));
-    assertTrue(edit.contains("\"Leave it empty to keep the saved password.\""), edit);
+    assertTrue(edit.contains("\"Leave it empty to keep the current password.\""), edit);
     assertTrue(line(edit, "label=\"Save password in the system keyring\"").endsWith(" checked"));
     assertTrue(line(edit, "label=\"Save\"").endsWith("disabled"), "nothing changed yet");
     String end = tree("end");
@@ -346,17 +358,6 @@ class ConnectionsTest {
         frame
         snap end
         """);
-    assertEquals(3, stored().size());
-  }
-
-  /** A save still wanted when the window closes is written before main returns. */
-  @Test
-  void aSaveStillWantedIsWrittenAtTheEnd() throws Exception {
-    store(shop());
-    App<State> app = app();
-    run(app, TWO_DUPLICATES + "snap end\n");
-    app.await(Duration.ofSeconds(10));
-    app.state().saveWanted();
     assertEquals(3, stored().size());
   }
 
@@ -503,5 +504,312 @@ class ConnectionsTest {
     assertFalse(tree.contains("No connections yet"), tree);
     assertTrue(line(tree, "role=note").contains("label=\"Connections could not be read\""), tree);
     assertTrue(tree.contains("it is not valid JSON"), tree);
+  }
+
+  static final String DELETE_SHOP = """
+      press role=treeitem label="shop-prod" right
+      frame
+      advance 1
+      frame
+      press role=menuitem label="Delete…"
+      frame
+      advance 1
+      frame
+      press role=button label="Delete"
+      frame
+      """;
+
+  static final String EDIT_SHOP = """
+      press role=treeitem label="shop-prod" right
+      frame
+      advance 1
+      frame
+      press role=menuitem label="Edit…"
+      frame
+      advance 1
+      frame
+      await
+      frame
+      """;
+
+  static final String SETTLE = """
+      await
+      frame
+      await
+      frame
+      """;
+
+  /** A file that is there but could not be read is not replaced, until a reload has read it. */
+  @Test
+  void aFileThatCouldNotBeReadIsNotReplaced() throws IOException {
+    Files.createDirectories(dir.resolve("config").resolve(ProfileStore.FILE)); // no file to read
+    App<State> app = app();
+    run(app, "snap blocked\n");
+    String blocked = tree("blocked");
+    assertTrue(line(blocked, "role=note").contains("\"Connections could not be read\""), blocked);
+    assertTrue(line(blocked, "label=\"Add connection\"").endsWith("disabled"), blocked);
+    assertFalse(blocked.contains("No connections yet"), blocked);
+    Files.delete(dir.resolve("config").resolve(ProfileStore.FILE));
+    store(shop());
+    more(app, """
+        press role=button label="Try again"
+        frame
+        await
+        frame
+        snap end
+        """);
+    String end = tree("end");
+    assertTrue(line(end, "role=treeitem").contains("label=\"shop-prod\""), end);
+    assertFalse(line(end, "label=\"Add connection\"").endsWith("disabled"), end);
+    assertFalse(end.contains("role=note"), end);
+  }
+
+  /** A delete whose keyring call runs cannot be cancelled: it ends, and then the list changes. */
+  @Test
+  void aDeleteUnderWayCannotBeCancelled() throws IOException {
+    var shop = shop();
+    store(shop);
+    secrets.stored.put(shop.id(), PASSWORD);
+    secrets.gate = new CountDownLatch(1);
+    App<State> app = app();
+    run(app, DELETE_SHOP + """
+        key Escape
+        frame
+        advance 1
+        frame
+        snap waiting
+        """);
+    String waiting = tree("waiting");
+    assertTrue(line(waiting, "role=dialog").contains("\"Delete connection\""), waiting);
+    assertTrue(line(waiting, "label=\"Delete\"").contains("busy"), waiting);
+    assertTrue(line(waiting, "label=\"Cancel\"").endsWith("disabled"), waiting);
+    secrets.gate.countDown();
+    more(app, SETTLE + "snap end\n");
+    assertFalse(tree("end").contains("role=dialog"));
+    assertFalse(secrets.stored.containsKey(shop.id()));
+    assertTrue(stored().isEmpty());
+  }
+
+  /** A password on its way into the keyring cannot be discarded: the connection is saved. */
+  @Test
+  void aSaveUnderWayCannotBeDiscarded() throws IOException {
+    secrets.gate = new CountDownLatch(1);
+    App<State> app = app();
+    run(app, NEW_SHOP + """
+        key Enter
+        frame
+        key Escape
+        frame
+        advance 1
+        frame
+        snap waiting
+        """);
+    String waiting = tree("waiting");
+    assertFalse(waiting.contains("Discard changes?"), waiting);
+    assertTrue(line(waiting, "label=\"Save\"").contains("busy"), waiting);
+    assertTrue(line(waiting, "label=\"Cancel\"").endsWith("disabled"), waiting);
+    secrets.gate.countDown();
+    more(app, SETTLE + "snap end\n");
+    var saved = stored();
+    assertEquals(1, saved.size());
+    assertEquals(PASSWORD, secrets.stored.get(saved.getFirst().id()));
+  }
+
+  /** The window closes once a save under way has ended and the list is written. */
+  @Test
+  void closingWaitsForWhatWasBegun() throws IOException {
+    secrets.gate = new CountDownLatch(1);
+    App<State> app = app();
+    run(app, NEW_SHOP + """
+        key Enter
+        frame
+        close
+        frame
+        snap closing
+        """);
+    assertFalse(app.windows().all().isEmpty(), "still open while the keyring works");
+    assertTrue(tree("closing").contains("\"HooriDB closes once the connections are saved.\""));
+    secrets.gate.countDown();
+    more(app, SETTLE);
+    assertTrue(app.windows().all().isEmpty());
+    var saved = stored();
+    assertEquals(1, saved.size());
+    assertEquals(PASSWORD, secrets.stored.get(saved.getFirst().id()));
+  }
+
+  /** Changing where a password is kept moves the one there is, the field left empty. */
+  @Test
+  void thePasswordMovesWhereTheUserWantsIt() throws IOException {
+    var shop = shop();
+    store(shop);
+    secrets.stored.put(shop.id(), PASSWORD);
+    App<State> app = app();
+    run(app, EDIT_SHOP + """
+        press role=checkbox label="Save password in the system keyring"
+        frame
+        press role=button label="Save"
+        frame
+        """ + SETTLE);
+    assertFalse(secrets.stored.containsKey(shop.id()), "out of the keyring");
+    assertTrue(app.state().remembers(shop.id()), "into the session");
+    more(app, "advance 1\nframe\n" + EDIT_SHOP + """
+        snap kept
+        press role=checkbox label="Save password in the system keyring"
+        frame
+        press role=button label="Save"
+        frame
+        """ + SETTLE);
+    assertTrue(tree("kept")
+        .contains("\"Leave it empty to keep the current password. The password"
+            + " is kept until HooriDB closes.\""));
+    assertEquals(PASSWORD, secrets.stored.get(shop.id()), "back into the keyring");
+    assertFalse(app.state().remembers(shop.id()));
+  }
+
+  /** The form cannot change while its save runs, so nothing typed then is lost. */
+  @Test
+  void theFormIsReadOnlyWhileItSaves() throws IOException {
+    secrets.gate = new CountDownLatch(1);
+    App<State> app = app();
+    run(app, NEW_SHOP + """
+        key Enter
+        frame
+        press role=textbox label="Host"
+        key A control
+        type "other.example.com"
+        frame
+        snap waiting
+        """);
+    String waiting = tree("waiting");
+    assertTrue(line(waiting, "#host").contains("\"db.example.com\""), waiting);
+    assertTrue(line(waiting, "#host").contains("disabled"), waiting);
+    secrets.gate.countDown();
+    more(app, SETTLE);
+    assertEquals("db.example.com", stored().getFirst().host());
+  }
+
+  /** A failed save stays unsaved: it is shown with a retry, and the window does not just close. */
+  @Test
+  void aFailedSaveIsTriedAgain() throws IOException {
+    App<State> app = app();
+    run(app, "snap start\n");
+    Path file = dir.resolve("config").resolve(ProfileStore.FILE);
+    Files.createDirectories(file); // the store cannot write here
+    more(app, NEW_SHOP + "key Enter\nframe\n" + SETTLE + """
+        snap failed
+        close
+        frame
+        await
+        frame
+        snap stayed
+        """);
+    String failed = tree("failed");
+    assertTrue(line(failed, "role=note").contains("\"Connections could not be saved\""), failed);
+    assertTrue(failed.contains("label=\"Try again\""), failed);
+    assertFalse(app.windows().all().isEmpty(), "the window stays while the list is not written");
+    assertTrue(tree("stayed").contains("Close it again to quit without them."));
+    Files.delete(file);
+    more(app, """
+        press role=button label="Try again"
+        frame
+        await
+        frame
+        snap end
+        """);
+    assertFalse(tree("end").contains("role=note"));
+    assertEquals(1, stored().size());
+    more(app, "close\nframe\n");
+    assertTrue(app.windows().all().isEmpty());
+  }
+
+  /** A delete before the keyring is found waits for it, and then takes the password along. */
+  @Test
+  void aDeleteWaitsForTheKeyring() throws IOException {
+    var shop = shop();
+    store(shop);
+    secrets.stored.put(shop.id(), PASSWORD);
+    var found = new CountDownLatch(1);
+    App<State> app = HooriDb.app(dir.resolve("config"), () -> {
+      found.await();
+      return new Keyring.Available(secrets);
+    });
+    // The connections load; the keyring is not found yet.
+    more(
+        app,
+        "size 1200 760\nframe\nawait\nframe\nadvance 1\nframe\n" + DELETE_SHOP + "snap waiting\n");
+    String waiting = tree("waiting");
+    assertTrue(line(waiting, "label=\"Delete\"").contains("busy"), waiting);
+    assertTrue(line(waiting, "role=treeitem").contains("\"shop-prod\""), waiting);
+    found.countDown();
+    more(app, SETTLE + SETTLE); // the keyring is found, the password goes, the list is saved
+    assertFalse(secrets.stored.containsKey(shop.id()));
+    assertTrue(stored().isEmpty());
+  }
+
+  /** Without a keyring, a delete goes ahead and says what may be left. */
+  @Test
+  void aDeleteWithoutAKeyringSaysSo() throws IOException {
+    store(shop());
+    App<State> app = app(new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, "no answer"));
+    run(app, DELETE_SHOP + SETTLE + "snap end\n");
+    assertTrue(tree("end").contains("a password saved for shop-prod could not be removed"));
+    assertTrue(stored().isEmpty());
+  }
+
+  /** Text typed into the port counts as set by hand and as a change, also when it is no port. */
+  @Test
+  void aPortThatIsNoPortYetCountsAsTyped() throws IOException {
+    store(shop());
+    App<State> app = app();
+    run(app, """
+        press role=button label="Add connection"
+        frame
+        advance 1
+        frame
+        press role=textbox label="Port"
+        key A control
+        key Backspace
+        press role=radio label="MySQL"
+        frame
+        snap emptied
+        key Escape
+        frame
+        advance 1
+        frame
+        press role=button label="Discard"
+        frame
+        advance 1
+        frame
+        """ + EDIT_SHOP + """
+        press role=textbox label="Port"
+        key A control
+        key Backspace
+        key Escape
+        frame
+        advance 1
+        frame
+        snap end
+        """);
+    assertTrue(line(tree("emptied"), "#port").contains("\"\""), tree("emptied"));
+    assertTrue(tree("end").contains("role=dialog label=\"Discard changes?\""), tree("end"));
+  }
+
+  /** A script names the folder it starts from, and has no keyring. */
+  @Test
+  void aScriptRunUsesTheFolderItIsGiven() throws Exception {
+    Path script = dir.resolve("new.txt");
+    Files.writeString(
+        script,
+        "size 1200 760\nframe\nawait\nframe\nadvance 1\nframe\n" + NEW_SHOP + "key Enter\nframe\n"
+            + SETTLE);
+    HooriDb.main(new String[] {
+      "--script",
+      script.toString(),
+      "--out",
+      dir.resolve("out").toString(),
+      "--config",
+      dir.resolve("config").toString()
+    });
+    assertEquals("shop-prod", stored().getFirst().name());
   }
 }

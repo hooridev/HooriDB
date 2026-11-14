@@ -30,6 +30,7 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.secret.Keyring;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -67,7 +68,9 @@ final class ConnectionDialog {
   boolean savePassword;
   Boolean stored; // whether the keyring holds a password for the profile; null while unknown
   String keyringError; // what the keyring answered when it failed, or null
-  Work asking; // the keyring's answer on its way, or null
+  Work asking; // the keyring's answer whether it holds a password, or null
+  // A change of the keyring runs: the dialog stays, unchanged, until its answer has come.
+  boolean changing;
   boolean discarding; // the question whether to throw the changes away is open
   final Menu.State tlsMenu = new Menu.State();
 
@@ -120,16 +123,30 @@ final class ConnectionDialog {
   /** Whether the user changed anything, the password or whether it is saved included. */
   boolean changed() {
     return editing.changed()
+        || portTyped()
         || !password.isEmpty()
         || !isNew && stored != null && savePassword != stored;
   }
 
   /** Whether Save can go: the profile can connect, and something changed. */
   boolean ready() {
-    return editing.valid() && editing.value().problems().isEmpty() && changed() && asking == null;
+    return editing.valid()
+        && editing.value().problems().isEmpty()
+        && changed()
+        && asking == null
+        && !changing;
   }
 
-  /** Saves the password as asked, then the profile, and closes; a failure keeps it open. */
+  /** Whether the port field holds a text that is no port, which the user typed. */
+  private boolean portTyped() {
+    return editing.at(PORT).draft().error() != null;
+  }
+
+  /**
+   * Saves the password where the user wants it, then the profile, and closes; a failure keeps it
+   * open. A password already kept moves when the user changes where: into the keyring from this
+   * session, or out of the keyring into this session.
+   */
   void save(State s) {
     if (!ready()) {
       triedToSave = true;
@@ -139,41 +156,55 @@ final class ConnectionDialog {
     var id = profile.id();
     var secrets = s.secrets();
     boolean keep = savePassword && secrets != null;
+    boolean inKeyring = Boolean.TRUE.equals(stored);
     char[] typed = password.isEmpty() ? null : password.toCharArray();
+    char[] put = !keep ? null : typed != null ? typed : inKeyring ? null : s.rememberedCopy(id);
+    boolean takeOut = !keep && secrets != null && inKeyring;
     keyringError = null;
-    if (keep && typed != null) {
-      asking = s.app.background(
-          "save a password",
-          () -> {
-            try {
-              secrets.store(id, typed);
-            } finally {
-              Arrays.fill(typed, '\0');
-            }
-            return id;
-          },
-          done -> saved(s, profile, null, true),
-          error -> failed(error, null));
-    } else if (!keep && secrets != null && Boolean.TRUE.equals(stored)) {
-      asking = s.app.background(
-          "delete a password",
-          () -> {
-            secrets.delete(id);
-            return id;
-          },
-          done -> saved(s, profile, typed, false),
-          error -> failed(error, typed));
-    } else {
+    if (put == null && !takeOut) {
       saved(s, profile, keep ? null : typed, false);
+      return;
     }
+    changing = true;
+    s.app.background(
+        "move a password",
+        () -> {
+          if (put != null) {
+            try {
+              secrets.store(id, put);
+            } finally {
+              Arrays.fill(put, '\0');
+            }
+            return null;
+          }
+          char[] old = typed == null ? secrets.read(id).orElse(null) : null;
+          try {
+            secrets.delete(id);
+          } catch (IOException e) {
+            if (old != null) {
+              Arrays.fill(old, '\0');
+            }
+            throw e;
+          }
+          return old;
+        },
+        old -> saved(s, profile, put != null ? null : typed != null ? typed : old, put != null),
+        error -> {
+          changing = false;
+          keyringError = State.message(error);
+          if (put == null && typed != null) {
+            Arrays.fill(typed, '\0');
+          }
+          s.keyringFailed();
+        });
   }
 
   /**
    * @param session the password to keep for this session, or null
-   * @param inKeyring whether the keyring has the typed password now
+   * @param inKeyring whether the keyring has the password now
    */
   private void saved(State s, ConnectionProfile profile, char[] session, boolean inKeyring) {
-    asking = null;
+    changing = false;
     if (session != null) {
       s.rememberPassword(profile.id(), session);
     } else if (inKeyring) {
@@ -184,16 +215,11 @@ final class ConnectionDialog {
     s.put(profile);
   }
 
-  private void failed(Exception error, char[] typed) {
-    asking = null;
-    keyringError = State.message(error);
-    if (typed != null) {
-      Arrays.fill(typed, '\0');
-    }
-  }
-
   /** Cancel and Escape: closes, after asking when there are changes. */
   void cancel(State s) {
+    if (changing) {
+      return;
+    }
     if (changed()) {
       discarding = true;
     } else {
@@ -213,7 +239,7 @@ final class ConnectionDialog {
 
   private void provider(Provider provider) {
     editing.at(PROVIDER).set(provider);
-    if (!portByHand) {
+    if (!portByHand && !portTyped()) {
       editing.at(PORT).set(provider.defaultPort());
     }
   }
@@ -295,23 +321,30 @@ final class ConnectionDialog {
     var e = editing;
     var p = e.value();
     var problems = p.problems();
-    boolean busy = asking != null && stored != null;
+    boolean open = !changing; // nothing changes while the keyring is being changed
     El save = button(
         t,
         PRIMARY,
         "Save",
         () -> save(s),
-        Button.options().enabled(busy || ready()).busy(busy));
-    El cancel = button(t, SECONDARY, "Cancel", () -> cancel(s));
+        Button.options().enabled(changing || ready()).busy(changing));
+    El cancel = button(t, SECONDARY, "Cancel", open ? () -> cancel(s) : null);
     boolean canSave = s.secrets() != null && stored != null;
-    var keyring = Prop.of(() -> canSave && savePassword, canSave ? v -> savePassword = v : null);
+    boolean inKeyring = Boolean.TRUE.equals(stored);
+    boolean inSession = !isNew && s.remembers(e.original().id());
+    String keepNote = password.isEmpty() && (inKeyring || inSession)
+        ? "Leave it empty to keep the current password."
+        : null;
+    String note = keyringNote(s);
+    var keyring =
+        Prop.of(() -> canSave && savePassword, canSave && open ? v -> savePassword = v : null);
     String fallback = String.valueOf(p.provider().defaultPort());
     El form = Form.form(
         t,
         Form.Labels.BESIDE,
         field(
             "Name",
-            textField(t, e.at(NAME), p.host().isBlank() ? "Optional" : p.host())
+            textField(t, locked(e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
                 .key("name")
                 .wFull()),
         field(
@@ -321,17 +354,23 @@ final class ConnectionDialog {
                 List.of(Provider.values()),
                 p.provider(),
                 Provider::displayName,
-                this::provider)),
+                open ? this::provider : null)),
         field(
                 "Host",
-                textField(t, p.host(), "Name or address", this::host)
+                textField(t, p.host(), "Name or address", open ? this::host : null)
                     .key("host")
                     .wFull())
             .required()
             .error(error(problems, ConnectionProfile.Field.HOST)),
         field(
                 "Port",
-                valueField(t, Format.INTEGER, p.port(), fallback, e.at(PORT).draft(), this::port)
+                valueField(
+                        t,
+                        Format.INTEGER,
+                        p.port(),
+                        fallback,
+                        e.at(PORT).draft(),
+                        open ? this::port : null)
                     .key("port")
                     .maxLength(5)
                     .w(3 * t.size().control()))
@@ -339,9 +378,9 @@ final class ConnectionDialog {
             .error(error(problems, ConnectionProfile.Field.PORT)),
         field(
                 "Database",
-                textField(t, e.at(DATABASE), "Optional").key("database").wFull())
+                textField(t, locked(e.at(DATABASE)), "Optional").key("database").wFull())
             .error(error(problems, ConnectionProfile.Field.DATABASE)),
-        field("User", textField(t, e.at(USER)).key("user").wFull())
+        field("User", textField(t, locked(e.at(USER))).key("user").wFull())
             .error(error(problems, ConnectionProfile.Field.USER)),
         field(
                 "Password",
@@ -352,20 +391,17 @@ final class ConnectionDialog {
                             t,
                             passwordField(
                                     t,
-                                    Prop.of(() -> password, v -> password = v),
-                                    Boolean.TRUE.equals(stored)
+                                    Prop.of(() -> password, open ? v -> password = v : null),
+                                    inKeyring
                                         ? "Saved in the system keyring"
-                                        : null)
+                                        : inSession ? "Kept until HooriDB closes" : null)
                                 .key("password")
                                 .wFull(),
                             revealed,
                             () -> revealed = !revealed)
                         .wFull())
                     .child(checkbox(t, keyring, "Save password in the system keyring")))
-            .help(
-                Boolean.TRUE.equals(stored) && savePassword && password.isEmpty()
-                    ? "Leave it empty to keep the saved password."
-                    : keyringNote(s)),
+            .help(keepNote == null ? note : note == null ? keepNote : keepNote + " " + note),
         field(
                 "TLS",
                 Select.select(
@@ -374,7 +410,7 @@ final class ConnectionDialog {
                         p.tls(),
                         ConnectionDialog::tlsLabel,
                         tlsMenu,
-                        this::tls)
+                        open ? this::tls : null)
                     .wFull())
             .help(help(p.tls())));
     El content = col()
@@ -401,6 +437,11 @@ final class ConnectionDialog {
         List.of(cancel, save),
         save,
         () -> cancel(s));
+  }
+
+  /** The prop, or one that cannot be written while the keyring is being changed. */
+  private <T> Prop<T> locked(Prop<T> prop) {
+    return changing ? Prop.of(prop::get, null) : prop;
   }
 
   /** The question whether to throw the changes away, or null while it is not asked. */

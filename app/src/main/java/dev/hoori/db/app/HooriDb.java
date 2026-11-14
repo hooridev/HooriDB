@@ -15,8 +15,10 @@ import com.rethinkj.ui.window.WindowLoop;
 import dev.hoori.db.core.AppFolders;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 /** The app's name and colour, and its window. */
@@ -47,13 +49,26 @@ public final class HooriDb {
 
   /**
    * Opens the window, or with {@code --script <file> --out <folder>} runs the script without one
-   * and writes its images and element trees.
+   * and writes its images and element trees. A script never reaches the user's connections or
+   * keyring: it has a new temporary folder, or the one {@code --config <folder>} names, and no
+   * keyring.
    */
-  public static void main(String[] args) throws IOException, InterruptedException {
-    App<State> app = app(AppFolders.find().config(), Keyring::find);
-    if (Script.handle(args, app)) {
+  public static void main(String[] args) throws IOException {
+    var rest = new ArrayList<>(List.of(args));
+    if (rest.contains("--script")) {
+      int at = rest.indexOf("--config");
+      Path folder;
+      if (at >= 0 && at + 1 < rest.size()) {
+        folder = Path.of(rest.remove(at + 1));
+        rest.remove(at);
+      } else {
+        folder = Files.createTempDirectory("hooridb-script-");
+      }
+      var none = new Keyring.Unavailable(Keyring.Reason.UNSUPPORTED_PLATFORM, "a script run");
+      Script.handle(rest.toArray(String[]::new), app(folder, () -> none));
       return;
     }
+    App<State> app = app(AppFolders.find().config(), Keyring::find);
     app.textRendering(TextRendering.platform());
     // Shows what goes wrong before there is a window to show it in, such as no usable GPU.
     SystemDialogs.reportFailure(NAME, () -> {
@@ -67,8 +82,5 @@ public final class HooriDb {
         WindowLoop.run(window, app, presenter);
       }
     });
-    // Work that runs when main returns is dropped, and a save of the connections among it.
-    app.await(Duration.ofSeconds(10));
-    app.state().saveWanted();
   }
 }
