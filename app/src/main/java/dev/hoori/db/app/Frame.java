@@ -8,11 +8,12 @@ import static com.rethinkj.ui.kit.TitleBar.withMenus;
 
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
+import com.rethinkj.ui.Style;
+import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.Dialog;
-import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.MenuBar;
@@ -22,6 +23,7 @@ import com.rethinkj.ui.kit.StatusBar;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -215,9 +217,22 @@ final class Frame {
       return State.name(node);
     }
 
+    // shortcut: the kit has no symbol per database and no muted text after a row's label, so a
+    // badge before it names the provider; use that text once the tree has it.
     @Override
     public El icon(ConnectionProfile node) {
-      return Icon.icon(t, Symbol.DATABASE, Icon.Variant.MUTED);
+      var provider = node.provider();
+      String code = switch (provider) {
+        case POSTGRESQL -> "PG";
+        case MARIADB -> "MA";
+        case MYSQL -> "MY";
+      };
+      // One width for the three, so that the names line up.
+      El badge = Badge.badge(t, code)
+          .label(provider.displayName())
+          .w(t.size().control() + t.space().s())
+          .justify(Style.Content.CENTER);
+      return Tooltip.tooltip(t, badge, provider.displayName());
     }
   }
 

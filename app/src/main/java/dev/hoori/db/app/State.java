@@ -12,8 +12,6 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
-import java.nio.file.AccessDeniedException;
-import java.nio.file.FileSystemException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -372,13 +370,6 @@ final class State {
   }
 
   static String message(Exception e) {
-    // A file system's own message is the bare path, or the reason without the file.
-    if (e instanceof FileSystemException f) {
-      String why = f.getReason() != null
-          ? f.getReason()
-          : e instanceof AccessDeniedException ? "access denied" : e.getClass().getSimpleName();
-      return f.getFile() + ": " + why;
-    }
     return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
   }
 

@@ -683,6 +683,7 @@ class ConnectionsTest {
     String waiting = tree("waiting");
     assertTrue(line(waiting, "#host").contains("\"db.example.com\""), waiting);
     assertTrue(line(waiting, "#host").contains("disabled"), waiting);
+    assertTrue(line(waiting, "role=checkbox").endsWith("disabled checked"), "keeps its tick");
     secrets.gate.countDown();
     more(app, SETTLE);
     assertEquals("db.example.com", stored().getFirst().host());
@@ -811,5 +812,25 @@ class ConnectionsTest {
       dir.resolve("config").toString()
     });
     assertEquals("shop-prod", stored().getFirst().name());
+  }
+
+  /** Each kind of database has its own mark in the list, which a tree dump names. */
+  @Test
+  void theListTellsTheProvidersApart() throws IOException {
+    store(
+        shop(),
+        ConnectionProfile.of(Provider.MARIADB).withName("analytics").withHost("db.example.com"),
+        ConnectionProfile.of(Provider.MYSQL).withName("legacy").withHost("localhost"));
+    String tree = run(app(), "snap end\n");
+    assertTrue(after(tree, "label=\"shop-prod\"").contains("label=\"PostgreSQL\""), tree);
+    assertTrue(after(tree, "label=\"analytics\"").contains("label=\"MariaDB\""), tree);
+    assertTrue(after(tree, "label=\"legacy\"").contains("label=\"MySQL\""), tree);
+  }
+
+  /** The lines of the tree from the first that contains the text to the next row. */
+  static String after(String tree, String text) {
+    int at = tree.indexOf(text);
+    int next = tree.indexOf("role=treeitem", at + text.length());
+    return tree.substring(at, next < 0 ? tree.length() : next);
   }
 }
