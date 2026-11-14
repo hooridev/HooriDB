@@ -16,7 +16,9 @@ import com.rethinkj.ui.El;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
+import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.Dialog;
+import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Editing;
 import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Format;
@@ -374,7 +376,7 @@ final class ConnectionDialog {
     var keyring =
         Prop.of(() -> canSave && savePassword, canSave && open ? v -> savePassword = v : null);
     String fallback = String.valueOf(p.provider().defaultPort());
-    El form = Form.form(
+    El named = Form.form(
         t,
         Form.Labels.BESIDE,
         field(
@@ -385,7 +387,10 @@ final class ConnectionDialog {
         field(
             "Colour",
             Colours.choice(t, p.colour(), open ? v -> e.at(COLOUR).set(v) : null)
-                .key("colour")),
+                .key("colour")));
+    El server = Form.form(
+        t,
+        Form.Labels.BESIDE,
         field(
                 "Type",
                 Segmented.segmented(
@@ -425,6 +430,21 @@ final class ConnectionDialog {
             .error(or(
                 error(problems, ConnectionProfile.Field.DATABASE), probe.error(Probe.At.DATABASE))),
         field(
+                "TLS",
+                Select.select(
+                        t,
+                        List.of(Tls.values()),
+                        p.tls(),
+                        ConnectionDialog::tlsLabel,
+                        tlsMenu,
+                        open ? this::tls : null)
+                    .wFull())
+            .help(help(p.tls()))
+            .error(probe.error(Probe.At.TLS)));
+    El login = Form.form(
+        t,
+        Form.Labels.BESIDE,
+        field(
                 "User",
                 marked(
                     t,
@@ -451,24 +471,14 @@ final class ConnectionDialog {
                         .wFull())
                     .child(checkbox(t, keyring, "Save password in the system keyring")))
             .help(keepNote == null ? note : note == null ? keepNote : keepNote + " " + note)
-            .error(probe.error(Probe.At.PASSWORD)),
-        field(
-                "TLS",
-                Select.select(
-                        t,
-                        List.of(Tls.values()),
-                        p.tls(),
-                        ConnectionDialog::tlsLabel,
-                        tlsMenu,
-                        open ? this::tls : null)
-                    .wFull())
-            .help(help(p.tls()))
-            .error(probe.error(Probe.At.TLS)));
+            .error(probe.error(Probe.At.PASSWORD)));
     El content = col()
         // As wide as two fields, so that help and errors wrap below their field.
         .w(2 * t.size().field())
         .gap(t.space().l())
-        .child(form)
+        .child(named)
+        .child(group(t, "Server", server))
+        .child(group(t, "Login", login))
         // Enter while Save cannot go shows what keeps it, the empty host too.
         .onKey(k -> {
           if (k.name().equals("Enter") && k.modifiers() == 0 && !ready()) {
@@ -498,6 +508,16 @@ final class ConnectionDialog {
         List.of(test, cancel, save),
         save,
         () -> cancel(s));
+  }
+
+  /** A group of the form's fields under a heading, set off by a line. */
+  // shortcut: each group's form has a label column of its own; share one once Form groups fields.
+  private static El group(Theme t, String heading, El form) {
+    return col()
+        .gap(t.space().m())
+        .child(Divider.divider(t))
+        .child(Card.header(t, heading, null))
+        .child(form);
   }
 
   /** The prop, or one that cannot be written while the keyring is being changed. */

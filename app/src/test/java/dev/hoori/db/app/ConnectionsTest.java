@@ -163,6 +163,9 @@ class ConnectionsTest {
         """);
     String typed = tree("typed");
     assertTrue(line(typed, "label=\"Save\"").endsWith("56x24"), "Save can go: " + typed);
+    for (var heading : List.of("Server", "Login")) {
+      assertTrue(line(typed, "role=heading \"" + heading + "\"").contains("level=3"), typed);
+    }
     assertTrue(
         line(typed, "role=combobox").contains("label=\"Encrypted\""), "TLS followed the host");
     assertTrue(line(tree("saving"), "label=\"Save\"").contains("busy"), "the keyring answers");

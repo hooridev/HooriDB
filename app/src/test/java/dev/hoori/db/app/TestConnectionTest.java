@@ -267,14 +267,14 @@ class TestConnectionTest {
         new Case(
             Failure.LOGIN_REFUSED,
             "#password",
-            "role=combobox",
+            "label=\"Test connection\"",
             "The server refused this user name and password.",
             "Login refused",
             "#user"),
         new Case(
             Failure.NO_SUCH_DATABASE,
             "#database",
-            "#user",
+            "role=combobox",
             "The server has no database named shop, or this user may not open it.",
             "No such database",
             null),
