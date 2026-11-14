@@ -256,6 +256,20 @@ class ConsoleEditorTest {
     held.countDown();
   }
 
+  @Test
+  void aMariadbConsoleOffersMariadbsKeywordsAndNotPostgresqls() throws Exception {
+    var app = console.console(INVENTORY);
+    console.c.run(
+        app,
+        type("SELECT * FROM items ST") + "type \"R\"\nframe\nadvance 1\nframe\nsnap join\n"
+            + "key Escape\ntype \";\"\nkey Enter\ntype \"V\"\ntype \"A\"\nframe\nadvance 1\nframe\nsnap va\n");
+    // STRAIGHT_JOIN is MariaDB's; VACUUM is PostgreSQL's only, VALUES everyone's.
+    assertTrue(options(console.c.tree("join")).contains("STRAIGHT_JOIN"), console.c.tree("join"));
+    var va = options(console.c.tree("va"));
+    assertTrue(va.contains("VALUES"), va.toString());
+    assertFalse(va.contains("VACUUM"), va.toString());
+  }
+
   /**
    * The pictures for a review, light and dark, into the folder that {@code -Dreview=<folder>}
    * names; skipped without it.

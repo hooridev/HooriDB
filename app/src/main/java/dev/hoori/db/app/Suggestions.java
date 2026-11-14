@@ -1,11 +1,11 @@
 package dev.hoori.db.app;
 
 import com.rethinkj.ui.kit.Completion;
-import com.rethinkj.ui.kit.Sql;
 import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.sql.Context;
+import dev.hoori.db.core.sql.Keywords;
 import dev.hoori.db.core.sql.Names;
 import dev.hoori.db.core.sql.Ranking;
 import dev.hoori.db.core.sql.Statements;
@@ -60,7 +60,7 @@ final class Suggestions {
         known.tables(known.tables(), candidates);
       }
       default -> {
-        for (var keyword : Sql.keywords()) {
+        for (var keyword : Keywords.offered(provider)) {
           candidates.add(new Candidate(keyword, keyword, null, "keyword", false));
         }
         known.schemas(candidates);
