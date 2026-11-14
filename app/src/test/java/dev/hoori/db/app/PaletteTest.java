@@ -218,6 +218,23 @@ class PaletteTest {
   }
 
   @Test
+  void aPressOnAnEntryThatKeepsThePaletteOpenLeavesTheKeysToItsFieldAndEscapeClosesIt()
+      throws Exception {
+    var app = connected();
+    var held = c.servers.hold("all tables " + PG + "/analytics");
+    c.run(
+        app,
+        GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n" + SHOWN
+            + "snap pressed\nkey Escape\n" + SHOWN + "snap closed\n");
+    var pressed = c.tree("pressed");
+    assertTrue(option(pressed, "analytics").contains("reading its tables…"), pressed);
+    assertTrue(focused(pressed).contains("role=textbox"), focused(pressed));
+    assertFalse(c.tree("closed").contains("label=\"Command palette\""), c.tree("closed"));
+    held.countDown();
+    c.run(app, SETTLE);
+  }
+
+  @Test
   void withoutAnOpenConnectionThePaletteSaysWhereTablesComeFrom() throws Exception {
     var app = c.app(SHOP);
     c.run(app, START + GO_TO + "snap none\n");

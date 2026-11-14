@@ -121,10 +121,6 @@ final class GoTo {
           if (started != null) {
             s.readForPalette(group, () -> c.stop(db, started));
           }
-          // shortcut: opened again only to give its field back the focus, which a press on an
-          // entry that keeps it open takes away; drop it once the kit's palette keeps the focus.
-          var palette = s.palette(group);
-          palette.open(palette.text());
         };
         var key = String.join("\0", id.toString(), database);
         notes.add((reading
