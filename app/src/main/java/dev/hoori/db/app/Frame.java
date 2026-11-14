@@ -94,6 +94,8 @@ final class Frame {
             new Tabs.Tab(s.title(x))
                 .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE)
                 .hue(Colours.hue(s.colour(x.id)));
+          case ConsoleTab x ->
+            new Tabs.Tab(s.title(x)).icon(Symbol.CODE).hue(Colours.hue(s.colour(x.id)));
         },
         tab -> switch (tab) {
           case null ->
@@ -102,10 +104,12 @@ final class Frame {
                     t,
                     Symbol.TABLE,
                     "No tabs open",
-                    "Open a table in the tree, with a double press or Enter, to see its rows.",
+                    "Open a table in the tree, with a double press or Enter, to see its rows, or"
+                        + " a console from a connection's menu to run statements.",
                     null)
                 : null;
           case TableTab x -> x.view(t, s, app);
+          case ConsoleTab x -> x.view(t, s, app);
         });
   }
 
@@ -114,6 +118,7 @@ final class Frame {
     return switch (tab) {
       case null -> HooriDb.NAME;
       case TableTab x -> s.title(x);
+      case ConsoleTab x -> s.title(x);
     };
   }
 
@@ -224,7 +229,7 @@ final class Frame {
         .gap(t.space().m())
         .child(label(t, "Delete the connection " + State.name(s.deleting) + "?"))
         .child(
-            s.tables(s.deleting.id()).isEmpty()
+            s.tables(s.deleting.id()).isEmpty() && s.consoles(s.deleting.id()).isEmpty()
                 ? null
                 : label(t, Label.Variant.MUTED, "Its open tabs close."))
         .child(label(
@@ -245,14 +250,21 @@ final class Frame {
         s::cancelDelete);
   }
 
-  /** Only what does something today: a new connection, quitting, and the themes. */
+  /**
+   * Only what does something today: a new connection, a console on the selected connection,
+   * quitting, and the themes.
+   */
   static List<Menu.Item> menus(State s) {
+    var selected = s.selected;
     return List.of(
         Menu.submenu(
             "&File",
             List.of(
                 Menu.item("New connection…", s.canChange() ? s::newConnection : null)
                     .icon(Symbol.ADD),
+                Menu.item(
+                        "New console", selected == null ? null : () -> s.openConsole(selected.id()))
+                    .icon(Symbol.CODE),
                 Menu.separator(),
                 Menu.item("Exit", s::quit))),
         Menu.submenu(

@@ -518,6 +518,43 @@ final class Catalogue {
     return live != null && live.phase instanceof Connected;
   }
 
+  /** A console's session: its own connection, and a copy of the password, which it wipes. */
+  record Session(Lane lane, char[] password) {}
+
+  /**
+   * Opens a connection of the console's own to the database, with the password and driver the
+   * tree's connection got; null while that is not connected. It is no lane of the tree's: what
+   * runs on it never holds up the tree or a table tab.
+   */
+  Session session(UUID id, String database) {
+    var live = lives.get(id);
+    if (live == null || !(live.phase instanceof Connected)) {
+      return null;
+    }
+    // A console finds a lost connection in what its statements give, not through the tree.
+    var lane = new Lane(e -> {});
+    var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
+    lane.open(servers, profile, live.password, live.driver);
+    return new Session(lane, live.password.clone());
+  }
+
+  /** The names of the connection's databases as the tree read them, or none where it has not. */
+  List<String> databases(UUID id) {
+    var live = lives.get(id);
+    if (live != null && live.levels.get(new Node.Connection(id)) instanceof Read r) {
+      return r.children().stream()
+          .map(n -> ((Node.OfDatabase) n).database().name())
+          .toList();
+    }
+    return List.of();
+  }
+
+  /** The version of the connected server, or null while it is not connected. */
+  ServerVersion version(UUID id) {
+    var live = lives.get(id);
+    return live != null && live.phase instanceof Connected c ? c.version() : null;
+  }
+
   /** The table's columns as the tree read them, or null where it has not. */
   List<Column> columns(UUID id, Table table) {
     var live = lives.get(id);
@@ -727,6 +764,7 @@ final class Catalogue {
   void drop(State s, UUID id) {
     end(lives.remove(id));
     s.ended(id);
+    s.dropped(id);
     open.removeIf(n -> n.id().equals(id));
     if (s.selected != null && s.selected.id().equals(id)) {
       s.selected = new Node.Connection(id);
@@ -1105,6 +1143,8 @@ final class Catalogue {
       case Node.Connection n -> {
         var p = s.profile(n.id());
         yield List.of(
+            Menu.item("New console", () -> s.openConsole(n.id())).icon(Symbol.CODE),
+            Menu.separator(),
             Menu.item("Disconnect", active(n.id()) ? () -> disconnect(s, n.id()) : null)
                 .icon(Symbol.PLUG_DISCONNECTED),
             refresh,

@@ -425,14 +425,38 @@ final class State {
     return all;
   }
 
+  /** Opens a console on the connection, on the database its profile names. */
+  void openConsole(UUID id) {
+    var profile = profile(id);
+    if (profile == null) {
+      return;
+    }
+    tabs.add(tabs.main(), tabs.main().tabs().size(), new ConsoleTab(id, database(profile)));
+  }
+
+  /** The consoles of every window, of the connection or of all where it is null. */
+  List<ConsoleTab> consoles(UUID id) {
+    var all = new ArrayList<ConsoleTab>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof ConsoleTab x && (id == null || x.id.equals(id))) {
+          all.add(x);
+        }
+      }
+    }
+    return all;
+  }
+
   // PostgreSQL opens the database named after the user where none is given.
-  private static String database(ConnectionProfile p) {
+  static String database(ConnectionProfile p) {
     return p.database().isBlank() && p.provider() == Provider.POSTGRESQL ? p.user() : p.database();
   }
 
   /** Closes the tabs of the connection, in every window. */
   private void closeTabs(UUID id) {
-    for (var tab : tables(id)) {
+    var all = new ArrayList<Tab>(tables(id));
+    all.addAll(consoles(id));
+    for (var tab : all) {
       var group = tabs.groupOf(tab);
       tabs.close(group, group.tabs().indexOf(tab));
     }
@@ -443,10 +467,21 @@ final class State {
     tables(id).forEach(TableTab::stop);
   }
 
-  /** The connection connected anew: its tabs read again what they showed. */
+  /**
+   * The user disconnected the connection, or gave up connecting it: its consoles' sessions end
+   * too. A connection that was lost, or is connected anew, leaves them, as they are their own.
+   */
+  void dropped(UUID id) {
+    consoles(id).forEach(ConsoleTab::end);
+  }
+
+  /** The connection connected anew: its tabs read again what they showed, its consoles run. */
   void connected(UUID id) {
     for (var tab : tables(id)) {
       tab.open(this, true);
+    }
+    for (var console : consoles(id)) {
+      console.connected(this);
     }
   }
 
@@ -466,6 +501,20 @@ final class State {
     }
     var profile = profile(tab.id);
     return (profile == null ? "" : name(profile) + ": ") + tab.path();
+  }
+
+  /**
+   * A console's title: its connection and its database, numbered where another console has the
+   * same.
+   */
+  String title(ConsoleTab tab) {
+    var profile = profile(tab.id);
+    var title = (profile == null ? "" : name(profile))
+        + (tab.database.isEmpty() ? "" : ": " + tab.database);
+    var same = consoles(null).stream()
+        .filter(x -> x.id.equals(tab.id) && x.database.equals(tab.database))
+        .toList();
+    return same.size() < 2 ? title : title + " (" + (same.indexOf(tab) + 1) + ")";
   }
 
   /**
@@ -536,6 +585,7 @@ final class State {
   }
 
   private void closeAll() {
+    consoles(null).forEach(ConsoleTab::close);
     catalogue.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();
