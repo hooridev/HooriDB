@@ -2,7 +2,7 @@
 
 A database manager for the desktop: connect to databases, browse their schemas, run queries, look at and edit data. It is written in Java and draws its windows with [rethinkj UI](https://ui.rethinkj.com), a native, GPU-rendered UI framework, whose first app it is.
 
-Status: a skeleton. The app opens a frameless window with its menus, an empty catalogue beside empty tabs, and a status line; nothing talks to a database yet.
+Status: early. The app opens a frameless window with its menus, the saved connections beside empty tabs, and a status line; connections can be created, edited, duplicated and deleted, with their passwords in the system keyring, but nothing talks to a database yet.
 
 - Later home: https://db.hoori.dev
 - Base package and Maven group: `dev.hoori.db`
@@ -22,7 +22,7 @@ mvn spotless:apply                        # format the Java code
 
 The first build downloads the UI framework from Maven Central's snapshot repository and needs network access. It builds nothing native: the framework's native libraries come packaged in a JAR per platform, which a profile of `app/pom.xml` picks by operating system.
 
-With `-Dargs="--script <file> --out <folder>"` the app runs a script instead of opening a window and writes images and element trees into the folder, with paths relative to the folder Maven was started in (see "Testing").
+With `-Dargs="--script <file> --out <folder>"` the app runs a script instead of opening a window and writes images and element trees into the folder, with paths relative to the folder Maven was started in (see "Testing"). A script never touches the user's own connections or keyring: it starts from a new temporary folder and has no keyring, or with `--config <folder>` from the connections in that folder.
 
 ## Modules
 
@@ -55,6 +55,8 @@ With `-Dargs="--script <file> --out <folder>"` the app runs a script instead of 
 
 - Views are tested without a window: `Script.run(text, app, folder)` drives the app with steps such as `press role=button label="Connect"`, `type "…"`, `key Enter`, `frame` and `snap <name>`, and writes `<name>.png` and `<name>.tree.txt`. A test asserts on the tree, which says what is selected, checked, focused, disabled, busy or invalid, and looks at the image only where the look is the point. `HooriDbTest` is the first such test; the framework's documentation has every step under "Testing and agents".
 - Selectors go by role and label, as a person would find a control, so every control that can be pressed or typed into has a label.
+- A selector does not find an element while it fades in or out, so a script runs `advance 1` and `frame` after a dialog or a menu opens or closes. A press finds its target in the last frame, so after typing that moves the layout, such as an error appearing below a field, a `frame` comes before the next press.
+- `await` waits for all running background work, and its results arrive only with the next `frame`. Work that a result starts, such as the save after the keyring answered, needs another `await` and `frame`. To hold work open, a test's fake blocks on a gate it opens between two `Script.run` calls on the same app; an `await` in between would wait for the gate.
 - Tests open no real windows and need no display. Tests of `core` need neither the UI framework nor a database that is not started by the test itself.
 
 ## Changes

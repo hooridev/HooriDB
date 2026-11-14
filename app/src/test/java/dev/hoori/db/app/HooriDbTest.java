@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,14 +16,23 @@ import org.junit.jupiter.api.io.TempDir;
 
 class HooriDbTest {
 
+  /** The app with its connections in the folder, and without a keyring. */
+  static App<State> app(Path folder) {
+    return HooriDb.app(
+        folder.resolve("config"),
+        () -> new Keyring.Unavailable(Keyring.Reason.UNSUPPORTED_PLATFORM, "a test"));
+  }
+
   /** The app runs under a script, without a window: this is how its views are tested. */
   @Test
   void anEmptyAppSaysThatItHasNoConnections(@TempDir Path out) throws IOException {
     Script.run("""
         size 1200 760
         frame
+        await
+        frame
         snap start
-        """, HooriDb.app(), out);
+        """, app(out), out);
     String tree = Files.readString(out.resolve("start.tree.txt"));
     assertTrue(tree.contains("role=status label=\"No connections yet\""), tree);
     assertTrue(tree.contains("role=menubar"), tree);
@@ -38,7 +48,7 @@ class HooriDbTest {
   /** The View menu switches the theme, and the status line says so for a while. */
   @Test
   void theViewMenuSwitchesTheTheme(@TempDir Path out) throws IOException {
-    App<State> app = HooriDb.app();
+    App<State> app = app(out);
     Script.run("""
         size 1200 760
         frame
@@ -64,7 +74,7 @@ class HooriDbTest {
 
   @Test
   void exitClosesTheWindow(@TempDir Path out) throws IOException {
-    App<State> app = HooriDb.app();
+    App<State> app = app(out);
     Script.run("""
         size 1200 760
         frame
