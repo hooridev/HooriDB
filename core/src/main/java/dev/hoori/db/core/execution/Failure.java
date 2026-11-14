@@ -4,6 +4,7 @@ import dev.hoori.db.core.query.Query;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -155,6 +156,87 @@ public record Failure(
         "",
         "",
         "");
+  }
+
+  /** A range of a statement's text, in {@code char}s from {@code start} up to {@code end}. */
+  public record Place(int start, int end) {}
+
+  /**
+   * Where in the statement, as it was sent, the server says the failure is: the word or quoted
+   * name there, or the last word for the end of the statement. PostgreSQL names the character;
+   * MariaDB and MySQL a line and the text from there on, which is looked for on or after that
+   * line, or the whole line where it is not found; text that begins with a space follows the
+   * token that failed. Empty where the server names no place, or a
+   * place the statement does not have.
+   */
+  public Optional<Place> place(String sql) {
+    if (position > 0) {
+      int at = position - 1 < sql.codePointCount(0, sql.length())
+          ? sql.offsetByCodePoints(0, position - 1)
+          : sql.length();
+      return Optional.of(token(sql, at));
+    }
+    if (line <= 0) {
+      return Optional.empty();
+    }
+    int from = 0;
+    for (int n = 1; n < line; n++) {
+      int end = sql.indexOf('\n', from);
+      if (end < 0) {
+        return Optional.empty();
+      }
+      from = end + 1;
+    }
+    if (near.isEmpty()) {
+      return Optional.of(token(sql, sql.length()));
+    }
+    int found = sql.indexOf(near, from);
+    if (found > 0 && Character.isWhitespace(near.charAt(0))) {
+      // MariaDB's lexer may have read the token it failed on already: the text is after it.
+      int start = found - 1;
+      while (start > 0 && word(sql.charAt(start)) && word(sql.charAt(start - 1))) {
+        start--;
+      }
+      return Optional.of(new Place(start, found));
+    }
+    if (found >= 0) {
+      return Optional.of(token(sql, found));
+    }
+    int to = sql.indexOf('\n', from);
+    to = to < 0 ? sql.length() : to;
+    return to > from ? Optional.of(new Place(from, to)) : Optional.empty();
+  }
+
+  // The word, the quoted text or the character at the offset; at the end, the last word.
+  private static Place token(String sql, int at) {
+    int n = sql.length();
+    if (at >= n) {
+      int end = n;
+      while (end > 0 && Character.isWhitespace(sql.charAt(end - 1))) {
+        end--;
+      }
+      int start = end;
+      while (start > 0 && word(sql.charAt(start - 1))) {
+        start--;
+      }
+      return start < end ? new Place(start, end) : new Place(Math.max(0, end - 1), end);
+    }
+    char c = sql.charAt(at);
+    int end = at + 1;
+    if (word(c)) {
+      while (end < n && word(sql.charAt(end))) {
+        end++;
+      }
+    } else if (c == '"' || c == '`' || c == '\'') {
+      int close = sql.indexOf(c, at + 1);
+      int line = sql.indexOf('\n', at + 1);
+      end = close >= 0 && (line < 0 || close < line) ? close + 1 : line < 0 ? n : line;
+    }
+    return new Place(at, end);
+  }
+
+  private static boolean word(char c) {
+    return Character.isLetterOrDigit(c) || c == '_' || c == '$';
   }
 
   // A driver that lost its stream may say so only in a cause, with a state of its own and the
