@@ -53,8 +53,9 @@ import java.util.regex.Pattern;
  * <p>Each call blocks, without a time limit. An interrupt of the calling thread ends it with a
  * {@link Failure.Kind#CANCELLED} failure, leaves the thread interrupted and the execution over: the
  * statement is cancelled on the server, while it executes and while its rows are read, and the
- * connection stays usable; only if the driver cannot stop it within {@link Query#GRACE} is the
- * connection aborted. A cancel fails PostgreSQL's transaction, which the caller then rolls back,
+ * connection stays usable; only if the driver cannot stop it within {@link Query#GRACE}, or a
+ * cancel may still be on its way, is the connection aborted, with a {@link
+ * Failure.Kind#CONNECTION_LOST} failure. A cancel fails PostgreSQL's transaction, which the caller then rolls back,
  * while on MariaDB and MySQL only the statement ends and the transaction stays open.
  */
 public final class Execution implements AutoCloseable {
@@ -107,12 +108,22 @@ public final class Execution implements AutoCloseable {
     }
     try {
       return Query.run(
-          connection, () -> Drivers.cancel(provider, connection, statement), () -> read(count));
+          connection,
+          provider,
+          () -> Drivers.cancel(provider, connection, statement),
+          () -> read(count),
+          // The server's word that a cancel stopped the statement, not MariaDB's time limit.
+          portion -> !portion.results().isEmpty()
+              && portion.results().getLast() instanceof Failure f
+              && (f.state().equals("57014") || f.state().equals("70100"))
+              && f.code() != 1969);
     } catch (QueryException e) {
       // Interrupted: the read has ended, or the connection was aborted.
       quietly(() -> end(false));
-      return new Portion(
-          List.of(Failure.cancelled()), List.of(), false, Duration.ZERO, transaction(before));
+      var failure = e.failure() == QueryException.Failure.ABORTED
+          ? Failure.connectionLost()
+          : Failure.cancelled();
+      return new Portion(List.of(failure), List.of(), false, Duration.ZERO, transaction(before));
     }
   }
 

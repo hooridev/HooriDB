@@ -10,8 +10,16 @@ public final class QueryException extends Exception {
     NOT_FOUND,
     /** The server refused the user what the query asks for. */
     ACCESS_DENIED,
-    /** The thread was interrupted, or the query was cancelled on the server. */
+    /**
+     * The thread was interrupted, or the query was cancelled on the server; the connection is
+     * usable.
+     */
     CANCELLED,
+    /**
+     * The thread was interrupted and the query could not be stopped for certain: the connection is
+     * closed, and going on needs a new one.
+     */
+    ABORTED,
     /** Anything else; the detail says what. */
     OTHER
   }

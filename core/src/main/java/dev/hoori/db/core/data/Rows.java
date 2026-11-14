@@ -102,7 +102,7 @@ public final class Rows {
     return switch (provider) {
       // The first line of the plan is its top: "Seq Scan on t  (cost=0.00..19.00 rows=900 ...".
       case POSTGRESQL ->
-        Query.run(connection, "EXPLAIN " + select, statement -> {
+        Query.run(connection, provider, "EXPLAIN " + select, statement -> {
           try (var rows = statement.executeQuery()) {
             var matcher = PLAN_ROWS.matcher(rows.next() ? rows.getString(1) : "");
             return matcher.find()
@@ -116,7 +116,7 @@ public final class Rows {
           yield OptionalLong.empty();
         }
         var explain = provider == Provider.MYSQL ? "EXPLAIN FORMAT=TRADITIONAL " : "EXPLAIN ";
-        yield Query.run(connection, explain + select, statement -> {
+        yield Query.run(connection, provider, explain + select, statement -> {
           try (var rows = statement.executeQuery()) {
             if (!rows.next()) {
               return OptionalLong.empty();
@@ -134,7 +134,7 @@ public final class Rows {
       throws QueryException {
     requireConnectedTo(connection, provider, table);
     return Query.run(
-        connection, "SELECT count(*) FROM " + qualified(provider, table), statement -> {
+        connection, provider, "SELECT count(*) FROM " + qualified(provider, table), statement -> {
           try (var rows = statement.executeQuery()) {
             rows.next();
             return rows.getLong(1);
@@ -173,7 +173,7 @@ public final class Rows {
         + reads.stream().flatMap(r -> r.sql().stream()).collect(Collectors.joining(", "))
         + " FROM " + qualified(provider, table) + order(provider, table, columns, reads)
         + " LIMIT ? OFFSET ?";
-    var rows = Query.run(connection, sql, statement -> {
+    var rows = Query.run(connection, provider, sql, statement -> {
       statement.setLong(1, to - from);
       statement.setLong(2, from);
       try (var result = statement.executeQuery()) {
@@ -232,7 +232,7 @@ public final class Rows {
         .map(column -> provider.quote(column.name()))
         .collect(Collectors.joining(", "));
     var sql = "SELECT " + names + " FROM " + qualified(provider, table) + " WHERE false";
-    return Query.run(connection, sql, statement -> {
+    return Query.run(connection, provider, sql, statement -> {
       try (var rows = statement.executeQuery()) {
         var metadata = rows.getMetaData();
         var reads = new ArrayList<Read>();

@@ -17,6 +17,11 @@ public final class CatalogException extends Exception {
     WRONG_DATABASE,
     /** The thread was interrupted, or the query was cancelled on the server. */
     CANCELLED,
+    /**
+     * The thread was interrupted and the query could not be stopped for certain: the connection is
+     * closed, and reading on needs a new one.
+     */
+    ABORTED,
     /** Anything else; the detail says what. */
     OTHER
   }

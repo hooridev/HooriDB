@@ -59,11 +59,13 @@ public final class Catalog {
       case POSTGRESQL ->
         query(
             connection,
+            provider,
             "SELECT datname, datistemplate FROM pg_catalog.pg_database ORDER BY datname",
             rows -> new Database(rows.getString(1), rows.getBoolean(2)));
       case MARIADB, MYSQL ->
         query(
             connection,
+            provider,
             "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
             rows -> {
               var name = rows.getString(1);
@@ -84,8 +86,11 @@ public final class Catalog {
       throw new IllegalArgumentException(provider.displayName() + " has no schemas");
     }
     requireConnectedTo(connection, provider, database);
-    var schemas =
-        query(connection, "SELECT nspname FROM pg_catalog.pg_namespace ORDER BY nspname", rows -> {
+    var schemas = query(
+        connection,
+        provider,
+        "SELECT nspname FROM pg_catalog.pg_namespace ORDER BY nspname",
+        rows -> {
           var name = rows.getString(1);
           // Names that start with pg_ are kept for the server: pg_toast, pg_temp_3 and the like.
           return new Schema(
@@ -113,6 +118,7 @@ public final class Catalog {
       case POSTGRESQL ->
         query(
             connection,
+            provider,
             "SELECT c.relname, c.relkind IN ('v', 'm') FROM pg_catalog.pg_class c"
                 + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
                 + " WHERE n.nspname = ? AND c.relkind IN " + PG_KINDS + " ORDER BY c.relname",
@@ -122,6 +128,7 @@ public final class Catalog {
       case MARIADB, MYSQL ->
         query(
             connection,
+            provider,
             "SELECT TABLE_NAME, TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW')"
                 + " FROM information_schema.TABLES"
                 + " WHERE TABLE_SCHEMA = ? AND TABLE_TYPE <> 'SEQUENCE' ORDER BY TABLE_NAME",
@@ -133,7 +140,7 @@ public final class Catalog {
         case POSTGRESQL -> "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = ?";
         case MARIADB, MYSQL -> "SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?";
       };
-      requireExists(connection, exists, container.name());
+      requireExists(connection, provider, exists, container.name());
     }
     return tables;
   }
@@ -149,6 +156,7 @@ public final class Catalog {
       case POSTGRESQL ->
         query(
             connection,
+            provider,
             "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), NOT a.attnotnull,"
                 + " (SELECT k.n FROM pg_catalog.pg_index i,"
                 + " unnest(i.indkey) WITH ORDINALITY k (attnum, n)"
@@ -164,6 +172,7 @@ public final class Catalog {
       case MARIADB, MYSQL ->
         query(
             connection,
+            provider,
             "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE = 'YES', k.ORDINAL_POSITION"
                 + " FROM information_schema.COLUMNS c"
                 + " LEFT JOIN information_schema.KEY_COLUMN_USAGE k"
@@ -184,7 +193,7 @@ public final class Catalog {
         case MARIADB, MYSQL ->
           "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
       };
-      requireExists(connection, exists, schema, table.name());
+      requireExists(connection, provider, exists, schema, table.name());
     }
     return columns;
   }
@@ -220,17 +229,19 @@ public final class Catalog {
     }
   }
 
-  private static void requireExists(Connection connection, String sql, String... names)
+  private static void requireExists(
+      Connection connection, Provider provider, String sql, String... names)
       throws CatalogException {
-    if (query(connection, sql, rows -> true, names).isEmpty()) {
+    if (query(connection, provider, sql, rows -> true, names).isEmpty()) {
       throw new CatalogException(Failure.NOT_FOUND, String.join(".", names), null);
     }
   }
 
-  static <T> List<T> query(Connection connection, String sql, Row<T> row, String... parameters)
+  static <T> List<T> query(
+      Connection connection, Provider provider, String sql, Row<T> row, String... parameters)
       throws CatalogException {
     try {
-      return Query.run(connection, sql, statement -> {
+      return Query.run(connection, provider, sql, statement -> {
         for (var i = 0; i < parameters.length; i++) {
           statement.setString(i + 1, parameters[i]);
         }
@@ -257,6 +268,7 @@ public final class Catalog {
       case NOT_FOUND -> Failure.NOT_FOUND;
       case ACCESS_DENIED -> Failure.ACCESS_DENIED;
       case CANCELLED -> Failure.CANCELLED;
+      case ABORTED -> Failure.ABORTED;
       case OTHER -> Failure.OTHER;
     };
     return new CatalogException(failure, e.detail(), e.getCause());

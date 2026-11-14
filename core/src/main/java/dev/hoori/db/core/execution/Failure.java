@@ -82,6 +82,10 @@ public record Failure(
     return new Failure(Kind.CANCELLED, "", "", 0, 0, "", 0, 0, "", "", "", "");
   }
 
+  static Failure connectionLost() {
+    return new Failure(Kind.CONNECTION_LOST, "", "", 0, 0, "", 0, 0, "", "", "", "");
+  }
+
   /** The failure that the driver's exception means, from a statement that was not cancelled. */
   static Failure of(Connection connection, Throwable thrown) {
     var message = thrown.getMessage() == null ? thrown.getClass().getName() : thrown.getMessage();
@@ -91,7 +95,7 @@ public record Failure(
     var state = e.getSQLState() == null ? "" : e.getSQLState();
     var code = e.getErrorCode();
     var kind = switch (Query.failure(connection, e).failure()) {
-      case CONNECTION_LOST -> Kind.CONNECTION_LOST;
+      case CONNECTION_LOST, ABORTED -> Kind.CONNECTION_LOST;
       case ACCESS_DENIED -> Kind.ACCESS_DENIED;
       case NOT_FOUND -> Kind.INVALID;
       // Not by the caller: PostgreSQL's statement timeout, or MariaDB's, which shares the state of

@@ -383,7 +383,7 @@ class CatalogServerTest {
       var interrupted = new boolean[1];
       var caller = Thread.ofPlatform().start(() -> {
         failure[0] = assertThrows(
-            CatalogException.class, () -> Catalog.query(connection, sleep, rows -> null));
+            CatalogException.class, () -> Catalog.query(connection, provider, sleep, rows -> null));
         interrupted[0] = Thread.currentThread().isInterrupted();
       });
       awaitRunning(server, sleep);
