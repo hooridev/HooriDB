@@ -87,6 +87,11 @@ final class Drivers {
     }
   }
 
+  /** Whether auto-commit is on as the status says, or null where it is not known. */
+  static Boolean autoCommit(int status) {
+    return status < 0 ? null : (status & SERVER_STATUS_AUTOCOMMIT) != 0;
+  }
+
   static Transaction transaction(int status) {
     if (status < 0) {
       return Transaction.UNKNOWN;

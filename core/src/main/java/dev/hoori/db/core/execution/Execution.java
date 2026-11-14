@@ -139,7 +139,8 @@ public final class Execution implements AutoCloseable {
           List.of(),
           false,
           Duration.ofNanos(System.nanoTime() - started),
-          transaction(-1));
+          transaction(-1),
+          autoCommit(-1));
     }
   }
 
@@ -255,12 +256,24 @@ public final class Execution implements AutoCloseable {
         messages,
         more,
         Duration.ofNanos(System.nanoTime() - started),
-        transaction(more ? -1 : status));
+        transaction(more ? -1 : status),
+        autoCommit(more ? -1 : status));
   }
 
   // PostgreSQL's state, which pgjdbc keeps current; MariaDB's and MySQL's from the status when the
   // statement's last result ended well, and otherwise not known. The transaction of its own is
   // none of the caller's, which it began without.
+  // As the transaction is known: pgjdbc's own, the caller's while one of its own is open; MariaDB's
+  // and MySQL's from the same status.
+  private Boolean autoCommit(int status) {
+    if (ownTransaction) {
+      return Boolean.TRUE;
+    }
+    return provider == Provider.POSTGRESQL
+        ? Status.autoCommit(connection)
+        : Drivers.autoCommit(status);
+  }
+
   private Transaction transaction(int status) {
     if (ownTransaction) {
       return Transaction.NONE;

@@ -24,24 +24,12 @@ public enum Transaction {
   /** Not known: not said since the statement began, or by a driver this code does not know. */
   UNKNOWN;
 
-  // MariaDB's and MySQL's statement that does nothing, whose answer carries the server's status.
-  private static final String NOTHING = "DO 0";
-
   /**
-   * The connection's transaction as the server has it now, for when a portion did not say: on
-   * PostgreSQL pgjdbc's, without a round trip; on MariaDB and MySQL from the status that comes
-   * with the answer to {@code DO 0}, which starts no transaction. Nothing else may run on the
-   * connection meanwhile; an interrupt cancels it, as {@link Query} does.
+   * The connection's transaction as the server has it now, as {@link Status#of} has it.
    *
    * @throws QueryException as {@link Query} reports it, such as for a lost connection
    */
   public static Transaction of(Connection connection, Provider provider) throws QueryException {
-    if (provider == Provider.POSTGRESQL) {
-      return Drivers.transaction(connection);
-    }
-    return Query.run(connection, provider, NOTHING, statement -> {
-      statement.execute();
-      return Drivers.transaction(Drivers.status(provider, connection));
-    });
+    return Status.of(connection, provider).transaction();
   }
 }

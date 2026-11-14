@@ -9,6 +9,8 @@ import java.util.List;
  *
  * @param more whether the last result has more rows, which the next call reads; if not, the
  *     execution is over
+ * @param autoCommit whether auto-commit is on after it, as {@link Status} has it, where that is known
+ *     as the transaction is; null where it is not
  * @param elapsed how long the call took, from sending the statement or asking for rows to the
  *     last one read, as the client measures it, with the network in it
  */
@@ -17,7 +19,8 @@ public record Portion(
     List<Message> messages,
     boolean more,
     Duration elapsed,
-    Transaction transaction) {
+    Transaction transaction,
+    Boolean autoCommit) {
 
   public Portion {
     results = List.copyOf(results);

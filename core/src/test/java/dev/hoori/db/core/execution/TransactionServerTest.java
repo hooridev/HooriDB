@@ -9,7 +9,10 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.Provider;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -250,6 +253,77 @@ class TransactionServerTest {
         connection.setAutoCommit(true);
         execute(connection, "DROP TABLE ddl_failed");
       }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aFailedProcedureThatTurnedAutoCommitOnIsSeenByTheStatusAndTheDriver(Provider provider)
+      throws Exception {
+    try (var connection = open(provider);
+        var other = open(provider)) {
+      table(connection, "turned_on");
+      execute(
+          connection,
+          "DROP PROCEDURE IF EXISTS on_and_fail",
+          "CREATE PROCEDURE on_and_fail() BEGIN SET autocommit = 1;"
+              + " SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'after'; END");
+      try {
+        connection.setAutoCommit(false);
+        run(connection, provider, "INSERT INTO turned_on VALUES (1)");
+        var failed = run(connection, provider, "CALL on_and_fail()");
+        assertEquals(Transaction.UNKNOWN, failed.transaction());
+        assertEquals(null, failed.autoCommit());
+        // Turned on, it committed what was open: the server says so, and the driver follows.
+        var status = Status.of(connection, provider);
+        assertEquals(new Status(Transaction.NONE, true), status);
+        assertTrue(connection.getAutoCommit(), "the driver's own idea, set from the server's");
+        assertEquals(1, selectLong(other, "SELECT count(*) FROM turned_on"));
+      } finally {
+        connection.setAutoCommit(true);
+        execute(connection, "DROP PROCEDURE on_and_fail", "DROP TABLE turned_on");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aPortionSaysTheAutoCommitAsItSaysTheTransaction(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      assertEquals(true, run(connection, provider, "SELECT 1").autoCommit());
+      connection.setAutoCommit(false);
+      try {
+        assertEquals(false, run(connection, provider, "SELECT 1").autoCommit());
+        var failed = run(connection, provider, "SELECT * FROM missing_table");
+        assertEquals(pg ? Boolean.FALSE : null, failed.autoCommit());
+        assertEquals(
+            new Status(pg ? Transaction.FAILED : Transaction.NONE, false),
+            Status.of(connection, provider));
+      } finally {
+        connection.rollback();
+        connection.setAutoCommit(true);
+      }
+    }
+  }
+
+  /** A driver whose status cannot be read, as MariaDB Connector/J before 3 lacks the API. */
+  @Test
+  void aDriverThatCannotReportTheStatusLeavesBothUnknown() throws Exception {
+    try (var real = open(Provider.MARIADB)) {
+      // The driver's own classes out of reach, as JDBC's interface alone.
+      var connection = (Connection) Proxy.newProxyInstance(
+          Connection.class.getClassLoader(), new Class<?>[] {Connection.class}, (p, m, a) -> {
+            try {
+              return m.invoke(real, a);
+            } catch (InvocationTargetException e) {
+              throw e.getCause();
+            }
+          });
+      assertEquals(new Status(Transaction.UNKNOWN, null), Status.of(connection, Provider.MARIADB));
+      assertEquals(null, run(connection, Provider.MARIADB, "SELECT 1").autoCommit());
     }
   }
 }
