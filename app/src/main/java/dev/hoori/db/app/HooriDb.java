@@ -47,7 +47,16 @@ public final class HooriDb {
    * @param tester tests a connection, off the app's thread
    */
   static App<State> app(Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester) {
-    App<State> app = new App<>(new State(folder, keyring, drivers, tester), Frame::view);
+    return app(folder, keyring, drivers, tester, Servers.SERVER);
+  }
+
+  /**
+   * The app as {@link #app(Path, Callable, Drivers, Tester)}, whose connections go to these
+   * servers.
+   */
+  static App<State> app(
+      Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester, Servers servers) {
+    App<State> app = new App<>(new State(folder, keyring, drivers, tester, servers), Frame::view);
     app.state().app = app;
     // A script's images must not depend on the platform they were made on.
     app.textRendering(TextRendering.LINUX);

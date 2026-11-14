@@ -577,10 +577,11 @@ class RowsServerTest {
       execute(admin, "CREATE ROLE rows_reader LOGIN PASSWORD '" + TestServer.PASSWORD + "'");
       try {
         var reader = Connector.open(
-            server.profile().withUser("rows_reader"),
-            TestServer.password(),
-            server.driver(),
-            TIMEOUT);
+                server.profile().withUser("rows_reader"),
+                TestServer.password(),
+                server.driver(),
+                TIMEOUT)
+            .connection();
         try (reader) {
           assertFailure(
               Failure.ACCESS_DENIED, () -> Rows.read(reader, provider, reading, columns, 0, 10));
@@ -598,10 +599,11 @@ class RowsServerTest {
     var server = TestServer.of(provider);
     var reading = table(provider, "reading", Table.Kind.TABLE);
     try (var connection = Connector.open(
-        server.profile().withDatabase(TestServer.SPACED_DATABASE),
-        TestServer.password(),
-        server.driver(),
-        TIMEOUT)) {
+            server.profile().withDatabase(TestServer.SPACED_DATABASE),
+            TestServer.password(),
+            server.driver(),
+            TIMEOUT)
+        .connection()) {
       assertThrows(IllegalArgumentException.class, () -> Rows.count(connection, provider, reading));
     }
   }
@@ -859,7 +861,8 @@ class RowsServerTest {
 
   static Connection open(Provider provider) throws Exception {
     var server = TestServer.of(provider);
-    return Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
+    return Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT)
+        .connection();
   }
 
   static void execute(Connection connection, String... statements) throws SQLException {

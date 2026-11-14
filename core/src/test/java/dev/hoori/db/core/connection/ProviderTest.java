@@ -1,5 +1,6 @@
 package dev.hoori.db.core.connection;
 
+import static dev.hoori.db.core.connection.Capability.CONNECTION_PER_DATABASE;
 import static dev.hoori.db.core.connection.Capability.ERROR_POSITION;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN_ANALYZE;
@@ -270,18 +271,21 @@ class ProviderTest {
 
   private static final List<Cell> TABLE = List.of(
       new Cell(POSTGRESQL, SCHEMAS, null, ALWAYS),
+      new Cell(POSTGRESQL, CONNECTION_PER_DATABASE, null, ALWAYS),
       new Cell(POSTGRESQL, TRANSACTIONAL_DDL, null, ALWAYS),
       new Cell(POSTGRESQL, ERROR_POSITION, null, ALWAYS),
       new Cell(POSTGRESQL, EXPLAIN, null, ALWAYS),
       new Cell(POSTGRESQL, EXPLAIN_JSON, "8.4.22", "9.0"),
       new Cell(POSTGRESQL, EXPLAIN_ANALYZE, "7.1.3", "7.2"),
       new Cell(MARIADB, SCHEMAS, NEVER, null),
+      new Cell(MARIADB, CONNECTION_PER_DATABASE, NEVER, null),
       new Cell(MARIADB, TRANSACTIONAL_DDL, NEVER, null),
       new Cell(MARIADB, ERROR_POSITION, NEVER, null),
       new Cell(MARIADB, EXPLAIN, null, ALWAYS),
       new Cell(MARIADB, EXPLAIN_JSON, "10.1.1", "10.1.2"),
       new Cell(MARIADB, EXPLAIN_ANALYZE, "10.0.38", "10.1.0"),
       new Cell(MYSQL, SCHEMAS, NEVER, null),
+      new Cell(MYSQL, CONNECTION_PER_DATABASE, NEVER, null),
       new Cell(MYSQL, TRANSACTIONAL_DDL, NEVER, null),
       new Cell(MYSQL, ERROR_POSITION, NEVER, null),
       new Cell(MYSQL, EXPLAIN, null, ALWAYS),

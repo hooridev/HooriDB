@@ -268,7 +268,8 @@ class RowReaderServerTest {
   private static Connection open(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     return Connector.open(
-        server.profile(), TestServer.password(), server.driver(), Duration.ofSeconds(10));
+            server.profile(), TestServer.password(), server.driver(), Duration.ofSeconds(10))
+        .connection();
   }
 
   private static void execute(Connection connection, String... statements) throws SQLException {

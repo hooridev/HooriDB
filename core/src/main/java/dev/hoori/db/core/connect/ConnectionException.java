@@ -56,6 +56,19 @@ public final class ConnectionException extends Exception {
     this.problems = Set.copyOf(problems);
   }
 
+  /**
+   * A failure as a stand-in for a server reports it, such as a made-up server in a test. The
+   * detail must not hold a password.
+   */
+  public static ConnectionException of(Failure failure, String detail) {
+    return new ConnectionException(failure, detail, null);
+  }
+
+  /** {@link Failure#UNFIT}, for these problems. */
+  public static ConnectionException of(Set<Problem> problems) {
+    return new ConnectionException(problems);
+  }
+
   public Failure failure() {
     return failure;
   }

@@ -7,6 +7,11 @@ package dev.hoori.db.core.connection;
 public enum Capability {
   /** A level of schemas between the database and its tables. */
   SCHEMAS,
+  /**
+   * A connection reads only the database it was opened on: every other database needs a
+   * connection of its own.
+   */
+  CONNECTION_PER_DATABASE,
   /** DDL takes part in a transaction: a rollback undoes it, and it commits nothing. */
   TRANSACTIONAL_DDL,
   /**

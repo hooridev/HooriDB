@@ -2,7 +2,6 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Work;
-import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.TabGroups;
@@ -24,7 +23,7 @@ import java.util.concurrent.Callable;
 /** The app's state, which only the handlers change, on the app's thread. */
 final class State {
 
-  static final Split.Position SIDEBAR = Split.Position.first(260);
+  static final Split.Position SIDEBAR = Split.Position.first(320); // room for a column and its type
   static final double MESSAGE_SECONDS = 5; // how long a message stays in the status line
 
   App<State> app; // runs the clock and the windows, and says whether the window is maximized
@@ -43,6 +42,7 @@ final class State {
   private final Callable<Keyring> findKeyring;
   final Drivers drivers; // null in a script run, which downloads none
   final Tester tester;
+  final Catalogue catalogue;
   List<ConnectionProfile> profiles = List.of(); // in the order shown and saved
   boolean loaded; // whether the profiles were loaded, or failed to
   String loadError; // why the profiles could not be loaded, or null
@@ -53,8 +53,7 @@ final class State {
   private boolean lookingForKeyring;
   // Passwords typed but not saved, for this session only.
   private final Map<UUID, char[]> passwords = new HashMap<>();
-  UUID selected; // the selected connection's id, or null
-  final Menu.State connectionMenu = new Menu.State();
+  Node selected; // the selected node of the catalogue, or null
   ConnectionDialog dialog; // null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
   // Its deletion runs: it waits for the keyring to be found, then for its password to go.
@@ -70,12 +69,14 @@ final class State {
    * @param keyring finds the system keyring, off the app's thread
    * @param drivers where drivers are kept and come from, or null for none
    * @param tester tests a connection, off the app's thread
+   * @param servers opens connections and reads their catalogue, off the app's thread
    */
-  State(Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester) {
+  State(Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester, Servers servers) {
     this.store = new ProfileStore(folder);
     this.findKeyring = keyring;
     this.drivers = drivers;
     this.tester = tester;
+    this.catalogue = new Catalogue(servers);
   }
 
   /** Loads the profiles, then looks up the keyring. */
@@ -127,6 +128,7 @@ final class State {
       dialog.lookUp(this);
       dialog.probe.keyringFound(this);
     }
+    catalogue.keyringFound(this);
     if (removing) {
       delete();
     }
@@ -168,7 +170,7 @@ final class State {
     var list = new ArrayList<>(profiles);
     list.add(list.indexOf(profile) + 1, copy);
     profiles = List.copyOf(list);
-    selected = copy.id();
+    selected = new Node.Connection(copy.id());
     persist();
   }
 
@@ -182,7 +184,8 @@ final class State {
       list.set(at, profile);
     }
     profiles = List.copyOf(list);
-    selected = profile.id();
+    selected = new Node.Connection(profile.id());
+    catalogue.drop(this, profile.id()); // what failed before the change is out of date
     persist();
   }
 
@@ -229,8 +232,9 @@ final class State {
     removing = false;
     deleting = null;
     forgetPassword(profile.id());
+    catalogue.drop(this, profile.id());
     profiles = profiles.stream().filter(p -> !p.id().equals(profile.id())).toList();
-    if (profile.id().equals(selected)) {
+    if (selected != null && selected.id().equals(profile.id())) {
       selected = null;
     }
     persist();
@@ -407,6 +411,7 @@ final class State {
   }
 
   private void closeAll() {
+    catalogue.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();
     }

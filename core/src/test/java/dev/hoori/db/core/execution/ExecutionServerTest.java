@@ -307,10 +307,11 @@ class ExecutionServerTest {
           connection, "CREATE ROLE statement_reader LOGIN PASSWORD '" + TestServer.PASSWORD + "'");
       try {
         try (var reader = Connector.open(
-            server.profile().withUser("statement_reader"),
-            TestServer.password(),
-            server.driver(),
-            TIMEOUT)) {
+                server.profile().withUser("statement_reader"),
+                TestServer.password(),
+                server.driver(),
+                TIMEOUT)
+            .connection()) {
           var denied = failure(run(reader, provider, "SELECT * FROM reading"));
           assertEquals(Failure.Kind.ACCESS_DENIED, denied.kind());
           assertEquals("42501", denied.state());
@@ -611,7 +612,8 @@ class ExecutionServerTest {
 
   static Connection open(Provider provider) throws Exception {
     var server = TestServer.of(provider);
-    return Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
+    return Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT)
+        .connection();
   }
 
   static long selectLong(Connection connection, String sql) throws SQLException {

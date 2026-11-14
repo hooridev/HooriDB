@@ -2,7 +2,7 @@
 
 A database manager for the desktop: connect to databases, browse their schemas, run queries, look at and edit data. It is written in Java and draws its windows with [rethinkj UI](https://ui.rethinkj.com), a native, GPU-rendered UI framework, whose first app it is.
 
-Status: early. The app opens a frameless window with its menus, the saved connections beside empty tabs, and a status line; connections can be created, edited, duplicated and deleted, with their passwords in the system keyring, and tested from their dialog, which downloads the JDBC driver from Maven Central after asking. Nothing else talks to a database yet.
+Status: early. The app opens a frameless window with its menus, the saved connections beside empty tabs, and a status line; connections can be created, edited, duplicated and deleted, with their passwords in the system keyring, and tested from their dialog, which downloads the JDBC driver from Maven Central after asking. Opening a connection in the tree connects and reads its databases, schemas, tables and views, and columns, one level at a time as they are opened; several connections are open at once. Tables cannot be opened yet.
 
 - Later home: https://db.hoori.dev
 - Base package and Maven group: `dev.hoori.db`
@@ -57,6 +57,7 @@ With `-Dargs="--script <file> --out <folder>"` the app runs a script instead of 
 - Selectors go by role and label, as a person would find a control, so every control that can be pressed or typed into has a label.
 - A selector does not find an element while it fades in or out, so a script runs `advance 1` and `frame` after a dialog or a menu opens or closes, and also after a part of an open dialog is replaced by another, such as a progress line by a callout: what fades out can hide the buttons that came in its place. A press finds its target in the last frame, so after typing that moves the layout, such as an error appearing below a field, a `frame` comes before the next press.
 - `await` waits for all running background work, and its results arrive only with the next `frame`. What running work posts with `App.post`, such as a download's progress, also arrives only at `await`, so a script cannot show it while the work is held open. Work that a result starts, such as the save after the keyring answered, needs another `await` and `frame`. To hold work open, a test's fake blocks on a gate it opens between two `Script.run` calls on the same app; an `await` in between would wait for the gate.
+- The catalogue's tests run against `FakeServers`: made-up servers by host, each written as an outline of databases, schemas, tables and columns, whose calls a test holds at a gate or fails by their key, such as `tables <host>/<database>.<schema>`. Each connection's calls run one at a time on its `Lane`, so a held call also holds the calls behind it on that connection.
 - Tests open no real windows and need no display. Tests of `core` need neither the UI framework nor a database that is not started by the test itself.
 
 ## Changes

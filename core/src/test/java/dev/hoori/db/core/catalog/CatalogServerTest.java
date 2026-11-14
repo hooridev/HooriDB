@@ -421,10 +421,11 @@ class CatalogServerTest {
           "REVOKE SELECT ON pg_catalog.pg_attribute FROM PUBLIC");
       try {
         var reader = Connector.open(
-            server.profile().withUser("catalog_reader"),
-            TestServer.password(),
-            server.driver(),
-            TIMEOUT);
+                server.profile().withUser("catalog_reader"),
+                TestServer.password(),
+                server.driver(),
+                TIMEOUT)
+            .connection();
         try (reader) {
           assertFailure(
               Failure.ACCESS_DENIED, () -> Catalog.columns(reader, Provider.POSTGRESQL, customer));
@@ -511,7 +512,11 @@ class CatalogServerTest {
 
   private static Connection open(TestServer server, String database) throws Exception {
     return Connector.open(
-        server.profile().withDatabase(database), TestServer.password(), server.driver(), TIMEOUT);
+            server.profile().withDatabase(database),
+            TestServer.password(),
+            server.driver(),
+            TIMEOUT)
+        .connection();
   }
 
   private static void execute(Connection connection, String... statements) throws SQLException {

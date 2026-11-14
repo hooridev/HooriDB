@@ -91,6 +91,50 @@ final class FakePostgres implements AutoCloseable {
     return new String(bytes, 0, bytes.length - 1, StandardCharsets.UTF_8);
   }
 
+  /** Lets the user in: the login is done, and the server is ready for a query. */
+  static void loggedIn(DataOutputStream out) throws IOException {
+    authenticationRequest(out, 0);
+    for (var parameter : new String[][] {
+      {"server_version", "16.4"},
+      {"server_encoding", "UTF8"},
+      {"client_encoding", "UTF8"},
+      {"DateStyle", "ISO, MDY"},
+      {"integer_datetimes", "on"},
+      {"standard_conforming_strings", "on"},
+      {"TimeZone", "UTC"}
+    }) {
+      var name = parameter[0].getBytes(StandardCharsets.UTF_8);
+      var value = parameter[1].getBytes(StandardCharsets.UTF_8);
+      out.writeByte('S');
+      out.writeInt(4 + name.length + 1 + value.length + 1);
+      out.write(name);
+      out.write(0);
+      out.write(value);
+      out.write(0);
+    }
+    out.writeByte('K');
+    out.writeInt(12);
+    out.writeInt(4242);
+    out.writeInt(2424);
+    out.writeByte('Z');
+    out.writeInt(5);
+    out.writeByte('I');
+    out.flush();
+  }
+
+  /** Answers a statement as done, with its tag, and is ready for the next. */
+  static void done(DataOutputStream out, String tag) throws IOException {
+    var bytes = tag.getBytes(StandardCharsets.UTF_8);
+    out.writeByte('C');
+    out.writeInt(4 + bytes.length + 1);
+    out.write(bytes);
+    out.write(0);
+    out.writeByte('Z');
+    out.writeInt(5);
+    out.writeByte('I');
+    out.flush();
+  }
+
   /** Refuses the login with the message. */
   static void refuse(DataOutputStream out, String message) throws IOException {
     var fields = new ByteArrayOutputStream();
