@@ -464,7 +464,8 @@ final class Catalogue {
             }
             live.levels.put(node, new NotOpened(e.failure(), e.detail()));
           } else if (checked instanceof CatalogException e
-              && e.failure() != CatalogException.Failure.CONNECTION_LOST) {
+              && e.failure() != CatalogException.Failure.CONNECTION_LOST
+              && e.failure() != CatalogException.Failure.ABORTED) {
             live.levels.put(node, new NotRead(e.failure(), e.detail()));
           } else {
             lose(s, live, detail(checked));
@@ -788,7 +789,7 @@ final class Catalogue {
 
   private static String title(CatalogException.Failure failure) {
     return switch (failure) {
-      case CONNECTION_LOST -> "Disconnected";
+      case CONNECTION_LOST, ABORTED -> "Disconnected";
       case NOT_FOUND -> "Not found";
       case ACCESS_DENIED -> "Access denied";
       case WRONG_DATABASE -> "Wrong database";
@@ -801,6 +802,7 @@ final class Catalogue {
     var name = name(s, node);
     return switch (failure) {
       case CONNECTION_LOST -> "The connection was lost.";
+      case ABORTED -> "The connection was closed, as the server did not stop a cancelled read.";
       case NOT_FOUND ->
         name + " is no longer there, or this user may not see it. Refresh what holds it.";
       case ACCESS_DENIED -> "The server does not let this user read what " + name + " holds.";

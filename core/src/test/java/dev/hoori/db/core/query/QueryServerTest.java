@@ -80,10 +80,11 @@ class QueryServerTest {
 
   private static Connection open(TestServer server, Relay relay) throws Exception {
     return Connector.open(
-        server.profile().withHost(Relay.HOST).withPort(relay.port()),
-        TestServer.password(),
-        server.driver(),
-        TIMEOUT);
+            server.profile().withHost(Relay.HOST).withPort(relay.port()),
+            TestServer.password(),
+            server.driver(),
+            TIMEOUT)
+        .connection();
   }
 
   private interface Call {

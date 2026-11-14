@@ -69,7 +69,8 @@ final class Lane {
       try {
         return call.call(link);
       } catch (CatalogException e) {
-        if (e.failure() == CatalogException.Failure.CONNECTION_LOST) {
+        if (e.failure() == CatalogException.Failure.CONNECTION_LOST
+            || e.failure() == CatalogException.Failure.ABORTED) {
           fail(e);
         }
         throw e;
