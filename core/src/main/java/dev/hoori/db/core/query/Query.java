@@ -48,6 +48,16 @@ public final class Query {
     T run(PreparedStatement statement) throws SQLException;
   }
 
+  /** A step of work on a connection, such as executing a statement or reading its rows. */
+  public interface Step<T> {
+    T run() throws SQLException;
+  }
+
+  /** What stops a step on the server, such as {@link Statement#cancel}. */
+  public interface Cancel {
+    void cancel() throws SQLException;
+  }
+
   /**
    * Prepares the statement and runs the work with it on a thread of its own, so that an interrupt
    * of the caller can cancel it on the server: an interrupt of a virtual thread that is in a
@@ -64,10 +74,26 @@ public final class Query {
     } catch (SQLException | RuntimeException e) {
       throw failure(connection, e);
     }
+    return run(connection, statement::cancel, () -> {
+      try (statement) {
+        return work.run(statement);
+      }
+    });
+  }
+
+  /**
+   * Runs the step on a thread of its own, as {@link #run(Connection, String, Work)} runs its work,
+   * with the given cancel in place of the statement's.
+   */
+  public static <T> T run(Connection connection, Cancel cancel, Step<T> step)
+      throws QueryException {
+    if (Thread.currentThread().isInterrupted()) {
+      throw new QueryException(Failure.CANCELLED, "", null);
+    }
     var result = new CompletableFuture<T>();
     Thread.ofVirtual().name("query").start(() -> {
-      try (statement) {
-        result.complete(work.run(statement));
+      try {
+        result.complete(step.run());
       } catch (Throwable e) {
         result.completeExceptionally(e);
       }
@@ -75,7 +101,7 @@ public final class Query {
     try {
       return result.get();
     } catch (InterruptedException e) {
-      cancel(connection, statement, result);
+      cancel(connection, cancel, result);
       Thread.currentThread().interrupt();
       throw new QueryException(Failure.CANCELLED, "", null);
     } catch (ExecutionException e) {
@@ -111,10 +137,10 @@ public final class Query {
 
   // Waits for the cancel as well as for the statement: a cancel that reaches the server late would
   // stop the caller's next statement instead.
-  private static void cancel(Connection connection, Statement statement, Future<?> result) {
+  private static void cancel(Connection connection, Cancel cancel, Future<?> result) {
     var canceller = Thread.ofVirtual().name("query cancel").start(() -> {
       try {
-        statement.cancel();
+        cancel.cancel();
       } catch (SQLException | RuntimeException e) {
         // The statement is over, or the connection is gone; either way nothing runs any more.
       }
