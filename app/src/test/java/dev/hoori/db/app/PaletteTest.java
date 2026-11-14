@@ -256,6 +256,19 @@ class PaletteTest {
   }
 
   @Test
+  void controlOneGoesBackToWhereTheFocusWasInAConsole() throws Exception {
+    var app = connected();
+    c.run(
+        app,
+        "press role=treeitem label=\"shop-prod\"\nframe\nkey N control\nframe\n" + SETTLE
+            + "snap new\nfocus #database\nframe\nkey 0 control\nframe\nsnap tree\n"
+            + "key 1 control\nframe\nsnap back\n");
+    assertTrue(focused(c.tree("new")).contains("#sql"), focused(c.tree("new")));
+    assertTrue(focused(c.tree("tree")).contains("role=tree "), focused(c.tree("tree")));
+    assertTrue(focused(c.tree("back")).contains("#database"), focused(c.tree("back")));
+  }
+
+  @Test
   void thePaletteAndItsKeysInATornOffWindowActOnItsTabs() throws Exception {
     var app = connected();
     c.run(

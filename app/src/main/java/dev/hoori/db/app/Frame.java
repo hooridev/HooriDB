@@ -355,53 +355,39 @@ final class Frame {
         || s.catalogue.dialog(s.theme, s, s.tabs.main()) != null;
   }
 
-  /**
-   * Gives the focus to the content of the window's active tab once the window has built it: a
-   * handler, in that window or another, has just made the tab active, so the tree of the window
-   * still shows what was there before. The second step runs after the window's next build.
-   */
-  static void focusContentSoon(State s, TabGroups.Group<Tab> group) {
-    var app = app(s, group);
-    app.after(0, () -> app.after(0, () -> focusContent(s, group)));
-  }
-
   /** Gives the focus to the tree of connections. */
   private static void focusTree(State s) {
-    El tree = find(s.app.tree(), e -> "connections".equals(e.key()) && e.isFocusable());
-    if (tree != null) {
-      s.app.focus(tree);
-    }
+    focus(s.app, find(s.app.tree(), "connections"));
   }
 
   /**
-   * Gives the focus to the content of the window's active tab: its editor or grid, else the first
-   * element there that takes it.
+   * Gives the focus to the content of the window's active tab: a table's grid, else where it was
+   * there last, or the console's editor. The handler may just have made the tab active, in that
+   * window or another.
    */
-  // shortcut: not back to where the focus was in the content, as the kit cannot focus a region
-  // that way; upgrade when it can.
-  private static void focusContent(State s, TabGroups.Group<Tab> group) {
+  // shortcut: a table's grid, not where the focus was in its tab, as the kit takes the first
+  // button there for a tab whose content never had the focus; leave it to the kit once a region
+  // can name what it prefers without that element taking the focus when it appears.
+  static void focusContent(State s, TabGroups.Group<Tab> group) {
     var app = app(s, group);
-    El panel = find(app.tree(), e -> "tabpanel".equals(e.role()));
-    if (panel == null) {
-      return;
-    }
-    El main = find(panel, e -> "sql".equals(e.key()) || "grid".equals(e.key()));
-    El target = main == null ? null : find(main, El::isFocusable);
-    if (target == null) {
-      target = find(panel, El::isFocusable);
-    }
-    if (target != null) {
-      app.focus(target);
+    El panel = find(find(app.tree(), "tabs"), "panel");
+    El grid = group.activeTab() instanceof TableTab ? find(panel, "grid") : null;
+    focus(app, grid == null ? panel : grid);
+  }
+
+  private static void focus(App<State> app, El el) {
+    if (el != null) {
+      app.focus(el);
     }
   }
 
-  /** The first element at or below this one, in tree order, that passes the test; or null. */
-  private static El find(El el, Predicate<El> test) {
-    if (el == null || test.test(el)) {
+  /** The element at or below this one with the key, in tree order; or null. */
+  private static El find(El el, String key) {
+    if (el == null || key.equals(el.key())) {
       return el;
     }
     for (El child : el.children()) {
-      El found = find(child, test);
+      El found = find(child, key);
       if (found != null) {
         return found;
       }

@@ -151,7 +151,7 @@ final class GoTo {
       var symbol = table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE;
       var colour = s.colour(f.id());
       entries.add(FilterList.entry(
-              table.name(), () -> Frame.focusContentSoon(s, s.openTable(f.id(), table, group)))
+              table.name(), () -> Frame.focusContent(s, s.openTable(f.id(), table, group)))
           .key(key(f.id(), table))
           .detail(f.where())
           .leading(t -> lead(t, colour, Icon.icon(t, symbol, Icon.Variant.MUTED))));
