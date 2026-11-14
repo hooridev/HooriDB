@@ -76,7 +76,7 @@ class ProviderTest {
   void mysql() throws Exception {
     assertParameters(
         "jdbc:mysql://db.example:3306/",
-        Map.of("sslMode", "DISABLED", "dbname", "shop"),
+        Map.of("sslMode", "DISABLED", "allowPublicKeyRetrieval", "true", "dbname", "shop"),
         parameters(MYSQL, "db.example", "shop", Tls.OFF));
     assertParameters(
         "jdbc:mysql://db.example:3306/",
@@ -86,6 +86,19 @@ class ProviderTest {
         "jdbc:mysql://db.example:3306/",
         Map.of("sslMode", "VERIFY_IDENTITY", "dbname", "shop"),
         parameters(MYSQL, "db.example", "shop", Tls.VERIFIED));
+  }
+
+  @Test
+  void onlyMysqlWithoutTlsMayFetchTheServersKey() throws Exception {
+    for (var provider : Provider.values()) {
+      for (var tls : Tls.values()) {
+        var properties = parameters(provider, "h", "d", tls).properties();
+        assertEquals(
+            provider == MYSQL && tls == Tls.OFF,
+            properties.containsKey("allowPublicKeyRetrieval"),
+            provider + " " + tls);
+      }
+    }
   }
 
   @Test
@@ -112,7 +125,9 @@ class ProviderTest {
         Map.of("sslMode", "disable"),
         parameters(MARIADB, "h", "", Tls.OFF));
     assertParameters(
-        "jdbc:mysql://h:3306/", Map.of("sslMode", "DISABLED"), parameters(MYSQL, "h", "", Tls.OFF));
+        "jdbc:mysql://h:3306/",
+        Map.of("sslMode", "DISABLED", "allowPublicKeyRetrieval", "true"),
+        parameters(MYSQL, "h", "", Tls.OFF));
   }
 
   @ParameterizedTest

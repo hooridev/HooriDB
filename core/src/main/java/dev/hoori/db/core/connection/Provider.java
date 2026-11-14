@@ -59,7 +59,11 @@ public enum Provider {
       "mysql",
       '`',
       Map.of(
-          Tls.OFF, Map.of("sslMode", "DISABLED"),
+          // Without TLS, a first login with caching_sha2_password fails unless the client may ask
+          // for the server's public key. Whoever can alter the traffic can hand it a key of their
+          // own and read the password; OFF already accepts an unprotected link, and does not work
+          // at all against a current MySQL without it.
+          Tls.OFF, Map.of("sslMode", "DISABLED", "allowPublicKeyRetrieval", "true"),
           Tls.ENCRYPTED, Map.of("sslMode", "REQUIRED"),
           Tls.VERIFIED, Map.of("sslMode", "VERIFY_IDENTITY")),
       "dbname",

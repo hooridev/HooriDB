@@ -183,6 +183,12 @@ class ConnectionProfileTest {
         "[fe80::1%eth0.100]",
         "fe80::1%nosuchinterface9",
         "fe80::1%en_0-x",
+        "postgres_db",
+        "_db.example",
+        "db_.example",
+        "my_db_1.internal",
+        "a._.example",
+        "_",
       })
   void validHostsAreAccepted(String host) {
     assertEquals(Set.of(), FIT.withHost(host).problems(), host);
@@ -232,7 +238,6 @@ class ConnectionProfileTest {
         "db\u007f.example",
         "db\u00a0.example",
         "bäckerei.example",
-        "db_1.example",
         "-db.example",
         "db-.example",
         "db..example",

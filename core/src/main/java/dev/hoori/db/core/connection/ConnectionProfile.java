@@ -26,7 +26,7 @@ public record ConnectionProfile(
     Tls tls) {
 
   private static final Pattern LABEL =
-      Pattern.compile("[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?");
+      Pattern.compile("[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?");
   private static final Pattern IPV6 = Pattern.compile("[0-9A-Fa-f:.]+");
   private static final Pattern ZONE = Pattern.compile("[A-Za-z0-9._-]+");
 
@@ -155,7 +155,8 @@ public record ConnectionProfile(
     return problems;
   }
 
-  // One DNS name, with or without the final dot, an IPv4 address in four decimal parts, or an IPv6
+  // One DNS name, with or without the final dot and with "_" as Docker Compose names have it, an
+  // IPv4 address in four decimal parts, or an IPv6
   // address with or without brackets and zone. Drivers read anything else in the host's place of
   // their URL as more of the URL: a path, parameters, more hosts.
   private static boolean isHost(String host) {
