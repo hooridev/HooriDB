@@ -511,17 +511,17 @@ class ExecutionServerTest {
         : "SELECT id, SLEEP(0.01), REPEAT('x', 8000) FROM reading";
   }
 
-  private interface Call {
+  interface Call {
     Portion call() throws Exception;
   }
 
-  private interface Wait {
+  interface Wait {
     void await() throws Exception;
   }
 
   // The portion of the call on a thread of its own, which is interrupted once the wait is over;
   // the call ends within the grace a cancel has, and leaves the thread interrupted.
-  private static Portion interrupted(Call call, Wait wait) throws Exception {
+  static Portion interrupted(Call call, Wait wait) throws Exception {
     var portion = new AtomicReference<Portion>();
     var stillInterrupted = new boolean[1];
     var caller = Thread.ofPlatform().start(() -> {
@@ -543,7 +543,7 @@ class ExecutionServerTest {
     return portion.get();
   }
 
-  private static void awaitRunning(Provider provider, String marker) throws Exception {
+  static void awaitRunning(Provider provider, String marker) throws Exception {
     var query = provider == Provider.POSTGRESQL
         ? "SELECT count(*) FROM pg_stat_activity"
             + " WHERE query LIKE ? AND state = 'active' AND pid <> pg_backend_pid()"

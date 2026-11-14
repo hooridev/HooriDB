@@ -1,7 +1,9 @@
 package dev.hoori.db.core.execution;
 
+import static dev.hoori.db.core.execution.ExecutionServerTest.awaitRunning;
 import static dev.hoori.db.core.execution.ExecutionServerTest.execute;
 import static dev.hoori.db.core.execution.ExecutionServerTest.failure;
+import static dev.hoori.db.core.execution.ExecutionServerTest.interrupted;
 import static dev.hoori.db.core.execution.ExecutionServerTest.million;
 import static dev.hoori.db.core.execution.ExecutionServerTest.only;
 import static dev.hoori.db.core.execution.ExecutionServerTest.open;
@@ -19,6 +21,7 @@ import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -30,8 +33,99 @@ import org.junit.jupiter.params.provider.EnumSource;
  */
 class AbandonedServerTest {
 
+  // Changes every row of the table and gives their ids, more than a portion of 10.
+  private static final String PAY =
+      "WITH changed AS (UPDATE orders SET paid = true RETURNING id) SELECT id FROM changed";
+
   @Test
-  void anAbandonedQueryOfItsOwnTransactionIsRolledBack() throws Exception {
+  void aDataModifyingQueryGivenUpIsCommitted() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider);
+        var other = open(provider)) {
+      createOrders(connection);
+      try {
+        var execution = new Execution(connection, provider, PAY);
+        assertTrue(execution.next(10).more());
+        assertEquals(Optional.empty(), execution.abandon());
+        assertTrue(connection.getAutoCommit());
+        assertEquals(1000, selectLong(other, "SELECT count(*) FROM orders WHERE paid"));
+      } finally {
+        execute(connection, "DROP TABLE orders");
+      }
+    }
+  }
+
+  @Test
+  void aDataModifyingQueryCancelledIsRolledBack() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider);
+        var other = open(provider)) {
+      createOrders(connection);
+      try {
+        var execution = new Execution(
+            connection,
+            provider,
+            "WITH changed AS (UPDATE orders SET paid = true RETURNING id)"
+                + " SELECT id, pg_sleep(30) AS slow FROM changed");
+        var portion = interrupted(() -> execution.next(10), () -> awaitRunning(provider, "slow"));
+        assertEquals(Failure.Kind.CANCELLED, failure(portion.results()).kind());
+        assertEquals(Optional.empty(), execution.abandon());
+        assertTrue(connection.getAutoCommit());
+        assertEquals(0, selectLong(other, "SELECT count(*) FROM orders WHERE paid"));
+      } finally {
+        execute(connection, "DROP TABLE orders");
+      }
+    }
+  }
+
+  @Test
+  void aDataModifyingQueryThatFailsIsRolledBack() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider);
+        var other = open(provider)) {
+      createOrders(connection);
+      try {
+        var execution = new Execution(
+            connection,
+            provider,
+            "WITH changed AS (UPDATE orders SET paid = true RETURNING id)"
+                + " SELECT 1 / (id - 500) FROM changed");
+        Portion portion;
+        do {
+          portion = execution.next(10);
+        } while (portion.more());
+        assertEquals(Failure.Kind.OTHER, failure(portion.results()).kind());
+        assertTrue(connection.getAutoCommit());
+        assertEquals(0, selectLong(other, "SELECT count(*) FROM orders WHERE paid"));
+      } finally {
+        execute(connection, "DROP TABLE orders");
+      }
+    }
+  }
+
+  @Test
+  void aLargeQueryGivenUpLeavesTheConnectionAsItWas() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      var execution =
+          new Execution(connection, provider, "SELECT n FROM generate_series(1, 100000) n");
+      assertTrue(execution.next(10).more());
+      assertEquals(Optional.empty(), execution.abandon());
+      assertTrue(connection.getAutoCommit());
+      assertEquals(Transaction.NONE, Drivers.transaction(connection));
+      assertEquals(List.of(List.of(1L)), rows(run(connection, provider, "SELECT 1")));
+    }
+  }
+
+  private static void createOrders(Connection connection) throws Exception {
+    execute(
+        connection,
+        "CREATE TABLE orders (id integer, paid boolean NOT NULL DEFAULT false)",
+        "INSERT INTO orders SELECT n FROM generate_series(1, 1000) n");
+  }
+
+  @Test
+  void aQueryGivenUpKeepsWhatItsFunctionsDidForTheRowsComputed() throws Exception {
     var provider = Provider.POSTGRESQL;
     try (var connection = open(provider)) {
       execute(
@@ -45,11 +139,12 @@ class AbandonedServerTest {
         assertTrue(execution.next(1).more());
         execution.close();
         assertTrue(connection.getAutoCommit());
-        assertEquals(0, selectLong(connection, "SELECT count(*) FROM bumped"));
+        var kept = selectLong(connection, "SELECT count(*) FROM bumped");
+        assertTrue(kept > 0 && kept < 100, "kept " + kept);
 
-        // Run to its end, it is committed.
+        // Run to its end, all of it is committed.
         run(connection, provider, "SELECT bump(n) FROM generate_series(1, 3) n");
-        assertEquals(3, selectLong(connection, "SELECT count(*) FROM bumped"));
+        assertEquals(kept + 3, selectLong(connection, "SELECT count(*) FROM bumped"));
       } finally {
         execute(connection, "DROP FUNCTION bump", "DROP TABLE bumped");
       }
@@ -74,10 +169,11 @@ class AbandonedServerTest {
 
         var early = new Execution(connection, provider, twice);
         assertTrue(early.next(1).more());
-        early.close();
+        assertEquals(Failure.Kind.CONSTRAINT, early.abandon().orElseThrow().kind());
         assertTrue(connection.getAutoCommit());
         assertFalse(connection.isClosed());
         assertEquals(1, selectLong(connection, "SELECT count(*) FROM deferred"));
+        assertEquals(List.of(List.of(1L)), rows(run(connection, provider, "SELECT 1")));
       } finally {
         execute(connection, "DROP TABLE deferred");
       }
