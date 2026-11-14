@@ -38,7 +38,6 @@ final class Frame {
 
   static El view(State s) {
     Theme t = s.theme;
-    s.forgetClosedWindows();
     var main = s.tabs.main();
     // One dialog at a time: what the catalogue asks waits for the others to close.
     El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, main) : null;

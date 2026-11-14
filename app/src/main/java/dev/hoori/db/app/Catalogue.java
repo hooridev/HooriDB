@@ -971,6 +971,15 @@ final class Catalogue {
     live.typed = "";
   }
 
+  /** A window of tabs closed: what it was to ask goes to the main window. */
+  void closed(TabGroups.Group<Tab> window) {
+    for (var live : lives.values()) {
+      if (live.window == window) {
+        live.window = null;
+      }
+    }
+  }
+
   /** The window closes: everything ends, without waiting for a server. */
   void closeAll() {
     lives.values().forEach(Catalogue::end);
@@ -1367,9 +1376,7 @@ final class Catalogue {
     }
     for (var live : lives.values()) {
       // In the window that asked, while it is open; else in the main one, where its tabs went.
-      var asked = live.window != null && s.tabs.groups().contains(live.window)
-          ? live.window
-          : s.tabs.main();
+      var asked = live.window != null ? live.window : s.tabs.main();
       if (live.phase instanceof ForPassword && asked == group) {
         return passwordDialog(t, s, live);
       }
