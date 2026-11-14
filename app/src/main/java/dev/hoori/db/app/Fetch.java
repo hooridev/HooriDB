@@ -17,7 +17,7 @@ import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.DriverException;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.driver.LoadedDriver;
-import java.time.Instant;
+import java.nio.file.AccessDeniedException;
 import java.util.function.BiConsumer;
 
 /**
@@ -69,6 +69,7 @@ final class Fetch {
   }
 
   private final BiConsumer<State, LoadedDriver> then; // gets the driver once it is loaded
+  private String chosen; // the version looked up, or null for the recommended one
   Lookup lookup; // null without drivers, as in a script run
   private Work looking; // the lookup under way, or null
   Step step; // null while the driver is not asked for
@@ -81,8 +82,13 @@ final class Fetch {
     this.then = then;
   }
 
-  /** Looks up the version of the provider's driver to use, and whether it is downloaded. */
-  void lookUp(State s, Provider provider) {
+  /**
+   * Looks up the version of the provider's driver to use, and whether it is downloaded.
+   *
+   * @param chosen the version to use, or null for the recommended one
+   */
+  void lookUp(State s, Provider provider, String chosen) {
+    this.chosen = chosen;
     if (looking != null) {
       looking.cancel();
       looking = null;
@@ -93,19 +99,24 @@ final class Fetch {
     }
     var driver = Driver.of(provider);
     var store = drivers.store;
+    var clock = drivers.clock;
     lookup = new Looking(provider);
     looking = s.app.background(
         "look up a driver",
         () -> {
-          var recommended = store.recommended(driver, Instant.now());
-          var version = recommended.version();
+          var recommended = chosen == null ? store.recommended(driver, clock.instant()) : null;
+          var version = chosen == null ? recommended.version() : chosen;
+          boolean offline = recommended != null && recommended.offline();
           boolean there = store.downloaded(driver).contains(version);
-          long size = there || recommended.offline() ? -1 : size(store, driver, version);
-          return new Found(provider, version, recommended.offline(), there, size);
+          long size = there || offline ? -1 : size(store, driver, version);
+          return new Found(provider, version, offline, there, size);
         },
         found -> {
           looking = null;
           lookup = found;
+          if (chosen == null) {
+            drivers.recommend(driver, found.version());
+          }
           if (step instanceof Waiting) {
             start(s);
           }
@@ -125,7 +136,7 @@ final class Fetch {
       case Looking looking -> step = new Waiting();
       case Missing missing -> {
         step = new Waiting();
-        lookUp(s, missing.provider());
+        lookUp(s, missing.provider(), chosen);
       }
       case Found found when !found.downloaded() -> step = new Asking(found);
       case Found found -> load(s, found);
@@ -213,9 +224,22 @@ final class Fetch {
           }
         },
         error -> {
-          if (stop == stops) {
-            step = new Failed(Stage.LOAD, error);
+          if (stop != stops) {
+            return;
           }
+          if (error instanceof DriverException e
+              && e.failure() == DriverException.Failure.NOT_DOWNLOADED) {
+            // Deleted since it was looked up: it is downloaded again, after asking.
+            var missing =
+                new Found(found.provider(), found.version(), found.offline(), false, found.size());
+            if (lookup instanceof Found f && f.equals(found)) {
+              lookup = missing;
+            }
+            agreed = false;
+            step = new Asking(missing);
+            return;
+          }
+          step = new Failed(Stage.LOAD, error);
         });
   }
 
@@ -263,6 +287,10 @@ final class Fetch {
     var source = drivers.source;
     return switch (e.failure()) {
       case NO_NETWORK -> source + " cannot be reached. Check the network connection.";
+      case UNAVAILABLE ->
+        source + " answered with an error or stopped answering. Try again later; if it goes on,"
+            + " check a proxy or firewall.";
+      case NO_SPACE -> "The disk of the drivers folder is full. Free some space and try again.";
       case NOT_FOUND -> source + " does not have this driver.";
       case NO_RECOMMENDATION ->
         "None of its newest releases has been out for "
@@ -280,12 +308,20 @@ final class Fetch {
             + " not used.";
       case INVALID_RESPONSE -> source + " answered with something HooriDB cannot read.";
       case STORAGE ->
-        "The drivers folder could not be read or written: "
-            + (e.getCause() == null ? e.getMessage() : State.message((Exception) e.getCause()));
+        "The drivers folder could not be read or written" + why(e)
+            + ". Check that HooriDB may write to it, then try again.";
       case NOT_DOWNLOADED -> "Its file is missing from the drivers folder.";
       case NOT_A_DRIVER -> "The file does not hold the driver.";
       case CANCELLED -> "It was cancelled.";
     };
+  }
+
+  /**
+   * Why the drivers folder failed, in HooriDB's words: the system's own text names the absolute
+   * path and is in the system's language.
+   */
+  static String why(DriverException e) {
+    return e.getCause() instanceof AccessDeniedException ? ": access was denied" : "";
   }
 
   /** The driver's name as its makers call it. */
@@ -317,6 +353,10 @@ final class Fetch {
       when m.error() instanceof DriverException e
           && e.failure() == DriverException.Failure.NO_NETWORK ->
         name(m.provider()) + ", not downloaded yet (" + source + " cannot be reached)";
+      case Missing m
+      when m.error() instanceof DriverException e
+          && e.failure() == DriverException.Failure.UNAVAILABLE ->
+        name(m.provider()) + ", not downloaded yet (" + source + " is not answering)";
       case Missing m ->
         name(m.provider()) + " could not be looked up. " + text(m.error(), s.drivers);
       case null -> null;
@@ -332,7 +372,8 @@ final class Fetch {
   El view(Theme t, State s, Runnable stop) {
     return switch (step) {
       case Asking a -> question(t, s, a.found(), stop);
-      case Downloading d -> downloading(t, d, stop);
+      case Downloading d ->
+        downloading(t, "Downloading " + name(d.found().provider()), d.done(), d.total(), stop);
       case Failed f ->
         Callout.callout(
             t,
@@ -363,13 +404,11 @@ final class Fetch {
     return col().wFull().key("question").child(callout);
   }
 
-  private static El downloading(Theme t, Downloading d, Runnable stop) {
-    var found = d.found();
-    String detail =
-        d.total() > 0 ? size(d.done()) + " of " + size(d.total()) : size(Math.max(0, d.done()));
-    String title = "Downloading " + name(found.provider());
-    El bar = d.total() > 0
-        ? Progress.labeled(t, title, (double) d.done() / d.total(), detail)
+  /** A download's bar, with its title, and Cancel download beside it. */
+  static El downloading(Theme t, String title, long done, long total, Runnable stop) {
+    String detail = total > 0 ? size(done) + " of " + size(total) : size(Math.max(0, done));
+    El bar = total > 0
+        ? Progress.labeled(t, title, (double) done / total, detail)
         : Progress.labeled(t, title, 0, detail);
     return row()
         .wFull()

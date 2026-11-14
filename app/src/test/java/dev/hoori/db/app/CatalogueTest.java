@@ -226,6 +226,8 @@ class CatalogueTest {
     downloaded();
     var s = app.state();
     for (var p : profiles) {
+      // As after the lookup of a connection opened earlier in this session.
+      s.drivers.recommend(Driver.of(p.provider()), FakeDrivers.VERSION);
       s.drivers.load(app, Driver.of(p.provider()), FakeDrivers.VERSION, d -> {}, e -> {});
       s.rememberPassword(p.id(), PASSWORD.toCharArray());
     }
@@ -957,6 +959,7 @@ class CatalogueTest {
     downloaded();
     secrets.stored.put(SHOP.id(), PASSWORD);
     var app = app(SHOP);
+    app.state().drivers.recommend(Driver.of(Provider.POSTGRESQL), FakeDrivers.VERSION);
     app.state()
         .drivers
         .load(app, Driver.of(Provider.POSTGRESQL), FakeDrivers.VERSION, d -> {}, e -> {});

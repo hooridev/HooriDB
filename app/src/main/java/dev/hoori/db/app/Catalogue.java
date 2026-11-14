@@ -35,7 +35,6 @@ import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.query.QueryException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -141,7 +140,14 @@ final class Catalogue {
   private final Servers servers;
   final Map<UUID, Live> lives = new LinkedHashMap<>(); // the connections opened, in that order
   final Set<Node> open = new HashSet<>();
-  private final Map<Provider, Fetch> fetches = new EnumMap<>(Provider.class);
+  /** The driver a connection needs: of its kind, in the version chosen or the recommended one. */
+  record Want(Provider provider, String version) {
+    static Want of(ConnectionProfile profile) {
+      return new Want(profile.provider(), profile.driverVersion());
+    }
+  }
+
+  private final Map<Want, Fetch> fetches = new HashMap<>();
   final Menu.State menu = new Menu.State();
   Disconnecting disconnecting; // the question before an edit or a delete, or null
 
@@ -214,40 +220,40 @@ final class Catalogue {
       live.phase = new WithoutDrivers();
       return;
     }
-    var provider = profile.provider();
-    var loaded = s.drivers.loaded(Driver.of(provider));
+    var want = Want.of(profile);
+    var loaded = s.drivers.loaded(Driver.of(want.provider()), want.version());
     if (loaded != null) {
       password(s, live, loaded);
       return;
     }
     live.phase = new ForDriver();
-    var fetch = fetches.computeIfAbsent(provider, p -> new Fetch((st, d) -> fetched(st, p, d)));
+    var fetch = fetches.computeIfAbsent(want, w -> new Fetch((st, d) -> fetched(st, w, d)));
     if (fetch.step == null) {
-      fetch.lookUp(s, provider);
+      fetch.lookUp(s, want.provider(), want.version());
       fetch.start(s);
     }
   }
 
-  private void fetched(State s, Provider provider, LoadedDriver driver) {
+  private void fetched(State s, Want want, LoadedDriver driver) {
     for (var live : List.copyOf(lives.values())) {
-      if (live.phase instanceof ForDriver && live.profile.provider() == provider) {
+      if (live.phase instanceof ForDriver && Want.of(live.profile).equals(want)) {
         password(s, live, driver);
       }
     }
   }
 
   /** Not now, Cancel download or Escape: the connections that wait for the driver stay closed. */
-  void stopFetch(State s, Provider provider) {
-    fetches.get(provider).stop();
+  void stopFetch(State s, Want want) {
+    fetches.get(want).stop();
     var names = new ArrayList<String>();
     for (var live : List.copyOf(lives.values())) {
-      if (live.phase instanceof ForDriver && live.profile.provider() == provider) {
+      if (live.phase instanceof ForDriver && Want.of(live.profile).equals(want)) {
         names.add(State.name(live.profile));
         drop(s, live.id());
       }
     }
     if (!names.isEmpty()) {
-      s.tell(String.join(", ", names) + " not connected, as " + Fetch.name(provider)
+      s.tell(String.join(", ", names) + " not connected, as " + Fetch.name(want.provider())
           + " is not downloaded.");
     }
   }
@@ -259,7 +265,7 @@ final class Catalogue {
         continue;
       }
       for (var live : lives.values()) {
-        if (live.phase instanceof ForDriver && live.profile.provider() == entry.getKey()) {
+        if (live.phase instanceof ForDriver && Want.of(live.profile).equals(entry.getKey())) {
           return entry.getValue();
         }
       }
@@ -267,7 +273,7 @@ final class Catalogue {
     return null;
   }
 
-  private Provider provider(Fetch fetch) {
+  private Want want(Fetch fetch) {
     for (var entry : fetches.entrySet()) {
       if (entry.getValue() == fetch) {
         return entry.getKey();
@@ -738,10 +744,10 @@ final class Catalogue {
     }
   }
 
-  private int waiting(Provider provider) {
+  private int waiting(Want want) {
     int n = 0;
     for (var live : lives.values()) {
-      if (live.phase instanceof ForDriver && live.profile.provider() == provider) {
+      if (live.phase instanceof ForDriver && Want.of(live.profile).equals(want)) {
         n++;
       }
     }
@@ -789,6 +795,27 @@ final class Catalogue {
     lives.values().forEach(Catalogue::end);
     lives.clear();
     fetches.values().forEach(Fetch::close);
+  }
+
+  /** The tree's connections that use the version of the driver or decided on it, by name. */
+  List<String> users(State s, Driver driver, String version) {
+    return lives.values().stream()
+        .filter(live -> !ended(live.phase)
+            && Driver.of(live.profile.provider()).equals(driver)
+            && version.equals(version(s, live)))
+        .map(live -> State.name(live.profile))
+        .toList();
+  }
+
+  /** The version the connection decided on: its driver's, or the one its fetch found; or null. */
+  private String version(State s, Live live) {
+    if (live.driver != null) {
+      return s.drivers.version(live.driver);
+    }
+    var fetch = fetches.get(Want.of(live.profile));
+    return live.phase instanceof ForDriver && fetch != null && fetch.lookup instanceof Fetch.Found f
+        ? f.version()
+        : null;
   }
 
   /** Edit or Delete on a connection: asks to disconnect first while it is connected. */
@@ -1145,8 +1172,8 @@ final class Catalogue {
     }
     var fetch = asking();
     if (fetch != null) {
-      var provider = provider(fetch);
-      Runnable stop = () -> stopFetch(s, provider);
+      var want = want(fetch);
+      Runnable stop = () -> stopFetch(s, want);
       List<El> buttons = fetch.step instanceof Fetch.Failed
           ? List.of(button(t, SECONDARY, "Cancel", stop))
           : List.of();

@@ -7,10 +7,15 @@ public final class DriverException extends Exception {
     /** The version is not in the storage folder. */
     NOT_DOWNLOADED,
     /**
-     * The repository could not be reached, timed out or answered with an error. From {@link
+     * The repository could not be reached: no network, no such host, or no connection. From {@link
      * DriverStore#recommended}, it also means that nothing is downloaded to fall back on.
      */
     NO_NETWORK,
+    /**
+     * The repository was reached but answered with an error or stopped answering. From {@link
+     * DriverStore#recommended}, it also means that nothing is downloaded to fall back on.
+     */
+    UNAVAILABLE,
     /** The repository has no such artifact or version. */
     NOT_FOUND,
     /** None of the newest releases is known to have been published the waiting period ago. */
@@ -29,6 +34,8 @@ public final class DriverException extends Exception {
     CANCELLED,
     /** The storage folder could not be read or written. */
     STORAGE,
+    /** The disk of the storage folder has no room for the download. */
+    NO_SPACE,
     /** The file holds no class of the driver's name that is a {@link java.sql.Driver}. */
     NOT_A_DRIVER
   }

@@ -167,8 +167,7 @@ class ConnectionsTest {
       assertTrue(typed.contains("role=group label=\"" + heading + "\""), typed);
       assertTrue(line(typed, "role=heading \"" + heading + "\"").contains("level=3"), typed);
     }
-    assertTrue(
-        line(typed, "role=combobox").contains("label=\"Encrypted\""), "TLS followed the host");
+    assertTrue(line(typed, "#tls").contains("label=\"Encrypted\""), "TLS followed the host");
     assertTrue(line(tree("saving"), "label=\"Save\"").contains("busy"), "the keyring answers");
     assertFalse(tree.contains("role=dialog"), tree);
     assertTrue(line(tree, "role=treeitem").contains("label=\"shop-prod\""), tree);
@@ -312,8 +311,8 @@ class ConnectionsTest {
         """);
     assertTrue(line(tree("mysql"), "#port").contains("\"3306\""));
     assertTrue(line(tree("mariadb"), "#port").contains("\"3400\""), "set by hand");
-    assertTrue(line(tree("local"), "role=combobox").contains("label=\"Off\""));
-    assertTrue(line(tree("end"), "role=combobox").contains("label=\"Encrypted, server verified\""));
+    assertTrue(line(tree("local"), "#tls").contains("label=\"Off\""));
+    assertTrue(line(tree("end"), "#tls").contains("label=\"Encrypted, server verified\""));
   }
 
   @Test
@@ -347,7 +346,7 @@ class ConnectionsTest {
     String edit = tree("edit");
     assertTrue(line(edit, "role=dialog").contains("label=\"Edit connection\""), edit);
     assertTrue(line(edit, "#host").contains("\"db.example.com\""), edit);
-    assertTrue(line(edit, "role=combobox").contains("label=\"Encrypted, server verified\""));
+    assertTrue(line(edit, "#tls").contains("label=\"Encrypted, server verified\""));
     assertTrue(edit.contains("\"Leave it empty to keep the current password.\""), edit);
     assertTrue(line(edit, "label=\"Save password in the system keyring\"").endsWith(" checked"));
     assertTrue(line(edit, "label=\"Save\"").endsWith("disabled"), "nothing changed yet");
@@ -444,7 +443,8 @@ class ConnectionsTest {
             copy.database(),
             copy.user(),
             copy.tls(),
-            copy.colour()));
+            copy.colour(),
+            copy.driverVersion()));
   }
 
   @Test

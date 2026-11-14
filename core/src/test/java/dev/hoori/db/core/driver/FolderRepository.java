@@ -1,6 +1,8 @@
 package dev.hoori.db.core.driver;
 
 import java.io.ByteArrayInputStream;
+import java.io.EOFException;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.ProtocolException;
@@ -26,7 +28,9 @@ public final class FolderRepository implements Repository {
   final List<String> opened = new CopyOnWriteArrayList<>();
   final List<String> asked = new CopyOnWriteArrayList<>();
   final Set<String> malformed = new HashSet<>();
+  final Set<String> breakingOff = new HashSet<>(); // answered, then cut off after half the body
   boolean offline;
+  boolean refusing; // answers every request with a server error
   // Runs once a file is read and before it is returned, as a server between two packets.
   Consumer<String> served = path -> {};
 
@@ -39,12 +43,30 @@ public final class FolderRepository implements Repository {
     if (offline) {
       throw new ConnectException("offline");
     }
+    if (refusing) {
+      throw new Refused("The repository answered 503 for " + path);
+    }
     if (malformed.contains(path)) {
       throw new ProtocolException("malformed");
     }
     opened.add(path);
     var bytes = Files.readAllBytes(root.resolve(path));
     served.accept(path);
+    if (breakingOff.contains(path)) {
+      var half = new ByteArrayInputStream(bytes, 0, bytes.length / 2);
+      return new Response(
+          new FilterInputStream(half) {
+            @Override
+            public int read(byte[] b, int off, int len) throws IOException {
+              int n = super.read(b, off, len);
+              if (n < 0) {
+                throw new EOFException("cut off");
+              }
+              return n;
+            }
+          },
+          bytes.length);
+    }
     return new Response(new ByteArrayInputStream(bytes), bytes.length);
   }
 
@@ -52,6 +74,9 @@ public final class FolderRepository implements Repository {
   public Optional<Instant> published(String path) throws IOException {
     if (offline) {
       throw new ConnectException("offline");
+    }
+    if (refusing) {
+      throw new Refused("The repository answered 503 for " + path);
     }
     asked.add(path);
     return Optional.of(Files.getLastModifiedTime(root.resolve(path)).toInstant());

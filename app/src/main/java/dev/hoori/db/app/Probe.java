@@ -77,9 +77,13 @@ final class Probe {
     this.dialog = dialog;
   }
 
-  /** Looks up the version of the provider's driver to use, and whether it is downloaded. */
-  void lookUp(State s, Provider provider) {
-    fetch.lookUp(s, provider);
+  /**
+   * Looks up the version of the provider's driver to use, and whether it is downloaded.
+   *
+   * @param version the version chosen, or null for the recommended one
+   */
+  void lookUp(State s, Provider provider, String version) {
+    fetch.lookUp(s, provider, version);
   }
 
   /** Whether Test connection can go: there are drivers, and the form holds a profile to test. */
