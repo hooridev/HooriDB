@@ -6,6 +6,7 @@ import static dev.hoori.db.core.execution.ExecutionServerTest.open;
 import static dev.hoori.db.core.execution.ExecutionServerTest.selectLong;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.Provider;
 import java.sql.Connection;
@@ -154,6 +155,100 @@ class TransactionServerTest {
         assertEquals(0, selectLong(connection, "SELECT count(*) FROM begun"));
       } finally {
         execute(connection, "DROP TABLE begun");
+      }
+    }
+  }
+
+  // A procedure that begins a transaction, changes a row and gives 300 rows, without a commit.
+  private static final String TX_ROWS = """
+      CREATE PROCEDURE tx_rows()
+      BEGIN
+        START TRANSACTION;
+        INSERT INTO kept_open VALUES (1);
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 300)
+        SELECT i FROM n;
+      END""";
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aProceduresRowsStillToComeSayNothingOfTheTransactionItBegan(Provider provider)
+      throws Exception {
+    try (var connection = open(provider);
+        var other = open(provider)) {
+      table(connection, "kept_open");
+      execute(connection, "DROP PROCEDURE IF EXISTS tx_rows", TX_ROWS);
+      try (var call = new Execution(connection, provider, "CALL tx_rows()")) {
+        // In auto-commit: the first portion cannot say that the procedure left one open.
+        var first = call.next(100);
+        assertTrue(first.more());
+        assertEquals(Transaction.UNKNOWN, first.transaction());
+        Portion last;
+        do {
+          last = call.next(100);
+        } while (last.more());
+        assertEquals(Transaction.OPEN, last.transaction());
+        assertEquals(0, selectLong(other, "SELECT count(*) FROM kept_open"));
+        assertEquals(Transaction.NONE, run(connection, provider, "ROLLBACK").transaction());
+        assertEquals(0, selectLong(connection, "SELECT count(*) FROM kept_open"));
+      } finally {
+        execute(connection, "DROP PROCEDURE tx_rows", "DROP TABLE kept_open");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void withChainedCompletionTheServerBeginsTheNextTransactionAtOnce(Provider provider)
+      throws Exception {
+    try (var connection = open(provider);
+        var other = open(provider)) {
+      table(connection, "chained");
+      try {
+        execute(connection, "SET SESSION completion_type = 1");
+        connection.setAutoCommit(false);
+        run(connection, provider, "INSERT INTO chained VALUES (1)");
+        // Committed, and a new transaction open already, with nothing in it.
+        assertEquals(Transaction.OPEN, run(connection, provider, "COMMIT").transaction());
+        assertEquals(1, selectLong(other, "SELECT count(*) FROM chained"));
+        assertEquals(Transaction.OPEN, Transaction.of(connection, provider));
+        assertEquals(Transaction.OPEN, run(connection, provider, "ROLLBACK").transaction());
+        assertEquals(1, selectLong(connection, "SELECT count(*) FROM chained"));
+        // Auto-commit turned on ends the empty one.
+        connection.setAutoCommit(true);
+        assertEquals(Transaction.NONE, Transaction.of(connection, provider));
+      } finally {
+        connection.setAutoCommit(true);
+        execute(connection, "SET SESSION completion_type = 0", "DROP TABLE chained");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aFailedDdlHasCommittedOnMariaDbAndMySqlAndFailsPostgresqls(Provider provider)
+      throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(provider);
+        var other = open(provider)) {
+      table(connection, "ddl_failed");
+      try {
+        connection.setAutoCommit(false);
+        run(connection, provider, "INSERT INTO ddl_failed VALUES (1)");
+        var ddl = run(connection, provider, "CREATE TABLE ddl_failed (id integer)");
+        assertEquals(Failure.Kind.INVALID, failure(ddl.results()).kind(), ddl.toString());
+        assertEquals(pg ? Transaction.FAILED : Transaction.UNKNOWN, ddl.transaction());
+        // MariaDB and MySQL committed before the statement ran, and kept nothing open.
+        assertEquals(
+            pg ? Transaction.FAILED : Transaction.NONE, Transaction.of(connection, provider));
+        assertEquals(pg ? 0 : 1, selectLong(other, "SELECT count(*) FROM ddl_failed"));
+      } finally {
+        connection.rollback();
+        connection.setAutoCommit(true);
+        execute(connection, "DROP TABLE ddl_failed");
       }
     }
   }
