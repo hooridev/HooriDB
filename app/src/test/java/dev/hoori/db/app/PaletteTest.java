@@ -310,6 +310,29 @@ class PaletteTest {
   }
 
   @Test
+  void aDialogOpeningOverThePaletteClosesItAndStopsItsRead() throws Exception {
+    var app = torn();
+    var key = "all tables " + PG + "/analytics";
+    var held = c.servers.hold(key);
+    c.run(
+        app,
+        "window main\n" + GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n"
+            + SHOWN);
+    CatalogueTest.eventually(() -> c.servers.calls.contains(key));
+    c.run(
+        app,
+        "window \"customers\"\n" + PALETTE + "type \"new connection\"\nframe\nkey Enter\n" + SHOWN
+            + "window main\nframe\n" + SHOWN + "snap main\n");
+    var main = c.tree("main");
+    assertTrue(main.contains("role=dialog label=\"New connection\""), main);
+    assertFalse(app.state().palette(app.state().tabs.main()).isOpen());
+    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    held.countDown();
+    c.run(app, "key Escape\n" + SHOWN + SETTLE + GO_TO + "type \"ev\"\nframe\nsnap after\n");
+    assertTrue(option(c.tree("after"), "analytics").contains("choose to read its tables"));
+  }
+
+  @Test
   void typingInTheTreeFindsANodeAndLeavesItsKeysAlone() throws Exception {
     var app = connected();
     c.run(

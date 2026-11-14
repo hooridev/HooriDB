@@ -43,6 +43,7 @@ final class Frame {
     // One dialog at a time: what the catalogue asks waits for the others to close.
     El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, main) : null;
     boolean modal = s.dialog != null || s.deleting != null || asked != null || s.driverList != null;
+    closePalette(s, main, modal);
     List<Menu.Item> menus = menus(s, main, modal);
     El catalogue = catalogue(t, s).key("catalogue").label("Catalogue");
     El tabs = tabs(s, main, s.app).key("tabs");
@@ -120,6 +121,14 @@ final class Frame {
         .or(keys);
   }
 
+  /** Closes the window's palette, and so stops what it reads, once a dialog hides it. */
+  private static void closePalette(State s, TabGroups.Group<Tab> group, boolean modal) {
+    var palette = s.palette(group);
+    if (modal && palette.isOpen()) {
+      palette.close();
+    }
+  }
+
   /** The window's command palette, over the commands of its menus and its tables after @. */
   private static El palette(State s, TabGroups.Group<Tab> group, List<Menu.Item> menus) {
     return CommandPalette.palette(
@@ -178,6 +187,7 @@ final class Frame {
     El asked = s.catalogue.dialog(t, s, group);
     // The menus' commands without the bar, acting on this window's tabs.
     List<Menu.Item> menus = menus(s, group, asked != null);
+    closePalette(s, group, asked != null);
     return col()
         .wFull()
         .hFull()
