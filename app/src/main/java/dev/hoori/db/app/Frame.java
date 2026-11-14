@@ -6,6 +6,7 @@ import static com.rethinkj.ui.kit.EmptyState.emptyState;
 import static com.rethinkj.ui.kit.Label.label;
 import static com.rethinkj.ui.kit.TitleBar.withMenus;
 
+import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.kit.Button;
@@ -19,10 +20,13 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.StatusBar;
 import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.TitleBar;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
+import dev.hoori.db.core.catalog.Table;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -35,16 +39,7 @@ final class Frame {
     Theme t = s.theme;
     List<Menu.Item> menus = menus(s);
     El catalogue = catalogue(t, s).key("catalogue").label("Catalogue");
-    El tabs = s.tabs
-        .tabs(
-            t,
-            s.tabs.main(),
-            tab -> new Tabs.Tab(tab.toString()),
-            tab -> tab == null
-                ? emptyState(
-                    t, Symbol.TABLE, "No tabs open", "Tables and queries you open show here.", null)
-                : null)
-        .key("tabs");
+    El tabs = tabs(s, s.tabs.main(), s.app).key("tabs");
     // The menus' keys, and the tabs' keys also while the focus is outside them; none while empty.
     Predicate<Key> keys = MenuBar.keys(s.bar, menus);
     El root = col()
@@ -86,6 +81,60 @@ final class Frame {
     root.overlay(s.deleting == null ? null : deleteDialog(t, s));
     // One dialog at a time: what the catalogue asks waits for the others to close.
     return root.overlay(s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s) : null);
+  }
+
+  /** The tabs of a window, each with its content; the main window's empty one says what goes in. */
+  private static El tabs(State s, TabGroups.Group<Tab> group, App<State> app) {
+    Theme t = s.theme;
+    return s.tabs.tabs(
+        t,
+        group,
+        tab -> switch (tab) {
+          case TableTab x ->
+            new Tabs.Tab(s.title(x))
+                .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE);
+        },
+        tab -> switch (tab) {
+          case null ->
+            group == s.tabs.main()
+                ? emptyState(
+                    t,
+                    Symbol.TABLE,
+                    "No tabs open",
+                    "Open a table in the tree, with a double press or Enter, to see its rows.",
+                    null)
+                : null;
+          case TableTab x -> x.view(t, s, app);
+        });
+  }
+
+  /** What a window of tabs is called: its active tab's title. */
+  static String title(State s, Tab tab) {
+    return switch (tab) {
+      case null -> HooriDb.NAME;
+      case TableTab x -> s.title(x);
+    };
+  }
+
+  /** The window of tabs torn off: its title bar over its tabs, whose status lines they show. */
+  static El window(State s, TabGroups.Group<Tab> group) {
+    Theme t = s.theme;
+    @SuppressWarnings("unchecked") // every window runs an app of the state
+    App<State> app =
+        group.window() == null ? s.app : (App<State>) group.window().app();
+    El tabs = tabs(s, group, app).key("tabs");
+    return col()
+        .wFull()
+        .hFull()
+        .fill(t.surface().window())
+        .onKey(tabs.onKey())
+        .child(TitleBar.titleBar(
+            t, title(s, group.activeTab()), HooriDb.COLOUR, app != null && app.windowMaximized()))
+        .child(col()
+            .grow(1)
+            .minSize(0, 0)
+            .padding(0, t.space().m(), t.space().m(), t.space().m())
+            .child(Card.flush(t, tabs.grow(1)).grow(1)));
   }
 
   /** The connections: waiting while they load, then a tree of them or the empty state. */
@@ -173,6 +222,10 @@ final class Frame {
     El content = col()
         .gap(t.space().m())
         .child(label(t, "Delete the connection " + State.name(s.deleting) + "?"))
+        .child(
+            s.tables(s.deleting.id()).isEmpty()
+                ? null
+                : label(t, Label.Variant.MUTED, "Its open tabs close."))
         .child(label(
             t,
             Label.Variant.MUTED,

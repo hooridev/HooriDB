@@ -22,6 +22,7 @@ import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
+import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
@@ -175,14 +176,18 @@ final class Catalogue {
     }
   }
 
-  /** A double press or Enter: a connection that is not open connects. */
+  /** A double press or Enter: a connection that is not open connects, a table opens its rows. */
   void activate(State s, Node node) {
-    if (node instanceof Node.Connection c) {
-      var live = lives.get(c.id());
-      if (live == null || ended(live.phase)) {
-        open.add(node);
-        connect(s, c.id());
+    switch (node) {
+      case Node.Connection c -> {
+        var live = lives.get(c.id());
+        if (live == null || ended(live.phase)) {
+          open.add(node);
+          connect(s, c.id());
+        }
       }
+      case Node.OfTable n -> s.openTable(n.id(), n.table());
+      default -> {}
     }
   }
 
@@ -391,6 +396,7 @@ final class Catalogue {
           live.phase =
               new Connected(version, database, provider.supports(Capability.SCHEMAS, version));
           s.tell("Connected to " + State.name(live.profile));
+          s.connected(live.id());
         },
         error -> {
           live.work = null;
@@ -434,10 +440,7 @@ final class Catalogue {
     if (call == null) {
       return;
     }
-    var database = database(node);
-    var lane = database == null || c.database() == null || database.equals(c.database())
-        ? live.lane
-        : further(live, database);
+    var lane = lane(live, database(node));
     var reading = new Reading();
     live.levels.put(node, reading);
     var asked = lane.submit(call);
@@ -456,7 +459,7 @@ final class Catalogue {
           var checked = checked(live, error);
           if (checked instanceof ConnectionException e) {
             // The next read opens it again.
-            if (live.lanes.remove(database, lane)) {
+            if (live.lanes.remove(database(node), lane)) {
               lane.close();
             }
             live.levels.put(node, new NotOpened(e.failure(), e.detail()));
@@ -468,6 +471,70 @@ final class Catalogue {
             lose(s, live, detail(checked));
           }
         });
+  }
+
+  /**
+   * The lane that reads the database's content: the first connection's, or where a connection
+   * reads one database only, the database's own; null as the database stands for the first's.
+   */
+  private Lane lane(Live live, String database) {
+    if (database == null) {
+      return live.lane; // the databases themselves, read also while it opens
+    }
+    var c = (Connected) live.phase;
+    return c.database() == null || database.equals(c.database())
+        ? live.lane
+        : further(live, database);
+  }
+
+  /** The lane that reads the table's rows, or null while its connection is not connected. */
+  Lane lane(UUID id, Table table) {
+    var live = lives.get(id);
+    return live != null && live.phase instanceof Connected
+        ? lane(live, table.container().database().name())
+        : null;
+  }
+
+  /** Whether the connection is connected, so that its lanes can be used. */
+  boolean connected(UUID id) {
+    var live = lives.get(id);
+    return live != null && live.phase instanceof Connected;
+  }
+
+  /** The table's columns as the tree read them, or null where it has not. */
+  List<Column> columns(UUID id, Table table) {
+    var live = lives.get(id);
+    if (live != null && live.levels.get(new Node.OfTable(id, table)) instanceof Read r) {
+      return r.children().stream().map(n -> ((Node.OfColumn) n).column()).toList();
+    }
+    return null;
+  }
+
+  /** The table's columns as read anew elsewhere, which the tree shows where it showed them. */
+  void columnsRead(UUID id, Table table, List<Column> columns) {
+    var live = lives.get(id);
+    var node = new Node.OfTable(id, table);
+    if (live != null && live.levels.get(node) instanceof Read) {
+      live.levels.put(
+          node,
+          new Read(columns.stream().map(c -> (Node) new Node.OfColumn(id, c)).toList()));
+    }
+  }
+
+  /** A failure's own words, withheld where they hold the password of the connection. */
+  String words(UUID id, String detail) {
+    var live = lives.get(id);
+    return live == null || live.password == null || Probe.contains(detail, live.password)
+        ? ConnectionException.WITHHELD
+        : detail;
+  }
+
+  /** A read elsewhere found the connection gone: it is closed, and its node says so. */
+  void lost(State s, UUID id, String detail) {
+    var live = lives.get(id);
+    if (live != null && live.phase instanceof Connected) {
+      lose(s, live, detail);
+    }
   }
 
   /** The connection to a further database, opened anew where it could not be or is gone. */
@@ -968,6 +1035,11 @@ final class Catalogue {
       }
       case Node.Problem n ->
         List.of(Menu.item("Try again", () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));
+      case Node.OfTable n ->
+        List.of(
+            Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
+            refresh,
+            copy);
       default -> List.of(refresh, copy);
     };
   }

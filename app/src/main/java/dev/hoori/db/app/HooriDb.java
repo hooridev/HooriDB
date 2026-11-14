@@ -30,6 +30,10 @@ public final class HooriDb {
   /** The app's own colour, for its icon and its mark in the title bar. */
   static final int COLOUR = Colors.rgb(0x0F766E);
 
+  /** The icon of the app's windows. */
+  static final WindowIcon ICON =
+      WindowIcon.of(size -> AppIcon.appIcon(Theme.DARK, size, COLOUR, Symbol.DATABASE));
+
   private HooriDb() {}
 
   /** The app without drivers, as in a script run: no connection can be tested. */
@@ -94,10 +98,7 @@ public final class HooriDb {
     // Shows what goes wrong before there is a window to show it in, such as no usable GPU.
     SystemDialogs.reportFailure(NAME, () -> {
       Window.identity("dev.hoori.db", NAME);
-      Window.Options options = Window.options()
-          .icon(WindowIcon.of(size -> AppIcon.appIcon(Theme.DARK, size, COLOUR, Symbol.DATABASE)))
-          .frameless()
-          .minimumSize(640, 400);
+      Window.Options options = Window.options().icon(ICON).frameless().minimumSize(640, 400);
       try (Window window = Window.open(NAME, 1200, 760, options);
           GpuPresenter presenter = new GpuPresenter(window)) {
         WindowLoop.run(window, app, presenter);

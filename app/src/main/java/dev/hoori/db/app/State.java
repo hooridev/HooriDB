@@ -6,7 +6,9 @@ import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
+import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.secret.Keyring;
@@ -30,11 +32,8 @@ final class State {
   Theme theme = Theme.DARK;
   Split.Position sidebar = SIDEBAR;
   final MenuBar.State bar = new MenuBar.State();
-  // shortcut: nothing opens a tab yet, so none can be torn off; give the opener a window of its
-  // own when the first kind of tab comes.
-  final TabGroups<Object> tabs = new TabGroups<>(List.of(), (group, options) -> {
-    throw new UnsupportedOperationException("No tab can be torn off yet");
-  });
+  // The tabs of every window: the first window's, and those torn off into windows of their own.
+  final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow).onClosed(Tab::close);
   String message; // in the status line for a while, or null
   private int messages; // told so far
 
@@ -233,6 +232,10 @@ final class State {
     deleting = null;
     forgetPassword(profile.id());
     catalogue.drop(this, profile.id());
+    for (var tab : tables(profile.id())) {
+      var group = tabs.groupOf(tab);
+      tabs.close(group, group.tabs().indexOf(tab));
+    }
     profiles = profiles.stream().filter(p -> !p.id().equals(profile.id())).toList();
     if (selected != null && selected.id().equals(profile.id())) {
       selected = null;
@@ -363,6 +366,78 @@ final class State {
       quitting = false;
       tell("HooriDB stayed open, as the system keyring reported a problem.");
     }
+  }
+
+  /** Opens the table's rows in a tab, or goes to the tab that has them, in whichever window. */
+  void openTable(UUID id, Table table) {
+    for (var group : tabs.groups()) {
+      for (int i = 0; i < group.tabs().size(); i++) {
+        if (group.tabs().get(i) instanceof TableTab x && x.id.equals(id) && x.table.equals(table)) {
+          tabs.select(group, i);
+          if (group.window() != null) {
+            group.window().raise();
+          }
+          return;
+        }
+      }
+    }
+    var tab = new TableTab(id, table);
+    tabs.add(tabs.main(), tabs.main().tabs().size(), tab);
+    tab.open(this, false);
+  }
+
+  /** The table tabs of every window, of the connection or of all where it is null. */
+  List<TableTab> tables(UUID id) {
+    var all = new ArrayList<TableTab>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof TableTab x && (id == null || x.id.equals(id))) {
+          all.add(x);
+        }
+      }
+    }
+    return all;
+  }
+
+  /** The connection connected anew: its tabs read again what they showed. */
+  void connected(UUID id) {
+    for (var tab : tables(id)) {
+      tab.open(this, true);
+    }
+  }
+
+  /**
+   * A tab's title: the table's name, with as much of where it lives as tells it apart from the
+   * other open tables of the same name.
+   */
+  String title(TableTab tab) {
+    var others = tables(null).stream()
+        .filter(x -> x != tab && x.table.name().equals(tab.table.name()))
+        .toList();
+    if (others.isEmpty()) {
+      return tab.table.name();
+    }
+    if (others.stream().noneMatch(x -> x.path().equals(tab.path()))) {
+      return tab.path();
+    }
+    var profile = profile(tab.id);
+    return (profile == null ? "" : name(profile) + ": ") + tab.path();
+  }
+
+  /**
+   * Opens the window of a tab torn off or moved to a new window: its title bar, its tabs and their
+   * status lines, over the same state.
+   */
+  Windows.Handle openWindow(TabGroups.Group<Tab> group, Window.Options options) {
+    App<State> window = new App<>(this, s -> Frame.window(s, group));
+    window.textRendering(app.textRendering());
+    return app.windows()
+        .open(
+            Frame.title(this, group.activeTab()),
+            900,
+            600,
+            options.frameless().minimumSize(480, 320).icon(HooriDb.ICON),
+            window);
   }
 
   ConnectionProfile profile(UUID id) {

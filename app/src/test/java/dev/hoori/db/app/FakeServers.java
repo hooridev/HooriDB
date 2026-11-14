@@ -10,14 +10,33 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.data.Binary;
+import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.query.Query;
+import dev.hoori.db.core.query.QueryException;
+import java.lang.reflect.Proxy;
+import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Made-up servers, by host: what they hold is written as an outline, each call can be held at a
@@ -27,6 +46,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>An outline has a database per line, its schemas indented under it where the provider has
  * schemas, then the tables, then the columns as {@code name: type}. A {@code ~} before a name marks
  * a system database or schema, {@code @} a view and {@code *} a column of the primary key.
+ *
+ * <p>A table has rows made up from their position, of the kinds its columns' types say, 3 unless
+ * {@link #rows} says how many, or the rows {@link #values} gives. Its rows' calls are keyed {@code
+ * estimate <host>/<path>}, {@code count <host>/<path>} and {@code read <host>/<path> <from>-<to>},
+ * the path as of {@code columns}, such as {@code pg.example.com/shop.public.orders}.
  */
 final class FakeServers implements Servers {
 
@@ -46,6 +70,9 @@ final class FakeServers implements Servers {
   final List<String> interrupted = new CopyOnWriteArrayList<>();
   volatile boolean overlapped; // two calls ran at once on one connection
   volatile boolean dead; // a gate ignores interrupts, as a server that no longer answers
+  private final Map<String, Long> counts = new ConcurrentHashMap<>();
+  private final Map<String, OptionalLong> estimates = new ConcurrentHashMap<>();
+  private final Map<String, List<List<Object>>> values = new ConcurrentHashMap<>();
 
   /** A server at the host, of the outline. */
   FakeServers serve(String host, Provider provider, String version, String outline) {
@@ -74,6 +101,67 @@ final class FakeServers implements Servers {
     failures.remove(key);
   }
 
+  /** The table at the path has so many rows, of which the server estimates so many, or none. */
+  FakeServers rows(String path, long count, OptionalLong estimate) {
+    counts.put(path, count);
+    estimates.put(path, estimate);
+    return this;
+  }
+
+  /** The table at the path has these rows, which the server estimates right. */
+  FakeServers values(String path, List<List<Object>> rows) {
+    values.put(path, rows);
+    return rows(path, rows.size(), OptionalLong.of(rows.size()));
+  }
+
+  /** How core reports a server's failure of this SQL state, on a connection that is open. */
+  static QueryException queryFailure(String state) {
+    return Query.failure(open(), new SQLException("the server's words for " + state, state));
+  }
+
+  /**
+   * How core reports a connection it had to give up, as when a cancelled call did not end: such
+   * a call, which takes core's grace to give up on, once.
+   */
+  static QueryException aborted() {
+    var thrown = new AtomicReference<QueryException>();
+    var caller = Thread.ofVirtual().start(() -> {
+      var self = Thread.currentThread();
+      try {
+        Query.run(
+            open(),
+            Provider.POSTGRESQL,
+            () -> {},
+            () -> {
+              self.interrupt(); // a cancel that the server never obeys
+              try {
+                new CountDownLatch(1).await();
+              } catch (InterruptedException e) {
+                throw new SQLException("given up");
+              }
+              return null;
+            },
+            v -> false);
+      } catch (QueryException e) {
+        thrown.set(e);
+      }
+    });
+    try {
+      caller.join();
+    } catch (InterruptedException e) {
+      throw new IllegalStateException(e);
+    }
+    return thrown.get();
+  }
+
+  /** A connection that says it is open and does nothing. */
+  private static Connection open() {
+    return (Connection) Proxy.newProxyInstance(
+        FakeServers.class.getClassLoader(),
+        new Class<?>[] {Connection.class},
+        (proxy, method, args) -> method.getName().equals("isClosed") ? false : null);
+  }
+
   void openAll() {
     gates.values().forEach(CountDownLatch::countDown);
   }
@@ -87,6 +175,14 @@ final class FakeServers implements Servers {
   }
 
   private void call(String key, boolean connecting) throws Exception {
+    call(
+        key,
+        connecting
+            ? ConnectionException.of(ConnectionException.Failure.CANCELLED, "")
+            : CatalogException.of(CatalogException.Failure.CANCELLED, ""));
+  }
+
+  private void call(String key, Exception cancelled) throws Exception {
     calls.add(key);
     var gate = gates.get(key);
     if (gate != null) {
@@ -109,9 +205,7 @@ final class FakeServers implements Servers {
         } catch (InterruptedException e) {
           interrupted.add(key);
           Thread.currentThread().interrupt();
-          throw connecting
-              ? ConnectionException.of(ConnectionException.Failure.CANCELLED, "")
-              : CatalogException.of(CatalogException.Failure.CANCELLED, "");
+          throw cancelled;
         }
       }
     }
@@ -245,13 +339,99 @@ final class FakeServers implements Servers {
       return read("columns " + host + "/" + path, c.database(), () -> {
         var list = new ArrayList<Column>();
         int key = 0;
-        for (var line : find(container(c), t.name()).children()) {
+        var table = find(container(c), t.name());
+        if (table == null) {
+          throw CatalogException.of(CatalogException.Failure.NOT_FOUND, t.name());
+        }
+        for (var line : table.children()) {
           var text = line.text();
           boolean inKey = text.startsWith("*");
           var parts = (inKey ? text.substring(1) : text).split(": ", 2);
           list.add(new Column(t, parts[0], parts[1], !inKey, inKey ? ++key : 0));
         }
         return list;
+      });
+    }
+
+    private String path(Table t) {
+      var c = t.container();
+      return host + "/"
+          + (c instanceof Schema s ? s.database().name() + "." + s.name() : c.name()) + "."
+          + t.name();
+    }
+
+    // A call on a table's rows: on its database, one at a time, held and failed by its key.
+    private <T> T rows(String key, Table t, RowsCall<T> call) throws QueryException {
+      if (busy.incrementAndGet() > 1) {
+        overlapped = true;
+      }
+      try {
+        if (database != null && !t.container().database().name().equals(database)) {
+          throw new IllegalArgumentException("A table of another database");
+        }
+        var table =
+            container(t.container()) == null ? null : find(container(t.container()), t.name());
+        var result = table == null ? null : call.call(table);
+        try {
+          call(key, queryFailure("57014"));
+        } catch (QueryException e) {
+          throw e;
+        } catch (Exception e) {
+          throw queryFailure("XX000");
+        }
+        if (table == null || result == null) {
+          throw queryFailure(table == null ? "42P01" : "42703");
+        }
+        done.add(key);
+        return result;
+      } finally {
+        busy.decrementAndGet();
+      }
+    }
+
+    @Override
+    public OptionalLong estimate(Table t) throws QueryException {
+      var path = path(t);
+      return rows("estimate " + path, t, table -> estimates.getOrDefault(path, OptionalLong.of(3)));
+    }
+
+    @Override
+    public long count(Table t) throws QueryException {
+      var path = path(t);
+      return rows("count " + path, t, table -> counts.getOrDefault(path, 3L));
+    }
+
+    @Override
+    public Page read(Table t, List<Column> columns, long from, long to) throws QueryException {
+      var path = path(t);
+      return rows("read " + path + " " + from + "-" + to, t, table -> {
+        var fields = new ArrayList<Field>();
+        for (var column : columns) {
+          var now = table.children().stream()
+              .map(line -> line.text().replaceFirst("^\\*", "").split(": ", 2))
+              .filter(parts -> parts[0].equals(column.name()))
+              .findFirst()
+              .orElse(null);
+          if (now == null) {
+            return null; // as the server says of a column that is gone
+          }
+          fields.add(new Field(column.name(), column.type(), kind(now[1])));
+        }
+        var given = values.get(path);
+        long count = given != null ? given.size() : counts.getOrDefault(path, 3L);
+        var rows = new ArrayList<List<Object>>();
+        for (long i = from; i < Math.min(to, count); i++) {
+          if (given != null) {
+            rows.add(given.get((int) i));
+            continue;
+          }
+          var row = new Object[fields.size()];
+          for (int c = 0; c < row.length; c++) {
+            row[c] = columns.get(c).nullable() && i % 7 == 6 ? null : value(fields.get(c), i);
+          }
+          rows.add(Collections.unmodifiableList(Arrays.asList(row)));
+        }
+        return new Page(List.copyOf(fields), List.copyOf(rows));
       });
     }
 
@@ -269,7 +449,65 @@ final class FakeServers implements Servers {
   }
 
   private interface Reader<T> {
-    List<T> read();
+    List<T> read() throws CatalogException;
+  }
+
+  private interface RowsCall<T> {
+    /** Of the table as the server has it; null where a column it asks for is gone. */
+    T call(Outline table) throws QueryException;
+  }
+
+  /** The kind of values a type of the outline holds, as core would read it. */
+  static Kind kind(String type) {
+    var t = type.toLowerCase(Locale.ROOT);
+    if (t.startsWith("timestamp with time zone")) {
+      return Kind.DATE_TIME_ZONED;
+    }
+    if (t.startsWith("timestamp") || t.startsWith("datetime")) {
+      return Kind.DATE_TIME;
+    }
+    if (t.matches("(big|small|tiny)?int(eger)?\\b.*|oid")) {
+      return Kind.INTEGER;
+    }
+    if (t.startsWith("numeric") || t.startsWith("decimal") || t.startsWith("double")) {
+      return Kind.DECIMAL;
+    }
+    if (t.startsWith("bool")) {
+      return Kind.BOOLEAN;
+    }
+    if (t.equals("date")) {
+      return Kind.DATE;
+    }
+    if (t.startsWith("time")) {
+      return Kind.TIME;
+    }
+    if (t.equals("bytea") || t.endsWith("blob") || t.contains("binary")) {
+      return Kind.BINARY;
+    }
+    if (t.startsWith("text")
+        || t.startsWith("char")
+        || t.startsWith("varchar")
+        || t.equals("name")) {
+      return Kind.TEXT;
+    }
+    return Kind.OTHER;
+  }
+
+  /** A value made up from the row's position. */
+  static Object value(Field field, long i) {
+    return switch (field.kind()) {
+      case INTEGER -> i + 1;
+      case DECIMAL -> BigDecimal.valueOf(i * 125 + 99, 2);
+      case TEXT -> field.name() + " " + (i + 1);
+      case BOOLEAN -> i % 2 == 0;
+      case DATE -> LocalDate.of(2026, 1, 1).plusDays(i % 365);
+      case TIME -> LocalTime.of(9, 0).plusMinutes(i % 600);
+      case DATE_TIME -> LocalDateTime.of(2026, 1, 1, 9, 0).plusMinutes(i);
+      case DATE_TIME_ZONED ->
+        LocalDateTime.of(2026, 1, 1, 9, 0).plusMinutes(i).atOffset(ZoneOffset.UTC);
+      case BINARY -> new Binary(new byte[] {(byte) i, (byte) (i >> 8), 0x0d, 0x0a}, 4);
+      case OTHER -> "{\"n\": " + (i + 1) + "}";
+    };
   }
 
   private static String name(Outline node) {
