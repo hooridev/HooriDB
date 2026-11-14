@@ -254,6 +254,26 @@ class TestConnectionTest {
     assertSame(server.drivers.get(0), server.drivers.get(1));
   }
 
+  /** A dialog higher than its window scrolls its fields and keeps Save in view. */
+  @Test
+  void theDialogHigherThanTheWindowKeepsItsButtons() throws Exception {
+    downloaded();
+    server.refuse(Failure.UNREACHABLE, "FATAL: the driver's words");
+    App<State> app = app(() -> new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, "no answer"));
+    run(
+        app,
+        START.replace("size 1200 760", "size 900 600") + NEW_SHOP + TEST + SETTLE + SETTLE + """
+        snap tall
+        press role=button label="Save"
+        frame
+        """
+            + SETTLE + "snap saved\n");
+    String tall = tree("tall");
+    assertTrue(line(tall, "#dialog-content").contains("thumb-y"), tall);
+    assertTrue(line(tall, "role=note").contains("The server cannot be reached"), tall);
+    assertFalse(tree("saved").contains("role=dialog"), tree("saved"));
+  }
+
   /** A failure, the field its note is under, the next field, and the other field it marks. */
   record Case(
       Failure failure, String field, String next, String note, String title, String marked) {}

@@ -16,9 +16,7 @@ import com.rethinkj.ui.El;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
-import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.Dialog;
-import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Editing;
 import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Format;
@@ -377,7 +375,7 @@ final class ConnectionDialog {
     var keyring =
         Prop.of(() -> canSave && savePassword, canSave && open ? v -> savePassword = v : null);
     String fallback = String.valueOf(p.provider().defaultPort());
-    El named = Form.form(
+    El form = Form.form(
         t,
         Form.Labels.BESIDE,
         field(
@@ -392,97 +390,102 @@ final class ConnectionDialog {
                     Colours.hue(p.colour()),
                     Colours.label(null),
                     open ? v -> e.at(COLOUR).set(Colours.colour(v)) : null)
-                .key("colour")));
-    El server = Form.form(
-        t,
-        Form.Labels.BESIDE,
-        field(
-                "Type",
-                Segmented.segmented(
-                    t,
-                    List.of(Provider.values()),
-                    p.provider(),
-                    Provider::displayName,
-                    open ? v -> provider(s, v) : null))
-            .help(probe.line(s)),
-        field(
-                "Host",
-                marked(
-                    t,
-                    Probe.At.HOST,
-                    textField(t, p.host(), "Name or address", open ? this::host : null)
-                        .key("host")
-                        .wFull()))
-            .required()
-            .error(error(problems, ConnectionProfile.Field.HOST)),
-        field(
-                "Port",
-                valueField(
-                        t,
-                        Format.INTEGER,
-                        p.port(),
-                        fallback,
-                        e.at(PORT).draft(),
-                        open ? this::port : null)
-                    .key("port")
-                    .maxLength(5)
-                    .w(3 * t.size().control()))
-            .required()
-            .error(or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))),
-        field(
-                "Database",
-                textField(t, locked(e.at(DATABASE)), "Optional").key("database").wFull())
-            .error(or(
-                error(problems, ConnectionProfile.Field.DATABASE), probe.error(Probe.At.DATABASE))),
-        field(
-                "TLS",
-                Select.select(
-                        t,
-                        List.of(Tls.values()),
-                        p.tls(),
-                        ConnectionDialog::tlsLabel,
-                        tlsMenu,
-                        open ? this::tls : null)
-                    .wFull())
-            .help(help(p.tls()))
-            .error(probe.error(Probe.At.TLS)));
-    El login = Form.form(
-        t,
-        Form.Labels.BESIDE,
-        field(
-                "User",
-                marked(
-                    t,
-                    Probe.At.USER,
-                    textField(t, locked(e.at(USER))).key("user").wFull()))
-            .error(error(problems, ConnectionProfile.Field.USER)),
-        field(
-                "Password",
-                col()
-                    .wFull()
-                    .gap(t.space().s())
-                    .child(revealable(
+                .key("colour")),
+        Form.group(
+                "Server",
+                field(
+                        "Type",
+                        Segmented.segmented(
                             t,
-                            passwordField(
+                            List.of(Provider.values()),
+                            p.provider(),
+                            Provider::displayName,
+                            open ? v -> provider(s, v) : null))
+                    .help(probe.line(s)),
+                // Host and port on two rows: a test's note at the port would wrap in its width.
+                field(
+                        "Host",
+                        marked(
+                            t,
+                            Probe.At.HOST,
+                            textField(t, p.host(), "Name or address", open ? this::host : null)
+                                .key("host")
+                                .wFull()))
+                    .required()
+                    .error(error(problems, ConnectionProfile.Field.HOST)),
+                field(
+                        "Port",
+                        valueField(
+                                t,
+                                Format.INTEGER,
+                                p.port(),
+                                fallback,
+                                e.at(PORT).draft(),
+                                open ? this::port : null)
+                            .key("port")
+                            .maxLength(5)
+                            .w(3 * t.size().control()))
+                    .required()
+                    .error(or(
+                        error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))),
+                field(
+                        "Database",
+                        textField(t, locked(e.at(DATABASE)), "Optional")
+                            .key("database")
+                            .wFull())
+                    .error(or(
+                        error(problems, ConnectionProfile.Field.DATABASE),
+                        probe.error(Probe.At.DATABASE))),
+                field(
+                        "TLS",
+                        Select.select(
+                                t,
+                                List.of(Tls.values()),
+                                p.tls(),
+                                ConnectionDialog::tlsLabel,
+                                tlsMenu,
+                                open ? this::tls : null)
+                            .wFull())
+                    .help(help(p.tls()))
+                    .error(probe.error(Probe.At.TLS)))
+            .divided()
+            .level(3),
+        Form.group(
+                "Login",
+                field(
+                        "User",
+                        marked(
+                            t,
+                            Probe.At.USER,
+                            textField(t, locked(e.at(USER))).key("user").wFull()))
+                    .error(error(problems, ConnectionProfile.Field.USER)),
+                field(
+                        "Password",
+                        col()
+                            .wFull()
+                            .gap(t.space().s())
+                            .child(revealable(
                                     t,
-                                    Prop.of(() -> password, open ? this::password : null),
-                                    inKeyring
-                                        ? "Saved in the system keyring"
-                                        : inSession ? "Kept until HooriDB closes" : null)
-                                .key("password")
-                                .wFull(),
-                            revealed,
-                            () -> revealed = !revealed)
-                        .wFull())
-                    .child(checkbox(t, keyring, "Save password in the system keyring")))
-            .help(keepNote == null ? note : note == null ? keepNote : keepNote + " " + note)
-            .error(probe.error(Probe.At.PASSWORD)));
+                                    passwordField(
+                                            t,
+                                            Prop.of(() -> password, open ? this::password : null),
+                                            inKeyring
+                                                ? "Saved in the system keyring"
+                                                : inSession ? "Kept until HooriDB closes" : null)
+                                        .key("password")
+                                        .wFull(),
+                                    revealed,
+                                    () -> revealed = !revealed)
+                                .wFull())
+                            .child(checkbox(t, keyring, "Save password in the system keyring")))
+                    .help(keepNote == null ? note : note == null ? keepNote : keepNote + " " + note)
+                    .error(probe.error(Probe.At.PASSWORD)))
+            .divided()
+            .level(3));
     El content = col()
         .w(width(t))
         .gap(t.space().l())
-        .child(named)
-        .child(group(t, "Server", server))
-        .child(group(t, "Login", login))
+        .child(form)
         // Enter while Save cannot go shows what keeps it, the empty host too.
         .onKey(k -> {
           if (k.name().equals("Enter") && k.modifiers() == 0 && !ready()) {
@@ -505,23 +508,17 @@ final class ConnectionDialog {
         "Test connection",
         () -> probe.test(s),
         Button.options().enabled(probe.running() || probe.canTest(s)).busy(probe.running()));
+    var options = Dialog.options().start(test).defaultButton(save);
+    if (p.colour() != null) {
+      options = options.leading(Colours.mark(t, p.colour()));
+    }
     return Dialog.dialog(
         t,
         isNew ? "New connection" : "Edit connection",
         content,
-        List.of(test, cancel, save),
-        save,
-        () -> cancel(s));
-  }
-
-  /** A group of the form's fields under a heading, set off by a line. */
-  // shortcut: each group's form has a label column of its own; share one once Form groups fields.
-  private static El group(Theme t, String heading, El form) {
-    return col()
-        .gap(t.space().m())
-        .child(Divider.divider(t))
-        .child(Card.header(t, heading, null))
-        .child(form);
+        List.of(cancel, save),
+        () -> cancel(s),
+        options);
   }
 
   /**

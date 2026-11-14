@@ -164,6 +164,7 @@ class ConnectionsTest {
     String typed = tree("typed");
     assertTrue(line(typed, "label=\"Save\"").endsWith("56x24"), "Save can go: " + typed);
     for (var heading : List.of("Server", "Login")) {
+      assertTrue(typed.contains("role=group label=\"" + heading + "\""), typed);
       assertTrue(line(typed, "role=heading \"" + heading + "\"").contains("level=3"), typed);
     }
     assertTrue(

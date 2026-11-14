@@ -92,6 +92,9 @@ class ColoursTest {
     assertTrue(line(red, "role=radio label=\"Red\"").contains("checked"), red);
     assertFalse(line(red, "role=radio label=\"Red\"").contains("checked=false"), red);
     assertTrue(line(c.tree("orange"), "role=radio label=\"Orange\"").endsWith(" checked"), "keys");
+    // The mark beside the dialog's title follows the choice.
+    assertEquals(1, marks(red, "red"), red);
+    assertEquals(1, marks(c.tree("orange"), "orange"), c.tree("orange"));
     String saved = c.tree("saved");
     assertFalse(saved.contains("role=dialog"), saved);
     assertTrue(marks(row(saved, "shop-prod"), "red") == 1, saved);
