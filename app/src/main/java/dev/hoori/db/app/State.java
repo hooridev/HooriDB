@@ -41,6 +41,8 @@ final class State {
 
   private final ProfileStore store;
   private final Callable<Keyring> findKeyring;
+  final Drivers drivers; // null in a script run, which downloads none
+  final Tester tester;
   List<ConnectionProfile> profiles = List.of(); // in the order shown and saved
   boolean loaded; // whether the profiles were loaded, or failed to
   String loadError; // why the profiles could not be loaded, or null
@@ -66,10 +68,14 @@ final class State {
   /**
    * @param folder where the profiles are kept
    * @param keyring finds the system keyring, off the app's thread
+   * @param drivers where drivers are kept and come from, or null for none
+   * @param tester tests a connection, off the app's thread
    */
-  State(Path folder, Callable<Keyring> keyring) {
+  State(Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester) {
     this.store = new ProfileStore(folder);
     this.findKeyring = keyring;
+    this.drivers = drivers;
+    this.tester = tester;
   }
 
   /** Loads the profiles, then looks up the keyring. */
@@ -140,7 +146,7 @@ final class State {
 
   /** Opens the dialog for a new connection. */
   void newConnection() {
-    dialog = ConnectionDialog.create();
+    dialog = ConnectionDialog.create(this);
   }
 
   void edit(ConnectionProfile profile) {
@@ -319,6 +325,10 @@ final class State {
    * written, so that no password is in the keyring for a connection that is not saved.
    */
   void requestClose() {
+    if (dialog != null) {
+      // A test or a download can always be done again: closing cancels them instead of waiting.
+      dialog.probe.stop();
+    }
     if (quitAnyway && !keyringBusy() && saving == null) {
       closeAll();
       return;

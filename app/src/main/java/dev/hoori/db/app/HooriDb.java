@@ -13,6 +13,7 @@ import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.WindowIcon;
 import com.rethinkj.ui.window.WindowLoop;
 import dev.hoori.db.core.AppFolders;
+import dev.hoori.db.core.driver.MavenRepository;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -31,15 +32,22 @@ public final class HooriDb {
 
   private HooriDb() {}
 
+  /** The app without drivers, as in a script run: no connection can be tested. */
+  static App<State> app(Path folder, Callable<Keyring> keyring) {
+    return app(folder, keyring, null, Tester.SERVER);
+  }
+
   /**
    * The app over a new state, with the text rendering that a script's images are made with. It
    * starts loading the connections and looking up the keyring.
    *
    * @param folder where the connections are kept
    * @param keyring finds the system keyring, off the app's thread
+   * @param drivers where drivers are kept and downloaded from, or null for none
+   * @param tester tests a connection, off the app's thread
    */
-  static App<State> app(Path folder, Callable<Keyring> keyring) {
-    App<State> app = new App<>(new State(folder, keyring), Frame::view);
+  static App<State> app(Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester) {
+    App<State> app = new App<>(new State(folder, keyring, drivers, tester), Frame::view);
     app.state().app = app;
     // A script's images must not depend on the platform they were made on.
     app.textRendering(TextRendering.LINUX);
@@ -50,8 +58,8 @@ public final class HooriDb {
   /**
    * Opens the window, or with {@code --script <file> --out <folder>} runs the script without one
    * and writes its images and element trees. A script never reaches the user's connections or
-   * keyring: it has a new temporary folder, or the one {@code --config <folder>} names, and no
-   * keyring.
+   * keyring: it has a new temporary folder, or the one {@code --config <folder>} names, no
+   * keyring, and no drivers, so that it never downloads one.
    */
   public static void main(String[] args) throws IOException {
     var rest = new ArrayList<>(List.of(args));
@@ -68,7 +76,11 @@ public final class HooriDb {
       Script.handle(rest.toArray(String[]::new), app(folder, () -> none));
       return;
     }
-    App<State> app = app(AppFolders.find().config(), Keyring::find);
+    var folders = AppFolders.find();
+    var central = MavenRepository.central();
+    var drivers = new Drivers(
+        folders.data().resolve("drivers"), central, "Maven Central", MavenRepository.CENTRAL);
+    App<State> app = app(folders.config(), Keyring::find, drivers, Tester.SERVER);
     app.textRendering(TextRendering.platform());
     // Shows what goes wrong before there is a window to show it in, such as no usable GPU.
     SystemDialogs.reportFailure(NAME, () -> {

@@ -25,6 +25,7 @@ import com.rethinkj.ui.kit.Part;
 import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
+import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
@@ -61,9 +62,10 @@ final class ConnectionDialog {
   private boolean portByHand; // the port no longer follows the provider
   private boolean tlsByHand; // the TLS no longer follows the host
   private boolean hostTyped;
-  private boolean triedToSave;
+  boolean triedToSave; // Save or a test was tried: the fields say what keeps them
   // The kit's password field holds a String, which cannot be wiped; it goes with the dialog.
   String password = "";
+  int passwordEdits; // tells a test's outcome that the password changed since
   boolean revealed;
   boolean savePassword;
   Boolean stored; // whether the keyring holds a password for the profile; null while unknown
@@ -73,6 +75,7 @@ final class ConnectionDialog {
   boolean changing;
   boolean discarding; // the question whether to throw the changes away is open
   final Menu.State tlsMenu = new Menu.State();
+  final Probe probe = new Probe(this);
 
   private ConnectionDialog(ConnectionProfile profile, boolean isNew) {
     this.isNew = isNew;
@@ -85,13 +88,16 @@ final class ConnectionDialog {
     }
   }
 
-  static ConnectionDialog create() {
-    return new ConnectionDialog(ConnectionProfile.of(Provider.POSTGRESQL), true);
+  static ConnectionDialog create(State s) {
+    var dialog = new ConnectionDialog(ConnectionProfile.of(Provider.POSTGRESQL), true);
+    dialog.probe.lookUp(s, Provider.POSTGRESQL);
+    return dialog;
   }
 
   static ConnectionDialog edit(State s, ConnectionProfile profile) {
     var dialog = new ConnectionDialog(profile, false);
     dialog.lookUp(s);
+    dialog.probe.lookUp(s, profile.provider());
     return dialog;
   }
 
@@ -211,6 +217,7 @@ final class ConnectionDialog {
       s.forgetPassword(profile.id());
     }
     password = "";
+    probe.close();
     s.dialog = null;
     s.put(profile);
   }
@@ -231,17 +238,23 @@ final class ConnectionDialog {
     if (asking != null) {
       asking.cancel();
     }
+    probe.close();
     password = "";
     s.dialog = null;
   }
 
   // Writes that let another field follow, as long as the user has not set that one by hand.
 
-  private void provider(Provider provider) {
+  private void provider(State s, Provider provider) {
+    if (provider == editing.value().provider()) {
+      return;
+    }
     editing.at(PROVIDER).set(provider);
     if (!portByHand && !portTyped()) {
       editing.at(PORT).set(provider.defaultPort());
     }
+    probe.stop(); // a test or a download is for the driver of the other kind
+    probe.lookUp(s, provider);
   }
 
   private void port(Integer port) {
@@ -255,6 +268,20 @@ final class ConnectionDialog {
     if (!tlsByHand) {
       editing.at(TLS).set(ConnectionProfile.tlsByDefault(host));
     }
+  }
+
+  private void password(String password) {
+    this.password = password;
+    passwordEdits++;
+  }
+
+  /** The text field, with the look of an error where a test's failure concerns it too. */
+  private El marked(Theme t, Probe.At at, El field) {
+    return probe.marks(at) ? TextField.invalid(t, field) : field;
+  }
+
+  private static String or(String first, String second) {
+    return first != null ? first : second;
   }
 
   private void tls(Tls tls) {
@@ -348,18 +375,22 @@ final class ConnectionDialog {
                 .key("name")
                 .wFull()),
         field(
-            "Type",
-            Segmented.segmented(
-                t,
-                List.of(Provider.values()),
-                p.provider(),
-                Provider::displayName,
-                open ? this::provider : null)),
+                "Type",
+                Segmented.segmented(
+                    t,
+                    List.of(Provider.values()),
+                    p.provider(),
+                    Provider::displayName,
+                    open ? v -> provider(s, v) : null))
+            .help(probe.line(s)),
         field(
                 "Host",
-                textField(t, p.host(), "Name or address", open ? this::host : null)
-                    .key("host")
-                    .wFull())
+                marked(
+                    t,
+                    Probe.At.HOST,
+                    textField(t, p.host(), "Name or address", open ? this::host : null)
+                        .key("host")
+                        .wFull()))
             .required()
             .error(error(problems, ConnectionProfile.Field.HOST)),
         field(
@@ -375,12 +406,18 @@ final class ConnectionDialog {
                     .maxLength(5)
                     .w(3 * t.size().control()))
             .required()
-            .error(error(problems, ConnectionProfile.Field.PORT)),
+            .error(or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))),
         field(
                 "Database",
                 textField(t, locked(e.at(DATABASE)), "Optional").key("database").wFull())
-            .error(error(problems, ConnectionProfile.Field.DATABASE)),
-        field("User", textField(t, locked(e.at(USER))).key("user").wFull())
+            .error(or(
+                error(problems, ConnectionProfile.Field.DATABASE), probe.error(Probe.At.DATABASE))),
+        field(
+                "User",
+                marked(
+                    t,
+                    Probe.At.USER,
+                    textField(t, locked(e.at(USER))).key("user").wFull()))
             .error(error(problems, ConnectionProfile.Field.USER)),
         field(
                 "Password",
@@ -391,7 +428,7 @@ final class ConnectionDialog {
                             t,
                             passwordField(
                                     t,
-                                    Prop.of(() -> password, open ? v -> password = v : null),
+                                    Prop.of(() -> password, open ? this::password : null),
                                     inKeyring
                                         ? "Saved in the system keyring"
                                         : inSession ? "Kept until HooriDB closes" : null)
@@ -401,7 +438,8 @@ final class ConnectionDialog {
                             () -> revealed = !revealed)
                         .wFull())
                     .child(checkbox(t, keyring, "Save password in the system keyring")))
-            .help(keepNote == null ? note : note == null ? keepNote : keepNote + " " + note),
+            .help(keepNote == null ? note : note == null ? keepNote : keepNote + " " + note)
+            .error(probe.error(Probe.At.PASSWORD)),
         field(
                 "TLS",
                 Select.select(
@@ -412,7 +450,8 @@ final class ConnectionDialog {
                         tlsMenu,
                         open ? this::tls : null)
                     .wFull())
-            .help(help(p.tls())));
+            .help(help(p.tls()))
+            .error(probe.error(Probe.At.TLS)));
     El content = col()
         // As wide as two fields, so that help and errors wrap below their field.
         .w(2 * t.size().field())
@@ -430,11 +469,21 @@ final class ConnectionDialog {
       content.child(Callout.callout(
           t, Callout.Kind.DANGER, "The system keyring reported a problem", keyringError));
     }
+    El tried = probe.view(t, s);
+    if (tried != null) {
+      content.child(tried);
+    }
+    El test = button(
+        t,
+        SECONDARY,
+        "Test connection",
+        () -> probe.test(s),
+        Button.options().enabled(probe.running() || probe.canTest(s)).busy(probe.running()));
     return Dialog.dialog(
         t,
         isNew ? "New connection" : "Edit connection",
         content,
-        List.of(cancel, save),
+        List.of(test, cancel, save),
         save,
         () -> cancel(s));
   }
