@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * The connections as a tree of what their servers hold: opening a connection connects, and each
@@ -128,7 +129,9 @@ final class Catalogue {
     Lane lane; // the first connection
     final Map<String, Lane> lanes = new HashMap<>(); // further connections, by database
     final Map<Node, Level> levels = new HashMap<>();
-    final Map<Node.OfDatabase, Scan> scans = new HashMap<>(); // go to table's reads, by database
+    // The background reads of go to table and of completions: a database's tables, a table's
+    // columns.
+    final Map<Node, Scan> scans = new HashMap<>();
     // The password dialog; the kit's field holds a String, which goes with the dialog.
     String typed = "";
     boolean revealed;
@@ -462,6 +465,12 @@ final class Catalogue {
     if (call == null) {
       return;
     }
+    // The columns are read once at a time: a read of them in the background gives way.
+    if (node instanceof Node.OfTable && live.scans.remove(node) instanceof Scan x) {
+      if (x.asked != null) {
+        x.asked.cancel();
+      }
+    }
     var lane = lane(s, live, database(node));
     var reading = new Reading();
     live.levels.put(node, reading);
@@ -496,7 +505,7 @@ final class Catalogue {
         });
   }
 
-  /** Go to table's read of a whole database: under way while it has work, else why it failed. */
+  /** A read in the background: under way while it has work, else why it failed. */
   static final class Scan {
     Lane.Asked asked;
     String failed;
@@ -512,26 +521,67 @@ final class Catalogue {
    */
   Scan scan(State s, Node.OfDatabase node) {
     var live = lives.get(node.id());
-    if (live == null
-        || !(live.phase instanceof Connected c)
-        || live.scans.get(node) instanceof Scan x && x.asked != null) {
+    if (!(live != null && live.phase instanceof Connected c)) {
       return null;
     }
     var database = node.database();
     boolean schemas = c.schemas();
-    var lane = lane(s, live, database.name());
     record Found(List<Schema> schemas, List<Table> tables) {}
+    return scan(
+        s,
+        live,
+        node,
+        "read the tables of " + database.name(),
+        link -> new Found(schemas ? link.schemas(database) : null, link.allTables(database)),
+        found -> fill(live, node, found.schemas(), found.tables()));
+  }
+
+  /**
+   * Reads the table's columns where the tree has not, as {@link #scan(State, Node.OfDatabase)}
+   * reads tables, for the completions of a console, which {@link #stop}s it as it closes.
+   */
+  Scan scan(State s, Node.OfTable node) {
+    var live = lives.get(node.id());
+    if (live == null
+        || !(live.phase instanceof Connected)
+        || live.levels.get(node) instanceof Reading) {
+      return null; // the tree reads them already
+    }
+    var id = live.id();
+    return scan(
+        s,
+        live,
+        node,
+        "read the columns of " + node.table().name(),
+        link -> link.columns(node.table()),
+        columns -> {
+          if (unread(live.levels.get(node))) {
+            live.levels.put(
+                node,
+                new Read(
+                    columns.stream().map(x -> (Node) new Node.OfColumn(id, x)).toList()));
+          }
+        });
+  }
+
+  private <T> Scan scan(
+      State s, Live live, Node node, String name, Lane.Call<T> call, Consumer<T> fill) {
+    if (live.scans.get(node) instanceof Scan x && x.asked != null) {
+      return null;
+    }
+    var database = database(node);
+    var lane = lane(s, live, database);
     var scan = new Scan();
     live.scans.put(node, scan);
     scan.asked = lane.ask(
         s.app,
-        "read the tables of " + database.name(),
+        name,
         Lane.Priority.AHEAD,
-        link -> new Found(schemas ? link.schemas(database) : null, link.allTables(database)),
+        call,
         found -> {
           if (live.scans.get(node) == scan) {
             live.scans.remove(node);
-            fill(live, node, found.schemas(), found.tables());
+            fill.accept(found);
           }
         },
         error -> {
@@ -541,7 +591,7 @@ final class Catalogue {
           scan.asked = null;
           var checked = checked(live, error);
           if (checked instanceof ConnectionException) {
-            if (live.lanes.remove(database.name(), lane)) {
+            if (live.lanes.remove(database, lane)) {
               lane.close(); // the next read opens it again
             }
             scan.failed = "The database could not be opened";
@@ -558,7 +608,7 @@ final class Catalogue {
   }
 
   /** Ends the scan if it has not delivered: what it asked of its lane never runs or is cancelled. */
-  void stop(Node.OfDatabase node, Scan scan) {
+  void stop(Node node, Scan scan) {
     var live = lives.get(node.id());
     if (live != null && live.scans.get(node) == scan) {
       live.scans.remove(node);

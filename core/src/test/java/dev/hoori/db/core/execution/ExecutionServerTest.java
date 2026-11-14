@@ -18,6 +18,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -277,6 +278,42 @@ class ExecutionServerTest {
       assertEquals(Failure.Kind.TIMEOUT, timeout.kind(), timeout.toString());
       assertEquals(List.of(List.of(1L)), rows(run(connection, provider, "SELECT 1")));
     }
+  }
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aFailureSaysWhereInTheStatementItIs(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      // A syntax error in the middle of a line: the second WHERE.
+      var middle = "SELECT id FROM reading WHERE WHERE id = 1";
+      assertEquals(
+          place(middle, "WHERE id", "WHERE"),
+          failure(run(connection, provider, middle)).place(middle));
+      // On a later line of a statement of several.
+      var later = "SELECT id,\n  label\nFROM reading\nWHERE id IN (1,, 2)";
+      assertEquals(
+          place(later, ", 2)", ","), failure(run(connection, provider, later)).place(later));
+      // At the end: the last word.
+      var end = "SELECT id FROM reading WHERE";
+      assertEquals(
+          place(end, "WHERE", "WHERE"), failure(run(connection, provider, end)).place(end));
+      // An unknown column and an unknown table: PostgreSQL says where, MariaDB and MySQL do not.
+      var column = "SELECT id,\n  nothere\nFROM reading";
+      assertEquals(
+          pg ? place(column, "nothere", "nothere") : Optional.empty(),
+          failure(run(connection, provider, column)).place(column));
+      // A name in double quotes is a string on MariaDB and MySQL.
+      var table = pg ? "SELECT *\nFROM \"nowhere\"" : "SELECT *\nFROM nowhere";
+      assertEquals(
+          pg ? place(table, "\"nowhere\"", "\"nowhere\"") : Optional.empty(),
+          failure(run(connection, provider, table)).place(table));
+    }
+  }
+
+  private static Optional<Failure.Place> place(String sql, String from, String word) {
+    int at = sql.indexOf(from);
+    return Optional.of(new Failure.Place(at, at + word.length()));
   }
 
   @Test
