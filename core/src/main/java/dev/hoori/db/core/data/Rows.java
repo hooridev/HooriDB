@@ -7,8 +7,10 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.time.DateTimeException;
@@ -18,6 +20,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -26,6 +29,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.OptionalLong;
 import java.util.function.Function;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -57,23 +61,32 @@ public final class Rows {
 
   // A date, and a date and time, as PostgreSQL writes them with DateStyle ISO, which pgjdbc sets,
   // and as MariaDB and MySQL write them; PostgreSQL's years go beyond 9999, and before the common
-  // era they end in BC.
+  // era they end in BC. A timestamp with time zone of a statement's result has the offset of the
+  // session's zone.
   private static final Pattern MOMENT = Pattern.compile(
-      "(\\d{4,7})-(\\d\\d)-(\\d\\d)(?: (\\d\\d):(\\d\\d):(\\d\\d)(?:\\.(\\d{1,9}))?)?( BC)?");
+      "(\\d{4,7})-(\\d\\d)-(\\d\\d)(?: (\\d\\d):(\\d\\d):(\\d\\d)(?:\\.(\\d{1,9}))?)?"
+          + "([+-]\\d\\d(?::\\d\\d){0,2})?( BC)?");
   // PostgreSQL writes an offset in hours, then minutes and seconds where they are not 0.
   private static final Pattern TIME =
       Pattern.compile("(\\d\\d):(\\d\\d):(\\d\\d)(?:\\.(\\d{1,9}))?([+-]\\d\\d(?::\\d\\d){0,2})?");
+  private static final DateTimeFormatter MYSQL_DATE_TIME =
+      DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSSSSS");
   private static final Pattern PLAN_ROWS = Pattern.compile(" rows=(\\d+) ");
 
   private Rows() {}
 
-  private interface Value {
+  interface Value {
     Object read(ResultSet rows, int index) throws SQLException;
   }
 
   // How a column is read: the expressions it takes in the select list, and how its value is made
-  // from them, the first one at the index given.
-  private record Read(Field field, List<String> sql, Value value) {}
+  // from them, the first one at the index given. A column of a statement's result takes none: it
+  // is read as it comes, at its own index.
+  record Read(Field field, List<String> sql, Value value) {}
+
+  // What a column is read from: the name and type its field shows, and its quoted name in a select
+  // list, or null for a column of a statement's result.
+  private record Source(String name, String type, String sql) {}
 
   /**
    * The number of rows of the table or view as the server's planner estimates it, without reading
@@ -208,7 +221,9 @@ public final class Rows {
       Connection connection, Provider provider, Table table, List<Column> columns)
       throws QueryException {
     if (provider != Provider.POSTGRESQL) {
-      return columns.stream().map(column -> mysql(provider, column)).toList();
+      return columns.stream()
+          .map(column -> mysql(provider, source(provider, column), column.type()))
+          .toList();
     }
     if (columns.isEmpty()) {
       return List.of();
@@ -223,111 +238,201 @@ public final class Rows {
         var reads = new ArrayList<Read>();
         for (var i = 0; i < columns.size(); i++) {
           reads.add(postgresql(
-              columns.get(i), metadata.getColumnTypeName(i + 1), metadata.getColumnType(i + 1)));
+              source(provider, columns.get(i)),
+              metadata.getColumnTypeName(i + 1),
+              metadata.getColumnType(i + 1)));
         }
         return reads;
       }
     });
   }
 
-  private static Read postgresql(Column column, String type, int jdbcType) {
-    var name = Provider.POSTGRESQL.quote(column.name());
+  /**
+   * How the columns of a statement's result are read, as {@link #read} reads a table's where the
+   * metadata of the result tells as much as the catalogue: see {@link RowReader}.
+   */
+  static List<Read> reads(Provider provider, ResultSetMetaData metadata) throws SQLException {
+    var reads = new ArrayList<Read>();
+    for (var i = 1; i <= metadata.getColumnCount(); i++) {
+      var type = metadata.getColumnTypeName(i);
+      var source = new Source(metadata.getColumnLabel(i), type, null);
+      reads.add(
+          provider == Provider.POSTGRESQL
+              ? postgresql(source, type, metadata.getColumnType(i))
+              : mysql(provider, source, catalogueType(provider, type, metadata.getPrecision(i))));
+    }
+    return reads;
+  }
+
+  // The type as the catalogue would name it, from what the driver reports: MariaDB Connector/J
+  // names tinyint(1) BOOLEAN and its json JSON, which the catalogue calls longtext, while MySQL
+  // Connector/J reports tinyint(1) and bit(1) alike as a BIT of precision 1, which is taken for the
+  // tinyint(1), as a whole number holds either.
+  private static String catalogueType(Provider provider, String type, int precision) {
+    return switch (type.toLowerCase(Locale.ROOT)) {
+      case "boolean" -> "tinyint(1)";
+      case "bit" ->
+        provider == Provider.MYSQL && precision == 1 ? "tinyint(1)" : "bit(" + precision + ")";
+      case "json" -> provider == Provider.MARIADB ? "longtext" : "json";
+      case String other -> other;
+    };
+  }
+
+  private static Source source(Provider provider, Column column) {
+    return new Source(column.name(), column.type(), provider.quote(column.name()));
+  }
+
+  private static Read postgresql(Source source, String type, int jdbcType) {
     return switch (type) {
-      case "int2", "int4", "int8", "oid" -> plain(column, Kind.INTEGER, name, Long::valueOf);
-      case "numeric" -> plain(column, Kind.DECIMAL, name, Rows::decimal);
-      case "float4" -> plain(column, Kind.DECIMAL, name, Float::valueOf);
-      case "float8" -> plain(column, Kind.DECIMAL, name, Double::valueOf);
-      case "bool" -> plain(column, Kind.BOOLEAN, name, "t"::equals);
+      case "int2", "int4", "int8", "oid" -> plain(source, Kind.INTEGER, Long::valueOf);
+      case "numeric" -> plain(source, Kind.DECIMAL, Rows::decimal);
+      case "float4" -> plain(source, Kind.DECIMAL, Float::valueOf);
+      case "float8" -> plain(source, Kind.DECIMAL, Double::valueOf);
+      case "bool" -> plain(source, Kind.BOOLEAN, "t"::equals);
       // shortcut: char(n) is read whole, as substr() would drop its trailing spaces; cut it too if
       // someone keeps long texts in one.
-      case "bpchar" -> plain(column, Kind.TEXT, name, text -> text);
+      case "bpchar" -> plain(source, Kind.TEXT, text -> text);
       case "bytea" ->
-        binary(column, "substr(" + name + ", 1, " + LIMIT + ")", "octet_length(" + name + ")");
-      case "date" -> plain(column, Kind.DATE, name, Rows::date);
-      case "time", "timetz" -> plain(column, Kind.TIME, name, Rows::time);
-      case "timestamp" -> plain(column, Kind.DATE_TIME, name, Rows::dateTime);
-      // In UTC rather than in the session's zone, whose offsets in the past have seconds.
+        binary(source, name -> "substr(" + name + ", 1, " + LIMIT + ")", "octet_length");
+      case "date" -> plain(source, Kind.DATE, Rows::date);
+      case "time", "timetz" -> plain(source, Kind.TIME, Rows::time);
+      case "timestamp" -> plain(source, Kind.DATE_TIME, Rows::dateTime);
+      // In UTC rather than in the session's zone, whose offsets in the past have seconds; a
+      // statement's result has them, and they are taken off here.
       case "timestamptz" ->
-        plain(column, Kind.DATE_TIME_ZONED, "(" + name + " AT TIME ZONE 'UTC')", Rows::utc);
+        plain(
+            source,
+            Kind.DATE_TIME_ZONED,
+            name -> "(" + name + " AT TIME ZONE 'UTC')",
+            ResultSet::getString,
+            Rows::utc);
       // pgjdbc reports money as DOUBLE, which it is not; it is written in the server's locale.
-      case "money" -> text(column, Kind.OTHER, name + "::text", "octet_length");
+      case "money" -> text(source, Kind.OTHER, name -> name + "::text", "octet_length");
       default -> {
         var kind = jdbcType == Types.VARCHAR || jdbcType == Types.CHAR ? Kind.TEXT : Kind.OTHER;
-        yield text(column, kind, name + "::text", "octet_length");
+        yield text(source, kind, name -> name + "::text", "octet_length");
       }
     };
   }
 
-  private static Read mysql(Provider provider, Column column) {
-    var type = column.type().toLowerCase(Locale.ROOT);
-    var name = provider.quote(column.name());
-    var asText = "CAST(" + name + " AS CHAR)";
+  private static Read mysql(Provider provider, Source source, String catalogueType) {
+    var type = catalogueType.toLowerCase(Locale.ROOT);
+    UnaryOperator<String> asText = name -> "CAST(" + name + " AS CHAR)";
+    // MariaDB Connector/J's getString() moves a time out of a daylight saving gap of the JVM's
+    // zone, where its LocalDateTime does not; it has none for a zero date.
+    Text dateTime = provider == Provider.MYSQL
+        ? ResultSet::getString
+        : (rows, index) -> {
+          var local = rows.getObject(index, LocalDateTime.class);
+          return local == null ? rows.getString(index) : MYSQL_DATE_TIME.format(local);
+        };
     return switch (type.split("[( ]", 2)[0]) {
       case "tinyint", "smallint", "mediumint", "int", "integer" ->
-        plain(column, Kind.INTEGER, name, Long::valueOf);
+        plain(source, Kind.INTEGER, Long::valueOf);
       case "bigint" ->
+        plain(source, Kind.INTEGER, type.contains("unsigned") ? BigInteger::new : Long::valueOf);
+      // MySQL Connector/J's getString() writes a year as a date.
+      case "year" ->
         plain(
-            column,
+            source,
             Kind.INTEGER,
-            name,
-            type.contains("unsigned") ? BigInteger::new : Long::valueOf);
-      case "year" -> plain(column, Kind.INTEGER, "CAST(" + name + " AS UNSIGNED)", Long::valueOf);
+            name -> "CAST(" + name + " AS UNSIGNED)",
+            provider == Provider.MYSQL ? Rows::ascii : ResultSet::getString,
+            Long::valueOf);
+      // Of a statement's result, MariaDB Connector/J's getString() writes true or false.
       case "bit" ->
         type.equals("bit(1)")
-            ? plain(column, Kind.BOOLEAN, name + " + 0", "1"::equals)
-            : binary(column, name, "LENGTH(" + name + ")");
-      case "decimal", "numeric" -> plain(column, Kind.DECIMAL, name, BigDecimal::new);
-      case "float" -> plain(column, Kind.DECIMAL, name, Float::valueOf);
-      case "double", "real" -> plain(column, Kind.DECIMAL, name, Double::valueOf);
-      // As the server writes them: MariaDB Connector/J's getString() moves a time out of a daylight
-      // saving gap of the JVM's zone.
-      case "date" -> plain(column, Kind.DATE, asText, Rows::date);
-      case "time" -> plain(column, Kind.TIME, asText, Rows::time);
-      case "datetime" -> plain(column, Kind.DATE_TIME, asText, Rows::dateTime);
+            ? plain(source, Kind.BOOLEAN, name -> name + " + 0", Rows::bit, "1"::equals)
+            : binary(source, name -> name, "LENGTH");
+      case "decimal", "numeric" -> plain(source, Kind.DECIMAL, BigDecimal::new);
+      case "float" -> plain(source, Kind.DECIMAL, Float::valueOf);
+      case "double", "real" -> plain(source, Kind.DECIMAL, Double::valueOf);
+      // As the server writes them.
+      case "date" -> plain(source, Kind.DATE, asText, Rows::date);
+      case "time" -> plain(source, Kind.TIME, asText, Rows::time);
+      case "datetime" -> plain(source, Kind.DATE_TIME, asText, dateTime, Rows::dateTime);
       // The server writes a timestamp in the session's zone; UNIX_TIMESTAMP() gives the moment it
-      // stores, and 0 for a zero date, which no timestamp is otherwise.
+      // stores, and 0 for a zero date, which no timestamp is otherwise. A statement's result has
+      // only the text, which is the time in the session's zone.
       case "timestamp" ->
-        new Read(
-            field(column, Kind.DATE_TIME_ZONED),
-            List.of(asText, "UNIX_TIMESTAMP(" + name + ")"),
-            (rows, index) -> {
-              var text = rows.getString(index);
-              if (text == null) {
-                return null;
-              }
-              var seconds = new BigDecimal(rows.getString(index + 1));
-              return seconds.signum() == 0
-                  ? text
-                  : Instant.ofEpochSecond(
-                          seconds.longValue(),
-                          seconds.remainder(BigDecimal.ONE).movePointRight(9).longValue())
-                      .atOffset(ZoneOffset.UTC);
-            });
+        source.sql() == null
+            ? plain(source, Kind.DATE_TIME, asText, dateTime, Rows::dateTime)
+            : new Read(
+                field(source, Kind.DATE_TIME_ZONED),
+                List.of(asText.apply(source.sql()), "UNIX_TIMESTAMP(" + source.sql() + ")"),
+                (rows, index) -> {
+                  var text = rows.getString(index);
+                  if (text == null) {
+                    return null;
+                  }
+                  var seconds = new BigDecimal(rows.getString(index + 1));
+                  return seconds.signum() == 0
+                      ? text
+                      : Instant.ofEpochSecond(
+                              seconds.longValue(),
+                              seconds
+                                  .remainder(BigDecimal.ONE)
+                                  .movePointRight(9)
+                                  .longValue())
+                          .atOffset(ZoneOffset.UTC);
+                });
       case "char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set" ->
-        text(column, Kind.TEXT, name, "LENGTH");
+        text(source, Kind.TEXT, name -> name, "LENGTH");
       case "binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob" ->
-        binary(column, "SUBSTRING(" + name + ", 1, " + LIMIT + ")", "LENGTH(" + name + ")");
-      default -> text(column, Kind.OTHER, name, "LENGTH");
+        binary(source, name -> "SUBSTRING(" + name + ", 1, " + LIMIT + ")", "LENGTH");
+      default -> text(source, Kind.OTHER, name -> name, "LENGTH");
     };
   }
 
-  private static Field field(Column column, Kind kind) {
-    return new Field(column.name(), column.type(), kind);
+  private interface Text {
+    String read(ResultSet rows, int index) throws SQLException;
   }
 
-  private static Read plain(Column column, Kind kind, String sql, Function<String, Object> parse) {
-    return new Read(field(column, kind), List.of(sql), (rows, index) -> {
-      var text = rows.getString(index);
-      return text == null ? null : parse.apply(text);
-    });
+  private static Field field(Source source, Kind kind) {
+    return new Field(source.name(), source.type(), kind);
+  }
+
+  private static Read plain(Source source, Kind kind, Function<String, Object> parse) {
+    return plain(source, kind, name -> name, parse);
+  }
+
+  private static Read plain(
+      Source source, Kind kind, UnaryOperator<String> sql, Function<String, Object> parse) {
+    return plain(source, kind, sql, ResultSet::getString, parse);
+  }
+
+  // The table's column is read as the text of the expression, a statement's as the text the
+  // given way gives.
+  private static Read plain(
+      Source source,
+      Kind kind,
+      UnaryOperator<String> sql,
+      Text text,
+      Function<String, Object> parse) {
+    var table = source.sql() != null;
+    return new Read(
+        field(source, kind), table ? List.of(sql.apply(source.sql())) : List.of(), (rows, i) -> {
+          var read = table ? rows.getString(i) : text.read(rows, i);
+          return read == null ? null : parse.apply(read);
+        });
   }
 
   // One character more than the limit tells that there is more; the server counts characters, as
-  // code points, where Java counts UTF-16 units.
-  private static Read text(Column column, Kind kind, String sql, String length) {
-    var start = "SUBSTRING(" + sql + " FROM 1 FOR " + (LIMIT + 1) + ")";
+  // code points, where Java counts UTF-16 units. A statement's result has the whole text, which is
+  // cut here and counted in UTF-8.
+  private static Read text(Source source, Kind kind, UnaryOperator<String> sql, String length) {
+    if (source.sql() == null) {
+      return new Read(field(source, kind), List.of(), (rows, index) -> {
+        var text = rows.getString(index);
+        return text == null || text.codePointCount(0, text.length()) <= LIMIT
+            ? text
+            : new Cut(text.substring(0, text.offsetByCodePoints(0, LIMIT)), utf8Length(text));
+      });
+    }
+    var expression = sql.apply(source.sql());
+    var start = "SUBSTRING(" + expression + " FROM 1 FOR " + (LIMIT + 1) + ")";
     return new Read(
-        field(column, kind), List.of(start, length + "(" + sql + ")"), (rows, index) -> {
+        field(source, kind), List.of(start, length + "(" + expression + ")"), (rows, index) -> {
           var text = rows.getString(index);
           if (text == null || text.codePointCount(0, text.length()) <= LIMIT) {
             return text;
@@ -337,11 +442,50 @@ public final class Rows {
         });
   }
 
-  private static Read binary(Column column, String sql, String length) {
-    return new Read(field(column, Kind.BINARY), List.of(sql, length), (rows, index) -> {
-      var bytes = rows.getBytes(index);
-      return bytes == null ? null : new Binary(bytes, rows.getLong(index + 1));
-    });
+  private static Read binary(Source source, UnaryOperator<String> sql, String length) {
+    if (source.sql() == null) {
+      return new Read(field(source, Kind.BINARY), List.of(), (rows, index) -> {
+        var bytes = rows.getBytes(index);
+        return bytes == null
+            ? null
+            : new Binary(Arrays.copyOf(bytes, Math.min(bytes.length, LIMIT)), bytes.length);
+      });
+    }
+    return new Read(
+        field(source, Kind.BINARY),
+        List.of(sql.apply(source.sql()), length + "(" + source.sql() + ")"),
+        (rows, index) -> {
+          var bytes = rows.getBytes(index);
+          return bytes == null ? null : new Binary(bytes, rows.getLong(index + 1));
+        });
+  }
+
+  private static String ascii(ResultSet rows, int index) throws SQLException {
+    var bytes = rows.getBytes(index);
+    return bytes == null ? null : new String(bytes, StandardCharsets.US_ASCII);
+  }
+
+  private static String bit(ResultSet rows, int index) throws SQLException {
+    var bytes = rows.getBytes(index);
+    return bytes == null ? null : bytes.length == 1 && bytes[0] == 1 ? "1" : "0";
+  }
+
+  private static long utf8Length(String text) {
+    long length = 0;
+    for (var i = 0; i < text.length(); i++) {
+      var c = text.charAt(i);
+      if (c < 0x80) {
+        length += 1;
+      } else if (c < 0x800) {
+        length += 2;
+      } else if (Character.isHighSurrogate(c)) {
+        length += 4;
+        i++;
+      } else {
+        length += 3;
+      }
+    }
+    return length;
   }
 
   private static Object decimal(String text) {
@@ -354,18 +498,29 @@ public final class Rows {
   }
 
   private static Object date(String text) {
-    return parsed(text, MOMENT, m -> m.group(4) == null ? localDate(m) : null);
+    return parsed(
+        text, MOMENT, m -> m.group(4) == null && m.group(8) == null ? localDate(m) : null);
   }
 
   private static Object dateTime(String text) {
     return parsed(
         text,
         MOMENT,
-        m -> m.group(4) == null ? null : LocalDateTime.of(localDate(m), localTime(m, 4)));
+        m -> m.group(4) == null || m.group(8) != null
+            ? null
+            : LocalDateTime.of(localDate(m), localTime(m, 4)));
   }
 
+  // A moment in UTC, or with the offset it was written in.
   private static Object utc(String text) {
-    return dateTime(text) instanceof LocalDateTime local ? local.atOffset(ZoneOffset.UTC) : text;
+    return parsed(
+        text,
+        MOMENT,
+        m -> m.group(4) == null
+            ? null
+            : LocalDateTime.of(localDate(m), localTime(m, 4))
+                .atOffset(m.group(8) == null ? ZoneOffset.UTC : ZoneOffset.of(m.group(8)))
+                .withOffsetSameInstant(ZoneOffset.UTC));
   }
 
   private static Object time(String text) {
@@ -393,7 +548,7 @@ public final class Rows {
   private static LocalDate localDate(Matcher m) {
     var year = Integer.parseInt(m.group(1));
     return LocalDate.of(
-        m.group(8) == null ? year : 1 - year,
+        m.group(9) == null ? year : 1 - year,
         Integer.parseInt(m.group(2)),
         Integer.parseInt(m.group(3)));
   }

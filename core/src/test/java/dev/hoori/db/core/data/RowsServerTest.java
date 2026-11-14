@@ -146,15 +146,15 @@ class RowsServerTest {
     }
   }
 
-  private record Typed(String type, String literal, Kind kind, Object value) {}
+  record Typed(String type, String literal, Kind kind, Object value) {}
 
-  private static Typed typed(String type, String literal, Kind kind, Object value) {
+  static Typed typed(String type, String literal, Kind kind, Object value) {
     return new Typed(type, literal, kind, value);
   }
 
-  private static final String EMOJI = "Grüße 😀 𝄞";
+  static final String EMOJI = "Grüße 😀 𝄞";
 
-  private static List<Typed> types(Provider provider) {
+  static List<Typed> types(Provider provider) {
     var utc = ZoneOffset.UTC;
     return switch (provider) {
       case POSTGRESQL ->
