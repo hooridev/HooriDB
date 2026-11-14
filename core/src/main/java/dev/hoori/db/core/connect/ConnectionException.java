@@ -5,10 +5,17 @@ import java.util.Set;
 
 /**
  * Why a connection could not be opened. The message is the failure and the driver's or the
- * server's own words, which never hold the password: no driver repeats it, and the URL and the
- * properties that a driver might quote hold none.
+ * server's own words, which never hold the password: the URL and the properties that a driver
+ * might quote hold none, and where a server quotes it, nothing of what the driver said is kept.
  */
 public final class ConnectionException extends Exception {
+
+  /**
+   * The detail in place of the driver's message when any message of the driver or the server, down
+   * to the causes, contains the password; the exception has no cause then. A short password can
+   * withhold a harmless message that merely contains it.
+   */
+  public static final String WITHHELD = "The message is not shown, as it contains the password.";
 
   public enum Failure {
     /** The profile cannot connect as it is; {@link #problems} says why. */
@@ -53,7 +60,9 @@ public final class ConnectionException extends Exception {
     return failure;
   }
 
-  /** The driver's or the server's own message, or empty when there is none. */
+  /**
+   * The driver's or the server's own message, empty when there is none, or {@link #WITHHELD}.
+   */
   public String detail() {
     return detail;
   }

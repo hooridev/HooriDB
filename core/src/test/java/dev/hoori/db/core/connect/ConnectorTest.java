@@ -2,8 +2,11 @@ package dev.hoori.db.core.connect;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
@@ -13,10 +16,22 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.Proxy;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -85,27 +100,175 @@ class ConnectorTest {
 
   @ParameterizedTest
   @EnumSource(Provider.class)
-  void anInterruptedCallerIsReleasedAtOnce(Provider provider) throws Exception {
+  void anInterruptedCallerIsReleasedAtOnceAndTheDriverStops(Provider provider) throws Exception {
     try (var gate = new Gate(null, 0)) {
-      var profile = local(provider).withPort(gate.port());
-      var driver = TestServer.driver(provider);
-      var failure = new ConnectionException[1];
-      var stillInterrupted = new boolean[1];
-      var caller = Thread.ofPlatform().start(() -> {
-        failure[0] = assertThrows(
-            ConnectionException.class,
-            () -> Connector.open(profile, TestServer.password(), driver, Duration.ofSeconds(30)));
-        stillInterrupted[0] = Thread.currentThread().isInterrupted();
-      });
-      gate.awaitClient();
-      var start = System.nanoTime();
-      caller.interrupt();
-      caller.join(Duration.ofSeconds(5));
-      assertFalse(caller.isAlive());
-      assertTrue(Duration.ofNanos(System.nanoTime() - start).toMillis() < 500);
-      assertEquals(Failure.CANCELLED, failure[0].failure());
-      assertTrue(stillInterrupted[0]);
+      var attempt = Attempt.start(local(provider).withPort(gate.port()), Duration.ofSeconds(30));
+      assertTrue(gate.awaitClient());
+      assertTrue(attempt.cancel().toMillis() < 500);
+      assertEquals(Failure.CANCELLED, attempt.failure().failure());
+      assertTrue(attempt.interrupted());
+      assertNotNull(Attempt.workersEnd(provider, Duration.ofSeconds(2)));
     }
+  }
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aCancelEndsTheDriverWhileItStillOpensTheSocket(Provider provider) throws Exception {
+    var queued = new ArrayList<Socket>();
+    try (var listener = new ServerSocket(0, 1, InetAddress.getByName(Gate.HOST))) {
+      // Linux drops what comes beyond a full queue, and the next connect waits for an answer.
+      var address = new InetSocketAddress(Gate.HOST, listener.getLocalPort());
+      try {
+        while (queued.size() < 64) {
+          var socket = new Socket();
+          queued.add(socket);
+          socket.connect(address, 200);
+        }
+        fail("The queue does not fill");
+      } catch (SocketTimeoutException full) {
+        // The next connect waits.
+      }
+      var attempt =
+          Attempt.start(local(provider).withPort(listener.getLocalPort()), Duration.ofSeconds(30));
+      Thread.sleep(300);
+      assertTrue(attempt.cancel().toMillis() < 500);
+      assertEquals(Failure.CANCELLED, attempt.failure().failure());
+      assertNotNull(Attempt.workersEnd(provider, Duration.ofSeconds(2)));
+    } finally {
+      for (var socket : queued) {
+        socket.close();
+      }
+    }
+  }
+
+  @Test
+  void anInterruptWinsOverAConnectionThatIsThereAlready() throws Exception {
+    var closes = new AtomicInteger();
+    var connection = (Connection) Proxy.newProxyInstance(
+        getClass().getClassLoader(), new Class<?>[] {Connection.class}, (proxy, method, args) -> {
+          if (method.getName().equals("close")) {
+            closes.incrementAndGet();
+          }
+          return null;
+        });
+    Thread.currentThread().interrupt();
+    try {
+      var e = assertThrows(
+          ConnectionException.class,
+          () -> Connector.await(
+              CompletableFuture.completedFuture(connection),
+              Thread.ofVirtual().unstarted(() -> {}),
+              Duration.ofSeconds(1),
+              thrown -> {
+                throw new AssertionError(thrown);
+              }));
+      assertEquals(Failure.CANCELLED, e.failure());
+      assertTrue(Thread.currentThread().isInterrupted());
+      assertEquals(1, closes.get());
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
+  @Test
+  void anInterruptWinsOverAFailureThatIsThereAlready() {
+    Thread.currentThread().interrupt();
+    try {
+      var e = assertThrows(
+          ConnectionException.class,
+          () -> Connector.await(
+              CompletableFuture.failedFuture(new SQLException("refused", "28000")),
+              Thread.ofVirtual().unstarted(() -> {}),
+              Duration.ofSeconds(1),
+              thrown -> {
+                throw new AssertionError(thrown);
+              }));
+      assertEquals(Failure.CANCELLED, e.failure());
+      assertTrue(Thread.currentThread().isInterrupted());
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
+  @Test
+  void aServerThatRepeatsThePasswordHasItsMessageWithheld() throws Exception {
+    try (var server = new FakePostgres(null, (in, out) -> {
+      FakePostgres.askPassword(out);
+      FakePostgres.refuse(out, "password \"" + FakePostgres.readPassword(in) + "\" is wrong");
+    })) {
+      var e = assertFailure(
+          Failure.LOGIN_REFUSED,
+          () -> Connector.test(
+              postgres(server.port(), Tls.OFF),
+              TestServer.password(),
+              TestServer.driver(Provider.POSTGRESQL),
+              Duration.ofSeconds(5)));
+      assertEquals(ConnectionException.WITHHELD, e.detail());
+      assertNull(e.getCause());
+    }
+  }
+
+  @Test
+  void aShortPasswordWithholdsAMessageThatMerelyContainsIt() throws Exception {
+    try (var server = new FakePostgres(null, (in, out) -> {
+      FakePostgres.askPassword(out);
+      FakePostgres.readPassword(in);
+      FakePostgres.refuse(out, "no entry");
+    })) {
+      var e = assertThrows(
+          ConnectionException.class,
+          () -> Connector.test(
+              postgres(server.port(), Tls.OFF),
+              "e".toCharArray(),
+              TestServer.driver(Provider.POSTGRESQL),
+              Duration.ofSeconds(5)));
+      assertEquals(Failure.LOGIN_REFUSED, e.failure());
+      assertEquals(ConnectionException.WITHHELD, e.detail());
+    }
+  }
+
+  @Test
+  void noTlsIsToldApartFromAMissingPassword() throws Exception {
+    // Without a password, a server that refuses TLS is still one that refuses TLS.
+    try (var server = new FakePostgres(null, (in, out) -> {})) {
+      assertFailure(
+          Failure.TLS_UNAVAILABLE,
+          () -> Connector.test(
+              postgres(server.port(), Tls.ENCRYPTED),
+              new char[0],
+              TestServer.driver(Provider.POSTGRESQL),
+              Duration.ofSeconds(5)));
+    }
+    // The driver refuses by itself when the server asks for a password that it has not got.
+    try (var server = new FakePostgres(null, (in, out) -> FakePostgres.askPassword(out))) {
+      assertFailure(
+          Failure.LOGIN_REFUSED,
+          () -> Connector.test(
+              postgres(server.port(), Tls.OFF),
+              new char[0],
+              TestServer.driver(Provider.POSTGRESQL),
+              Duration.ofSeconds(5)));
+    }
+  }
+
+  @Test
+  void anAuthenticationMethodThatTheDriverDoesNotKnowIsNeitherOverTls(@TempDir Path temp)
+      throws Exception {
+    var tls = FakePostgres.selfSigned(temp);
+    try (var server =
+        new FakePostgres(tls, (in, out) -> FakePostgres.authenticationRequest(out, 99))) {
+      assertFailure(
+          Failure.OTHER,
+          () -> Connector.test(
+              postgres(server.port(), Tls.ENCRYPTED),
+              TestServer.password(),
+              TestServer.driver(Provider.POSTGRESQL),
+              Duration.ofSeconds(5)));
+    }
+  }
+
+  private static ConnectionProfile postgres(int port, Tls tls) {
+    return local(Provider.POSTGRESQL).withPort(port).withTls(tls);
   }
 
   @ParameterizedTest
@@ -131,7 +294,7 @@ class ConnectorTest {
 
   private static ConnectionProfile local(Provider provider) {
     return ConnectionProfile.of(provider)
-        .withHost("127.0.0.1")
+        .withHost(Gate.HOST)
         .withDatabase(TestServer.DATABASE)
         .withUser(TestServer.USER);
   }
