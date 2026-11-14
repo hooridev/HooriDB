@@ -26,8 +26,9 @@ class ProviderServerTest {
     var server = TestServer.of(provider);
     var version = Connector.test(server.profile(), TestServer.password(), server.driver(), TIMEOUT)
         .parsed();
-    var connection =
-        Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
+    var connection = Connector.open(
+            server.profile(), TestServer.password(), server.driver(), TIMEOUT)
+        .connection();
     try {
       var plan = run(connection, provider.explain(QUERY, version));
       assertFalse(plan.isEmpty());

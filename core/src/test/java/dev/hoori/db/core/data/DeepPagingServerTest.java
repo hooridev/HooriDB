@@ -38,7 +38,8 @@ class DeepPagingServerTest {
     var hoori = new Database(TestServer.DATABASE, false);
     var container = pg ? new Schema(hoori, "public", false) : hoori;
     try (var connection = Connector.open(
-        server.profile(), TestServer.password(), server.driver(), Duration.ofSeconds(10))) {
+            server.profile(), TestServer.password(), server.driver(), Duration.ofSeconds(10))
+        .connection()) {
       var numbers = pg
           ? "SELECT n, 'reading ' || n, n / 8.0 FROM generate_series(1, " + ROWS + ") n"
           : "WITH digit (d) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3"

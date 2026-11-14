@@ -14,7 +14,6 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.driver.LoadedDriver;
 import java.sql.Connection;
-import java.sql.SQLException;
 import java.util.List;
 
 /**
@@ -27,22 +26,14 @@ interface Servers {
 
   /** Through the driver to the real server, with {@link Connector} and {@link Catalog}. */
   Servers SERVER = (profile, password, driver) -> {
-    Connection connection;
     try {
-      connection = Connector.open(profile, password, driver, Tester.TIMEOUT);
-    } catch (ConnectionException e) {
-      throw new NotConnected(e.failure(), e.detail());
-    }
-    try {
-      var metadata = connection.getMetaData();
-      var version = ServerVersion.parse(metadata.getDatabaseProductVersion());
+      var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
       // shortcut: core has no capability that says a connection reads one database only; ask it
       // for one once it has, instead of naming the provider.
-      var database = profile.provider() == Provider.POSTGRESQL ? connection.getCatalog() : null;
-      return new Real(connection, profile.provider(), version, database);
-    } catch (SQLException | RuntimeException e) {
-      Connector.close(connection);
-      throw new NotConnected(ConnectionException.Failure.OTHER, State.message(e));
+      var database = profile.provider() == Provider.POSTGRESQL ? opened.database() : null;
+      return new Real(opened.connection(), profile.provider(), opened.server().parsed(), database);
+    } catch (ConnectionException e) {
+      throw new NotConnected(e.failure(), e.detail());
     }
   };
 

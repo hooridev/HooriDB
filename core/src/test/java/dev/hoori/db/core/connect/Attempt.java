@@ -21,7 +21,7 @@ final class Attempt {
     var driver = TestServer.driver(profile.provider());
     caller = Thread.ofPlatform().start(() -> {
       try {
-        Connector.close(Connector.open(profile, password, driver, timeout));
+        Connector.close(Connector.open(profile, password, driver, timeout).connection());
       } catch (ConnectionException e) {
         failure = e;
       }
