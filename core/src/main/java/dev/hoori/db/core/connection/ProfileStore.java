@@ -3,6 +3,7 @@ package dev.hoori.db.core.connection;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -70,9 +71,20 @@ public final class ProfileStore {
   /**
    * The profiles in the order they were saved, or none when there is no file. A file that cannot be
    * understood is left as it is.
+   *
+   * @throws UnreadableException if the file was read but not understood
+   * @throws IOException if it could not be read; its message names the file and says why in
+   *     HooriDB's words, and its cause is what the file system threw
    */
   public List<ConnectionProfile> load() throws IOException {
-    var bytes = read();
+    byte[] bytes;
+    try {
+      bytes = read();
+    } catch (UnreadableException unreadable) {
+      throw unreadable;
+    } catch (IOException e) {
+      throw failed("read", e, 0);
+    }
     return bytes == null ? List.of() : parse(bytes);
   }
 
@@ -162,6 +174,7 @@ public final class ProfileStore {
    *
    * @throws IllegalArgumentException if two of the profiles have the same id, which {@link #load}
    *     would refuse
+   * @throws IOException if it could not be written, with a message as {@link #load} gives
    */
   public void save(List<ConnectionProfile> profiles) throws IOException {
     if (profiles.stream().map(ConnectionProfile::id).distinct().count() != profiles.size()) {
@@ -186,37 +199,45 @@ public final class ProfileStore {
     // Two saves at once would each find the unreadable file, and the second would copy the first
     // one's new file over the copy of it.
     synchronized (SAVING) {
-      Files.createDirectories(folder);
-      byte[] old = null;
       try {
-        old = read();
-        if (old != null) {
-          parse(old);
-        }
-      } catch (UnreadableException unreadable) {
-        var copy = folder.resolve(UNREADABLE);
-        if (old == null) { // too large to have been read
-          Files.copy(file, copy, StandardCopyOption.REPLACE_EXISTING);
-        } else {
-          // The bytes that were refused, and not the file again, which may have changed since.
-          Files.write(copy, old);
-        }
+        write(bytes);
+      } catch (IOException e) {
+        throw failed("save", e, bytes.capacity());
       }
-      // In the same folder, so that the move is a rename on the same file system.
-      var temporary = Files.createTempFile(folder, FILE + ".", ".tmp");
-      try {
-        try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
-          while (bytes.hasRemaining()) {
-            channel.write(bytes);
-          }
-          // On disk before the rename, or a crash could leave the new name on an empty file.
-          channel.force(true);
-        }
-        Files.move(
-            temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-      } finally {
-        Files.deleteIfExists(temporary);
+    }
+  }
+
+  private void write(ByteBuffer bytes) throws IOException {
+    Files.createDirectories(folder);
+    byte[] old = null;
+    try {
+      old = read();
+      if (old != null) {
+        parse(old);
       }
+    } catch (UnreadableException unreadable) {
+      var copy = folder.resolve(UNREADABLE);
+      if (old == null) { // too large to have been read
+        Files.copy(file, copy, StandardCopyOption.REPLACE_EXISTING);
+      } else {
+        // The bytes that were refused, and not the file again, which may have changed since.
+        Files.write(copy, old);
+      }
+    }
+    // In the same folder, so that the move is a rename on the same file system.
+    var temporary = Files.createTempFile(folder, FILE + ".", ".tmp");
+    try {
+      try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+        while (bytes.hasRemaining()) {
+          channel.write(bytes);
+        }
+        // On disk before the rename, or a crash could leave the new name on an empty file.
+        channel.force(true);
+      }
+      Files.move(
+          temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    } finally {
+      Files.deleteIfExists(temporary);
     }
   }
 
@@ -290,6 +311,43 @@ public final class ProfileStore {
       case ENCRYPTED -> "encrypted";
       case VERIFIED -> "verified";
     };
+  }
+
+  /**
+   * A failure of the file system in HooriDB's words, from what Java can tell: the operating
+   * system's own text is in the user's language, and often names no file.
+   *
+   * @param needed the bytes a save writes, to tell a full disk; 0 for a read
+   */
+  private IOException failed(String doing, IOException e, long needed) {
+    String why = null;
+    if (Files.isDirectory(file)) {
+      why = "it is a folder, not a file";
+    }
+    for (var p = folder; why == null && p != null; p = p.getParent()) {
+      if (Files.exists(p) && !Files.isDirectory(p)) {
+        why = p + " is a file, not a folder";
+      }
+    }
+    if (why == null) {
+      why = switch (e) {
+        case AccessDeniedException denied -> "access was denied";
+        case NoSuchFileException missing -> "its folder does not exist";
+        default ->
+          full(needed)
+              ? "the disk is full"
+              : "the system reported " + e.getClass().getSimpleName();
+      };
+    }
+    return new IOException("Cannot " + doing + " the connections in " + file + ": " + why + ".", e);
+  }
+
+  private boolean full(long needed) {
+    try {
+      return needed > 0 && Files.getFileStore(folder).getUsableSpace() < needed;
+    } catch (IOException unknown) {
+      return false;
+    }
   }
 
   private UnreadableException unreadable(String why) {
