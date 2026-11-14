@@ -75,6 +75,9 @@
           <argLine>--enable-native-access=ALL-UNNAMED</argLine>
           <systemPropertyVariables>
             <hooridb.test.drivers>${project.build.directory}/jdbc-drivers</hooridb.test.drivers>
+            <hooridb.test.postgresql.version>${test.postgresql.version}</hooridb.test.postgresql.version>
+            <hooridb.test.mariadb.version>${test.mariadb.version}</hooridb.test.mariadb.version>
+            <hooridb.test.mysql.version>${test.mysql.version}</hooridb.test.mysql.version>
           </systemPropertyVariables>
         </configuration>
       </plugin>

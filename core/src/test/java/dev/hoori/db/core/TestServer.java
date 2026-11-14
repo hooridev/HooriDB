@@ -126,7 +126,7 @@ public final class TestServer {
     var loaded = DRIVERS.get(provider);
     if (loaded == null) {
       try {
-        loaded = load(Driver.of(provider));
+        loaded = load(provider, Driver.of(provider));
       } catch (Exception e) {
         throw new IllegalStateException("Cannot load the driver of " + provider, e);
       }
@@ -139,18 +139,18 @@ public final class TestServer {
     return driver(provider);
   }
 
-  private static LoadedDriver load(Driver driver) throws Exception {
+  // Exactly the version the build configures: earlier copies stay in the folder.
+  private static LoadedDriver load(Provider provider, Driver driver) throws Exception {
     var copied = Path.of(System.getProperty("hooridb.test.drivers", "target/jdbc-drivers"));
-    Path jar;
-    try (var files = Files.list(copied)) {
-      jar = files
-          .filter(file -> file.getFileName().toString().startsWith(driver.artifact() + "-"))
-          .findFirst()
-          .orElseThrow(() -> new IllegalStateException(
-              "No " + driver.artifact() + " in " + copied + "; run the build through Maven"));
+    var key = "hooridb.test." + provider.name().toLowerCase(Locale.ROOT) + ".version";
+    var version = System.getProperty(key);
+    if (version == null) {
+      throw new IllegalStateException("No " + key + "; run the tests through Maven");
     }
-    var name = jar.getFileName().toString();
-    var version = name.substring(driver.artifact().length() + 1, name.length() - ".jar".length());
+    var jar = copied.resolve(driver.artifact() + "-" + version + ".jar");
+    if (!Files.isRegularFile(jar)) {
+      throw new IllegalStateException("No " + jar + "; run the tests through Maven");
+    }
     var work = copied.resolveSibling("test-driver-store");
     var repository = new FolderRepository(work.resolve("repository"));
     repository.publish(
