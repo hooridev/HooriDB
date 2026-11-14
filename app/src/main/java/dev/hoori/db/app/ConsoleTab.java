@@ -7,7 +7,6 @@ import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.App;
-import com.rethinkj.ui.Decorator;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.Style;
@@ -762,6 +761,8 @@ final class ConsoleTab implements Tab {
 
   private El editor(Theme t, State s, App<State> app, Provider provider) {
     var dialect = provider == Provider.POSTGRESQL ? Sql.Dialect.POSTGRES : Sql.Dialect.MYSQL;
+    var at = target(provider); // the lines of the statement Control+Enter runs
+    this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
     El editor = CodeEditor.codeEditor(t, app, text, this.editor, Sql.of(t, dialect), v -> text = v)
         .key("sql")
         .label("SQL")
@@ -783,18 +784,7 @@ final class ConsoleTab implements Tab {
       return false;
     };
     editor.onKey(editor.onKey() == null ? keys : keys.or(editor.onKey()));
-    // The lines of the statement Control+Enter runs, as the find bar marks the lines it keeps to.
-    var at = target(provider);
-    Decorator own = editor.decorator();
-    int mark = t.code().line();
-    return editor.decorate((index, start, line, out) -> {
-      if (own != null) {
-        own.line(index, start, line, out);
-      }
-      if (at != null && start <= at.end() && start + line.length() >= at.start()) {
-        out.lineBackground(mark);
-      }
-    });
+    return editor;
   }
 
   /** The results of the last runs in tabs, with Messages; what went wrong above them. */

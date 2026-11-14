@@ -15,8 +15,11 @@ import static dev.hoori.db.app.TableTabTest.tabs;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
+import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -24,12 +27,15 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Message;
 import dev.hoori.db.core.execution.Result;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** A console: statements written, run on a connection of its own, and what they gave. */
 class ConsoleTest {
@@ -467,5 +473,32 @@ class ConsoleTest {
     servers.heal("open " + PG + "/shop");
     c.run(app, "press #try-again\nframe\n" + SETTLE + "snap ran\n");
     assertTrue(status(c.tree("ran")).contains("\"Ran in 4 ms · 1 row\""), c.tree("ran"));
+  }
+
+  /**
+   * The pictures for a review, light and dark, into the folder that {@code -Dreview=<folder>}
+   * names; skipped without it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void pictures(String look) throws Exception {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    var out = Files.createDirectories(Path.of(review));
+    var app = console(SHOP.withColour(Colour.TEAL));
+    app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    var multi = "SELECT id, total\nFROM orders\nWHERE total > 10";
+    servers.statement(multi, List.of(FakeServers.made(1000, "id: bigint", "total: numeric(12,2)")));
+    var held = servers.hold("run " + PG + " " + multi);
+    // The caret on the middle line of the statement that Control+Enter runs.
+    Script.run(
+        type(COUNT + ";\n" + multi + ";")
+            + "key ArrowUp\nframe\nadvance 1\nframe\nsnap console-marked-" + look
+            + "\nkey Enter control\nframe\n" + menu(SHOP.name(), "New console")
+            + "frame\nadvance 1\nframe\nsnap console-busy-" + look + "\n",
+        app,
+        out);
+    held.countDown();
+    c.run(app, SETTLE);
   }
 }
