@@ -293,6 +293,17 @@ class PaletteTest {
   }
 
   @Test
+  void controlOneOnATableTabThatNeverHadTheFocusGoesToItsGrid() throws Exception {
+    var app = connected();
+    c.run(
+        app,
+        "press role=treeitem label=\"orders\"\nkey Enter\nframe\n" + SETTLE + "snap opened\n"
+            + "key 1 control\nframe\nsnap content\n");
+    assertTrue(focused(c.tree("opened")).contains("role=tree "), focused(c.tree("opened")));
+    assertTrue(focused(c.tree("content")).contains("role=grid"), focused(c.tree("content")));
+  }
+
+  @Test
   void goToATableOpenBehindAConsoleFocusesItsGrid() throws Exception {
     var app = connected();
     c.run(
@@ -696,6 +707,12 @@ class PaletteTest {
             + "press role=menuitem label=\"Go\"\n" + SHOWN + "snap menu-go-" + look + "\n"
             + close + "press role=treeitem label=\"shop-prod\"\nframe\ntype \"ord\"\nframe\n"
             + "snap tree-find-" + look + "\n",
+        app,
+        out);
+    // A table's tab that never had the focus, after Control+1.
+    Script.run(
+        "key Escape\npress role=treeitem label=\"customers\"\nkey Enter\nframe\n" + SETTLE
+            + "key 1 control\nframe\nadvance 1\nframe\nsnap table-focus-" + look + "\n",
         app,
         out);
   }

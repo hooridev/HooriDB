@@ -693,7 +693,8 @@ final class TableTab implements Tab {
         .loading(this::loaded, (first, last) -> want(s, first, last));
     return DataGrid.dataGrid(t, shown, (int) Math.min(shown(), GRID_ROWS), options)
         .key("grid")
-        .label("Rows of " + table.name());
+        .label("Rows of " + table.name())
+        .defaultFocus();
   }
 
   private boolean loaded(int row) {
