@@ -247,6 +247,20 @@ class ConsoleTransactionTest {
   }
 
   @Test
+  void controlWAndTheMenusCloseTabAskToo() throws Exception {
+    var app = open(SHOP);
+    c.run(app, "key W control\nframe\n" + OPENED + "snap key\n");
+    assertTrue(c.tree("key").contains("role=dialog label=\"Commit the transaction?\""));
+    c.run(
+        app,
+        "press #answer-cancel\nframe\n" + OPENED
+            + "press role=menuitem label=\"File\"\nframe\nadvance 0.3\nframe\n"
+            + "press role=menuitem label=\"Close tab\"\nframe\n" + OPENED + "snap menu\n");
+    assertTrue(c.tree("menu").contains("role=dialog label=\"Commit the transaction?\""));
+    assertEquals(1, app.state().consoles(null).size());
+  }
+
+  @Test
   void closingTheTabCommitsOrRollsBackFirst() throws Exception {
     for (var answer : List.of("COMMIT", "ROLLBACK")) {
       var app = open(SHOP);

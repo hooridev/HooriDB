@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Work;
+import com.rethinkj.ui.kit.CommandPalette;
 import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.TabGroups;
@@ -40,6 +41,14 @@ final class State {
   final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow)
       .onCloseTab(this::closeTab)
       .onClosed(Tab::close);
+  // The command palette of each window, by its tabs, and what Go to table began reading there.
+  final Map<TabGroups.Group<Tab>, Palette> palettes = new HashMap<>();
+
+  static final class Palette {
+    final CommandPalette.State state = new CommandPalette.State();
+    final List<Runnable> reads = new ArrayList<>(); // stops what it began reading
+  }
+
   String message; // in the status line for a while, or null
   private int messages; // told so far
 
@@ -410,6 +419,14 @@ final class State {
    * whichever window; a table that became a view of its name, or the reverse, is read anew there.
    */
   void openTable(UUID id, Table table) {
+    openTable(id, table, tabs.main());
+  }
+
+  /**
+   * As {@link #openTable(UUID, Table)}, a new tab in the window of these tabs; returns the tabs
+   * that hold it.
+   */
+  TabGroups.Group<Tab> openTable(UUID id, Table table, TabGroups.Group<Tab> into) {
     for (var group : tabs.groups()) {
       for (int i = 0; i < group.tabs().size(); i++) {
         if (group.tabs().get(i) instanceof TableTab x
@@ -417,20 +434,22 @@ final class State {
             && x.table.container().equals(table.container())
             && x.table.name().equals(table.name())) {
           tabs.select(group, i);
-          if (group.window() != null) {
-            group.window().raise();
+          var window = group.window() != null ? group.window() : app.windows().of(app);
+          if (window != null) {
+            window.raise();
           }
           if (!x.table.equals(table)) {
             x.table = table;
             x.open(this, true);
           }
-          return;
+          return group;
         }
       }
     }
     var tab = new TableTab(id, table);
-    tabs.add(tabs.main(), tabs.main().tabs().size(), tab);
+    tabs.add(into, into.tabs().size(), tab);
     tab.open(this, false);
+    return into;
   }
 
   /** The table tabs of every window, of the connection or of all where it is null. */
@@ -448,11 +467,79 @@ final class State {
 
   /** Opens a console on the connection, on the database its profile names. */
   void openConsole(UUID id) {
+    openConsole(id, tabs.main());
+  }
+
+  /** As {@link #openConsole(UUID)}, in the window of these tabs. */
+  void openConsole(UUID id, TabGroups.Group<Tab> group) {
     var profile = profile(id);
     if (profile == null) {
       return;
     }
-    tabs.add(tabs.main(), tabs.main().tabs().size(), new ConsoleTab(id, database(profile)));
+    tabs.add(group, group.tabs().size(), new ConsoleTab(id, database(profile)));
+  }
+
+  /**
+   * The connection a new console in the window is for: in the main window the one selected in the
+   * tree, else that of the window's active tab; null for none.
+   */
+  UUID consoleFor(TabGroups.Group<Tab> group) {
+    if (group == tabs.main() && selected != null) {
+      return selected.id();
+    }
+    return switch (group.activeTab()) {
+      case null -> null;
+      case TableTab x -> x.id;
+      case ConsoleTab x -> x.id;
+    };
+  }
+
+  /** The command palette of the window of these tabs. */
+  CommandPalette.State palette(TabGroups.Group<Tab> group) {
+    return palettes.computeIfAbsent(group, g -> new Palette()).state;
+  }
+
+  /** Ends with the palette of the window: what it began reading, stopped by this. */
+  void readForPalette(TabGroups.Group<Tab> group, Runnable stop) {
+    palettes.computeIfAbsent(group, g -> new Palette()).reads.add(stop);
+  }
+
+  /**
+   * Stops what a palette that closed began reading, and forgets the palettes of windows that
+   * closed. Each window runs it as it builds its view, since the kit tells nobody that a palette
+   * closed.
+   */
+  // shortcut: a palette's last entries stay in the kit's state until it opens again, as the kit
+  // cannot drop them without the commands used last; upgrade when it can.
+  void tidyPalettes() {
+    var groups = tabs.groups();
+    for (var it = palettes.entrySet().iterator(); it.hasNext(); ) {
+      var entry = it.next();
+      var palette = entry.getValue();
+      boolean gone = !groups.contains(entry.getKey());
+      if (gone || !palette.state.isOpen()) {
+        palette.reads.forEach(Runnable::run);
+        palette.reads.clear();
+      }
+      if (gone) {
+        it.remove();
+      }
+    }
+  }
+
+  /** Closes the active tab of the window, as its cross does: a console asks first. */
+  void closeTab(TabGroups.Group<Tab> group) {
+    if (group.activeTab() != null) {
+      closeTab(group, group.active());
+    }
+  }
+
+  /** Goes to the next tab of the window, or with -1 to the one before, around at the ends. */
+  void nextTab(TabGroups.Group<Tab> group, int step) {
+    int n = group.tabs().size();
+    if (n > 1) {
+      tabs.select(group, Math.floorMod(group.active() + step, n));
+    }
   }
 
   /**

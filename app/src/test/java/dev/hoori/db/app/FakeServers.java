@@ -388,6 +388,28 @@ final class FakeServers implements Servers {
     }
 
     @Override
+    public List<Table> allTables(Database d) throws CatalogException {
+      return read("all tables " + host + "/" + d.name(), d, () -> {
+        var list = new ArrayList<Table>();
+        var db = find(root(), d.name());
+        boolean schemas = made.provider() == Provider.POSTGRESQL;
+        for (var line : db.children()) {
+          if (!schemas) {
+            var kind = line.text().startsWith("@") ? Table.Kind.VIEW : Table.Kind.TABLE;
+            list.add(new Table(d, name(line), kind));
+          } else if (!line.text().startsWith("~")) {
+            var schema = new Schema(d, name(line), false);
+            for (var table : line.children()) {
+              var kind = table.text().startsWith("@") ? Table.Kind.VIEW : Table.Kind.TABLE;
+              list.add(new Table(schema, name(table), kind));
+            }
+          }
+        }
+        return list;
+      });
+    }
+
+    @Override
     public List<Column> columns(Table t) throws CatalogException {
       var c = t.container();
       var path = (c instanceof Schema s ? s.database().name() + "." + s.name() : c.name()) + "."
