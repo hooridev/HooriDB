@@ -26,99 +26,58 @@ interface Servers {
 
   /** Through the driver to the real server, with {@link Connector} and {@link Catalog}. */
   Servers SERVER = (profile, password, driver) -> {
-    try {
-      var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
-      // shortcut: core has no capability that says a connection reads one database only; ask it
-      // for one once it has, instead of naming the provider.
-      var database = profile.provider() == Provider.POSTGRESQL ? opened.database() : null;
-      return new Real(opened.connection(), profile.provider(), opened.server().parsed(), database);
-    } catch (ConnectionException e) {
-      throw new NotConnected(e.failure(), e.detail());
-    }
+    var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
+    return new Real(
+        opened.connection(), profile.provider(), opened.server().parsed(), opened.database());
   };
 
   /** Opens a connection to the profile's server and database. */
-  Link open(ConnectionProfile profile, char[] password, LoadedDriver driver) throws NotConnected;
+  Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
+      throws ConnectionException;
 
   /** An open connection. It serves one call at a time. */
   interface Link {
 
     ServerVersion version();
 
-    /** The one database this connection reads, or null where it reads every database. */
+    /** The database the connection is on, or null where the driver names none. */
     String database();
 
-    List<Database> databases() throws NotRead;
+    List<Database> databases() throws CatalogException;
 
-    List<Schema> schemas(Database database) throws NotRead;
+    List<Schema> schemas(Database database) throws CatalogException;
 
     /** Of a schema, or of a database where the server has no schemas. */
-    List<Table> tables(Container container) throws NotRead;
+    List<Table> tables(Container container) throws CatalogException;
 
-    List<Column> columns(Table table) throws NotRead;
+    List<Column> columns(Table table) throws CatalogException;
 
     /** Closes it; a failure to close is not reported. */
     void close();
-  }
-
-  /** Why a connection could not be opened, as {@link ConnectionException} says it. */
-  final class NotConnected extends Exception {
-    final ConnectionException.Failure failure;
-    final String detail;
-
-    NotConnected(ConnectionException.Failure failure, String detail) {
-      super(failure.toString(), null, false, false);
-      this.failure = failure;
-      this.detail = detail;
-    }
-  }
-
-  /** Why the catalogue could not be read, as {@link CatalogException} says it. */
-  final class NotRead extends Exception {
-    final CatalogException.Failure failure;
-    final String detail;
-
-    NotRead(CatalogException.Failure failure, String detail) {
-      super(failure.toString(), null, false, false);
-      this.failure = failure;
-      this.detail = detail;
-    }
   }
 
   /** A connection of a driver. */
   record Real(Connection connection, Provider provider, ServerVersion version, String database)
       implements Link {
 
-    private interface Read<T> {
-      T read() throws CatalogException;
-    }
-
-    private static <T> T read(Read<T> read) throws NotRead {
-      try {
-        return read.read();
-      } catch (CatalogException e) {
-        throw new NotRead(e.failure(), e.detail());
-      }
+    @Override
+    public List<Database> databases() throws CatalogException {
+      return Catalog.databases(connection, provider);
     }
 
     @Override
-    public List<Database> databases() throws NotRead {
-      return read(() -> Catalog.databases(connection, provider));
+    public List<Schema> schemas(Database database) throws CatalogException {
+      return Catalog.schemas(connection, provider, database);
     }
 
     @Override
-    public List<Schema> schemas(Database database) throws NotRead {
-      return read(() -> Catalog.schemas(connection, provider, database));
+    public List<Table> tables(Container container) throws CatalogException {
+      return Catalog.tables(connection, provider, container);
     }
 
     @Override
-    public List<Table> tables(Container container) throws NotRead {
-      return read(() -> Catalog.tables(connection, provider, container));
-    }
-
-    @Override
-    public List<Column> columns(Table table) throws NotRead {
-      return read(() -> Catalog.columns(connection, provider, table));
+    public List<Column> columns(Table table) throws CatalogException {
+      return Catalog.columns(connection, provider, table);
     }
 
     @Override

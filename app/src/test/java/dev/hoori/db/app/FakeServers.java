@@ -78,12 +78,12 @@ final class FakeServers implements Servers {
     gates.values().forEach(CountDownLatch::countDown);
   }
 
-  static Servers.NotRead notRead(CatalogException.Failure failure) {
-    return new Servers.NotRead(failure, "the server's words for " + failure);
+  static CatalogException notRead(CatalogException.Failure failure) {
+    return CatalogException.of(failure, "the server's words for " + failure);
   }
 
-  static Servers.NotConnected notConnected(ConnectionException.Failure failure) {
-    return new Servers.NotConnected(failure, "FATAL: the server's words for " + failure);
+  static ConnectionException notConnected(ConnectionException.Failure failure) {
+    return ConnectionException.of(failure, "FATAL: the server's words for " + failure);
   }
 
   private void call(String key, boolean connecting) throws Exception {
@@ -110,8 +110,8 @@ final class FakeServers implements Servers {
           interrupted.add(key);
           Thread.currentThread().interrupt();
           throw connecting
-              ? new Servers.NotConnected(ConnectionException.Failure.CANCELLED, "")
-              : new Servers.NotRead(CatalogException.Failure.CANCELLED, "");
+              ? ConnectionException.of(ConnectionException.Failure.CANCELLED, "")
+              : CatalogException.of(CatalogException.Failure.CANCELLED, "");
         }
       }
     }
@@ -123,10 +123,10 @@ final class FakeServers implements Servers {
 
   @Override
   public Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
-      throws NotConnected {
+      throws ConnectionException {
     var made = servers.get(profile.host());
     if (made == null) {
-      throw new NotConnected(ConnectionException.Failure.UNREACHABLE, "no such host");
+      throw ConnectionException.of(ConnectionException.Failure.UNREACHABLE, "no such host");
     }
     passwords.add(new String(password));
     boolean perDatabase = made.provider() == Provider.POSTGRESQL;
@@ -134,17 +134,17 @@ final class FakeServers implements Servers {
     var key = "open " + profile.host() + (perDatabase ? "/" + database : "");
     try {
       call(key, true);
-    } catch (NotConnected e) {
+    } catch (ConnectionException e) {
       throw e;
     } catch (Exception e) {
-      throw new NotConnected(ConnectionException.Failure.OTHER, e.toString());
+      throw ConnectionException.of(ConnectionException.Failure.OTHER, e.toString());
     }
     if (made.password() != null && !made.password().equals(new String(password))) {
-      throw new NotConnected(
+      throw ConnectionException.of(
           ConnectionException.Failure.LOGIN_REFUSED, "FATAL: password authentication failed");
     }
     if (perDatabase && find(made.root(), database) == null) {
-      throw new NotConnected(
+      throw ConnectionException.of(
           ConnectionException.Failure.NO_SUCH_DATABASE,
           "FATAL: database \"" + database + "\" does not exist");
     }
@@ -178,22 +178,22 @@ final class FakeServers implements Servers {
       return database;
     }
 
-    private <T> List<T> read(String key, Database of, Reader<T> reader) throws NotRead {
+    private <T> List<T> read(String key, Database of, Reader<T> reader) throws CatalogException {
       if (busy.incrementAndGet() > 1) {
         overlapped = true;
       }
       try {
         if (database != null && of != null && !of.name().equals(database)) {
-          throw new NotRead(CatalogException.Failure.WRONG_DATABASE, of.name());
+          throw CatalogException.of(CatalogException.Failure.WRONG_DATABASE, of.name());
         }
         // What the server holds when the call begins, as a query sees it.
         var read = reader.read();
         try {
           call(key, false);
-        } catch (NotRead e) {
+        } catch (CatalogException e) {
           throw e;
         } catch (Exception e) {
-          throw new NotRead(CatalogException.Failure.OTHER, e.toString());
+          throw CatalogException.of(CatalogException.Failure.OTHER, e.toString());
         }
         done.add(key);
         return read;
@@ -203,7 +203,7 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public List<Database> databases() throws NotRead {
+    public List<Database> databases() throws CatalogException {
       return read("databases " + host, null, () -> {
         var list = new ArrayList<Database>();
         for (var line : root().children()) {
@@ -214,7 +214,7 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public List<Schema> schemas(Database d) throws NotRead {
+    public List<Schema> schemas(Database d) throws CatalogException {
       return read("schemas " + host + "/" + d.name(), d, () -> {
         var list = new ArrayList<Schema>();
         for (var line : find(root(), d.name()).children()) {
@@ -225,7 +225,7 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public List<Table> tables(Container c) throws NotRead {
+    public List<Table> tables(Container c) throws CatalogException {
       var path = c instanceof Schema s ? s.database().name() + "." + s.name() : c.name();
       return read("tables " + host + "/" + path, c.database(), () -> {
         var list = new ArrayList<Table>();
@@ -238,7 +238,7 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public List<Column> columns(Table t) throws NotRead {
+    public List<Column> columns(Table t) throws CatalogException {
       var c = t.container();
       var path = (c instanceof Schema s ? s.database().name() + "." + s.name() : c.name()) + "."
           + t.name();

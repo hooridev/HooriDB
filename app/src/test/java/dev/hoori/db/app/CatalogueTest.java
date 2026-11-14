@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import dev.hoori.db.core.catalog.CatalogException;
+import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
@@ -646,6 +647,8 @@ class CatalogueTest {
         app,
         open("customers") + open("orders") + open("order_totals") + open("invoices")
             + "snap asked\n");
+    // The first call is in the server, held, while the others are asked for behind it.
+    eventually(() -> servers.calls.contains("columns " + PG + "/shop.public.customers"));
     first.countDown();
     run(app, SETTLE + "snap end\n");
     assertFalse(servers.overlapped, "two calls ran at once on one connection");
@@ -838,12 +841,19 @@ class CatalogueTest {
     ready(app, SHOP);
     servers.dead = true; // the read does not even end when it is interrupted
     servers.hold("databases " + PG);
-    run(app, START + open("shop-prod") + "close\nframe\n");
+    run(app, START + open("shop-prod"));
+    eventually(() -> servers.calls.contains("databases " + PG)); // the read is in the server
+    run(app, "close\nframe\n");
     assertTrue(app.windows().all().isEmpty());
     app.await(Duration.ofSeconds(1)); // nothing of the app waits for the server
     assertTrue(servers.closed.isEmpty(), "the connection closes once the read has ended");
   }
 
+  /**
+   * Shows that a cancel interrupts the lane's thread in the call, which the made-up server sees.
+   * It does not show that a cancel goes through core to the server: the made-up server stands
+   * where {@code Catalog} would, and core's own tests show its cancel against real servers.
+   */
   @Test
   void aRunningReadIsCancelledOnTheServer() throws Exception {
     var app = app(SHOP);
@@ -852,6 +862,117 @@ class CatalogueTest {
     servers.hold("schemas " + PG + "/shop");
     run(app, open("shop") + menu("shop-prod", "Disconnect"));
     eventually(() -> servers.interrupted.contains("schemas " + PG + "/shop"));
+    eventually(() -> servers.closed.contains(PG + "/shop"));
+  }
+
+  /** Every node that cannot be read shows why, the connection's own databases too. */
+  @Test
+  void aFailedReadOfTheDatabasesShowsAtTheConnection() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var key = "databases " + PG;
+    servers.fail(key, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    run(app, START + open("shop-prod") + SETTLE + "snap denied\n");
+    String denied = tree("denied");
+    assertEquals(List.of("shop-prod", "  Access denied"), rows(denied));
+    assertTrue(line(denied, "role=note").contains("label=\"Access denied\""), denied);
+    assertTrue(denied.contains("The server does not let this user read what shop-prod holds."));
+    servers.heal(key);
+    run(app, "press role=button label=\"Try again\"\nframe\n" + SETTLE + "snap end\n");
+    assertTrue(rows(tree("end")).contains("  shop"), tree("end"));
+  }
+
+  /** What a server says is checked against the password before anything of it is kept. */
+  @Test
+  void noFailureKeepsThePassword() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var words = "the server repeats " + PASSWORD;
+    servers.fail(
+        "tables " + PG + "/shop.public",
+        dev.hoori.db.core.catalog.CatalogException.of(
+            CatalogException.Failure.ACCESS_DENIED, words));
+    servers.fail(
+        "open " + PG + "/analytics",
+        dev.hoori.db.core.connect.ConnectionException.of(Failure.NO_SUCH_DATABASE, words));
+    servers.fail(
+        "tables " + PG + "/shop.sales",
+        dev.hoori.db.core.catalog.CatalogException.of(
+            CatalogException.Failure.CONNECTION_LOST, words));
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE
+            + "press role=treeitem label=\"Access denied\"\nframe\nsnap denied\n"
+            + open("analytics") + SETTLE
+            + "press role=treeitem label=\"The database could not be opened\"\nframe\n"
+            + "snap unopened\n");
+    var kept = new StringBuilder();
+    for (var live : app.state().catalogue.lives.values()) {
+      kept.append(live.phase).append(live.levels);
+    }
+    run(app, open("sales") + SETTLE + "snap lost\n");
+    for (var live : app.state().catalogue.lives.values()) {
+      kept.append(live.phase).append(live.levels);
+    }
+    assertTrue(tree("denied").contains(ConnectionException.WITHHELD), tree("denied"));
+    assertTrue(tree("unopened").contains(ConnectionException.WITHHELD), tree("unopened"));
+    assertTrue(tree("lost").contains(ConnectionException.WITHHELD), tree("lost"));
+    assertTrue(kept.toString().contains("Lost["), kept.toString());
+    assertFalse(kept.toString().contains(PASSWORD), kept.toString());
+    noPassword();
+  }
+
+  /** A refresh closes the connections to the databases it throws away, openings included. */
+  @Test
+  void aRefreshClosesAConnectionStillOpening() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var key = "open " + PG + "/analytics";
+    var opening = servers.hold(key);
+    servers.fail(key, FakeServers.notConnected(Failure.NO_SUCH_DATABASE));
+    run(app, START + open("shop-prod") + SETTLE + open("analytics"));
+    eventually(() -> servers.calls.contains(key));
+    run(app, menu("shop-prod", "Refresh"));
+    eventually(() -> servers.interrupted.contains(key));
+    opening.countDown();
+    servers.heal(key);
+    run(app, SETTLE + open("analytics") + SETTLE + "snap end\n");
+    assertTrue(rows(tree("end")).contains("    tracking"), tree("end"));
+    assertEquals(2, servers.calls.stream().filter(key::equals).count());
+  }
+
+  /** A password from the keyring is wiped also when its delivery is cancelled. */
+  @Test
+  void aPasswordReadForADisconnectedConnectionIsWiped() throws Exception {
+    downloaded();
+    secrets.stored.put(SHOP.id(), PASSWORD);
+    var app = app(SHOP);
+    app.state()
+        .drivers
+        .load(app, Driver.of(Provider.POSTGRESQL), FakeDrivers.VERSION, d -> {}, e -> {});
+    run(app, START + open("shop-prod"));
+    eventually(() -> secrets.given.size() == 1); // the keyring answered; the app has not taken it
+    run(app, menu("shop-prod", "Disconnect") + SETTLE);
+    var given = secrets.given.getFirst();
+    eventually(() -> new String(given).equals("\0".repeat(PASSWORD.length())));
+    assertTrue(servers.passwords.isEmpty(), "nothing connected");
+  }
+
+  /** A connection reported as gone is not used again, not even by the calls asked for behind. */
+  @Test
+  void aConnectionReportedAsGoneIsNotUsedAgain() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(app, START + open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE);
+    var first = "columns " + PG + "/shop.public.customers";
+    var gate = servers.hold(first);
+    servers.fail(first, FakeServers.notRead(CatalogException.Failure.CONNECTION_LOST));
+    run(app, open("customers") + open("orders"));
+    eventually(() -> servers.calls.contains(first));
+    gate.countDown();
+    run(app, SETTLE + "snap end\n");
+    assertEquals(List.of("shop-prod", "  Disconnected"), rows(tree("end")));
+    assertFalse(servers.calls.contains("columns " + PG + "/shop.public.orders"), "used again");
     eventually(() -> servers.closed.contains(PG + "/shop"));
   }
 }

@@ -113,6 +113,7 @@ final class Catalogue {
     final ConnectionProfile profile; // as it was when opened
     Phase phase;
     Work work; // the step under way: reading the password or connecting; or null
+    Handover handover; // the password on its way from the keyring, or null
     LoadedDriver driver;
     // While connected, for the connections to further databases; wiped when it ends.
     char[] password;
@@ -284,11 +285,18 @@ final class Catalogue {
       return;
     }
     live.phase = new ReadingPassword();
+    var handover = new Handover();
+    live.handover = handover;
     live.work = s.app.background(
         "read a password",
-        () -> secrets.read(id).orElse(null),
-        password -> {
+        () -> {
+          secrets.read(id).ifPresent(handover::put);
+          return handover;
+        },
+        given -> {
           live.work = null;
+          live.handover = null;
+          char[] password = given.take();
           if (password == null) {
             live.phase = new ForPassword();
           } else {
@@ -297,8 +305,41 @@ final class Catalogue {
         },
         error -> {
           live.work = null;
+          live.handover = null;
           live.phase = new ForPassword(); // the user can still type it
         });
+  }
+
+  /**
+   * A password on its way from the keyring's thread to the app's. Whoever comes last of the two
+   * wipes it, should the app's side be cancelled before it takes it.
+   */
+  static final class Handover {
+    private char[] password;
+    private boolean closed;
+
+    synchronized void put(char[] given) {
+      if (closed) {
+        Arrays.fill(given, '\0');
+      } else {
+        password = given;
+      }
+    }
+
+    /** The password, which the caller owns now; null if there was none. */
+    synchronized char[] take() {
+      closed = true;
+      var given = password;
+      password = null;
+      return given;
+    }
+
+    synchronized void drop() {
+      var given = take();
+      if (given != null) {
+        Arrays.fill(given, '\0');
+      }
+    }
   }
 
   /** The system keyring was found: connections that waited for it go on. */
@@ -344,20 +385,25 @@ final class Catalogue {
         },
         opened -> {
           live.work = null;
-          boolean schemas = live.profile.provider().supports(Capability.SCHEMAS, opened.version());
-          live.phase = new Connected(opened.version(), opened.database(), schemas);
+          var provider = live.profile.provider();
+          var version = opened.version();
+          // Where a connection reads one database only, the others get connections of their own.
+          var database = provider.supports(Capability.CONNECTION_PER_DATABASE, version)
+              ? opened.database()
+              : null;
+          live.phase =
+              new Connected(version, database, provider.supports(Capability.SCHEMAS, version));
           s.tell("Connected to " + State.name(live.profile));
         },
         error -> {
           live.work = null;
-          var refused = error instanceof Servers.NotConnected n
-              ? n
-              : new Servers.NotConnected(ConnectionException.Failure.OTHER, State.message(error));
-          String detail =
-              Probe.contains(refused.detail, live.password) ? Probe.HIDDEN : refused.detail;
-          live.phase = new Failed(refused.failure, detail, live.password.length > 0);
+          var checked = checked(live, error);
+          var failure = checked instanceof ConnectionException e
+              ? e.failure()
+              : ConnectionException.Failure.OTHER;
+          live.phase = new Failed(failure, detail(checked), live.password.length > 0);
           end(live);
-          s.tell(State.name(live.profile) + ": " + Words.title(refused.failure));
+          s.tell(State.name(live.profile) + ": " + Words.title(failure));
         });
   }
 
@@ -394,11 +440,7 @@ final class Catalogue {
     var database = database(node);
     var lane = database == null || c.database() == null || database.equals(c.database())
         ? live.lane
-        : live.lanes.computeIfAbsent(database, name -> {
-          var further = new Lane();
-          further.open(servers, live.profile.withDatabase(name), live.password, live.driver);
-          return further;
-        });
+        : further(live, database);
     var reading = new Reading();
     live.levels.put(node, reading);
     var asked = lane.submit(call);
@@ -414,23 +456,59 @@ final class Catalogue {
           if (live.levels.get(node) != reading) {
             return;
           }
-          switch (error) {
-            case Servers.NotRead e
-            when e.failure == CatalogException.Failure.CONNECTION_LOST -> lose(s, live, e.detail);
-            case Servers.NotRead e -> live.levels.put(node, new NotRead(e.failure, e.detail));
-            case Servers.NotConnected e -> {
-              // The next read opens it again.
-              var lost = live.lanes.remove(database);
-              if (lost != null) {
-                lost.close();
-              }
-              live.levels.put(node, new NotOpened(e.failure, e.detail));
+          var checked = checked(live, error);
+          if (checked instanceof ConnectionException e) {
+            // The next read opens it again.
+            if (live.lanes.remove(database, lane)) {
+              lane.close();
             }
-            default ->
-              live.levels.put(
-                  node, new NotRead(CatalogException.Failure.OTHER, State.message(error)));
+            live.levels.put(node, new NotOpened(e.failure(), e.detail()));
+          } else if (checked instanceof CatalogException e
+              && e.failure() != CatalogException.Failure.CONNECTION_LOST) {
+            live.levels.put(node, new NotRead(e.failure(), e.detail()));
+          } else {
+            lose(s, live, detail(checked));
           }
         });
+  }
+
+  /** The connection to a further database, opened anew where it could not be or is gone. */
+  private Lane further(Live live, String database) {
+    var lane = live.lanes.get(database);
+    if (lane == null || lane.broken()) {
+      if (lane != null) {
+        lane.close();
+      }
+      lane = new Lane();
+      lane.open(servers, live.profile.withDatabase(database), live.password, live.driver);
+      live.lanes.put(database, lane);
+    }
+    return lane;
+  }
+
+  /**
+   * Every failure of a connection passes here before anything of it is kept: as core's typed
+   * failure, with its detail withheld where it holds the password the connection was given.
+   */
+  private static Exception checked(Live live, Exception error) {
+    var detail = detail(error);
+    // Without the password at hand nothing can be told apart, so nothing is shown.
+    boolean withheld = live.password == null || Probe.contains(detail, live.password);
+    var shown = withheld ? ConnectionException.WITHHELD : detail;
+    return switch (error) {
+      case ConnectionException e when e.failure() == ConnectionException.Failure.UNFIT -> e;
+      case ConnectionException e -> withheld ? ConnectionException.of(e.failure(), shown) : e;
+      case CatalogException e -> withheld ? CatalogException.of(e.failure(), shown) : e;
+      default -> CatalogException.of(CatalogException.Failure.OTHER, shown);
+    };
+  }
+
+  private static String detail(Exception error) {
+    return switch (error) {
+      case ConnectionException e -> e.detail();
+      case CatalogException e -> e.detail();
+      default -> State.message(error);
+    };
   }
 
   private static Lane.Call<List<Node>> tables(
@@ -484,6 +562,11 @@ final class Catalogue {
         }
         live.levels.remove(entry.getKey());
       }
+    }
+    if (node instanceof Node.Connection) {
+      // The databases are read anew: their connections go, those still opening too.
+      live.lanes.values().forEach(Lane::close);
+      live.lanes.clear();
     }
     open.add(node);
     read(s, live, node);
@@ -553,6 +636,10 @@ final class Catalogue {
     if (live.work != null) {
       live.work.cancel();
       live.work = null;
+    }
+    if (live.handover != null) {
+      live.handover.drop();
+      live.handover = null;
     }
     for (var level : live.levels.values()) {
       if (level instanceof Reading r) {
@@ -645,7 +732,8 @@ final class Catalogue {
     if (live == null) {
       return null;
     }
-    if (node instanceof Node.Connection) {
+    // A connected connection's trouble is that of its databases' read, as for any other node.
+    if (node instanceof Node.Connection && !(live.phase instanceof Connected)) {
       var p = live.profile;
       return switch (live.phase) {
         case Failed f -> {
@@ -679,7 +767,12 @@ final class Catalogue {
         new Trouble(
             "The database could not be opened",
             join(
-                Words.note(o.failure(), live.profile.withDatabase(database(node)), true),
+                Words.note(
+                    o.failure(),
+                    database(node) == null
+                        ? live.profile
+                        : live.profile.withDatabase(database(node)),
+                    true),
                 o.detail()),
             false);
       case null, default -> null;
