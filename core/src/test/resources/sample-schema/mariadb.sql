@@ -25,6 +25,16 @@ CREATE TABLE purchase (
 
 CREATE VIEW active_customer AS SELECT id, name, email FROM customer WHERE active;
 
+-- A primary key of two columns.
+CREATE TABLE purchase_line (
+  purchase_id integer NOT NULL,
+  line integer NOT NULL,
+  item varchar(80) NOT NULL,
+  quantity decimal(10, 2),
+  PRIMARY KEY (purchase_id, line),
+  FOREIGN KEY (purchase_id) REFERENCES purchase (id)
+);
+
 -- Enough rows to page through.
 CREATE TABLE reading (
   id integer PRIMARY KEY,
@@ -41,6 +51,11 @@ INSERT INTO purchase VALUES
   (1, 1, 19.99, TIMESTAMP '2024-01-16 10:00:00'),
   (2, 1, 5.00, TIMESTAMP '2024-01-20 18:45:00'),
   (3, 3, 249.00, TIMESTAMP '2024-03-10 12:00:00');
+
+INSERT INTO purchase_line VALUES
+  (1, 1, 'Notebook', 2.00),
+  (1, 2, 'Pencil', NULL),
+  (3, 1, 'Calculating engine', 1.00);
 
 INSERT INTO reading
 WITH digit (d) AS (
