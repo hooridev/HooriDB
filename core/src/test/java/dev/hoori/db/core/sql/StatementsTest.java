@@ -46,6 +46,18 @@ class StatementsTest {
   }
 
   @Test
+  void theFirstWordComesAfterCommentsAndParentheses() {
+    assertEquals("VACUUM", Statements.firstWord("-- SELECT\nVACUUM t", POSTGRESQL));
+    assertEquals("VACUUM", Statements.firstWord("/* a /* SELECT */ b */ VACUUM", POSTGRESQL));
+    assertEquals("select", Statements.firstWord(" ( /* x */ (select 1))", POSTGRESQL));
+    assertEquals("WITH", Statements.firstWord("WITH x AS (SELECT 1) SELECT * FROM x;", POSTGRESQL));
+    assertEquals("t1", Statements.firstWord("t1", POSTGRESQL));
+    assertEquals("", Statements.firstWord("\"SELECT\"", POSTGRESQL));
+    assertEquals("", Statements.firstWord("-- only a comment", POSTGRESQL));
+    assertEquals("SELECT", Statements.firstWord("# x\nSELECT 1", MYSQL));
+  }
+
+  @Test
   void emptyStatementsAreNone() {
     assertSplitAll(";;SELECT 1;; ;\n;", "SELECT 1");
   }
