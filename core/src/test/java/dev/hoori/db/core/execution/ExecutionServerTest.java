@@ -172,7 +172,9 @@ class ExecutionServerTest {
       assertEquals(100, ((Result.Rows) only(first.results())).rows().size());
       assertTrue(took.toMillis() < 1000, provider + " took " + took);
       if (provider == Provider.POSTGRESQL) {
-        assertEquals(Transaction.OPEN, first.transaction());
+        // In a transaction of its own, which is none of the caller's.
+        assertEquals(Transaction.OPEN, Drivers.transaction(connection));
+        assertEquals(Transaction.NONE, first.transaction());
         assertFalse(connection.getAutoCommit());
       }
 

@@ -259,8 +259,12 @@ public final class Execution implements AutoCloseable {
   }
 
   // PostgreSQL's state, which pgjdbc keeps current; MariaDB's and MySQL's from the status when the
-  // statement's last result ended well, and otherwise not known.
+  // statement's last result ended well, and otherwise not known. The transaction of its own is
+  // none of the caller's, which it began without.
   private Transaction transaction(int status) {
+    if (ownTransaction) {
+      return Transaction.NONE;
+    }
     return provider == Provider.POSTGRESQL
         ? Drivers.transaction(connection)
         : Drivers.transaction(status);
