@@ -20,7 +20,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 /** A repository in a folder of a test, which counts what is asked of it. */
-final class FolderRepository implements Repository {
+public final class FolderRepository implements Repository {
 
   final Path root;
   final List<String> opened = new CopyOnWriteArrayList<>();
@@ -30,7 +30,7 @@ final class FolderRepository implements Repository {
   // Runs once a file is read and before it is returned, as a server between two packets.
   Consumer<String> served = path -> {};
 
-  FolderRepository(Path root) {
+  public FolderRepository(Path root) {
     this.root = root;
   }
 
@@ -57,14 +57,14 @@ final class FolderRepository implements Repository {
     return Optional.of(Files.getLastModifiedTime(root.resolve(path)).toInstant());
   }
 
-  enum Sum {
+  public enum Sum {
     SHA256,
     SHA1,
     NONE
   }
 
   /** Puts a version of the driver into the repository, with a checksum beside it. */
-  Path publish(Driver driver, String version, byte[] jar, Sum sum, Instant published)
+  public Path publish(Driver driver, String version, byte[] jar, Sum sum, Instant published)
       throws Exception {
     var dir = root.resolve(driver.group().replace('.', '/'))
         .resolve(driver.artifact())
