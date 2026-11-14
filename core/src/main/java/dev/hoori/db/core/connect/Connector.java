@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 
 /**
  * Opens, tests and closes connections to the server of a profile. Each call blocks. The driver
@@ -58,12 +59,21 @@ public final class Connector {
     });
   }
 
-  /** Closes the connection. A failure to close is not reported: the connection is gone either way. */
+  /**
+   * Closes the connection. A failure to close is not reported: the connection is gone either way.
+   * An interrupt of the calling thread waits until it is closed, so that the driver can still say
+   * goodbye to the server instead of dropping the socket.
+   */
   public static void close(Connection connection) {
+    var interrupted = Thread.interrupted();
     try {
       connection.close();
     } catch (SQLException | RuntimeException e) {
       // Nothing is left to do with a connection that cannot even be closed.
+    } finally {
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 
@@ -85,17 +95,18 @@ public final class Connector {
       throw new ConnectionException(e.problems());
     }
     if (Thread.currentThread().isInterrupted()) {
-      throw new ConnectionException(Failure.CANCELLED, "", null);
+      throw cancelled();
     }
     properties.putAll(timeouts(provider, timeout));
     properties.setProperty("user", profile.user());
-    if (password.length > 0) {
-      // JDBC takes the password only as a String, which cannot be wiped; it is dropped from the
-      // properties once the driver is done with them, and the driver may keep a copy of its own.
-      properties.setProperty("password", new String(password));
+    // JDBC takes the password only as a String, which cannot be wiped; it is dropped from the
+    // properties once the driver is done with them, and the driver may keep a copy of its own.
+    var secret = password.length > 0 ? new String(password) : null;
+    if (secret != null) {
+      properties.setProperty("password", secret);
     }
     var result = new CompletableFuture<T>();
-    Thread.ofVirtual().name("connect " + provider.displayName()).start(() -> {
+    var worker = Thread.ofVirtual().name("connect " + provider.displayName()).start(() -> {
       Connection connection = null;
       try {
         connection = driver.connect(url, properties);
@@ -112,29 +123,60 @@ public final class Connector {
         }
       }
     });
+    return await(
+        result, worker, timeout.plus(GRACE), thrown -> Failures.of(profile, secret, thrown));
+  }
+
+  /**
+   * The worker's result, or the failure it ended with. An interrupted caller gets {@link
+   * Failure#CANCELLED} even where the result is there already, and a connection in it is closed.
+   */
+  static <T> T await(
+      CompletableFuture<T> result,
+      Thread worker,
+      Duration limit,
+      Function<Throwable, ConnectionException> failure)
+      throws ConnectionException {
+    T value;
     try {
-      return result.get(timeout.plus(GRACE).toMillis(), TimeUnit.MILLISECONDS);
+      // get() does not look at the interrupt when the result is there, hence the checks after it.
+      value = result.get(limit.toMillis(), TimeUnit.MILLISECONDS);
     } catch (InterruptedException e) {
-      abandon(result);
+      abandon(result, worker);
       Thread.currentThread().interrupt();
-      throw new ConnectionException(Failure.CANCELLED, "", null);
+      throw cancelled();
     } catch (TimeoutException e) {
-      abandon(result);
+      abandon(result, worker);
       throw new ConnectionException(Failure.TIMED_OUT, "", null);
     } catch (ExecutionException e) {
-      throw Failures.of(profile, password.length > 0, e.getCause());
+      if (Thread.currentThread().isInterrupted()) {
+        throw cancelled();
+      }
+      throw failure.apply(e.getCause());
     }
+    if (Thread.currentThread().isInterrupted()) {
+      if (value instanceof Connection connection) {
+        close(connection);
+      }
+      throw cancelled();
+    }
+    return value;
+  }
+
+  private static ConnectionException cancelled() {
+    return new ConnectionException(Failure.CANCELLED, "", null);
   }
 
   // The worker closes what arrives from now on, and what arrived just before is closed here. The
-  // worker is not interrupted: the driver's own timeouts end it, so that every attempt given up
-  // ends the one way.
-  private static void abandon(CompletableFuture<?> result) {
+  // interrupt ends the worker in the driver's socket calls, as it is a virtual thread: the
+  // drivers' timeouts bound each read, but not a server that answers slowly without end.
+  private static void abandon(CompletableFuture<?> result, Thread worker) {
     if (!result.cancel(false)
         && result.state() == Future.State.SUCCESS
         && result.resultNow() instanceof Connection connection) {
       close(connection);
     }
+    worker.interrupt();
   }
 
   // Each driver's own time limits for reaching the server and for logging in. PostgreSQL's

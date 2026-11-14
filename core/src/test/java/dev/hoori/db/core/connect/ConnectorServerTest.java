@@ -2,8 +2,9 @@ package dev.hoori.db.core.connect;
 
 import static dev.hoori.db.core.connect.ConnectorTest.WRONG_PASSWORD;
 import static dev.hoori.db.core.connect.ConnectorTest.assertFailure;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -15,7 +16,10 @@ import dev.hoori.db.core.connection.Tls;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -27,6 +31,11 @@ class ConnectorServerTest {
   // What the images of TestServer run.
   private static final Map<Provider, String> PRODUCTS = Map.of(
       Provider.POSTGRESQL, "PostgreSQL", Provider.MARIADB, "MariaDB", Provider.MYSQL, "MySQL");
+  // What a driver sends as it closes a connection: PostgreSQL's Terminate, MySQL's COM_QUIT.
+  private static final Map<Provider, byte[]> GOODBYES = Map.of(
+      Provider.POSTGRESQL, new byte[] {'X', 0, 0, 0, 4},
+      Provider.MARIADB, new byte[] {1, 0, 0, 0, 1},
+      Provider.MYSQL, new byte[] {1, 0, 0, 0, 1});
   private static final Map<Provider, Integer> MAJORS =
       Map.of(Provider.POSTGRESQL, 18, Provider.MARIADB, 12, Provider.MYSQL, 9);
 
@@ -141,26 +150,106 @@ class ConnectorServerTest {
 
   @ParameterizedTest
   @EnumSource(Provider.class)
-  void aConnectionThatArrivesAfterACancelIsClosed(Provider provider) throws Exception {
+  void aConnectionThatIsThereForAnInterruptedCallerIsClosedProperly(Provider provider)
+      throws Exception {
     var server = TestServer.of(provider);
     try (var gate = new Gate(server.host(), server.port())) {
-      var profile = server.profile().withHost("127.0.0.1").withPort(gate.port());
-      var failure = new ConnectionException[1];
-      var caller = Thread.ofPlatform()
-          .start(() -> failure[0] = assertThrows(
-              ConnectionException.class,
-              () -> Connector.open(profile, TestServer.password(), server.driver(), TIMEOUT)));
-      gate.awaitClient();
-      caller.interrupt();
-      caller.join(Duration.ofSeconds(1));
-      assertFalse(caller.isAlive());
-      assertEquals(Failure.CANCELLED, failure[0].failure());
-
-      // The driver logs in only now, and its connection is closed as soon as it arrives.
       gate.open();
-      assertTrue(gate.awaitPassed(TIMEOUT));
-      assertEquals(0, otherSessions(server));
+      // Without TLS, so that the gate sees the driver's goodbye.
+      var profile = server.profile().withHost(Gate.HOST).withPort(gate.port()).withTls(Tls.OFF);
+      var connection = Connector.open(profile, TestServer.password(), server.driver(), TIMEOUT);
+      Thread.currentThread().interrupt();
+      try {
+        var e = assertThrows(
+            ConnectionException.class,
+            () -> Connector.await(
+                CompletableFuture.completedFuture(connection),
+                Thread.ofVirtual().unstarted(() -> {}),
+                TIMEOUT,
+                thrown -> {
+                  throw new AssertionError(thrown);
+                }));
+        assertEquals(Failure.CANCELLED, e.failure());
+      } finally {
+        Thread.interrupted();
+      }
+      assertTrue(connection.isClosed());
+      assertTrue(gate.awaitEnd(TIMEOUT));
+      var sent = gate.sent();
+      var goodbye = GOODBYES.get(provider);
+      assertArrayEquals(
+          goodbye, Arrays.copyOfRange(sent, sent.length - goodbye.length, sent.length));
+      assertEquals(0, otherSessions(server, false));
     }
+  }
+
+  private record Phase(String name, TestServer server, Tls tls, Gate.Relay relay, boolean in) {}
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void anAbandonedAttemptEndsInEveryPhase(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    // A login over TLS fills MySQL's cache of passwords, which a login without TLS needs to end
+    // without an exchange of keys.
+    Connector.test(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
+    var postgres = provider == Provider.POSTGRESQL;
+    var phases = List.of(
+        new Phase("before the first answer", server, server.profile().tls(), Gate.NONE, false),
+        new Phase(
+            "TLS handshake",
+            encrypted(provider),
+            Tls.ENCRYPTED,
+            postgres ? Gate.bytes(1) : Gate.messages(provider, 1),
+            false),
+        new Phase("authentication", server, Tls.OFF, Gate.messages(provider, 1), !postgres),
+        new Phase("logged in", server, Tls.OFF, Gate.messages(provider, 2), postgres));
+    for (var phase : phases) {
+      if (!postgres && phase.name().equals("logged in")) {
+        // The server's answer to the login itself is what the gate held in the phase before.
+        continue;
+      }
+      try (var gate = new Gate(phase.server().host(), phase.server().port(), phase.relay())) {
+        gate.open();
+        var profile =
+            phase.server().profile().withHost(Gate.HOST).withPort(gate.port()).withTls(phase.tls());
+        var attempt = Attempt.start(profile, TIMEOUT);
+        assertTrue(gate.awaitClient());
+        if (phase.in()) {
+          assertTrue(otherSessions(phase.server(), true) > 0, phase.name());
+        } else {
+          Thread.sleep(300);
+        }
+        var released = attempt.cancel();
+        assertEquals(Failure.CANCELLED, attempt.failure().failure(), phase.name());
+        assertTrue(released.toMillis() < 500, phase.name());
+        assertEnded(provider, gate, phase.name());
+        assertEquals(0, otherSessions(phase.server(), false), phase.name());
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aServerThatTricklesIsLeftWithinTheTimeLimit(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    try (var gate = new Gate(server.host(), server.port(), Gate.trickle(Duration.ofMillis(250)))) {
+      gate.open();
+      var profile = server.profile().withHost(Gate.HOST).withPort(gate.port());
+      var attempt = Attempt.start(profile, Duration.ofMillis(600));
+      var released = attempt.end();
+      assertEquals(Failure.TIMED_OUT, attempt.failure().failure());
+      assertTrue(released.toMillis() < 2500, released::toString);
+      assertEnded(provider, gate, "trickle");
+      assertEquals(0, otherSessions(server, false));
+    }
+  }
+
+  // The worker of the attempt has ended, and its socket is closed.
+  private static void assertEnded(Provider provider, Gate gate, String phase) throws Exception {
+    var worker = Attempt.workersEnd(provider, Duration.ofSeconds(2));
+    var socket = gate.awaitEnd(Duration.ofSeconds(2));
+    assertNotNull(worker, phase);
+    assertTrue(socket, phase);
   }
 
   private static TestServer plain(Provider provider) {
@@ -198,9 +287,9 @@ class ConnectorServerTest {
     }
   }
 
-  // The sessions of the test user other than the one that asks, once the server has seen the
-  // others end.
-  private static int otherSessions(TestServer server) throws Exception {
+  // The sessions of the test user other than the one that asks, once there are some, or once the
+  // server has seen the others end.
+  private static int otherSessions(TestServer server, boolean some) throws Exception {
     var query = server.provider() == Provider.POSTGRESQL
         ? "SELECT count(*) FROM pg_stat_activity"
             + " WHERE usename = current_user AND backend_type = 'client backend'"
@@ -215,7 +304,7 @@ class ConnectorServerTest {
         try (var rows = statement.executeQuery(query)) {
           rows.next();
           var count = rows.getInt(1);
-          if (count == 0 || System.nanoTime() > deadline) {
+          if ((count > 0) == some || System.nanoTime() > deadline) {
             return count;
           }
         }
