@@ -8,8 +8,6 @@ import static com.rethinkj.ui.kit.TitleBar.withMenus;
 
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
-import com.rethinkj.ui.Style;
-import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
@@ -23,10 +21,8 @@ import com.rethinkj.ui.kit.StatusBar;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
-import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
-import dev.hoori.db.core.connection.ConnectionProfile;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -87,7 +83,9 @@ final class Frame {
     if (s.dialog != null) {
       root.overlay(s.dialog.view(t, s)).overlay(s.dialog.question(t, s));
     }
-    return root.overlay(s.deleting == null ? null : deleteDialog(t, s));
+    root.overlay(s.deleting == null ? null : deleteDialog(t, s));
+    // One dialog at a time: what the catalogue asks waits for the others to close.
+    return root.overlay(s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s) : null);
   }
 
   /** The connections: waiting while they load, then a tree of them or the empty state. */
@@ -121,18 +119,25 @@ final class Frame {
           .child(Progress.spinner(t))
           .child(label(t, Label.Variant.MUTED, "Loading connections…"));
     } else if (!s.profiles.isEmpty()) {
-      var selected = s.profile(s.selected);
+      var c = s.catalogue;
       El tree = Tree.tree(
               t,
-              new Connections(t, s.profiles),
-              p -> false,
-              selected,
-              p -> s.selected = p.id(),
-              null,
-              null)
+              new Catalogue.Model(t, s),
+              c.open::contains,
+              s.selected,
+              node -> s.selected = node,
+              (node, open) -> c.toggle(s, node, open),
+              node -> c.activate(s, node))
           .key("connections")
           .label("Connections");
-      body = Card.inset(t, Menu.contextMenu(t, tree, s.connectionMenu, items(s, selected)));
+      body = Card.inset(t, Menu.contextMenu(t, tree, c.menu, c.items(s, s.selected)));
+      El callout = c.callout(t, s);
+      if (callout != null) {
+        body = col()
+            .grow(1)
+            .child(body)
+            .child(col().padding(0, t.space().s(), t.space().s(), t.space().s()).child(callout));
+      }
     } else if (s.loadError == null) {
       body = emptyState(
           t,
@@ -156,18 +161,6 @@ final class Frame {
 
   private static El tryAgain(Theme t, Runnable action) {
     return button(t, Button.Variant.SECONDARY, "Try again", action);
-  }
-
-  /** The context menu of a connection. */
-  private static List<Menu.Item> items(State s, ConnectionProfile p) {
-    if (p == null) {
-      return List.of();
-    }
-    return List.of(
-        Menu.item("Edit…", () -> s.edit(p)).icon(Symbol.EDIT),
-        Menu.item("Duplicate", () -> s.duplicate(p)).icon(Symbol.COPY),
-        Menu.separator(),
-        Menu.item("Delete…", () -> s.askDelete(p)).icon(Symbol.DELETE));
   }
 
   private static El deleteDialog(Theme t, State s) {
@@ -196,44 +189,6 @@ final class Frame {
             button(t, Button.Variant.SECONDARY, "Cancel", s.removing ? null : s::cancelDelete),
             delete),
         s::cancelDelete);
-  }
-
-  /** The saved profiles as the tree's nodes, without children yet. */
-  private record Connections(Theme t, List<ConnectionProfile> roots)
-      implements Tree.Model<ConnectionProfile> {
-
-    @Override
-    public List<ConnectionProfile> children(ConnectionProfile node) {
-      return List.of();
-    }
-
-    @Override
-    public boolean isLeaf(ConnectionProfile node) {
-      return true;
-    }
-
-    @Override
-    public String label(ConnectionProfile node) {
-      return State.name(node);
-    }
-
-    // shortcut: the kit has no symbol per database and no muted text after a row's label, so a
-    // badge before it names the provider; use that text once the tree has it.
-    @Override
-    public El icon(ConnectionProfile node) {
-      var provider = node.provider();
-      String code = switch (provider) {
-        case POSTGRESQL -> "PG";
-        case MARIADB -> "MA";
-        case MYSQL -> "MY";
-      };
-      // One width for the three, so that the names line up.
-      El badge = Badge.badge(t, code)
-          .label(provider.displayName())
-          .w(t.size().control() + t.space().s())
-          .justify(Style.Content.CENTER);
-      return Tooltip.tooltip(t, badge, provider.displayName());
-    }
   }
 
   /** Only what does something today: a new connection, quitting, and the themes. */
