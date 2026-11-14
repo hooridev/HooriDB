@@ -163,6 +163,8 @@ class ConnectionsTest {
         """);
     String typed = tree("typed");
     assertTrue(line(typed, "label=\"Save\"").endsWith("56x24"), "Save can go: " + typed);
+    // It fits, also with the checkbox at its end: no scrollbar.
+    assertFalse(line(typed, "#dialog-content").contains("thumb-y"), typed);
     for (var heading : List.of("Server", "Login")) {
       assertTrue(typed.contains("role=group label=\"" + heading + "\""), typed);
       assertTrue(line(typed, "role=heading \"" + heading + "\"").contains("level=3"), typed);
