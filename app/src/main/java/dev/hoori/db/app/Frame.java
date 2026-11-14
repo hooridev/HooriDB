@@ -50,7 +50,7 @@ final class Frame {
         .wFull()
         .hFull()
         .fill(t.surface().window())
-        .onKey(keys(MenuBar.keys(s.bar, menus), s.palette(main), modal, tabs))
+        .onKey(keys(MenuBar.keys(s.bar, menus), s.bar, s.palette(main), modal, tabs))
         .onKeyUp(MenuBar.keysUp(s.bar, menus))
         .child(withMenus(
             t,
@@ -92,13 +92,32 @@ final class Frame {
 
   /**
    * A window's keys: the tabs' first, also while the focus is outside them, as in the tree, so that
-   * they go through the tabs as inside them; then its menus' combinations, and the palette's own
-   * while no dialog is open. None of the tabs' while empty.
+   * they go through the tabs as inside them, closing the menu open in the bar; then its menus'
+   * combinations, and the palette's own while no dialog is open. None of the tabs' while empty.
+   *
+   * @param bar the window's menu bar, null for a window without one
    */
   private static Predicate<Key> keys(
-      Predicate<Key> menus, CommandPalette.State palette, boolean modal, El tabs) {
+      Predicate<Key> menus,
+      MenuBar.State bar,
+      CommandPalette.State palette,
+      boolean modal,
+      El tabs) {
     Predicate<Key> keys = modal ? menus : menus.or(CommandPalette.keys(palette));
-    return tabs.onKey() == null ? keys : tabs.onKey().or(keys);
+    Predicate<Key> ofTabs = tabs.onKey();
+    if (ofTabs == null) {
+      return keys;
+    }
+    return ((Predicate<Key>) k -> {
+          if (!ofTabs.test(k)) {
+            return false;
+          }
+          if (bar != null) {
+            bar.close();
+          }
+          return true;
+        })
+        .or(keys);
   }
 
   /** The window's command palette, over the commands of its menus and its tables after @. */
@@ -163,7 +182,7 @@ final class Frame {
         .wFull()
         .hFull()
         .fill(t.surface().window())
-        .onKey(keys(Menu.shortcuts(menus), s.palette(group), asked != null, tabs))
+        .onKey(keys(Menu.shortcuts(menus), null, s.palette(group), asked != null, tabs))
         .child(TitleBar.titleBar(
             t, title(s, group.activeTab()), HooriDb.COLOUR, app != null && app.windowMaximized()))
         .child(col()

@@ -290,6 +290,26 @@ class PaletteTest {
   }
 
   @Test
+  void aTabsKeyClosesTheMenuOpenInTheBarAndThenActs() throws Exception {
+    var app = connected();
+    var go = "press role=menuitem label=\"Go\"\n" + SHOWN;
+    c.run(
+        app,
+        GO_TO + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + SETTLE
+            + GO_TO + "type \"customers\"\nframe\nkey Enter\n" + SHOWN + SETTLE
+            + go + "snap open\nkey PageDown control\n" + SHOWN + "snap next\n"
+            + go + "key W control\n" + SHOWN + SETTLE + "snap closed\n");
+    assertTrue(c.tree("open").contains("role=menu "), c.tree("open"));
+    var next = c.tree("next");
+    assertEquals("orders", active(next));
+    assertFalse(next.contains("role=menu "), next);
+    assertFalse(focused(next).contains("role=menuitem"), focused(next));
+    var closed = c.tree("closed");
+    assertEquals("customers", tabs(closed));
+    assertFalse(closed.contains("role=menu "), closed);
+  }
+
+  @Test
   void typingInTheTreeFindsANodeAndLeavesItsKeysAlone() throws Exception {
     var app = connected();
     c.run(
