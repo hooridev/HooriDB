@@ -440,32 +440,34 @@ final class ConnectionDialog {
                 field("Driver", driverVersion(t, s, open))
                     .help(driverHelp(s))
                     .warning(youngWarning()),
-                // Host and port on two rows: a test's note at the port would wrap in its width.
-                field(
-                        "Host",
-                        marked(
-                            t,
-                            Probe.At.HOST,
-                            textField(t, p.host(), "Name or address", open ? this::host : null)
-                                .key("host")
-                                .wFull()))
-                    .required()
-                    .error(error(problems, ConnectionProfile.Field.HOST)),
-                field(
-                        "Port",
-                        valueField(
+                Form.row(
+                    field(
+                            "Host",
+                            marked(
                                 t,
-                                Format.INTEGER,
-                                p.port(),
-                                fallback,
-                                e.at(PORT).draft(),
-                                open ? this::port : null)
-                            .key("port")
-                            .maxLength(5)
-                            .w(3 * t.size().control()))
-                    .required()
-                    .error(or(
-                        error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))),
+                                Probe.At.HOST,
+                                textField(t, p.host(), "Name or address", open ? this::host : null)
+                                    .key("host")
+                                    .wFull()))
+                        .required()
+                        .error(error(problems, ConnectionProfile.Field.HOST))
+                        .grow(),
+                    field(
+                            "Port",
+                            valueField(
+                                    t,
+                                    Format.INTEGER,
+                                    p.port(),
+                                    fallback,
+                                    e.at(PORT).draft(),
+                                    open ? this::port : null)
+                                .key("port")
+                                .maxLength(5)
+                                .w(3 * t.size().control()))
+                        .required()
+                        .error(or(
+                            error(problems, ConnectionProfile.Field.PORT),
+                            probe.error(Probe.At.PORT)))),
                 field(
                         "Database",
                         textField(t, locked(e.at(DATABASE)), "Optional")

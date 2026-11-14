@@ -6,9 +6,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Tls;
@@ -29,6 +31,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Test connection in the connection dialog, with the driver it needs. */
 class TestConnectionTest {
@@ -731,5 +735,27 @@ class TestConnectionTest {
     assertTrue(secrets.stored.isEmpty());
     assertFalse(app.state().remembers(shop.id()));
     assertEquals(List.of(shop), store.load());
+  }
+
+  /**
+   * The pictures for a review, light and dark, into the folder that {@code -Dreview=<folder>}
+   * names; skipped without it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void pictures(String look) throws Exception {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    var out = Files.createDirectories(Path.of(review));
+    downloaded();
+    server.refuse(Failure.UNREACHABLE, "FATAL: the driver's words");
+    var app = app();
+    app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    Script.run(
+        START + "press role=button label=\"New connection\"\nframe\nadvance 1\nframe\n" + SETTLE
+            + SETTLE + "snap connection-new-" + look + "\nkey Escape\nframe\nadvance 1\nframe\n"
+            + NEW_SHOP + TEST + SETTLE + SETTLE + "snap connection-port-" + look + "\n",
+        app,
+        out);
   }
 }
