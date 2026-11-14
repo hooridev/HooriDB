@@ -271,11 +271,10 @@ class ServersServerTest {
   }
 
   /** A statement as the console runs it on its lane: its portion, and the auto-commit after. */
-  static ConsoleTab.Ran statement(Lane lane, String sql, boolean fresh, ConsoleTab.Mode mode)
-      throws Exception {
+  static ConsoleTab.Ran statement(Lane lane, String sql, ConsoleTab.Mode mode) throws Exception {
     return lane.submit(link -> {
           var held = new AtomicReference<Servers.Run>();
-          var ran = ConsoleTab.start(link, sql, fresh, mode, held);
+          var ran = ConsoleTab.start(link, sql, mode, held);
           held.get().close();
           return ran;
         })
@@ -300,26 +299,26 @@ class ServersServerTest {
     var lane = lane(server, TestServer.DATABASE);
     var watcher = open(server);
     try {
-      statement(lane, "DROP TABLE IF EXISTS seam_auto", true, ConsoleTab.Mode.AUTO);
-      statement(lane, "CREATE TABLE seam_auto (id integer)", false, ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE IF EXISTS seam_auto", ConsoleTab.Mode.AUTO);
+      statement(lane, "CREATE TABLE seam_auto (id integer)", ConsoleTab.Mode.AUTO);
       for (var sql : List.of("START TRANSACTION", "INSERT INTO seam_auto VALUES (1)")) {
-        statement(lane, sql, false, ConsoleTab.Mode.AUTO);
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
       }
-      var set = statement(lane, "SET autocommit=0", false, ConsoleTab.Mode.AUTO);
+      var set = statement(lane, "SET autocommit=0", ConsoleTab.Mode.AUTO);
       assertEquals(false, set.autoCommit(), "the driver follows the server, as the mode does");
       assertEquals(Transaction.OPEN, set.portion().transaction());
       // The Rollback button's call, then a typed ROLLBACK: neither commits first.
       var rolledBack = end(lane, ConsoleTab.ROLLBACK);
       assertEquals(Transaction.NONE, rolledBack.portion().transaction());
       assertEquals(0L, count(watcher, "seam_auto"));
-      statement(lane, "INSERT INTO seam_auto VALUES (2)", false, ConsoleTab.Mode.MANUAL);
+      statement(lane, "INSERT INTO seam_auto VALUES (2)", ConsoleTab.Mode.MANUAL);
       assertEquals(
           Transaction.NONE,
-          statement(lane, "ROLLBACK", false, ConsoleTab.Mode.MANUAL).portion().transaction());
+          statement(lane, "ROLLBACK", ConsoleTab.Mode.MANUAL).portion().transaction());
       assertEquals(0L, count(watcher, "seam_auto"));
     } finally {
-      statement(lane, "SET autocommit=1", false, ConsoleTab.Mode.AUTO);
-      statement(lane, "DROP TABLE seam_auto", false, ConsoleTab.Mode.AUTO);
+      statement(lane, "SET autocommit=1", ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE seam_auto", ConsoleTab.Mode.AUTO);
       lane.close();
       watcher.close();
     }
@@ -335,10 +334,10 @@ class ServersServerTest {
     var lane = lane(server, TestServer.DATABASE);
     var watcher = open(server);
     try {
-      statement(lane, "DROP TABLE IF EXISTS seam_cancel", true, ConsoleTab.Mode.AUTO);
-      statement(lane, "CREATE TABLE seam_cancel (id integer)", false, ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE IF EXISTS seam_cancel", ConsoleTab.Mode.AUTO);
+      statement(lane, "CREATE TABLE seam_cancel (id integer)", ConsoleTab.Mode.AUTO);
       lane.submit(link -> ConsoleTab.setMode(link, true, false)).get(20, TimeUnit.SECONDS);
-      statement(lane, "INSERT INTO seam_cancel VALUES (1)", false, ConsoleTab.Mode.MANUAL);
+      statement(lane, "INSERT INTO seam_cancel VALUES (1)", ConsoleTab.Mode.MANUAL);
       var slow = lane.submit(link -> link.run(sleep(provider, 30)).next(10));
       Thread.sleep(500);
       slow.cancel(true); // as the console's Cancel does
@@ -356,7 +355,7 @@ class ServersServerTest {
       }
     } finally {
       lane.submit(link -> ConsoleTab.setMode(link, false, false)).get(20, TimeUnit.SECONDS);
-      statement(lane, "DROP TABLE seam_cancel", false, ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE seam_cancel", ConsoleTab.Mode.AUTO);
       lane.close();
       watcher.close();
     }
@@ -373,11 +372,11 @@ class ServersServerTest {
     var lane = lane(server, TestServer.DATABASE);
     var watcher = open(server);
     try {
-      statement(lane, "DROP TABLE IF EXISTS seam_chain", true, ConsoleTab.Mode.AUTO);
-      statement(lane, "CREATE TABLE seam_chain (id integer)", false, ConsoleTab.Mode.AUTO);
-      statement(lane, "SET SESSION completion_type = 1", false, ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE IF EXISTS seam_chain", ConsoleTab.Mode.AUTO);
+      statement(lane, "CREATE TABLE seam_chain (id integer)", ConsoleTab.Mode.AUTO);
+      statement(lane, "SET SESSION completion_type = 1", ConsoleTab.Mode.AUTO);
       lane.submit(link -> ConsoleTab.setMode(link, true, false)).get(20, TimeUnit.SECONDS);
-      statement(lane, "INSERT INTO seam_chain VALUES (1)", false, ConsoleTab.Mode.MANUAL);
+      statement(lane, "INSERT INTO seam_chain VALUES (1)", ConsoleTab.Mode.MANUAL);
       var committed = end(lane, ConsoleTab.COMMIT);
       assertEquals(Transaction.OPEN, committed.before());
       assertEquals(Transaction.OPEN, committed.portion().transaction(), "chained at once");
@@ -389,8 +388,70 @@ class ServersServerTest {
       assertTrue(switched.done());
       assertEquals(Transaction.NONE, switched.now());
     } finally {
-      statement(lane, "SET SESSION completion_type = 0", false, ConsoleTab.Mode.AUTO);
-      statement(lane, "DROP TABLE seam_chain", false, ConsoleTab.Mode.AUTO);
+      statement(lane, "SET SESSION completion_type = 0", ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE seam_chain", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /**
+   * The second review's first finding: a session whose first call never set the mode, as one
+   * cancelled while the connection opened, still runs the next statement in Manual.
+   */
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aStatementRunsInTheModeChosenWhateverRanBefore(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      statement(lane, "DROP TABLE IF EXISTS seam_mode", ConsoleTab.Mode.AUTO);
+      statement(lane, "CREATE TABLE seam_mode (id integer)", ConsoleTab.Mode.AUTO);
+      // A call that ran without the console's mode, in auto-commit.
+      lane.submit(link -> value(link, "SELECT 1")).get(20, TimeUnit.SECONDS);
+      var inserted = statement(lane, "INSERT INTO seam_mode VALUES (1)", ConsoleTab.Mode.MANUAL);
+      assertEquals(Transaction.OPEN, inserted.portion().transaction());
+      assertEquals(false, inserted.autoCommit());
+      assertEquals(0L, count(watcher, "seam_mode"));
+      end(lane, ConsoleTab.ROLLBACK);
+      assertEquals(0L, count(watcher, "seam_mode"));
+    } finally {
+      statement(lane, "DROP TABLE seam_mode", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /** The second review's fourth finding: a COMMIT that fails at a deferred constraint. */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"POSTGRESQL"})
+  void aCommitThatFailsAtADeferredConstraintEndsTheTransactionUncommitted(Provider provider)
+      throws Exception {
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS seam_child",
+          "DROP TABLE IF EXISTS seam_parent",
+          "CREATE TABLE seam_parent (id integer PRIMARY KEY)",
+          "CREATE TABLE seam_child (parent integer REFERENCES seam_parent"
+              + " DEFERRABLE INITIALLY DEFERRED)")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      statement(lane, "INSERT INTO seam_child VALUES (7)", ConsoleTab.Mode.MANUAL);
+      var ended = end(lane, ConsoleTab.COMMIT);
+      assertEquals(Transaction.OPEN, ended.before());
+      var failure = (Failure) ended.portion().results().getLast();
+      assertEquals(Failure.Kind.CONSTRAINT, failure.kind());
+      assertEquals(Transaction.NONE, ended.portion().transaction());
+      assertEquals(0L, count(watcher, "seam_child"));
+    } finally {
+      statement(lane, "DROP TABLE seam_child", ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE seam_parent", ConsoleTab.Mode.AUTO);
       lane.close();
       watcher.close();
     }

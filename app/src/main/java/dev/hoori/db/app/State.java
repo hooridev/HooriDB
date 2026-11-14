@@ -71,6 +71,7 @@ final class State {
   ConnectionDialog dialog; // null while closed
   DriversDialog driverList; // the Drivers dialog, null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
+  ConsoleTab.Asked asked; // the one way out that waits for a console's question, or null
   // Its deletion runs: it waits for the keyring to be found, then for its password to go.
   boolean removing;
   String removeError; // why its password could not be removed, or null
@@ -238,7 +239,8 @@ final class State {
    */
   void delete() {
     var profile = deleting;
-    if (asks(consoles(profile.id()), name(profile) + " is deleted", this::delete)) {
+    if (profile == null
+        || asks(consoles(profile.id()), name(profile) + " is deleted", this::delete, profile)) {
       return;
     }
     removing = true;
@@ -270,6 +272,13 @@ final class State {
 
   private void deleted(ConnectionProfile profile) {
     removing = false;
+    // Again at the moment of the act: a console may have begun something while the keyring worked.
+    if (asks(
+        consoles(profile.id()), name(profile) + " is deleted", () -> deleted(profile), profile)) {
+      tell("The password of " + name(profile) + " is out of the keyring already; it is deleted"
+          + " once its console's question is answered.");
+      return;
+    }
     deleting = null;
     forgetPassword(profile.id());
     catalogue.drop(this, profile.id());
@@ -284,6 +293,7 @@ final class State {
   /** Closes the delete dialog, unless its deletion has begun: that one ends first. */
   void cancelDelete() {
     if (!removing) {
+      drop(deleting); // and the way out it asked for
       deleting = null;
     }
   }
@@ -549,13 +559,31 @@ final class State {
    * next one. True while one asks, and the caller goes no further; Cancel leaves it all as it was.
    */
   boolean asks(List<ConsoleTab> consoles, String before, Runnable then) {
+    return asks(consoles, before, then, null);
+  }
+
+  /**
+   * As {@link #asks(List, String, Runnable)}, for a way out that something else asked for, as a
+   * dialog: when that is given up ({@link #drop(Object)}), so is the way out. There is one way out
+   * waiting at most, {@link #asked}: a newer one takes its place, and so a later Cancel gives up
+   * what an earlier one began. Called at the moment of the act, also where it asked before.
+   */
+  boolean asks(List<ConsoleTab> consoles, String before, Runnable then, Object owner) {
     for (var console : consoles) {
       if (console.atStake()) {
-        console.ask(this, new ConsoleTab.Asked(before, then));
+        asked = new ConsoleTab.Asked(console, before, then, owner);
+        console.show(this);
         return true;
       }
     }
     return false;
+  }
+
+  /** Gives up the way out that waits, where the console's or what asked for it is given up. */
+  void drop(Object asker) {
+    if (asked != null && (asked.console() == asker || asked.owner() == asker)) {
+      asked = null;
+    }
   }
 
   /** The user closes a tab, by its cross or Control+W: a console asks first. */

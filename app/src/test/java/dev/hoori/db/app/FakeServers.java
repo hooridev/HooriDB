@@ -63,12 +63,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>Each connection keeps a transaction and auto-commit as the servers do. {@code BEGIN}, {@code
  * START TRANSACTION}, {@code COMMIT} and {@code ROLLBACK} are known statements without results; so
  * are, on MariaDB and MySQL, {@code SET autocommit=0} and {@code =1}, of which the second commits
- * what is open, and {@code SET completion_type=1}, after which a COMMIT or ROLLBACK begins the next
+ * what is open where auto-commit was off, and {@code SET completion_type=1}, after which a COMMIT
+ * or ROLLBACK begins the next
  * transaction at once. With auto-commit off any other statement that ends well opens one, as does
  * one that {@link #begins} says begins one by itself, as a procedure may. On MariaDB and MySQL one
  * that begins with {@code CREATE}, {@code ALTER} or {@code DROP} commits it, also where it fails,
- * and a deadlock ({@link #deadlock}) rolls it back; another failure leaves it open, a failed COMMIT
- * or ROLLBACK among them. On PostgreSQL a failure or a cancel within it fails it, and then every
+ * and a deadlock ({@link #deadlock}) or another failure of class 40 ({@link #rolledBack}) rolls
+ * it back, also a COMMIT's; another failure leaves it open, a failed COMMIT or ROLLBACK among them.
+ * {@link #rollBackBehind} ends it as a server does by itself. On PostgreSQL a failure or a cancel within it fails it, and then every
  * statement but a COMMIT, which rolls back, or a ROLLBACK fails as PostgreSQL's do; a failed COMMIT
  * ends it. A portion says it as core's do: on MariaDB and MySQL not after a failure or a cancel,
  * nor while rows are still to come, and nowhere after a lost connection. Turning auto-commit on
@@ -143,6 +145,30 @@ final class FakeServers implements Servers {
   }
 
   static final int DEADLOCK = 1213;
+
+  /** A failure of class 40, transaction rollback: the server rolled the transaction back. */
+  static Failure rolledBack(String message) {
+    return new Failure(Failure.Kind.OTHER, message, "40000", 0, 0, "", 0, 0, "", "", "", "");
+  }
+
+  private static boolean rolledBack(Failure failure) {
+    return failure.code() == DEADLOCK || failure.state().startsWith("40");
+  }
+
+  private final List<FakeLink> links = new CopyOnWriteArrayList<>();
+
+  /**
+   * The server ends the open transactions of its connections by itself, rolled back, as after an
+   * idle-in-transaction timeout or a kill of another session; the console learns of it only when
+   * it asks.
+   */
+  void rollBackBehind(String host) {
+    for (var link : links) {
+      if (link.host.equals(host)) {
+        link.transaction = Transaction.NONE;
+      }
+    }
+  }
 
   /** Rows of the columns, given as {@code name: type}, made up from their position. */
   static Result.Rows made(long count, String... columns) {
@@ -293,7 +319,9 @@ final class FakeServers implements Servers {
           ConnectionException.Failure.NO_SUCH_DATABASE,
           "FATAL: database \"" + database + "\" does not exist");
     }
-    return new FakeLink(profile.host(), made, perDatabase ? database : null);
+    var link = new FakeLink(profile.host(), made, perDatabase ? database : null);
+    links.add(link);
+    return link;
   }
 
   private final class FakeLink implements Link {
@@ -640,8 +668,9 @@ final class FakeServers implements Servers {
       }
       if (!failed && setting.startsWith("setautocommit=")) {
         boolean on = setting.endsWith("1");
+        boolean was = manual;
         manual = !on;
-        return on ? Transaction.NONE : transaction; // turned on, it commits
+        return on && was ? Transaction.NONE : transaction; // turned on from off, it commits
       }
       if (!failed && setting.startsWith("setcompletion_type=")) {
         chain = setting.endsWith("1");
@@ -655,7 +684,9 @@ final class FakeServers implements Servers {
           if (!failed) {
             return chain ? Transaction.OPEN : Transaction.NONE;
           }
-          return pg && word.equals("COMMIT") ? Transaction.NONE : transaction;
+          return pg && word.equals("COMMIT") || rolledBack(failure)
+              ? Transaction.NONE
+              : transaction;
         }
         case "CREATE", "ALTER", "DROP" -> {
           if (!pg) {
@@ -668,7 +699,7 @@ final class FakeServers implements Servers {
         if (pg) {
           return manual || transaction == Transaction.OPEN ? Transaction.FAILED : transaction;
         }
-        return failure.code() == DEADLOCK ? Transaction.NONE : transaction;
+        return rolledBack(failure) ? Transaction.NONE : transaction;
       }
       return manual ? Transaction.OPEN : transaction;
     }

@@ -202,12 +202,8 @@ final class ConnectionDialog {
     }
     var profile = editing.value();
     var id = profile.id();
-    // A change but of the colour ends the consoles' sessions: they ask first, before anything is
-    // written, so that Cancel leaves it all as it was.
-    var before = s.profile(id);
-    if (before != null
-        && !before.withColour(profile.colour()).equals(profile)
-        && s.asks(s.consoles(id), "the changed connection is saved", () -> save(s))) {
+    // The consoles ask first, before anything is written, so that Cancel leaves it all as it was.
+    if (ends(s, profile) && s.asks(s.consoles(id), SAVED, () -> save(s), this)) {
       return;
     }
     var secrets = s.secrets();
@@ -266,11 +262,32 @@ final class ConnectionDialog {
     } else if (inKeyring) {
       s.forgetPassword(profile.id());
     }
+    apply(s, profile);
+  }
+
+  static final String SAVED = "the changed connection is saved";
+
+  /**
+   * Puts the profile in place and closes, where no console's question stops it at this moment: one
+   * may have begun something while the keyring worked. The password is moved already; the dialog
+   * stays open with its edits until the console's question is settled.
+   */
+  private void apply(State s, ConnectionProfile profile) {
+    if (ends(s, profile)
+        && s.asks(s.consoles(profile.id()), SAVED, () -> apply(s, profile), this)) {
+      return;
+    }
     password = "";
     probe.close();
     versions.close();
     s.dialog = null;
     s.put(profile);
+  }
+
+  /** Whether saving the profile ends its consoles' sessions: a change but of the colour. */
+  private static boolean ends(State s, ConnectionProfile profile) {
+    var before = s.profile(profile.id());
+    return before != null && !before.withColour(profile.colour()).equals(profile);
   }
 
   /** Cancel and Escape: closes, after asking when there are changes. */
@@ -286,6 +303,7 @@ final class ConnectionDialog {
   }
 
   void close(State s) {
+    s.drop(this); // the way out a Save asked for goes with the dialog
     if (asking != null) {
       asking.cancel();
     }

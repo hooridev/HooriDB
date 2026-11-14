@@ -182,9 +182,12 @@ final class Frame {
         .overlay(asked != null || question != null ? null : palette(s, group, menus));
   }
 
-  /** What the window's console asks about what may be open in it, or null. */
+  /** What a console of the window asks about what may be open in it, or null. */
   private static El question(State s, TabGroups.Group<Tab> group) {
-    return group.activeTab() instanceof ConsoleTab x ? x.question(s.theme, s) : null;
+    var asked = s.asked;
+    return asked != null && s.tabs.groupOf(asked.console()) == group
+        ? asked.console().question(s.theme, s)
+        : null;
   }
 
   /** The app of the window of these tabs. */
