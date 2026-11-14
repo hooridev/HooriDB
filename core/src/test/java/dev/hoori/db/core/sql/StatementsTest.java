@@ -429,4 +429,17 @@ class StatementsTest {
       }
     }
   }
+
+  @Test
+  void aTextScannedOnceAnswersForEveryCaretAsAScanOfItsOwn() {
+    var text = "SELECT 1;  \n-- a note\n\nSELECT 'a;b'\nFROM t;\n/* end */ UPDATE t SET x = 1";
+    for (var provider : Provider.values()) {
+      var scanned = Statements.of(text, provider);
+      assertEquals(Statements.split(text, provider), scanned.statements());
+      for (int caret = -1; caret <= text.length() + 1; caret++) {
+        assertEquals(
+            Statements.at(text, provider, caret), scanned.at(caret), provider + " at " + caret);
+      }
+    }
+  }
 }

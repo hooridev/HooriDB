@@ -15,14 +15,17 @@ import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.execution.Execution;
+import dev.hoori.db.core.execution.Portion;
+import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
 import java.util.List;
 import java.util.OptionalLong;
 
 /**
- * Opens connections to servers and reads their catalogue and the rows of their tables. Each call blocks, off the app's thread,
- * and an interrupt of the calling thread cancels it. The app gets it from outside, so that a test
+ * Opens connections to servers, reads their catalogue and the rows of their tables, and runs
+ * statements. Each call blocks, off the app's thread, and an interrupt of the calling thread cancels it. The app gets it from outside, so that a test
  * can put made-up servers in its place.
  */
 @FunctionalInterface
@@ -65,7 +68,23 @@ interface Servers {
     /** The rows from {@code from} up to {@code to}, fewer at the end, as {@link Rows#read}. */
     Page read(Table table, List<Column> columns, long from, long to) throws QueryException;
 
+    /** A statement to run, as {@link Execution} runs it; nothing runs before its first next. */
+    Run run(String sql);
+
+    /** Makes the database the connection's own, where the server switches on one connection. */
+    void use(String database) throws QueryException;
+
     /** Closes it; a failure to close is not reported. */
+    void close();
+  }
+
+  /** A statement run on a link, as {@link Execution}: it has the link until it is over. */
+  interface Run {
+
+    /** Its results up to the given number of rows, then as many more, as {@link Execution#next}. */
+    Portion next(int count);
+
+    /** Ends it, abandoning the rows not read. */
     void close();
   }
 
@@ -106,6 +125,31 @@ interface Servers {
     @Override
     public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
       return Rows.read(connection, provider, table, columns, from, to);
+    }
+
+    @Override
+    public Run run(String sql) {
+      var execution = new Execution(connection, provider, sql);
+      return new Run() {
+        @Override
+        public Portion next(int count) {
+          return execution.next(count);
+        }
+
+        @Override
+        public void close() {
+          execution.close();
+        }
+      };
+    }
+
+    @Override
+    public void use(String database) throws QueryException {
+      // Through core's worker, so that an interrupt never lands in the driver's socket I/O.
+      Query.run(connection, provider, () -> {
+        connection.setCatalog(database);
+        return null;
+      });
     }
 
     @Override
