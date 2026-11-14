@@ -1381,12 +1381,14 @@ class ConsoleTransactionTest {
   void aTransactionOpenAfterOnlyAReadInManualAsks() throws Exception {
     for (var profile : List.of(SHOP, INVENTORY)) {
       var app = k.console(profile);
-      c.run(app, MANUAL + type(COUNT) + RUN);
+      // A session the server said had nothing open, then a read in Manual.
+      c.run(app, type(COUNT + ";") + RUN + MANUAL + type("\n" + COUNT) + RUN);
       assertEquals(Transaction.OPEN, k.tab(app).transaction, profile.name());
       c.run(app, "press #close-0\nframe\n" + OPENED + "snap asked\n");
       String asked = c.tree("asked");
       assertTrue(asked.contains("role=dialog label=\"Commit the transaction?\""), asked);
       assertTrue(asked.contains("has a transaction open, after 1 statement. Commit it or"), asked);
+      assertFalse(asked.contains("changes"), asked);
       c.run(app, "press #answer-rollback\nframe\n" + OPENED + SETTLE);
       assertTrue(app.state().consoles(null).isEmpty(), profile.name());
     }
