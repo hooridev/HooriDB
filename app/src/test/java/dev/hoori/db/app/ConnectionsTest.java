@@ -786,6 +786,42 @@ class ConnectionsTest {
     assertTrue(stored().isEmpty());
   }
 
+  /** Host and port in one row, both wrong: each is marked, and each error reads whole. */
+  @Test
+  void aWrongHostAndPortAreEachMarkedAndSaid() throws IOException {
+    run(app(), """
+        press role=button label="New connection"
+        frame
+        advance 1
+        frame
+        press role=textbox label="Host"
+        type "d"
+        key Backspace
+        press role=textbox label="Port"
+        key A control
+        type "70000"
+        frame
+        advance 1
+        frame
+        snap both
+        """);
+    String both = tree("both");
+    var host = line(both, "#host");
+    var port = line(both, "#port");
+    assertTrue(host.contains("invalid") && host.contains("error=\""), host);
+    assertTrue(port.contains("invalid") && port.contains("error=\""), port);
+    var hostError = host.replaceAll(".*error=\"([^\"]*)\".*", "$1");
+    var portError = port.replaceAll(".*error=\"([^\"]*)\".*", "$1");
+    float hostText = TestConnectionTest.top(both, "text \"" + hostError);
+    float portText = TestConnectionTest.top(both, "text \"" + portError);
+    // Under the row, one below the other, each on a line of the row's width.
+    assertTrue(TestConnectionTest.top(both, "#port") < hostText && hostText < portText, both);
+    assertTrue(portText < TestConnectionTest.top(both, "#database"), both);
+    for (var error : List.of(hostError, portError)) {
+      assertTrue(line(both, "text \"" + error).contains(" 432,"), both);
+    }
+  }
+
   /** Text typed into the port counts as set by hand and as a change, also when it is no port. */
   @Test
   void aPortThatIsNoPortYetCountsAsTyped() throws IOException {

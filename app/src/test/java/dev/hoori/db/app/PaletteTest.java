@@ -310,6 +310,26 @@ class PaletteTest {
   }
 
   @Test
+  void aPaletteClosedWhileItReadsAndOpenedWithOtherTextStartsAfresh() throws Exception {
+    var app = connected();
+    var key = "all tables " + PG + "/analytics";
+    var held = c.servers.hold(key);
+    c.run(app, GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n" + SHOWN);
+    CatalogueTest.eventually(() -> c.servers.calls.contains(key));
+    c.run(app, "key Escape\n" + SHOWN + GO_TO + "type \"ord\"\nframe\nsnap again\n");
+    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    held.countDown();
+    c.run(app, SETTLE + "snap after\n");
+    for (var snap : List.of("again", "after")) {
+      var tree = c.tree(snap);
+      assertEquals(List.of("orders", "order_totals"), options(tree).subList(0, 2), tree);
+      assertTrue(line(tree, "role=option label=\"orders\"").contains("selected"), tree);
+      assertTrue(option(tree, "analytics").contains("choose to read its tables"), tree);
+      assertFalse(options(tree).contains("events"), tree);
+    }
+  }
+
+  @Test
   void aDialogOpeningOverThePaletteClosesItAndStopsItsRead() throws Exception {
     var app = torn();
     var key = "all tables " + PG + "/analytics";
