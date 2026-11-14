@@ -5,6 +5,7 @@ import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.driver.Repository;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -72,6 +73,17 @@ final class Drivers {
           loading.remove(key).forEach(w -> w.then().accept(result));
         },
         error -> loading.remove(key).forEach(w -> w.failed().accept(error)));
+  }
+
+  /**
+   * Closes the drivers loaded so far. The app's end closes them by itself; a test closes them
+   * before its folder goes, as Windows deletes no JAR that is open.
+   */
+  void close() throws IOException {
+    for (var driver : loaded.values()) {
+      driver.close();
+    }
+    loaded.clear();
   }
 
   /** Where the version's file is downloaded from. */

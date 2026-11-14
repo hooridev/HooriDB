@@ -143,6 +143,11 @@ final class ConnectionDialog {
         && !changing;
   }
 
+  /** Whether the form, the port's text included, holds a profile that can connect. */
+  boolean formValid() {
+    return editing.valid() && !portTyped() && editing.value().problems().isEmpty();
+  }
+
   /** Whether the port field holds a text that is no port, which the user typed. */
   private boolean portTyped() {
     return editing.at(PORT).draft().error() != null;

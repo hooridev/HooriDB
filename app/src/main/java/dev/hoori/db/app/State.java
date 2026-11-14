@@ -125,6 +125,7 @@ final class State {
     keyring = found;
     if (dialog != null) {
       dialog.lookUp(this);
+      dialog.probe.keyringFound(this);
     }
     if (removing) {
       delete();

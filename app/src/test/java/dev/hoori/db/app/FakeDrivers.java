@@ -48,6 +48,8 @@ final class FakeDrivers implements Repository {
   volatile CountDownLatch opening;
   // Holds a driver's file after its first half, until it opens.
   volatile CountDownLatch reading;
+  // Opens once a driver's file has been read halfway: the transfer is under way.
+  final CountDownLatch halfway = new CountDownLatch(1);
 
   FakeDrivers(Path root) {
     this.root = root;
@@ -96,6 +98,7 @@ final class FakeDrivers implements Repository {
     public int read(byte[] b, int off, int len) throws IOException {
       if (left == 0) {
         left = -1;
+        halfway.countDown();
         var gate = reading;
         if (gate != null) {
           try {

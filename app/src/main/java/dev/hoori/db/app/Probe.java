@@ -65,17 +65,28 @@ final class Probe {
 
   record Loading(Found found) implements Step {}
 
+  /** For the system keyring, which holds the password to test with. */
+  record ForKeyring(LoadedDriver driver) implements Step {}
+
   record Testing(String host) implements Step {}
 
-  record Failed(Stage stage, Exception error) implements Step {}
-
   /**
+   * What a test was given: the profile and how often the password had been edited.
+   *
    * @param profile what was tested
    * @param edits the password's edits when the test began
-   * @param withPassword whether the test sent a password
    */
-  record Done(ConnectionProfile profile, int edits, Tester.Result result, boolean withPassword)
-      implements Step {}
+  record Tried(ConnectionProfile profile, int edits) {}
+
+  /** @param tried what was tested, for a failure of the test itself; null for the driver's */
+  record Failed(Stage stage, Exception error, Tried tried) implements Step {}
+
+  /** @param withPassword whether the test sent a password */
+  record Done(Tried tried, Tester.Result result, boolean withPassword) implements Step {
+    ConnectionProfile profile() {
+      return tried.profile();
+    }
+  }
 
   enum Stage {
     LOOK_UP,
@@ -94,7 +105,8 @@ final class Probe {
     TLS
   }
 
-  static final String HIDDEN = "The driver's message is not shown, as it contains the password.";
+  // The same words as core's, which withholds such a message from a real driver already.
+  static final String HIDDEN = ConnectionException.WITHHELD;
 
   private final ConnectionDialog dialog;
   Lookup lookup; // null without drivers, as in a script run
@@ -103,6 +115,7 @@ final class Probe {
   private Work work; // the download or the test under way, or null
   // Counts the tests stopped, so that what a stopped one delivers late is dropped.
   private int stops;
+  private boolean agreed; // the user agreed to the download in this test
 
   Probe(ConnectionDialog dialog) {
     this.dialog = dialog;
@@ -141,17 +154,14 @@ final class Probe {
           looking = null;
           lookup = new Missing(provider, error);
           if (step instanceof Waiting) {
-            step = new Failed(Stage.LOOK_UP, error);
+            step = new Failed(Stage.LOOK_UP, error, null);
           }
         });
   }
 
-  /** Whether Test connection can go: there are drivers, and the profile can connect. */
+  /** Whether Test connection can go: there are drivers, and the form holds a profile to test. */
   boolean canTest(State s) {
-    return s.drivers != null
-        && dialog.editing.valid()
-        && dialog.editing.value().problems().isEmpty()
-        && !dialog.changing;
+    return s.drivers != null && dialog.formValid() && !dialog.changing;
   }
 
   /** Whether a test runs: Test connection is busy. */
@@ -159,6 +169,7 @@ final class Probe {
     return step instanceof Waiting
         || step instanceof Downloading
         || step instanceof Loading
+        || step instanceof ForKeyring
         || step instanceof Testing;
   }
 
@@ -184,9 +195,22 @@ final class Probe {
     }
   }
 
-  /** Downloads the driver the question was about, then goes on with the test. */
+  /** Download in the question: the user agrees, and the test goes on. */
+  void agree(State s) {
+    agreed = true;
+    download(s);
+  }
+
+  /**
+   * Downloads the driver, then goes on with the test; asks first unless the user agreed in this
+   * test.
+   */
   void download(State s) {
     if (!(lookup instanceof Found found)) {
+      return;
+    }
+    if (!agreed) {
+      step = new Asking(found);
       return;
     }
     var store = s.drivers.store;
@@ -226,7 +250,7 @@ final class Probe {
         },
         error -> {
           work = null;
-          step = new Failed(Stage.DOWNLOAD, error);
+          step = new Failed(Stage.DOWNLOAD, error, null);
         });
   }
 
@@ -244,7 +268,7 @@ final class Probe {
         },
         error -> {
           if (stop == stops) {
-            step = new Failed(Stage.LOAD, error);
+            step = new Failed(Stage.LOAD, error, null);
           }
         });
   }
@@ -255,15 +279,23 @@ final class Probe {
    */
   private void connect(State s, LoadedDriver driver) {
     var d = dialog;
+    if (!d.formValid()) {
+      step = null; // the form changed into one that cannot be tested meanwhile
+      return;
+    }
     var profile = d.editing.value();
     var id = profile.id();
+    if (d.password.isEmpty() && !d.isNew && !s.remembers(id) && s.keyring == null) {
+      step = new ForKeyring(driver);
+      return;
+    }
     char[] typed = d.password.isEmpty() ? null : d.password.toCharArray();
     char[] kept = typed == null && !d.isNew ? s.rememberedCopy(id) : null;
     var secrets = typed == null && kept == null && !d.isNew && !Boolean.FALSE.equals(d.stored)
         ? s.secrets()
         : null;
     var tester = s.tester;
-    int edits = d.passwordEdits;
+    var tried = new Tried(profile, d.passwordEdits);
     step = new Testing(profile.host());
     work = s.app.background(
         "test a connection",
@@ -279,7 +311,7 @@ final class Probe {
             if (result instanceof Tester.Refused r && contains(r.detail(), password)) {
               result = new Tester.Refused(r.failure(), HIDDEN);
             }
-            return new Done(profile, edits, result, password.length > 0);
+            return new Done(tried, result, password.length > 0);
           } finally {
             Arrays.fill(password, '\0');
           }
@@ -297,13 +329,21 @@ final class Probe {
         },
         error -> {
           work = null;
-          step = new Failed(Stage.TEST, error);
+          step = new Failed(Stage.TEST, error, tried);
         });
+  }
+
+  /** The system keyring was found: a test that waited for it goes on. */
+  void keyringFound(State s) {
+    if (step instanceof ForKeyring k) {
+      connect(s, k.driver());
+    }
   }
 
   /** Stops the test under way, or forgets its outcome. */
   void stop() {
     stops++;
+    agreed = false;
     if (work != null) {
       work.cancel();
       work = null;
@@ -322,12 +362,16 @@ final class Probe {
 
   /** The outcome while the form holds what was tested, its name aside; null otherwise. */
   Done outcome() {
-    if (step instanceof Done done
-        && done.edits() == dialog.passwordEdits
-        && done.profile().equals(dialog.editing.value().withName(done.profile().name()))) {
-      return done;
-    }
-    return null;
+    return step instanceof Done done && holds(done.tried()) ? done : null;
+  }
+
+  /** Whether the form is valid and holds what was tested, its name aside. */
+  private boolean holds(Tried tried) {
+    return dialog.formValid()
+        && tried.edits() == dialog.passwordEdits
+        && tried
+            .profile()
+            .equals(dialog.editing.value().withName(tried.profile().name()));
   }
 
   /** What the outcome says at the field, or null. */
@@ -486,10 +530,12 @@ final class Probe {
     return switch (step) {
       case null -> null;
       case Waiting w -> status(t, "Looking up the driver…");
+      case ForKeyring k -> status(t, "Looking for the system keyring…");
       case Asking a -> question(t, s, a.found());
       case Downloading d -> downloading(t, d);
       case Loading l -> status(t, "Loading " + name(l.found().provider()) + "…");
       case Testing x -> status(t, "Connecting to " + x.host() + "…");
+      case Failed f when f.tried() != null && !holds(f.tried()) -> null;
       case Failed f ->
         Callout.callout(
             t,
@@ -530,7 +576,7 @@ final class Probe {
         .child(callout)
         .child(Form.buttons(
             t,
-            button(t, SECONDARY, "Download", () -> download(s)),
+            button(t, SECONDARY, "Download", () -> agree(s)),
             button(t, SECONDARY, "Not now", this::stop)));
   }
 

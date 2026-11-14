@@ -17,9 +17,15 @@ import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -33,10 +39,27 @@ class TestConnectionTest {
   final ConnectionsTest.Secrets secrets = new ConnectionsTest.Secrets();
   final FakeDrivers.FakeServer server = new FakeDrivers.FakeServer();
   FakeDrivers repository;
+  final List<App<State>> apps = new ArrayList<>();
 
   @BeforeEach
   void setUp() throws Exception {
     repository = new FakeDrivers(Files.createDirectories(dir.resolve("repository"))).publish(true);
+  }
+
+  /** Closes the drivers the apps loaded once their work has ended: Windows deletes no open JAR. */
+  @AfterEach
+  void closeDrivers() throws Exception {
+    for (var gate : new CountDownLatch[] {server.gate, repository.reading, secrets.gate}) {
+      if (gate != null) {
+        gate.countDown();
+      }
+    }
+    for (var app : apps) {
+      app.await(Duration.ofSeconds(10));
+      if (app.state().drivers != null) {
+        app.state().drivers.close();
+      }
+    }
   }
 
   Path drivers() {
@@ -44,11 +67,13 @@ class TestConnectionTest {
   }
 
   App<State> app() {
-    return HooriDb.app(
-        dir.resolve("config"),
-        () -> new Keyring.Available(secrets),
-        repository.drivers(drivers()),
-        server);
+    return app(() -> new Keyring.Available(secrets));
+  }
+
+  App<State> app(Callable<Keyring> keyring) {
+    var app = HooriDb.app(dir.resolve("config"), keyring, repository.drivers(drivers()), server);
+    apps.add(app);
+    return app;
   }
 
   /** Puts the driver into the folder, as an earlier session would have. */
@@ -386,6 +411,9 @@ class TestConnectionTest {
     run(app, START + NEW_SHOP + TEST + """
         press role=button label="Download"
         frame
+        """);
+    assertTrue(repository.halfway.await(10, TimeUnit.SECONDS), "the transfer began");
+    run(app, """
         press role=button label="Cancel download"
         frame
         """ + SETTLE + "snap end\n");
@@ -398,6 +426,9 @@ class TestConnectionTest {
   /** The download's thread cleans up after it was cancelled, which takes a moment. */
   static void assertNothingIn(Path folder) throws Exception {
     for (int i = 0; ; i++) {
+      if (!Files.exists(folder)) {
+        return;
+      }
       List<Path> files;
       try (Stream<Path> paths = Files.walk(folder)) {
         files = paths.filter(Files::isRegularFile).toList();
@@ -534,6 +565,121 @@ class TestConnectionTest {
     String end = tree("end");
     assertTrue(end.contains("\"" + Probe.HIDDEN + "\""), end);
     noPasswordIn("end");
+  }
+
+  /** Without a typed or kept password, a test waits for the keyring, which holds the saved one. */
+  @Test
+  void aTestWaitsForTheKeyring() throws Exception {
+    downloaded();
+    var shop = ConnectionsTest.shop();
+    new ProfileStore(dir.resolve("config")).save(List.of(shop));
+    secrets.stored.put(shop.id(), PASSWORD);
+    var found = new CountDownLatch(1);
+    App<State> app = app(() -> {
+      found.await();
+      return new Keyring.Available(secrets);
+    });
+    // The driver is loaded and the dialog open before the keyring is looked up, as an await
+    // would wait for the lookup.
+    var s = app.state();
+    s.drivers.load(app, FakeDrivers.DRIVER, FakeDrivers.VERSION, d -> {}, e -> {});
+    s.edit(shop);
+    run(app, """
+        size 1200 760
+        frame
+        await
+        frame
+        advance 1
+        frame
+        """ + TEST + "advance 1\nframe\nsnap waiting\n");
+    String waiting = tree("waiting");
+    assertTrue(waiting.contains("role=status label=\"Looking for the system keyring…\""), waiting);
+    assertTrue(line(waiting, "label=\"Test connection\"").contains("busy"), waiting);
+    assertFalse(waiting.contains("role=note"), waiting);
+    assertTrue(server.passwords.isEmpty(), "nothing was tested yet");
+    found.countDown();
+    run(app, SETTLE + SETTLE + "snap end\n");
+    assertEquals(List.of(PASSWORD), server.passwords);
+    assertTrue(tree("end").contains("Connected to PostgreSQL 16.4"), tree("end"));
+  }
+
+  /** A port that is no port stops a test, and hides an outcome. */
+  @Test
+  void aPortThatIsNoPortStopsATest() throws Exception {
+    App<State> app = app();
+    run(app, START + NEW_SHOP + TEST + """
+        press role=textbox label="Port"
+        key A control
+        key Backspace
+        frame
+        press role=button label="Download"
+        frame
+        """ + SETTLE + SETTLE + SETTLE + "snap stopped\n");
+    assertTrue(server.passwords.isEmpty(), "no test with the port before");
+    assertFalse(tree("stopped").contains("role=status label=\"Connect"), tree("stopped"));
+    run(app, """
+        press role=textbox label="Port"
+        type "5432"
+        frame
+        """ + TEST + SETTLE + SETTLE + """
+        snap connected
+        press role=textbox label="Port"
+        key A control
+        key Backspace
+        frame
+        snap emptied
+        """);
+    assertTrue(tree("connected").contains("Connected to PostgreSQL 16.4"), tree("connected"));
+    String emptied = tree("emptied");
+    assertFalse(emptied.contains("Connected to"), emptied);
+    assertTrue(line(emptied, "label=\"Test connection\"").endsWith("disabled"), emptied);
+  }
+
+  /** A test that failed with an exception goes stale with the form, as every outcome does. */
+  @Test
+  void aFailureOfTheTestGoesWithTheForm() throws Exception {
+    downloaded();
+    var shop = ConnectionsTest.shop();
+    new ProfileStore(dir.resolve("config")).save(List.of(shop));
+    secrets.stored.put(shop.id(), PASSWORD);
+    App<State> app = app();
+    run(app, START + ConnectionsTest.EDIT_SHOP + SETTLE);
+    secrets.gate = new CountDownLatch(1); // holds the test's read of the saved password
+    run(app, TEST + """
+        await
+        frame
+        press role=textbox label="Password"
+        type "other"
+        frame
+        """);
+    secrets.fails = true;
+    secrets.gate.countDown();
+    run(app, SETTLE + "snap end\n");
+    String end = tree("end");
+    assertFalse(end.contains("The connection could not be tested"), end);
+    assertFalse(end.contains("role=note"), end);
+  }
+
+  /** Try again after a driver would not load asks before it downloads. */
+  @Test
+  void aRetryAfterAFailedLoadAsksFirst() throws Exception {
+    downloaded();
+    App<State> app = app();
+    run(app, START + NEW_SHOP);
+    try (var paths = Files.walk(drivers())) {
+      for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
+        Files.delete(path);
+      }
+    }
+    run(app, TEST + SETTLE + "snap failed\n");
+    assertTrue(tree("failed").contains("\"The driver could not be loaded\""), tree("failed"));
+    run(app, """
+        press role=button label="Try again"
+        frame
+        """ + SETTLE + "snap end\n");
+    String end = tree("end");
+    assertTrue(line(end, "role=note").contains("\"Download PostgreSQL JDBC 42.7.14?\""), end);
+    assertFalse(Files.exists(drivers()), "nothing was downloaded");
   }
 
   /** Testing saves nothing: not the list, not its file, not the keyring. */
