@@ -1,26 +1,34 @@
 package dev.hoori.db.core.driver;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.ConnectException;
+import java.net.ProtocolException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.time.Instant;
-import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 /** A repository in a folder of a test, which counts what is asked of it. */
 final class FolderRepository implements Repository {
 
   final Path root;
-  final List<String> opened = new ArrayList<>();
-  final List<String> asked = new ArrayList<>();
+  final List<String> opened = new CopyOnWriteArrayList<>();
+  final List<String> asked = new CopyOnWriteArrayList<>();
+  final Set<String> malformed = new HashSet<>();
   boolean offline;
+  // Runs once a file is read and before it is returned, as a server between two packets.
+  Consumer<String> served = path -> {};
 
   FolderRepository(Path root) {
     this.root = root;
@@ -31,9 +39,13 @@ final class FolderRepository implements Repository {
     if (offline) {
       throw new ConnectException("offline");
     }
+    if (malformed.contains(path)) {
+      throw new ProtocolException("malformed");
+    }
     opened.add(path);
-    var file = root.resolve(path);
-    return new Response(Files.newInputStream(file), Files.size(file));
+    var bytes = Files.readAllBytes(root.resolve(path));
+    served.accept(path);
+    return new Response(new ByteArrayInputStream(bytes), bytes.length);
   }
 
   @Override

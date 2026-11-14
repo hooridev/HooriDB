@@ -11,13 +11,19 @@ public final class DriverException extends Exception {
      * DriverStore#recommended}, it also means that nothing is downloaded to fall back on.
      */
     NO_NETWORK,
-    /** The repository has no such artifact or version, or no release that is old enough. */
+    /** The repository has no such artifact or version. */
     NOT_FOUND,
+    /** None of the newest releases is known to have been published the waiting period ago. */
+    NO_RECOMMENDATION,
+    /** The repository publishes no checksum beside the file, so a download cannot be verified. */
+    NO_CHECKSUM,
     /** A download, or a stored file, does not match its checksum. */
     CHECKSUM_MISMATCH,
     /** A download is larger than a driver may be. */
     TOO_LARGE,
-    /** The repository's metadata or checksum file cannot be read. */
+    /** The JAR's manifest names further files to load, which nothing has checked. */
+    CLASS_PATH_IN_MANIFEST,
+    /** The repository's response, metadata or checksum file cannot be read. */
     INVALID_RESPONSE,
     /** The thread was interrupted. */
     CANCELLED,

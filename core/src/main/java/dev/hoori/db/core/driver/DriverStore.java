@@ -2,11 +2,14 @@ package dev.hoori.db.core.driver;
 
 import static dev.hoori.db.core.driver.DriverException.Failure.CANCELLED;
 import static dev.hoori.db.core.driver.DriverException.Failure.CHECKSUM_MISMATCH;
+import static dev.hoori.db.core.driver.DriverException.Failure.CLASS_PATH_IN_MANIFEST;
 import static dev.hoori.db.core.driver.DriverException.Failure.INVALID_RESPONSE;
 import static dev.hoori.db.core.driver.DriverException.Failure.NOT_A_DRIVER;
 import static dev.hoori.db.core.driver.DriverException.Failure.NOT_DOWNLOADED;
 import static dev.hoori.db.core.driver.DriverException.Failure.NOT_FOUND;
+import static dev.hoori.db.core.driver.DriverException.Failure.NO_CHECKSUM;
 import static dev.hoori.db.core.driver.DriverException.Failure.NO_NETWORK;
+import static dev.hoori.db.core.driver.DriverException.Failure.NO_RECOMMENDATION;
 import static dev.hoori.db.core.driver.DriverException.Failure.STORAGE;
 import static dev.hoori.db.core.driver.DriverException.Failure.TOO_LARGE;
 
@@ -16,24 +19,27 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.MalformedURLException;
+import java.net.ProtocolException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.jar.Attributes;
+import java.util.jar.JarFile;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
@@ -42,10 +48,13 @@ import org.xml.sax.helpers.DefaultHandler;
 
 /**
  * Drivers downloaded from a repository into a folder, with a sub-folder per artifact and version
- * such as {@code org.postgresql/postgresql/42.7.14/}. A file there under its real name has matched
- * its checksum, which is recorded beside it and checked again before the file is loaded. What is
- * downloaded works without a network. Every method blocks; interrupting the thread cancels it with
- * {@link DriverException.Failure#CANCELLED} and leaves the thread interrupted.
+ * such as {@code org.postgresql/postgresql/42.7.14/}. A version's folder is complete or absent: a
+ * download fills a temporary folder and renames it into place, and a delete renames it away before
+ * removing it. Its file has matched the repository's checksum, which is recorded beside it and
+ * checked again before the file is loaded. What is downloaded works without a network. Every
+ * method blocks; interrupting the thread cancels it with {@link DriverException.Failure#CANCELLED}
+ * and leaves the thread interrupted, except while a driver's own class initialisation runs during
+ * {@link #load}, which cannot be interrupted.
  */
 public final class DriverStore {
 
@@ -53,6 +62,8 @@ public final class DriverStore {
   public static final Duration WAITING_PERIOD = Duration.ofDays(3);
 
   static final long MAX_DRIVER_SIZE = 64L << 20;
+  // How many stable releases, newest first, are asked for their date before giving up.
+  static final int MAX_CANDIDATES = 5;
   private static final int MAX_METADATA_SIZE = 4 << 20;
   private static final int MAX_CHECKSUM_SIZE = 1024;
 
@@ -84,6 +95,7 @@ public final class DriverStore {
   /** The versions the repository has of the driver, newest first. */
   public List<String> versions(Driver driver) throws DriverException {
     var path = base(driver) + "maven-metadata.xml";
+    checkCancelled(path);
     return parse(path, fetch(path, MAX_METADATA_SIZE)).stream()
         .filter(Maven::isVersion)
         .distinct()
@@ -94,6 +106,7 @@ public final class DriverStore {
   /** When the repository got the version, or empty when it does not say. */
   public Optional<Instant> published(Driver driver, String version) throws DriverException {
     var path = file(driver, version);
+    checkCancelled(path);
     return remote(path, () -> repository.published(path));
   }
 
@@ -105,18 +118,21 @@ public final class DriverStore {
   /**
    * The newest stable release that was published at least the waiting period before now. A bad
    * release is usually noticed and withdrawn within days, so a younger one is never recommended,
-   * though it can still be downloaded by name. When the repository cannot be reached, this is the
-   * newest version that is downloaded, and {@link DriverException.Failure#NO_NETWORK} only when
-   * there is none.
+   * though it can still be downloaded by name. Only the newest few releases are asked for their
+   * date; when none of them qualifies, this fails with {@link
+   * DriverException.Failure#NO_RECOMMENDATION}. When the repository cannot be reached, this is the
+   * newest stable version that is downloaded and matches its record, and {@link
+   * DriverException.Failure#NO_NETWORK} only when there is none.
    */
   public Recommended recommended(Driver driver, Instant now, Duration waitingPeriod)
       throws DriverException {
     try {
       var latest = now.minus(waitingPeriod);
-      for (var version : versions(driver)) {
-        if (!Maven.isStable(version)) {
-          continue;
-        }
+      var candidates = versions(driver).stream()
+          .filter(Maven::isStable)
+          .limit(MAX_CANDIDATES)
+          .toList();
+      for (var version : candidates) {
         Optional<Instant> published;
         try {
           published = published(driver, version);
@@ -131,29 +147,34 @@ public final class DriverStore {
           return new Recommended(version, false);
         }
       }
-      throw new DriverException(NOT_FOUND, "No release is old enough: " + base(driver));
+      throw new DriverException(NO_RECOMMENDATION, base(driver));
     } catch (DriverException e) {
       if (e.failure() != NO_NETWORK) {
         throw e;
       }
-      var downloaded = downloaded(driver);
-      if (downloaded.isEmpty()) {
-        throw e;
+      // A version on disk was either recommended when it was downloaded or chosen on purpose,
+      // which is good enough offline, so its age is not checked again and no dates are kept.
+      for (var version : downloaded(driver)) {
+        if (Maven.isStable(version) && matchesRecord(jar(driver, version))) {
+          return new Recommended(version, true);
+        }
       }
-      return new Recommended(downloaded.getFirst(), true);
+      throw e;
     }
   }
 
   /**
-   * Downloads the version into the folder, unless it is there already and matches its record.
-   * The bytes go to a temporary file, which gets its real name only once its checksum matched.
+   * Downloads the version into the folder, unless it is there already and matches its record. The
+   * file goes into a temporary folder, which takes the version's name only once the file matched
+   * its checksum. Two downloads of one version at once both succeed with one of their results.
    */
   public void download(Driver driver, String version, Progress progress) throws DriverException {
     var jar = jar(driver, version);
+    var path = file(driver, version);
+    checkCancelled(path);
     if (matchesRecord(jar)) {
       return;
     }
-    var path = file(driver, version);
     // The checksum the repository publishes beside the file, fetched over HTTPS as well. It shows
     // that a download is not damaged or cut short, but not that the repository serves a good
     // file: one that serves a bad file can serve a checksum to match. The waiting period before
@@ -167,14 +188,24 @@ public final class DriverStore {
         throw e;
       }
       bySha256 = false;
-      expected = checksum(path + ".sha1", 40);
+      try {
+        expected = checksum(path + ".sha1", 40);
+      } catch (DriverException sha1) {
+        if (sha1.failure() != NOT_FOUND) {
+          throw sha1;
+        }
+        // Without either checksum the version itself may be missing, which is NOT_FOUND.
+        published(driver, version);
+        throw new DriverException(NO_CHECKSUM, path);
+      }
     }
     var dir = jar.getParent();
-    Path part = null;
-    Path recordPart = null;
+    Path temporary = null;
     try {
-      Files.createDirectories(dir);
-      part = Files.createTempFile(dir, jar.getFileName() + ".", ".part");
+      Files.createDirectories(dir.getParent());
+      // Its name starts with a dot, which no version does, so nothing lists or loads it.
+      temporary = Files.createTempDirectory(dir.getParent(), "." + version + ".");
+      var part = temporary.resolve(jar.getFileName());
       var sha256 = digest("SHA-256");
       var sha1 = digest("SHA-1");
       try (var response = remote(path, () -> repository.open(path));
@@ -186,21 +217,34 @@ public final class DriverStore {
       if (!actual.equals(expected)) {
         throw new DriverException(CHECKSUM_MISMATCH, path);
       }
-      recordPart = Files.createTempFile(dir, jar.getFileName() + ".sha256.", ".part");
-      Files.writeString(recordPart, recorded, StandardCharsets.US_ASCII);
-      Files.move(recordPart, record(jar), StandardCopyOption.ATOMIC_MOVE);
-      Files.move(part, jar, StandardCopyOption.ATOMIC_MOVE);
+      checkManifest(part, path);
+      Files.writeString(record(part), recorded, StandardCharsets.US_ASCII);
+      checkCancelled(path);
+      publish(temporary, dir, jar);
     } catch (IOException e) {
       throw storage(e);
     } finally {
-      deleteQuietly(part);
-      deleteQuietly(recordPart);
+      deleteTree(temporary);
+    }
+  }
+
+  // Renaming a folder is atomic on Linux and Windows. Linux replaces an empty target and refuses
+  // one with files; Windows refuses any target that exists. Either way a version that is there
+  // and matches its record has been published by a concurrent download, and that one stands.
+  private void publish(Path temporary, Path dir, Path jar) throws IOException, DriverException {
+    for (int attempt = 0; ; attempt++) {
       try {
-        Files.deleteIfExists(dir);
-      } catch (DirectoryNotEmptyException e) {
-        // It holds this download or an earlier one.
+        Files.move(temporary, dir, StandardCopyOption.ATOMIC_MOVE);
+        return;
       } catch (IOException e) {
-        // Only an empty folder is left behind.
+        if (matchesRecord(jar)) {
+          return;
+        }
+        if (attempt > 0 || !Files.exists(dir)) {
+          throw e;
+        }
+        // An earlier download that no longer matches its record, which this one replaces.
+        discard(dir);
       }
     }
   }
@@ -208,6 +252,7 @@ public final class DriverStore {
   /** The versions of the driver in the folder, newest first. */
   public List<String> downloaded(Driver driver) throws DriverException {
     var dir = folder.resolve(driver.group()).resolve(driver.artifact());
+    checkCancelled(base(driver));
     if (!Files.isDirectory(dir)) {
       return List.of();
     }
@@ -225,21 +270,15 @@ public final class DriverStore {
     }
   }
 
-  /** Deletes the version from the folder; on Windows, it must not be loaded. */
+  /**
+   * Deletes the version from the folder; a download in progress is not disturbed. On Windows, a
+   * loaded version cannot be deleted, since its file is open.
+   */
   public void delete(Driver driver, String version) throws DriverException {
-    var jar = jar(driver, version);
-    var dir = jar.getParent();
-    if (!Files.isDirectory(dir)) {
-      return;
-    }
+    var dir = jar(driver, version).getParent();
+    checkCancelled(file(driver, version));
     try {
-      Files.deleteIfExists(jar);
-      try (var entries = Files.list(dir)) {
-        for (var entry : entries.toList()) {
-          Files.delete(entry);
-        }
-      }
-      Files.delete(dir);
+      discard(dir);
     } catch (IOException e) {
       throw storage(e);
     }
@@ -248,13 +287,23 @@ public final class DriverStore {
   /** Loads the downloaded version in a class loader of its own. */
   public LoadedDriver load(Driver driver, String version) throws DriverException {
     var jar = jar(driver, version);
+    var path = file(driver, version);
+    checkCancelled(path);
+    // shortcut: a folder that cannot be read is reported as not downloaded, as if it were absent;
+    // tell the two apart if users meet unreadable data folders.
     if (!Files.isRegularFile(jar)) {
-      throw new DriverException(NOT_DOWNLOADED, file(driver, version));
+      throw new DriverException(NOT_DOWNLOADED, path);
     }
-    // The file sat on disk since it was checked, and whatever changed it must not run.
+    // A check against damage and accidental change since the download: whoever can write the
+    // file can write its record as well.
     if (!matchesRecord(jar)) {
-      throw new DriverException(CHECKSUM_MISMATCH, file(driver, version));
+      throw new DriverException(CHECKSUM_MISMATCH, path);
     }
+    checkManifest(jar, path);
+    checkCancelled(path);
+    // shortcut: the file is hashed and then opened again by the class loader, so a file replaced
+    // in between loads unchecked; load from a snapshot in memory if that ever matters, though it
+    // does not against whoever can write the data folder, who can replace the record or the app.
     URL url;
     try {
       url = jar.toUri().toURL();
@@ -277,6 +326,8 @@ public final class DriverStore {
     }
   }
 
+  // shortcut: two versions that differ only in letter case share a folder on a case-insensitive
+  // file system; no driver publishes such versions, so they are not told apart.
   private Path jar(Driver driver, String version) {
     if (!Maven.isVersion(version)) {
       throw new IllegalArgumentException("Not a version: " + version);
@@ -303,21 +354,49 @@ public final class DriverStore {
     return base(driver) + version + "/" + driver.artifact() + "-" + version + ".jar";
   }
 
-  private boolean matchesRecord(Path jar) throws DriverException {
+  private static void checkCancelled(String path) throws DriverException {
+    if (Thread.currentThread().isInterrupted()) {
+      throw new DriverException(CANCELLED, path);
+    }
+  }
+
+  private static boolean matchesRecord(Path jar) throws DriverException {
     if (!Files.isRegularFile(jar)) {
       return false;
     }
     try {
       var recorded = Files.readString(record(jar), StandardCharsets.US_ASCII).strip();
       var sha256 = digest("SHA-256");
-      try (var in = new DigestInputStream(Files.newInputStream(jar), sha256)) {
-        in.transferTo(OutputStream.nullOutputStream());
+      try (var in = Files.newInputStream(jar)) {
+        var buffer = new byte[64 * 1024];
+        for (int n; (n = in.read(buffer)) >= 0; ) {
+          checkCancelled(jar.getFileName().toString());
+          sha256.update(buffer, 0, n);
+        }
       }
       return recorded.equals(HexFormat.of().formatHex(sha256.digest()));
     } catch (NoSuchFileException e) {
       return false;
     } catch (IOException e) {
       throw storage(e);
+    }
+  }
+
+  // The class loader would also load whatever the manifest's Class-Path names, none of it checked.
+  private static void checkManifest(Path jar, String path) throws DriverException {
+    try (var file = new JarFile(jar.toFile(), false)) {
+      var manifest = file.getManifest();
+      var classPath = manifest == null
+          ? null
+          : manifest.getMainAttributes().getValue(Attributes.Name.CLASS_PATH);
+      if (classPath != null && !classPath.isBlank()) {
+        throw new DriverException(CLASS_PATH_IN_MANIFEST, path);
+      }
+    } catch (IOException e) {
+      if (Thread.currentThread().isInterrupted()) {
+        throw new DriverException(CANCELLED, path, e);
+      }
+      throw new DriverException(NOT_A_DRIVER, "Not a JAR: " + path, e);
     }
   }
 
@@ -355,9 +434,7 @@ public final class DriverStore {
     var buffer = new byte[64 * 1024];
     long done = 0;
     while (true) {
-      if (Thread.currentThread().isInterrupted()) {
-        throw new DriverException(CANCELLED, path);
-      }
+      checkCancelled(path);
       int n;
       try {
         n = response.body().read(buffer);
@@ -401,8 +478,11 @@ public final class DriverStore {
   }
 
   private static DriverException network(String path, IOException e) {
-    return Thread.currentThread().isInterrupted()
-        ? new DriverException(CANCELLED, path, e)
+    if (Thread.currentThread().isInterrupted()) {
+      return new DriverException(CANCELLED, path, e);
+    }
+    return e instanceof ProtocolException
+        ? new DriverException(INVALID_RESPONSE, path, e)
         : new DriverException(NO_NETWORK, path, e);
   }
 
@@ -449,14 +529,27 @@ public final class DriverStore {
     }
   }
 
-  private static void deleteQuietly(Path path) {
-    if (path == null) {
+  // Renames the folder away first, so that no one finds it half deleted.
+  private static void discard(Path dir) throws IOException {
+    var trash = dir.resolveSibling("." + dir.getFileName() + "." + UUID.randomUUID() + ".deleted");
+    try {
+      Files.move(dir, trash, StandardCopyOption.ATOMIC_MOVE);
+    } catch (NoSuchFileException e) {
       return;
     }
-    try {
-      Files.deleteIfExists(path);
-    } catch (IOException e) {
-      // What cannot be deleted keeps its temporary name and is never loaded.
+    deleteTree(trash);
+  }
+
+  private static void deleteTree(Path dir) {
+    if (dir == null) {
+      return;
+    }
+    try (var paths = Files.walk(dir)) {
+      for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
+        Files.deleteIfExists(path);
+      }
+    } catch (IOException | UncheckedIOException e) {
+      // What is left keeps a name that starts with a dot and is never listed or loaded.
     }
   }
 }

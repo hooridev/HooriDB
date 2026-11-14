@@ -18,6 +18,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -26,7 +30,7 @@ class DriverStoreTest {
 
   private static final Driver DRIVER = FakeDriver.DRIVER;
   private static final Instant NOW = Instant.parse("2026-11-14T12:00:00Z");
-  private static final byte[] BYTES = "not really a jar".getBytes(StandardCharsets.UTF_8);
+  private static final byte[] BYTES = FakeDriver.plain(null);
 
   @TempDir
   Path temp;
@@ -86,7 +90,8 @@ class DriverStoreTest {
 
     assertEquals(
         new Recommended("42.7.11", false), store.recommended(DRIVER, NOW, Duration.ofDays(1)));
-    assertFailure(Failure.NOT_FOUND, () -> store.recommended(DRIVER, NOW, Duration.ofDays(60)));
+    assertFailure(
+        Failure.NO_RECOMMENDATION, () -> store.recommended(DRIVER, NOW, Duration.ofDays(60)));
   }
 
   @Test
@@ -105,10 +110,37 @@ class DriverStoreTest {
     repository.offline = false;
     repository.publish(DRIVER, "1.9.0", BYTES, Sum.SHA256, NOW);
     repository.publish(DRIVER, "1.10.0", BYTES, Sum.SHA256, NOW);
-    store.download(DRIVER, "1.9.0", DriverStore.Progress.NONE);
-    store.download(DRIVER, "1.10.0", DriverStore.Progress.NONE);
+    repository.publish(DRIVER, "1.11.0", BYTES, Sum.SHA256, NOW);
+    repository.publish(DRIVER, "2.0.0-rc1", BYTES, Sum.SHA256, NOW);
+    for (var version : List.of("1.9.0", "1.10.0", "1.11.0", "2.0.0-rc1")) {
+      store.download(DRIVER, version, DriverStore.Progress.NONE);
+    }
+    Files.write(
+        storage.resolve("dev.hoori.fake/fake-jdbc/1.11.0/fake-jdbc-1.11.0.jar"),
+        FakeDriver.plain("changed"));
     repository.offline = true;
     assertEquals(new Recommended("1.10.0", true), store.recommended(DRIVER, NOW));
+  }
+
+  @Test
+  void theNumberOfCandidatesIsBounded() throws Exception {
+    for (int i = 1; i <= 8; i++) {
+      repository.publish(DRIVER, "1." + i + ".0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(1)));
+    }
+    assertFailure(Failure.NO_RECOMMENDATION, () -> store.recommended(DRIVER, NOW));
+    assertEquals(DriverStore.MAX_CANDIDATES, repository.asked.size());
+  }
+
+  @Test
+  void aMalformedResponseIsInvalid() throws Exception {
+    repository.publish(DRIVER, "1.0.0", BYTES, Sum.SHA256, NOW);
+    repository.malformed.add("dev/hoori/fake/fake-jdbc/maven-metadata.xml");
+    assertFailure(Failure.INVALID_RESPONSE, () -> store.versions(DRIVER));
+    Files.writeString(
+        repository.root.resolve("dev/hoori/fake/fake-jdbc/1.0.0/fake-jdbc-1.0.0.jar.sha256"),
+        "not a checksum");
+    assertFailure(
+        Failure.INVALID_RESPONSE, () -> store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE));
   }
 
   @Test
@@ -145,10 +177,10 @@ class DriverStoreTest {
   }
 
   @Test
-  void aFileWithoutAChecksumIsNotFound() throws Exception {
+  void aFileWithoutAChecksumCannotBeVerified() throws Exception {
     repository.publish(DRIVER, "1.0.0", BYTES, Sum.NONE, NOW);
     assertFailure(
-        Failure.NOT_FOUND, () -> store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE));
+        Failure.NO_CHECKSUM, () -> store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE));
     assertEquals(List.of(), files());
   }
 
@@ -176,6 +208,102 @@ class DriverStoreTest {
       Thread.interrupted();
     }
     assertEquals(List.of(), files());
+  }
+
+  @Test
+  void anInterruptedThreadIsCancelledWithoutANetworkToo() throws Exception {
+    repository.publish(DRIVER, "1.0.0", FakeDriver.jar("1", temp), Sum.SHA256, NOW);
+    store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+    repository.offline = true;
+    Thread.currentThread().interrupt();
+    try {
+      assertFailure(
+          Failure.CANCELLED, () -> store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE));
+      assertFailure(Failure.CANCELLED, () -> store.load(DRIVER, "1.0.0"));
+      assertTrue(Thread.currentThread().isInterrupted());
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
+  @Test
+  void aJarWhoseManifestNamesAClassPathIsRefused() throws Exception {
+    repository.publish(DRIVER, "1.0.0", FakeDriver.plain("../../../other.jar"), Sum.SHA256, NOW);
+    assertFailure(
+        Failure.CLASS_PATH_IN_MANIFEST,
+        () -> store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE));
+    assertEquals(List.of(), files());
+
+    repository.publish(DRIVER, "2.0.0", FakeDriver.jar("2", temp), Sum.SHA256, NOW);
+    store.download(DRIVER, "2.0.0", DriverStore.Progress.NONE);
+    var stored = storage.resolve("dev.hoori.fake/fake-jdbc/2.0.0/fake-jdbc-2.0.0.jar");
+    var changed = FakeDriver.plain("other.jar");
+    Files.write(stored, changed);
+    Files.writeString(
+        stored.resolveSibling("fake-jdbc-2.0.0.jar.sha256"),
+        FolderRepository.hex("SHA-256", changed));
+    assertFailure(Failure.CLASS_PATH_IN_MANIFEST, () -> store.load(DRIVER, "2.0.0"));
+
+    repository.publish(
+        DRIVER, "3.0.0", "not a jar".getBytes(StandardCharsets.UTF_8), Sum.SHA256, NOW);
+    assertFailure(
+        Failure.NOT_A_DRIVER, () -> store.download(DRIVER, "3.0.0", DriverStore.Progress.NONE));
+  }
+
+  @Test
+  void twoDownloadsOfOneVersionAtOnceBothSucceedWithOneResult() throws Exception {
+    repository.publish(DRIVER, "1.0.0", FakeDriver.jar("1", temp), Sum.SHA256, NOW);
+    var started = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    var calls = new AtomicInteger();
+    repository.served = path -> {
+      if (path.endsWith(".jar") && calls.getAndIncrement() == 0) {
+        started.countDown();
+        try {
+          release.await();
+        } catch (InterruptedException e) {
+          throw new IllegalStateException(e);
+        }
+      }
+    };
+    try (var executor = Executors.newSingleThreadExecutor()) {
+      var first = executor.submit(() -> {
+        store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+        return null;
+      });
+      assertTrue(started.await(10, TimeUnit.SECONDS));
+      // The first download holds its bytes; the repository changes the file, and a second
+      // download finishes before the first does.
+      repository.publish(DRIVER, "1.0.0", FakeDriver.jar("2", temp), Sum.SHA256, NOW);
+      store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+      release.countDown();
+      first.get(10, TimeUnit.SECONDS);
+    }
+    assertEquals(List.of("fake-jdbc-1.0.0.jar", "fake-jdbc-1.0.0.jar.sha256"), files());
+    assertEquals(List.of("1.0.0"), entries());
+    try (var loaded = store.load(DRIVER, "1.0.0")) {
+      assertEquals("2", loaded.connect("jdbc:fake:x", new Properties()).getCatalog());
+    }
+  }
+
+  @Test
+  void aDeleteDuringADownloadDisturbsNeither() throws Exception {
+    repository.publish(DRIVER, "1.0.0", FakeDriver.jar("1", temp), Sum.SHA256, NOW);
+    store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+    var stored = storage.resolve("dev.hoori.fake/fake-jdbc/1.0.0/fake-jdbc-1.0.0.jar");
+    Files.write(stored, FakeDriver.plain("changed"));
+    store.download(DRIVER, "1.0.0", (done, total) -> {
+      try {
+        store.delete(DRIVER, "1.0.0");
+      } catch (DriverException e) {
+        throw new IllegalStateException(e);
+      }
+    });
+    assertEquals(List.of("fake-jdbc-1.0.0.jar", "fake-jdbc-1.0.0.jar.sha256"), files());
+    assertEquals(List.of("1.0.0"), entries());
+    try (var loaded = store.load(DRIVER, "1.0.0")) {
+      assertEquals("1", loaded.connect("jdbc:fake:x", new Properties()).getCatalog());
+    }
   }
 
   @Test
@@ -281,6 +409,12 @@ class DriverStoreTest {
           .map(path -> path.getFileName().toString())
           .sorted()
           .toList();
+    }
+  }
+
+  private List<String> entries() throws Exception {
+    try (var paths = Files.list(storage.resolve("dev.hoori.fake/fake-jdbc"))) {
+      return paths.map(path -> path.getFileName().toString()).sorted().toList();
     }
   }
 

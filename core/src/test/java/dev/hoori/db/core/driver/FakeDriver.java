@@ -1,10 +1,15 @@
 package dev.hoori.db.core.driver;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
 import javax.tools.ToolProvider;
 
 /** Builds the JAR of a made-up JDBC driver, compiled by the JDK's compiler. */
@@ -76,6 +81,24 @@ final class FakeDriver {
         jar.write(Files.readAllBytes(path));
         jar.closeEntry();
       }
+    }
+    return bytes.toByteArray();
+  }
+
+  /** A JAR with one text file, whose manifest names the class path, if there is one. */
+  static byte[] plain(String classPath) {
+    var manifest = new Manifest();
+    manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
+    if (classPath != null) {
+      manifest.getMainAttributes().put(Attributes.Name.CLASS_PATH, classPath);
+    }
+    var bytes = new ByteArrayOutputStream();
+    try (var jar = new JarOutputStream(bytes, manifest)) {
+      jar.putNextEntry(new JarEntry("hello.txt"));
+      jar.write("hello".getBytes(StandardCharsets.UTF_8));
+      jar.closeEntry();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
     }
     return bytes.toByteArray();
   }

@@ -3,6 +3,7 @@ package dev.hoori.db.core.driver;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
+import java.net.ProtocolException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -24,25 +25,33 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-/** A Maven repository over HTTPS, by default Maven Central. Plain HTTP is refused. */
+/**
+ * A Maven repository over HTTPS, by default Maven Central. Plain HTTP is refused, and so is a
+ * response the client cannot parse, with a {@link ProtocolException}.
+ */
 public final class MavenRepository implements Repository {
 
   public static final URI CENTRAL = URI.create("https://repo.maven.apache.org/maven2/");
 
   private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(15);
   // Bounds both the wait for a response's headers and any pause between bytes of its body.
+  // shortcut: a download that keeps trickling has no overall time limit, only one per pause; the
+  // user can cancel it. Add a deadline if slow mirrors become a problem.
   private static final Duration STALL_TIMEOUT = Duration.ofSeconds(30);
 
   private final URI base;
   private final HttpClient client;
 
   public MavenRepository(URI base) {
-    if (!"https".equals(base.getScheme())
-        || base.getRawAuthority() == null
-        || base.getRawUserInfo() != null
-        || base.getRawQuery() != null
-        || base.getRawFragment() != null) {
-      throw new IllegalArgumentException("A repository needs a plain https URL: " + base);
+    // The URL is never part of a message: it may carry a secret.
+    if (!"https".equals(base.getScheme()) || base.getRawAuthority() == null) {
+      throw new IllegalArgumentException("A repository URL must be https with a host");
+    }
+    if (base.getRawUserInfo() != null) {
+      throw new IllegalArgumentException("A repository URL must not carry a user or password");
+    }
+    if (base.getRawQuery() != null || base.getRawFragment() != null) {
+      throw new IllegalArgumentException("A repository URL must not have a query or fragment");
     }
     this.base = base.getRawPath().endsWith("/") ? base : URI.create(base + "/");
     // NORMAL follows redirects, but never one from HTTPS to HTTP.
@@ -58,22 +67,31 @@ public final class MavenRepository implements Repository {
 
   @Override
   public Response open(String path) throws IOException, InterruptedException {
-    var response =
-        client.send(request(path).GET().build(), HttpResponse.BodyHandlers.ofPublisher());
+    var response = send(path, request(path).GET(), HttpResponse.BodyHandlers.ofPublisher());
     var body = new Body();
     response.body().subscribe(body);
     if (response.statusCode() != 200) {
       body.close();
       throw failure(path, response.statusCode());
     }
-    return new Response(
-        body, response.headers().firstValueAsLong("Content-Length").orElse(-1));
+    long length;
+    try {
+      length = response.headers().firstValueAsLong("Content-Length").orElse(-1);
+    } catch (NumberFormatException e) {
+      length = -2;
+    }
+    if (length < -1) {
+      body.close();
+      throw new ProtocolException("The repository sent a bad length for " + path);
+    }
+    return new Response(body, length);
   }
 
   @Override
   public Optional<Instant> published(String path) throws IOException, InterruptedException {
-    var response = client.send(
-        request(path).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(),
+    var response = send(
+        path,
+        request(path).method("HEAD", HttpRequest.BodyPublishers.noBody()),
         HttpResponse.BodyHandlers.discarding());
     if (response.statusCode() != 200) {
       throw failure(path, response.statusCode());
@@ -95,6 +113,20 @@ public final class MavenRepository implements Repository {
       throw new IllegalArgumentException("Not a path under the repository: " + path);
     }
     return uri;
+  }
+
+  private <T> HttpResponse<T> send(
+      String path, HttpRequest.Builder request, HttpResponse.BodyHandler<T> handler)
+      throws IOException, InterruptedException {
+    try {
+      return client.send(request.build(), handler);
+    } catch (IllegalArgumentException e) {
+      // The request is well formed, so this is the client refusing the response, such as one
+      // whose Content-Length is no number or does not fit a long.
+      var malformed = new ProtocolException("The repository sent a malformed response for " + path);
+      malformed.initCause(e);
+      throw malformed;
+    }
   }
 
   private HttpRequest.Builder request(String path) {

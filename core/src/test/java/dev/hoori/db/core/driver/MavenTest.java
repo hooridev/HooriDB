@@ -134,8 +134,11 @@ class MavenTest {
         "ftp://example.com/",
         "https://user:secret@example.com/maven2/",
         "https://example.com/maven2/?a=b",
+        "https://example.com/maven2/#secret",
         "https:/maven2/")) {
-      assertThrows(IllegalArgumentException.class, () -> new MavenRepository(URI.create(url)), url);
+      var e = assertThrows(
+          IllegalArgumentException.class, () -> new MavenRepository(URI.create(url)), url);
+      assertFalse(e.getMessage().contains("secret") || e.getMessage().contains("example"), url);
     }
     var central = MavenRepository.central();
     assertEquals(
