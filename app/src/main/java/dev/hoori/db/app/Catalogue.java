@@ -897,13 +897,13 @@ final class Catalogue {
    * ends its consoles' sessions, after their questions where something may be open in them.
    */
   void disconnect(State s, UUID id) {
-    disconnect(s, id, () -> {});
+    disconnect(s, new State.Act("disconnect", id), id, () -> {});
   }
 
-  private void disconnect(State s, UUID id, Runnable then) {
+  private void disconnect(State s, State.Act act, UUID id, Runnable then) {
     var profile = s.profile(id);
     var name = profile == null ? "the connection" : State.name(profile);
-    if (s.asks(id, name + " disconnects", s.consoles(id), () -> disconnect(s, id, then))) {
+    if (s.asks(act, name + " disconnects", s.consoles(id), () -> disconnect(s, act, id, then))) {
       return;
     }
     var live = lives.get(id);
@@ -1023,10 +1023,24 @@ final class Catalogue {
       return;
     }
     // Its consoles' sessions end too, as their connection changes or goes.
-    disconnect(s, profile.id(), () -> go(s, profile, then));
+    disconnect(s, act(profile, then), profile.id(), () -> go(s, profile, then));
   }
 
+  /** Edit's or Delete's act, which its disconnect asks for. */
+  private static State.Act act(ConnectionProfile profile, Then then) {
+    return then == Then.DELETE ? State.deleteAct(profile) : new State.Act("edit", profile.id());
+  }
+
+  /**
+   * The edit or the delete, once disconnected: refused where a dialog was opened meanwhile, as
+   * while a console's question waited, which it would replace.
+   */
   private static void go(State s, ConnectionProfile profile, Then then) {
+    if (s.dialogOpen()) {
+      s.tell("Another dialog is open, so " + State.name(profile) + " was not "
+          + (then == Then.EDIT ? "opened for editing." : "asked about deleting."));
+      return;
+    }
     switch (then) {
       case EDIT -> s.edit(profile);
       case DELETE -> s.askDelete(profile);
@@ -1037,7 +1051,7 @@ final class Catalogue {
   void disconnectAndGo(State s) {
     var d = disconnecting;
     disconnecting = null;
-    disconnect(s, d.profile().id(), () -> go(s, d.profile(), d.then()));
+    disconnect(s, act(d.profile(), d.then()), d.profile().id(), () -> go(s, d.profile(), d.then()));
   }
 
   /** Copy name: the node's own name, without its type. */

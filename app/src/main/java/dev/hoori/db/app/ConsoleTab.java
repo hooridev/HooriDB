@@ -52,13 +52,14 @@ import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
@@ -77,11 +78,14 @@ import java.util.regex.Pattern;
  * <ul>
  *   <li>What is at stake is one test, {@link #atStake}: an outcome in doubt until read; a call
  *       that may change data or the transaction for its whole life; a question to the server; a
- *       transaction the server did not say is closed, with a change in it. A plain read ({@link
- *       #reads}, an allowlist per provider) is none; any other statement is read to its end in one
- *       call, so that none is ever left open between calls.
- *   <li>The mode is verified, or the statement is not sent ({@link #start}): by the server's word
- *       on MariaDB and MySQL, pgjdbc's on PostgreSQL. Auto-commit changes only in {@link
+ *       transaction the server did not say is closed, with a change in it. Only a plain read
+ *       ({@link #reads}, a short allowlist) in Auto with nothing open is read as the grid scrolls,
+ *       and is none; every other statement, and every one in Manual or in a transaction, is read
+ *       to its end in its one call, so that none is ever left open inside a transaction.
+ *   <li>Each call gives up first what is still open on the session and reads its status fresh
+ *       ({@link #after}, {@link #start}); nothing the app's thread believed authorises it. The
+ *       mode is verified, or the statement is not sent: by the server's word on MariaDB and
+ *       MySQL, pgjdbc's on PostgreSQL. Auto-commit changes only in {@link
  *       #setMode}, where the server has just said that nothing is open; the mode shown follows the
  *       session's. A driver that cannot say makes Manual unavailable.
  *   <li>Committed is said only where the server answered so, after it said a transaction was
@@ -92,7 +96,7 @@ import java.util.regex.Pattern;
  *       change something runs; neither twice at once.
  *   <li>Every act that would end the session or its transaction asks first, through {@link
  *       State#asks}; one act waits at most, and once armed it locks the consoles it concerns.
- * </ul>
+ *       Every statement and portion goes to the session through one gate ({@link #gate}).
  * </ul>
  */
 final class ConsoleTab implements Tab {
@@ -116,7 +120,7 @@ final class ConsoleTab implements Tab {
     final List<List<Object>> rows = new ArrayList<>();
     boolean more; // its statement has more rows of it, read as the grid scrolls on
     boolean cut; // rows were left unread, as the session went on to something else
-    boolean dropped; // rows beyond those kept were read and not kept
+    long dropped; // rows beyond those kept, read to the statement's end and not kept
     boolean pinned; // the next run leaves it
     float[] widths;
     final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
@@ -156,10 +160,10 @@ final class ConsoleTab implements Tab {
   record Check(Lane lane, int at) {}
 
   /**
-   * What a statement's call read: a portion, or all of them as one for a statement that is not a
-   * plain read, which is read to its end; whether rows of it were read and not kept.
+   * What a statement's call read: its first portion where it was read lazily, else all of it as
+   * one; for each of the portion's results, how many of its rows were read and not kept.
    */
-  record Ran(Portion portion, boolean dropped) {}
+  record Ran(Portion portion, List<Long> dropped, boolean lazy) {}
 
   /**
    * Commit's or Rollback's call: the transaction the server said before a COMMIT, null before a
@@ -205,6 +209,9 @@ final class ConsoleTab implements Tab {
   Split.Position split = SPLIT;
   final Menu.State databases = new Menu.State();
   private Lane lane; // the session, or null until it is needed
+  // Tells the app, from the thread that closes the session, that the commit of what its last
+  // statement changed failed as the session ended: the statement's first words and the failure.
+  private BiConsumer<String, String> notKept;
   private char[] password; // its copy, which checks what the server says; wiped with the session
   LoadedDriver driver; // the session's, from when it is opened until it is closed
   // The statement that may still have the session, from when it is asked to run until a portion
@@ -248,13 +255,14 @@ final class ConsoleTab implements Tab {
   // to its end, or Commit, Rollback, a switch of auto-commit or of the database. Cut short or
   // lost, what it did is not known.
   private boolean writes;
+  // The call is a plain read ({@link #reads}): read whole in a transaction, and at stake while it
+  // runs there, but what it did, cut short, is the transaction's, which the server says.
+  private boolean plain;
   String unavailable; // why Manual is not to be had on this session, or null
   // The session has the console's mode, as a statement sent on it or a switch confirmed: from then
   // on the mode shown follows the session's, before it the user's choice stands.
   private boolean applied;
-  // The session's status as last confirmed on its lane, while nothing since may have changed it:
-  // the lane's own, read and written there only.
-  private AtomicReference<Status> known;
+  private String openSql; // the read whose rest is still to be read, or given up
   // Why the outcome of what may have ended the transaction is not known, until the user has read
   // it; null for nothing in doubt.
   String doubt;
@@ -398,7 +406,7 @@ final class ConsoleTab implements Tab {
   /** Runs the next statement of the run, on the session; its rows before are left as read. */
   private void next(State s) {
     var sql = queue.poll();
-    if (sql == null) {
+    if (sql == null || !gate(s, sql)) {
       return;
     }
     var lane = session(s);
@@ -406,22 +414,24 @@ final class ConsoleTab implements Tab {
       queue.clear();
       return;
     }
-    leave(s);
+    leave();
     running = sql;
-    boolean read = reads(sql, s.profile(id).provider());
-    writes = !read;
+    var provider = s.profile(id).provider();
+    // Only a plain read in Auto with nothing open may stay open between calls; the lane call
+    // decides that from the server's word, and all else is read to its end, at stake meanwhile.
+    boolean lazy = reads(sql, provider) && mode == Mode.AUTO && transaction == Transaction.NONE;
+    writes = !lazy;
+    plain = reads(sql, provider);
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
     empty = false;
     var held = new AtomicReference<Servers.Run>();
     sent = held;
-    open = read ? held : null; // a statement that is not a plain read is read to its end
     var mode = this.mode;
-    var known = this.known;
     work = ask(
         s,
         "run a statement",
-        link -> start(link, sql, mode, read, held, known),
+        link -> start(link, sql, mode, lazy, held, KEPT),
         ran -> {
           work = null;
           ran(s, sql, ran);
@@ -435,6 +445,34 @@ final class ConsoleTab implements Tab {
             failed(s, sql, error);
           }
         });
+    open = held; // after ask, which gives up the one open before
+    openSql = sql;
+  }
+
+  /**
+   * The one gate before the user's work goes to the session: a statement, a first one that waited
+   * for its connection, the next of a Run all, or, with a null {@code sql}, a further portion of
+   * rows. Not while an act holds its connection or a question about this console waits. A
+   * statement held back is refused, and the run stops there; a portion is read once the grid asks
+   * again.
+   */
+  private boolean gate(State s, String sql) {
+    var why = s.locked(this);
+    var pending = s.pending;
+    if (why == null && pending != null && !pending.armed() && pending.console() == this) {
+      why = "A question about this console waits for its answer";
+    }
+    if (why == null) {
+      return true;
+    }
+    if (sql == null) {
+      return false;
+    }
+    queue.clear();
+    failedRun = true;
+    problem = new Problem("Not run", why + ": nothing more runs until that is done.");
+    log.add(new Logged(Level.ERROR, brief(sql), null, "Not run"));
+    return false;
   }
 
   /** The session, opened now where it is not; null while the tree's connection is not connected. */
@@ -447,54 +485,61 @@ final class ConsoleTab implements Tab {
       lane = session.lane();
       driver = session.driver();
       password = session.password();
-      known = new AtomicReference<>(); // nothing confirmed of a new session
+      var name = State.name(s.profile(id));
+      var app = s.app;
+      notKept = (sql, said) -> app.post(() -> s.notKept(name, sql, said));
     }
     return lane;
   }
 
   /**
-   * Waits for a call on the session off the app's thread; once its result or failure is taken,
-   * the question sees whether what it asked about may go on.
+   * The one way the console's calls reach the session: in the same lane call, the read still open
+   * on it is given up first, and what that failed with is said; then the call, which reads the
+   * session's status itself, as nothing the app's thread believed authorises anything on it. Once
+   * its result or failure is taken, the question sees whether what it waits for may go on.
    */
   private <T> Lane.Asked ask(
       State s, String what, Lane.Call<T> call, Consumer<T> done, Consumer<Exception> failed) {
+    var leftSql = openSql;
+    open = null; // given up on the lane, also where this call never starts
+    var gaveUp = new AtomicReference<Failure>();
     return lane.ask(
         s.app,
         what,
         Lane.Priority.VIEW,
-        call,
+        link -> after(link, gaveUp, call),
         value -> {
+          gaveUp(s, leftSql, gaveUp.get());
           done.accept(value);
           settle(s);
         },
         error -> {
+          gaveUp(s, leftSql, gaveUp.get());
           failed.accept(error);
           settle(s);
         });
   }
 
-  // On the lane: what the console's calls do with the session.
-
   /**
-   * The session's status as last confirmed on the lane, where nothing may have changed it since;
-   * else as the server says it now. Taken: whatever runs next confirms it anew, or leaves it
-   * unknown.
+   * The lane call of every console call but a further portion, as one unit: the statement still
+   * open on the session is given up first, whatever the app's thread knew of it, and what that
+   * failed with is kept in {@code gaveUp}; then the call.
    */
-  private static Status status(Servers.Link link, AtomicReference<Status> known)
-      throws QueryException {
-    var now = known.getAndSet(null);
-    return now != null ? now : link.status();
+  static <T> T after(Servers.Link link, AtomicReference<Failure> gaveUp, Lane.Call<T> call)
+      throws Exception {
+    gaveUp.set(link.giveUp().orElse(null));
+    return call.call(link);
   }
 
-  /** What the portion confirms of the session, for the next call; nothing while rows are to come. */
-  private static void confirm(Portion portion, AtomicReference<Status> known) {
-    known.set(
-        portion.more()
-                || portion.transaction() == Transaction.UNKNOWN
-                || portion.autoCommit() == null
-            ? null
-            : new Status(portion.transaction(), portion.autoCommit()));
+  /** What giving up a read's rest failed with, as a commit of what it did, the console says. */
+  private void gaveUp(State s, String sql, Failure failure) {
+    if (failure != null) {
+      heard(Level.ERROR, sql, null, "Giving up the rest failed: " + failure.message());
+      fail(s, failure);
+    }
   }
+
+  // On the lane: what the console's calls do with the session.
 
   /**
    * The one place where the session's auto-commit changes, as JDBC commits a transaction that is
@@ -502,12 +547,13 @@ final class ConsoleTab implements Tab {
    * where the one open is empty, the server's own begun as the user's Commit or Rollback ended
    * theirs. Done where the session has the mode afterwards, by the server's word.
    */
-  static Switched setMode(
-      Servers.Link link, boolean manual, boolean empty, AtomicReference<Status> known)
+  static Switched setMode(Servers.Link link, boolean manual, boolean empty) throws QueryException {
+    return setMode(link, manual, empty, link.status());
+  }
+
+  private static Switched setMode(Servers.Link link, boolean manual, boolean empty, Status now)
       throws QueryException {
-    var now = status(link, known);
     if (now.autoCommit() != null && now.autoCommit() == !manual) {
-      known.set(now);
       return new Switched(true, now);
     }
     if (now.autoCommit() == null
@@ -517,34 +563,33 @@ final class ConsoleTab implements Tab {
     }
     link.manual(manual);
     now = link.status();
-    boolean done = now.autoCommit() != null && now.autoCommit() == !manual;
-    known.set(done ? now : null);
-    return new Switched(done, now);
+    return new Switched(now.autoCommit() != null && now.autoCommit() == !manual, now);
   }
 
   /**
-   * A statement on the session, sent only where the session is known to have the mode shown: by
-   * the server's word on MariaDB and MySQL, by pgjdbc's on PostgreSQL, taken from what the last
-   * call confirmed or asked anew. A session without it takes it where nothing is open; else the
+   * A statement on the session, as one lane call. It reads the session's status fresh, by the
+   * server's word on MariaDB and MySQL and by pgjdbc's on PostgreSQL, and is sent only where the
+   * session has the mode shown; a session without it takes it where nothing is open, else the
    * statement is not sent. Auto runs also where the driver cannot say, as nothing then stays open
-   * that the console would not ask about. A plain read gives its first portion and the rest as the
-   * grid scrolls; any other statement is read to its end in this one call, so that no execution
-   * of one is ever left open between calls.
+   * that the console would not ask about. A plain read asked for lazily, in Auto with nothing open
+   * by the server's word, gives its first portion and the rest as the grid scrolls; any other
+   * statement is read to its end here, so that no execution is ever left open inside a
+   * transaction or of anything that may change data, keeping at most {@code keep} rows a result.
    */
   static Ran start(
       Servers.Link link,
       String sql,
       Mode mode,
-      boolean read,
+      boolean lazy,
       AtomicReference<Servers.Run> held,
-      AtomicReference<Status> known)
-      throws QueryException, NotRun {
-    var now = status(link, known);
+      int keep)
+      throws QueryException, NotRun, InterruptedException {
+    var now = link.status();
     if (now.autoCommit() == null && mode == Mode.MANUAL) {
       throw new NotRun(UNVERIFIABLE, now, true);
     }
     if (now.autoCommit() != null && now.autoCommit() != (mode == Mode.AUTO)) {
-      var switched = setMode(link, mode == Mode.MANUAL, false, new AtomicReference<>(now));
+      var switched = setMode(link, mode == Mode.MANUAL, false, now);
       if (!switched.done()) {
         throw new NotRun(
             "The session's auto-commit is "
@@ -555,53 +600,60 @@ final class ConsoleTab implements Tab {
             switched.now(),
             false);
       }
+      now = switched.now();
     }
     var run = link.run(sql);
-    held.set(run);
-    var portions = new ArrayList<Portion>();
-    Portion portion;
-    do {
-      portion = run.next(PORTION);
-      portions.add(portion);
-    } while (!read && portion.more());
-    confirm(portion, known);
-    return merged(portions);
+    held.set(run); // sent: cut short now, what it did is in doubt; and the rest as the grid scrolls
+    var first = run.next(PORTION);
+    if (lazy && Boolean.TRUE.equals(now.autoCommit()) && now.transaction() == Transaction.NONE) {
+      return new Ran(first, Collections.nCopies(first.results().size(), 0L), true);
+    }
+    return drained(run, first, keep);
   }
 
   /**
-   * The portions of a statement read to its end as one: rows of a result that go on joined, and
-   * those beyond {@link #KEPT} not kept.
+   * Reads the statement to its end: rows of a result that go on joined as they come, at most
+   * {@code keep} of each result kept and those beyond dropped as they arrive, counted. An interrupt
+   * ends it, as core cancels the statement on the server and gives no more.
    */
-  static Ran merged(List<Portion> portions) {
+  static Ran drained(Servers.Run run, Portion first, int keep) throws InterruptedException {
     var results = new ArrayList<Result>();
+    var dropped = new ArrayList<Long>();
     var messages = new ArrayList<Message>();
     var took = Duration.ZERO;
-    long kept = 0;
-    boolean dropped = false;
-    for (var portion : portions) {
+    var portion = first;
+    while (true) {
       took = took.plus(portion.elapsed());
       messages.addAll(portion.messages());
       for (var result : portion.results()) {
-        if (result instanceof Result.Rows r) {
-          int room = (int) Math.max(0, Math.min(r.rows().size(), KEPT - kept));
-          dropped |= room < r.rows().size();
-          kept += room;
-          var rows = r.rows().subList(0, room);
-          if (r.from() > 0 && !results.isEmpty() && results.getLast() instanceof Result.Rows last) {
-            var joined = new ArrayList<>(last.rows());
-            joined.addAll(rows);
-            results.set(results.size() - 1, new Result.Rows(last.fields(), last.from(), joined));
-            continue;
-          }
-          result = new Result.Rows(r.fields(), r.from(), rows);
+        if (!(result instanceof Result.Rows r)) {
+          results.add(result);
+          dropped.add(0L);
+          continue;
         }
-        results.add(result);
+        int at = results.size() - 1;
+        if (r.from() == 0 || at < 0 || !(results.get(at) instanceof Result.Rows)) {
+          results.add(new Result.Rows(r.fields(), 0, new ArrayList<>()));
+          dropped.add(0L);
+          at++;
+        }
+        var kept = ((Result.Rows) results.get(at)).rows();
+        int room = Math.max(0, Math.min(r.rows().size(), keep - kept.size()));
+        kept.addAll(r.rows().subList(0, room));
+        dropped.set(at, dropped.get(at) + r.rows().size() - room);
       }
+      if (!portion.more()) {
+        break;
+      }
+      if (Thread.currentThread().isInterrupted()) {
+        throw new InterruptedException(); // Cancel, also where core did not notice it
+      }
+      portion = run.next(PORTION);
     }
-    var last = portions.getLast();
     return new Ran(
-        new Portion(results, messages, last.more(), took, last.transaction(), last.autoCommit()),
-        dropped);
+        new Portion(results, messages, false, took, portion.transaction(), portion.autoCommit()),
+        dropped,
+        false);
   }
 
   /**
@@ -609,51 +661,43 @@ final class ConsoleTab implements Tab {
    * transaction is open: PostgreSQL answers one in a failed transaction by rolling it back, without
    * an error, and MariaDB and MySQL roll one back by themselves, as after a deadlock.
    */
-  static Ended finish(Servers.Link link, String sql, AtomicReference<Status> known)
-      throws QueryException {
-    known.set(null);
+  static Ended finish(Servers.Link link, String sql) throws QueryException {
     Transaction before = null;
     if (sql.equals(COMMIT)) {
       var now = link.status();
       before = now.transaction();
       if (before != Transaction.OPEN) {
-        known.set(now);
         return new Ended(before, null);
       }
     }
     var run = link.run(sql);
     try {
-      var portion = run.next(1);
-      confirm(portion, known);
-      return new Ended(before, portion);
+      return new Ended(before, run.next(1));
     } finally {
       run.close();
     }
   }
 
-  // First words of statements that only read, by provider: anything else may change data or the
-  // transaction, by itself, inside or with an implicit commit, and is treated as such.
-  private static final Set<String> READS_POSTGRESQL =
-      Set.of("SELECT", "SHOW", "EXPLAIN", "VALUES", "TABLE");
-  private static final Set<String> READS_MYSQL =
-      Set.of("SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "VALUES", "TABLE");
-  // Words that make such a statement write: SELECT … INTO makes a table on PostgreSQL and sets
-  // variables or writes a file on MariaDB and MySQL; EXPLAIN ANALYZE runs what it explains.
-  private static final Pattern WRITING =
-      Pattern.compile("\\b(INTO|ANALYZE|ANALYSE)\\b", Pattern.CASE_INSENSITIVE);
+  // First words of statements that only read, the same on every provider; anything else may change
+  // data or the transaction, by itself, inside or with an implicit commit, and is treated as such.
+  // SELECT reads, but for what a function it calls does, which no word tells, and INTO, below.
+  // SHOW reads settings and the catalogue, on PostgreSQL, MariaDB and MySQL alike. VALUES and
+  // TABLE are a SELECT's own forms. EXPLAIN is not on it: its options, ANALYZE however spelt,
+  // run what it explains; nor DESCRIBE and DESC, the same statement on MariaDB and MySQL.
+  private static final Set<String> READS = Set.of("SELECT", "SHOW", "VALUES", "TABLE");
+  // A word that makes a read write: SELECT … INTO makes a table on PostgreSQL and sets variables or
+  // writes a file on MariaDB and MySQL. A keyword cannot be quoted, so no spelling hides it.
+  private static final Pattern WRITING = Pattern.compile("\\bINTO\\b", Pattern.CASE_INSENSITIVE);
 
   /**
-   * Whether the statement is a plain read, which changes neither data nor the transaction: its
-   * first word is on the provider's read list, and no word of it makes it write. A statement
-   * taken for a change that is none costs a needless caution; the other way would cost data, so
-   * the list is short.
+   * Whether the statement is a plain read: its first word is on the read list, and no word of it
+   * makes it write. Only ever conservative: a statement taken for a change that is none costs a
+   * needless caution.
    */
   static boolean reads(String sql, Provider provider) {
     var word = Statements.firstWord(sql, provider).toUpperCase(Locale.ROOT);
-    var list = provider == Provider.POSTGRESQL ? READS_POSTGRESQL : READS_MYSQL;
-    // shortcut: a word in a literal or comment makes a read count as a change, a needless caution;
-    // a function a SELECT calls that writes is not seen, which only the server could tell.
-    return list.contains(word) && !WRITING.matcher(sql).find();
+    // shortcut: INTO in a literal or comment makes a read count as a change, a needless caution.
+    return READS.contains(word) && !WRITING.matcher(sql).find();
   }
 
   // A statement that ends the transaction when it ends well, as Commit and Rollback do; a ROLLBACK
@@ -671,29 +715,10 @@ final class ConsoleTab implements Tab {
   }
 
   /**
-   * The statement whose rows went on ends, on the session before what comes next; the rows read of
-   * it stay. Where giving it up failed, as a commit of what it changed, the console says so.
+   * The read whose rows went on stops showing more; the next call on the session gives it up
+   * ({@link #ask}). The rows read of it stay.
    */
-  private void leave(State s) {
-    if (open != null) {
-      var held = open;
-      var sql = running;
-      // Behind the call that ran it, whether that ended, was cancelled, or was never delivered.
-      lane.ask(
-          s.app,
-          "give up the rest of the rows",
-          Lane.Priority.VIEW,
-          link -> {
-            var run = held.getAndSet(null);
-            return run == null ? Optional.<Failure>empty() : run.close();
-          },
-          failure -> failure.ifPresent(f -> {
-            heard(Level.ERROR, sql, null, "Giving up the rest failed: " + f.message());
-            fail(s, f);
-          }),
-          error -> {});
-      open = null;
-    }
+  private void leave() {
     if (reading != null && reading.more) {
       reading.more = false;
       reading.cut = true;
@@ -708,25 +733,25 @@ final class ConsoleTab implements Tab {
     statements++;
     took = took.plus(portion.elapsed());
     var before = outputs.size();
-    learn(portion, !writes);
+    learn(portion, ran.lazy());
     follow(portion.autoCommit());
-    if (writes && failure == null && ends(sql)) {
+    if (changes() && failure == null && ends(sql)) {
       empty = true; // what is open after a typed COMMIT or ROLLBACK, the server began by itself
     }
     inTransaction = transaction == Transaction.NONE ? 0 : inTransaction + 1;
-    take(sql, portion);
-    if (ran.dropped() && before < outputs.size()) {
-      outputs.getLast().dropped = true;
-    }
+    take(sql, portion, ran.dropped());
     if (before < outputs.size()) {
       shown = outputs.get(before);
     }
     heard(failure == null ? Level.RAN : Level.ERROR, sql, portion.elapsed(), outcome(portion));
     messages(portion);
+    if (incomplete(portion)) {
+      partly(s, sql);
+    }
     if (failure != null) {
       queue.clear();
       failedRun = true;
-      if (writes && failure.kind() == Failure.Kind.CONNECTION_LOST) {
+      if (changes() && failure.kind() == Failure.Kind.CONNECTION_LOST) {
         doubt(sql, "the connection was lost while it ran");
       }
       fail(s, failure);
@@ -780,9 +805,14 @@ final class ConsoleTab implements Tab {
       return;
     }
     var failure = failure(portion);
+    boolean partly = incomplete(portion);
     var done = sql.equals(COMMIT)
-        ? "Committed"
-        : doubt == null ? "Rolled back" : "ROLLBACK ran; what is in doubt still is";
+        ? portion.messages().isEmpty() ? "Committed" : "Committed, with warnings"
+        : partly
+            ? "Rolled back in part"
+            : doubt != null
+                ? "ROLLBACK ran; what is in doubt still is"
+                : portion.messages().isEmpty() ? "Rolled back" : "Rolled back, with warnings";
     heard(
         failure == null ? Level.RAN : Level.ERROR,
         sql,
@@ -796,6 +826,9 @@ final class ConsoleTab implements Tab {
       empty = true;
       inTransaction = 0;
       say(s, done);
+      if (partly) {
+        partly(s, sql);
+      }
     } else if (failure.kind() == Failure.Kind.CONNECTION_LOST && sql.equals(COMMIT)) {
       doubt(sql, "the connection was lost while it committed");
       closeSession();
@@ -813,6 +846,26 @@ final class ConsoleTab implements Tab {
     if (transaction == Transaction.UNKNOWN && lane != null) {
       check(s);
     }
+  }
+
+  // MariaDB's and MySQL's warning that changes to tables outside transactions, as MyISAM ones,
+  // could not be rolled back: ER_WARNING_NOT_COMPLETE_ROLLBACK.
+  static final int NOT_ROLLED_BACK = 1196;
+
+  /** Whether the server said that a rollback, typed or Rollback's, left changes in place. */
+  private static boolean incomplete(Portion portion) {
+    return portion.messages().stream().anyMatch(m -> m.code() == NOT_ROLLED_BACK);
+  }
+
+  static final String PARTLY = "Rolled back in part";
+
+  /** A rollback left changes in place: the results area says so until the next run. */
+  private void partly(State s, String sql) {
+    problem = new Problem(
+        PARTLY,
+        brief(sql) + " could not undo everything: changes to tables that keep no transactions,"
+            + " such as MyISAM ones, stay as they were made. Check those tables.");
+    log.add(new Logged(Level.ERROR, brief(sql), null, PARTLY));
   }
 
   static final String UNSURE = "The outcome is not known";
@@ -880,15 +933,10 @@ final class ConsoleTab implements Tab {
   private void check(State s) {
     var asked = new Check(lane, ++learned);
     probing = asked;
-    var known = this.known;
     probe = ask(
         s,
         "ask for the transaction",
-        link -> {
-          var now = link.status();
-          known.set(now.autoCommit() == null ? null : now);
-          return now;
-        },
+        Servers.Link::status,
         now -> probed(asked, now),
         e -> probed(s, asked, e));
   }
@@ -933,20 +981,23 @@ final class ConsoleTab implements Tab {
   }
 
   /** Puts the portion's results in tabs: rows from a position on go on with the result before. */
-  private void take(String sql, Portion portion) {
-    for (var result : portion.results()) {
+  private void take(String sql, Portion portion, List<Long> dropped) {
+    var results = portion.results();
+    for (int i = 0; i < results.size(); i++) {
+      var result = results.get(i);
       switch (result) {
         case Result.Rows r when r.from() > 0 && reading != null -> reading.rows.addAll(r.rows());
         case Result.Rows r -> {
           finished();
-          var output = new Output(++results, sql, r.fields(), 0);
+          var output = new Output(++this.results, sql, r.fields(), 0);
           output.rows.addAll(r.rows());
+          output.dropped = dropped == null ? 0 : dropped.get(i);
           outputs.add(output);
           reading = output;
         }
         case Result.Count c -> {
           finished();
-          outputs.add(new Output(++results, sql, null, c.count()));
+          outputs.add(new Output(++this.results, sql, null, c.count()));
         }
         case Failure f -> {}
       }
@@ -1009,7 +1060,7 @@ final class ConsoleTab implements Tab {
       text.append("\nHint: ").append(f.hint());
     }
     // What may have changed something leaves it in doubt, not gone.
-    var gone = f.kind() == Failure.Kind.CONNECTION_LOST && !writes ? gone() : null;
+    var gone = f.kind() == Failure.Kind.CONNECTION_LOST && !changes() ? gone() : null;
     if (gone != null) {
       text.append('\n').append(gone);
     }
@@ -1105,26 +1156,30 @@ final class ConsoleTab implements Tab {
    * where its statement has more.
    */
   void want(State s, Output output, int first, int last) {
-    if (output != reading || !output.more || work != null || last < output.rows.size() - 50) {
-      return;
+    if (output != reading
+        || !output.more
+        || work != null
+        || last < output.rows.size() - 50
+        || !gate(s, null)) {
+      return; // asked again once the grid builds these rows anew
     }
     var held = open;
     var sql = running;
-    var known = this.known;
-    // leave() clears it only after this; only a plain read is read so, a portion at a time
-    writes = false;
-    work = ask(
-        s,
+    writes = false; // only a plain read in Auto, with nothing open, is read so
+    plain = true;
+    // Straight on the lane, as the read goes on rather than being given up.
+    work = lane.ask(
+        s.app,
         "read rows",
-        link -> {
-          var portion = held.get().next(PORTION);
-          confirm(portion, known);
-          return portion;
-        },
+        Lane.Priority.VIEW,
+        link -> held.get().next(PORTION),
         portion -> {
           work = null;
+          if (!portion.more()) {
+            open = null; // over: nothing is left to give up
+          }
           int before = outputs.size();
-          take(sql, portion);
+          take(sql, portion, null);
           learn(portion, true);
           follow(portion.autoCommit());
           messages(portion);
@@ -1139,10 +1194,12 @@ final class ConsoleTab implements Tab {
           if (transaction == Transaction.UNKNOWN && !portion.more() && lane != null) {
             check(s);
           }
+          settle(s);
         },
         error -> {
           work = null;
           failed(s, sql, error);
+          settle(s);
         });
   }
 
@@ -1165,7 +1222,7 @@ final class ConsoleTab implements Tab {
     }
     stop();
     queue.clear();
-    leave(s); // the statement may have finished its portion, which then never arrives
+    leave(); // the statement may have finished its portion, which then never arrives
     if (switching != null) {
       // Whether a switch cut short took effect cannot be known: the next run connects anew, to the
       // database the tab names. Nothing was at stake, as it asked first.
@@ -1175,7 +1232,7 @@ final class ConsoleTab implements Tab {
     cancelled = true;
     log.add(new Logged(Level.WARNING, brief(running), null, "Cancelled"));
     // Not where it was never sent, as one cancelled while the session opened.
-    if (writes && !firm && sent.get() != null) {
+    if (changes() && !firm && sent.get() != null) {
       doubt(running, "it was cancelled");
     }
     if (lane != null) {
@@ -1207,7 +1264,7 @@ final class ConsoleTab implements Tab {
       return;
     }
     if (s.asks(
-        this,
+        new State.Act("switch the database to " + name, this),
         "it switches to " + (name.isEmpty() ? "no database" : name),
         List.of(this),
         () -> use(s, name))) {
@@ -1219,17 +1276,16 @@ final class ConsoleTab implements Tab {
       database = name;
       return;
     }
-    leave(s);
+    leave();
     switching = name;
     running = "Database " + name;
     writes = true;
+    plain = false;
     sent = new AtomicReference<>(); // no statement of the user's
-    var known = this.known;
     work = ask(
         s,
         "switch the database",
         link -> {
-          known.set(null);
           link.use(name);
           return name;
         },
@@ -1301,7 +1357,21 @@ final class ConsoleTab implements Tab {
     }
     reading = null;
     if (lane != null) {
-      lane.close(); // interrupts what runs, which core cancels, and closes the connection
+      // Interrupts what runs, which core cancels, gives up what is still open, as a read whose
+      // rest was not read, and closes the connection. A commit of what that read changed, which
+      // fails then, no console shows any more: the app does, checked against the password.
+      var sql = brief(openSql == null ? "" : openSql);
+      var copy = password == null ? null : password.clone();
+      var tell = notKept;
+      lane.close(failure -> {
+        try {
+          failure.ifPresent(f -> tell.accept(sql, words(copy, f.message())));
+        } finally {
+          if (copy != null) {
+            Arrays.fill(copy, '\0');
+          }
+        }
+      });
       lane = null;
     }
     driver = null;
@@ -1315,6 +1385,11 @@ final class ConsoleTab implements Tab {
   public void close() {
     closed = true;
     end();
+  }
+
+  /** Whether the call under way may change data or the transaction beyond a plain read. */
+  private boolean changes() {
+    return writes && !plain;
   }
 
   /** Whether something runs or waits to. */
@@ -1379,18 +1454,19 @@ final class ConsoleTab implements Tab {
       return;
     }
     var before = "it switches to " + (mode == Mode.AUTO ? "Auto" : "Manual");
-    if (s.asks(this, before, List.of(this), () -> mode(s, mode))) {
+    var act = new State.Act("switch to " + mode, this);
+    if (s.asks(act, before, List.of(this), () -> mode(s, mode))) {
       return;
     }
     boolean empty = this.empty;
-    var known = this.known;
     firm = true;
     writes = true;
+    plain = false;
     running = "Auto-commit";
     work = ask(
         s,
         "switch auto-commit",
-        link -> setMode(link, mode == Mode.MANUAL, empty, known),
+        link -> setMode(link, mode == Mode.MANUAL, empty),
         switched -> {
           work = null;
           firm = false;
@@ -1406,7 +1482,7 @@ final class ConsoleTab implements Tab {
                 Level.RAN, "Auto-commit", null, mode == Mode.AUTO ? "Turned on" : "Turned off"));
           } else {
             // The server had one open after all.
-            s.asks(this, before, List.of(this), () -> mode(s, mode));
+            s.asks(act, before, List.of(this), () -> mode(s, mode));
           }
         },
         error -> {
@@ -1431,17 +1507,17 @@ final class ConsoleTab implements Tab {
   }
 
   private void end(State s, String sql) {
-    leave(s);
+    leave();
     queue.clear();
     problem = null;
     firm = true;
     writes = true;
+    plain = false;
     running = sql;
-    var known = this.known;
     work = ask(
         s,
         sql.equals(COMMIT) ? "commit" : "roll back",
-        link -> finish(link, sql, known),
+        link -> finish(link, sql),
         ended -> {
           work = null;
           firm = false;
@@ -1496,19 +1572,28 @@ final class ConsoleTab implements Tab {
       }
       case GO_ON -> {
         s.pending = null;
+        var cut = running;
         end();
+        if (!closed) { // the console stays, and its Messages keep what was cut off
+          log.add(new Logged(
+              Level.ERROR,
+              brief(cut),
+              null,
+              "Went on before it ended: the connection ended, the server rolls back what was not"
+                  + " committed, and what this statement did is not known"));
+        }
         asked.then().run();
         return;
       }
       case COMMIT -> commit(s);
       case ROLLBACK -> {
-        if (firm || work != null && writes) {
+        if (firm || work != null && changes()) {
           return;
         }
         if (work != null) {
           stop();
           queue.clear();
-          leave(s);
+          leave();
           cancelled = true;
           log.add(new Logged(Level.WARNING, brief(running), null, "Cancelled"));
         }
@@ -1555,6 +1640,11 @@ final class ConsoleTab implements Tab {
 
   /** The server's words, withheld where they hold the password. */
   private String words(String words) {
+    return words(password, words);
+  }
+
+  /** The server's words, or that they were withheld where they hold the password. */
+  private static String words(char[] password, String words) {
     return password == null || Probe.contains(words, password)
         ? ConnectionException.WITHHELD
         : words;
@@ -1897,27 +1987,17 @@ final class ConsoleTab implements Tab {
         + (o.more
             ? count + " so far, more as it scrolls"
             : o.cut
-                ? "the first " + count + ", the rest left unread as the console went on"
-                    + givenUp(s)
-                : o.dropped ? "the first " + count + ", the rest read and not kept" : count);
+                ? "the first " + count + "; the rest was not read"
+                : o.dropped > 0
+                    ? "the first " + count + " of " + rows(o.rows.size() + o.dropped)
+                        + "; the rest was read and not kept"
+                    : count);
     return col()
         .grow(1)
         .minSize(0, 0)
         .child(grid(t, s, app, o).grow(1))
         .child(Card.footer(
             t, Label.label(t, Label.Variant.MUTED, about).key("result-status").ellipsis(), pin));
-  }
-
-  /**
-   * What became of what a plain read, given up, may have done, as a function it calls that
-   * writes: PostgreSQL commits the part done so far with the query's own transaction, or keeps it
-   * in the user's; MariaDB and MySQL stop the statement, which keeps all of it or none.
-   */
-  private String givenUp(State s) {
-    var profile = s.profile(id);
-    return profile != null && profile.provider() == Provider.POSTGRESQL
-        ? "; anything it changed until then stands"
-        : "; whether anything it changed stands is not known";
   }
 
   /** The result's rows, read-only, with the table tab's cells. */
@@ -1993,7 +2073,7 @@ final class ConsoleTab implements Tab {
           : switching != null
               ? "Switching to " + (switching.isEmpty() ? "no database" : switching) + "…"
               : !firm
-                  ? "Running…"
+                  ? writes ? "Running; rows show once all are read…" : "Running…"
                   : COMMIT.equals(running)
                       ? "Committing…"
                       : ROLLBACK.equals(running) ? "Rolling back…" : "Switching auto-commit…";
@@ -2066,7 +2146,7 @@ final class ConsoleTab implements Tab {
     El rollback = button(t, PRIMARY, "Rollback", () -> answer(s, ROLLBACK)).key("answer-rollback");
     String title;
     String text;
-    boolean waits = firm || work != null && writes;
+    boolean waits = firm || work != null && changes();
     if (doubt != null) {
       title = UNSURE;
       text = "On " + name + ", " + doubt + " Go on, and " + before + "?";
@@ -2141,6 +2221,15 @@ final class ConsoleTab implements Tab {
 
   /** "Ran in 12 ms · 3 rows": the last run's time on the server, and its rows. */
   String status() {
+    var status = ran();
+    // shortcut: Manual reads every result whole before showing it, as it may not stay open in a
+    // transaction; read lazily in Manual too once giving up a read can keep the transaction.
+    return mode != Mode.MANUAL ? status : status.isEmpty() ? WHOLE : status + " · " + WHOLE;
+  }
+
+  static final String WHOLE = "Manual reads each result whole";
+
+  private String ran() {
     if (took == null || statements == 0 && !cancelled && !failedRun) {
       return connected() ? "Connected" : "";
     }

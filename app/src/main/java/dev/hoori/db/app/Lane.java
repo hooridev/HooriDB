@@ -6,10 +6,12 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.query.QueryException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -254,6 +256,14 @@ final class Lane {
    * dev.hoori.db.core.catalog.Catalog#GRACE} after a server that no longer answers.
    */
   void close() {
+    close(failure -> {});
+  }
+
+  /**
+   * Closes it as {@link #close()} does, and hands what giving up a statement still open on the
+   * connection failed with, or empty, to {@code gaveUp}, on the thread that closes it.
+   */
+  void close(Consumer<Optional<Failure>> gaveUp) {
     for (var dropped : thread.shutdownNow()) {
       if (dropped == opening) {
         Arrays.fill(copy, '\0'); // the opening never started
@@ -265,11 +275,10 @@ final class Lane {
         // As long as it takes: the thread keeps nothing alive, as a virtual thread.
         thread.awaitTermination(Long.MAX_VALUE, TimeUnit.DAYS);
       } catch (InterruptedException e) {
+        gaveUp.accept(Optional.empty());
         return;
       }
-      if (link != null) {
-        link.close();
-      }
+      gaveUp.accept(link != null ? link.close() : Optional.empty());
     });
   }
 }

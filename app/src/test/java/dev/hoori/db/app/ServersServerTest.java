@@ -11,6 +11,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
+import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
@@ -273,19 +274,40 @@ class ServersServerTest {
     }
   }
 
-  /** A statement as the console runs it on its lane: its portion, and the auto-commit after. */
+  /** A statement as the console runs it on its lane, read to its end. */
   static ConsoleTab.Ran statement(Lane lane, String sql, ConsoleTab.Mode mode) throws Exception {
-    return lane.submit(link -> {
-          var held = new AtomicReference<Servers.Run>();
-          var ran = ConsoleTab.start(link, sql, mode, false, held, new AtomicReference<>());
-          return ran;
-        })
+    return statement(lane, sql, mode, false);
+  }
+
+  /**
+   * A statement as the console runs it: the console's own unit on its lane, which gives up what is
+   * still open first and reads the status fresh; lazily where asked, as a plain read in Auto.
+   */
+  static ConsoleTab.Ran statement(Lane lane, String sql, ConsoleTab.Mode mode, boolean lazy)
+      throws Exception {
+    return lane.submit(link -> unit(
+            link,
+            l -> ConsoleTab.start(l, sql, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT)))
+        .get(20, TimeUnit.SECONDS);
+  }
+
+  /** A switch of auto-commit as the console's unit does it. */
+  static ConsoleTab.Switched mode(Lane lane, boolean manual, boolean empty) throws Exception {
+    return lane.submit(link -> unit(link, l -> ConsoleTab.setMode(l, manual, empty)))
         .get(20, TimeUnit.SECONDS);
   }
 
   static ConsoleTab.Ended end(Lane lane, String sql) throws Exception {
-    return lane.submit(link -> ConsoleTab.finish(link, sql, new AtomicReference<>()))
+    return lane.submit(link -> unit(link, l -> ConsoleTab.finish(l, sql)))
         .get(20, TimeUnit.SECONDS);
+  }
+
+  /** The console's unit around a call; what giving up the statement left open failed with fails it. */
+  static <T> T unit(Servers.Link link, Lane.Call<T> call) throws Exception {
+    var gaveUp = new AtomicReference<Failure>();
+    var value = ConsoleTab.after(link, gaveUp, call);
+    assertEquals(null, gaveUp.get(), "giving up what was left open");
+    return value;
   }
 
   static long count(Servers.Link link, String table) {
@@ -340,8 +362,7 @@ class ServersServerTest {
     try {
       statement(lane, "DROP TABLE IF EXISTS seam_cancel", ConsoleTab.Mode.AUTO);
       statement(lane, "CREATE TABLE seam_cancel (id integer)", ConsoleTab.Mode.AUTO);
-      lane.submit(link -> ConsoleTab.setMode(link, true, false, new AtomicReference<>()))
-          .get(20, TimeUnit.SECONDS);
+      mode(lane, true, false);
       statement(lane, "INSERT INTO seam_cancel VALUES (1)", ConsoleTab.Mode.MANUAL);
       var slow = lane.submit(link -> link.run(sleep(provider, 30)).next(10));
       Thread.sleep(500);
@@ -359,8 +380,7 @@ class ServersServerTest {
         assertEquals(1L, count(watcher, "seam_cancel"));
       }
     } finally {
-      lane.submit(link -> ConsoleTab.setMode(link, false, false, new AtomicReference<>()))
-          .get(20, TimeUnit.SECONDS);
+      mode(lane, false, false);
       statement(lane, "DROP TABLE seam_cancel", ConsoleTab.Mode.AUTO);
       lane.close();
       watcher.close();
@@ -381,21 +401,16 @@ class ServersServerTest {
       statement(lane, "DROP TABLE IF EXISTS seam_chain", ConsoleTab.Mode.AUTO);
       statement(lane, "CREATE TABLE seam_chain (id integer)", ConsoleTab.Mode.AUTO);
       statement(lane, "SET SESSION completion_type = 1", ConsoleTab.Mode.AUTO);
-      lane.submit(link -> ConsoleTab.setMode(link, true, false, new AtomicReference<>()))
-          .get(20, TimeUnit.SECONDS);
+      mode(lane, true, false);
       statement(lane, "INSERT INTO seam_chain VALUES (1)", ConsoleTab.Mode.MANUAL);
       var committed = end(lane, ConsoleTab.COMMIT);
       assertEquals(Transaction.OPEN, committed.before());
       assertEquals(Transaction.OPEN, committed.portion().transaction(), "chained at once");
       assertEquals(1L, count(watcher, "seam_chain"));
       // Not where it is not known to be empty; where it is, auto-commit goes on and ends it.
-      var refused = lane.submit(
-              link -> ConsoleTab.setMode(link, false, false, new AtomicReference<>()))
-          .get();
+      var refused = mode(lane, false, false);
       assertFalse(refused.done());
-      var switched = lane.submit(
-              link -> ConsoleTab.setMode(link, false, true, new AtomicReference<>()))
-          .get();
+      var switched = mode(lane, false, true);
       assertTrue(switched.done());
       assertEquals(Transaction.NONE, switched.now().transaction());
     } finally {
@@ -521,13 +536,16 @@ class ServersServerTest {
       statement(lane, "DROP TABLE IF EXISTS seam_dropped", ConsoleTab.Mode.AUTO);
       statement(lane, "CREATE TABLE seam_dropped (id integer)", ConsoleTab.Mode.AUTO);
       var held = new AtomicReference<Servers.Run>();
-      var update = lane.submit(link -> ConsoleTab.start(
+      var update = lane.submit(link -> ConsoleTab.after(
           link,
-          "INSERT INTO seam_dropped VALUES (1)",
-          ConsoleTab.Mode.AUTO,
-          false,
-          held,
-          new AtomicReference<>()));
+          new AtomicReference<>(),
+          l -> ConsoleTab.start(
+              l,
+              "INSERT INTO seam_dropped VALUES (1)",
+              ConsoleTab.Mode.AUTO,
+              false,
+              held,
+              ConsoleTab.KEPT)));
       eventually(update::isDone);
       update.cancel(true); // too late, as the console's Cancel or close can be: its answer is lost
       var rolledBack = end(lane, ConsoleTab.ROLLBACK);
@@ -607,7 +625,7 @@ class ServersServerTest {
 
   /**
    * A plain read by its first word whose function writes, given up with rows left, in Auto: what
-   * the server keeps of what it did differs by provider, which the console's footer says.
+   * the server keeps of what it did differs by provider, so the console's footer claims nothing.
    */
   @ParameterizedTest
   @EnumSource(
@@ -675,14 +693,7 @@ class ServersServerTest {
       }
       var sql = "SELECT seam_read_note(7)";
       assertTrue(ConsoleTab.reads(sql, Provider.POSTGRESQL), "a plain read by its first word");
-      var read = lane.submit(link -> ConsoleTab.start(
-              link,
-              sql,
-              ConsoleTab.Mode.MANUAL,
-              true,
-              new AtomicReference<>(),
-              new AtomicReference<>()))
-          .get(20, TimeUnit.SECONDS);
+      var read = statement(lane, sql, ConsoleTab.Mode.MANUAL, true);
       assertEquals(Transaction.OPEN, read.portion().transaction());
       assertEquals(0L, count(watcher, "seam_read_wrote"));
       var committed = end(lane, ConsoleTab.COMMIT);
@@ -690,10 +701,136 @@ class ServersServerTest {
       assertEquals(Transaction.NONE, committed.portion().transaction());
       assertEquals(1L, count(watcher, "seam_read_wrote"));
     } finally {
-      lane.submit(link -> ConsoleTab.setMode(link, false, false, new AtomicReference<>()))
-          .get(20, TimeUnit.SECONDS);
+      mode(lane, false, false);
       statement(lane, "DROP FUNCTION seam_read_note", ConsoleTab.Mode.AUTO);
       statement(lane, "DROP TABLE seam_read_wrote", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  // The fourth review: the console's unit, run in the true order of the console's calls.
+
+  /**
+   * F1: PostgreSQL, a read left with rows unread in Auto holds core's own transaction with
+   * auto-commit off; the switch to Manual gives it up first and turns auto-commit off itself, so
+   * that the UPDATE after it stays in the user's transaction.
+   */
+  @Test
+  void aReadLeftOpenInAutoDoesNotPassForManual() throws Exception {
+    var server = TestServer.of(Provider.POSTGRESQL);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      statement(lane, "DROP TABLE IF EXISTS seam_f1", ConsoleTab.Mode.AUTO);
+      statement(lane, "CREATE TABLE seam_f1 (id integer)", ConsoleTab.Mode.AUTO);
+      var read =
+          statement(lane, "SELECT n FROM generate_series(1, 1000) n", ConsoleTab.Mode.AUTO, true);
+      assertTrue(read.lazy() && read.portion().more(), "left with rows unread");
+      var switched = mode(lane, true, false);
+      assertTrue(switched.done());
+      assertEquals(new Status(Transaction.NONE, false), switched.now());
+      statement(lane, "INSERT INTO seam_f1 VALUES (1)", ConsoleTab.Mode.MANUAL);
+      assertEquals(0L, count(watcher, "seam_f1"), "not committed by itself");
+      end(lane, ConsoleTab.ROLLBACK);
+      assertEquals(0L, count(watcher, "seam_f1"));
+    } finally {
+      mode(lane, false, false);
+      statement(lane, "DROP TABLE seam_f1", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /**
+   * F2: in Manual a read whose function writes, with more rows than a portion, is read whole in its
+   * one call, also where the console asked for it lazily, and the transaction it leaves is the
+   * server's word.
+   */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"POSTGRESQL", "MARIADB"}) // MySQL's test user may not create such a function
+  void aLongReadInManualIsReadWhole(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      for (var sql : pg
+          ? List.of(
+              "DROP TABLE IF EXISTS seam_f2",
+              "CREATE TABLE seam_f2 (id integer)",
+              "CREATE OR REPLACE FUNCTION seam_f2_note(n integer) RETURNS integer AS"
+                  + " 'INSERT INTO seam_f2 VALUES (n) RETURNING id' LANGUAGE sql")
+          : List.of(
+              "DROP TABLE IF EXISTS seam_f2",
+              "CREATE TABLE seam_f2 (id integer)",
+              "DROP FUNCTION IF EXISTS seam_f2_note",
+              "CREATE FUNCTION seam_f2_note(n integer) RETURNS integer DETERMINISTIC MODIFIES SQL"
+                  + " DATA BEGIN INSERT INTO seam_f2 VALUES (n); RETURN n; END")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      var many = pg
+          ? "SELECT seam_f2_note(n) FROM generate_series(1, 1000) n"
+          : "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000)"
+              + " SELECT seam_f2_note(i) FROM n";
+      mode(lane, true, false);
+      var read = statement(lane, many, ConsoleTab.Mode.MANUAL, true);
+      assertFalse(read.lazy());
+      assertFalse(read.portion().more(), "read to its end");
+      assertEquals(
+          1000, ((Result.Rows) read.portion().results().getFirst()).rows().size());
+      assertEquals(Transaction.OPEN, read.portion().transaction(), "the server's word");
+      assertEquals(0L, count(watcher, "seam_f2"), "in the user's transaction");
+      end(lane, ConsoleTab.ROLLBACK);
+      assertEquals(0L, count(watcher, "seam_f2"));
+    } finally {
+      mode(lane, false, false);
+      statement(lane, "DROP FUNCTION seam_f2_note", ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE seam_f2", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /**
+   * A rollback that could not undo a MyISAM table's change says so, in the server's warning, on
+   * MariaDB; MySQL with consistent GTIDs, as its image has them, takes no such change in one.
+   */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aRollbackOverATableWithoutTransactionsWarns(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS seam_plain, seam_kept",
+          "CREATE TABLE seam_plain (id integer) ENGINE=MyISAM",
+          "CREATE TABLE seam_kept (id integer) ENGINE=InnoDB")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      mode(lane, true, false);
+      statement(lane, "INSERT INTO seam_kept VALUES (1)", ConsoleTab.Mode.MANUAL);
+      var plain = statement(lane, "INSERT INTO seam_plain VALUES (1)", ConsoleTab.Mode.MANUAL);
+      // MySQL's image keeps GTIDs consistent, and refuses such a change inside a transaction.
+      boolean refused =
+          plain.portion().results().getFirst() instanceof Failure f && f.code() == 1785;
+      assertEquals(
+          provider == Provider.MYSQL, refused, plain.portion().results().toString());
+      var ended = end(lane, ConsoleTab.ROLLBACK);
+      assertEquals(
+          !refused,
+          ended.portion().messages().stream().anyMatch(m -> m.code() == ConsoleTab.NOT_ROLLED_BACK),
+          ended.portion().messages().toString());
+      assertEquals(0L, count(watcher, "seam_kept"));
+      assertEquals(refused ? 0L : 1L, count(watcher, "seam_plain"), "MyISAM keeps what it took");
+    } finally {
+      mode(lane, false, false);
+      statement(lane, "DROP TABLE seam_plain, seam_kept", ConsoleTab.Mode.AUTO);
       lane.close();
       watcher.close();
     }

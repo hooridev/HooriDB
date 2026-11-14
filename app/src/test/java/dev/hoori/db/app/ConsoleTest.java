@@ -165,12 +165,10 @@ class ConsoleTest {
     assertTrue(changed.contains("label=\"3 rows changed\""), changed);
     c.run(app, "press role=tab label=\"Result 2\"\nframe\nsnap cut\n");
     assertTrue(
-        line(c.tree("cut"), "#result-status").contains("the first 200 rows, the rest left unread"),
+        line(c.tree("cut"), "#result-status").contains("the first 200 rows; the rest was not read"),
         c.tree("cut"));
-    // On PostgreSQL what a read given up did, as a function of it that writes, stands.
-    assertTrue(
-        line(c.tree("cut"), "#result-status").contains("anything it changed until then stands"),
-        c.tree("cut"));
+    // And nothing of what it changed, if it did, which it does not know.
+    assertFalse(line(c.tree("cut"), "#result-status").contains("chang"), c.tree("cut"));
     // Messages: each statement, its time and what it gave, the server's warning and the error.
     c.run(app, "press role=tab label=\"Messages\"\nframe\nsnap messages\n");
     String messages = c.tree("messages");

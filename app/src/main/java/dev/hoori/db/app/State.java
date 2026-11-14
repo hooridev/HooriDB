@@ -33,6 +33,8 @@ final class State {
 
   static final Split.Position SIDEBAR = Split.Position.first(320); // room for a column and its type
   static final double MESSAGE_SECONDS = 5; // how long a message stays in the status line
+  // How long a change of the keyring may keep its dialog waiting before Cancel gives it up.
+  static final double KEYRING_SECONDS = 5;
 
   App<State> app; // runs the clock and the windows, and says whether the window is maximized
   Theme theme = Theme.DARK;
@@ -75,7 +77,13 @@ final class State {
   Pending pending; // the one act that waits, or null
   // Its deletion runs: it waits for the keyring to be found, then for its password to go.
   boolean removing;
+  boolean removingSlow; // the keyring has not answered for a while: Cancel gives up waiting
+  private Work removal; // the removal of the password, while it runs
+  private int removals; // counted, so that a late patience is dropped
   String removeError; // why its password could not be removed, or null
+  // What a session took with it as it ended: the commit of the change its last statement made
+  // failed, and no console shows that any more. Until dismissed.
+  String notKept;
   private Work saving; // the save of the profiles on its way, or null
   private boolean saveAgain; // the profiles changed while it ran
   private boolean quitAnyway; // the last save at the end failed and the user was told
@@ -227,6 +235,32 @@ final class State {
     persist();
   }
 
+  /**
+   * A console's session ended, and the commit of what its last statement changed, as it was given
+   * up, failed: the status line and the main window say so, until dismissed. The text was checked
+   * against the session's password.
+   */
+  void notKept(String connection, String statement, String failure) {
+    notKept = connection + ": " + statement + " ran, and its change was to be committed as the"
+        + " session ended, but the commit failed: " + failure
+        + (failure.endsWith(".") ? "" : ".") + " What it changed may not stand.";
+    tell("A change on " + connection + " may not stand: see the connections.");
+  }
+
+  void dismissNotKept() {
+    notKept = null;
+  }
+
+  /** Whether a dialog is open, which an act that opens one must not replace. */
+  boolean dialogOpen() {
+    return dialog != null || deleting != null || driverList != null;
+  }
+
+  /** The act of deleting the connection, which its disconnect and its delete share. */
+  static Act deleteAct(ConnectionProfile profile) {
+    return new Act("delete", profile.id());
+  }
+
   /** Asks before the connection is deleted. */
   void askDelete(ConnectionProfile profile) {
     deleting = profile;
@@ -240,8 +274,9 @@ final class State {
   void delete() {
     var profile = deleting;
     if (profile == null
-        || asks(profile, name(profile) + " is deleted", consoles(profile.id()), this::delete)
-        || !lock(profile, name(profile) + " is being deleted", profile.id())) {
+        || asks(
+            deleteAct(profile), name(profile) + " is deleted", consoles(profile.id()), this::delete)
+        || !lock(deleteAct(profile), name(profile) + " is being deleted", profile.id())) {
       return;
     }
     removing = true;
@@ -257,7 +292,16 @@ final class State {
       return;
     }
     var id = profile.id();
-    app.background(
+    int at = ++removals;
+    app.after(KEYRING_SECONDS, () -> {
+      if (removing && removals == at) {
+        removingSlow = true;
+        if (quitting()) {
+          giveUpDelete(); // closing never waits for a keyring that does not answer
+        }
+      }
+    });
+    removal = app.background(
         "delete a password",
         () -> {
           secrets.delete(id);
@@ -265,16 +309,20 @@ final class State {
         },
         done -> deleted(profile),
         error -> {
+          removal = null;
+          removingSlow = false;
           removing = false;
           removeError = message(error);
-          drop(profile);
+          drop(deleteAct(profile));
           keyringFailed();
         });
   }
 
   private void deleted(ConnectionProfile profile) {
+    removal = null;
+    removingSlow = false;
     removing = false;
-    drop(profile); // its consoles were locked meanwhile, and close now
+    drop(deleteAct(profile)); // its consoles were locked meanwhile, and close now
     deleting = null;
     forgetPassword(profile.id());
     catalogue.drop(this, profile.id());
@@ -286,10 +334,36 @@ final class State {
     persist();
   }
 
-  /** Closes the delete dialog, unless its deletion has begun: that one ends first. */
+  static final String DELETE_GAVE_UP =
+      "The system keyring did not answer, and the deletion was given up: whether the password is"
+          + " still in it is not known. The connection was not deleted.";
+
+  /**
+   * Cancel once the keyring has not answered for a while: the removal of the password is given
+   * up, whatever it did, and so is the deletion; the dialog stays and says what that leaves.
+   */
+  private void giveUpDelete() {
+    removal.cancel();
+    removal = null;
+    removals++;
+    removing = false;
+    removingSlow = false;
+    removeError = DELETE_GAVE_UP;
+    drop(deleteAct(deleting));
+    keyringFailed();
+  }
+
+  /**
+   * Closes the delete dialog, unless its deletion has begun: that one ends first, or is given up
+   * once the keyring has kept it waiting.
+   */
   void cancelDelete() {
-    if (!removing) {
-      drop(deleting); // and the way out it asked for
+    if (removing && removingSlow) {
+      giveUpDelete();
+      return;
+    }
+    if (deleting != null && !removing) {
+      drop(deleteAct(deleting)); // and the way out it asked for
       deleting = null;
     }
   }
@@ -387,6 +461,16 @@ final class State {
     }
     if (driverList != null) {
       driverList.close(this); // a download can be done again
+    }
+    // A keyring that keeps a change waiting is given up, as its Cancel does: the window stays, and
+    // says what that left; the next close closes. A slower one is given up once it is slow.
+    if (dialog != null && dialog.slow) {
+      dialog.giveUp(this);
+      return;
+    }
+    if (removingSlow) {
+      giveUpDelete();
+      return;
     }
     if (quitAnyway && !keyringBusy() && saving == null) {
       closeAll();
@@ -557,6 +641,13 @@ final class State {
   record Pending(
       Object owner, String what, Runnable then, ConsoleTab console, boolean armed, UUID scope) {}
 
+  /**
+   * An act that may wait, as the owner of {@link Pending}: what it does, and to what. Two are the
+   * same act only where both are the same; another act, on the same connection or console, is
+   * refused while one waits.
+   */
+  record Act(String kind, Object target) {}
+
   private static final Object EXIT = new Object();
 
   /**
@@ -623,14 +714,14 @@ final class State {
         : null;
   }
 
-  private boolean quitting() {
+  boolean quitting() {
     return pending != null && pending.owner() == EXIT && pending.armed();
   }
 
   /** The user closes a tab, by its cross or Control+W: a console asks first. */
   private void closeTab(TabGroups.Group<Tab> group, int index) {
     if (!(group.tabs().get(index) instanceof ConsoleTab x
-        && asks(x, "the console closes", List.of(x), () -> closeTab(x)))) {
+        && asks(new Act("close", x), "the console closes", List.of(x), () -> closeTab(x)))) {
       tabs.close(group, index);
     }
   }

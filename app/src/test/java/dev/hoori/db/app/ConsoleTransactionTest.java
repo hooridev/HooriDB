@@ -39,7 +39,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -414,7 +413,7 @@ class ConsoleTransactionTest {
     var app = open(SHOP);
     var key = "run " + PG + " " + ORDERS;
     servers.hold(key);
-    var probe = servers.hold("transaction " + PG);
+    var probe = servers.hold("transaction " + PG, 1); // past the statement's own
     c.run(app, type(";\n" + ORDERS) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
     // The cancelled call ends; the question to the server is held.
@@ -444,7 +443,7 @@ class ConsoleTransactionTest {
     link.run(PAY).next(1);
     link.run(MISSING).next(1);
     assertEquals(Transaction.FAILED, link.status().transaction());
-    var ended = ConsoleTab.finish(link, ConsoleTab.COMMIT, new AtomicReference<>());
+    var ended = ConsoleTab.finish(link, ConsoleTab.COMMIT);
     assertEquals(Transaction.FAILED, ended.before());
     assertEquals(null, ended.portion());
     assertFalse(servers.calls.contains(COMMITTING), servers.calls.toString());
@@ -581,7 +580,7 @@ class ConsoleTransactionTest {
   @Test
   void aProbeThatFailsLateLeavesTheSession() throws Exception {
     var app = open(INVENTORY);
-    var probe = servers.hold("transaction " + MARIA);
+    var probe = servers.hold("transaction " + MARIA, 1); // past the statement's own
     long asked = probes(MARIA);
     c.run(app, type(";\n" + BROKEN) + "key Enter control\nframe\nawait\nframe\n");
     eventually(() -> probes(MARIA) > asked); // held: what the statement left is asked
@@ -668,7 +667,7 @@ class ConsoleTransactionTest {
   @Test
   void aSwitchAskedWhileTheServerWasAskedGoesToItsDatabase() throws Exception {
     var app = open(INVENTORY);
-    var probe = servers.hold("transaction " + MARIA);
+    var probe = servers.hold("transaction " + MARIA, 1); // past the statement's own
     long asked = probes(MARIA);
     c.run(app, type(";\n" + DEADLOCKED) + "key Enter control\nframe\nawait\nframe\n");
     eventually(() -> probes(MARIA) > asked); // held: what the statement left is asked
@@ -998,7 +997,6 @@ class ConsoleTransactionTest {
           "/* note */ SELECT 1",
           "(SELECT 1)",
           "SHOW search_path",
-          "EXPLAIN SELECT 1",
           "VALUES (1)",
           "TABLE orders")) {
         assertTrue(ConsoleTab.reads(sql, provider), provider + ": " + sql);
@@ -1015,6 +1013,11 @@ class ConsoleTransactionTest {
           "CREATE TABLE t (id int)",
           "SELECT * INTO copy FROM orders",
           "EXPLAIN ANALYZE DELETE FROM orders",
+          // The fourth review's F4: ANALYZE spelt so that no pattern finds it.
+          "EXPLAIN (U&\"\\0061nalyze\" true) UPDATE orders SET paid = true",
+          "EXPLAIN SELECT 1",
+          "DESCRIBE orders",
+          "DESC orders",
           "/*! COMMIT */",
           "/*M! COMMIT */",
           "IF 1 THEN COMMIT; END IF",
@@ -1024,8 +1027,6 @@ class ConsoleTransactionTest {
         assertFalse(ConsoleTab.reads(sql, provider), provider + ": " + sql);
       }
     }
-    assertTrue(ConsoleTab.reads("DESCRIBE orders", Provider.MYSQL));
-    assertFalse(ConsoleTab.reads("DESCRIBE orders", Provider.POSTGRESQL));
     // What ends the transaction typed, as the buttons do; not a rollback to a savepoint.
     for (var sql :
         List.of("COMMIT", "commit work", "END", "ABORT", "ROLLBACK", "COMMIT AND CHAIN")) {
@@ -1205,7 +1206,7 @@ class ConsoleTransactionTest {
   void aProbeAnsweringLateIsDropped() throws Exception {
     var app = open(INVENTORY);
     var tab = k.tab(app);
-    var held = servers.hold("transaction " + MARIA);
+    var held = servers.hold("transaction " + MARIA, 1); // past the statement's own
     long asked = probes(MARIA);
     c.run(app, type(";\n" + BROKEN) + "key Enter control\nframe\nawait\nframe\n");
     eventually(() -> probes(MARIA) > asked);
@@ -1515,5 +1516,390 @@ class ConsoleTransactionTest {
       assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
     }
     assertTrue(Files.exists(out.resolve("shop-prod-shop-console-locked-" + look + ".png")));
+  }
+
+  // The fourth review's findings, each as it was met.
+
+  static final String NOTE = "SELECT note(id) FROM source"; // a read whose function writes
+
+  /**
+   * F1: PostgreSQL, Auto, a read left with rows unread holds core's own transaction, with
+   * auto-commit off; Manual then is not taken from that, and the UPDATE does not commit by itself.
+   */
+  @Test
+  void aReadLeftOpenInAutoDoesNotPassForManual() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS) + RUN);
+    assertTrue(k.tab(app).outputs.getFirst().more, "rows left unread");
+    c.run(app, MANUAL + type(";\n" + PAY) + RUN + "snap paid\n");
+    var calls = servers.calls;
+    int closed = calls.indexOf("close " + PG + " " + ORDERS);
+    int off = calls.indexOf("autocommit " + PG + " off");
+    int pay = calls.indexOf("run " + PG + " " + PAY);
+    assertTrue(closed >= 0 && closed < off && off < pay, calls.toString());
+    assertEquals(Transaction.OPEN, k.tab(app).transaction);
+    assertTrue(badge(c.tree("paid")).contains("Transaction open"), c.tree("paid"));
+  }
+
+  /**
+   * F2: MariaDB, Manual, a read whose function writes and that has more rows than a portion is
+   * read whole: the server's word on the transaction follows it, and closing asks.
+   */
+  @Test
+  void aLongReadInManualIsReadWholeAndClosingAsks() throws Exception {
+    servers.statement(NOTE, List.of(FakeServers.made(250, "id: bigint")));
+    var app = k.console(INVENTORY);
+    c.run(app, MANUAL + type(NOTE) + RUN + "snap read\n");
+    String read = c.tree("read");
+    assertTrue(near(read, "#result-status").contains("· 250 rows\""), read);
+    assertTrue(line(read, "#run-status").contains(ConsoleTab.WHOLE), read);
+    assertTrue(servers.calls.contains("next " + MARIA + " " + NOTE + " 200"), "in its one call");
+    assertEquals(Transaction.OPEN, k.tab(app).transaction);
+    c.run(app, "press #close-0\nframe\n" + OPENED + "snap asked\n");
+    assertTrue(c.tree("asked").contains("role=dialog"), c.tree("asked"));
+    assertEquals(1, app.state().consoles(null).size());
+  }
+
+  /** F3: a statement that waited for its connection is refused while a lock holds it. */
+  @Test
+  void aStatementThatWaitedForItsConnectionIsRefusedUnderALock() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, menu("shop-prod", "Disconnect") + OPENED + SETTLE + MANUAL);
+    var opening = servers.hold("open " + PG + "/shop");
+    c.run(app, type(PAY) + "key Enter control\nframe\nframe\n");
+    assertTrue(k.tab(app).waiting);
+    // As a Save of the connection does, once nothing of its consoles was at stake.
+    var save = new Object();
+    assertTrue(app.state().lock(save, "shop-prod is being saved", SHOP.id()));
+    opening.countDown();
+    c.run(app, SETTLE + "snap refused\n");
+    String refused = c.tree("refused");
+    assertFalse(servers.calls.contains("run " + PG + " " + PAY), servers.calls.toString());
+    assertTrue(line(refused, "#problem").contains("Not run"), refused);
+    assertTrue(refused.contains("shop-prod is being saved"), refused);
+    app.state().drop(save);
+  }
+
+  /** F3: Run all goes on to its next statement only through the same gate. */
+  @Test
+  void runAllStopsAtALock() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN); // the session is open
+    var key = "run " + PG + " " + ORDERS;
+    var held = servers.hold(key);
+    // The first, COUNT again, runs to its end; its result starts the held one.
+    c.run(
+        app,
+        type("\n" + ORDERS + ";\n" + PAY + ";")
+            + "key Enter control shift\nframe\nawait\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    var save = new Object();
+    assertTrue(app.state().lock(save, "shop-prod is being saved", SHOP.id()));
+    held.countDown();
+    c.run(app, SETTLE + "snap stopped\n");
+    assertFalse(servers.calls.contains("run " + PG + " " + PAY), servers.calls.toString());
+    assertTrue(line(c.tree("stopped"), "#problem").contains("Not run"), c.tree("stopped"));
+    app.state().drop(save);
+  }
+
+  /** F3: and the grid's further rows are not read under a lock. */
+  @Test
+  void noFurtherRowsAreReadUnderALock() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS) + RUN);
+    var save = new Object();
+    assertTrue(app.state().lock(save, "shop-prod is being saved", SHOP.id()));
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE);
+    assertFalse(
+        servers.calls.contains("next " + PG + " " + ORDERS + " 200"), servers.calls.toString());
+    app.state().drop(save);
+  }
+
+  static final String EXPLAINED = "EXPLAIN (U&\"\\0061nalyze\" true) UPDATE orders SET paid = true";
+
+  /** F4: an EXPLAIN may run what it explains: cancelled, its outcome is in doubt. */
+  @Test
+  void anExplainIsNoRead() throws Exception {
+    servers.statement(EXPLAINED, List.of(FakeServers.made(3, "QUERY PLAN: text")));
+    var app = k.console(SHOP);
+    var key = "run " + PG + " " + EXPLAINED;
+    c.run(app, type(COUNT + ";") + RUN); // the session is open
+    servers.hold(key);
+    // The script's text escapes its backslash.
+    c.run(app, type("\n" + EXPLAINED.replace("\\", "\\\\")) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap cancelled\n");
+    assertTrue(
+        near(c.tree("cancelled"), "#doubt").contains("it was cancelled"), c.tree("cancelled"));
+  }
+
+  /**
+   * F5: the drain keeps at most so many rows of a result, those beyond counted as they come, and
+   * stops at an interrupt between portions, also where the driver did not notice it.
+   */
+  @Test
+  void theDrainIsBoundedAndStopsAtAnInterrupt() throws Exception {
+    var fields = List.of(
+        new dev.hoori.db.core.data.Field("id", "bigint", dev.hoori.db.core.data.Kind.INTEGER));
+    class Endless implements Servers.Run {
+      int portions;
+      final int interruptAt;
+
+      Endless(int interruptAt) {
+        this.interruptAt = interruptAt;
+      }
+
+      @Override
+      public dev.hoori.db.core.execution.Portion next(int count) {
+        portions++;
+        if (portions == interruptAt) {
+          Thread.currentThread().interrupt();
+        }
+        var rows = new java.util.ArrayList<List<Object>>();
+        for (int i = 0; i < count; i++) {
+          rows.add(List.of((long) i));
+        }
+        return portion(new Result.Rows(fields, (portions - 1L) * count, rows), portions < 50);
+      }
+
+      @Override
+      public java.util.Optional<Failure> close() {
+        return java.util.Optional.empty();
+      }
+    }
+    var whole = new Endless(0);
+    var ran = ConsoleTab.drained(whole, whole.next(200), 1000);
+    var rows = (Result.Rows) ran.portion().results().getFirst();
+    assertEquals(1000, rows.rows().size());
+    assertEquals(List.of(50L * 200 - 1000), ran.dropped());
+    assertEquals(50, whole.portions);
+    var cut = new Endless(3);
+    try {
+      ConsoleTab.drained(cut, cut.next(200), 1000);
+      throw new AssertionError("not stopped");
+    } catch (InterruptedException e) {
+      assertEquals(3, cut.portions, "no portion after the interrupt");
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
+  static dev.hoori.db.core.execution.Portion portion(Result result, boolean more) {
+    return new dev.hoori.db.core.execution.Portion(
+        List.of(result), List.of(), more, java.time.Duration.ZERO, Transaction.NONE, true);
+  }
+
+  static final String BIG = "CALL big()";
+
+  /** F6: each result cut short says so on itself, and one result's rows leave the next its own. */
+  @Test
+  void everyCutResultSaysSo() throws Exception {
+    servers.statement(
+        BIG,
+        List.of(
+            FakeServers.made(ConsoleTab.KEPT + 1, "id: bigint"),
+            FakeServers.made(50, "id: bigint"),
+            new Result.Count(5)));
+    var app = k.console(SHOP);
+    c.run(app, type(BIG) + RUN + "snap big\n");
+    String big = c.tree("big");
+    assertTrue(near(big, "#result-status").contains("the first 100,000 rows of 100,001 rows"), big);
+    var outputs = k.tab(app).outputs;
+    assertEquals(3, outputs.size());
+    assertEquals(ConsoleTab.KEPT, outputs.get(0).rows.size());
+    assertEquals(50, outputs.get(1).rows.size());
+  }
+
+  /** F7: a read given up says nothing of what it changed, and one read whole is not given up. */
+  @Test
+  void aReadsFooterClaimsNothingOfChanges() throws Exception {
+    servers.statement(NOTE, List.of(FakeServers.made(250, "id: bigint")));
+    var app = k.console(SHOP);
+    c.run(app, MANUAL + type(NOTE) + RUN + "press #rollback\nframe\n" + SETTLE + "snap rolled\n");
+    String rolled = c.tree("rolled");
+    assertFalse(rolled.contains("stands"), rolled);
+    assertTrue(near(rolled, "#result-status").contains("· 250 rows\""), rolled);
+  }
+
+  /** F8: an Edit that waited on a question does not replace a dialog opened meanwhile. */
+  @Test
+  void anEditThatWaitedReplacesNoNewerDialog() throws Exception {
+    var app = k.console(SHOP);
+    var window = "shop-prod: shop";
+    c.run(app, MANUAL + type(PAY) + RUN + tearOff(window));
+    c.run(
+        app,
+        in("main") + menu("shop-prod", "Edit…") + "press role=button label=\"Disconnect\"\nframe\n"
+            + OPENED);
+    assertTrue(app.state().pending != null, "the console asks");
+    c.run(
+        app,
+        in("main") + "press role=menuitem label=\"File\"\nframe\nadvance 0.3\nframe\n"
+            + "press role=menuitem label=\"New connection…\"\nframe\n" + OPENED
+            + "press role=textbox label=\"Name\"\ntype \"kept\"\nframe\n");
+    var newer = app.state().dialog;
+    assertTrue(newer != null && newer.isNew, "the new connection's dialog");
+    c.run(app, in(window) + "press #answer-rollback\nframe\n" + SETTLE + OPENED);
+    assertEquals(newer, app.state().dialog);
+    assertTrue(app.state().message.contains("was not opened for editing"), app.state().message);
+  }
+
+  /** F9: a Delete asked while an Edit of the same connection waits is refused, not put in place. */
+  @Test
+  void aDeleteDoesNotReplaceAWaitingEdit() throws Exception {
+    var app = k.console(SHOP);
+    var window = "shop-prod: shop";
+    c.run(app, MANUAL + type(PAY) + RUN + tearOff(window));
+    c.run(
+        app,
+        in("main") + menu("shop-prod", "Edit…") + "press role=button label=\"Disconnect\"\nframe\n"
+            + OPENED);
+    var edit = app.state().pending;
+    c.run(
+        app,
+        in("main") + menu("shop-prod", "Delete…")
+            + "press role=button label=\"Disconnect\"\nframe\n" + OPENED);
+    assertEquals(edit, app.state().pending, "the edit still waits");
+    c.run(app, in(window) + "press #answer-rollback\nframe\n" + SETTLE + OPENED);
+    assertTrue(app.state().dialog != null, "the edit goes on");
+    assertEquals(null, app.state().deleting);
+  }
+
+  /**
+   * The commit of what a read changed, as its session ends with its tab, fails: the main window
+   * says so until dismissed, with the connection and the statement.
+   */
+  @Test
+  void aCommitThatFailsAsTheSessionEndsReachesTheMainWindow() throws Exception {
+    servers.failsAtGiveUp(
+        ORDERS, FakeServers.serverError(Failure.Kind.OTHER, "could not serialize access"));
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS) + RUN);
+    c.run(app, "press #close-0\nframe\n" + OPENED);
+    assertTrue(app.state().consoles(null).isEmpty(), "nothing asked: a read in Auto");
+    eventually(() -> servers.calls.contains("close " + PG + " " + ORDERS));
+    // Posted by the thread that closed the session, once it has.
+    eventually(() -> {
+      try {
+        c.run(app, "await\nframe\n");
+      } catch (java.io.IOException e) {
+        throw new java.io.UncheckedIOException(e);
+      }
+      return app.state().notKept != null;
+    });
+    c.run(app, "frame\nsnap told\n");
+    String told = c.tree("told");
+    assertTrue(told.contains("A change may not stand"), told);
+    assertTrue(app.state().notKept.contains("shop-prod: " + ORDERS), app.state().notKept);
+    assertTrue(app.state().notKept.contains("could not serialize access"), app.state().notKept);
+    c.run(app, "press role=button label=\"Dismiss\"\nframe\nsnap dismissed\n");
+    assertFalse(c.tree("dismissed").contains("A change may not stand"), c.tree("dismissed"));
+  }
+
+  static final dev.hoori.db.core.execution.Message NOT_ROLLED_BACK =
+      new dev.hoori.db.core.execution.Message(
+          "Some non-transactional changed tables couldn't be rolled back", "HY000", 1196);
+
+  /** MariaDB's and MySQL's warning that a rollback left changes is said, not "Rolled back". */
+  @Test
+  void aRollbackThatLeftChangesSaysSo() throws Exception {
+    servers.statement(ConsoleTab.ROLLBACK, List.of(new Result.Count(0)), NOT_ROLLED_BACK);
+    var app = open(INVENTORY);
+    c.run(app, "press #rollback\nframe\n" + SETTLE + "snap partly\n");
+    String partly = c.tree("partly");
+    assertTrue(line(partly, "#said").contains(ConsoleTab.PARTLY), partly);
+    assertTrue(line(partly, "#problem").contains(ConsoleTab.PARTLY), partly);
+    assertFalse(partly.contains("\"Rolled back\""), partly);
+  }
+
+  /** A keyring that does not answer can be given up, and says what that leaves. */
+  @Test
+  void aKeyringThatDoesNotAnswerCanBeGivenUp() throws Exception {
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(app, CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
+    c.secrets.gate = new CountDownLatch(1);
+    c.run(
+        app,
+        "press role=textbox label=\"User\"\ntype \"2\"\n"
+            + "press role=textbox label=\"Password\"\ntype \"hunter2\"\n"
+            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=button label=\"Save\"\nframe\nsnap waits\n");
+    assertTrue(line(c.tree("waits"), "role=button label=\"Cancel\"").contains("disabled"));
+    assertTrue(app.state().pending != null, "the save holds its lock");
+    c.run(app, "advance " + State.KEYRING_SECONDS + "\nframe\nsnap slow\n");
+    assertTrue(c.tree("slow").contains("The system keyring does not answer"), c.tree("slow"));
+    c.run(app, "press role=button label=\"Cancel\"\nframe\nsnap given\n");
+    String given = c.tree("given");
+    assertTrue(given.contains("the save was given up"), given);
+    assertEquals(null, app.state().pending, "the lock ended");
+    assertFalse(app.state().dialog.changing);
+    c.secrets.gate.countDown();
+    c.run(app, SETTLE);
+  }
+
+  /** The pictures of what the fourth round changed, light and dark, as {@link #pictures}. */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void picturesOfTheFourthRound(String look) throws Exception {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    var out = Files.createDirectories(Path.of(review));
+    var theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    // Manual reads whole, and a result cut at what is kept says so on itself.
+    servers.statement(
+        BIG, List.of(FakeServers.made(ConsoleTab.KEPT + 1, "id: bigint"), new Result.Count(5)));
+    var pg = k.console(SHOP);
+    pg.state().theme = theme;
+    Script.run(MANUAL + type(BIG) + RUN + "snap console-read-whole-" + look + "\n", pg, out);
+    // A rollback that left a MyISAM table's change.
+    servers.statement(ConsoleTab.ROLLBACK, List.of(new Result.Count(0)), NOT_ROLLED_BACK);
+    var maria = open(INVENTORY);
+    maria.state().theme = theme;
+    Script.run(
+        "press #rollback\nframe\n" + SETTLE + "snap console-rolled-back-in-part-" + look + "\n",
+        maria,
+        out);
+    // The commit of a read's change failed as its session ended: the main window says so.
+    servers.failsAtGiveUp(
+        ORDERS, FakeServers.serverError(Failure.Kind.OTHER, "could not serialize access"));
+    var ended = k.console(SHOP);
+    ended.state().theme = theme;
+    Script.run(type(ORDERS) + RUN + "press #close-0\nframe\n" + OPENED, ended, out);
+    eventually(() -> {
+      try {
+        Script.run("await\nframe\n", ended, out);
+      } catch (java.io.IOException e) {
+        throw new java.io.UncheckedIOException(e);
+      }
+      return ended.state().notKept != null;
+    });
+    Script.run("frame\nsnap main-change-may-not-stand-" + look + "\n", ended, out);
+    // A keyring that does not answer, and what giving it up leaves.
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    app.state().theme = theme;
+    Script.run(CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE, app, out);
+    c.secrets.gate = new CountDownLatch(1);
+    Script.run(
+        "press role=textbox label=\"User\"\ntype \"2\"\n"
+            + "press role=textbox label=\"Password\"\ntype \"hunter2\"\n"
+            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
+            + "\nframe\nadvance 1\nframe\nsnap dialog-keyring-slow-" + look + "\n"
+            + "press role=button label=\"Cancel\"\nframe\nadvance 1\nframe\n"
+            + "snap dialog-keyring-given-up-" + look + "\n",
+        app,
+        out);
+    c.secrets.gate.countDown();
+    Script.run(SETTLE, app, out);
+    for (var name : List.of(
+        "console-read-whole",
+        "console-rolled-back-in-part",
+        "main-change-may-not-stand",
+        "dialog-keyring-slow",
+        "dialog-keyring-given-up")) {
+      assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
+    }
   }
 }

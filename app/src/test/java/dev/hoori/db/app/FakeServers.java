@@ -90,6 +90,7 @@ final class FakeServers implements Servers {
 
   private final Map<String, Made> servers = new ConcurrentHashMap<>();
   private final Map<String, CountDownLatch> gates = new ConcurrentHashMap<>();
+  private final Map<String, AtomicInteger> passes = new ConcurrentHashMap<>(); // before the gate
   private final Map<String, Exception> failures = new ConcurrentHashMap<>();
   final List<String> calls = new CopyOnWriteArrayList<>(); // in the order they began
   final List<String> done = new CopyOnWriteArrayList<>(); // the reads that returned
@@ -237,6 +238,15 @@ final class FakeServers implements Servers {
     return gate;
   }
 
+  /**
+   * Holds the calls of this key once so many more of them have passed: as {@code hold("transaction
+   * <host>", 1)} lets a statement read the status fresh and holds the question asked after it.
+   */
+  CountDownLatch hold(String key, int passing) {
+    passes.put(key, new AtomicInteger(passing));
+    return hold(key);
+  }
+
   /** The calls of this key fail so, until {@link #heal}. */
   void fail(String key, Exception failure) {
     failures.put(key, failure);
@@ -287,6 +297,10 @@ final class FakeServers implements Servers {
   private void call(String key, Exception cancelled) throws Exception {
     calls.add(key);
     var gate = gates.get(key);
+    var passing = passes.get(key);
+    if (gate != null && passing != null && passing.getAndDecrement() > 0) {
+      gate = null;
+    }
     if (gate != null) {
       if (dead) {
         boolean interrupt = false;
@@ -362,6 +376,11 @@ final class FakeServers implements Servers {
     private Transaction transaction = Transaction.NONE;
     private boolean lost; // a statement said the connection is gone: nothing is known of it
     private boolean chain; // MariaDB's and MySQL's completion_type=1
+    // A statement whose rows are not all read, which closing the link gives up first, as Real's.
+    private Run giving;
+    // PostgreSQL's query streaming in a transaction core opened for it in auto-commit, while
+    // pgjdbc has auto-commit off: core's portions say neither, the driver's state both.
+    private boolean own;
 
     // What the server holds now, which a test may change between two reads.
     private Outline root() {
@@ -670,6 +689,13 @@ final class FakeServers implements Servers {
               result++;
             }
             over = !more;
+            if (more) {
+              giving = this;
+              own |= key.startsWith("run ") && pg && !manual && transaction == Transaction.NONE;
+            } else if (giving == this) {
+              giving = null;
+              own = false;
+            }
             done.add(key);
             var messages = key.startsWith("run ") ? answer.messages() : List.<Message>of();
             return new Portion(out, messages, more, TOOK, said(more, failed), mode(more, failed));
@@ -685,7 +711,16 @@ final class FakeServers implements Servers {
             calls.add("close " + host + " " + sql);
           }
           over = true;
-          return gaveUp ? Optional.ofNullable(givingUp.get(sql)) : Optional.empty();
+          if (giving == this) {
+            giving = null;
+          }
+          var failure = gaveUp ? Optional.ofNullable(givingUp.get(sql)) : Optional.<Failure>empty();
+          if (own) {
+            own = false; // committed, or rolled back where that failed: nothing stays open
+          } else if (failure.isPresent() && pg && transaction == Transaction.OPEN) {
+            transaction = Transaction.FAILED; // in the user's transaction, the failure fails it
+          }
+          return failure;
         }
       };
     }
@@ -796,6 +831,9 @@ final class FakeServers implements Servers {
         return new Status(Transaction.UNKNOWN, null);
       }
       seen = manual; // as core sets the driver's idea from the server's status
+      if (own) {
+        return new Status(Transaction.OPEN, false); // pgjdbc's, while core reads in its own
+      }
       return new Status(transaction, !manual);
     }
 
@@ -813,8 +851,16 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public void close() {
+    public Optional<Failure> giveUp() {
+      var left = giving;
+      giving = null;
+      return left == null ? Optional.empty() : left.close();
+    }
+
+    @Override
+    public Optional<Failure> close() {
       closed.add(host + (database == null ? "" : "/" + database));
+      return giveUp();
     }
   }
 

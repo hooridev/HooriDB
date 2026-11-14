@@ -94,8 +94,17 @@ interface Servers {
     /** The connection's transaction and auto-commit as they are now, as {@link Status#of}. */
     Status status() throws QueryException;
 
-    /** Closes it; a failure to close is not reported. */
-    void close();
+    /**
+     * Gives up the statement whose rows are not all read, if one is: what that failed with, as a
+     * commit of what it changed, or empty.
+     */
+    Optional<Failure> giveUp();
+
+    /**
+     * Closes it, giving up a statement whose rows are not all read first; what giving that up failed
+     * with, as a commit of what it changed, or empty. A failure to close is not reported.
+     */
+    Optional<Failure> close();
   }
 
   /** A statement run on a link, as {@link Execution}: it has the link until it is over. */
@@ -203,17 +212,17 @@ interface Servers {
     }
 
     @Override
-    public void close() {
+    public Optional<Failure> giveUp() {
       // A statement that ran well keeps what it changed, though its rows were not all read.
-      // shortcut: a commit that fails here is dropped: the close comes on the lane's thread once
-      // the
-      // console has let the session go, where nothing waits to show it; a console that keeps its
-      // tab gives up what it still reads through Run.close first, if that ever becomes common.
       var left = open.getAndSet(null);
-      if (left != null) {
-        left.abandon();
-      }
+      return left == null ? Optional.empty() : left.abandon();
+    }
+
+    @Override
+    public Optional<Failure> close() {
+      var failure = giveUp();
       Connector.close(connection);
+      return failure;
     }
   }
 }

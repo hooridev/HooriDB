@@ -264,7 +264,18 @@ final class Frame {
             null,
             Button.icon(t, Button.Variant.GHOST, Symbol.ADD, "Add connection", create)),
         problem == null ? null : col().padding(t.space().s()).child(problem),
+        s.notKept == null ? null : col().padding(t.space().s()).child(notKept(t, s)),
         body);
+  }
+
+  /** What a session that ended took with it, which no console shows: until dismissed. */
+  private static El notKept(Theme t, State s) {
+    return Callout.callout(
+        t,
+        Callout.Kind.DANGER,
+        "A change may not stand",
+        s.notKept,
+        button(t, Button.Variant.SECONDARY, "Dismiss", s::dismissNotKept));
   }
 
   private static El tryAgain(Theme t, Runnable action) {
@@ -289,6 +300,14 @@ final class Frame {
             t,
             Label.Variant.MUTED,
             "If its password is saved in the system keyring, it is deleted there too."));
+    if (s.removingSlow) {
+      content.child(Callout.callout(
+          t,
+          Callout.Kind.WARNING,
+          "The system keyring does not answer",
+          "Cancel gives up waiting: the password may then still be in the keyring or not, and the"
+              + " connection is not deleted."));
+    }
     if (s.removeError != null) {
       content.child(Callout.callout(
           t, Callout.Kind.DANGER, "The password could not be deleted", s.removeError));
@@ -298,7 +317,11 @@ final class Frame {
         "Delete connection",
         content,
         List.of(
-            button(t, Button.Variant.SECONDARY, "Cancel", s.removing ? null : s::cancelDelete),
+            button(
+                t,
+                Button.Variant.SECONDARY,
+                "Cancel",
+                s.removing && !s.removingSlow ? null : s::cancelDelete),
             delete),
         s::cancelDelete);
   }

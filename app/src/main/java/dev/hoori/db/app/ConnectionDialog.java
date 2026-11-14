@@ -86,6 +86,11 @@ final class ConnectionDialog {
   Work asking; // the keyring's answer whether it holds a password, or null
   // A change of the keyring runs: the dialog stays, unchanged, until its answer has come.
   boolean changing;
+  boolean slow; // the keyring has not answered for a while: Cancel gives up waiting for it
+  private Work moving; // the change of the keyring, while it runs
+  private int moves; // counted, so that a late patience is dropped
+  private char[] held; // the typed password the change keeps for this session, wiped if given up
+  private final State.Act act = new State.Act("save", this);
   boolean discarding; // the question whether to throw the changes away is open
   final Menu.State tlsMenu = new Menu.State();
   final ComboBox.State versionBox = new ComboBox.State();
@@ -205,8 +210,8 @@ final class ConnectionDialog {
     // The consoles ask first, before anything is written, so that Cancel leaves it all as it was;
     // then they start nothing until the save is done.
     if (ends(s, profile)
-        && (s.asks(this, SAVED, s.consoles(id), () -> save(s))
-            || !s.lock(this, State.name(profile) + " is being saved", id))) {
+        && (s.asks(act, SAVED, s.consoles(id), () -> save(s))
+            || !s.lock(act, State.name(profile) + " is being saved", id))) {
       return;
     }
     var secrets = s.secrets();
@@ -221,7 +226,17 @@ final class ConnectionDialog {
       return;
     }
     changing = true;
-    s.app.background(
+    held = put == null ? typed : null;
+    int move = ++moves;
+    s.app.after(State.KEYRING_SECONDS, () -> {
+      if (changing && moves == move) {
+        slow = true;
+        if (s.quitting()) {
+          giveUp(s); // closing never waits for a keyring that does not answer
+        }
+      }
+    });
+    moving = s.app.background(
         "move a password",
         () -> {
           if (put != null) {
@@ -244,12 +259,18 @@ final class ConnectionDialog {
           return old;
         },
         old -> {
+          moving = null;
+          held = null;
+          slow = false;
           stored = put != null; // where the password is now, as was done
           saved(s, profile, put != null ? null : typed != null ? typed : old, put != null);
         },
         error -> {
+          moving = null;
+          held = null;
+          slow = false;
           changing = false;
-          s.drop(this);
+          s.drop(act);
           keyringError = State.message(error);
           if (put == null && typed != null) {
             Arrays.fill(typed, '\0');
@@ -272,11 +293,39 @@ final class ConnectionDialog {
     apply(s, profile);
   }
 
+  static final String GAVE_UP =
+      "The system keyring did not answer, and the save was given up: whether it holds the password"
+          + " now, the old one or the new, is not known. The connection was not saved.";
+
+  /**
+   * Cancel once the keyring has not answered for a while: the change of the keyring is given up,
+   * whatever it did, and so is the save; the dialog stays and says what that leaves.
+   */
+  void giveUp(State s) {
+    if (!changing || !slow) {
+      return;
+    }
+    moving.cancel();
+    moving = null;
+    moves++;
+    changing = false;
+    slow = false;
+    stored = null; // not known now, and asked again before it counts
+    if (held != null) {
+      Arrays.fill(held, '\0');
+      held = null;
+    }
+    keyringError = GAVE_UP;
+    s.drop(act);
+    s.keyringFailed();
+    lookUp(s);
+  }
+
   static final String SAVED = "the changed connection is saved";
 
   /** Puts the profile in place and closes; its consoles were locked since their answers. */
   private void apply(State s, ConnectionProfile profile) {
-    s.drop(this);
+    s.drop(act);
     password = "";
     probe.close();
     versions.close();
@@ -293,6 +342,7 @@ final class ConnectionDialog {
   /** Cancel and Escape: closes, after asking when there are changes. */
   void cancel(State s) {
     if (changing) {
+      giveUp(s); // only once the keyring has kept it waiting
       return;
     }
     if (changed()) {
@@ -303,7 +353,7 @@ final class ConnectionDialog {
   }
 
   void close(State s) {
-    s.drop(this); // the way out a Save asked for goes with the dialog
+    s.drop(act); // the way out a Save asked for goes with the dialog
     if (asking != null) {
       asking.cancel();
     }
@@ -426,7 +476,8 @@ final class ConnectionDialog {
         "Save",
         () -> save(s),
         Button.options().enabled(changing || ready()).busy(changing));
-    El cancel = button(t, SECONDARY, "Cancel", open ? () -> cancel(s) : null);
+    El cancel =
+        button(t, SECONDARY, "Cancel", open ? () -> cancel(s) : slow ? () -> giveUp(s) : null);
     boolean canSave = s.secrets() != null && stored != null;
     boolean inKeyring = Boolean.TRUE.equals(stored);
     boolean inSession = !isNew && s.remembers(e.original().id());
@@ -557,6 +608,14 @@ final class ConnectionDialog {
           }
           return false;
         });
+    if (slow) {
+      content.child(Callout.callout(
+          t,
+          Callout.Kind.WARNING,
+          "The system keyring does not answer",
+          "Cancel gives up waiting: the keyring may then hold the password, the old one or the"
+              + " new, or none, and the connection is not saved."));
+    }
     if (keyringError != null) {
       content.child(Callout.callout(
           t, Callout.Kind.DANGER, "The system keyring reported a problem", keyringError));
