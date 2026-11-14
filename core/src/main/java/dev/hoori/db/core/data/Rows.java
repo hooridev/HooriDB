@@ -34,7 +34,6 @@ import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * Reads the rows of a table or view, a page at a time, and how many there are.
@@ -85,8 +84,10 @@ public final class Rows {
       DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSSSSS");
   private static final Pattern PLAN_ROWS = Pattern.compile(" rows=(\\d+) ");
 
-  // The alias of the table in every statement that reads its rows.
+  // The alias of the table in every statement that reads its rows, and of the table joined to it
+  // whose columns say what the table's are now.
   private static final String ALIAS = "r";
+  private static final String WITNESS = "w";
 
   // PostgreSQL's built-in types, by the OIDs it gives them for good; a user's type may have any of
   // their names.
@@ -192,8 +193,17 @@ public final class Rows {
    * can repeat or leave out a row, and a count and the pages need not agree. A position names a
    * row only for as long as the table does not change.
    *
-   * @param columns the table's columns as {@link dev.hoori.db.core.catalog.Catalog#columns} read
-   *     them, which give the primary key
+   * <p>The columns may have changed since they were read. The read notices it from what the
+   * server reports with the rows, without asking anything more, and fails with {@link
+   * QueryException.Failure#COLUMNS_CHANGED} where their names, number or order differ, or on
+   * MariaDB and MySQL where a column's type is now read another way: of another kind, or a {@code
+   * bigint} that became unsigned or signed. A type that keeps how its values are read, such as a
+   * longer {@code varchar}, is not told apart, and on MySQL neither are {@code tinyint(1)} and
+   * {@code bit(1)}, which its driver reports alike. PostgreSQL's values are read by the types the
+   * server reports for that very read, so a page's fields give the kinds the columns have now.
+   *
+   * @param columns all the table's columns, in their order, as {@link
+   *     dev.hoori.db.core.catalog.Catalog#columns} read them, which give the primary key
    * @throws IllegalArgumentException if the positions are not {@code 0 <= from <= to}, a column is
    *     not the table's, or a PostgreSQL connection is to another database than the table's
    */
@@ -223,25 +233,103 @@ public final class Rows {
         && table.kind() == Table.Kind.TABLE
         && key
         && children(connection, provider, described.table());
+    var pg = provider == Provider.POSTGRESQL;
+    var selected = reads.stream().flatMap(r -> r.sql().stream()).toList();
+    // On MariaDB and MySQL the table's columns as they are now come with the rows, from a join to
+    // none of its rows, whose columns only say what they are.
     var sql = "SELECT "
-        + reads.stream().flatMap(r -> r.sql().stream()).collect(Collectors.joining(", "))
+        + String.join(", ", selected)
+        + (pg ? "" : (selected.isEmpty() ? "" : ", ") + WITNESS + ".*")
         + " FROM " + qualified(provider, table) + " AS " + ALIAS
+        + (pg
+            ? ""
+            : " LEFT JOIN (SELECT * FROM " + qualified(provider, table) + " LIMIT 0) AS " + WITNESS
+                + " ON FALSE")
         + order(provider, table, columns, reads, children)
         + " LIMIT " + (to - from) + " OFFSET " + from;
-    var rows = Query.query(connection, provider, sql, result -> {
-      var read = new ArrayList<List<Object>>();
-      while (result.next()) {
-        var values = new Object[reads.size()];
-        var index = 1;
-        for (var i = 0; i < values.length; i++) {
-          values[i] = reads.get(i).value().read(result, index);
-          index += reads.get(i).sql().size();
+    List<List<Object>> rows;
+    try {
+      rows = Query.query(connection, provider, sql, result -> {
+        if (!pg && !same(provider, columns, reads, result.getMetaData(), selected.size())) {
+          return null;
         }
-        read.add(Collections.unmodifiableList(Arrays.asList(values)));
-      }
-      return read;
-    });
+        return rows(result, reads);
+      });
+    } catch (QueryException e) {
+      throw columnGone(e) ? changed(table) : e;
+    }
+    if (rows == null) {
+      throw changed(table);
+    }
     return new Page(reads.stream().map(Read::field).toList(), List.copyOf(rows));
+  }
+
+  private static List<List<Object>> rows(ResultSet result, List<Read> reads) throws SQLException {
+    var read = new ArrayList<List<Object>>();
+    while (result.next()) {
+      var values = new Object[reads.size()];
+      var index = 1;
+      for (var i = 0; i < values.length; i++) {
+        values[i] = reads.get(i).value().read(result, index);
+        index += reads.get(i).sql().size();
+      }
+      read.add(Collections.unmodifiableList(Arrays.asList(values)));
+    }
+    return read;
+  }
+
+  private static QueryException changed(Table table) {
+    return QueryException.of(
+        QueryException.Failure.COLUMNS_CHANGED, "The columns of " + table.name() + " changed");
+  }
+
+  // A column named in the statement is gone: PostgreSQL's undefined column, MariaDB's and MySQL's
+  // unknown column.
+  private static boolean columnGone(QueryException e) {
+    return e.failure() == QueryException.Failure.NOT_FOUND
+        && e.getCause() instanceof SQLException sql
+        && ("42703".equals(sql.getSQLState()) || "42S22".equals(sql.getSQLState()));
+  }
+
+  /**
+   * Whether the witness's columns, after the {@code selected} expressions of the reads, are the
+   * given columns, by name and in order, each read the way its catalogue type is read.
+   */
+  private static boolean same(
+      Provider provider,
+      List<Column> columns,
+      List<Read> reads,
+      ResultSetMetaData metadata,
+      int selected)
+      throws SQLException {
+    if (metadata.getColumnCount() - selected != columns.size()) {
+      return false;
+    }
+    for (var i = 0; i < columns.size(); i++) {
+      var at = selected + i + 1;
+      var type = metadata.getColumnTypeName(at);
+      var given = columns.get(i).type().toLowerCase(Locale.ROOT);
+      var precision = metadata.getPrecision(at);
+      // MySQL Connector/J reports tinyint(1) and bit(1) alike.
+      var bit = provider == Provider.MYSQL
+          && type.equalsIgnoreCase("bit")
+          && precision == 1
+          && (given.equals("bit(1)") || given.startsWith("tinyint(1)"));
+      var now = mysql(
+          provider,
+          new Source(metadata.getColumnLabel(at), type, ALIAS),
+          catalogueType(provider, type, precision));
+      if (!metadata.getColumnLabel(at).equals(columns.get(i).name())
+          || !bit && now.field().kind() != reads.get(i).field().kind()
+          || unsignedBigint(type.toLowerCase(Locale.ROOT)) != unsignedBigint(given)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean unsignedBigint(String type) {
+    return type.startsWith("bigint") && type.contains("unsigned");
   }
 
   private static String order(
@@ -280,16 +368,22 @@ public final class Rows {
               .toList(),
           0);
     }
-    if (columns.isEmpty()) {
-      return new Described(List.of(), 0);
-    }
-    var names = columns.stream()
-        .map(column -> column(provider, column.name()))
-        .collect(Collectors.joining(", "));
-    var sql =
-        "SELECT " + names + " FROM " + qualified(provider, table) + " AS " + ALIAS + " WHERE false";
-    return Query.query(connection, provider, sql, rows -> {
+    // All the table's columns, so that the given ones can be told to be them still.
+    var sql = "SELECT " + ALIAS + ".* FROM " + qualified(provider, table) + " AS " + ALIAS
+        + " WHERE false";
+    var described = Query.query(connection, provider, sql, rows -> {
       var metadata = rows.getMetaData();
+      if (metadata.getColumnCount() != columns.size()) {
+        return null;
+      }
+      for (var i = 0; i < columns.size(); i++) {
+        if (!metadata.getColumnLabel(i + 1).equals(columns.get(i).name())) {
+          return null;
+        }
+      }
+      if (columns.isEmpty()) {
+        return new Described(List.of(), 0);
+      }
       var reads = new ArrayList<Read>();
       for (var i = 0; i < columns.size(); i++) {
         reads.add(postgresql(
@@ -299,6 +393,10 @@ public final class Rows {
       }
       return new Described(reads, Integer.toUnsignedLong(field(metadata, 1, "getTableOid")));
     });
+    if (described == null) {
+      throw changed(table);
+    }
+    return described;
   }
 
   // How a table's columns are read, and on PostgreSQL the OID of the table, or 0.

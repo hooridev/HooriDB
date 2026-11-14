@@ -633,7 +633,7 @@ class RowsServerTest {
   @EnumSource(
       value = Provider.class,
       names = {"MARIADB", "MYSQL"})
-  void aValueThatIsNoneOfItsKindIsItsTextAndFailsNothing(Provider provider) throws Exception {
+  void aColumnRetypedSinceItWasReadFailsWithoutItsValue(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       execute(connection, "CREATE TABLE changed (id integer PRIMARY KEY, n integer)");
       try {
@@ -644,9 +644,10 @@ class RowsServerTest {
             connection,
             "ALTER TABLE changed MODIFY n varchar(20)",
             "INSERT INTO changed VALUES (1, 'secret 42')");
-        assertEquals(
-            List.of(List.of(1L, "secret 42")),
-            Rows.read(connection, provider, table, columns, 0, 1).rows());
+        var failed = assertThrows(
+            QueryException.class, () -> Rows.read(connection, provider, table, columns, 0, 1));
+        assertEquals(Failure.COLUMNS_CHANGED, failed.failure());
+        assertFalse(failed.getMessage().contains("secret"), failed.getMessage());
       } finally {
         execute(connection, "DROP TABLE changed");
       }
@@ -807,6 +808,75 @@ class RowsServerTest {
         if (pg) {
           execute(connection, "DROP COLLATION folded");
         }
+      }
+    }
+  }
+
+  /**
+   * Columns that changed since they were read are noticed by the read itself: one retyped, added,
+   * dropped, renamed or moved, and a boolean that became a whole number holding 2. With the
+   * columns read anew the table reads again.
+   */
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aReadWithColumnsThatChangedFailsAsChanged(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    var table = table(provider, "changing", Table.Kind.TABLE);
+    var changes = new ArrayList<>(List.of(
+        pg
+            ? "ALTER TABLE changing ALTER COLUMN a TYPE text"
+            : "ALTER TABLE changing MODIFY a varchar(20)",
+        "ALTER TABLE changing ADD COLUMN c integer",
+        "ALTER TABLE changing DROP COLUMN b",
+        "ALTER TABLE changing RENAME COLUMN b TO b2"));
+    if (!pg) {
+      changes.add("ALTER TABLE changing MODIFY b integer FIRST");
+      changes.add("ALTER TABLE changing MODIFY flag integer");
+    }
+    try (var connection = open(provider)) {
+      for (var change : changes) {
+        execute(
+            connection,
+            "CREATE TABLE changing (id integer PRIMARY KEY, a integer, b integer"
+                + (pg ? "" : ", flag bit(1)") + ")",
+            "INSERT INTO changing VALUES (1, 2, 3" + (pg ? "" : ", 1") + ")");
+        try {
+          var columns = columns(connection, provider, table);
+          assertEquals(
+              1, Rows.read(connection, provider, table, columns, 0, 10).rows().size());
+          execute(connection, change);
+          if (change.contains("flag")) {
+            execute(connection, "UPDATE changing SET flag = 2");
+          }
+          if (pg && change.contains(" TYPE ")) {
+            // PostgreSQL's values are read by the types of each read.
+            var page = Rows.read(connection, provider, table, columns, 0, 10);
+            assertEquals(Kind.TEXT, page.fields().get(1).kind(), change);
+            assertEquals("2", page.rows().getFirst().get(1), change);
+          } else {
+            var failed = assertThrows(
+                QueryException.class,
+                () -> Rows.read(connection, provider, table, columns, 0, 10),
+                change);
+            assertEquals(Failure.COLUMNS_CHANGED, failed.failure(), change);
+          }
+          var again = columns(connection, provider, table);
+          assertEquals(
+              1, Rows.read(connection, provider, table, again, 0, 10).rows().size());
+        } finally {
+          execute(connection, "DROP TABLE changing");
+        }
+      }
+      // Columns given in another order than the table's are not its columns.
+      execute(connection, "CREATE TABLE changing (id integer PRIMARY KEY, a integer, b integer)");
+      try {
+        var columns = new ArrayList<>(columns(connection, provider, table));
+        columns.add(columns.remove(1));
+        var failed = assertThrows(
+            QueryException.class, () -> Rows.read(connection, provider, table, columns, 0, 10));
+        assertEquals(Failure.COLUMNS_CHANGED, failed.failure());
+      } finally {
+        execute(connection, "DROP TABLE changing");
       }
     }
   }

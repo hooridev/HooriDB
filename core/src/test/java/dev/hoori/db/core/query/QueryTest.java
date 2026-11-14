@@ -412,4 +412,14 @@ class QueryTest {
           return result == null && method.getReturnType() == boolean.class ? false : result;
         }));
   }
+
+  @Test
+  void aFailureCanBeMadeFromItsParts() {
+    var failure = QueryException.of(Failure.ABORTED, "given up");
+    assertEquals(Failure.ABORTED, failure.failure());
+    assertEquals("given up", failure.detail());
+    assertEquals("ABORTED: given up", failure.getMessage());
+    assertEquals(
+        "COLUMNS_CHANGED", QueryException.of(Failure.COLUMNS_CHANGED, "").getMessage());
+  }
 }

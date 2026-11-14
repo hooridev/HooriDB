@@ -103,7 +103,8 @@ public record Failure(
         : switch (Query.failure(connection, e).failure()) {
           case CONNECTION_LOST, ABORTED -> Kind.CONNECTION_LOST;
           case ACCESS_DENIED -> Kind.ACCESS_DENIED;
-          case NOT_FOUND -> Kind.INVALID;
+          // Query.failure never says that columns changed, which only a read of a table finds.
+          case NOT_FOUND, COLUMNS_CHANGED -> Kind.INVALID;
           // Not by the caller: PostgreSQL's statement timeout, or MariaDB's, which shares the state
           // of
           // an interrupted statement.

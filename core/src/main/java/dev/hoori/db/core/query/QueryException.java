@@ -20,6 +20,11 @@ public final class QueryException extends Exception {
      * closed, and going on needs a new one.
      */
     ABORTED,
+    /**
+     * The table's columns are no longer those the read was given: one was added, dropped, renamed,
+     * moved or given another type. Read the columns again, then the rows.
+     */
+    COLUMNS_CHANGED,
     /** Anything else; the detail says what. */
     OTHER
   }
@@ -31,6 +36,14 @@ public final class QueryException extends Exception {
     super(detail.isEmpty() ? failure.toString() : failure + ": " + detail, cause);
     this.failure = failure;
     this.detail = detail;
+  }
+
+  /**
+   * A failure as a stand-in for a server reports it, such as a made-up server in a test. The
+   * detail must not hold a password.
+   */
+  public static QueryException of(Failure failure, String detail) {
+    return new QueryException(failure, detail, null);
   }
 
   public Failure failure() {

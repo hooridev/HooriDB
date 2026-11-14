@@ -299,7 +299,7 @@ public final class Catalog {
       case ACCESS_DENIED -> Failure.ACCESS_DENIED;
       case CANCELLED -> Failure.CANCELLED;
       case ABORTED -> Failure.ABORTED;
-      case OTHER -> Failure.OTHER;
+      case COLUMNS_CHANGED, OTHER -> Failure.OTHER;
     };
     return new CatalogException(failure, e.detail(), e.getCause());
   }
