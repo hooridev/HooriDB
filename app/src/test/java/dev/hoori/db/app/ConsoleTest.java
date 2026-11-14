@@ -294,6 +294,44 @@ class ConsoleTest {
     assertFalse(tab.text.contains(ORDERS), tab.text);
   }
 
+  /** Two consoles, the second with a result. */
+  static final String TWO = menu(SHOP.name(), "New console") + SETTLE + type(COUNT) + RUN;
+
+  /** Back to the second console, the focus on its result's first cell. */
+  static final String RESULTS =
+      "press role=tab label=\"shop-prod: shop (2)\"\nframe\npress #cell-0-0\nframe\n";
+
+  /** The window's tab keys, each from the results of the second console; snaps their trees. */
+  static final String KEYS = RESULTS + "snap results\nkey Tab control\nframe\nsnap tab\n"
+      + RESULTS + "key PageDown control\nframe\nsnap down\n"
+      + RESULTS + "key PageUp control\nframe\nsnap up\n";
+
+  @Test
+  void theWindowsTabKeysSwitchItsTabsAlsoFromAConsolesResults() throws Exception {
+    var app = console(SHOP);
+    c.run(app, TWO + KEYS);
+    var results = c.tree("results");
+    assertTrue(PaletteTest.focused(results).contains("role=grid"), PaletteTest.focused(results));
+    for (var snap : List.of("tab", "down", "up")) {
+      assertEquals("shop-prod: shop (1)", PaletteTest.active(c.tree(snap)), c.tree(snap));
+    }
+  }
+
+  @Test
+  void theTabKeysSwitchATornOffWindowsTabsAlsoFromAConsolesResults() throws Exception {
+    var app = console(SHOP);
+    c.run(
+        app,
+        "press #tab-0 right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
+            + "window \"shop-prod: shop\"\nkey N control\nframe\n" + SETTLE + type(COUNT) + RUN
+            + KEYS);
+    for (var snap : List.of("tab", "down", "up")) {
+      var window = c.tree("shop-prod-shop-" + snap);
+      assertEquals("shop-prod: shop (1)", PaletteTest.active(window), window);
+    }
+  }
+
   @Test
   void findAndReplaceWorkInTheEditor() throws Exception {
     var app = console(SHOP);

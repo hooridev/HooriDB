@@ -826,7 +826,8 @@ final class ConsoleTab implements Tab {
             at < 0 ? outputs.size() : at,
             i -> shown = i < outputs.size() ? outputs.get(i) : null,
             i -> {},
-            content)
+            content,
+            Tabs.options().switchKeys(false))
         .key("results")
         .grow(1);
     return col()
