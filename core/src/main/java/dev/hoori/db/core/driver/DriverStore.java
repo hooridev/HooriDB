@@ -110,6 +110,32 @@ public final class DriverStore {
     return remote(path, () -> repository.published(path));
   }
 
+  /**
+   * The size of the version's file in bytes, or -1 when the repository does not say; nothing is
+   * downloaded. The file is opened and closed again before its content is read, which over HTTPS
+   * costs one request whose body is cut off after the headers.
+   */
+  public long size(Driver driver, String version) throws DriverException {
+    var path = file(driver, version);
+    checkCancelled(path);
+    try (var response = remote(path, () -> repository.open(path))) {
+      if (response.length() > maxSize) {
+        throw new DriverException(TOO_LARGE, path);
+      }
+      return response.length();
+    } catch (IOException e) {
+      throw network(path, e);
+    }
+  }
+
+  /**
+   * Where the version's file is under the repository, such as {@code
+   * org/postgresql/postgresql/42.7.14/postgresql-42.7.14.jar}, for showing to the user.
+   */
+  public String address(Driver driver, String version) {
+    return file(driver, version);
+  }
+
   /** {@link #recommended(Driver, Instant, Duration)} with the default waiting period. */
   public Recommended recommended(Driver driver, Instant now) throws DriverException {
     return recommended(driver, now, WAITING_PERIOD);

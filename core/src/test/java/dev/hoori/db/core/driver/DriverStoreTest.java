@@ -422,6 +422,24 @@ class DriverStoreTest {
     void run() throws Exception;
   }
 
+  @Test
+  void theSizeIsAskedWithoutDownloading() throws Exception {
+    repository.publish(DRIVER, "1.0", BYTES, Sum.SHA256, NOW);
+    assertEquals(BYTES.length, store.size(DRIVER, "1.0"));
+    assertEquals(List.of(), store.downloaded(DRIVER));
+    assertFailure(Failure.NOT_FOUND, () -> store.size(DRIVER, "2.0"));
+    assertFailure(
+        Failure.TOO_LARGE, () -> new DriverStore(storage, repository, 10).size(DRIVER, "1.0"));
+    repository.offline = true;
+    assertFailure(Failure.NO_NETWORK, () -> store.size(DRIVER, "1.0"));
+  }
+
+  @Test
+  void theAddressIsTheFilesPathUnderTheRepository() {
+    assertEquals("dev/hoori/fake/fake-jdbc/1.0/fake-jdbc-1.0.jar", store.address(DRIVER, "1.0"));
+    assertThrows(IllegalArgumentException.class, () -> store.address(DRIVER, "../1.0"));
+  }
+
   private static void assertFailure(Failure failure, Call call) {
     var e = assertThrows(DriverException.class, call::run);
     assertEquals(failure, e.failure(), e.getMessage());
