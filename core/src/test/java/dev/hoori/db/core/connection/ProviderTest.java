@@ -14,71 +14,201 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class ProviderTest {
 
-  private static String url(Provider provider, String host, String database, boolean tls) {
-    return provider.jdbcUrl(ConnectionProfile.of(provider)
+  private static ConnectionParameters parameters(
+      Provider provider, String host, String database, Tls tls)
+      throws ConnectionProfile.UnfitException {
+    return provider.parameters(ConnectionProfile.of(provider)
         .withHost(host)
         .withDatabase(database)
         .withUser("someone")
         .withTls(tls));
   }
 
-  @Test
-  void urlWithTls() {
-    assertEquals(
-        "jdbc:postgresql://db.example:5432/shop?sslmode=verify-full",
-        url(Provider.POSTGRESQL, "db.example", "shop", true));
-    assertEquals(
-        "jdbc:mariadb://db.example:3306/shop?sslMode=verify-full",
-        url(Provider.MARIADB, "db.example", "shop", true));
-    assertEquals(
-        "jdbc:mysql://db.example:3306/shop?sslMode=VERIFY_IDENTITY",
-        url(Provider.MYSQL, "db.example", "shop", true));
+  private static void assertParameters(
+      String url, Map<String, String> properties, ConnectionParameters parameters) {
+    assertEquals(new ConnectionParameters(url, properties), parameters);
   }
 
   @Test
-  void urlWithoutTls() {
-    assertEquals(
-        "jdbc:postgresql://db.example:5432/shop?sslmode=disable",
-        url(Provider.POSTGRESQL, "db.example", "shop", false));
-    assertEquals(
-        "jdbc:mariadb://db.example:3306/shop?sslMode=disable",
-        url(Provider.MARIADB, "db.example", "shop", false));
-    assertEquals(
-        "jdbc:mysql://db.example:3306/shop?sslMode=DISABLED",
-        url(Provider.MYSQL, "db.example", "shop", false));
+  void postgresql() throws Exception {
+    assertParameters(
+        "jdbc:postgresql://db.example:5432/shop",
+        Map.of("sslmode", "disable"),
+        parameters(POSTGRESQL, "db.example", "shop", Tls.OFF));
+    assertParameters(
+        "jdbc:postgresql://db.example:5432/shop",
+        Map.of("sslmode", "require"),
+        parameters(POSTGRESQL, "db.example", "shop", Tls.ENCRYPTED));
+    assertParameters(
+        "jdbc:postgresql://db.example:5432/shop",
+        Map.of("sslmode", "verify-full", "sslfactory", "org.postgresql.ssl.DefaultJavaSSLFactory"),
+        parameters(POSTGRESQL, "db.example", "shop", Tls.VERIFIED));
   }
 
   @Test
-  void urlPutsIpv6HostInBrackets() {
-    assertEquals(
-        "jdbc:postgresql://[::1]:5432/shop?sslmode=disable",
-        url(Provider.POSTGRESQL, "::1", "shop", false));
-    assertEquals(
-        "jdbc:mariadb://[fe80::1]:3306/shop?sslMode=disable",
-        url(Provider.MARIADB, "[fe80::1]", "shop", false));
-    assertEquals(
-        "jdbc:mysql://[2001:db8::1]:3306/shop?sslMode=DISABLED",
-        url(Provider.MYSQL, "2001:db8::1", "shop", false));
+  void mariadb() throws Exception {
+    assertParameters(
+        "jdbc:mariadb://db.example:3306/",
+        Map.of("sslMode", "disable", "database", "shop"),
+        parameters(MARIADB, "db.example", "shop", Tls.OFF));
+    assertParameters(
+        "jdbc:mariadb://db.example:3306/",
+        Map.of("sslMode", "trust", "database", "shop"),
+        parameters(MARIADB, "db.example", "shop", Tls.ENCRYPTED));
+    assertParameters(
+        "jdbc:mariadb://db.example:3306/",
+        Map.of("sslMode", "verify-full", "deferCertificateValidation", "false", "database", "shop"),
+        parameters(MARIADB, "db.example", "shop", Tls.VERIFIED));
   }
 
   @Test
-  void urlEncodesDatabase() {
-    assertEquals(
-        "jdbc:postgresql://h:5432/my%20db%2Fa%3Fb%2B%26%23%25-._~%C3%A4?sslmode=disable",
-        url(Provider.POSTGRESQL, "h", "my db/a?b+&#%-._~ä", false));
+  void mysql() throws Exception {
+    assertParameters(
+        "jdbc:mysql://db.example:3306/",
+        Map.of("sslMode", "DISABLED", "dbname", "shop"),
+        parameters(MYSQL, "db.example", "shop", Tls.OFF));
+    assertParameters(
+        "jdbc:mysql://db.example:3306/",
+        Map.of("sslMode", "REQUIRED", "dbname", "shop"),
+        parameters(MYSQL, "db.example", "shop", Tls.ENCRYPTED));
+    assertParameters(
+        "jdbc:mysql://db.example:3306/",
+        Map.of("sslMode", "VERIFY_IDENTITY", "dbname", "shop"),
+        parameters(MYSQL, "db.example", "shop", Tls.VERIFIED));
   }
 
   @Test
-  void urlHasNoUser() {
-    var url = url(Provider.MYSQL, "h", "d", true);
-    assertEquals(-1, url.indexOf("someone"));
+  void theOtherFieldsGoAsTheyAre() throws Exception {
+    var profile = ConnectionProfile.of(MYSQL)
+        .withHost("127.0.0.1")
+        .withPort(1)
+        .withDatabase("d")
+        .withTls(Tls.OFF);
+    assertEquals("jdbc:mysql://127.0.0.1:1/", MYSQL.parameters(profile).url());
+    assertEquals(
+        "jdbc:postgresql://db.example.:65535/d",
+        POSTGRESQL.parameters(profile.withHost("db.example.").withPort(65535)).url());
+  }
+
+  @Test
+  void anEmptyDatabaseIsLeftOut() throws Exception {
+    assertParameters(
+        "jdbc:postgresql://h:5432/",
+        Map.of("sslmode", "disable"),
+        parameters(POSTGRESQL, "h", "", Tls.OFF));
+    assertParameters(
+        "jdbc:mariadb://h:3306/",
+        Map.of("sslMode", "disable"),
+        parameters(MARIADB, "h", "", Tls.OFF));
+    assertParameters(
+        "jdbc:mysql://h:3306/", Map.of("sslMode", "DISABLED"), parameters(MYSQL, "h", "", Tls.OFF));
+  }
+
+  @ParameterizedTest
+  @CsvSource(textBlock = """
+      'a b',          a%20b
+      'a/b',          a%2Fb
+      '50%',          50%25
+      ' lead',        %20lead
+      'trail ',       trail%20
+      'a?b+&#=;-._~', a%3Fb%2B%26%23%3D%3B-._~
+      'Bäckerei 東京', B%C3%A4ckerei%20%E6%9D%B1%E4%BA%AC
+      """)
+  void databaseNamesArriveAsTheyAre(String database, String path) throws Exception {
+    assertEquals(
+        "jdbc:postgresql://h:5432/" + path,
+        parameters(POSTGRESQL, "h", database, Tls.OFF).url());
+    var mariadb = parameters(MARIADB, "h", database, Tls.OFF);
+    assertEquals("jdbc:mariadb://h:3306/", mariadb.url());
+    assertEquals(database, mariadb.properties().get("database"));
+    var mysql = parameters(MYSQL, "h", database, Tls.OFF);
+    assertEquals("jdbc:mysql://h:3306/", mysql.url());
+    assertEquals(database, mysql.properties().get("dbname"));
+  }
+
+  @Test
+  void ipv6HostsGoInBrackets() throws Exception {
+    for (var host : List.of("::1", "[::1]")) {
+      assertEquals(
+          "jdbc:postgresql://[::1]:5432/d",
+          parameters(POSTGRESQL, host, "d", Tls.OFF).url());
+      assertEquals(
+          "jdbc:mariadb://[::1]:3306/", parameters(MARIADB, host, "d", Tls.OFF).url());
+      assertEquals(
+          "jdbc:mysql://[::1]:3306/", parameters(MYSQL, host, "d", Tls.OFF).url());
+    }
+    assertEquals(
+        "jdbc:mysql://[2001:db8::1]:3306/",
+        parameters(MYSQL, "2001:db8::1", "d", Tls.OFF).url());
+  }
+
+  @Test
+  void theZoneOfAnIpv6HostIsEncodedOnlyForMysql() throws Exception {
+    for (var host : List.of("fe80::1%1", "[fe80::1%1]")) {
+      assertEquals(
+          "jdbc:postgresql://[fe80::1%1]:5432/d",
+          parameters(POSTGRESQL, host, "d", Tls.OFF).url());
+      assertEquals(
+          "jdbc:mariadb://[fe80::1%1]:3306/",
+          parameters(MARIADB, host, "d", Tls.OFF).url());
+      assertEquals(
+          "jdbc:mysql://[fe80::1%251]:3306/",
+          parameters(MYSQL, host, "d", Tls.OFF).url());
+    }
+    assertEquals(
+        "jdbc:mysql://[fe80::1%25eth0]:3306/",
+        parameters(MYSQL, "fe80::1%eth0", "d", Tls.OFF).url());
+  }
+
+  @Test
+  void parametersHaveNoUser() throws Exception {
+    for (var provider : Provider.values()) {
+      for (var tls : Tls.values()) {
+        var parameters = parameters(provider, "h", "d", tls);
+        assertFalse(parameters.url().contains("someone"), parameters.toString());
+        assertFalse(parameters.properties().containsValue("someone"), parameters.toString());
+      }
+    }
+  }
+
+  @Test
+  void anUnfitProfileFailsWithItsProblems() {
+    for (var provider : Provider.values()) {
+      var profile = ConnectionProfile.of(provider)
+          .withHost("db.example/shop?sslmode=disable&ignored=")
+          .withPort(65536)
+          .withDatabase("a\0b")
+          .withUser("c\0d");
+      var failure =
+          assertThrows(ConnectionProfile.UnfitException.class, () -> provider.parameters(profile));
+      assertEquals(profile.problems(), failure.problems());
+      assertEquals(4, failure.problems().size());
+      assertFalse(failure.getMessage().contains("db.example"), failure.getMessage());
+      assertThrows(
+          ConnectionProfile.UnfitException.class,
+          () -> provider.parameters(ConnectionProfile.of(provider)));
+    }
+  }
+
+  @Test
+  void parametersCannotBeChanged() throws Exception {
+    var properties = new HashMap<>(Map.of("a", "b"));
+    var parameters = new ConnectionParameters("u", properties);
+    properties.put("c", "d");
+    assertEquals(Map.of("a", "b"), parameters.properties());
+    assertThrows(
+        UnsupportedOperationException.class, () -> parameters.properties().put("x", "y"));
   }
 
   @Test

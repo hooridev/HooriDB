@@ -8,6 +8,7 @@ import static dev.hoori.db.core.connection.Capability.SCHEMAS;
 import static dev.hoori.db.core.connection.Capability.TRANSACTIONAL_DDL;
 
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
@@ -18,8 +19,17 @@ public enum Provider {
       5432,
       "postgresql",
       '"',
-      "sslmode=verify-full",
-      "sslmode=disable",
+      // DefaultJavaSSLFactory checks the chain against the JVM's trust store, where the driver's
+      // own factory reads a root.crt from the user's PostgreSQL folder; verify-full still has the
+      // driver check the host name.
+      Map.of(
+          Tls.OFF, Map.of("sslmode", "disable"),
+          Tls.ENCRYPTED, Map.of("sslmode", "require"),
+          Tls.VERIFIED,
+              Map.of(
+                  "sslmode", "verify-full",
+                  "sslfactory", "org.postgresql.ssl.DefaultJavaSSLFactory")),
+      null,
       Map.of(
           SCHEMAS, always(),
           TRANSACTIONAL_DDL, always(),
@@ -32,8 +42,13 @@ public enum Provider {
       3306,
       "mariadb",
       '`',
-      "sslMode=verify-full",
-      "sslMode=disable",
+      // Without deferCertificateValidation=false, verify-full accepts a certificate the trust
+      // store does not, against a fingerprint bound to the password and without the host name.
+      Map.of(
+          Tls.OFF, Map.of("sslMode", "disable"),
+          Tls.ENCRYPTED, Map.of("sslMode", "trust"),
+          Tls.VERIFIED, Map.of("sslMode", "verify-full", "deferCertificateValidation", "false")),
+      "database",
       Map.of(
           EXPLAIN, always(MySqlFamily.PLAN),
           EXPLAIN_JSON, since(10, 1, 2, MySqlFamily.PLAN_JSON),
@@ -43,8 +58,11 @@ public enum Provider {
       3306,
       "mysql",
       '`',
-      "sslMode=VERIFY_IDENTITY",
-      "sslMode=DISABLED",
+      Map.of(
+          Tls.OFF, Map.of("sslMode", "DISABLED"),
+          Tls.ENCRYPTED, Map.of("sslMode", "REQUIRED"),
+          Tls.VERIFIED, Map.of("sslMode", "VERIFY_IDENTITY")),
+      "dbname",
       Map.of(
           EXPLAIN, always(MySqlFamily.PLAN),
           EXPLAIN_JSON, since(5, 6, 5, MySqlFamily.PLAN_JSON),
@@ -65,8 +83,8 @@ public enum Provider {
   private final int defaultPort;
   private final String scheme;
   private final char quote;
-  private final String tlsOn;
-  private final String tlsOff;
+  private final Map<Tls, Map<String, String>> tls;
+  private final String databaseProperty;
   private final Map<Capability, Since> capabilities;
 
   Provider(
@@ -74,15 +92,15 @@ public enum Provider {
       int defaultPort,
       String scheme,
       char quote,
-      String tlsOn,
-      String tlsOff,
+      Map<Tls, Map<String, String>> tls,
+      String databaseProperty,
       Map<Capability, Since> capabilities) {
     this.displayName = displayName;
     this.defaultPort = defaultPort;
     this.scheme = scheme;
     this.quote = quote;
-    this.tlsOn = tlsOn;
-    this.tlsOff = tlsOff;
+    this.tls = tls;
+    this.databaseProperty = databaseProperty;
     this.capabilities = capabilities;
   }
 
@@ -106,14 +124,37 @@ public enum Provider {
     return defaultPort;
   }
 
-  /** The JDBC URL of the profile, without its user or password. */
-  public String jdbcUrl(ConnectionProfile profile) {
-    var host = profile.host();
-    if (host.indexOf(':') >= 0 && !host.startsWith("[")) {
-      host = "[" + host + "]";
+  /**
+   * What this provider's driver needs to connect to the profile, but its user and password, which
+   * go into a copy of the properties.
+   *
+   * @throws ConnectionProfile.UnfitException if the profile has {@link ConnectionProfile#problems}
+   */
+  public ConnectionParameters parameters(ConnectionProfile profile)
+      throws ConnectionProfile.UnfitException {
+    var problems = profile.problems();
+    if (!problems.isEmpty()) {
+      throw new ConnectionProfile.UnfitException(problems);
     }
-    return "jdbc:" + scheme + "://" + host + ":" + profile.port() + "/" + encode(profile.database())
-        + "?" + (profile.tls() ? tlsOn : tlsOff);
+    var host = profile.host();
+    if (host.indexOf(':') >= 0) {
+      // As typed: with VERIFIED, pgjdbc and MySQL Connector/J compare an IPv6 address with the
+      // certificate's as text, so a shortened form or brackets can fail a right certificate.
+      host = host.startsWith("[") ? host.substring(1, host.length() - 1) : host;
+      // MySQL Connector/J decodes the host, and fails on the "%" of a zone that is not "%25".
+      host = "[" + (this == MYSQL ? host.replace("%", "%25") : host) + "]";
+    }
+    var url = "jdbc:" + scheme + "://" + host + ":" + profile.port() + "/";
+    var properties = new HashMap<>(tls.get(profile.tls()));
+    var database = profile.database();
+    if (databaseProperty == null) {
+      url += encode(database);
+    } else if (!database.isEmpty()) {
+      // MariaDB Connector/J does not decode the path of the URL and MySQL Connector/J trims it, so
+      // the name goes as a property, which both pass on as it is.
+      properties.put(databaseProperty, database);
+    }
+    return new ConnectionParameters(url, properties);
   }
 
   /** The identifier as a quoted name of this provider's SQL. */

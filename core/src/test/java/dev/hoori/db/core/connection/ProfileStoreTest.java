@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -29,12 +30,12 @@ class ProfileStoreTest {
       {
         "id": "0f8fad5b-d9cb-469f-a165-70867728950e",
         "name": "Local",
-        "provider": "POSTGRESQL",
+        "provider": "postgresql",
         "host": "localhost",
         "port": 5432,
         "database": "app",
         "user": "app",
-        "tls": false
+        "tls": "off"
       }""";
 
   private static final String VALID = "{\"version\": 1, \"profiles\": [" + PROFILE + "]}";
@@ -48,10 +49,17 @@ class ProfileStoreTest {
           5432,
           "shop/€",
           "ünïcode user",
-          false),
-      new ConnectionProfile(UUID.randomUUID(), "", Provider.MYSQL, "", 0, "", "", true),
+          Tls.OFF),
+      new ConnectionProfile(UUID.randomUUID(), "", Provider.MYSQL, "", 0, "", "", Tls.ENCRYPTED),
       new ConnectionProfile(
-          UUID.randomUUID(), "{\"x\": 1}", Provider.MARIADB, "db.example", 3307, "x", "y", true));
+          UUID.randomUUID(),
+          "{\"x\": 1}",
+          Provider.MARIADB,
+          "db.example",
+          3307,
+          "x",
+          "y",
+          Tls.VERIFIED));
 
   @TempDir
   Path folder;
@@ -99,10 +107,23 @@ class ProfileStoreTest {
   }
 
   @Test
+  void providerAndTlsAreStoredByNamesOfTheirOwn() throws IOException {
+    new ProfileStore(folder).save(PROFILES);
+    var root =
+        JsonMapper.builder().build().readTree(Files.readString(folder.resolve(ProfileStore.FILE)));
+    var stored = new ArrayList<String>();
+    for (var profile : root.get("profiles")) {
+      stored.add(
+          profile.get("provider").stringValue() + " " + profile.get("tls").stringValue());
+    }
+    assertEquals(List.of("postgresql off", "mysql encrypted", "mariadb verified"), stored);
+  }
+
+  @Test
   void unknownFieldsOfTheSameVersionAreIgnored() throws IOException {
     write(VALID
         .replace("\"version\": 1", "\"version\": 1, \"theme\": {\"dark\": true}")
-        .replace("\"tls\": false", "\"tls\": false, \"colour\": \"red\"")
+        .replace("\"tls\": \"off\"", "\"tls\": \"off\", \"colour\": \"red\"")
         .getBytes(UTF_8));
     var profiles = new ProfileStore(folder).load();
     assertEquals(1, profiles.size());
@@ -127,11 +148,14 @@ class ProfileStoreTest {
         broken(VALID.replace("\"app\",", "7,"), "\"database\" is not text"),
         broken(VALID.replace("0f8fad5b-d9cb-469f", "nope"), "\"id\" is not a UUID"),
         broken(VALID.replace("0f8fad5b-d9cb-469f-a165-70867728950e", "1-2-3-4-5"), "not a UUID"),
-        broken(VALID.replace("POSTGRESQL", "ORACLE"), "\"ORACLE\", a database HooriDB does not"),
+        broken(VALID.replace("postgresql", "oracle"), "\"oracle\", a database HooriDB does not"),
+        broken(VALID.replace("postgresql", "POSTGRESQL"), "\"POSTGRESQL\", a database"),
         broken(VALID.replace("5432", "\"5432\""), "\"port\" is not a whole number"),
         broken(VALID.replace("5432", "5432.0"), "\"port\" is not a whole number"),
         broken(VALID.replace("5432", "99999999999"), "\"port\" is not a whole number"),
-        broken(VALID.replace("false", "\"false\""), "\"tls\" is not true or false"),
+        broken(VALID.replace("\"off\"", "\"strict\""), "\"tls\" is not \"off\", \"encrypted\""),
+        broken(VALID.replace("\"off\"", "\"OFF\""), "\"tls\" is not \"off\", \"encrypted\""),
+        broken(VALID.replace("\"off\"", "false"), "\"tls\" is not text"),
         broken(VALID.replace(PROFILE, PROFILE + "," + PROFILE), "profile 2 has the id"),
         // "ÿ" in Latin-1 is a byte that UTF-8 never has.
         Arguments.of(VALID.replace("Local", "Lÿcal").getBytes(ISO_8859_1), "not valid JSON"));
