@@ -38,7 +38,7 @@ final class Frame {
 
   static El view(State s) {
     Theme t = s.theme;
-    s.tidyPalettes();
+    s.forgetClosedWindows();
     var main = s.tabs.main();
     // One dialog at a time: what the catalogue asks waits for the others to close.
     El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, main) : null;
@@ -48,6 +48,7 @@ final class Frame {
         || asked != null
         || s.driverList != null
         || question != null;
+    closePalette(s, main, modal);
     List<Menu.Item> menus = menus(s, main, modal);
     El catalogue = catalogue(t, s).key("catalogue").label("Catalogue");
     El tabs = tabs(s, main, s.app).key("tabs");
@@ -55,7 +56,7 @@ final class Frame {
         .wFull()
         .hFull()
         .fill(t.surface().window())
-        .onKey(keys(MenuBar.keys(s.bar, menus), s.palette(main), modal, tabs))
+        .onKey(keys(MenuBar.keys(s.bar, menus), s.bar, s.palette(main), modal, tabs))
         .onKeyUp(MenuBar.keysUp(s.bar, menus))
         .child(withMenus(
             t,
@@ -97,13 +98,41 @@ final class Frame {
   }
 
   /**
-   * A window's keys: its menus' combinations, the palette's own while no dialog is open, and the
-   * tabs' also while the focus is outside them, as in the tree; none of the tabs' while empty.
+   * A window's keys: the tabs' first, also while the focus is outside them, as in the tree, so that
+   * they go through the tabs as inside them, closing the menu open in the bar; then its menus'
+   * combinations, and the palette's own while no dialog is open. None of the tabs' while empty.
+   *
+   * @param bar the window's menu bar, null for a window without one
    */
   private static Predicate<Key> keys(
-      Predicate<Key> menus, CommandPalette.State palette, boolean modal, El tabs) {
+      Predicate<Key> menus,
+      MenuBar.State bar,
+      CommandPalette.State palette,
+      boolean modal,
+      El tabs) {
     Predicate<Key> keys = modal ? menus : menus.or(CommandPalette.keys(palette));
-    return tabs.onKey() == null ? keys : keys.or(tabs.onKey());
+    Predicate<Key> ofTabs = tabs.onKey();
+    if (ofTabs == null) {
+      return keys;
+    }
+    return ((Predicate<Key>) k -> {
+          if (!ofTabs.test(k)) {
+            return false;
+          }
+          if (bar != null) {
+            bar.close();
+          }
+          return true;
+        })
+        .or(keys);
+  }
+
+  /** Closes the window's palette, and so stops what it reads, once a dialog hides it. */
+  private static void closePalette(State s, TabGroups.Group<Tab> group, boolean modal) {
+    var palette = s.palette(group);
+    if (modal && palette.isOpen()) {
+      palette.close();
+    }
   }
 
   /** The window's command palette, over the commands of its menus and its tables after @. */
@@ -122,10 +151,12 @@ final class Frame {
           case TableTab x ->
             new Tabs.Tab(s.title(x))
                 .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE)
-                .hue(Colours.hue(s.colour(x.id)));
+                .hue(Colours.hue(s.colour(x.id)))
+                .busy(x.opening != null || x.counting != null);
           // What may be open is changes not yet committed: the tab's dot.
           case ConsoleTab x ->
-            new Tabs.Tab(s.title(x), true, x.atStake(), Symbol.CODE, Colours.hue(s.colour(x.id)));
+            new Tabs.Tab(
+                s.title(x), true, x.atStake(), Symbol.CODE, Colours.hue(s.colour(x.id)), x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -155,7 +186,6 @@ final class Frame {
   /** The window of tabs torn off: its title bar over its tabs, whose status lines they show. */
   static El window(State s, TabGroups.Group<Tab> group) {
     Theme t = s.theme;
-    s.tidyPalettes();
     App<State> app = app(s, group);
     El tabs = tabs(s, group, app).key("tabs");
     // What a console of this window asked for, such as a password.
@@ -163,13 +193,14 @@ final class Frame {
     // What its console asks about what may be open in it.
     El question = question(s, group);
     // The menus' commands without the bar, acting on this window's tabs.
-    List<Menu.Item> menus = menus(s, group, asked != null || question != null);
+    boolean modal = asked != null || question != null;
+    List<Menu.Item> menus = menus(s, group, modal);
+    closePalette(s, group, modal);
     return col()
         .wFull()
         .hFull()
         .fill(t.surface().window())
-        .onKey(
-            keys(Menu.shortcuts(menus), s.palette(group), asked != null || question != null, tabs))
+        .onKey(keys(Menu.shortcuts(menus), null, s.palette(group), modal, tabs))
         .child(TitleBar.titleBar(
             t, title(s, group.activeTab()), HooriDb.COLOUR, app != null && app.windowMaximized()))
         .child(col()
@@ -374,11 +405,13 @@ final class Frame {
                     .icon(Symbol.TABLE)
                     .shortcut(Key.CONTROL, "P"),
                 Menu.separator(),
-                // Control+Tab and Control+Shift+Tab do the same, through the kit's tabs.
+                // The kit's tabs take these keys first; Page Down shows, as it says the direction.
                 Menu.item("Next tab", several ? () -> s.nextTab(group, 1) : null)
-                    .shortcut(Key.CONTROL, "PageDown"),
+                    .shortcut(Key.CONTROL, "PageDown")
+                    .alsoShortcut(Key.CONTROL, "Tab"),
                 Menu.item("Previous tab", several ? () -> s.nextTab(group, -1) : null)
-                    .shortcut(Key.CONTROL, "PageUp"),
+                    .shortcut(Key.CONTROL, "PageUp")
+                    .alsoShortcut(Key.CONTROL | Key.SHIFT, "Tab"),
                 Menu.separator(),
                 Menu.item("Connections", tree ? () -> focusTree(s) : null)
                     .shortcut(Key.CONTROL, "0"),
@@ -394,53 +427,48 @@ final class Frame {
         || s.catalogue.dialog(s.theme, s, s.tabs.main()) != null;
   }
 
+  /** Gives the focus to the tree of connections. */
+  private static void focusTree(State s) {
+    focus(s.app, find(s.app.tree(), "connections"));
+  }
+
   /**
-   * Gives the focus to the content of the window's active tab once the window has built it: a
-   * handler, in that window or another, has just made the tab active, so the tree of the window
-   * still shows what was there before. The second step runs after the window's next build.
+   * Gives the focus to the content of the window's active tab: a table's grid, else where it was
+   * there last, or the console's editor; as the window's last build shows them.
+   */
+  // shortcut: a table's grid, not where the focus was in its tab, as the kit takes the first
+  // button there for a tab whose content never had the focus; leave it to the kit once a region
+  // can name what it prefers without that element taking the focus when it appears.
+  private static void focusContent(State s, TabGroups.Group<Tab> group) {
+    var app = app(s, group);
+    El panel = find(find(app.tree(), "tabs"), "panel");
+    El grid = group.activeTab() instanceof TableTab ? find(panel, "grid") : null;
+    focus(app, grid == null ? panel : grid);
+  }
+
+  /**
+   * Gives the focus to the content of the window's active tab once the window has built it anew: a
+   * handler, in that window or another, has just made the tab active.
    */
   static void focusContentSoon(State s, TabGroups.Group<Tab> group) {
     var app = app(s, group);
-    app.after(0, () -> app.after(0, () -> focusContent(s, group)));
+    app.invalidate();
+    app.after(0, () -> focusContent(s, group));
   }
 
-  /** Gives the focus to the tree of connections. */
-  private static void focusTree(State s) {
-    El tree = find(s.app.tree(), e -> "connections".equals(e.key()) && e.isFocusable());
-    if (tree != null) {
-      s.app.focus(tree);
-    }
-  }
-
-  /**
-   * Gives the focus to the content of the window's active tab: its editor or grid, else the first
-   * element there that takes it.
-   */
-  // shortcut: not back to where the focus was in the content, as the kit cannot focus a region
-  // that way; upgrade when it can.
-  private static void focusContent(State s, TabGroups.Group<Tab> group) {
-    var app = app(s, group);
-    El panel = find(app.tree(), e -> "tabpanel".equals(e.role()));
-    if (panel == null) {
-      return;
-    }
-    El main = find(panel, e -> "sql".equals(e.key()) || "grid".equals(e.key()));
-    El target = main == null ? null : find(main, El::isFocusable);
-    if (target == null) {
-      target = find(panel, El::isFocusable);
-    }
-    if (target != null) {
-      app.focus(target);
+  private static void focus(App<State> app, El el) {
+    if (el != null) {
+      app.focus(el);
     }
   }
 
-  /** The first element at or below this one, in tree order, that passes the test; or null. */
-  private static El find(El el, Predicate<El> test) {
-    if (el == null || test.test(el)) {
+  /** The element at or below this one with the key, in tree order; or null. */
+  private static El find(El el, String key) {
+    if (el == null || key.equals(el.key())) {
       return el;
     }
     for (El child : el.children()) {
-      El found = find(child, test);
+      El found = find(child, key);
       if (found != null) {
         return found;
       }

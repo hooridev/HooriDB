@@ -112,6 +112,8 @@ class ConsoleTransactionTest {
     return near(tree, "#transaction");
   }
 
+  static final String TAB = "role=tab label=\"shop-prod: shop\"";
+
   @Test
   void manualKeepsTheChangeOpenUntilCommitOrRollback() throws Exception {
     var app = k.console(SHOP);
@@ -126,11 +128,13 @@ class ConsoleTransactionTest {
     assertTrue(line(manual, "#commit").contains("disabled"), manual);
     assertTrue(line(manual, "#rollback").contains("disabled"), manual);
     assertTrue(badge(manual).contains("No transaction"), manual);
+    assertFalse(line(manual, TAB).contains("modified"), manual);
     // A change opens it; the connection turned auto-commit off first.
     c.run(app, type(PAY) + RUN + "snap changed\n");
     String changed = c.tree("changed");
     assertTrue(servers.calls.contains("autocommit " + PG + " off"), servers.calls.toString());
     assertTrue(badge(changed).contains("Transaction open · 1 statement"), changed);
+    assertTrue(line(changed, TAB).contains("modified"), "the tab's dot: " + changed);
     assertFalse(line(changed, "#commit").contains("disabled"), changed);
     assertFalse(line(changed, "#rollback").contains("disabled"), changed);
     // Commit leaves the results as they are, and the console says so.
@@ -138,6 +142,7 @@ class ConsoleTransactionTest {
     String committed = c.tree("committed");
     assertTrue(servers.calls.contains("run " + PG + " COMMIT"), servers.calls.toString());
     assertTrue(badge(committed).contains("No transaction"), committed);
+    assertFalse(line(committed, TAB).contains("modified"), committed);
     assertTrue(line(committed, "#commit").contains("disabled"), committed);
     assertTrue(tabs(committed).endsWith("Result 1,Messages"), tabs(committed));
     assertTrue(line(committed, "#said").contains("Committed"), committed);
@@ -266,6 +271,25 @@ class ConsoleTransactionTest {
             + "press role=menuitem label=\"Close tab\"\nframe\n" + OPENED + "snap menu\n");
     assertTrue(c.tree("menu").contains("role=dialog label=\"Commit the transaction?\""));
     assertEquals(1, app.state().consoles(null).size());
+  }
+
+  /** In a window of its own, Control+W and the palette's Close tab ask as the main window's do. */
+  @Test
+  void aTornOffWindowsKeysAndPaletteAskToo() throws Exception {
+    var app = open(SHOP);
+    var window = "shop-prod: shop";
+    c.run(app, tearOff(window) + in(window) + "key W control\nframe\n" + OPENED + "snap key\n");
+    String key = c.tree("shop-prod-shop-key");
+    assertTrue(key.contains("role=dialog label=\"Commit the transaction?\""), key);
+    c.run(
+        app,
+        in(window) + "press #answer-cancel\nframe\n" + OPENED + PaletteTest.PALETTE
+            + "type \"close tab\"\nframe\nkey Enter\n" + PaletteTest.SHOWN + OPENED
+            + "snap palette\n");
+    String palette = c.tree("shop-prod-shop-palette");
+    assertTrue(palette.contains("role=dialog label=\"Commit the transaction?\""), palette);
+    assertEquals(1, app.state().consoles(null).size());
+    assertEquals(Transaction.OPEN, k.tab(app).transaction);
   }
 
   @Test

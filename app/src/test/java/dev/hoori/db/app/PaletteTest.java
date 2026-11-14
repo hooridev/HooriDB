@@ -143,6 +143,10 @@ class PaletteTest {
             + "press role=menuitem label=\"Command palette…\"\n" + SHOWN + "snap palette\n");
     var go = c.tree("go");
     assertTrue(line(go, "role=menuitem label=\"Next tab\"").contains("disabled"), go);
+    // Of its two keys, the first shows.
+    var next = ConnectionsTest.after(go, "role=menuitem label=\"Next tab\"");
+    next = next.substring(0, next.indexOf("role=menuitem label=\"Previous tab\""));
+    assertTrue(next.contains("\"Ctrl+Page Down\"") && !next.contains("Ctrl+Tab"), next);
     assertTrue(
         ConnectionsTest.after(go, "role=menuitem label=\"Connections\"").contains("\"Ctrl+0\""),
         go);
@@ -237,6 +241,7 @@ class PaletteTest {
             + "key Tab control\nframe\nsnap tab\n"
             + "key 1 control\nframe\nsnap content\n"
             + "key 0 control\nframe\nsnap tree\n"
+            + "key PageDown control\nframe\nsnap from-tree\n"
             + PALETTE + "type \"tab content\"\nframe\nkey Enter\n" + SHOWN + "snap from-palette\n");
     assertTrue(tabs(c.tree("console")).startsWith("shop-prod: shop"), c.tree("console"));
     assertEquals("", tabs(c.tree("closed")));
@@ -251,8 +256,122 @@ class PaletteTest {
         focused(content));
     var tree = c.tree("tree");
     assertTrue(focused(tree).contains("role=tree "), focused(tree));
+    // From the tree too, once: the kit's tabs take the key before the menu's item.
+    assertEquals("customers", active(c.tree("from-tree")));
     var fromPalette = c.tree("from-palette");
     assertTrue(focused(fromPalette).contains("role=grid"), focused(fromPalette));
+  }
+
+  @Test
+  void controlOneGoesBackToWhereTheFocusWasInAConsole() throws Exception {
+    var app = connected();
+    c.run(
+        app,
+        "press role=treeitem label=\"shop-prod\"\nframe\nkey N control\nframe\n" + SETTLE
+            + "snap new\nfocus #database\nframe\nkey 0 control\nframe\nsnap tree\n"
+            + "key 1 control\nframe\nsnap back\n");
+    assertTrue(focused(c.tree("new")).contains("#sql"), focused(c.tree("new")));
+    assertTrue(focused(c.tree("tree")).contains("role=tree "), focused(c.tree("tree")));
+    assertTrue(focused(c.tree("back")).contains("#database"), focused(c.tree("back")));
+  }
+
+  @Test
+  void goToATableOpenBehindAConsoleFocusesItsGrid() throws Exception {
+    var app = connected();
+    c.run(
+        app,
+        "press role=treeitem label=\"orders\"\nkey Enter\nframe\n" + SETTLE
+            + "key N control\nframe\n" + SETTLE + "snap console\n"
+            + GO_TO + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + "snap end\n");
+    assertTrue(focused(c.tree("console")).contains("#sql"), focused(c.tree("console")));
+    var end = c.tree("end");
+    assertEquals("orders", active(end));
+    assertTrue(focused(end).contains("role=grid"), focused(end));
+  }
+
+  @Test
+  void aTabsKeyClosesTheMenuOpenInTheBarAndThenActs() throws Exception {
+    var app = connected();
+    var go = "press role=menuitem label=\"Go\"\n" + SHOWN;
+    c.run(
+        app,
+        GO_TO + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + SETTLE
+            + GO_TO + "type \"customers\"\nframe\nkey Enter\n" + SHOWN + SETTLE
+            + go + "snap open\nkey PageDown control\n" + SHOWN + "snap next\n"
+            + go + "key W control\n" + SHOWN + SETTLE + "snap closed\n");
+    assertTrue(c.tree("open").contains("role=menu "), c.tree("open"));
+    var next = c.tree("next");
+    assertEquals("orders", active(next));
+    assertFalse(next.contains("role=menu "), next);
+    assertFalse(focused(next).contains("role=menuitem"), focused(next));
+    var closed = c.tree("closed");
+    assertEquals("customers", tabs(closed));
+    assertFalse(closed.contains("role=menu "), closed);
+  }
+
+  @Test
+  void aPaletteClosedWhileItReadsAndOpenedWithOtherTextStartsAfresh() throws Exception {
+    var app = connected();
+    var key = "all tables " + PG + "/analytics";
+    var held = c.servers.hold(key);
+    c.run(app, GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n" + SHOWN);
+    CatalogueTest.eventually(() -> c.servers.calls.contains(key));
+    c.run(app, "key Escape\n" + SHOWN + GO_TO + "type \"ord\"\nframe\nsnap again\n");
+    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    held.countDown();
+    c.run(app, SETTLE + "snap after\n");
+    for (var snap : List.of("again", "after")) {
+      var tree = c.tree(snap);
+      assertEquals(List.of("orders", "order_totals"), options(tree).subList(0, 2), tree);
+      assertTrue(line(tree, "role=option label=\"orders\"").contains("selected"), tree);
+      assertTrue(option(tree, "analytics").contains("choose to read its tables"), tree);
+      assertFalse(options(tree).contains("events"), tree);
+    }
+  }
+
+  @Test
+  void aDialogOpeningOverThePaletteClosesItAndStopsItsRead() throws Exception {
+    var app = torn();
+    var key = "all tables " + PG + "/analytics";
+    var held = c.servers.hold(key);
+    c.run(
+        app,
+        "window main\n" + GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n"
+            + SHOWN);
+    CatalogueTest.eventually(() -> c.servers.calls.contains(key));
+    c.run(
+        app,
+        "window \"customers\"\n" + PALETTE + "type \"new connection\"\nframe\nkey Enter\n" + SHOWN
+            + "window main\nframe\n" + SHOWN + "snap main\n");
+    var main = c.tree("main");
+    assertTrue(main.contains("role=dialog label=\"New connection\""), main);
+    assertFalse(app.state().palette(app.state().tabs.main()).isOpen());
+    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    held.countDown();
+    c.run(app, "key Escape\n" + SHOWN + SETTLE + GO_TO + "type \"ev\"\nframe\nsnap after\n");
+    assertTrue(option(c.tree("after"), "analytics").contains("choose to read its tables"));
+  }
+
+  @Test
+  void typingInTheTreeFindsANodeAndLeavesItsKeysAlone() throws Exception {
+    var app = connected();
+    c.run(
+        app,
+        "press role=treeitem label=\"shop-prod\"\nframe\ntype \"ord\"\nframe\nsnap ord\n"
+            + "advance 2\ntype \"c\"\nframe\nsnap anew\n"
+            + "advance 2\ntype \"ord\"\nframe\nkey Enter\n" + SETTLE + "snap opened\n"
+            + "key F10 shift\n" + SHOWN + "snap menu\nkey Escape\n" + SHOWN
+            + "key N control\nframe\n" + SETTLE + "snap console\n");
+    var ord = c.tree("ord");
+    assertTrue(line(ord, "role=treeitem label=\"orders\"").contains("selected"), ord);
+    // A second later the search starts anew: c alone, not ordc.
+    var anew = c.tree("anew");
+    assertTrue(line(anew, "role=treeitem label=\"customers\"").contains("selected"), anew);
+    // Enter still opens the node found, once; the context menu key and Control+N still act.
+    assertEquals("orders", tabs(c.tree("opened")));
+    assertTrue(focused(c.tree("opened")).contains("role=tree "), focused(c.tree("opened")));
+    assertTrue(c.tree("menu").contains("role=menu"), c.tree("menu"));
+    assertEquals(1, app.state().consoles(null).size());
   }
 
   @Test
@@ -268,6 +387,9 @@ class PaletteTest {
             + SETTLE + "snap torn\n");
     assertEquals("orders", tabs(c.tree("torn")));
     assertEquals("customers,order_totals", tabs(c.tree("customers-torn")));
+    c.run(app, "key PageUp control\nframe\nsnap back\nkey Tab control\nframe\nsnap on\n");
+    assertEquals("customers", active(c.tree("customers-back")));
+    assertEquals("order_totals", active(c.tree("customers-on")));
     c.run(app, "key W control\nframe\n" + SETTLE + "snap closed\n");
     assertEquals("orders", tabs(c.tree("closed")));
     assertEquals("customers", tabs(c.tree("customers-closed")));
@@ -546,15 +668,17 @@ class PaletteTest {
         "frame\n" + PALETTE + "snap palette-commands-" + look + "\n" + close
             + GO_TO + "type \"st\"\nframe\nframe\nsnap palette-tables-" + look + "\n" + close
             + GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n" + SHOWN
-            + "snap palette-unread-" + look + "\n" + close,
+            + "snap palette-unread-" + look + "\n",
         app,
         out);
     held.countDown();
     Script.run(
-        SETTLE + GO_TO + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + SETTLE
+        SETTLE + "snap palette-read-" + look + "\n" + close + GO_TO
+            + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + SETTLE
             + GO_TO + "type \"stock\"\nframe\nkey Enter\n" + SHOWN + SETTLE
             + "press role=menuitem label=\"Go\"\n" + SHOWN + "snap menu-go-" + look + "\n"
-            + close,
+            + close + "press role=treeitem label=\"shop-prod\"\nframe\ntype \"ord\"\nframe\n"
+            + "snap tree-find-" + look + "\n",
         app,
         out);
   }

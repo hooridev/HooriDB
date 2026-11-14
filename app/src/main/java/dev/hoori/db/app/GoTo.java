@@ -115,17 +115,19 @@ final class GoTo {
           continue;
         }
         String database = db.database().name();
+        // The palette stays open, and shows the tables as they come.
         Runnable readThem = () -> {
-          var palette = s.palette(group);
-          var text = palette.text();
           var started = c.scan(s, db);
           if (started != null) {
             s.readForPalette(group, () -> c.stop(db, started));
           }
-          palette.open(text); // it stays, and shows the tables as they come
+          // shortcut: opened again only to give its field back the focus, which a press on an
+          // entry that keeps it open takes away; drop it once the kit's palette keeps the focus.
+          var palette = s.palette(group);
+          palette.open(palette.text());
         };
-        notes.add(
-            reading
+        var key = String.join("\0", id.toString(), database);
+        notes.add((reading
                 ? note(database, name + " · reading its tables…", colour, true, null)
                 : failed != null
                     ? note(
@@ -135,7 +137,9 @@ final class GoTo {
                         false,
                         readThem)
                     : note(
-                        database, name + " · choose to read its tables", colour, false, readThem));
+                        database, name + " · choose to read its tables", colour, false, readThem))
+            .key(key)
+            .keepsOpen(true));
       }
     }
     found.sort(Comparator.comparingInt(Found::rank)
@@ -146,9 +150,9 @@ final class GoTo {
       var table = f.table();
       var symbol = table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE;
       var colour = s.colour(f.id());
-      entries.add(FilterList.entry(table.name(), () -> {
-            Frame.focusContentSoon(s, s.openTable(f.id(), table, group));
-          })
+      entries.add(FilterList.entry(
+              table.name(), () -> Frame.focusContentSoon(s, s.openTable(f.id(), table, group)))
+          .key(key(f.id(), table))
           .detail(f.where())
           .leading(t -> lead(t, colour, Icon.icon(t, symbol, Icon.Variant.MUTED))));
     }
@@ -214,6 +218,15 @@ final class GoTo {
       case Database d -> connection + " · " + d.name();
       case Schema x -> connection + " · " + x.database().name() + " · " + x.name();
     };
+  }
+
+  /** What tells the table from every other: its connection, database, schema and name. */
+  private static String key(UUID id, Table table) {
+    var path = switch (table.container()) {
+      case Database d -> List.of(d.name());
+      case Schema x -> List.of(x.database().name(), x.name());
+    };
+    return id + "\0" + String.join("\0", path) + "\0" + table.name();
   }
 
   private static boolean system(Table table) {

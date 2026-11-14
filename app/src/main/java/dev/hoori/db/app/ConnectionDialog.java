@@ -514,33 +514,37 @@ final class ConnectionDialog {
                         p.provider(),
                         Provider::displayName,
                         open ? v -> provider(s, v) : null)),
-                field("Driver", driverVersion(t, s, open)).help(driverHelp(s)),
-                // Host and port on two rows: a test's note at the port would wrap in its width.
-                field(
-                        "Host",
-                        marked(
-                            t,
-                            Probe.At.HOST,
-                            textField(t, p.host(), "Name or address", open ? this::host : null)
-                                .key("host")
-                                .wFull()))
-                    .required()
-                    .error(error(problems, ConnectionProfile.Field.HOST)),
-                field(
-                        "Port",
-                        valueField(
+                field("Driver", driverVersion(t, s, open))
+                    .help(driverHelp(s))
+                    .warning(youngWarning(s)),
+                Form.row(
+                    field(
+                            "Host",
+                            marked(
                                 t,
-                                Format.INTEGER,
-                                p.port(),
-                                fallback,
-                                e.at(PORT).draft(),
-                                open ? this::port : null)
-                            .key("port")
-                            .maxLength(5)
-                            .w(3 * t.size().control()))
-                    .required()
-                    .error(or(
-                        error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))),
+                                Probe.At.HOST,
+                                textField(t, p.host(), "Name or address", open ? this::host : null)
+                                    .key("host")
+                                    .wFull()))
+                        .required()
+                        .error(error(problems, ConnectionProfile.Field.HOST))
+                        .grow(),
+                    field(
+                            "Port",
+                            valueField(
+                                    t,
+                                    Format.INTEGER,
+                                    p.port(),
+                                    fallback,
+                                    e.at(PORT).draft(),
+                                    open ? this::port : null)
+                                .key("port")
+                                .maxLength(5)
+                                .w(3 * t.size().control()))
+                        .required()
+                        .error(or(
+                            error(problems, ConnectionProfile.Field.PORT),
+                            probe.error(Probe.At.PORT)))),
                 field(
                         "Database",
                         textField(t, locked(e.at(DATABASE)), "Optional")
@@ -670,24 +674,25 @@ final class ConnectionDialog {
           "Read the versions again",
           () -> versions.read(s)));
     }
-    if (!versions.young(chosen)) {
-      return line;
+    return line;
+  }
+
+  /**
+   * The driver's line with what to think of a version chosen that is too new to be recommended, as
+   * the warning replaces the help; null where it is not too new, or where a lookup or the list
+   * failed, which the help says instead.
+   */
+  private String youngWarning(State s) {
+    var chosen = editing.value().driverVersion();
+    if (!versions.young(chosen)
+        || probe.fetch.lookup instanceof Fetch.Missing
+        || s.drivers != null && versions.problem(s.drivers) != null) {
+      return null;
     }
-    // shortcut: a callout under the control, as the kit's form has no warning of a field of its
-    // own; use that once the kit has one.
     var age = versions.age(chosen);
-    return col()
-        .wFull()
-        .gap(t.space().s())
-        .child(line)
-        .child(Callout.callout(
-            t,
-            Callout.Kind.WARNING,
-            "Version " + chosen + " is " + (age == null ? "very new" : age),
-            "HooriDB recommends a release only once it has been out for "
-                + DriverStore.WAITING_PERIOD.toDays()
-                + " days, as a bad release is usually withdrawn within days. Choose Recommended"
-                + " unless this connection needs this version."));
+    return probe.line(s) + ". " + (age == null ? "Very new" : "Only " + age)
+        + ": recommended after " + DriverStore.WAITING_PERIOD.toDays()
+        + " days, once a bad release would be withdrawn.";
   }
 
   /** Which driver, and whether it is there; and what keeps the list of versions from showing. */
