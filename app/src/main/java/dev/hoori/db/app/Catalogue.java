@@ -465,6 +465,12 @@ final class Catalogue {
     if (call == null) {
       return;
     }
+    // The columns are read once at a time: a read of them in the background gives way.
+    if (node instanceof Node.OfTable && live.scans.remove(node) instanceof Scan x) {
+      if (x.asked != null) {
+        x.asked.cancel();
+      }
+    }
     var lane = lane(s, live, database(node));
     var reading = new Reading();
     live.levels.put(node, reading);
@@ -536,8 +542,10 @@ final class Catalogue {
    */
   Scan scan(State s, Node.OfTable node) {
     var live = lives.get(node.id());
-    if (live == null || !(live.phase instanceof Connected)) {
-      return null;
+    if (live == null
+        || !(live.phase instanceof Connected)
+        || live.levels.get(node) instanceof Reading) {
+      return null; // the tree reads them already
     }
     var id = live.id();
     return scan(

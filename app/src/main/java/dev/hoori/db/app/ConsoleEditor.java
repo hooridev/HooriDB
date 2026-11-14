@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.Key;
 import com.rethinkj.ui.kit.Completion;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Provider;
@@ -29,7 +30,7 @@ final class ConsoleEditor {
   private El built; // the editor of the last build, and the app of its window
   private App<State> app;
   private final Completion.State completion = new Completion.State();
-  private final Suggestions suggestions;
+  final Suggestions suggestions;
 
   ConsoleEditor(ConsoleTab tab) {
     this.tab = tab;
@@ -88,8 +89,19 @@ final class ConsoleEditor {
     }
     this.app = app;
     built = editor;
-    return Completion.complete(
+    if (!completion.isOpen()) {
+      suggestions.forget();
+    }
+    El completing = Completion.complete(
         t, app, editor, tab.editor.caret(), completion, word -> suggestions.at(s, provider, word));
+    // Control+Space asks anew, with what was read since the list was made.
+    var keys = completing.onKey();
+    return completing.onKey(k -> {
+      if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
+        suggestions.forget();
+      }
+      return keys != null && keys.test(k);
+    });
   }
 
   /** The console closes: the reads for its completions are given up. */

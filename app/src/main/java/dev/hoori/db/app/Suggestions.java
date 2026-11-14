@@ -2,14 +2,15 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.kit.Completion;
 import com.rethinkj.ui.kit.Symbol;
+import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.sql.Context;
 import dev.hoori.db.core.sql.Keywords;
 import dev.hoori.db.core.sql.Names;
 import dev.hoori.db.core.sql.Ranking;
-import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,24 +31,47 @@ final class Suggestions {
   private final ConsoleTab tab;
   private final Map<Node, Catalogue.Scan> asked = new HashMap<>(); // the reads it started
   private Catalogue catalogue; // where they were asked, once they are
+  // The last entries, and what they were made for: the list keeps them while only its highlight
+  // moves, and until it closes.
+  private List<Completion.Entry> entries;
+  private String madeFor;
+  private int madeAt;
+  private String madeOf;
+  int made; // how often they were made, which a test counts
 
   Suggestions(ConsoleTab tab) {
     this.tab = tab;
   }
 
-  /** The entries for the word before the caret, best first. */
+  /**
+   * The entries for the word before the caret, best first: made again only where the text, the
+   * caret or the word changed since the last, or the list was closed meanwhile.
+   */
   List<Completion.Entry> at(State s, Provider provider, String word) {
     var text = tab.text;
     int caret = Math.min(tab.editor.caret(), text.length());
-    // The statement the caret is in, also after spaces at its end; none after its terminator.
-    var statement = Statements.at(text, provider, caret)
-        .filter(at -> at.start() <= caret
-            && (caret <= at.end() || text.substring(at.end(), caret).isBlank()));
-    var sql = statement
-        .map(at -> text.substring(at.start(), Math.max(at.end(), caret)))
-        .orElse("");
+    if (entries != null && text == madeFor && caret == madeAt && word.equals(madeOf)) {
+      return entries; // each edit hands over a new string
+    }
+    entries = make(s, provider, word, text, caret);
+    made++;
+    madeFor = text;
+    madeAt = caret;
+    madeOf = word;
+    return entries;
+  }
+
+  /** The list closed: the next one is made anew, with what was read meanwhile. */
+  void forget() {
+    entries = null;
+  }
+
+  private List<Completion.Entry> make(
+      State s, Provider provider, String word, String text, int caret) {
+    // The statement the caret writes in, with the comments around it, from the console's split.
+    var around = tab.statements(provider).around(caret);
     var context =
-        Context.at(sql, provider, statement.map(at -> caret - at.start()).orElse(0));
+        Context.at(text.substring(around.start(), around.end()), provider, caret - around.start());
     if (context.asked() == Context.Asked.NOTHING) {
       return List.of();
     }
@@ -57,14 +81,14 @@ final class Suggestions {
       case MEMBER -> member(known, context, candidates);
       case TABLE -> {
         known.schemas(candidates);
-        known.tables(known.tables(), candidates);
+        known.tables(candidates);
       }
       default -> {
         for (var keyword : Keywords.offered(provider)) {
           candidates.add(new Candidate(keyword, keyword, null, "keyword", false));
         }
         known.schemas(candidates);
-        known.tables(known.tables(), candidates);
+        known.tables(candidates);
         for (var reference : context.tables()) {
           var table = known.table(reference.schema(), reference.name());
           if (table != null) {
@@ -146,6 +170,10 @@ final class Suggestions {
     private final Catalogue.Live live; // null while not connected
     private final boolean schemas; // whether the server has schemas within its databases
     private final Node.OfDatabase database; // the console's, or null
+    // Where PostgreSQL looks for a name without a schema, in order.
+    // shortcut: the search path is taken to be PostgreSQL's default, "$user", public; read the
+    // session's search_path once a console can change it or users set another.
+    private final List<String> path;
 
     Known(State s, Provider provider) {
       this.s = s;
@@ -156,6 +184,8 @@ final class Suggestions {
       schemas = connected != null && connected.schemas();
       var name = !tab.database.isEmpty() || connected == null ? tab.database : connected.database();
       database = name == null ? null : database(name);
+      var profile = s.profile(tab.id);
+      path = profile == null ? List.of("public") : List.of(profile.user(), "public");
     }
 
     /** Whether two names are the same as the server compares them. */
@@ -244,8 +274,22 @@ final class Suggestions {
       return read(container).stream().map(n -> ((Node.OfTable) n).table()).toList();
     }
 
-    /** The table of that name, in the schema or else among those of its database, or null. */
+    /**
+     * The table of that name in the schema, or without one where the server finds it: on
+     * PostgreSQL in the first schema of the search path that has it, on MariaDB and MySQL in the
+     * console's database; null for none.
+     */
     Table table(String schema, String name) {
+      if (schema == null && schemas) {
+        tables(); // reads the database's tables where it has not
+        for (var first : path) {
+          var found = table(first, name);
+          if (found != null) {
+            return found;
+          }
+        }
+        return null;
+      }
       var tables = schema == null ? tables() : tablesIn(schema);
       if (tables == null) {
         return null;
@@ -261,6 +305,33 @@ final class Suggestions {
         }
       }
       return found;
+    }
+
+    /**
+     * The tables and views of its database: as they are on the search path, with their schema
+     * where they are not, so that the name inserted is one the server finds; those on the path
+     * first, so that a name that two schemas have is the one the server takes.
+     */
+    void tables(List<Candidate> into) {
+      var qualified = new ArrayList<Candidate>();
+      var tables = new ArrayList<>(tables());
+      tables.sort(Comparator.comparingInt(t -> t.container() instanceof Schema x
+          ? path.contains(x.name()) ? path.indexOf(x.name()) : path.size()
+          : 0));
+      for (var table : tables) {
+        if (!(table.container() instanceof Schema x) || path.contains(x.name())) {
+          tables(List.of(table), into);
+        } else {
+          boolean view = table.kind() == Table.Kind.VIEW;
+          qualified.add(new Candidate(
+              table.name(),
+              Names.quoted(x.name(), provider) + "." + Names.quoted(table.name(), provider),
+              view ? Symbol.EYE : Symbol.TABLE,
+              view ? "view" : "table",
+              false));
+        }
+      }
+      into.addAll(qualified);
     }
 
     void tables(List<Table> tables, List<Candidate> into) {

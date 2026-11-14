@@ -23,6 +23,7 @@ import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -268,6 +269,154 @@ class ConsoleEditorTest {
     var va = options(console.c.tree("va"));
     assertTrue(va.contains("VALUES"), va.toString());
     assertFalse(va.contains("VACUUM"), va.toString());
+  }
+
+  static final String PATHS = "paths.example.com";
+  static final ConnectionProfile AUDITED = ConnectionProfile.of(Provider.POSTGRESQL)
+      .withName("audited")
+      .withHost(PATHS)
+      .withDatabase("shop")
+      .withUser("shop_app");
+
+  /** Control+Space, and what that reads let in, until the database and its columns are read. */
+  static final String READ = (COMPLETE + SETTLE).repeat(3) + COMPLETE;
+
+  @Test
+  void aCommentGetsNoCompletionsAndEnterMakesANewLine() throws Exception {
+    var app = console.console(SHOP);
+    console.c.run(
+        app,
+        TREE + type("SELECT 1 -- se") + "type \"l\"\nframe\nadvance 1\nframe\nsnap comment\n"
+            + "key Enter\nframe\n");
+    assertEquals(List.of(), options(console.c.tree("comment")));
+    assertEquals("SELECT 1 -- sel\n", console.tab(app).text);
+    console.c.run(
+        app, "type \"-- se\"\ntype \"l\"\nframe\nadvance 1\nframe\nsnap alone\nkey Enter\nframe\n");
+    assertEquals(List.of(), options(console.c.tree("alone")));
+    assertEquals("SELECT 1 -- sel\n-- sel\n", console.tab(app).text);
+  }
+
+  @Test
+  void aNameWithoutSchemaIsWhereTheSearchPathFindsItAndOthersAreInsertedQualified()
+      throws Exception {
+    servers.serve(PATHS, Provider.POSTGRESQL, "16.4", """
+        shop
+          audit
+            orders
+              *id: integer
+              changed_by: text
+            events
+              *id: bigint
+          public
+            orders
+              *id: bigint
+              total: numeric(12,2)
+        """);
+    var app = console.console(AUDITED);
+    console.c.run(
+        app,
+        open("audited") + SETTLE + type("SELECT  FROM orders o") + "key Home\n"
+            + "key ArrowRight\n".repeat(7) + "type \"o.\"\n" + READ + "snap columns\n");
+    assertEquals(List.of("id", "total"), options(console.c.tree("columns")));
+    console.c.run(
+        app,
+        "key Escape\nkey A control\ntype \"SELECT * FROM e\"\ntype \"v\"\nframe\nadvance 1\n"
+            + "frame\nsnap events\nkey Enter\nframe\n");
+    assertEquals(List.of("audit.events"), options(console.c.tree("events")));
+    assertEquals("SELECT * FROM audit.events", console.tab(app).text);
+  }
+
+  @Test
+  void theColumnsOfATableAreReadOnceWhileTheTreeReadsThem() throws Exception {
+    var app = console.console(SHOP);
+    var key = "columns " + PG + "/shop.public.orders";
+    console.c.run(
+        app, open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE);
+    var held = servers.hold(key);
+    // The tree reads the columns of orders, held; the console wants them too meanwhile.
+    console.c.run(
+        app, open("orders") + type("SELECT * FROM orders o WHERE ") + COMPLETE + "frame\n");
+    CatalogueTest.eventually(() -> servers.calls.contains(key));
+    held.countDown();
+    console.c.run(app, SETTLE + COMPLETE + "snap read\n");
+    assertEquals(1, servers.calls.stream().filter(key::equals).count(), servers.calls.toString());
+    assertTrue(options(console.c.tree("read")).contains("total"), console.c.tree("read"));
+  }
+
+  @Test
+  void theTreeReadingColumnsTheConsoleReadsGivesUpTheConsolesRead() throws Exception {
+    var app = console.console(SHOP);
+    var key = "columns " + PG + "/shop.public.customers";
+    console.c.run(
+        app, open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE);
+    var held = servers.hold(key);
+    console.c.run(app, type("SELECT * FROM customers c WHERE ") + COMPLETE + "frame\n");
+    CatalogueTest.eventually(() -> servers.calls.contains(key));
+    console.c.run(app, "key Escape\n" + open("customers"));
+    CatalogueTest.eventually(() -> servers.interrupted.contains(key));
+    held.countDown();
+    console.c.run(app, SETTLE + "snap tree\n");
+    assertTrue(console.c.tree("tree").contains("role=treeitem label=\"email\""));
+    assertFalse(servers.overlapped, "two calls ran at once on one connection");
+  }
+
+  @Test
+  void theListIsMadeAgainOnlyWhenTheTextOrTheCaretChanged() throws Exception {
+    var app = console.console(SHOP);
+    console.c.run(app, TREE + type("SELECT * FROM or") + "type \"d\"\nframe\nadvance 1\nframe\n");
+    var suggestions = console.tab(app).help.suggestions;
+    int made = suggestions.made;
+    console.c.run(
+        app, "key ArrowDown\nframe\nkey ArrowDown\nframe\nkey ArrowUp\nframe\nsnap moved\n");
+    assertEquals(made, suggestions.made);
+    assertEquals(List.of("order_totals", "orders"), options(console.c.tree("moved")));
+    console.c.run(app, "type \"e\"\nframe\n");
+    assertEquals(made + 1, suggestions.made);
+  }
+
+  @Test
+  void aMariadbConsoleCompletesTheTablesOfADatabaseAndTheColumnsOfAnAlias() throws Exception {
+    var app = console.console(INVENTORY);
+    console.c.run(
+        app,
+        open("inventory") + SETTLE + type("SELECT * FROM inventory.") + READ + "snap tables\n");
+    assertEquals(List.of("items", "low_stock", "stock"), options(console.c.tree("tables")));
+    console.c.run(
+        app,
+        "key Escape\nkey A control\ntype \"SELECT i. FROM inventory.items i\"\nkey Home\n"
+            + "key ArrowRight\n".repeat(9) + READ + "snap columns\n");
+    assertEquals(List.of("id", "name", "sku"), options(console.c.tree("columns")));
+  }
+
+  @Test
+  void aConsoleInASecondWindowCompletesAndMarksItsErrorThere() throws Exception {
+    var app = console.console(SHOP);
+    console.c.run(app, TREE);
+    var s = app.state();
+    var tab = console.tab(app);
+    var group = s.tabs.groupOf(tab);
+    s.tabs.toNewWindow(group, group.tabs().indexOf(tab));
+    var text = COUNT + ";\n" + WRONG + ";";
+    int at = text.indexOf(WRONG) + WRONG.indexOf("WHERE id");
+    console.c.run(
+        app,
+        "frame\nwindow \"shop-prod: shop\"\nframe\n" + type("SELECT * FROM or")
+            + "type \"d\"\nframe\nadvance 1\nframe\nsnap there\nkey Escape\nkey A control\n"
+            + type(text).replaceFirst("press #sql\n", "") + RUN_ALL + "snap failed\n");
+    assertEquals(List.of("order_totals", "orders"), options(window("there")));
+    assertEquals(new Failure.Place(at, at + 5), help(app).underlined());
+    assertEquals(String.valueOf(at), caret(window("failed")), line(window("failed"), "#sql"));
+  }
+
+  /** The tree of the snap of the window other than the main one. */
+  String window(String snap) throws IOException {
+    try (var files = Files.list(dir.resolve("out"))) {
+      var file = files
+          .filter(f -> f.getFileName().toString().endsWith("-" + snap + ".tree.txt"))
+          .findFirst()
+          .orElseThrow();
+      return Files.readString(file);
+    }
   }
 
   /**

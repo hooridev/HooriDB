@@ -683,7 +683,7 @@ final class ConsoleTab implements Tab {
   }
 
   /** The text's statements, scanned again only when the text changed. */
-  private Statements statements(Provider provider) {
+  Statements statements(Provider provider) {
     if (scanned == null || scannedText != text) { // each edit hands over a new string
       scanned = Statements.of(text, provider);
       scannedText = text;
