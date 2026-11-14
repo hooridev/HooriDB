@@ -2,6 +2,7 @@ package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -61,19 +62,35 @@ public final class Statements {
    * A caret outside the text counts as at its nearest end.
    */
   public static Optional<Statement> at(String text, Provider provider, int caret) {
-    var scan = scan(text, provider);
-    var list = scan.statements;
+    return scan(text, provider).at(caret);
+  }
+
+  /**
+   * The text scanned once, for a caret that moves while the text stays: {@link #at(int)} then
+   * costs no scan.
+   */
+  public static Statements of(String text, Provider provider) {
+    return scan(text, provider);
+  }
+
+  /** The statements of the text, in order. */
+  public List<Statement> statements() {
+    return Collections.unmodifiableList(statements);
+  }
+
+  /** The statement that runs for a caret at the offset, as {@link #at(String, Provider, int)}. */
+  public Optional<Statement> at(int caret) {
     int at = Math.clamp(caret, 0, text.length());
-    for (int k = 0; k < list.size(); k++) {
-      var statement = list.get(k);
+    for (int k = 0; k < statements.size(); k++) {
+      var statement = statements.get(k);
       if (at <= statement.end()) {
         return Optional.of(
-            at < statement.start() && k > 0 && scan.justEnded(k - 1, at)
-                ? list.get(k - 1)
+            at < statement.start() && k > 0 && justEnded(k - 1, at)
+                ? statements.get(k - 1)
                 : statement);
       }
     }
-    return list.isEmpty() ? Optional.empty() : Optional.of(list.getLast());
+    return statements.isEmpty() ? Optional.empty() : Optional.of(statements.getLast());
   }
 
   /**
