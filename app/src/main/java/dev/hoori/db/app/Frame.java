@@ -38,7 +38,7 @@ final class Frame {
 
   static El view(State s) {
     Theme t = s.theme;
-    s.tidyPalettes();
+    s.forgetClosedWindows();
     var main = s.tabs.main();
     // One dialog at a time: what the catalogue asks waits for the others to close.
     El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, main) : null;
@@ -152,7 +152,6 @@ final class Frame {
   /** The window of tabs torn off: its title bar over its tabs, whose status lines they show. */
   static El window(State s, TabGroups.Group<Tab> group) {
     Theme t = s.theme;
-    s.tidyPalettes();
     App<State> app = app(s, group);
     El tabs = tabs(s, group, app).key("tabs");
     // What a console of this window asked for, such as a password.

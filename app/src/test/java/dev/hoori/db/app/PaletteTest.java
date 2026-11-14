@@ -546,12 +546,13 @@ class PaletteTest {
         "frame\n" + PALETTE + "snap palette-commands-" + look + "\n" + close
             + GO_TO + "type \"st\"\nframe\nframe\nsnap palette-tables-" + look + "\n" + close
             + GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n" + SHOWN
-            + "snap palette-unread-" + look + "\n" + close,
+            + "snap palette-unread-" + look + "\n",
         app,
         out);
     held.countDown();
     Script.run(
-        SETTLE + GO_TO + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + SETTLE
+        SETTLE + "snap palette-read-" + look + "\n" + close + GO_TO
+            + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + SETTLE
             + GO_TO + "type \"stock\"\nframe\nkey Enter\n" + SHOWN + SETTLE
             + "press role=menuitem label=\"Go\"\n" + SHOWN + "snap menu-go-" + look + "\n"
             + close,

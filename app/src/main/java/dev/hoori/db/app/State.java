@@ -39,13 +39,17 @@ final class State {
   final MenuBar.State bar = new MenuBar.State();
   // The tabs of every window: the first window's, and those torn off into windows of their own.
   final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow).onClosed(Tab::close);
-  // The command palette of each window, by its tabs; it goes with the window.
   // The command palette of each window, by its tabs, and what Go to table began reading there.
   final Map<TabGroups.Group<Tab>, Palette> palettes = new HashMap<>();
 
   static final class Palette {
-    final CommandPalette.State state = new CommandPalette.State();
     final List<Runnable> reads = new ArrayList<>(); // stops what it began reading
+    final CommandPalette.State state = new CommandPalette.State().onClose(this::stop);
+
+    void stop() {
+      reads.forEach(Runnable::run);
+      reads.clear();
+    }
   }
 
   String message; // in the status line for a while, or null
@@ -492,26 +496,18 @@ final class State {
   }
 
   /**
-   * Stops what a palette that closed began reading, and forgets the palettes of windows that
-   * closed. Each window runs it as it builds its view, since the kit tells nobody that a palette
-   * closed.
+   * Forgets the palettes of windows that closed, and stops what they read. The main window runs it
+   * as it builds its view, since nothing tells the app that a window closed.
    */
-  // shortcut: a palette's last entries stay in the kit's state until it opens again, as the kit
-  // cannot drop them without the commands used last; upgrade when it can.
-  void tidyPalettes() {
+  void forgetClosedWindows() {
     var groups = tabs.groups();
-    for (var it = palettes.entrySet().iterator(); it.hasNext(); ) {
-      var entry = it.next();
-      var palette = entry.getValue();
+    palettes.entrySet().removeIf(entry -> {
       boolean gone = !groups.contains(entry.getKey());
-      if (gone || !palette.state.isOpen()) {
-        palette.reads.forEach(Runnable::run);
-        palette.reads.clear();
-      }
       if (gone) {
-        it.remove();
+        entry.getValue().stop();
       }
-    }
+      return gone;
+    });
   }
 
   /** Closes the active tab of the window. */
