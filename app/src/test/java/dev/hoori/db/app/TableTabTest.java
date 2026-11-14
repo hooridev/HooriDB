@@ -636,15 +636,30 @@ class TableTabTest {
         menu("shop-prod", "Disconnect")
             + "press role=treeitem label=\"shop-prod\"\nkey Enter\nframe\n");
     eventually(() -> servers.passwords.contains("another"));
+    // The server answers the old read with the password in its words; the tab's work ended with
+    // the connection, so that answer never reaches it.
     old.countDown();
     eventually(() -> servers.failed.contains(key));
-    Thread.sleep(300); // the old failure is handed to the app before the connection opens
     servers.heal(key);
     opening.countDown();
     c.run(app, SETTLE + "snap after\n");
-    var failure = tab(app).failure;
-    assertTrue(
-        failure == null || !failure.detail().contains(ConnectionsTest.PASSWORD), "" + failure);
+    assertEquals(null, tab(app).failure);
+    c.noPassword();
+  }
+
+  @Test
+  void aFailureThatRepeatsThePasswordIsWithheld() throws Exception {
+    var app = shop();
+    servers.fail(
+        "read " + ORDERS + " 0-200",
+        QueryException.of(
+            QueryException.Failure.ACCESS_DENIED,
+            "the server repeats " + ConnectionsTest.PASSWORD));
+    c.run(app, table("orders") + SETTLE + "snap denied\n");
+    assertEquals(
+        new TableTab.Failure(
+            TableTab.Problem.DENIED, dev.hoori.db.core.connect.ConnectionException.WITHHELD),
+        tab(app).failure);
     c.noPassword();
   }
 
