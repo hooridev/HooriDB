@@ -25,6 +25,7 @@ import java.sql.Connection;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Opens connections to servers, reads their catalogue and the rows of their tables, and runs
@@ -38,7 +39,11 @@ interface Servers {
   Servers SERVER = (profile, password, driver) -> {
     var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
     return new Real(
-        opened.connection(), profile.provider(), opened.server().parsed(), opened.database());
+        opened.connection(),
+        profile.provider(),
+        opened.server().parsed(),
+        opened.database(),
+        new AtomicReference<>());
   };
 
   /** Opens a connection to the profile's server and database. */
@@ -107,7 +112,12 @@ interface Servers {
   }
 
   /** A connection of a driver. */
-  record Real(Connection connection, Provider provider, ServerVersion version, String database)
+  record Real(
+      Connection connection,
+      Provider provider,
+      ServerVersion version,
+      String database,
+      AtomicReference<Execution> open) // the statement whose rows are not all read, or null
       implements Link {
 
     @Override
@@ -153,6 +163,7 @@ interface Servers {
     @Override
     public Run run(String sql) {
       var execution = new Execution(connection, provider, sql);
+      open.set(execution);
       return new Run() {
         @Override
         public Portion next(int count) {
@@ -161,10 +172,8 @@ interface Servers {
 
         @Override
         public Optional<Failure> close() {
-          // shortcut: Execution says nothing of how giving up went; take abandon()'s answer once it
-          // can say it.
-          execution.close();
-          return Optional.empty();
+          open.compareAndSet(execution, null);
+          return execution.abandon();
         }
       };
     }
@@ -195,6 +204,15 @@ interface Servers {
 
     @Override
     public void close() {
+      // A statement that ran well keeps what it changed, though its rows were not all read.
+      // shortcut: a commit that fails here is dropped: the close comes on the lane's thread once
+      // the
+      // console has let the session go, where nothing waits to show it; a console that keeps its
+      // tab gives up what it still reads through Run.close first, if that ever becomes common.
+      var left = open.getAndSet(null);
+      if (left != null) {
+        left.abandon();
+      }
       Connector.close(connection);
     }
   }

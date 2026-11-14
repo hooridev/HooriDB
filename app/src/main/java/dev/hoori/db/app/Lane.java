@@ -1,11 +1,15 @@
 package dev.hoori.db.app;
 
+import com.rethinkj.ui.App;
+import com.rethinkj.ui.Work;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.query.QueryException;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -69,23 +73,20 @@ final class Lane {
    * Opens the connection as the lane's first call, with a copy of the password, which is wiped
    * once the call ends, or by {@link #close} if it never starts.
    */
-  Future<Servers.Link> open(
-      Servers servers, ConnectionProfile profile, char[] password, LoadedDriver driver) {
+  void open(Servers servers, ConnectionProfile profile, char[] password, LoadedDriver driver) {
     char[] given = password.clone();
     copy = given;
-    Future<Servers.Link> call = run(Priority.VIEW, () -> {
+    opening = run(Priority.VIEW, () -> {
       try {
         link = servers.open(profile, given, driver);
         return link;
-      } catch (ConnectionException e) {
-        fail(e);
+      } catch (ConnectionException | RuntimeException e) {
+        fail(e); // the calls behind it fail as it did
         throw e;
       } finally {
         Arrays.fill(given, '\0');
       }
     });
-    opening = call;
-    return call;
   }
 
   /** Runs the call for what the user looks at, once the calls asked for before it have ended. */
@@ -129,22 +130,73 @@ final class Lane {
   }
 
   /**
-   * Takes a call that still waits as one of the higher priority, in the place it was asked in; a
-   * call that runs or has ended stays as it is.
+   * Asks for the call on the lane, and for work that waits for its answer and hands it to a
+   * handler on the app's thread. It is given up only by {@link Asked#cancel} or {@link #cancel}:
+   * cancelling the work alone cancels the call only once the work's thread gets to it, by when the
+   * lane may have begun it, or the one behind it.
    */
-  void promote(Future<?> call, Priority priority) {
-    if (call instanceof Task<?> task
-        && task.priority.compareTo(priority) > 0
-        && thread.getQueue().remove(task)) {
-      task.priority = priority;
-      thread.getQueue().add(task);
+  <T> Asked ask(
+      App<?> app,
+      String name,
+      Priority priority,
+      Call<T> call,
+      Consumer<? super T> onResult,
+      Consumer<? super Exception> onFailure) {
+    var task = submit(priority, call);
+    return new Asked(
+        this, (Task<?>) task, app.background(name, () -> await(task), onResult, onFailure));
+  }
+
+  /** A call asked for on a lane, and the work that waits for its answer. */
+  static final class Asked {
+    private final Lane lane;
+    private final Task<?> call;
+    private final Work work;
+
+    private Asked(Lane lane, Task<?> call, Work work) {
+      this.lane = lane;
+      this.call = call;
+      this.work = work;
+    }
+
+    /** What it was asked for as, or was promoted to. */
+    Priority priority() {
+      return call.priority;
+    }
+
+    /**
+     * Takes the call, while it waits, as one of the higher priority, in the place it was asked
+     * in; a call that runs or has ended stays as it is.
+     */
+    void promote(Priority priority) {
+      var queue = lane.thread.getQueue();
+      if (call.priority.compareTo(priority) > 0 && queue.remove(call)) {
+        call.priority = priority;
+        queue.add(call);
+      }
+    }
+
+    /** Gives it up, as {@link Lane#cancel} does. */
+    void cancel() {
+      Lane.cancel(List.of(this));
     }
   }
 
-  /** Takes a call that still waits off the lane, so that it never runs; one that runs stays. */
-  void drop(Future<?> call) {
-    if (call instanceof Task<?> task) {
-      thread.getQueue().remove(task);
+  /**
+   * Gives up what was asked, on the app's thread: no answer arrives, a call that waits leaves its
+   * lane and never begins, and one that runs is interrupted, which core turns into a cancel on the
+   * server. All that wait leave before any is interrupted, as an interrupted call lets its lane go
+   * on at once, to the next that waits.
+   */
+  static void cancel(Collection<Asked> asked) {
+    for (var a : asked) {
+      if (a.lane.thread.getQueue().remove(a.call)) {
+        a.call.cancel(false);
+      }
+    }
+    for (var a : asked) {
+      a.call.cancel(true);
+      a.work.cancel();
     }
   }
 
@@ -181,7 +233,7 @@ final class Lane {
    * cancelled, interrupts the lane's thread in the call, which core turns into a cancel on the
    * server.
    */
-  static <T> T await(Future<T> call) throws Exception {
+  private static <T> T await(Future<T> call) throws Exception {
     try {
       return call.get();
     } catch (InterruptedException e) {

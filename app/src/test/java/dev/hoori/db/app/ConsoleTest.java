@@ -167,6 +167,10 @@ class ConsoleTest {
     assertTrue(
         line(c.tree("cut"), "#result-status").contains("the first 200 rows, the rest left unread"),
         c.tree("cut"));
+    // On PostgreSQL what a read given up did, as a function of it that writes, stands.
+    assertTrue(
+        line(c.tree("cut"), "#result-status").contains("anything it changed until then stands"),
+        c.tree("cut"));
     // Messages: each statement, its time and what it gave, the server's warning and the error.
     c.run(app, "press role=tab label=\"Messages\"\nframe\nsnap messages\n");
     String messages = c.tree("messages");

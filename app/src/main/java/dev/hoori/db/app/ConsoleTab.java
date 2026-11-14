@@ -11,7 +11,6 @@ import com.rethinkj.ui.Decorator;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.Style;
-import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
@@ -59,7 +58,6 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -216,8 +214,7 @@ final class ConsoleTab implements Tab {
   private AtomicReference<Servers.Run> sent = new AtomicReference<>();
   private Output reading; // the result whose rows it has
   private final ArrayDeque<String> queue = new ArrayDeque<>(); // the run's statements still to run
-  private Work work; // the statement, the rows or the switch under way, or null
-  private Future<?> call; // its call on the lane
+  private Lane.Asked work; // the statement, the rows or the switch under way, or null
   private String running; // the statement under way, or the one whose rows are read
   boolean waiting; // for the tree's connection, which the session is opened from
   boolean stranded; // the tree's connection failed while it waited: Try again goes on
@@ -261,7 +258,7 @@ final class ConsoleTab implements Tab {
   // Why the outcome of what may have ended the transaction is not known, until the user has read
   // it; null for nothing in doubt.
   String doubt;
-  private Work probe; // the question to the server about the transaction, or null
+  private Lane.Asked probe; // the question to the server about the transaction, or null
   Check probing; // which one it is
   private int learned; // what was learned of it, counted: an answer that comes late is dropped
 
@@ -421,12 +418,10 @@ final class ConsoleTab implements Tab {
     open = read ? held : null; // a statement that is not a plain read is read to its end
     var mode = this.mode;
     var known = this.known;
-    var asked = lane.submit(link -> start(link, sql, mode, read, held, known));
-    call = asked;
-    work = background(
+    work = ask(
         s,
         "run a statement",
-        asked,
+        link -> start(link, sql, mode, read, held, known),
         ran -> {
           work = null;
           ran(s, sql, ran);
@@ -461,11 +456,13 @@ final class ConsoleTab implements Tab {
    * Waits for a call on the session off the app's thread; once its result or failure is taken,
    * the question sees whether what it asked about may go on.
    */
-  private <T> Work background(
-      State s, String what, Future<T> asked, Consumer<T> done, Consumer<Exception> failed) {
-    return s.app.background(
+  private <T> Lane.Asked ask(
+      State s, String what, Lane.Call<T> call, Consumer<T> done, Consumer<Exception> failed) {
+    return lane.ask(
+        s.app,
         what,
-        () -> Lane.await(asked),
+        Lane.Priority.VIEW,
+        call,
         value -> {
           done.accept(value);
           settle(s);
@@ -682,13 +679,14 @@ final class ConsoleTab implements Tab {
       var held = open;
       var sql = running;
       // Behind the call that ran it, whether that ended, was cancelled, or was never delivered.
-      var closed = lane.submit(link -> {
-        var run = held.getAndSet(null);
-        return run == null ? Optional.<Failure>empty() : run.close();
-      });
-      s.app.background(
+      lane.ask(
+          s.app,
           "give up the rest of the rows",
-          () -> Lane.await(closed),
+          Lane.Priority.VIEW,
+          link -> {
+            var run = held.getAndSet(null);
+            return run == null ? Optional.<Failure>empty() : run.close();
+          },
           failure -> failure.ifPresent(f -> {
             heard(Level.ERROR, sql, null, "Giving up the rest failed: " + f.message());
             fail(s, f);
@@ -883,15 +881,14 @@ final class ConsoleTab implements Tab {
     var asked = new Check(lane, ++learned);
     probing = asked;
     var known = this.known;
-    var question = lane.submit(link -> {
-      var now = link.status();
-      known.set(now.autoCommit() == null ? null : now);
-      return now;
-    });
-    probe = background(
+    probe = ask(
         s,
         "ask for the transaction",
-        question,
+        link -> {
+          var now = link.status();
+          known.set(now.autoCommit() == null ? null : now);
+          return now;
+        },
         now -> probed(asked, now),
         e -> probed(s, asked, e));
   }
@@ -1115,17 +1112,15 @@ final class ConsoleTab implements Tab {
     var sql = running;
     var known = this.known;
     // leave() clears it only after this; only a plain read is read so, a portion at a time
-    var asked = lane.submit(link -> {
-      var portion = held.get().next(PORTION);
-      confirm(portion, known);
-      return portion;
-    });
-    call = asked;
     writes = false;
-    work = background(
+    work = ask(
         s,
         "read rows",
-        asked,
+        link -> {
+          var portion = held.get().next(PORTION);
+          confirm(portion, known);
+          return portion;
+        },
         portion -> {
           work = null;
           int before = outputs.size();
@@ -1230,16 +1225,14 @@ final class ConsoleTab implements Tab {
     writes = true;
     sent = new AtomicReference<>(); // no statement of the user's
     var known = this.known;
-    var asked = lane.submit(link -> {
-      known.set(null);
-      link.use(name);
-      return name;
-    });
-    call = asked;
-    work = background(
+    work = ask(
         s,
         "switch the database",
-        asked,
+        link -> {
+          known.set(null);
+          link.use(name);
+          return name;
+        },
         done -> {
           work = null;
           switching = null;
@@ -1259,9 +1252,8 @@ final class ConsoleTab implements Tab {
    * leave it to run.
    */
   private void stop() {
-    work.cancel();
+    work.cancel(); // a call that waits never begins; one that runs is cancelled on the server
     work = null;
-    call.cancel(true);
     firm = false;
   }
 
@@ -1395,12 +1387,10 @@ final class ConsoleTab implements Tab {
     firm = true;
     writes = true;
     running = "Auto-commit";
-    var asked = lane.submit(link -> setMode(link, mode == Mode.MANUAL, empty, known));
-    call = asked;
-    work = background(
+    work = ask(
         s,
         "switch auto-commit",
-        asked,
+        link -> setMode(link, mode == Mode.MANUAL, empty, known),
         switched -> {
           work = null;
           firm = false;
@@ -1448,12 +1438,10 @@ final class ConsoleTab implements Tab {
     writes = true;
     running = sql;
     var known = this.known;
-    var asked = lane.submit(link -> finish(link, sql, known));
-    call = asked;
-    work = background(
+    work = ask(
         s,
         sql.equals(COMMIT) ? "commit" : "roll back",
-        asked,
+        link -> finish(link, sql, known),
         ended -> {
           work = null;
           firm = false;
@@ -1910,6 +1898,7 @@ final class ConsoleTab implements Tab {
             ? count + " so far, more as it scrolls"
             : o.cut
                 ? "the first " + count + ", the rest left unread as the console went on"
+                    + givenUp(s)
                 : o.dropped ? "the first " + count + ", the rest read and not kept" : count);
     return col()
         .grow(1)
@@ -1917,6 +1906,18 @@ final class ConsoleTab implements Tab {
         .child(grid(t, s, app, o).grow(1))
         .child(Card.footer(
             t, Label.label(t, Label.Variant.MUTED, about).key("result-status").ellipsis(), pin));
+  }
+
+  /**
+   * What became of what a plain read, given up, may have done, as a function it calls that
+   * writes: PostgreSQL commits the part done so far with the query's own transaction, or keeps it
+   * in the user's; MariaDB and MySQL stop the statement, which keeps all of it or none.
+   */
+  private String givenUp(State s) {
+    var profile = s.profile(id);
+    return profile != null && profile.provider() == Provider.POSTGRESQL
+        ? "; anything it changed until then stands"
+        : "; whether anything it changed stands is not known";
   }
 
   /** The result's rows, read-only, with the table tab's cells. */

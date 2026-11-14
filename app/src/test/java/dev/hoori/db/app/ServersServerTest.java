@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -38,11 +39,11 @@ class ServersServerTest {
   static Lane lane(TestServer server, String database) throws Exception {
     var lane = new Lane(e -> {});
     lane.open(
-            Servers.SERVER,
-            server.profile().withDatabase(database),
-            TestServer.password(),
-            server.driver())
-        .get(30, TimeUnit.SECONDS);
+        Servers.SERVER,
+        server.profile().withDatabase(database),
+        TestServer.password(),
+        server.driver());
+    lane.submit(link -> link).get(30, TimeUnit.SECONDS); // fails as the opening did
     return lane;
   }
 
@@ -570,6 +571,89 @@ class ServersServerTest {
     } finally {
       statement(lane, "DROP PROCEDURE seam_commit_rows", ConsoleTab.Mode.AUTO);
       statement(lane, "DROP TABLE seam_rows", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  // PostgreSQL streams such a statement in a transaction core opens, which a close must not undo.
+  @Test
+  void closingKeepsWhatAStatementChangedThoughItsRowsWereNotAllRead() throws Exception {
+    var server = TestServer.of(Provider.POSTGRESQL);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS kept",
+          "CREATE TABLE kept (id integer, done boolean NOT NULL DEFAULT false)",
+          "INSERT INTO kept SELECT n FROM generate_series(1, 1000) n")) {
+        var setup = watcher.run(sql);
+        setup.next(1);
+        setup.close();
+      }
+      var read = lane.submit(link -> rows(link.run(
+                  "WITH changed AS (UPDATE kept SET done = true RETURNING id) SELECT id FROM changed")
+              .next(200))
+          .size());
+      assertEquals(200, read.get(20, TimeUnit.SECONDS));
+      lane.close(); // as closing the console's tab does: the statement's rows are never read on
+      eventually(() ->
+          ((Number) value(watcher, "SELECT count(*) FROM kept WHERE done")).longValue() == 1000);
+    } finally {
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /**
+   * A plain read by its first word whose function writes, given up with rows left, in Auto: what
+   * the server keeps of what it did differs by provider, which the console's footer says.
+   */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"POSTGRESQL", "MARIADB"}) // MySQL's test user may not create such a function
+  void aReadWhoseFunctionWritesGivenUpKeepsWhatTheServerKeeps(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      for (var sql : pg
+          ? List.of(
+              "DROP TABLE IF EXISTS seam_noted",
+              "CREATE TABLE seam_noted (id integer)",
+              "CREATE OR REPLACE FUNCTION seam_note(n integer) RETURNS integer AS"
+                  + " 'INSERT INTO seam_noted VALUES (n) RETURNING id' LANGUAGE sql")
+          : List.of(
+              "DROP TABLE IF EXISTS seam_noted",
+              "CREATE TABLE seam_noted (id integer)",
+              "DROP FUNCTION IF EXISTS seam_note",
+              "CREATE FUNCTION seam_note(n integer) RETURNS integer DETERMINISTIC MODIFIES SQL DATA"
+                  + " BEGIN INSERT INTO seam_noted VALUES (n); RETURN n; END")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      var many = pg
+          ? "SELECT seam_note(n) FROM generate_series(1, 1000) n"
+          : "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000)"
+              + " SELECT seam_note(i) FROM n";
+      var gaveUp = lane.submit(link -> {
+            var run = link.run(many);
+            assertTrue(run.next(200).more());
+            return run.close();
+          })
+          .get(30, TimeUnit.SECONDS);
+      assertTrue(gaveUp.isEmpty(), gaveUp.toString());
+      long kept = count(watcher, "seam_noted");
+      if (pg) {
+        // Its own transaction, committed as it was given up: what it did until then, no more.
+        assertTrue(kept > 200 && kept < 1000, "kept " + kept);
+      } else {
+        // One statement, stopped or finished: all of it or none, on a table with transactions.
+        assertTrue(kept == 0 || kept == 1000, "kept " + kept);
+      }
+    } finally {
+      statement(lane, "DROP TABLE seam_noted", ConsoleTab.Mode.AUTO);
       lane.close();
       watcher.close();
     }

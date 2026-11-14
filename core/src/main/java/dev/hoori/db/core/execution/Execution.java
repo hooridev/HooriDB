@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 
@@ -29,8 +30,8 @@ import java.util.function.Supplier;
  * on to the results after them. A failure is a result, the last one, rather than an exception,
  * after the rows and messages that came before it; only where ending the statement then lost the
  * connection does a second failure follow, which says so. The statement is over when a portion
- * has no {@link Portion#more}, or when the execution is closed; closing it before abandons the
- * rows still unread.
+ * has no {@link Portion#more}, or when the execution is abandoned or closed; doing so before
+ * gives up the rows still unread.
  *
  * <p>From the first call until it is over, the connection belongs to the execution: nothing else
  * may run on it, as the server is still sending rows.
@@ -41,11 +42,13 @@ import java.util.function.Supplier;
  *       auto-commit on and no transaction open, a text that holds one statement, which starts with
  *       {@code SELECT}, {@code WITH}, {@code VALUES} or {@code TABLE}, runs in a transaction of its
  *       own, which keeps its locks while its rows are read; meanwhile {@link
- *       Connection#getAutoCommit} says false. That transaction is committed only when the statement
- *       ran to its end, and rolled back where it failed, was cancelled or was closed early: rows
- *       already seen of a statement that was abandoned may have had effects, such as rows its
- *       functions inserted, which are then undone. Others, among them those that cannot run in a
- *       transaction, such as {@code VACUUM}, read all their rows at once.
+ *       Connection#getAutoCommit} says false. That transaction is committed when the statement ran
+ *       to its end and when its rest is given up, as auto-commit would keep what it changed, and
+ *       rolled back where it failed or was cancelled. A data-modifying {@code WITH} runs to its end
+ *       on the server however few rows are read; functions in a statement whose rest is given up
+ *       have run only for the rows computed so far, and what they did is kept. Others, among them
+ *       those that cannot run in a transaction, such as {@code VACUUM}, read all their rows at
+ *       once.
  *   <li>MariaDB sends the rows while they are read, and waits for the client; its {@code
  *       net_write_timeout}, 60 seconds by default, ends a statement whose rows are not read for
  *       that long. Another statement on the connection would have MariaDB Connector/J read all the
@@ -130,7 +133,7 @@ public final class Execution implements AutoCloseable {
           ? Failure.connectionLost()
           : e.getCause() == null ? Failure.cancelled() : Failure.of(connection, e.getCause());
       var results = new ArrayList<Result>(List.of(failure));
-      var lost = over ? null : withoutInterrupt(() -> end(false));
+      var lost = over ? null : withoutInterrupt(() -> end(Ending.FAILED));
       if (lost != null && failure.kind() != Failure.Kind.CONNECTION_LOST) {
         results.add(lost);
       }
@@ -145,14 +148,20 @@ public final class Execution implements AutoCloseable {
   }
 
   /**
-   * Ends the statement where it is not over, abandoning what is left of its rows; where it ran in
-   * a transaction of its own, that is rolled back.
+   * Ends the statement where it is not over, giving up what is left of its rows; where it ran in a
+   * transaction of its own, that is committed, as auto-commit would have. The failure, if any: of
+   * that commit, such as a deferred constraint's, or that the connection is lost.
    */
+  public Optional<Failure> abandon() {
+    return over
+        ? Optional.empty()
+        : Optional.ofNullable(withoutInterrupt(() -> end(Ending.GAVE_UP)));
+  }
+
+  /** As {@link #abandon}, without its failure; a caller that reports one uses that. */
   @Override
   public void close() {
-    if (!over) {
-      withoutInterrupt(() -> end(false));
-    }
+    abandon();
   }
 
   private Portion read(int count) {
@@ -218,7 +227,7 @@ public final class Execution implements AutoCloseable {
         rows.clearWarnings();
       }
       if (!more) {
-        var failure = end(true, status);
+        var failure = end(Ending.RAN, status);
         if (failure != null) {
           results.add(failure);
           status = -1;
@@ -244,7 +253,7 @@ public final class Execution implements AutoCloseable {
       }
       var failure = Failure.of(connection, e);
       results.add(failure);
-      var lost = end(false);
+      var lost = end(Ending.FAILED);
       if (lost != null && failure.kind() != Failure.Kind.CONNECTION_LOST) {
         results.add(lost);
       }
@@ -320,19 +329,29 @@ public final class Execution implements AutoCloseable {
     return statement.getMoreResults();
   }
 
-  private Failure end(boolean ranToEnd) {
-    return end(ranToEnd, -1);
+  // How a statement came to its end.
+  private enum Ending {
+    // It ran to its end.
+    RAN,
+    // The caller gave up the rows still unread.
+    GAVE_UP,
+    // It failed, or was cancelled.
+    FAILED
+  }
+
+  private Failure end(Ending ending) {
+    return end(ending, -1);
   }
 
   // Ends the statement: where it did not run to its end, has MariaDB and MySQL stop sending and
   // reads what they still send, so that the connection takes statements again; closes its rows
-  // and the statement; and ends its own transaction, committing it only if it ran to its end. The
-  // failure of the commit, if any; where the connection is left in a state that cannot be known,
-  // it is aborted, and the failure says it is lost.
-  private Failure end(boolean ranToEnd, int status) {
+  // and the statement; and ends its own transaction, committing it unless it failed. The failure
+  // of the commit, if any; where the connection is left in a state that cannot be known, it is
+  // aborted, and the failure says it is lost.
+  private Failure end(Ending ending, int status) {
     over = true;
     var lost = false;
-    if (!ranToEnd && provider != Provider.POSTGRESQL && statement != null) {
+    if (ending != Ending.RAN && provider != Provider.POSTGRESQL && statement != null) {
       lost = !drain();
     }
     var closeables = new ArrayList<AutoCloseable>(ended);
@@ -352,7 +371,7 @@ public final class Execution implements AutoCloseable {
     Failure failure = null;
     if (ownTransaction) {
       ownTransaction = false;
-      var commit = ranToEnd;
+      var commit = ending != Ending.FAILED;
       if (commit) {
         try {
           connection.commit();
@@ -377,7 +396,7 @@ public final class Execution implements AutoCloseable {
         }
       }
     }
-    if (!lost && ranToEnd && failure == null) {
+    if (!lost && ending == Ending.RAN && failure == null) {
       try {
         Drivers.followAutoCommit(provider, connection, status);
       } catch (SQLException e) {

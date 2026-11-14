@@ -636,15 +636,30 @@ class TableTabTest {
         menu("shop-prod", "Disconnect")
             + "press role=treeitem label=\"shop-prod\"\nkey Enter\nframe\n");
     eventually(() -> servers.passwords.contains("another"));
+    // The server answers the old read with the password in its words; the tab's work ended with
+    // the connection, so that answer never reaches it.
     old.countDown();
     eventually(() -> servers.failed.contains(key));
-    Thread.sleep(300); // the old failure is handed to the app before the connection opens
     servers.heal(key);
     opening.countDown();
     c.run(app, SETTLE + "snap after\n");
-    var failure = tab(app).failure;
-    assertTrue(
-        failure == null || !failure.detail().contains(ConnectionsTest.PASSWORD), "" + failure);
+    assertEquals(null, tab(app).failure);
+    c.noPassword();
+  }
+
+  @Test
+  void aFailureThatRepeatsThePasswordIsWithheld() throws Exception {
+    var app = shop();
+    servers.fail(
+        "read " + ORDERS + " 0-200",
+        QueryException.of(
+            QueryException.Failure.ACCESS_DENIED,
+            "the server repeats " + ConnectionsTest.PASSWORD));
+    c.run(app, table("orders") + SETTLE + "snap denied\n");
+    assertEquals(
+        new TableTab.Failure(
+            TableTab.Problem.DENIED, dev.hoori.db.core.connect.ConnectionException.WITHHELD),
+        tab(app).failure);
     c.noPassword();
   }
 
@@ -767,6 +782,26 @@ class TableTabTest {
     assertEquals(
         1, servers.calls.stream().filter(x -> x.equals("count " + ORDERS)).count());
     assertFalse(servers.interrupted.contains("count " + ORDERS));
+  }
+
+  @Test
+  void aTabClosedWhileItOpensNeverStartsItsCount() throws Exception {
+    servers.rows(ORDERS, 1000, OptionalLong.of(1000));
+    var app = shop();
+    var key = "read " + ORDERS + " 0-200";
+    var held = servers.hold(key);
+    c.run(
+        app,
+        open("orders") + SETTLE + table("orders")
+            + "frame\nadvance 1\nframe\npress #count\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    // The read that runs is interrupted, which lets the lane go on at once: the count behind it
+    // has left the lane by then.
+    c.run(app, "press #close-0\nframe\n");
+    eventually(() -> servers.interrupted.contains(key));
+    held.countDown();
+    c.run(app, SETTLE);
+    assertFalse(servers.calls.contains("count " + ORDERS), servers.calls.toString());
   }
 
   /** The row more that asks whether there are more is not counted as one that is there. */
