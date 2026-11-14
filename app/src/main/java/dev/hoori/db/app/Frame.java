@@ -295,18 +295,29 @@ final class Frame {
             null,
             Button.icon(t, Button.Variant.GHOST, Symbol.ADD, "Add connection", create)),
         problem == null ? null : col().padding(t.space().s()).child(problem),
-        s.notKept == null ? null : col().padding(t.space().s()).child(notKept(t, s)),
+        s.notices.isEmpty() ? null : notices(t, s),
         body);
   }
 
-  /** What a session that ended took with it, which no console shows: until dismissed. */
-  private static El notKept(Theme t, State s) {
-    return Callout.callout(
-        t,
-        Callout.Kind.DANGER,
-        "A change may not stand",
-        s.notKept,
-        button(t, Button.Variant.SECONDARY, "Dismiss", s::dismissNotKept));
+  /**
+   * The notices of what finishing something on a console's session did, the newest first, each
+   * until dismissed: a failure as a danger, a warning as such.
+   */
+  // shortcut: the notices stack above the tree without a limit; put them in a list that scrolls
+  // once several at a time are common.
+  private static El notices(Theme t, State s) {
+    var list = col().gap(t.space().s()).padding(t.space().s()).key("notices").label("Notices");
+    for (var notice : s.notices.reversed()) {
+      list.child(Callout.callout(
+              t,
+              notice.failure() ? Callout.Kind.DANGER : Callout.Kind.WARNING,
+              notice.connection() + " · " + notice.statement(),
+              notice.what(),
+              button(t, Button.Variant.SECONDARY, "Dismiss", () -> s.dismiss(notice))
+                  .key("dismiss-" + notice.number()))
+          .key("notice-" + notice.number()));
+    }
+    return list;
   }
 
   private static El tryAgain(Theme t, Runnable action) {
@@ -337,7 +348,8 @@ final class Frame {
           Callout.Kind.WARNING,
           "The system keyring does not answer",
           "Cancel gives up waiting: the password may then still be in the keyring or not, and the"
-              + " connection is not deleted."));
+              + " connection is not deleted."
+              + (s.keyringWorker.behind() ? ConnectionDialog.BEHIND : "")));
     }
     if (s.removeError != null) {
       content.child(Callout.callout(

@@ -57,8 +57,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
@@ -208,9 +208,8 @@ final class ConsoleTab implements Tab {
   Split.Position split = SPLIT;
   final Menu.State databases = new Menu.State();
   private Lane lane; // the session, or null until it is needed
-  // Tells the app, from the thread that closes the session, that the commit of what its last
-  // statement changed failed as the session ended: the statement's first words and the failure.
-  private BiConsumer<String, String> notKept;
+  // Tells the app what finishing something on the session did, from the thread that sees it.
+  private Teller teller;
   private char[] password; // its copy, which checks what the server says; wiped with the session
   LoadedDriver driver; // the session's, from when it is opened until it is closed
   // The statement that may still have the session, from when it is asked to run until a portion
@@ -484,9 +483,8 @@ final class ConsoleTab implements Tab {
       lane = session.lane();
       driver = session.driver();
       password = session.password();
-      var name = State.name(s.profile(id));
-      var app = s.app;
-      notKept = (sql, said) -> app.post(() -> s.notKept(name, sql, said));
+      teller = new Teller(
+          s.app, s, State.name(s.profile(id)), password == null ? null : password.clone(), this);
     }
     return lane;
   }
@@ -501,19 +499,18 @@ final class ConsoleTab implements Tab {
       State s, String what, Lane.Call<T> call, Consumer<T> done, Consumer<Exception> failed) {
     var leftSql = openSql;
     open = null; // given up on the lane, also where this call never starts
-    var gaveUp = new AtomicReference<Failure>();
+    leave(); // and its rows end where they are
+    var tell = teller;
     return lane.ask(
         s.app,
         what,
         Lane.Priority.VIEW,
-        link -> after(link, gaveUp, call),
+        link -> after(link, tell, leftSql, call),
         value -> {
-          gaveUp(s, leftSql, gaveUp.get());
           done.accept(value);
           settle(s);
         },
         error -> {
-          gaveUp(s, leftSql, gaveUp.get());
           failed.accept(error);
           settle(s);
         });
@@ -521,22 +518,68 @@ final class ConsoleTab implements Tab {
 
   /**
    * The lane call of every console call but a further portion, as one unit: the statement still
-   * open on the session is given up first, whatever the app's thread knew of it, and what that
-   * failed with is kept in {@code gaveUp}; then the call.
+   * open on the session is given up first, whatever the app's thread knew of it, as a step of its
+   * own. Where that fails, as the commit of a read's own transaction does on a deferred
+   * constraint, the failure goes to the app at once ({@link Tell}), from here, and the call is not
+   * made: {@link GaveUp} says why.
    */
-  static <T> T after(Servers.Link link, AtomicReference<Failure> gaveUp, Lane.Call<T> call)
+  static <T> T after(Servers.Link link, Tell tell, String left, Lane.Call<T> call)
       throws Exception {
-    gaveUp.set(link.giveUp().orElse(null));
+    var failure = link.giveUp();
+    if (failure.isPresent()) {
+      tell.tell(left, ENDED + failure.get().message() + MAY_NOT_STAND, true);
+      throw new GaveUp(left, failure.get());
+    }
     return call.call(link);
   }
 
-  /** What giving up a read's rest failed with, as a commit of what it did, the console says. */
-  private void gaveUp(State s, String sql, Failure failure) {
-    if (failure != null) {
-      heard(Level.ERROR, sql, null, "Giving up the rest failed: " + failure.message());
-      fail(s, failure);
+  static final String ENDED = "Its end, as the console went on, failed: ";
+  static final String MAY_NOT_STAND = ". What it changed may not stand.";
+
+  /** Giving up what was still open on the session failed: what wanted to run after it did not. */
+  static final class GaveUp extends Exception {
+    final String sql;
+    final Failure failure;
+
+    GaveUp(String sql, Failure failure) {
+      super(failure.message());
+      this.sql = sql;
+      this.failure = failure;
     }
   }
+
+  /**
+   * Says what finishing something on a session did, from whichever thread sees it, at once: to the
+   * app's notices ({@link State#notice}), which nothing that can be cancelled, closed or replaced
+   * stands between.
+   */
+  interface Tell {
+    void tell(String sql, String what, boolean failure);
+  }
+
+  /**
+   * The session's {@link Tell}: the server's words checked against its own copy of the password,
+   * which it wipes once the session has closed and said so.
+   */
+  record Teller(App<State> app, State state, String connection, char[] password, ConsoleTab of)
+      implements Tell {
+    @Override
+    public void tell(String sql, String what, boolean failure) {
+      var said = words(password, what);
+      var statement = brief(sql == null ? "" : sql);
+      app.post(() -> state.notice(connection, statement, said, failure, of));
+    }
+
+    /** The session has closed and said all it had to: the password goes. */
+    void wipe() {
+      if (password != null) {
+        Arrays.fill(password, '\0');
+      }
+    }
+  }
+
+  static final String SESSION_ENDED =
+      "Its change was to be committed as the session ended, but the commit failed: ";
 
   // On the lane: what the console's calls do with the session.
 
@@ -660,7 +703,7 @@ final class ConsoleTab implements Tab {
    * transaction is open: PostgreSQL answers one in a failed transaction by rolling it back, without
    * an error, and MariaDB and MySQL roll one back by themselves, as after a deadlock.
    */
-  static Ended finish(Servers.Link link, String sql) throws QueryException {
+  static Ended finish(Servers.Link link, String sql, Tell tell) throws QueryException {
     Transaction before = null;
     if (sql.equals(COMMIT)) {
       var now = link.status();
@@ -670,10 +713,38 @@ final class ConsoleTab implements Tab {
       }
     }
     var run = link.run(sql);
+    Portion portion;
     try {
-      return new Ended(before, run.next(1));
+      portion = run.next(1);
     } finally {
       run.close();
+    }
+    told(portion, sql, tell);
+    return new Ended(before, portion);
+  }
+
+  /**
+   * What Commit's or Rollback's statement came back with beyond its plain outcome, its failure or
+   * the server's warnings, goes to the app's notices at once, from the lane.
+   */
+  private static void told(Portion portion, String sql, Tell tell) {
+    var failure = failure(portion);
+    if (failure != null) {
+      tell.tell(
+          sql,
+          (sql.equals(COMMIT) ? "Commit failed: " : "Rollback failed: ") + failure.message(),
+          true);
+    }
+    for (var m : portion.messages()) {
+      if (m.code() == NOT_ROLLED_BACK) {
+        tell.tell(sql, PARTLY + ": " + m.text() + ". Those changes stand.", true);
+      } else {
+        var code = !m.state().isEmpty() ? m.state() : m.code() != 0 ? String.valueOf(m.code()) : "";
+        tell.tell(
+            sql,
+            "The server warned: " + m.text() + (code.isEmpty() ? "" : " (" + code + ")"),
+            false);
+      }
     }
   }
 
@@ -746,6 +817,7 @@ final class ConsoleTab implements Tab {
     messages(portion);
     if (incomplete(portion)) {
       partly(s, sql);
+      log.add(new Logged(Level.ERROR, brief(sql), null, PARTLY));
     }
     if (failure != null) {
       queue.clear();
@@ -817,7 +889,7 @@ final class ConsoleTab implements Tab {
         sql,
         portion.elapsed(),
         failure == null ? done : outcome(portion));
-    messages(portion);
+    // Its warnings came as notices, which Messages shows too ({@link #noticed}).
     if (failure == null) {
       learn(portion, false);
       follow(portion.autoCommit());
@@ -858,13 +930,21 @@ final class ConsoleTab implements Tab {
 
   static final String PARTLY = "Rolled back in part";
 
-  /** A rollback left changes in place: the results area says so until the next run. */
+  /**
+   * A rollback left changes in place: the results area says so until the next run, and an act
+   * that waited on it does not go on, as its outcome is not what was asked.
+   */
   private void partly(State s, String sql) {
+    s.drop(this);
     problem = new Problem(
         PARTLY,
         brief(sql) + " could not undo everything: changes to tables that keep no transactions,"
             + " such as MyISAM ones, stay as they were made. Check those tables.");
-    log.add(new Logged(Level.ERROR, brief(sql), null, PARTLY));
+  }
+
+  /** A notice about this console's session, which Messages keeps too while the console lives. */
+  void noticed(String statement, String what, boolean failure) {
+    log.add(new Logged(failure ? Level.ERROR : Level.WARNING, statement, null, what));
   }
 
   static final String UNSURE = "The outcome is not known";
@@ -966,7 +1046,7 @@ final class ConsoleTab implements Tab {
     if (learned != asked.at() || lane != asked.lane() || error instanceof InterruptedException) {
       return;
     }
-    if (lost(error)) {
+    if (lost(error) || error instanceof GaveUp) {
       failed(s, "Transaction", error);
     } else {
       transaction = Transaction.UNKNOWN;
@@ -1121,6 +1201,19 @@ final class ConsoleTab implements Tab {
     if (closed || error instanceof InterruptedException) {
       return; // the session closed under it, which says why where it says anything
     }
+    if (error instanceof GaveUp g) {
+      // Its notice is the app's already; here the console stops, and an act that waited too.
+      s.drop(this);
+      failedRun = true;
+      problem = heard(
+          "Not run",
+          brief(g.sql) + " could not be ended, so " + brief(sql) + " was not sent and nothing"
+              + " more runs: " + g.failure.message() + MAY_NOT_STAND);
+      log.add(new Logged(Level.ERROR, brief(sql), null, "Not run"));
+      transaction = Transaction.UNKNOWN;
+      learned++;
+      return;
+    }
     var profile = s.profile(id);
     boolean lost = lost(error);
     if (doubt == null) {
@@ -1161,6 +1254,10 @@ final class ConsoleTab implements Tab {
         || last < output.rows.size() - 50
         || !gate(s, null)) {
       return; // asked again once the grid builds these rows anew
+    }
+    if (lane == null || open == null || open.get() == null) {
+      leave(); // its statement was given up, or its session ended: no more rows of it
+      return;
     }
     var held = open;
     var sql = running;
@@ -1358,19 +1455,25 @@ final class ConsoleTab implements Tab {
     if (lane != null) {
       // Interrupts what runs, which core cancels, gives up what is still open, as a read whose
       // rest was not read, and closes the connection. A commit of what that read changed, which
-      // fails then, no console shows any more: the app does, checked against the password.
-      var sql = brief(openSql == null ? "" : openSql);
-      var copy = password == null ? null : password.clone();
-      var tell = notKept;
+      // fails then, goes to the app's notices; the app counts the session closing until then.
+      // The app counts the session until it has, which a background work waits for, so that
+      // Exit can wait for it as for any work.
+      var sql = openSql;
+      var tell = teller;
+      var said = new CompletableFuture<Void>();
       lane.close(failure -> {
         try {
-          failure.ifPresent(f -> tell.accept(sql, words(copy, f.message())));
+          failure.ifPresent(f -> tell.tell(sql, SESSION_ENDED + f.message() + MAY_NOT_STAND, true));
         } finally {
-          if (copy != null) {
-            Arrays.fill(copy, '\0');
-          }
+          tell.wipe();
+          said.complete(null);
         }
       });
+      var state = tell.state();
+      state.closing();
+      tell.app()
+          .background(
+              "close a console's session", said::get, done -> state.closed(), e -> state.closed());
       lane = null;
     }
     driver = null;
@@ -1513,10 +1616,11 @@ final class ConsoleTab implements Tab {
     writes = true;
     plain = false;
     running = sql;
+    var tell = teller;
     work = ask(
         s,
         sql.equals(COMMIT) ? "commit" : "roll back",
-        link -> finish(link, sql),
+        link -> finish(link, sql, tell),
         ended -> {
           work = null;
           firm = false;

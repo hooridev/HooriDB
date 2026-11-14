@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.rethinkj.ui.App;
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
@@ -13,6 +14,7 @@ import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
 import java.util.List;
@@ -298,15 +300,15 @@ class ServersServerTest {
   }
 
   static ConsoleTab.Ended end(Lane lane, String sql) throws Exception {
-    return lane.submit(link -> unit(link, l -> ConsoleTab.finish(l, sql)))
+    return lane.submit(link -> unit(link, l -> ConsoleTab.finish(l, sql, (a, b, c) -> {})))
         .get(20, TimeUnit.SECONDS);
   }
 
-  /** The console's unit around a call; what giving up the statement left open failed with fails it. */
+  /** The console's unit around a call, which fails where giving up what was left open fails. */
   static <T> T unit(Servers.Link link, Lane.Call<T> call) throws Exception {
-    var gaveUp = new AtomicReference<Failure>();
-    var value = ConsoleTab.after(link, gaveUp, call);
-    assertEquals(null, gaveUp.get(), "giving up what was left open");
+    var told = new ArrayList<String>();
+    var value = ConsoleTab.after(link, (sql, what, failure) -> told.add(what), "", call);
+    assertEquals(List.of(), told, "giving up what was left open");
     return value;
   }
 
@@ -538,7 +540,8 @@ class ServersServerTest {
       var held = new AtomicReference<Servers.Run>();
       var update = lane.submit(link -> ConsoleTab.after(
           link,
-          new AtomicReference<>(),
+          (sql, what, failure) -> {},
+          "",
           l -> ConsoleTab.start(
               l,
               "INSERT INTO seam_dropped VALUES (1)",
@@ -831,6 +834,125 @@ class ServersServerTest {
     } finally {
       mode(lane, false, false);
       statement(lane, "DROP TABLE seam_plain, seam_kept", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  // The fifth review: the console itself, on its cancellable path, against a real server.
+
+  @org.junit.jupiter.api.io.TempDir
+  java.nio.file.Path dir;
+
+  /**
+   * The app with one connection to the real server, whose console runs as it does for the user:
+   * the tree and the console open their connections through {@link Servers#SERVER}, with the
+   * server's own driver and password.
+   */
+  CatalogueTest app(TestServer server, List<App<State>> apps) throws Exception {
+    var c = new CatalogueTest();
+    c.dir = dir;
+    c.setUp();
+    Servers real = (profile, password, driver) ->
+        Servers.SERVER.open(profile, TestServer.password(), server.driver());
+    var profile = server.profile().withName("real");
+    var app = c.app(
+        real,
+        () -> new Keyring.Unavailable(Keyring.Reason.UNSUPPORTED_PLATFORM, "a test"),
+        profile);
+    c.ready(app, profile);
+    c.run(
+        app,
+        CatalogueTest.START + CatalogueTest.menu("real", "New console") + CatalogueTest.SETTLE);
+    apps.add(app);
+    return c;
+  }
+
+  /**
+   * The first finding: PostgreSQL, Auto, Run all of a read whose function breaks a deferred
+   * constraint, then an INSERT. Giving up the read commits its own transaction, which fails: the
+   * INSERT is not sent, and the app has the failure.
+   */
+  @Test
+  void aRunAllStopsWhereAReadsCommitFailed() throws Exception {
+    var server = TestServer.of(Provider.POSTGRESQL);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    var apps = new ArrayList<App<State>>();
+    CatalogueTest c = null;
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS seam_once, seam_after",
+          "CREATE TABLE seam_once (id integer,"
+              + " CONSTRAINT seam_once_id UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)",
+          "CREATE TABLE seam_after (id integer)",
+          "CREATE OR REPLACE FUNCTION seam_twice(n integer) RETURNS integer AS"
+              + " 'INSERT INTO seam_once VALUES (1) RETURNING id' LANGUAGE sql")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      c = app(server, apps);
+      var app = apps.getFirst();
+      c.run(
+          app,
+          ConsoleTest.type("SELECT seam_twice(n) FROM generate_series(1, 1000) n;\n"
+                  + "INSERT INTO seam_after VALUES (1);")
+              + ConsoleTest.RUN_ALL);
+      assertEquals(0L, count(watcher, "seam_after"), "not sent after the failed commit");
+      assertEquals(0L, count(watcher, "seam_once"), "rolled back");
+      assertTrue(
+          ConsoleTransactionTest.noticed(app).contains(ConsoleTab.ENDED),
+          ConsoleTransactionTest.noticed(app));
+      assertTrue(app.state().notices.getFirst().failure());
+    } finally {
+      if (c != null) {
+        c.tearDown();
+      }
+      statement(lane, "DROP FUNCTION IF EXISTS seam_twice", ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE IF EXISTS seam_once, seam_after", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /**
+   * The third finding: MariaDB, Manual, a change of an InnoDB and of a MyISAM table, then the tab
+   * closed and Rollback answered: the server says the rollback was partial, and the close stops.
+   */
+  @Test
+  void aRollbackInPartAnsweredAtCloseKeepsTheConsole() throws Exception {
+    var server = TestServer.of(Provider.MARIADB);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    var apps = new ArrayList<App<State>>();
+    CatalogueTest c = null;
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS seam_plain, seam_kept",
+          "CREATE TABLE seam_plain (id integer) ENGINE=MyISAM",
+          "CREATE TABLE seam_kept (id integer) ENGINE=InnoDB")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      c = app(server, apps);
+      var app = apps.getFirst();
+      c.run(
+          app,
+          ConsoleTransactionTest.MANUAL
+              + ConsoleTest.type(
+                  "INSERT INTO seam_kept VALUES (1);\nINSERT INTO seam_plain VALUES (1);")
+              + ConsoleTest.RUN_ALL + "press #close-0\nframe\n" + ConsoleTransactionTest.OPENED
+              + "press #answer-rollback\nframe\n" + ConsoleTransactionTest.OPENED
+              + CatalogueTest.SETTLE);
+      assertEquals(1, app.state().consoles(null).size(), "the close stopped");
+      assertTrue(
+          ConsoleTransactionTest.noticed(app).contains(ConsoleTab.PARTLY),
+          ConsoleTransactionTest.noticed(app));
+      assertEquals(0L, count(watcher, "seam_kept"));
+      assertEquals(1L, count(watcher, "seam_plain"), "MyISAM keeps it");
+    } finally {
+      if (c != null) {
+        c.tearDown();
+      }
+      statement(lane, "DROP TABLE IF EXISTS seam_plain, seam_kept", ConsoleTab.Mode.AUTO);
       lane.close();
       watcher.close();
     }

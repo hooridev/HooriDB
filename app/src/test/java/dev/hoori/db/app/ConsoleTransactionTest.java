@@ -35,6 +35,7 @@ import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -110,6 +111,15 @@ class ConsoleTransactionTest {
 
   static String badge(String tree) {
     return near(tree, "#transaction");
+  }
+
+  /** The notices of the app, one a line: connection, statement, what happened. */
+  static String noticed(App<State> app) {
+    return String.join(
+        "\n",
+        app.state().notices.stream()
+            .map(n -> n.connection() + " · " + n.statement() + " · " + n.what())
+            .toList());
   }
 
   static final String TAB = "role=tab label=\"shop-prod: shop\"";
@@ -467,7 +477,7 @@ class ConsoleTransactionTest {
     link.run(PAY).next(1);
     link.run(MISSING).next(1);
     assertEquals(Transaction.FAILED, link.status().transaction());
-    var ended = ConsoleTab.finish(link, ConsoleTab.COMMIT);
+    var ended = ConsoleTab.finish(link, ConsoleTab.COMMIT, (sql, what, failure) -> {});
     assertEquals(Transaction.FAILED, ended.before());
     assertEquals(null, ended.portion());
     assertFalse(servers.calls.contains(COMMITTING), servers.calls.toString());
@@ -730,7 +740,8 @@ class ConsoleTransactionTest {
     assertTrue(
         line(c.tree("auto"), "role=radio label=\"Auto\"").contains("checked"), c.tree("auto"));
     assertTrue(servers.calls.contains("autocommit " + MARIA + " on"), servers.calls.toString());
-    c.run(app, type(";\n" + PAY) + RUN + EXIT);
+    // Exit waits for the session it ends to say how it closed.
+    c.run(app, type(";\n" + PAY) + RUN + EXIT + SETTLE);
     assertTrue(app.windows().all().isEmpty());
   }
 
@@ -1392,10 +1403,14 @@ class ConsoleTransactionTest {
     var app = k.console(SHOP);
     c.run(app, type(ORDERS + ";\n" + COUNT) + RUN_ALL + "snap given\n");
     assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
-    c.run(app, "press role=tab label=\"Messages\"\nframe\nsnap messages\n");
+    // The fifth review's first finding: what came after it is not sent, and the run stops.
+    assertFalse(servers.calls.contains("run " + PG + " " + COUNT), servers.calls.toString());
+    assertTrue(line(c.tree("given"), "#problem").contains("Not run"), c.tree("given"));
+    c.run(app, "press role=tab label=\"Messages\"\nframe\n" + OPENED + "snap messages\n");
     assertTrue(
-        c.tree("messages").contains("Giving up the rest failed: the commit at give-up failed"),
+        c.tree("messages").contains(ConsoleTab.ENDED + "the commit at give-up failed"),
         c.tree("messages"));
+    assertTrue(noticed(app).contains(ConsoleTab.ENDED + "the commit at give-up failed"));
   }
 
   /**
@@ -1809,15 +1824,15 @@ class ConsoleTransactionTest {
       } catch (java.io.IOException e) {
         throw new java.io.UncheckedIOException(e);
       }
-      return app.state().notKept != null;
+      return !app.state().notices.isEmpty();
     });
     c.run(app, "frame\nsnap told\n");
     String told = c.tree("told");
-    assertTrue(told.contains("A change may not stand"), told);
-    assertTrue(app.state().notKept.contains("shop-prod: " + ORDERS), app.state().notKept);
-    assertTrue(app.state().notKept.contains("could not serialize access"), app.state().notKept);
-    c.run(app, "press role=button label=\"Dismiss\"\nframe\nsnap dismissed\n");
-    assertFalse(c.tree("dismissed").contains("A change may not stand"), c.tree("dismissed"));
+    assertTrue(near(told, "#notice-1").contains("shop-prod · " + ORDERS), told);
+    assertTrue(noticed(app).contains("could not serialize access"), noticed(app));
+    c.run(app, "press #dismiss-1\nframe\nadvance 1\nframe\nsnap dismissed\n");
+    assertFalse(c.tree("dismissed").contains("#notice-1"), c.tree("dismissed"));
+    assertTrue(app.state().notices.isEmpty());
   }
 
   static final dev.hoori.db.core.execution.Message NOT_ROLLED_BACK =
@@ -1896,7 +1911,7 @@ class ConsoleTransactionTest {
       } catch (java.io.IOException e) {
         throw new java.io.UncheckedIOException(e);
       }
-      return ended.state().notKept != null;
+      return !ended.state().notices.isEmpty();
     });
     Script.run("frame\nsnap main-change-may-not-stand-" + look + "\n", ended, out);
     // A keyring that does not answer, and what giving it up leaves.
@@ -1923,6 +1938,222 @@ class ConsoleTransactionTest {
         "main-change-may-not-stand",
         "dialog-keyring-slow",
         "dialog-keyring-given-up")) {
+      assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
+    }
+  }
+
+  // The fifth review's findings: who owns a failure once it has happened, and a keyring change
+  // once it has started. Its first finding is aFailureAtGivingUpIsShown, and against PostgreSQL
+  // ServersServerTest's aRunAllStopsWhereAReadsCommitFailed.
+
+  static final String DUPLICATE = "duplicate key value violates unique constraint";
+
+  /**
+   * 2: the failure of giving up a read is the app's at once, and neither a Cancel of what came
+   * after nor a close of the tab can lose it.
+   */
+  @Test
+  void aGiveUpsFailureOutlivesWhatCameAfter() throws Exception {
+    servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
+    for (var after :
+        List.of("press role=button label=\"Cancel\"\nframe\n", "press #close-0\nframe\n")) {
+      var app = k.console(SHOP);
+      c.run(app, type(ORDERS) + RUN);
+      c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\nframe\n");
+      eventually(() -> servers.calls.contains("close " + PG + " " + ORDERS));
+      c.run(app, after + OPENED + SETTLE + "snap after\n");
+      assertTrue(noticed(app).contains(ConsoleTab.ENDED + DUPLICATE), after + noticed(app));
+      assertTrue(near(c.tree("after"), "#notice-1").contains(DUPLICATE), c.tree("after"));
+      servers.calls.clear();
+    }
+  }
+
+  /**
+   * 3: a Rollback that the close question ran, and that rolled back only in part, stops the close:
+   * the console stays and says so, and the app keeps it.
+   */
+  @Test
+  void aRollbackInPartStopsTheCloseItAnswered() throws Exception {
+    servers.statement(ConsoleTab.ROLLBACK, List.of(new Result.Count(0)), NOT_ROLLED_BACK);
+    var app = open(INVENTORY);
+    c.run(
+        app,
+        "press #close-0\nframe\n" + OPENED + "press #answer-rollback\nframe\n" + OPENED + SETTLE
+            + "snap partly\n");
+    String partly = c.tree("partly");
+    assertEquals(1, app.state().consoles(null).size(), "the close stopped");
+    assertEquals(null, app.state().pending);
+    assertTrue(line(partly, "#problem").contains(ConsoleTab.PARTLY), partly);
+    assertTrue(noticed(app).contains(ConsoleTab.PARTLY), noticed(app));
+  }
+
+  /**
+   * 4: a keyring change given up still runs, and what is asked of the keyring after it runs after
+   * it: the password a save gave up on is not left behind by the delete that came later.
+   */
+  @Test
+  void aKeyringChangeGivenUpRunsBeforeTheNextOne() throws Exception {
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(app, CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
+    var late = new CountDownLatch(1);
+    c.secrets.late = late;
+    c.run(
+        app,
+        "press role=textbox label=\"User\"\ntype \"2\"\n"
+            + "press role=textbox label=\"Password\"\ntype \"first\"\n"
+            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
+            + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED
+            + "press role=button label=\"Cancel\"\nframe\n" + OPENED
+            + "press role=button label=\"Discard\"\nframe\n" + OPENED
+            + menu("shop-prod", "Delete…") + OPENED
+            + "press role=button label=\"Delete\"\nframe\nadvance " + State.KEYRING_SECONDS
+            + "\nframe\nadvance 1\nframe\nsnap waiting\n");
+    assertTrue(c.tree("waiting").contains("this one waits behind it"), c.tree("waiting"));
+    late.countDown(); // the save given up writes now, as a native call can
+    c.run(app, SETTLE + "snap deleted\n");
+    assertFalse(c.secrets.stored.containsKey(SHOP.id()), "the delete came last");
+    assertTrue(app.state().profiles.isEmpty());
+  }
+
+  /** 5: while the keyring is still being found, a Delete can be given up, and so can Exit. */
+  @Test
+  void aKeyringNeverFoundStrandsNeitherDeleteNorExit() throws Exception {
+    var finding = new CountDownLatch(1);
+    var app = c.app(
+        servers,
+        () -> {
+          finding.await();
+          return new Keyring.Available(c.secrets);
+        },
+        SHOP);
+    c.ready(app, SHOP);
+    // The load comes in; the keyring is looked for from then on, and not found.
+    c.run(app, "size 1200 760\nframe\nawait\nframe\nframe\nadvance 1\nframe\n");
+    c.run(
+        app,
+        menu("shop-prod", "Delete…") + OPENED + "press role=button label=\"Delete\"\nframe\n"
+            + "advance " + State.KEYRING_SECONDS + "\nframe\nadvance 1\nframe\nsnap slow\n");
+    String slow = c.tree("slow");
+    assertTrue(slow.contains("The system keyring does not answer"), slow);
+    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + OPENED + "snap given\n");
+    assertTrue(c.tree("given").contains("the deletion was given up"), c.tree("given"));
+    assertEquals(null, app.state().pending);
+    // Delete again, and Exit: the first gives the delete up once it is slow, the next goes.
+    c.run(
+        app,
+        "press role=button label=\"Delete\"\nframe\nadvance " + State.KEYRING_SECONDS
+            + "\nframe\nadvance 1\nframe\n");
+    app.state().requestClose(); // the window's close button, under the dialog
+    c.run(app, "frame\n");
+    assertFalse(app.windows().all().isEmpty(), "the first close gave up the delete");
+    assertEquals(1, app.state().profiles.size());
+    assertEquals(null, app.state().pending);
+    app.state().requestClose();
+    c.run(app, "frame\n");
+    assertTrue(app.windows().all().isEmpty());
+    finding.countDown();
+  }
+
+  /** 6: two sessions whose closing commits fail leave two notices, each readable. */
+  @Test
+  void twoClosingFailuresAreBothKept() throws Exception {
+    servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS) + RUN + menu("shop-prod", "New console") + SETTLE + type(ORDERS) + RUN);
+    assertEquals(2, app.state().consoles(null).size());
+    c.run(app, menu("shop-prod", "Disconnect") + OPENED + SETTLE + "snap both\n");
+    assertEquals(2, app.state().notices.size(), noticed(app));
+    String both = c.tree("both");
+    assertTrue(near(both, "#notice-1").contains(DUPLICATE), both);
+    assertTrue(near(both, "#notice-2").contains(DUPLICATE), both);
+  }
+
+  /** 7: a switch to Manual gives up a read left with rows, which then says so and reads no more. */
+  @Test
+  void aSwitchThatGivesUpAReadLeavesItsGridCut() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS) + RUN + MANUAL);
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE + "snap scrolled\n");
+    String scrolled = c.tree("scrolled");
+    assertFalse(
+        servers.calls.contains("next " + PG + " " + ORDERS + " 200"), servers.calls.toString());
+    assertTrue(near(scrolled, "#result-status").contains("the rest was not read"), scrolled);
+    assertEquals(Transaction.NONE, k.tab(app).transaction);
+    assertEquals(null, k.tab(app).problem);
+  }
+
+  /** Exit waits for the sessions it ends; one that reports a failure keeps HooriDB open. */
+  @Test
+  void exitStaysOpenOnASessionsFailure() throws Exception {
+    servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS) + RUN + EXIT + SETTLE + "snap stayed\n");
+    assertFalse(app.windows().all().isEmpty(), "stayed open");
+    assertTrue(near(c.tree("stayed"), "#notice-1").contains(DUPLICATE), c.tree("stayed"));
+    assertEquals(null, app.state().pending);
+    c.run(app, EXIT + SETTLE);
+    assertTrue(app.windows().all().isEmpty());
+  }
+
+  /** Exit waits for a session that does not say it closed only so long, then once more. */
+  @Test
+  void exitWaitsForASilentSessionOnlySoLong() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS) + RUN);
+    servers.dead = true; // the held call ends only once its gate opens, interrupted or not
+    var gate = servers.hold("run " + PG + " " + COUNT);
+    c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains("run " + PG + " " + COUNT));
+    c.run(app, EXIT + "advance " + State.EXIT_SECONDS + "\nframe\nsnap silent\n");
+    assertFalse(app.windows().all().isEmpty());
+    assertTrue(c.tree("silent").contains("did not say in time"), c.tree("silent"));
+    c.run(app, EXIT);
+    assertTrue(app.windows().all().isEmpty(), "the second Exit goes");
+    gate.countDown();
+  }
+
+  /** The pictures of what the fifth round changed, light and dark, as {@link #pictures}. */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void picturesOfTheFifthRound(String look) throws Exception {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    var out = Files.createDirectories(Path.of(review));
+    var theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    // Two notices, and Exit staying open on them.
+    servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
+    var app = k.console(SHOP);
+    app.state().theme = theme;
+    Script.run(
+        type(ORDERS) + RUN + menu("shop-prod", "New console") + SETTLE + type(ORDERS) + RUN + EXIT
+            + SETTLE + "snap main-exit-stayed-open-" + look + "\n",
+        app,
+        out);
+    // A delete that waits behind a keyring save given up.
+    var keyring = c.app(SHOP);
+    c.ready(keyring, SHOP);
+    keyring.state().theme = theme;
+    var late = new CountDownLatch(1);
+    Script.run(CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE, keyring, out);
+    c.secrets.late = late;
+    Script.run(
+        "press role=textbox label=\"User\"\ntype \"2\"\n"
+            + "press role=textbox label=\"Password\"\ntype \"first\"\n"
+            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
+            + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED
+            + "press role=button label=\"Cancel\"\nframe\n" + OPENED
+            + "press role=button label=\"Discard\"\nframe\n" + OPENED
+            + menu("shop-prod", "Delete…") + OPENED
+            + "press role=button label=\"Delete\"\nframe\nadvance " + State.KEYRING_SECONDS
+            + "\nframe\nadvance 1\nframe\nsnap dialog-keyring-behind-" + look + "\n",
+        keyring,
+        out);
+    late.countDown();
+    Script.run(SETTLE, keyring, out);
+    for (var name : List.of("main-exit-stayed-open", "dialog-keyring-behind")) {
       assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
     }
   }

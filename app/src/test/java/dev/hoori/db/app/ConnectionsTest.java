@@ -40,6 +40,7 @@ class ConnectionsTest {
     final Map<UUID, String> stored = new ConcurrentHashMap<>();
     volatile boolean fails;
     volatile CountDownLatch gate;
+    volatile CountDownLatch late; // holds the next call alone, which ignores its interrupt
     final List<char[]> given =
         new java.util.concurrent.CopyOnWriteArrayList<>(); // the passwords read
     final List<char[]> received =
@@ -67,6 +68,24 @@ class ConnectionsTest {
     }
 
     private void check() throws IOException {
+      var hold = late;
+      if (hold != null) {
+        // As a native call that takes no cancellation: it waits on, and then does what it was
+        // asked, however long ago its caller gave up.
+        late = null;
+        boolean interrupted = false;
+        while (true) {
+          try {
+            hold.await();
+            break;
+          } catch (InterruptedException e) {
+            interrupted = true;
+          }
+        }
+        if (interrupted) {
+          Thread.currentThread().interrupt();
+        }
+      }
       if (gate != null) {
         try {
           gate.await();

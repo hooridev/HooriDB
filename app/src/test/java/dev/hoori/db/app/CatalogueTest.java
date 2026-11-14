@@ -148,10 +148,19 @@ class CatalogueTest {
 
   /** The app with these connections, the made-up servers and the keyring in memory. */
   App<State> app(ConnectionProfile... profiles) throws IOException {
+    return app(servers, () -> new Keyring.Available(secrets), profiles);
+  }
+
+  /** The app with these connections, servers and way of finding the keyring. */
+  App<State> app(
+      Servers servers,
+      java.util.concurrent.Callable<Keyring> keyring,
+      ConnectionProfile... profiles)
+      throws IOException {
     new ProfileStore(dir.resolve("config")).save(List.of(profiles));
     var app = HooriDb.app(
         dir.resolve("config"),
-        () -> new Keyring.Available(secrets),
+        keyring,
         repository.drivers(dir.resolve("drivers")),
         Tester.SERVER,
         servers);

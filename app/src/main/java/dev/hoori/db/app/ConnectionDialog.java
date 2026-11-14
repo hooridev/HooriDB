@@ -295,7 +295,11 @@ final class ConnectionDialog {
 
   static final String GAVE_UP =
       "The system keyring did not answer, and the save was given up: whether it holds the password"
-          + " now, the old one or the new, is not known. The connection was not saved.";
+          + " now, the old one or the new, is not known. The connection was not saved. What is"
+          + " asked of the keyring next waits until it has answered this.";
+
+  static final String BEHIND =
+      " An earlier request to it that was given up has not ended yet: this one waits behind it.";
 
   /**
    * Cancel once the keyring has not answered for a while: the change of the keyring is given up,
@@ -318,7 +322,7 @@ final class ConnectionDialog {
     keyringError = GAVE_UP;
     s.drop(act);
     s.keyringFailed();
-    lookUp(s);
+    lookUp(s); // queued behind the change given up: what the keyring holds once it has answered
   }
 
   static final String SAVED = "the changed connection is saved";
@@ -618,7 +622,8 @@ final class ConnectionDialog {
           Callout.Kind.WARNING,
           "The system keyring does not answer",
           "Cancel gives up waiting: the keyring may then hold the password, the old one or the"
-              + " new, or none, and the connection is not saved."));
+              + " new, or none, and the connection is not saved."
+              + (s.keyringWorker.behind() ? BEHIND : "")));
     }
     if (keyringError != null) {
       content.child(Callout.callout(

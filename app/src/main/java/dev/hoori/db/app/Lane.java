@@ -270,9 +270,10 @@ final class Lane {
       }
       ((Future<?>) dropped).cancel(false);
     }
-    Thread.ofVirtual().name("close a connection").start(() -> {
+    // Not a daemon: the process does not end while a connection closes and says how, which takes
+    // at most core's grace after a server that no longer answers.
+    Thread.ofPlatform().daemon(false).name("close a connection").start(() -> {
       try {
-        // As long as it takes: the thread keeps nothing alive, as a virtual thread.
         thread.awaitTermination(Long.MAX_VALUE, TimeUnit.DAYS);
       } catch (InterruptedException e) {
         gaveUp.accept(Optional.empty());

@@ -62,6 +62,8 @@ final class State {
 
   private final ProfileStore store;
   private final Callable<Keyring> findKeyring;
+  // Finds the keyring, and makes every call of it, one after another.
+  final KeyringWorker keyringWorker = new KeyringWorker();
   final Drivers drivers; // null in a script run, which downloads none
   final Tester tester;
   final Catalogue catalogue;
@@ -86,9 +88,14 @@ final class State {
   private Work removal; // the removal of the password, while it runs
   private int removals; // counted, so that a late patience is dropped
   String removeError; // why its password could not be removed, or null
-  // What a session took with it as it ended: the commit of the change its last statement made
-  // failed, and no console shows that any more. Until dismissed.
-  String notKept;
+  // What finishing something on a console's session did, failures and warnings, in the order they
+  // came, each until the user dismisses it: the app's from the moment it exists.
+  final List<Notice> notices = new ArrayList<>();
+  private int noticed; // counted, also those dismissed
+  private int closing; // consoles' sessions whose closing has not said how it ended
+  private int exitAt = -1; // the notices counted when Exit began to wait for the sessions, or -1
+  private int exits; // counted, so that a late patience is dropped
+  private boolean unconfirmed; // the sessions did not all say in time: the next Exit goes
   private Work saving; // the save of the profiles on its way, or null
   private boolean saveAgain; // the profiles changed while it ran
   private boolean quitAnyway; // the last save at the end failed and the user was told
@@ -144,10 +151,15 @@ final class State {
       return;
     }
     lookingForKeyring = true;
+    var worker = keyringWorker;
+    var find = findKeyring;
     app.background(
         "find the system keyring",
-        findKeyring,
-        this::keyringFound,
+        () -> worker.call(find), // its first call: what is asked of it waits behind it
+        found -> keyringFound(
+            found instanceof Keyring.Available(var secrets)
+                ? new Keyring.Available(worker.serial(secrets))
+                : found),
         error -> keyringFound(new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, message(error))));
   }
 
@@ -241,20 +253,38 @@ final class State {
   }
 
   /**
-   * A console's session ended, and the commit of what its last statement changed, as it was given
-   * up, failed: the status line and the main window say so, until dismissed. The text was checked
-   * against the session's password.
+   * What finishing something on a console's session did: a give-up's commit that failed, Commit's
+   * or Rollback's failure and warnings, a session's closing that failed. On the connection, of the
+   * statement's first words; the text was checked against the password. A failure means that
+   * what was asked may not have happened.
    */
-  void notKept(String connection, String statement, String failure) {
-    notKept = connection + ": " + statement + " ran, and its change was to be committed as the"
-        + " session ended, but the commit failed: " + failure
-        + (failure.endsWith(".") ? "" : ".") + " What it changed may not stand.";
-    tell("A change on " + connection + " may not stand: see the connections.");
+  record Notice(int number, String connection, String statement, String what, boolean failure) {}
+
+  /** Takes a notice, posted at once by what saw it; its console's Messages show it too. */
+  void notice(String connection, String statement, String what, boolean failure, ConsoleTab of) {
+    notices.add(new Notice(++noticed, connection, statement, what, failure));
+    if (consoles(null).contains(of)) {
+      of.noticed(statement, what, failure);
+    }
+    tell(connection + ": " + what);
   }
 
-  void dismissNotKept() {
-    notKept = null;
+  void dismiss(Notice notice) {
+    notices.remove(notice);
   }
+
+  /** A console's session begins to close, off the app's thread; {@link #closed} when it has. */
+  void closing() {
+    closing++;
+  }
+
+  /** A console's session has closed, after what its closing had to say. */
+  void closed() {
+    closing--;
+    settled();
+  }
+
+  static final double EXIT_SECONDS = 10; // how long Exit waits for the sessions to say they closed
 
   /** Whether a dialog is open, which an act that opens one must not replace. */
   boolean dialogOpen() {
@@ -286,6 +316,16 @@ final class State {
     }
     removing = true;
     removeError = null;
+    // Patience from the start, also while the keyring is still being found.
+    int at = ++removals;
+    app.after(KEYRING_SECONDS, () -> {
+      if (removing && removals == at) {
+        removingSlow = true;
+        if (quitting()) {
+          giveUpDelete(); // closing never waits for a keyring that does not answer
+        }
+      }
+    });
     if (keyring == null) {
       return; // keyringFound goes on
     }
@@ -297,15 +337,6 @@ final class State {
       return;
     }
     var id = profile.id();
-    int at = ++removals;
-    app.after(KEYRING_SECONDS, () -> {
-      if (removing && removals == at) {
-        removingSlow = true;
-        if (quitting()) {
-          giveUpDelete(); // closing never waits for a keyring that does not answer
-        }
-      }
-    });
     removal = app.background(
         "delete a password",
         () -> {
@@ -341,15 +372,18 @@ final class State {
 
   static final String DELETE_GAVE_UP =
       "The system keyring did not answer, and the deletion was given up: whether the password is"
-          + " still in it is not known. The connection was not deleted.";
+          + " still in it is not known. The connection was not deleted. What is asked of the"
+          + " keyring next waits until it has answered this.";
 
   /**
    * Cancel once the keyring has not answered for a while: the removal of the password is given
    * up, whatever it did, and so is the deletion; the dialog stays and says what that leaves.
    */
   private void giveUpDelete() {
-    removal.cancel();
-    removal = null;
+    if (removal != null) {
+      removal.cancel(); // stops waiting; the removal itself runs on, before any later call
+      removal = null;
+    }
     removals++;
     removing = false;
     removingSlow = false;
@@ -499,7 +533,36 @@ final class State {
       persist();
       return;
     }
+    if (exitAt < 0) {
+      // The consoles' sessions end first, and HooriDB waits for each to say how it ended.
+      exitAt = noticed;
+      consoles(null).forEach(ConsoleTab::end);
+      int at = ++exits;
+      app.after(EXIT_SECONDS, () -> {
+        if (exits == at && quitting() && closing > 0) {
+          stay(closing + (closing == 1 ? " session" : " sessions")
+              + " did not say in time that it closed, so what it finished is not confirmed."
+              + " HooriDB stayed open; close it again to quit without waiting.");
+          unconfirmed = true;
+        }
+      });
+    }
+    if (closing > 0 && !unconfirmed) {
+      return;
+    }
+    if (noticed > exitAt) {
+      stay("HooriDB stayed open: a session reported a problem as it closed. See the connections.");
+      return;
+    }
     closeAll();
+  }
+
+  /** Exit stops, and says why; the next one asks again. */
+  private void stay(String why) {
+    pending = null;
+    exitAt = -1;
+    exits++;
+    tell(why);
   }
 
   /** The keyring refused a change: the window stays open, so that the user sees why. */
