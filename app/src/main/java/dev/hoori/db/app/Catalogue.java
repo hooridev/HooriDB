@@ -415,6 +415,7 @@ final class Catalogue {
               : ConnectionException.Failure.OTHER;
           live.phase = new Failed(failure, detail(checked), live.password.length > 0);
           end(live);
+          s.unconnected(live.id());
           s.tell(State.name(live.profile) + ": " + Words.title(failure));
         });
   }

@@ -48,6 +48,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
 /**
@@ -108,9 +109,6 @@ final class ConsoleTab implements Tab {
   /** What the results area says went wrong, the server's words checked for the password. */
   record Problem(String title, String text) {}
 
-  /** A statement's first portion, with the run whose further rows it may have. */
-  private record Step(Servers.Run run, Portion portion) {}
-
   final UUID id;
   // shortcut: a USE the user runs is not followed, so this may name another database than the
   // session's; ask the session for its database after each run once that misleads.
@@ -121,12 +119,18 @@ final class ConsoleTab implements Tab {
   final Menu.State databases = new Menu.State();
   private Lane lane; // the session, or null until it is needed
   private char[] password; // its copy, which checks what the server says; wiped with the session
-  private Servers.Run open; // the statement whose rows go on, or null
+  // The statement that may still have the session, from when it is asked to run until a portion
+  // says it is over: set on the lane, so that it is closed also where its portion never arrives.
+  private AtomicReference<Servers.Run> open;
   private Output reading; // the result whose rows it has
   private final ArrayDeque<String> queue = new ArrayDeque<>(); // the run's statements still to run
   private Work work; // the statement, the rows or the switch under way, or null
   private String running; // the statement under way, or the one whose rows are read
   boolean waiting; // for the tree's connection, which the session is opened from
+  boolean stranded; // the tree's connection failed while it waited: Try again goes on
+  String switching; // the database it switches to, while it does; the old one shows meanwhile
+  private Statements scanned; // the statements of the text it was made from, as the caret moves
+  private String scannedText;
   final List<Output> outputs = new ArrayList<>(); // the pinned results first
   Output shown; // the results tab shown; null for Messages
   final List<Logged> log = new ArrayList<>();
@@ -164,7 +168,8 @@ final class ConsoleTab implements Tab {
     } else {
       start(
           s,
-          Statements.at(text, provider, editor.caret())
+          statements(provider)
+              .at(editor.caret())
               .map(at -> List.of(text.substring(at.start(), at.end())))
               .orElse(List.of()));
     }
@@ -174,7 +179,11 @@ final class ConsoleTab implements Tab {
   void runAll(State s) {
     var provider = provider(s);
     if (provider != null) {
-      start(s, texts(text, provider));
+      start(
+          s,
+          statements(provider).statements().stream()
+              .map(at -> text.substring(at.start(), at.end()))
+              .toList());
     }
   }
 
@@ -201,6 +210,7 @@ final class ConsoleTab implements Tab {
     if (lane == null && !s.catalogue.connected(id) && !s.catalogue.active(id)) {
       s.catalogue.connect(s, id); // as the tree connects: the driver, the password, the server
     }
+    stranded = false;
     outputs.removeIf(o -> !o.pinned);
     if (!outputs.contains(shown)) {
       shown = null;
@@ -212,19 +222,49 @@ final class ConsoleTab implements Tab {
     firstOfRun = results + 1;
     queue.clear();
     queue.addAll(sql);
+    follow(s);
+  }
+
+  /** Runs on where it can, waits for the tree's connection where it connects, else is stranded. */
+  private void follow(State s) {
     if (lane != null || s.catalogue.connected(id)) {
       next(s);
-    } else {
+    } else if (s.catalogue.active(id)) {
       waiting = true;
+    } else {
+      stranded = true;
     }
   }
 
-  /** The tree's connection connected: what waited for it runs. */
+  /** The tree's connection connected: what waited for it runs; what was stranded is let go. */
   void connected(State s) {
+    stranded = false;
     if (waiting) {
       waiting = false;
       next(s);
+    } else {
+      queue.clear();
     }
+  }
+
+  /** The tree's connection failed while the console waited for it: it says so, with Try again. */
+  void unconnected() {
+    if (waiting) {
+      waiting = false;
+      stranded = true;
+    }
+  }
+
+  /** Try again, or Enter password…: connects the tree's connection again, and goes on. */
+  void retry(State s, boolean password) {
+    stranded = false;
+    var live = s.catalogue.live(id);
+    if (password && live != null) {
+      s.catalogue.askPassword(live);
+    } else {
+      s.catalogue.connect(s, id);
+    }
+    follow(s);
   }
 
   /** Runs the next statement of the run, on the session; its rows before are left as read. */
@@ -240,16 +280,19 @@ final class ConsoleTab implements Tab {
     }
     leave();
     running = sql;
+    var held = new AtomicReference<Servers.Run>();
+    open = held;
     var call = lane.submit(link -> {
       var run = link.run(sql);
-      return new Step(run, run.next(PORTION));
+      held.set(run);
+      return run.next(PORTION);
     });
     work = s.app.background(
         "run a statement",
         () -> Lane.await(call),
-        step -> {
+        portion -> {
           work = null;
-          ran(s, sql, step);
+          ran(s, sql, portion);
         },
         error -> {
           work = null;
@@ -276,9 +319,13 @@ final class ConsoleTab implements Tab {
    */
   private void leave() {
     if (open != null) {
-      var run = open;
+      var held = open;
+      // Behind the call that ran it, whether that ended, was cancelled, or was never delivered.
       lane.submit(link -> {
-        run.close();
+        var run = held.getAndSet(null);
+        if (run != null) {
+          run.close();
+        }
         return null;
       });
       open = null;
@@ -290,8 +337,7 @@ final class ConsoleTab implements Tab {
     reading = null;
   }
 
-  private void ran(State s, String sql, Step step) {
-    var portion = step.portion();
+  private void ran(State s, String sql, Portion portion) {
     statements++;
     took = took.plus(portion.elapsed());
     var before = outputs.size();
@@ -300,15 +346,8 @@ final class ConsoleTab implements Tab {
     if (before < outputs.size()) {
       shown = outputs.get(before);
     }
-    log.add(new Logged(
-        failure == null ? Level.RAN : Level.ERROR,
-        brief(sql),
-        portion.elapsed(),
-        outcome(portion)));
+    heard(failure == null ? Level.RAN : Level.ERROR, sql, portion.elapsed(), outcome(portion));
     messages(portion);
-    if (portion.more()) {
-      open = step.run();
-    }
     if (failure != null) {
       queue.clear();
       fail(failure);
@@ -326,14 +365,15 @@ final class ConsoleTab implements Tab {
       switch (result) {
         case Result.Rows r when r.from() > 0 && reading != null -> reading.rows.addAll(r.rows());
         case Result.Rows r -> {
+          finished();
           var output = new Output(++results, sql, r.fields(), 0);
           output.rows.addAll(r.rows());
           outputs.add(output);
           reading = output;
         }
         case Result.Count c -> {
+          finished();
           outputs.add(new Output(++results, sql, null, c.count()));
-          reading = null;
         }
         case Failure f -> {}
       }
@@ -341,20 +381,37 @@ final class ConsoleTab implements Tab {
     if (portion.more() && reading != null) {
       reading.more = true;
     } else {
-      if (reading != null) {
-        reading.more = false;
-      }
+      finished();
+      open = null; // over: nothing is left to close
+    }
+  }
+
+  /** The result whose rows it read has ended, as another came after it or the statement ended. */
+  private void finished() {
+    if (reading != null) {
+      reading.more = false;
       reading = null;
-      open = null;
     }
   }
 
   private void messages(Portion portion) {
     for (var m : portion.messages()) {
       var code = !m.state().isEmpty() ? m.state() : m.code() != 0 ? String.valueOf(m.code()) : "";
-      log.add(new Logged(
-          Level.WARNING, "", null, words(m.text()) + (code.isEmpty() ? "" : " (" + code + ")")));
+      heard(Level.WARNING, null, null, m.text() + (code.isEmpty() ? "" : " (" + code + ")"));
     }
+  }
+
+  /**
+   * A line of Messages with what the server said: the one place where its words go into
+   * Messages, checked whole for the password.
+   */
+  private void heard(Level level, String sql, Duration took, String said) {
+    log.add(new Logged(level, sql == null ? "" : brief(sql), took, words(said)));
+  }
+
+  /** What the results area says went wrong, the server's part checked whole for the password. */
+  private Problem heard(String title, String said) {
+    return new Problem(title, words(said));
   }
 
   private static Failure failure(Portion portion) {
@@ -368,14 +425,14 @@ final class ConsoleTab implements Tab {
 
   /** The server's failure: the results area says it, and a lost session is opened anew next. */
   private void fail(Failure f) {
-    var text = new StringBuilder(words(f.message()));
+    var text = new StringBuilder(f.message());
     if (!f.detail().isEmpty()) {
-      text.append('\n').append(words(f.detail()));
+      text.append('\n').append(f.detail());
     }
     if (!f.hint().isEmpty()) {
-      text.append("\nHint: ").append(words(f.hint()));
+      text.append("\nHint: ").append(f.hint());
     }
-    problem = new Problem(title(f.kind()), text.toString());
+    problem = heard(title(f.kind()), text.toString());
     if (f.kind() == Failure.Kind.CONNECTION_LOST) {
       closeSession();
     }
@@ -403,12 +460,12 @@ final class ConsoleTab implements Tab {
     if (error instanceof ConnectionException e && profile != null) {
       var on = database.isEmpty() ? profile : profile.withDatabase(database);
       var note = Words.note(e.failure(), on, true);
-      var detail = words(e.detail());
-      problem = new Problem(
+      var detail = e.detail();
+      problem = heard(
           Words.title(e.failure()),
           note == null ? detail : detail.isEmpty() ? note : note + "\n" + detail);
     } else {
-      problem = new Problem("The statement could not be run", words(State.message(error)));
+      problem = heard("The statement could not be run", State.message(error));
     }
     log.add(new Logged(Level.ERROR, brief(sql), null, problem.title()));
     closeSession();
@@ -422,9 +479,9 @@ final class ConsoleTab implements Tab {
     if (output != reading || !output.more || work != null || last < output.rows.size() - 50) {
       return;
     }
-    var run = open;
+    var held = open;
     var sql = running;
-    var call = lane.submit(link -> run.next(PORTION));
+    var call = lane.submit(link -> held.get().next(PORTION)); // leave() clears it only after this
     work = s.app.background(
         "read rows",
         () -> Lane.await(call),
@@ -435,11 +492,11 @@ final class ConsoleTab implements Tab {
           messages(portion);
           var failure = failure(portion);
           if (failure != null) {
-            log.add(new Logged(Level.ERROR, brief(sql), portion.elapsed(), outcome(portion)));
+            heard(Level.ERROR, sql, portion.elapsed(), outcome(portion));
             fail(failure);
           } else if (before < outputs.size()) {
             // Results after the rows: what the statement gave next.
-            log.add(new Logged(Level.RAN, brief(sql), portion.elapsed(), outcome(portion)));
+            heard(Level.RAN, sql, portion.elapsed(), outcome(portion));
           }
         },
         error -> {
@@ -462,12 +519,13 @@ final class ConsoleTab implements Tab {
     work.cancel(); // interrupts the call on the lane, which core turns into a cancel
     work = null;
     queue.clear();
-    open = null; // a cancel ends the statement
-    if (reading != null && reading.more) {
-      reading.more = false;
-      reading.cut = true;
+    leave(); // the statement may have finished its portion, which then never arrives
+    if (switching != null) {
+      // Whether a switch cut short took effect cannot be known: the next run connects anew, to the
+      // database the tab names.
+      switching = null;
+      closeSession();
     }
-    reading = null;
     cancelled = true;
     log.add(new Logged(Level.WARNING, brief(running), null, "Cancelled"));
   }
@@ -482,18 +540,19 @@ final class ConsoleTab implements Tab {
     }
     var profile = s.profile(id);
     var version = s.catalogue.version(id);
-    database = name;
     if (lane == null || profile == null) {
-      return; // the next session opens on it
+      database = name; // the next session opens on it
+      return;
     }
     if (version == null
         || profile.provider().supports(Capability.CONNECTION_PER_DATABASE, version)) {
       closeSession();
+      database = name;
       return;
     }
     leave();
-    running = "USE " + name;
-    var lane = this.lane;
+    switching = name;
+    running = "Database " + name;
     var call = lane.submit(link -> {
       link.use(name);
       return name;
@@ -503,10 +562,13 @@ final class ConsoleTab implements Tab {
         () -> Lane.await(call),
         done -> {
           work = null;
+          switching = null;
+          database = done;
           log.add(new Logged(Level.RAN, "Database " + done, null, "Switched"));
         },
         error -> {
           work = null;
+          switching = null;
           failed(s, "Database " + name, error);
         });
   }
@@ -519,11 +581,13 @@ final class ConsoleTab implements Tab {
     }
     queue.clear();
     waiting = false;
+    stranded = false;
+    switching = null;
     closeSession();
   }
 
   private void closeSession() {
-    open = null;
+    open = null; // closed with the connection
     if (reading != null && reading.more) {
       reading.more = false;
       reading.cut = true;
@@ -585,8 +649,7 @@ final class ConsoleTab implements Tab {
       switch (result) {
         case Result.Rows r -> parts.add(rows(r.rows().size()) + (portion.more() ? " so far" : ""));
         case Result.Count c -> parts.add(rows(c.count()) + " changed");
-        case Failure f ->
-          parts.add(f.kind() == Failure.Kind.CANCELLED ? "Cancelled" : words(f.message()));
+        case Failure f -> parts.add(f.kind() == Failure.Kind.CANCELLED ? "Cancelled" : f.message());
       }
     }
     return parts.isEmpty() ? "Done" : String.join(", ", parts);
@@ -603,7 +666,16 @@ final class ConsoleTab implements Tab {
     if (editor.caret() != editor.anchor()) {
       return null;
     }
-    return Statements.at(text, provider, editor.caret()).orElse(null);
+    return statements(provider).at(editor.caret()).orElse(null);
+  }
+
+  /** The text's statements, scanned again only when the text changed. */
+  private Statements statements(Provider provider) {
+    if (scanned == null || scannedText != text) { // each edit hands over a new string
+      scanned = Statements.of(text, provider);
+      scannedText = text;
+    }
+    return scanned;
   }
 
   /** The tab's content: its toolbar, the editor over the results, and its status line. */
@@ -757,14 +829,20 @@ final class ConsoleTab implements Tab {
 
   /** Why nothing runs or what failed, with what the user can do; null for nothing. */
   private El note(Theme t, State s) {
-    if (waiting && !s.catalogue.active(id)) {
+    if (stranded) {
       var trouble = s.catalogue.problem(s, new Node.Connection(id));
+      var actions = new ArrayList<El>();
+      if (trouble != null && trouble.password()) {
+        actions.add(button(t, SECONDARY, "Enter password…", () -> retry(s, true)));
+      }
+      actions.add(button(t, SECONDARY, "Try again", () -> retry(s, false)).key("try-again"));
       return Callout.callout(
-          t,
-          Callout.Kind.DANGER,
-          trouble == null ? "Not connected" : trouble.title(),
-          trouble == null ? null : trouble.text(),
-          button(t, SECONDARY, "Try again", () -> s.catalogue.connect(s, id)));
+              t,
+              Callout.Kind.DANGER,
+              trouble == null ? "Not connected" : trouble.title(),
+              trouble == null ? null : trouble.text(),
+              actions.toArray(El[]::new))
+          .key("unconnected");
     }
     if (problem != null) {
       return Callout.callout(t, Callout.Kind.DANGER, problem.title(), problem.text())
@@ -871,7 +949,11 @@ final class ConsoleTab implements Tab {
   private El footer(Theme t, State s) {
     El status;
     if (busy()) {
-      var what = waiting ? "Connecting…" : work != null && running != null ? "Running…" : "";
+      var what = waiting
+          ? "Connecting…"
+          : switching != null
+              ? "Switching to " + (switching.isEmpty() ? "no database" : switching) + "…"
+              : "Running…";
       status = row()
           .gap(t.space().s())
           .align(Style.Align.CENTER)

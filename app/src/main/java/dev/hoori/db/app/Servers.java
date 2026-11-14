@@ -20,7 +20,6 @@ import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
-import java.sql.SQLException;
 import java.util.List;
 import java.util.OptionalLong;
 
@@ -146,11 +145,11 @@ interface Servers {
 
     @Override
     public void use(String database) throws QueryException {
-      try {
+      // Through core's worker, so that an interrupt never lands in the driver's socket I/O.
+      Query.run(connection, provider, () -> {
         connection.setCatalog(database);
-      } catch (SQLException e) {
-        throw Query.failure(connection, e);
-      }
+        return null;
+      });
     }
 
     @Override

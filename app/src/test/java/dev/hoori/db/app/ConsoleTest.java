@@ -20,6 +20,7 @@ import com.rethinkj.ui.App;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Message;
 import dev.hoori.db.core.execution.Result;
@@ -296,7 +297,8 @@ class ConsoleTest {
     String analytics = c.tree("analytics");
     assertTrue(tabs(analytics).startsWith("shop-prod: analytics,"), analytics);
     assertTrue(servers.calls.contains("open " + PG + "/analytics"), servers.calls.toString());
-    assertTrue(servers.closed.contains(PG + "/shop"), servers.closed.toString());
+    // The connection to shop closes on a thread of its own, which nothing in the script awaits.
+    eventually(() -> servers.closed.contains(PG + "/shop"));
   }
 
   @Test
@@ -319,8 +321,10 @@ class ConsoleTest {
   void theServersWordsKeepThePasswordOut() throws Exception {
     servers.statement(
         "SELECT secret",
-        List.of(FakeServers.serverError(Failure.Kind.OTHER, "no user with " + PASSWORD)),
-        new Message("a note on " + PASSWORD, "01000", 0));
+        List.of(new Failure(
+            Failure.Kind.OTHER, "no such user", "", 0, 0, "", 0, 0, "", "", "try " + PASSWORD, "")),
+        new Message("a note on " + PASSWORD, "01000", 0),
+        new Message("a note", PASSWORD, 0)); // a state of the server's choosing
     var app = console(SHOP);
     c.run(
         app,
@@ -328,6 +332,84 @@ class ConsoleTest {
             + "frame\nsnap messages\n");
     c.noPassword();
     assertTrue(c.tree("error").contains(ConnectionException.WITHHELD), c.tree("error"));
+  }
+
+  @Test
+  void aConsoleTornOffSaysWhyItCouldNotConnectAndTriesAgainItself() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogueTest.PG_OUTLINE, "another");
+    var app = console(SHOP);
+    c.run(
+        app,
+        "press #tab-0 right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
+            + "window \"shop-prod: shop\"\n" + type(COUNT) + RUN + "snap refused\n");
+    String window = c.tree("shop-prod-shop-refused");
+    assertTrue(line(window, "#unconnected").contains("label=\"Login refused\""), window);
+    assertTrue(window.contains("role=button label=\"Enter password…\""), window);
+    assertFalse(line(window, "#run ").contains("busy"), window);
+    assertTrue(line(window, "#cancel").contains("disabled"), window);
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogueTest.PG_OUTLINE, PASSWORD);
+    c.run(
+        app,
+        "window \"shop-prod: shop\"\npress role=button label=\"Try again\"\nframe\n" + SETTLE
+            + "snap ran\n");
+    window = c.tree("shop-prod-shop-ran");
+    assertTrue(status(window).contains("\"Ran in 4 ms · 1 row\""), window);
+    assertFalse(window.contains("#unconnected"), window);
+  }
+
+  @Test
+  void aCancelledSwitchLeavesTheDatabaseTheConnectionIsOn() throws Exception {
+    var app = console(INVENTORY);
+    c.run(app, type(COUNT) + RUN);
+    var key = "use " + MARIA + " inventory";
+    servers.hold(key);
+    c.run(
+        app,
+        "press #database\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"inventory\"\nframe\nadvance 1\nframe\nsnap switching\n");
+    eventually(() -> servers.calls.contains(key));
+    String switching = c.tree("switching");
+    assertTrue(status(switching).contains("\"Switching to inventory…\""), switching);
+    assertTrue(near(switching, "#database").contains("\"No database\""), switching);
+    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\nsnap cancelled\n");
+    eventually(() -> servers.interrupted.contains(key));
+    String cancelled = c.tree("cancelled");
+    assertTrue(near(cancelled, "#database").contains("\"No database\""), cancelled);
+    assertEquals("", tab(app).database);
+    // Whether the switch took effect is not known: the next statement runs on a new connection.
+    eventually(() -> servers.closed.contains(MARIA));
+    c.run(app, "press #sql\n" + RUN);
+    assertEquals(
+        3, servers.calls.stream().filter(k -> k.equals("open " + MARIA)).count());
+  }
+
+  @Test
+  void aStatementWhosePortionCameAfterCancelIsClosed() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN);
+    var key = "run " + PG + " " + ORDERS;
+    var gate = servers.hold(key);
+    c.run(app, type("\n" + ORDERS) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    // Its first portion is read, with more to come, but not delivered before Cancel.
+    gate.countDown();
+    eventually(() -> servers.done.contains(key));
+    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap cancelled\n");
+    assertTrue(status(c.tree("cancelled")).contains("\"Cancelled\""), c.tree("cancelled"));
+    eventually(() -> servers.calls.contains("close " + PG + " " + ORDERS));
+  }
+
+  @Test
+  void aResultThatEndsAsTheNextOfItsStatementComesHasNoLoadingRow() throws Exception {
+    var both = "CALL report()"; // one statement, whose procedure gives rows, then a count
+    servers.statement(both, List.of(FakeServers.made(250, "id: bigint"), new Result.Count(5)));
+    var app = console(SHOP);
+    c.run(app, type(both) + RUN + "scroll #grid row 180\nframe\nframe\n" + SETTLE + "snap ended\n");
+    String ended = c.tree("ended");
+    assertTrue(tabs(ended).endsWith("Result 1,Result 2,Messages"), tabs(ended));
+    assertTrue(near(ended, "#result-status").contains("· 250 rows\""), ended);
+    assertTrue(status(ended).contains("\"Ran in 4 ms · 250 rows · 5 rows changed\""), ended);
   }
 
   @Test
@@ -343,7 +425,7 @@ class ConsoleTest {
     assertTrue(line(failed, "role=note").contains("label=\""), failed);
     assertTrue(failed.contains("label=\"Try again\""), failed);
     servers.heal("open " + PG + "/shop");
-    c.run(app, "press role=button label=\"Try again\"\nframe\n" + SETTLE + "snap ran\n");
+    c.run(app, "press #try-again\nframe\n" + SETTLE + "snap ran\n");
     assertTrue(status(c.tree("ran")).contains("\"Ran in 4 ms · 1 row\""), c.tree("ran"));
   }
 }

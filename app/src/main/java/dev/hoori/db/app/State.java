@@ -475,6 +475,11 @@ final class State {
     consoles(id).forEach(ConsoleTab::end);
   }
 
+  /** The connection could not be connected: its consoles that waited for it say so. */
+  void unconnected(UUID id) {
+    consoles(id).forEach(ConsoleTab::unconnected);
+  }
+
   /** The connection connected anew: its tabs read again what they showed, its consoles run. */
   void connected(UUID id) {
     for (var tab : tables(id)) {
