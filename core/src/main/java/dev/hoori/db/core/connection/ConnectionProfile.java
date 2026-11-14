@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 /**
  * How to reach one database. The strings may be empty, as while a form edits a new profile, and
  * {@link #problems} says what keeps it from connecting. The password is not part of it: it is kept
- * in the system keyring under the id.
+ * in the system keyring under the id. The colour that marks it is null for none.
  */
 public record ConnectionProfile(
     UUID id,
@@ -23,7 +23,8 @@ public record ConnectionProfile(
     int port,
     String database,
     String user,
-    Tls tls) {
+    Tls tls,
+    Colour colour) {
 
   private static final Pattern LABEL =
       Pattern.compile("[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?");
@@ -90,7 +91,15 @@ public record ConnectionProfile(
   /** A new, empty profile of the provider, on its default port and encrypted. */
   public static ConnectionProfile of(Provider provider) {
     return new ConnectionProfile(
-        UUID.randomUUID(), "", provider, "", provider.defaultPort(), "", "", tlsByDefault(""));
+        UUID.randomUUID(),
+        "",
+        provider,
+        "",
+        provider.defaultPort(),
+        "",
+        "",
+        tlsByDefault(""),
+        null);
   }
 
   /**
@@ -207,30 +216,34 @@ public record ConnectionProfile(
   }
 
   public ConnectionProfile withName(String name) {
-    return new ConnectionProfile(id, name, provider, host, port, database, user, tls);
+    return new ConnectionProfile(id, name, provider, host, port, database, user, tls, colour);
   }
 
   public ConnectionProfile withProvider(Provider provider) {
-    return new ConnectionProfile(id, name, provider, host, port, database, user, tls);
+    return new ConnectionProfile(id, name, provider, host, port, database, user, tls, colour);
   }
 
   public ConnectionProfile withHost(String host) {
-    return new ConnectionProfile(id, name, provider, host, port, database, user, tls);
+    return new ConnectionProfile(id, name, provider, host, port, database, user, tls, colour);
   }
 
   public ConnectionProfile withPort(int port) {
-    return new ConnectionProfile(id, name, provider, host, port, database, user, tls);
+    return new ConnectionProfile(id, name, provider, host, port, database, user, tls, colour);
   }
 
   public ConnectionProfile withDatabase(String database) {
-    return new ConnectionProfile(id, name, provider, host, port, database, user, tls);
+    return new ConnectionProfile(id, name, provider, host, port, database, user, tls, colour);
   }
 
   public ConnectionProfile withUser(String user) {
-    return new ConnectionProfile(id, name, provider, host, port, database, user, tls);
+    return new ConnectionProfile(id, name, provider, host, port, database, user, tls, colour);
   }
 
   public ConnectionProfile withTls(Tls tls) {
-    return new ConnectionProfile(id, name, provider, host, port, database, user, tls);
+    return new ConnectionProfile(id, name, provider, host, port, database, user, tls, colour);
+  }
+
+  public ConnectionProfile withColour(Colour colour) {
+    return new ConnectionProfile(id, name, provider, host, port, database, user, tls, colour);
   }
 }

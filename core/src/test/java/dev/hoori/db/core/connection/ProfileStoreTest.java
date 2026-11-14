@@ -54,8 +54,10 @@ class ProfileStoreTest {
           5432,
           "shop/€",
           "ünïcode user",
-          Tls.OFF),
-      new ConnectionProfile(UUID.randomUUID(), "", Provider.MYSQL, "", 0, "", "", Tls.ENCRYPTED),
+          Tls.OFF,
+          Colour.RED),
+      new ConnectionProfile(
+          UUID.randomUUID(), "", Provider.MYSQL, "", 0, "", "", Tls.ENCRYPTED, null),
       new ConnectionProfile(
           UUID.randomUUID(),
           "{\"x\": 1}",
@@ -64,7 +66,8 @@ class ProfileStoreTest {
           3307,
           "x",
           "y",
-          Tls.VERIFIED));
+          Tls.VERIFIED,
+          Colour.GREY));
 
   @TempDir
   Path folder;
@@ -104,11 +107,12 @@ class ProfileStoreTest {
     assertTrue(text.contains("\n  \"profiles\""), "indented: " + text);
     var root = JsonMapper.builder().build().readTree(text);
     assertEquals(Set.of("version", "profiles"), Set.copyOf(root.propertyNames()));
-    for (var profile : root.get("profiles")) {
-      assertEquals(
-          Set.of("id", "name", "provider", "host", "port", "database", "user", "tls"),
-          Set.copyOf(profile.propertyNames()));
-    }
+    var fields = Set.of("id", "name", "provider", "host", "port", "database", "user", "tls");
+    var withColour = new java.util.HashSet<>(fields);
+    withColour.add("colour");
+    var profiles = root.get("profiles");
+    assertEquals(withColour, Set.copyOf(profiles.get(0).propertyNames()));
+    assertEquals(fields, Set.copyOf(profiles.get(1).propertyNames()), "no colour, no field");
   }
 
   @Test
@@ -122,13 +126,36 @@ class ProfileStoreTest {
           profile.get("provider").stringValue() + " " + profile.get("tls").stringValue());
     }
     assertEquals(List.of("postgresql off", "mysql encrypted", "mariadb verified"), stored);
+    var colours = new ArrayList<String>();
+    for (var colour : Colour.values()) {
+      new ProfileStore(folder).save(List.of(PROFILES.get(1).withColour(colour)));
+      var text = Files.readString(folder.resolve(ProfileStore.FILE));
+      colours.add(JsonMapper.builder()
+          .build()
+          .readTree(text)
+          .get("profiles")
+          .get(0)
+          .get("colour")
+          .stringValue());
+      assertEquals(colour, new ProfileStore(folder).load().getFirst().colour());
+    }
+    assertEquals(
+        List.of(
+            "blue", "violet", "purple", "pink", "red", "orange", "amber", "green", "teal", "grey"),
+        colours);
+  }
+
+  @Test
+  void aFileWithoutColoursLoadsWithNone() throws IOException {
+    write(VALID.getBytes(UTF_8));
+    assertEquals(null, new ProfileStore(folder).load().getFirst().colour());
   }
 
   @Test
   void unknownFieldsOfTheSameVersionAreIgnored() throws IOException {
     write(VALID
         .replace("\"version\": 1", "\"version\": 1, \"theme\": {\"dark\": true}")
-        .replace("\"tls\": \"off\"", "\"tls\": \"off\", \"colour\": \"red\"")
+        .replace("\"tls\": \"off\"", "\"tls\": \"off\", \"folder\": \"work\"")
         .getBytes(UTF_8));
     var profiles = new ProfileStore(folder).load();
     assertEquals(1, profiles.size());
@@ -161,6 +188,9 @@ class ProfileStoreTest {
         broken(VALID.replace("\"off\"", "\"strict\""), "\"tls\" is not \"off\", \"encrypted\""),
         broken(VALID.replace("\"off\"", "\"OFF\""), "\"tls\" is not \"off\", \"encrypted\""),
         broken(VALID.replace("\"off\"", "false"), "\"tls\" is not text"),
+        broken(VALID.replace("\"off\"", "\"off\", \"colour\": \"crimson\""), "\"colour\" is not a"),
+        broken(VALID.replace("\"off\"", "\"off\", \"colour\": \"RED\""), "\"colour\" is not a"),
+        broken(VALID.replace("\"off\"", "\"off\", \"colour\": null"), "\"colour\" is not text"),
         broken(VALID.replace(PROFILE, PROFILE + "," + PROFILE), "profile 2 has the id"),
         // "ÿ" in Latin-1 is a byte that UTF-8 never has.
         Arguments.of(VALID.replace("Local", "Lÿcal").getBytes(ISO_8859_1), "not valid JSON"));
@@ -196,7 +226,8 @@ class ProfileStoreTest {
     var broken = List.of(
         VALID.replace("\"version\": 1", "\"version\": \"s3cret\""),
         VALID.replace("0f8fad5b-d9cb-469f", "s3cret"),
-        VALID.replace("postgresql", "s3cret"));
+        VALID.replace("postgresql", "s3cret"),
+        VALID.replace("\"off\"", "\"off\", \"colour\": \"s3cret\""));
     for (var content : broken) {
       write(content.getBytes(UTF_8));
       var failure =

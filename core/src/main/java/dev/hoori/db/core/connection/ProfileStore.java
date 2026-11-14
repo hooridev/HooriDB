@@ -157,7 +157,8 @@ public final class ProfileStore {
           integer(node, where, "port"),
           text(node, where, "database"),
           text(node, where, "user"),
-          tls(node, where));
+          tls(node, where),
+          colour(node, where));
       if (!ids.add(profile.id())) {
         throw unreadable(where + " has the id " + profile.id() + " of an earlier profile");
       }
@@ -184,7 +185,7 @@ public final class ProfileStore {
     root.put("version", VERSION);
     var list = root.putArray("profiles");
     for (var profile : profiles) {
-      list.addObject()
+      var object = list.addObject()
           .put("id", profile.id().toString())
           .put("name", profile.name())
           .put("provider", stored(profile.provider()))
@@ -193,6 +194,9 @@ public final class ProfileStore {
           .put("database", profile.database())
           .put("user", profile.user())
           .put("tls", stored(profile.tls()));
+      if (profile.colour() != null) {
+        object.put("colour", stored(profile.colour()));
+      }
     }
     var bytes = ByteBuffer.wrap(JSON.writeValueAsBytes(root));
 
@@ -296,6 +300,20 @@ public final class ProfileStore {
     throw unreadable("in " + where + ", \"tls\" is not \"off\", \"encrypted\" or \"verified\"");
   }
 
+  // Left out for none, as in a file written before there were colours.
+  private Colour colour(JsonNode profile, String where) throws UnreadableException {
+    if (profile.get("colour") == null) {
+      return null;
+    }
+    var value = text(profile, where, "colour");
+    for (var colour : Colour.values()) {
+      if (stored(colour).equals(value)) {
+        return colour;
+      }
+    }
+    throw unreadable("in " + where + ", \"colour\" is not a colour HooriDB knows");
+  }
+
   // The names in the file, spelt out so that renaming a constant cannot change it.
   private static String stored(Provider provider) {
     return switch (provider) {
@@ -310,6 +328,21 @@ public final class ProfileStore {
       case OFF -> "off";
       case ENCRYPTED -> "encrypted";
       case VERIFIED -> "verified";
+    };
+  }
+
+  private static String stored(Colour colour) {
+    return switch (colour) {
+      case BLUE -> "blue";
+      case VIOLET -> "violet";
+      case PURPLE -> "purple";
+      case PINK -> "pink";
+      case RED -> "red";
+      case ORANGE -> "orange";
+      case AMBER -> "amber";
+      case GREEN -> "green";
+      case TEAL -> "teal";
+      case GREY -> "grey";
     };
   }
 

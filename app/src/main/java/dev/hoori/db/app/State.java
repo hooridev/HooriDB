@@ -166,7 +166,8 @@ final class State {
         profile.port(),
         profile.database(),
         profile.user(),
-        profile.tls());
+        profile.tls(),
+        profile.colour());
     var list = new ArrayList<>(profiles);
     list.add(list.indexOf(profile) + 1, copy);
     profiles = List.copyOf(list);

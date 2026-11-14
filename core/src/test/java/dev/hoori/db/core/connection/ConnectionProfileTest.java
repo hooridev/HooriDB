@@ -34,11 +34,13 @@ class ConnectionProfileTest {
         .withPort(3307)
         .withDatabase("shop")
         .withUser("app")
-        .withTls(Tls.VERIFIED);
+        .withTls(Tls.VERIFIED)
+        .withColour(Colour.TEAL);
     assertEquals(
         new ConnectionProfile(
-            p.id(), "Shop", Provider.MYSQL, "db", 3307, "shop", "app", Tls.VERIFIED),
+            p.id(), "Shop", Provider.MYSQL, "db", 3307, "shop", "app", Tls.VERIFIED, Colour.TEAL),
         q);
+    assertEquals(null, p.colour());
     assertEquals("", p.name());
     assertEquals(Provider.MARIADB, p.provider());
     assertEquals(Tls.ENCRYPTED, p.tls());
@@ -47,11 +49,12 @@ class ConnectionProfileTest {
   @Test
   void equalFieldsAreEqual() {
     var id = UUID.randomUUID();
-    var a = new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF);
-    var b = new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF);
+    var a = new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null);
+    var b = new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null);
     assertEquals(a, b);
     assertEquals(a.hashCode(), b.hashCode());
     assertNotEquals(a, b.withUser("v"));
+    assertNotEquals(a, b.withColour(Colour.RED));
   }
 
   @ParameterizedTest
