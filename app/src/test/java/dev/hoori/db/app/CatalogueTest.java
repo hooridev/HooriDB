@@ -832,6 +832,25 @@ class CatalogueTest {
   }
 
   @Test
+  void aRefreshNeverStartsTheReadsItGivesUp() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(app, START + open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE);
+    var customers = "columns " + PG + "/shop.public.customers";
+    var gate = servers.hold(customers);
+    run(app, open("customers"));
+    eventually(() -> servers.calls.contains(customers));
+    run(app, open("orders") + menu("public", "Refresh"));
+    // The read that runs is interrupted, which lets the lane go on at once: the one behind it has
+    // left the lane by then.
+    eventually(() -> servers.interrupted.contains(customers));
+    gate.countDown();
+    run(app, SETTLE);
+    assertFalse(
+        servers.calls.contains("columns " + PG + "/shop.public.orders"), servers.calls.toString());
+  }
+
+  @Test
   void aResultForAConnectionDisconnectedMeanwhileIsIgnored() throws Exception {
     var app = app(SHOP);
     ready(app, SHOP);

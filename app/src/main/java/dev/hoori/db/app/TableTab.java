@@ -8,7 +8,6 @@ import static com.rethinkj.ui.kit.Button.button;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
-import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.DataGrid;
@@ -36,7 +35,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
-import java.util.concurrent.Future;
 import java.util.function.LongPredicate;
 
 /**
@@ -91,19 +89,6 @@ final class TableTab implements Tab {
   /** @param detail the server's or the driver's words, withheld where they hold the password */
   record Failure(Problem problem, String detail) {}
 
-  /** A page asked for: its work, its call on the lane, and for what it was asked. */
-  record Asked(Work work, Lane lane, Future<?> call, Lane.Priority priority) {
-
-    /**
-     * Gives the page up: the call too, which a work cancelled before it began to wait would leave
-     * on the lane.
-     */
-    void cancel() {
-      work.cancel();
-      call.cancel(true);
-    }
-  }
-
   /** The most rows a grid shows: it counts them in an int. */
   static final int GRID_ROWS = Integer.MAX_VALUE;
 
@@ -116,9 +101,9 @@ final class TableTab implements Tab {
   private boolean more; // a row more in the grid, whose read says whether there are more
   Counted counted = Counted.ESTIMATED;
   final Map<Long, List<List<Object>>> pages = new HashMap<>(); // the rows read, by page
-  final Map<Long, Asked> reading = new HashMap<>(); // the pages asked for
-  Work opening; // the columns, the estimate and the first page, or null
-  Work counting; // the exact count, or null
+  final Map<Long, Lane.Asked> reading = new HashMap<>(); // the pages asked for
+  Lane.Asked opening; // the columns, the estimate and the first page, or null
+  Lane.Asked counting; // the exact count, or null
   // An empty page past what is known: the count says where the end is, and no page is read until
   // then, so that finding it takes one read and not one per page.
   private boolean ending;
@@ -165,16 +150,17 @@ final class TableTab implements Tab {
     var of = table;
     long from = (long) first / PAGE * PAGE;
     record Opened(List<Column> columns, OptionalLong estimate, Page page, long took) {}
-    var asked = lane.submit(Lane.Priority.VIEW, link -> {
-      var read = known != null ? known : link.columns(of);
-      var estimate = link.estimate(of);
-      long start = System.nanoTime();
-      var page = link.read(of, read, from, from + PAGE);
-      return new Opened(read, estimate, page, System.nanoTime() - start);
-    });
-    opening = s.app.background(
+    opening = lane.ask(
+        s.app,
         "open " + table.name(),
-        () -> Lane.await(asked),
+        Lane.Priority.VIEW,
+        link -> {
+          var read = known != null ? known : link.columns(of);
+          var estimate = link.estimate(of);
+          long start = System.nanoTime();
+          var page = link.read(of, read, from, from + PAGE);
+          return new Opened(read, estimate, page, System.nanoTime() - start);
+        },
         opened -> {
           opening = null;
           if (!opened.columns().equals(columns)) {
@@ -236,8 +222,7 @@ final class TableTab implements Tab {
       var asked = reading.get(page);
       if (asked != null && asked.priority() != Lane.Priority.VIEW) {
         // Asked for ahead, and in view now: it goes before what is asked for ahead still.
-        asked.lane().promote(asked.call(), Lane.Priority.VIEW);
-        reading.put(page, new Asked(asked.work(), asked.lane(), asked.call(), Lane.Priority.VIEW));
+        asked.promote(Lane.Priority.VIEW);
       }
       read(s, page, Lane.Priority.VIEW);
     }
@@ -268,14 +253,15 @@ final class TableTab implements Tab {
     var with = columns;
     long from = page * PAGE;
     record Read(Page page, long took) {}
-    var call = lane.submit(priority, link -> {
-      long start = System.nanoTime();
-      var read = link.read(of, with, from, from + PAGE);
-      return new Read(read, System.nanoTime() - start);
-    });
-    var work = s.app.background(
+    var asked = lane.ask(
+        s.app,
         "read rows of " + table.name(),
-        () -> Lane.await(call),
+        priority,
+        link -> {
+          long start = System.nanoTime();
+          var read = link.read(of, with, from, from + PAGE);
+          return new Read(read, System.nanoTime() - start);
+        },
         read -> {
           reading.remove(page);
           arrived(s, page, read.page(), read.took());
@@ -284,7 +270,7 @@ final class TableTab implements Tab {
           reading.remove(page);
           failed(s, error, true, live);
         });
-    reading.put(page, new Asked(work, lane, call, priority));
+    reading.put(page, asked);
   }
 
   /** A page came: it corrects the number of rows where it ends early or reaches beyond it. */
@@ -368,10 +354,11 @@ final class TableTab implements Tab {
     }
     var live = s.catalogue.live(id);
     var of = table;
-    var asked = lane.submit(Lane.Priority.COUNT, link -> link.count(of));
-    counting = s.app.background(
+    counting = lane.ask(
+        s.app,
         "count rows of " + table.name(),
-        () -> Lane.await(asked),
+        Lane.Priority.COUNT,
+        link -> link.count(of),
         n -> {
           counting = null;
           ending = false;
@@ -466,32 +453,28 @@ final class TableTab implements Tab {
    * connection it was read on ends, whose work ends with it.
    */
   void stop() {
-    giveUp(page -> true);
+    var gone = asked(page -> true);
     if (opening != null) {
-      opening.cancel();
+      gone.add(opening);
       opening = null;
     }
     if (counting != null) {
-      counting.cancel();
+      gone.add(counting);
       counting = null;
     }
+    Lane.cancel(gone);
   }
 
-  /**
-   * Gives up the pages asked for that the test picks. Those that wait leave their lane before any
-   * is cancelled: a cancel of the read that runs lets the lane go on at once, to the next that waits.
-   */
+  /** Gives up the pages asked for that the test picks. */
   private void giveUp(LongPredicate which) {
-    var gone = new ArrayList<Asked>();
-    for (var it = reading.entrySet().iterator(); it.hasNext(); ) {
-      var entry = it.next();
-      if (which.test(entry.getKey())) {
-        gone.add(entry.getValue());
-        it.remove();
-      }
-    }
-    gone.forEach(asked -> asked.lane().drop(asked.call()));
-    gone.forEach(Asked::cancel);
+    Lane.cancel(asked(which));
+  }
+
+  /** Takes the pages asked for that the test picks out of those asked for. */
+  private List<Lane.Asked> asked(LongPredicate which) {
+    var gone = new ArrayList<Lane.Asked>();
+    reading.entrySet().removeIf(e -> which.test(e.getKey()) && gone.add(e.getValue()));
+    return gone;
   }
 
   @Override

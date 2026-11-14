@@ -91,9 +91,9 @@ final class Catalogue {
   /** What is known of a node's children. */
   sealed interface Level {}
 
-  /** They are being read; the work is set once it is asked for. */
+  /** They are being read; the call is set once it is asked for. */
   static final class Reading implements Level {
-    Work work;
+    Lane.Asked asked;
   }
 
   record Read(List<Node> children) implements Level {}
@@ -459,10 +459,11 @@ final class Catalogue {
     var lane = lane(s, live, database(node));
     var reading = new Reading();
     live.levels.put(node, reading);
-    var asked = lane.submit(call);
-    reading.work = s.app.background(
+    reading.asked = lane.ask(
+        s.app,
         "read " + label(s, node),
-        () -> Lane.await(asked),
+        Lane.Priority.VIEW,
+        call,
         children -> {
           if (live.levels.get(node) == reading) {
             live.levels.put(node, new Read(children));
@@ -722,14 +723,16 @@ final class Catalogue {
       return;
     }
     forgetBelow(s, node);
+    var gone = new ArrayList<Lane.Asked>();
     for (var entry : List.copyOf(live.levels.entrySet())) {
       if (entry.getKey().within(node)) {
         if (entry.getValue() instanceof Reading r) {
-          r.work.cancel();
+          gone.add(r.asked);
         }
         live.levels.remove(entry.getKey());
       }
     }
+    Lane.cancel(gone);
     if (node instanceof Node.Connection) {
       // The databases are read anew: their connections go, those still opening too.
       live.lanes.values().forEach(Lane::close);
@@ -810,11 +813,13 @@ final class Catalogue {
       live.handover.drop();
       live.handover = null;
     }
+    var gone = new ArrayList<Lane.Asked>();
     for (var level : live.levels.values()) {
       if (level instanceof Reading r) {
-        r.work.cancel();
+        gone.add(r.asked);
       }
     }
+    Lane.cancel(gone);
     live.levels.clear();
     if (live.lane != null) {
       live.lane.close();

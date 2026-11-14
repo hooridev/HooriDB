@@ -769,6 +769,26 @@ class TableTabTest {
     assertFalse(servers.interrupted.contains("count " + ORDERS));
   }
 
+  @Test
+  void aTabClosedWhileItOpensNeverStartsItsCount() throws Exception {
+    servers.rows(ORDERS, 1000, OptionalLong.of(1000));
+    var app = shop();
+    var key = "read " + ORDERS + " 0-200";
+    var held = servers.hold(key);
+    c.run(
+        app,
+        open("orders") + SETTLE + table("orders")
+            + "frame\nadvance 1\nframe\npress #count\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    // The read that runs is interrupted, which lets the lane go on at once: the count behind it
+    // has left the lane by then.
+    c.run(app, "press #close-0\nframe\n");
+    eventually(() -> servers.interrupted.contains(key));
+    held.countDown();
+    c.run(app, SETTLE);
+    assertFalse(servers.calls.contains("count " + ORDERS), servers.calls.toString());
+  }
+
   /** The row more that asks whether there are more is not counted as one that is there. */
   @Test
   void theRowThatAsksForMoreIsNotCounted() throws Exception {
