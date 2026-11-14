@@ -1,5 +1,6 @@
 package dev.hoori.db.core.connection;
 
+import dev.hoori.db.core.driver.Maven;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -158,7 +159,8 @@ public final class ProfileStore {
           text(node, where, "database"),
           text(node, where, "user"),
           tls(node, where),
-          colour(node, where));
+          colour(node, where),
+          driverVersion(node, where));
       if (!ids.add(profile.id())) {
         throw unreadable(where + " has the id " + profile.id() + " of an earlier profile");
       }
@@ -196,6 +198,9 @@ public final class ProfileStore {
           .put("tls", stored(profile.tls()));
       if (profile.colour() != null) {
         object.put("colour", stored(profile.colour()));
+      }
+      if (profile.driverVersion() != null) {
+        object.put("driverVersion", profile.driverVersion());
       }
     }
     var bytes = ByteBuffer.wrap(JSON.writeValueAsBytes(root));
@@ -312,6 +317,18 @@ public final class ProfileStore {
       }
     }
     throw unreadable("in " + where + ", \"colour\" is not a colour HooriDB knows");
+  }
+
+  // Left out for the recommended one, as in a file written before a version could be chosen.
+  private String driverVersion(JsonNode profile, String where) throws UnreadableException {
+    if (profile.get("driverVersion") == null) {
+      return null;
+    }
+    var value = text(profile, where, "driverVersion");
+    if (!Maven.isVersion(value)) {
+      throw unreadable("in " + where + ", \"driverVersion\" is not a version HooriDB accepts");
+    }
+    return value;
   }
 
   // The names in the file, spelt out so that renaming a constant cannot change it.

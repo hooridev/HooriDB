@@ -1,6 +1,7 @@
 package dev.hoori.db.app;
 
 import static com.rethinkj.ui.El.col;
+import static com.rethinkj.ui.El.row;
 import static com.rethinkj.ui.kit.Button.Variant.PRIMARY;
 import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
@@ -13,9 +14,11 @@ import static com.rethinkj.ui.kit.TextField.textField;
 import static com.rethinkj.ui.kit.ValueField.valueField;
 
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
+import com.rethinkj.ui.kit.ComboBox;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Editing;
 import com.rethinkj.ui.kit.Form;
@@ -23,19 +26,23 @@ import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.HuePicker;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Part;
+import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
+import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
+import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -60,6 +67,8 @@ final class ConnectionDialog {
       Part.of(ConnectionProfile::tls, ConnectionProfile::withTls);
   static final Part<ConnectionProfile, Colour> COLOUR =
       Part.of(ConnectionProfile::colour, ConnectionProfile::withColour);
+  static final Part<ConnectionProfile, String> DRIVER_VERSION =
+      Part.of(ConnectionProfile::driverVersion, ConnectionProfile::withDriverVersion);
 
   final boolean isNew;
   final Editing<ConnectionProfile> editing;
@@ -79,6 +88,8 @@ final class ConnectionDialog {
   boolean changing;
   boolean discarding; // the question whether to throw the changes away is open
   final Menu.State tlsMenu = new Menu.State();
+  final ComboBox.State versionBox = new ComboBox.State();
+  Versions versions; // of the driver of the kind of database chosen
   final Probe probe = new Probe(this);
 
   private ConnectionDialog(ConnectionProfile profile, boolean isNew) {
@@ -94,15 +105,37 @@ final class ConnectionDialog {
 
   static ConnectionDialog create(State s) {
     var dialog = new ConnectionDialog(ConnectionProfile.of(Provider.POSTGRESQL), true);
-    dialog.probe.lookUp(s, Provider.POSTGRESQL);
+    dialog.driver(s);
     return dialog;
   }
 
   static ConnectionDialog edit(State s, ConnectionProfile profile) {
     var dialog = new ConnectionDialog(profile, false);
     dialog.lookUp(s);
-    dialog.probe.lookUp(s, profile.provider());
+    dialog.driver(s);
     return dialog;
+  }
+
+  /** Reads the versions of the kind's driver, and looks up the one to use. */
+  private void driver(State s) {
+    var p = editing.value();
+    if (versions != null) {
+      versions.close();
+    }
+    versions = new Versions(p.provider());
+    versions.read(s);
+    versions.date(s, p.driverVersion());
+    probe.lookUp(s, p.provider(), p.driverVersion());
+  }
+
+  private void version(State s, String version) {
+    if (Objects.equals(version, editing.value().driverVersion())) {
+      return;
+    }
+    editing.at(DRIVER_VERSION).set(version);
+    versions.date(s, version);
+    probe.stop(); // a test or a download is for the other version
+    probe.lookUp(s, editing.value().provider(), version);
   }
 
   /** Asks the keyring whether it holds a password for the profile edited, once there is one. */
@@ -227,6 +260,7 @@ final class ConnectionDialog {
     }
     password = "";
     probe.close();
+    versions.close();
     s.dialog = null;
     s.put(profile);
   }
@@ -248,6 +282,7 @@ final class ConnectionDialog {
       asking.cancel();
     }
     probe.close();
+    versions.close();
     password = "";
     s.dialog = null;
   }
@@ -259,11 +294,12 @@ final class ConnectionDialog {
       return;
     }
     editing.at(PROVIDER).set(provider);
+    editing.at(DRIVER_VERSION).set(null); // a version of the other kind's driver
     if (!portByHand && !portTyped()) {
       editing.at(PORT).set(provider.defaultPort());
     }
     probe.stop(); // a test or a download is for the driver of the other kind
-    probe.lookUp(s, provider);
+    driver(s);
   }
 
   private void port(Integer port) {
@@ -394,14 +430,14 @@ final class ConnectionDialog {
         Form.group(
                 "Server",
                 field(
-                        "Type",
-                        Segmented.segmented(
-                            t,
-                            List.of(Provider.values()),
-                            p.provider(),
-                            Provider::displayName,
-                            open ? v -> provider(s, v) : null))
-                    .help(probe.line(s)),
+                    "Type",
+                    Segmented.segmented(
+                        t,
+                        List.of(Provider.values()),
+                        p.provider(),
+                        Provider::displayName,
+                        open ? v -> provider(s, v) : null)),
+                field("Driver", driverVersion(t, s, open)).help(driverHelp(s)),
                 // Host and port on two rows: a test's note at the port would wrap in its width.
                 field(
                         "Host",
@@ -445,6 +481,7 @@ final class ConnectionDialog {
                                 ConnectionDialog::tlsLabel,
                                 tlsMenu,
                                 open ? this::tls : null)
+                            .key("tls")
                             .wFull())
                     .help(help(p.tls()))
                     .error(probe.error(Probe.At.TLS)))
@@ -519,6 +556,60 @@ final class ConnectionDialog {
         List.of(cancel, save),
         () -> cancel(s),
         options);
+  }
+
+  /** The version of the driver: Recommended or one of the list, which is read in the background. */
+  private El driverVersion(Theme t, State s, boolean open) {
+    var chosen = editing.value().driverVersion();
+    El box = ComboBox.items(
+            t,
+            versions.values(chosen),
+            chosen,
+            versions::item,
+            versionBox,
+            open && s.drivers != null ? v -> version(s, v) : null)
+        .key("driver-version")
+        .label("Driver version")
+        .grow(1);
+    El line = row().wFull().gap(t.space().s()).align(Style.Align.CENTER).child(box);
+    if (versions.reading() || versions.dating != null) {
+      var waiting = versions.dating != null
+          ? "Looking up when " + versions.dating + " was published"
+          : "Reading the versions";
+      line.child(col().role("status").label(waiting).child(Progress.spinner(t)));
+    } else if (versions.problem(s.drivers) != null) {
+      line.child(Button.icon(
+          t,
+          Button.Variant.GHOST,
+          Symbol.ARROW_CLOCKWISE,
+          "Read the versions again",
+          () -> versions.read(s)));
+    }
+    if (!versions.young(chosen)) {
+      return line;
+    }
+    // shortcut: a callout under the control, as the kit's form has no warning of a field of its
+    // own; use that once the kit has one.
+    var age = versions.age(chosen);
+    return col()
+        .wFull()
+        .gap(t.space().s())
+        .child(line)
+        .child(Callout.callout(
+            t,
+            Callout.Kind.WARNING,
+            "Version " + chosen + " is " + (age == null ? "very new" : age),
+            "HooriDB recommends a release only once it has been out for "
+                + DriverStore.WAITING_PERIOD.toDays()
+                + " days, as a bad release is usually withdrawn within days. Choose Recommended"
+                + " unless this connection needs this version."));
+  }
+
+  /** Which driver, and whether it is there; and what keeps the list of versions from showing. */
+  private String driverHelp(State s) {
+    var line = probe.line(s);
+    var problem = s.drivers == null ? null : versions.problem(s.drivers);
+    return problem == null ? line : line + "\n" + problem;
   }
 
   /**

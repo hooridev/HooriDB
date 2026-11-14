@@ -136,7 +136,7 @@ public final class MavenRepository implements Repository {
   private static IOException failure(String path, int status) {
     return status == 404 || status == 410
         ? new NoSuchFileException(path)
-        : new IOException("The repository answered " + status + " for " + path);
+        : new Repository.Refused("The repository answered " + status + " for " + path);
   }
 
   // The JDK's own stream of a body waits for each part without a limit, so a server that stops

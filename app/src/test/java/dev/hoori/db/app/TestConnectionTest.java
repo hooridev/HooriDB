@@ -182,8 +182,8 @@ class TestConnectionTest {
     run(app, SETTLE + "snap missing\n");
     assertTrue(
         tree("missing")
-            .contains(
-                "\"PostgreSQL JDBC 42.7.14, not downloaded yet (657 B, from Maven" + " Central)\""),
+            .contains("\"PostgreSQL JDBC 42.7.14, not downloaded yet (" + FakeDrivers.SIZE
+                + ", from Maven" + " Central)\""),
         tree("missing"));
     repository.offline = true;
     run(app, """
@@ -193,8 +193,11 @@ class TestConnectionTest {
         frame
         snap offline
         """);
-    assertTrue(tree("offline")
-        .contains("\"MySQL Connector/J, not downloaded yet (Maven Central cannot be reached)\""));
+    assertTrue(
+        tree("offline")
+            .contains(
+                "\"MySQL Connector/J, not downloaded yet (Maven Central cannot be reached)\\n"),
+        tree("offline"));
     repository.offline = false;
     downloaded();
     repository.offline = true;
@@ -207,7 +210,7 @@ class TestConnectionTest {
         """);
     assertTrue(tree("downloaded-offline")
         .contains("\"PostgreSQL JDBC 42.7.14, downloaded (Maven Central cannot be reached to look"
-            + " for a newer one)\""));
+            + " for a newer one)\\nIts versions could not be read."));
     repository.offline = false;
     run(app, """
         press role=radio label="MySQL"
@@ -294,7 +297,7 @@ class TestConnectionTest {
         new Case(
             Failure.NO_SUCH_DATABASE,
             "#database",
-            "role=combobox",
+            "#tls",
             "The server has no database named shop, or this user may not open it.",
             "No such database",
             null),
@@ -316,7 +319,7 @@ class TestConnectionTest {
             "#host"),
         new Case(
             Failure.TLS_UNAVAILABLE,
-            "role=combobox",
+            "#tls",
             null,
             "The server offers no TLS. Off connects without it, and password and data go over the"
                 + " network as they are.",
@@ -324,7 +327,7 @@ class TestConnectionTest {
             null),
         new Case(
             Failure.CERTIFICATE_REJECTED,
-            "role=combobox",
+            "#tls",
             null,
             "The server's certificate is not trusted, or not for db.example.com. Encrypted accepts"
                 + " it, without verifying the server.",
@@ -371,8 +374,8 @@ class TestConnectionTest {
         line(asked, "role=note").contains("label=\"Download PostgreSQL JDBC 42.7.14?\""), asked);
     // The tree shows the start and the end of a long text.
     assertTrue(
-        asked.contains("To connect, HooriDB needs this driver (657 B), which it downloads"
-            + " from Maven Central:\\nhttps://repo.m"),
+        asked.contains("To connect, HooriDB needs this driver (" + FakeDrivers.SIZE
+            + "), which it downloads" + " from Maven Central:\\nhttps://repo."),
         asked);
     assertEquals(
         "https://repo.maven.apache.org/maven2/org/postgresql/postgresql/42.7.14/"
@@ -384,7 +387,7 @@ class TestConnectionTest {
     String downloading = tree("downloading");
     assertTrue(
         line(downloading, "label=\"Downloading PostgreSQL JDBC\"").contains("0%"), downloading);
-    assertTrue(downloading.contains("\"0 B of 657 B\""), downloading);
+    assertTrue(downloading.contains("\"0 B of " + FakeDrivers.SIZE + "\""), downloading);
     run(app, SETTLE + SETTLE + SETTLE + "snap end\n");
     String end = tree("end");
     assertTrue(end.contains("role=status label=\"Connected to PostgreSQL 16.4\""), end);
@@ -682,9 +685,9 @@ class TestConnectionTest {
     assertFalse(end.contains("role=note"), end);
   }
 
-  /** Try again after a driver would not load asks before it downloads. */
+  /** A driver whose file went since it was looked up is downloaded again, after asking. */
   @Test
-  void aRetryAfterAFailedLoadAsksFirst() throws Exception {
+  void aDriverGoneSinceItsLookupIsAskedFor() throws Exception {
     downloaded();
     App<State> app = app();
     run(app, START + NEW_SHOP);
@@ -693,13 +696,9 @@ class TestConnectionTest {
         Files.delete(path);
       }
     }
-    run(app, TEST + SETTLE + "snap failed\n");
-    assertTrue(tree("failed").contains("\"The driver could not be loaded\""), tree("failed"));
-    run(app, """
-        press role=button label="Try again"
-        frame
-        """ + SETTLE + "snap end\n");
+    run(app, TEST + SETTLE + "snap end\n");
     String end = tree("end");
+    assertFalse(end.contains("\"The driver could not be loaded\""), end);
     assertTrue(line(end, "role=note").contains("\"Download PostgreSQL JDBC 42.7.14?\""), end);
     assertFalse(Files.exists(drivers()), "nothing was downloaded");
   }

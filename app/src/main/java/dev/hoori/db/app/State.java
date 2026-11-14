@@ -13,6 +13,7 @@ import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.nio.file.Path;
@@ -56,6 +57,7 @@ final class State {
   private final Map<UUID, char[]> passwords = new HashMap<>();
   Node selected; // the selected node of the catalogue, or null
   ConnectionDialog dialog; // null while closed
+  DriversDialog driverList; // the Drivers dialog, null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
   // Its deletion runs: it waits for the keyring to be found, then for its password to go.
   boolean removing;
@@ -168,7 +170,8 @@ final class State {
         profile.database(),
         profile.user(),
         profile.tls(),
-        profile.colour());
+        profile.colour(),
+        profile.driverVersion());
     var list = new ArrayList<>(profiles);
     list.add(list.indexOf(profile) + 1, copy);
     profiles = List.copyOf(list);
@@ -353,6 +356,9 @@ final class State {
       // A test or a download can always be done again: closing cancels them instead of waiting.
       dialog.probe.stop();
     }
+    if (driverList != null) {
+      driverList.close(this); // a download can be done again
+    }
     if (quitAnyway && !keyringBusy() && saving == null) {
       closeAll();
       return;
@@ -536,6 +542,31 @@ final class State {
             600,
             options.frameless().minimumSize(480, 320).icon(HooriDb.ICON),
             window);
+  }
+
+  /**
+   * Who uses the version of the driver, by name: every connection from the moment its attempt to
+   * connect decided on the version until it ended, and a load of it under way. Each kind of
+   * connection that holds a driver answers here.
+   */
+  List<String> users(Driver driver, String version) {
+    var users = new ArrayList<>(catalogue.users(this, driver, version));
+    if (users.isEmpty() && drivers.loading(driver, version)) {
+      users.add("a connection being opened");
+    }
+    return users;
+  }
+
+  /**
+   * Claims the version for a delete, which no one may use or begin to use until {@code
+   * drivers.deleting(driver, version, false)}; false while someone uses it.
+   */
+  boolean claimForDelete(Driver driver, String version) {
+    if (!users(driver, version).isEmpty()) {
+      return false;
+    }
+    drivers.deleting(driver, version, true);
+    return true;
   }
 
   /** The colour of the connection, null for none or for a connection that is gone. */

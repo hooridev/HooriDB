@@ -32,6 +32,8 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -113,6 +115,8 @@ class ConnectorTest {
     }
   }
 
+  // Windows refuses a connect beyond a full queue at once, so no connect can be held open this way.
+  @EnabledOnOs(OS.LINUX)
   @ParameterizedTest
   @EnumSource(Provider.class)
   void aCancelEndsTheDriverWhileItStillOpensTheSocket(Provider provider) throws Exception {

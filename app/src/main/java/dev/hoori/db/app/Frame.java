@@ -80,7 +80,12 @@ final class Frame {
     }
     root.overlay(s.deleting == null ? null : deleteDialog(t, s));
     // One dialog at a time: what the catalogue asks waits for the others to close.
-    return root.overlay(s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s) : null);
+    El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s) : null;
+    root.overlay(asked);
+    if (s.driverList != null && s.dialog == null && s.deleting == null && asked == null) {
+      root.overlay(s.driverList.view(t, s)).overlay(s.driverList.question(t, s));
+    }
+    return root;
   }
 
   /** The tabs of a window, each with its content; the main window's empty one says what goes in. */
@@ -251,8 +256,8 @@ final class Frame {
   }
 
   /**
-   * Only what does something today: a new connection, a console on the selected connection,
-   * quitting, and the themes.
+   * Only what does something today: a new connection, a console on the selected connection, the
+   * drivers, quitting, and the themes.
    */
   static List<Menu.Item> menus(State s) {
     var selected = s.selected;
@@ -265,6 +270,14 @@ final class Frame {
                 Menu.item(
                         "New console", selected == null ? null : () -> s.openConsole(selected.id()))
                     .icon(Symbol.CODE),
+                Menu.item(
+                    "Drivers…",
+                    s.drivers == null
+                            || s.dialog != null
+                            || s.deleting != null
+                            || s.driverList != null
+                        ? null
+                        : () -> s.driverList = DriversDialog.open(s)),
                 Menu.separator(),
                 Menu.item("Exit", s::quit))),
         Menu.submenu(

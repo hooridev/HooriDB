@@ -2,16 +2,20 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.driver.DriverException;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.driver.Repository;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -24,14 +28,21 @@ final class Drivers {
   final DriverStore store;
   final String source; // the repository as the user knows it, such as "Maven Central"
   final URI address; // where its files are
+  final Clock clock; // what the age of a release counts from
 
   private record Version(Driver driver, String version) {}
 
   private record Waiter(Consumer<LoadedDriver> then, Consumer<Exception> failed) {}
 
   private final Map<Version, LoadedDriver> loaded = new HashMap<>();
+  // The version last looked up as the recommended one of each driver.
+  private final Map<Driver, String> recommended = new HashMap<>();
+  // Loaded versions that were deleted since: closed with the others, as a connection may use one.
+  private final List<LoadedDriver> deleted = new ArrayList<>();
   // The loads under way, with whoever waits for each; one load per driver and version at a time.
   private final Map<Version, List<Waiter>> loading = new HashMap<>();
+  // The versions being deleted, which nothing loads meanwhile.
+  private final Set<Version> deleting = new HashSet<>();
 
   /**
    * @param folder where downloaded drivers are kept
@@ -40,9 +51,14 @@ final class Drivers {
    * @param address the repository's address, for the user
    */
   Drivers(Path folder, Repository repository, String source, URI address) {
+    this(folder, repository, source, address, Clock.systemUTC());
+  }
+
+  Drivers(Path folder, Repository repository, String source, URI address, Clock clock) {
     this.store = new DriverStore(folder, repository);
     this.source = source;
     this.address = address;
+    this.clock = clock;
   }
 
   /** Gives the version of the driver to one of the two, loaded now or once its load is done. */
@@ -53,6 +69,10 @@ final class Drivers {
       Consumer<LoadedDriver> then,
       Consumer<Exception> failed) {
     var key = new Version(driver, version);
+    if (deleting.contains(key)) {
+      failed.accept(new DriverException(DriverException.Failure.NOT_DOWNLOADED, "being deleted"));
+      return;
+    }
     var done = loaded.get(key);
     if (done != null) {
       then.accept(done);
@@ -75,14 +95,53 @@ final class Drivers {
         error -> loading.remove(key).forEach(w -> w.failed().accept(error)));
   }
 
-  /** A version of the driver loaded in this session, or null while there is none. */
-  LoadedDriver loaded(Driver driver) {
+  /** The version is the driver's recommended one now. */
+  void recommend(Driver driver, String version) {
+    recommended.put(driver, version);
+  }
+
+  /**
+   * The version of the driver loaded in this session, or null while it is not; for a null version
+   * the one last looked up as recommended.
+   */
+  LoadedDriver loaded(Driver driver, String version) {
+    var v = version != null ? version : recommended.get(driver);
+    var key = new Version(driver, v);
+    return v == null || deleting.contains(key) ? null : loaded.get(key);
+  }
+
+  /** The version the driver loaded in this session is, or null for one deleted since. */
+  String version(LoadedDriver driver) {
     for (var entry : loaded.entrySet()) {
-      if (entry.getKey().driver().equals(driver)) {
-        return entry.getValue();
+      if (entry.getValue() == driver) {
+        return entry.getKey().version();
       }
     }
     return null;
+  }
+
+  /** Whether the version is being loaded: an attempt to connect decided on it. */
+  boolean loading(Driver driver, String version) {
+    return loading.containsKey(new Version(driver, version));
+  }
+
+  /** A delete of the version begins, or ends: until it ends, nothing loads the version. */
+  void deleting(Driver driver, String version, boolean begins) {
+    var key = new Version(driver, version);
+    if (begins) {
+      deleting.add(key);
+    } else {
+      deleting.remove(key);
+    }
+  }
+
+  /** The version was deleted: it is loaded again, from a new download, when it is needed. */
+  void forget(Driver driver, String version) {
+    var gone = loaded.remove(new Version(driver, version));
+    if (gone != null) {
+      deleted.add(gone);
+    }
+    recommended.remove(driver, version);
   }
 
   /**
@@ -93,7 +152,11 @@ final class Drivers {
     for (var driver : loaded.values()) {
       driver.close();
     }
+    for (var driver : deleted) {
+      driver.close();
+    }
     loaded.clear();
+    deleted.clear();
   }
 
   /** Where the version's file is downloaded from. */

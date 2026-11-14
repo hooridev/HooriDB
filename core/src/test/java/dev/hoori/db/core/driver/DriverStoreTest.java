@@ -5,13 +5,17 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import dev.hoori.db.core.driver.DriverException.Failure;
 import dev.hoori.db.core.driver.DriverStore.Recommended;
 import dev.hoori.db.core.driver.FolderRepository.Sum;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -385,6 +389,112 @@ class DriverStoreTest {
     store.delete(DRIVER, "7.0.0");
     assertEquals(List.of("1.0.0"), store.downloaded(DRIVER));
     assertFalse(Files.exists(storage.resolve("dev.hoori.fake/fake-jdbc/1.1.0")));
+  }
+
+  /** Its file goes, then its folder cannot be renamed away: the version is gone, not broken. */
+  @Test
+  void aVersionWhoseFolderStaysAfterItsFileWentIsGone() throws Exception {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+    repository.publish(DRIVER, "1.0.0", FakeDriver.jar("1", temp), Sum.SHA256, NOW);
+    store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+    var artifact = storage.resolve("dev.hoori.fake/fake-jdbc");
+    var permissions = Files.getPosixFilePermissions(artifact);
+    Files.setPosixFilePermissions(artifact, PosixFilePermissions.fromString("r-xr-xr-x"));
+    try {
+      assumeFalse(Files.isWritable(artifact), "not as root");
+      store.delete(DRIVER, "1.0.0");
+      assertEquals(List.of(), store.downloaded(DRIVER));
+      assertFailure(Failure.NOT_DOWNLOADED, () -> store.load(DRIVER, "1.0.0"));
+    } finally {
+      Files.setPosixFilePermissions(artifact, permissions);
+    }
+    store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+    store.load(DRIVER, "1.0.0").close();
+  }
+
+  @Test
+  void aResponseThatBreaksOffIsTheRepositorysFailure() throws Exception {
+    repository.publish(DRIVER, "1.0.0", BYTES, Sum.SHA256, NOW);
+    repository.breakingOff.add("dev/hoori/fake/fake-jdbc/1.0.0/fake-jdbc-1.0.0.jar");
+    assertFailure(
+        Failure.UNAVAILABLE, () -> store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE));
+    repository.breakingOff.add("dev/hoori/fake/fake-jdbc/maven-metadata.xml");
+    assertFailure(Failure.UNAVAILABLE, () -> store.versions(DRIVER));
+  }
+
+  /** A write that fails is put down to a full disk when the disk has less room than the file. */
+  @Test
+  void aFailedWriteIsNoSpaceWhenTheDiskHasLessRoomThanTheFile() throws Exception {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+    var path = "dev/hoori/fake/fake-jdbc/1.0.0/fake-jdbc-1.0.0.jar";
+    repository.publish(DRIVER, "1.0.0", BYTES, Sum.SHA256, NOW);
+    // Once the file is served, its temporary folder takes no file: the write fails.
+    repository.served = served -> {
+      if (served.equals(path)) {
+        try (var entries = Files.list(storage.resolve("dev.hoori.fake/fake-jdbc"))) {
+          for (var entry : entries.toList()) {
+            Files.setPosixFilePermissions(entry, PosixFilePermissions.fromString("r-xr-xr-x"));
+          }
+        } catch (java.io.IOException e) {
+          throw new java.io.UncheckedIOException(e);
+        }
+      }
+    };
+    long size = BYTES.length;
+    var roomy = new DriverStore(storage, repository, 1 << 20, folder -> size);
+    assertFailure(Failure.STORAGE, () -> roomy.download(DRIVER, "1.0.0", null));
+    var full = new DriverStore(storage, repository, 1 << 20, folder -> size - 1);
+    assertFailure(Failure.NO_SPACE, () -> full.download(DRIVER, "1.0.0", null));
+  }
+
+  /** As a loaded JAR on Windows, which stays open until the app ends. */
+  @Test
+  void aVersionWhoseFileCannotBeDeletedStaysWholeAndUsable() throws Exception {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+    repository.publish(DRIVER, "1.0.0", FakeDriver.jar("1", temp), Sum.SHA256, NOW);
+    store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+    var dir = storage.resolve("dev.hoori.fake/fake-jdbc/1.0.0");
+    var permissions = Files.getPosixFilePermissions(dir);
+    Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-xr-xr-x"));
+    try {
+      assumeFalse(Files.isWritable(dir), "not as root");
+      assertFailure(Failure.STORAGE, () -> store.delete(DRIVER, "1.0.0"));
+      assertEquals(List.of("1.0.0"), store.downloaded(DRIVER));
+      repository.offline = true;
+      store.load(DRIVER, "1.0.0").close();
+    } finally {
+      Files.setPosixFilePermissions(dir, permissions);
+    }
+    store.delete(DRIVER, "1.0.0");
+    assertEquals(List.of(), store.downloaded(DRIVER));
+  }
+
+  @Test
+  void theChoicesSayWhichAreTooYoungToBeRecommended() throws Exception {
+    var young = NOW.minus(Duration.ofDays(1));
+    repository.publish(DRIVER, "1.0.0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(30)));
+    repository.publish(DRIVER, "1.1.0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(5)));
+    repository.publish(DRIVER, "1.2.0-rc1", BYTES, Sum.SHA256, young);
+    repository.publish(DRIVER, "1.2.0", BYTES, Sum.SHA256, young);
+    var choices = store.choices(DRIVER, NOW);
+    assertEquals(List.of("1.2.0", "1.1.0", "1.0.0"), choices.versions());
+    assertEquals("1.1.0", choices.recommended());
+    assertEquals(java.util.Map.of("1.2.0", young), choices.published());
+    store.download(DRIVER, "1.2.0", DriverStore.Progress.NONE);
+    assertEquals(BYTES.length, store.sizeOnDisk(DRIVER, "1.2.0"));
+    assertFailure(Failure.NOT_DOWNLOADED, () -> store.sizeOnDisk(DRIVER, "1.1.0"));
+  }
+
+  @Test
+  void aRepositoryThatAnswersWithAnErrorIsUnavailable() throws Exception {
+    repository.publish(DRIVER, "1.0.0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(10)));
+    repository.refusing = true;
+    assertFailure(Failure.UNAVAILABLE, () -> store.versions(DRIVER));
+    assertFailure(Failure.UNAVAILABLE, () -> store.recommended(DRIVER, NOW));
+    repository.refusing = false;
+    store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
+    repository.refusing = true;
+    assertEquals(new Recommended("1.0.0", true), store.recommended(DRIVER, NOW));
   }
 
   @Test
