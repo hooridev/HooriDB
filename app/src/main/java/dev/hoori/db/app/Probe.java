@@ -120,7 +120,6 @@ final class Probe {
     }
     var driver = Driver.of(provider);
     var store = drivers.store;
-    var repository = drivers.repository;
     lookup = new Looking(provider);
     looking = s.app.background(
         "look up a driver",
@@ -128,8 +127,7 @@ final class Probe {
           var recommended = store.recommended(driver, Instant.now());
           var version = recommended.version();
           boolean there = store.downloaded(driver).contains(version);
-          long size =
-              there || recommended.offline() ? -1 : Drivers.size(repository, driver, version);
+          long size = there || recommended.offline() ? -1 : size(store, driver, version);
           return new Found(provider, version, recommended.offline(), there, size);
         },
         found -> {
@@ -533,7 +531,7 @@ final class Probe {
         .child(Form.buttons(
             t,
             button(t, SECONDARY, "Download", () -> download(s)),
-            button(t, SECONDARY, "Cancel", this::stop).label("Cancel download")));
+            button(t, SECONDARY, "Not now", this::stop)));
   }
 
   private El downloading(Theme t, Downloading d) {
@@ -585,6 +583,15 @@ final class Probe {
         Callout.callout(
             t, Callout.Kind.DANGER, title(r.failure()), r.detail().isEmpty() ? null : r.detail());
     };
+  }
+
+  /** The size of the version's file, or -1: it is a courtesy, and the download says what fails. */
+  private static long size(DriverStore store, Driver driver, String version) {
+    try {
+      return store.size(driver, version);
+    } catch (DriverException e) {
+      return -1;
+    }
   }
 
   /** Bytes as megabytes with one decimal, or as kilobytes below one megabyte. */

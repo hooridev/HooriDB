@@ -5,7 +5,6 @@ import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.driver.Repository;
-import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -22,7 +21,6 @@ import java.util.function.Consumer;
 final class Drivers {
 
   final DriverStore store;
-  final Repository repository;
   final String source; // the repository as the user knows it, such as "Maven Central"
   final URI address; // where its files are
 
@@ -42,7 +40,6 @@ final class Drivers {
    */
   Drivers(Path folder, Repository repository, String source, URI address) {
     this.store = new DriverStore(folder, repository);
-    this.repository = repository;
     this.source = source;
     this.address = address;
   }
@@ -77,28 +74,8 @@ final class Drivers {
         error -> loading.remove(key).forEach(w -> w.failed().accept(error)));
   }
 
-  /** The path of the version's file under the repository, in Maven's layout. */
-  // shortcut: DriverStore names this path privately and tells no size; ask it once it offers both.
-  static String path(Driver driver, String version) {
-    return driver.group().replace('.', '/') + "/" + driver.artifact() + "/" + version + "/"
-        + driver.artifact() + "-" + version + ".jar";
-  }
-
   /** Where the version's file is downloaded from. */
   URI address(Driver driver, String version) {
-    return address.resolve(path(driver, version));
-  }
-
-  /**
-   * The size of the version's file in bytes, or -1 when the repository does not say or cannot be
-   * asked. Blocks: it opens the file and closes it again before its content comes.
-   */
-  static long size(Repository repository, Driver driver, String version)
-      throws InterruptedException {
-    try (var response = repository.open(path(driver, version))) {
-      return response.length();
-    } catch (IOException e) {
-      return -1; // the size is a courtesy: the download says what went wrong
-    }
+    return address.resolve(store.address(driver, version));
   }
 }

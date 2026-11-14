@@ -311,7 +311,7 @@ class TestConnectionTest {
     App<State> app = app();
     run(app, START + NEW_SHOP + TEST + """
         snap asked
-        press role=button label="Cancel download"
+        press role=button label="Not now"
         frame
         snap cancelled
         """ + TEST + """
