@@ -15,8 +15,14 @@ import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.execution.Failure;
+import dev.hoori.db.core.execution.Message;
+import dev.hoori.db.core.execution.Portion;
+import dev.hoori.db.core.execution.Result;
+import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -46,6 +52,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  * {@link #rows} says how many, or the rows {@link #values} gives. Its rows' calls are keyed {@code
  * estimate <host>/<path>}, {@code count <host>/<path>} and {@code read <host>/<path> <from>-<to>},
  * the path as of {@code columns}, such as {@code pg.example.com/shop.public.orders}.
+ *
+ * <p>A statement gives what {@link #statement} says, on any server, and one it does not know fails
+ * as invalid. Its calls are keyed {@code run <host> <sql>} for the first portion, {@code next
+ * <host> <sql> <from>} for the next ones, and a switch of the database {@code use <host>
+ * <database>}; a statement closed with rows unread notes {@code close <host> <sql>} among the
+ * calls. A held statement that is interrupted ends as core's does: with a cancelled failure, the
+ * thread left interrupted. Each portion took {@link #TOOK}.
  */
 final class FakeServers implements Servers {
 
@@ -69,6 +82,41 @@ final class FakeServers implements Servers {
   private final Map<String, Long> counts = new ConcurrentHashMap<>();
   private final Map<String, OptionalLong> estimates = new ConcurrentHashMap<>();
   private final Map<String, List<List<Object>>> values = new ConcurrentHashMap<>();
+  private final Map<String, Answer> statements = new ConcurrentHashMap<>();
+
+  /** How long each portion of a statement took, as the server would say. */
+  static final Duration TOOK = Duration.ofMillis(4);
+
+  /** What a statement gives: its results, whose rows are read in portions, and its messages. */
+  record Answer(List<Result> results, List<Message> messages) {}
+
+  /** The statement, as written, gives these results, and the server says these messages. */
+  FakeServers statement(String sql, List<Result> results, Message... messages) {
+    statements.put(sql, new Answer(List.copyOf(results), List.of(messages)));
+    return this;
+  }
+
+  /** Rows of the columns, given as {@code name: type}, made up from their position. */
+  static Result.Rows made(long count, String... columns) {
+    var fields = Arrays.stream(columns)
+        .map(c -> c.split(": ", 2))
+        .map(c -> new Field(c[0], c[1], kind(c[1])))
+        .toList();
+    var rows = new ArrayList<List<Object>>();
+    for (long i = 0; i < count; i++) {
+      var row = new ArrayList<Object>();
+      for (var field : fields) {
+        row.add(value(field, i));
+      }
+      rows.add(Collections.unmodifiableList(row));
+    }
+    return new Result.Rows(fields, 0, List.copyOf(rows));
+  }
+
+  /** A failure of a statement, as the server says it. */
+  static Failure serverError(Failure.Kind kind, String message) {
+    return new Failure(kind, message, "", 0, 0, "", 0, 0, "", "", "", "");
+  }
 
   /** A server at the host, of the outline. */
   FakeServers serve(String host, Provider provider, String version, String outline) {
@@ -397,6 +445,89 @@ final class FakeServers implements Servers {
         case Database d -> find(root(), d.name());
         case Schema s -> find(find(root(), s.database().name()), s.name());
       };
+    }
+
+    @Override
+    public Run run(String sql) {
+      var answer = statements.getOrDefault(
+          sql,
+          new Answer(
+              List.of(serverError(
+                  Failure.Kind.INVALID,
+                  "syntax error at or near \"" + sql.split("\\s+", 2)[0] + "\"")),
+              List.of()));
+      return new Run() {
+        private int result; // of the answer, the one read next
+        private long position; // in its rows
+        private boolean started;
+        private boolean over;
+
+        @Override
+        public Portion next(int count) {
+          if (busy.incrementAndGet() > 1) {
+            overlapped = true;
+          }
+          try {
+            var key =
+                started ? "next " + host + " " + sql + " " + position : "run " + host + " " + sql;
+            started = true;
+            try {
+              call(key, queryFailure(QueryException.Failure.CANCELLED));
+            } catch (Exception e) {
+              over = true;
+              var cancelled =
+                  new Failure(Failure.Kind.CANCELLED, "", "57014", 0, 0, "", 0, 0, "", "", "", "");
+              return new Portion(List.of(cancelled), List.of(), false, TOOK, Transaction.NONE);
+            }
+            var out = new ArrayList<Result>();
+            boolean more = false;
+            while (result < answer.results().size()) {
+              var next = answer.results().get(result);
+              if (next instanceof Result.Rows r) {
+                int from = (int) position;
+                int to = (int) Math.min(r.rows().size(), position + count);
+                out.add(new Result.Rows(r.fields(), from, r.rows().subList(from, to)));
+                position = to;
+                if (to < r.rows().size()) {
+                  more = true;
+                  break;
+                }
+                position = 0;
+              } else {
+                out.add(next);
+              }
+              result++;
+            }
+            over = !more;
+            done.add(key);
+            var messages = key.startsWith("run ") ? answer.messages() : List.<Message>of();
+            return new Portion(out, messages, more, TOOK, Transaction.NONE);
+          } finally {
+            busy.decrementAndGet();
+          }
+        }
+
+        @Override
+        public void close() {
+          if (!over) {
+            calls.add("close " + host + " " + sql);
+          }
+          over = true;
+        }
+      };
+    }
+
+    @Override
+    public void use(String name) throws QueryException {
+      var key = "use " + host + " " + name;
+      try {
+        call(key, queryFailure(QueryException.Failure.CANCELLED));
+      } catch (QueryException e) {
+        throw e;
+      } catch (Exception e) {
+        throw queryFailure(QueryException.Failure.OTHER);
+      }
+      done.add(key);
     }
 
     @Override
