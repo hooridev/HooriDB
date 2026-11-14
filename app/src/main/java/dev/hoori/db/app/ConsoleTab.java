@@ -410,9 +410,9 @@ final class ConsoleTab implements Tab {
     running = sql;
     boolean read = reads(sql, s.profile(id).provider());
     writes = !read;
-    if (writes) {
-      empty = false; // what it changes, a rollback would undo
-    }
+    // Whatever it is, what it leaves open is at stake: a read may write through a function or a
+    // trigger, or hold locks on purpose, which no first word tells.
+    empty = false;
     var held = new AtomicReference<Servers.Run>();
     sent = held;
     open = read ? held : null; // a statement that is not a plain read is read to its end
@@ -2107,11 +2107,12 @@ final class ConsoleTab implements Tab {
       buttons.add(rollback);
     } else {
       title = "Commit the transaction?";
+      // A transaction is open, which is not to say that anything in it changed.
       text = name + " has a transaction open"
           + (inTransaction > 0
               ? ", after " + inTransaction + (inTransaction == 1 ? " statement" : " statements")
               : "")
-          + ". Commit its changes or roll them back before " + before + ".";
+          + ". Commit it or roll it back before " + before + ".";
       buttons.add(
           button(t, SECONDARY, "Rollback", () -> answer(s, ROLLBACK)).key("answer-rollback"));
       buttons.add(button(t, PRIMARY, "Commit", () -> answer(s, COMMIT)).key("answer-commit"));

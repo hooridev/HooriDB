@@ -244,8 +244,8 @@ class ConsoleTransactionTest {
     String asked = c.tree("asked");
     assertTrue(asked.contains("role=dialog label=\"Commit the transaction?\""), asked);
     assertTrue(
-        asked.contains("after 1 statement. Commit its changes or roll them back before the"
-            + " console closes."),
+        asked.contains(
+            "after 1 statement. Commit it or roll it back before the" + " console closes."),
         asked);
     c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE + "snap stayed\n");
     String stayed = c.tree("stayed");
@@ -1371,6 +1371,29 @@ class ConsoleTransactionTest {
     assertTrue(
         c.tree("messages").contains("Giving up the rest failed: the commit at give-up failed"),
         c.tree("messages"));
+  }
+
+  /**
+   * An open transaction is at stake whatever ran in it: after only a read in Manual, closing asks,
+   * without claiming that anything changed.
+   */
+  @Test
+  void aTransactionOpenAfterOnlyAReadInManualAsks() throws Exception {
+    for (var profile : List.of(SHOP, INVENTORY)) {
+      var app = k.console(profile);
+      c.run(app, MANUAL + type(COUNT) + RUN);
+      assertEquals(Transaction.OPEN, k.tab(app).transaction, profile.name());
+      c.run(app, "press #close-0\nframe\n" + OPENED + "snap asked\n");
+      String asked = c.tree("asked");
+      assertTrue(asked.contains("role=dialog label=\"Commit the transaction?\""), asked);
+      assertTrue(asked.contains("has a transaction open, after 1 statement. Commit it or"), asked);
+      c.run(app, "press #answer-rollback\nframe\n" + OPENED + SETTLE);
+      assertTrue(app.state().consoles(null).isEmpty(), profile.name());
+    }
+    // In Auto, with none open, a read with rows left still asks nothing.
+    var auto = k.console(SHOP);
+    c.run(auto, type(ORDERS) + RUN + "press #close-0\nframe\n" + OPENED);
+    assertTrue(auto.state().consoles(null).isEmpty());
   }
 
   /**

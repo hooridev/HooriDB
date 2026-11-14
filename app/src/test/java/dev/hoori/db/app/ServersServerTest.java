@@ -658,4 +658,44 @@ class ServersServerTest {
       watcher.close();
     }
   }
+
+  /** What a read in Manual wrote through a function stays, once the user answers Commit. */
+  @Test
+  void aReadsWritesInManualStayWhenCommitted() throws Exception {
+    var server = TestServer.of(Provider.POSTGRESQL);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS seam_read_wrote",
+          "CREATE TABLE seam_read_wrote (id integer)",
+          "CREATE OR REPLACE FUNCTION seam_read_note(n integer) RETURNS integer AS"
+              + " 'INSERT INTO seam_read_wrote VALUES (n) RETURNING id' LANGUAGE sql")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      var sql = "SELECT seam_read_note(7)";
+      assertTrue(ConsoleTab.reads(sql, Provider.POSTGRESQL), "a plain read by its first word");
+      var read = lane.submit(link -> ConsoleTab.start(
+              link,
+              sql,
+              ConsoleTab.Mode.MANUAL,
+              true,
+              new AtomicReference<>(),
+              new AtomicReference<>()))
+          .get(20, TimeUnit.SECONDS);
+      assertEquals(Transaction.OPEN, read.portion().transaction());
+      assertEquals(0L, count(watcher, "seam_read_wrote"));
+      var committed = end(lane, ConsoleTab.COMMIT);
+      assertEquals(Transaction.OPEN, committed.before());
+      assertEquals(Transaction.NONE, committed.portion().transaction());
+      assertEquals(1L, count(watcher, "seam_read_wrote"));
+    } finally {
+      lane.submit(link -> ConsoleTab.setMode(link, false, false, new AtomicReference<>()))
+          .get(20, TimeUnit.SECONDS);
+      statement(lane, "DROP FUNCTION seam_read_note", ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE seam_read_wrote", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
 }
