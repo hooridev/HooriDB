@@ -21,8 +21,10 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -40,7 +42,7 @@ final class FakeDrivers implements Repository {
   static final Driver DRIVER = Driver.of(Provider.POSTGRESQL);
   static final Instant PUBLISHED = Instant.parse("2026-10-01T00:00:00Z");
 
-  private static byte[] jar; // compiled once for all tests
+  private static final Map<Driver, byte[]> JARS = new HashMap<>(); // compiled once for all tests
 
   final Path root;
   volatile boolean offline;
@@ -119,12 +121,24 @@ final class FakeDrivers implements Repository {
 
   /** Puts the made-up driver into the repository, with its checksum or a wrong one. */
   FakeDrivers publish(boolean rightChecksum) throws Exception {
-    var dir = root.resolve(DRIVER.group().replace('.', '/'))
-        .resolve(DRIVER.artifact())
+    return publish(DRIVER, rightChecksum);
+  }
+
+  /** Puts a made-up driver of each kind into the repository. */
+  FakeDrivers publishAll() throws Exception {
+    for (var provider : Provider.values()) {
+      publish(Driver.of(provider), true);
+    }
+    return this;
+  }
+
+  private FakeDrivers publish(Driver driver, boolean rightChecksum) throws Exception {
+    var dir = root.resolve(driver.group().replace('.', '/'))
+        .resolve(driver.artifact())
         .resolve(VERSION);
     Files.createDirectories(dir);
-    var bytes = jar();
-    var file = dir.resolve(DRIVER.artifact() + "-" + VERSION + ".jar");
+    var bytes = jar(driver);
+    var file = dir.resolve(driver.artifact() + "-" + VERSION + ".jar");
     Files.write(file, bytes);
     Files.setLastModifiedTime(file, FileTime.from(PUBLISHED));
     var sum = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
@@ -138,23 +152,28 @@ final class FakeDrivers implements Repository {
     return this;
   }
 
-  /** The JAR of a class of the PostgreSQL driver's name that is a driver and connects nowhere. */
-  static synchronized byte[] jar() throws Exception {
+  /** The JAR of a class of the driver's name that is a driver and connects nowhere. */
+  static synchronized byte[] jar(Driver driver) throws Exception {
+    var jar = JARS.get(driver);
     if (jar != null) {
       return jar;
     }
+    var name = driver.driverClass();
+    var pkg = name.substring(0, name.lastIndexOf('.'));
+    var simple = name.substring(pkg.length() + 1);
+    var entry = name.replace('.', '/');
     var work = Files.createTempDirectory("hooridb-fake-driver-");
     try {
-      var src = Files.createDirectories(work.resolve("src/org/postgresql"));
+      var src = Files.createDirectories(work.resolve("src").resolve(pkg.replace('.', '/')));
       var classes = Files.createDirectories(work.resolve("classes"));
-      var file = Files.writeString(src.resolve("Driver.java"), """
-          package org.postgresql;
+      var file = Files.writeString(src.resolve(simple + ".java"), """
+          package %s;
 
           import java.sql.*;
           import java.util.Properties;
           import java.util.logging.Logger;
 
-          public class Driver implements java.sql.Driver {
+          public class %s implements java.sql.Driver {
             public Connection connect(String url, Properties info) {
               return null;
             }
@@ -183,7 +202,7 @@ final class FakeDrivers implements Repository {
               throw new SQLFeatureNotSupportedException();
             }
           }
-          """);
+          """.formatted(pkg, simple));
       int status = ToolProvider.getSystemJavaCompiler()
           .run(null, null, null, "-d", classes.toString(), file.toString());
       if (status != 0) {
@@ -191,11 +210,12 @@ final class FakeDrivers implements Repository {
       }
       var bytes = new ByteArrayOutputStream();
       try (var out = new JarOutputStream(bytes)) {
-        out.putNextEntry(new JarEntry("org/postgresql/Driver.class"));
-        out.write(Files.readAllBytes(classes.resolve("org/postgresql/Driver.class")));
+        out.putNextEntry(new JarEntry(entry + ".class"));
+        out.write(Files.readAllBytes(classes.resolve(entry + ".class")));
         out.closeEntry();
       }
       jar = bytes.toByteArray();
+      JARS.put(driver, jar);
       return jar;
     } finally {
       try (var paths = Files.walk(work)) {

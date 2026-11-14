@@ -57,8 +57,9 @@ class ConnectorServerTest {
   @EnumSource(Provider.class)
   void anOpenConnectionWorksWithoutTimeUntilClosed(Provider provider) throws Exception {
     var server = TestServer.of(provider);
-    var connection =
-        Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
+    var connection = Connector.open(
+            server.profile(), TestServer.password(), server.driver(), TIMEOUT)
+        .connection();
     try {
       assertEquals(0, connection.getNetworkTimeout());
       try (var statement = connection.createStatement();
@@ -78,10 +79,15 @@ class ConnectorServerTest {
   void namesWithSpacesAndBeyondAsciiReachTheirDatabase(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     for (var name : new String[] {TestServer.SPACED_DATABASE, TestServer.NON_ASCII_DATABASE}) {
-      var connection = Connector.open(
+      var opened = Connector.open(
           server.profile().withDatabase(name), TestServer.password(), server.driver(), TIMEOUT);
+      var connection = opened.connection();
       try {
         assertEquals(name, currentDatabase(provider, connection));
+        // What opening read: the database, and the server as a test of it finds it.
+        assertEquals(name, opened.database());
+        assertEquals(PRODUCTS.get(provider), opened.server().product());
+        assertEquals(MAJORS.get(provider), opened.server().parsed().major());
       } finally {
         Connector.close(connection);
       }
@@ -157,13 +163,14 @@ class ConnectorServerTest {
       gate.open();
       // Without TLS, so that the gate sees the driver's goodbye.
       var profile = server.profile().withHost(Gate.HOST).withPort(gate.port()).withTls(Tls.OFF);
-      var connection = Connector.open(profile, TestServer.password(), server.driver(), TIMEOUT);
+      var opened = Connector.open(profile, TestServer.password(), server.driver(), TIMEOUT);
+      var connection = opened.connection();
       Thread.currentThread().interrupt();
       try {
         var e = assertThrows(
             ConnectionException.class,
             () -> Connector.await(
-                CompletableFuture.completedFuture(connection),
+                CompletableFuture.completedFuture(opened),
                 Thread.ofVirtual().unstarted(() -> {}),
                 TIMEOUT,
                 thrown -> {
@@ -263,8 +270,9 @@ class ConnectorServerTest {
   }
 
   private static String selectVersion(TestServer server) throws Exception {
-    var connection =
-        Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
+    var connection = Connector.open(
+            server.profile(), TestServer.password(), server.driver(), TIMEOUT)
+        .connection();
     try (var statement = connection.createStatement();
         var rows = statement.executeQuery(
             server.provider() == Provider.POSTGRESQL
@@ -296,8 +304,9 @@ class ConnectorServerTest {
             + " AND pid <> pg_backend_pid()"
         : "SELECT count(*) FROM information_schema.processlist" + " WHERE user = '"
             + TestServer.USER + "' AND id <> CONNECTION_ID()";
-    var connection =
-        Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
+    var connection = Connector.open(
+            server.profile(), TestServer.password(), server.driver(), TIMEOUT)
+        .connection();
     try (var statement = connection.createStatement()) {
       var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
       while (true) {

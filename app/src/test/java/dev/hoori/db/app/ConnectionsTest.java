@@ -39,6 +39,8 @@ class ConnectionsTest {
     final Map<UUID, String> stored = new ConcurrentHashMap<>();
     volatile boolean fails;
     volatile CountDownLatch gate;
+    final List<char[]> given =
+        new java.util.concurrent.CopyOnWriteArrayList<>(); // the passwords read
 
     @Override
     public void store(UUID key, char[] secret) throws IOException {
@@ -49,7 +51,9 @@ class ConnectionsTest {
     @Override
     public Optional<char[]> read(UUID key) throws IOException {
       check();
-      return Optional.ofNullable(stored.get(key)).map(String::toCharArray);
+      var password = Optional.ofNullable(stored.get(key)).map(String::toCharArray);
+      password.ifPresent(given::add);
+      return password;
     }
 
     @Override

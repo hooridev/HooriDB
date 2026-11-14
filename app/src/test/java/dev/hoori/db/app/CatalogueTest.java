@@ -1,0 +1,978 @@
+package dev.hoori.db.app;
+
+import static dev.hoori.db.app.ConnectionsTest.PASSWORD;
+import static dev.hoori.db.app.ConnectionsTest.line;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.rethinkj.ui.App;
+import com.rethinkj.ui.Script;
+import dev.hoori.db.core.catalog.CatalogException;
+import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.connect.ConnectionException.Failure;
+import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.ProfileStore;
+import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.driver.DriverStore;
+import dev.hoori.db.core.secret.Keyring;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.BooleanSupplier;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+/** The catalogue: connections that open onto what their servers hold. */
+class CatalogueTest {
+
+  static final String PG = "pg.example.com";
+  static final String MARIA = "maria.example.com";
+  static final String MYSQL = "mysql.example.com";
+
+  static final String PG_OUTLINE = """
+      shop
+        public
+          customers
+            *id: integer
+            name: text
+            email: character varying(255)
+          orders
+            *id: bigint
+            customer_id: integer
+            placed_at: timestamp with time zone
+            total: numeric(12,2)
+          @order_totals
+            customer_id: integer
+            total: numeric
+        sales
+          invoices
+            *id: integer
+            amount: numeric(12,2)
+        ~information_schema
+          @columns
+            table_name: name
+        ~pg_catalog
+          pg_class
+            oid: oid
+        ~pg_toast
+      analytics
+        tracking
+          events
+            *id: bigint
+            kind: text
+      postgres
+        reports
+      ~template0
+      ~template1
+      """;
+
+  static final String MARIA_OUTLINE = """
+      inventory
+        items
+          *id: int(11)
+          sku: varchar(32)
+          name: varchar(200)
+        stock
+          *item_id: int(11)
+          *warehouse: varchar(8)
+          quantity: int(11)
+        @low_stock
+          item_id: int(11)
+      ~information_schema
+      ~mysql
+      ~performance_schema
+      """;
+
+  static final String MYSQL_OUTLINE = """
+      legacy
+        accounts
+          *id: int
+          login: varchar(64)
+      ~mysql
+      ~sys
+      """;
+
+  @TempDir
+  Path dir;
+
+  final ConnectionsTest.Secrets secrets = new ConnectionsTest.Secrets();
+  final FakeServers servers = new FakeServers()
+      .serve(PG, Provider.POSTGRESQL, "16.4", PG_OUTLINE)
+      .serve(MARIA, Provider.MARIADB, "11.4.2-MariaDB", MARIA_OUTLINE)
+      .serve(MYSQL, Provider.MYSQL, "8.4.3", MYSQL_OUTLINE);
+  FakeDrivers repository;
+  final List<App<State>> apps = new ArrayList<>();
+
+  static final ConnectionProfile SHOP = ConnectionProfile.of(Provider.POSTGRESQL)
+      .withName("shop-prod")
+      .withHost(PG)
+      .withDatabase("shop")
+      .withUser("shop_app");
+  static final ConnectionProfile INVENTORY = ConnectionProfile.of(Provider.MARIADB)
+      .withName("inventory")
+      .withHost(MARIA)
+      .withUser("inv");
+  static final ConnectionProfile LEGACY =
+      ConnectionProfile.of(Provider.MYSQL).withName("legacy").withHost(MYSQL).withUser("app");
+
+  @BeforeEach
+  void setUp() throws Exception {
+    repository = new FakeDrivers(Files.createDirectories(dir.resolve("repository"))).publishAll();
+  }
+
+  @AfterEach
+  void tearDown() throws Exception {
+    servers.openAll();
+    for (var app : apps) {
+      app.await(Duration.ofSeconds(10));
+      app.state().catalogue.closeAll();
+      app.state().drivers.close();
+    }
+  }
+
+  /** The drivers in the folder, as an earlier session would have left them. */
+  void downloaded() throws Exception {
+    var store = new DriverStore(dir.resolve("drivers"), repository);
+    for (var provider : Provider.values()) {
+      store.download(Driver.of(provider), FakeDrivers.VERSION, DriverStore.Progress.NONE);
+    }
+  }
+
+  /** The app with these connections, the made-up servers and the keyring in memory. */
+  App<State> app(ConnectionProfile... profiles) throws IOException {
+    new ProfileStore(dir.resolve("config")).save(List.of(profiles));
+    var app = HooriDb.app(
+        dir.resolve("config"),
+        () -> new Keyring.Available(secrets),
+        repository.drivers(dir.resolve("drivers")),
+        Tester.SERVER,
+        servers);
+    apps.add(app);
+    return app;
+  }
+
+  static final String START = """
+      size 1200 760
+      frame
+      await
+      frame
+      await
+      frame
+      advance 1
+      frame
+      """;
+
+  /** Lets in what the work delivers, and what that starts, several times over. */
+  static final String SETTLE = "await\nframe\n".repeat(6) + "advance 1\nframe\n";
+
+  /** Selects the row and opens it. */
+  static String open(String label) {
+    return "press role=treeitem label=\"" + label + "\"\nkey ArrowRight\nframe\n";
+  }
+
+  static String menu(String row, String item) {
+    return "press role=treeitem label=\"" + row + "\" right\nframe\nadvance 1\nframe\n"
+        + "press role=menuitem label=\"" + item + "\"\nframe\nadvance 1\nframe\n";
+  }
+
+  void run(App<State> app, String script) throws IOException {
+    Script.run(script, app, dir.resolve("out"));
+  }
+
+  String tree(String snap) throws IOException {
+    return Files.readString(dir.resolve("out").resolve(snap + ".tree.txt"));
+  }
+
+  /** The labels of the tree's rows, in order, with their levels. */
+  static List<String> rows(String tree) {
+    return tree.lines()
+        .filter(l -> l.contains("role=treeitem"))
+        .map(l -> {
+          var label = l.substring(l.indexOf("label=\"") + 7);
+          label = label.substring(0, label.indexOf('"'));
+          var level = l.replaceAll(".* level=(\\d+).*", "$1");
+          return "  ".repeat(Integer.parseInt(level) - 1) + label;
+        })
+        .toList();
+  }
+
+  void noPassword() throws IOException {
+    try (Stream<Path> files = Files.list(dir.resolve("out"))) {
+      for (var file : files.filter(f -> f.toString().endsWith(".tree.txt")).toList()) {
+        assertFalse(Files.readString(file).contains(PASSWORD), file.toString());
+      }
+    }
+  }
+
+  static void eventually(BooleanSupplier condition) throws InterruptedException {
+    for (int i = 0; !condition.getAsBoolean(); i++) {
+      if (i == 250) {
+        throw new AssertionError("It did not happen");
+      }
+      Thread.sleep(20);
+    }
+  }
+
+  /** The drivers loaded and the passwords kept for this session, so that opening connects. */
+  void ready(App<State> app, ConnectionProfile... profiles) throws Exception {
+    downloaded();
+    var s = app.state();
+    for (var p : profiles) {
+      s.drivers.load(app, Driver.of(p.provider()), FakeDrivers.VERSION, d -> {}, e -> {});
+      s.rememberPassword(p.id(), PASSWORD.toCharArray());
+    }
+  }
+
+  /** The lines of the tree from the row with the label to the next row. */
+  static String row(String tree, String label) {
+    return ConnectionsTest.after(tree, "role=treeitem label=\"" + label + "\"");
+  }
+
+  static String message(String tree) {
+    return line(tree, "#message");
+  }
+
+  @Test
+  void openingAConnectionShowsItsDatabases() throws Exception {
+    downloaded();
+    secrets.stored.put(SHOP.id(), PASSWORD);
+    var app = app(SHOP);
+    var held = servers.hold("open " + PG + "/shop");
+    run(app, START + open("shop-prod") + "await\nframe\n".repeat(3) + "snap connecting\n");
+    String connecting = tree("connecting");
+    assertTrue(row(connecting, "shop-prod").contains("role=progressbar label=\"Connecting\""));
+    assertTrue(connecting.contains("\"Connecting…\""), connecting);
+    held.countDown();
+    run(app, SETTLE + "snap connected\n");
+    var connected = tree("connected");
+    assertEquals(
+        List.of("shop-prod", "  shop", "  analytics", "  postgres", "  template0", "  template1"),
+        rows(connected));
+    assertFalse(row(connected, "shop-prod").contains("progressbar"), connected);
+    assertTrue(message(connected).contains("\"Connected to shop-prod\""), connected);
+    assertEquals(List.of(PASSWORD), servers.passwords);
+    noPassword();
+  }
+
+  @Test
+  void thePasswordKeptForTheSessionComesFirst() throws Exception {
+    downloaded();
+    secrets.stored.put(SHOP.id(), "from-the-keyring");
+    var app = app(SHOP);
+    app.state().rememberPassword(SHOP.id(), PASSWORD.toCharArray());
+    run(app, START + open("shop-prod") + SETTLE + "snap end\n");
+    assertEquals(List.of(PASSWORD), servers.passwords);
+    assertTrue(rows(tree("end")).contains("  shop"));
+  }
+
+  @Test
+  void withoutAPasswordTheAppAsksForIt() throws Exception {
+    downloaded();
+    var app = app(SHOP);
+    run(app, START + open("shop-prod") + SETTLE + """
+        snap asked
+        press role=textbox label="Password"
+        type "hunter2"
+        press role=checkbox label="Keep it until HooriDB closes"
+        frame
+        snap typed
+        press role=button label="Connect"
+        frame
+        advance 1
+        frame
+        """ + SETTLE + "snap end\n");
+    String asked = tree("asked");
+    assertTrue(line(asked, "role=dialog").contains("label=\"Password for shop-prod\""), asked);
+    assertTrue(asked.contains("\"Enter the password of shop_app on pg.example.com.\""), asked);
+    assertTrue(row(asked, "shop-prod").contains("progressbar"), "it waits: " + asked);
+    assertTrue(asked.contains("\"Waiting for the password…\""), asked);
+    assertTrue(tree("typed").contains("\"" + "•".repeat(7) + "\""), tree("typed"));
+    assertEquals(List.of(PASSWORD), servers.passwords);
+    assertTrue(rows(tree("end")).contains("  shop"), tree("end"));
+    assertTrue(app.state().remembers(SHOP.id()), "kept for this session");
+    assertTrue(secrets.stored.isEmpty(), "the keyring was not written");
+    noPassword();
+  }
+
+  @Test
+  void aPasswordNotKeptIsAskedForAgain() throws Exception {
+    downloaded();
+    var app = app(SHOP);
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + """
+        press role=textbox label="Password"
+        type "hunter2"
+        key Enter
+        frame
+        advance 1
+        frame
+        """ + SETTLE + menu("shop-prod", "Disconnect")
+            + open("shop-prod") + SETTLE + "snap end\n");
+    assertFalse(app.state().remembers(SHOP.id()));
+    assertTrue(line(tree("end"), "role=dialog").contains("\"Password for shop-prod\""));
+  }
+
+  @Test
+  void aMissingDriverIsAskedAboutAndDownloaded() throws Exception {
+    secrets.stored.put(SHOP.id(), PASSWORD);
+    secrets.stored.put(LEGACY.id(), PASSWORD);
+    var app = app(SHOP, LEGACY);
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + """
+        snap asked
+        press role=button label="Download"
+        frame
+        snap downloading
+        """ + SETTLE + SETTLE + "snap downloaded\n"
+            + open("legacy") + SETTLE + """
+        snap mysql
+        press role=button label="Not now"
+        frame
+        advance 1
+        frame
+        snap declined
+        """);
+    String asked = tree("asked");
+    assertTrue(line(asked, "role=dialog").contains("label=\"Driver needed\""), asked);
+    assertTrue(
+        line(asked, "role=note").contains("label=\"Download PostgreSQL JDBC 42.7.14?\""), asked);
+    assertTrue(asked.contains("\"Waiting for the driver…\""), asked);
+    String downloading = tree("downloading");
+    assertTrue(line(downloading, "role=dialog").contains("label=\"Driver needed\""), downloading);
+    assertTrue(downloading.contains("label=\"Downloading PostgreSQL JDBC\""), downloading);
+    String downloaded = tree("downloaded");
+    assertFalse(downloaded.contains("role=dialog"), downloaded);
+    assertTrue(rows(downloaded).contains("  shop"), downloaded);
+    assertTrue(
+        line(tree("mysql"), "role=note").contains("\"Download MySQL Connector/J 42.7.14?\""));
+    String declined = tree("declined");
+    assertFalse(declined.contains("role=dialog"), declined);
+    assertTrue(row(declined, "legacy").contains("expanded=false"), declined);
+    assertTrue(
+        message(declined).contains("legacy not connected, as MySQL Connector/J is not downloaded."),
+        declined);
+  }
+
+  /** A failure, and the words that show for it below the tree. */
+  record Case(Failure failure, String title, String text) {}
+
+  @Test
+  void eachConnectFailureShowsAtTheNode() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var key = "open " + PG + "/shop";
+    var cases = List.of(
+        new Case(
+            Failure.LOGIN_REFUSED,
+            "Login refused",
+            "The server refused this user name and password."),
+        new Case(
+            Failure.NO_SUCH_DATABASE,
+            "No such database",
+            "The server has no database named shop, or this user may not open it."),
+        new Case(
+            Failure.UNREACHABLE,
+            "The server cannot be reached",
+            "Nothing answered at pg.example.com, port 5432. Check the host and the port, and that"
+                + " the server is running."),
+        new Case(
+            Failure.TIMED_OUT,
+            "No answer in time",
+            "pg.example.com did not answer on port 5432 within 10 seconds. Check the host and the"
+                + " port; a firewall may be in the way."),
+        new Case(
+            Failure.TLS_UNAVAILABLE,
+            "The server offers no TLS",
+            "The server offers no TLS. Off connects without it, and password and data go over the"
+                + " network as they are."),
+        new Case(
+            Failure.CERTIFICATE_REJECTED,
+            "The certificate was not accepted",
+            "The server's certificate is not trusted, or not for pg.example.com. Encrypted accepts"
+                + " it, without verifying the server."),
+        new Case(
+            Failure.UNFIT,
+            "The connection failed",
+            "Its settings cannot connect as they are. Edit the connection to complete them."),
+        new Case(Failure.OTHER, "The connection failed", "FATAL: the server's words for OTHER"));
+    run(app, START);
+    boolean first = true;
+    for (var c : cases) {
+      servers.fail(key, FakeServers.notConnected(c.failure()));
+      String name = c.failure().name().toLowerCase();
+      run(
+          app,
+          (first ? open("shop-prod") : "press role=button label=\"Try again\"\nframe\n") + SETTLE
+              + "snap " + name + "\n");
+      first = false;
+      String tree = tree(name);
+      assertEquals(List.of("shop-prod", "  " + c.title()), rows(tree), tree);
+      assertTrue(row(tree, c.title()).contains("label=\"error_circle\""), tree);
+      assertTrue(line(tree, "role=note").contains("label=\"" + c.title() + "\""), tree);
+      assertTrue(tree.contains(c.text()), tree);
+      assertTrue(tree.contains("role=button label=\"Try again\""), tree);
+      assertEquals(
+          c.failure() == Failure.LOGIN_REFUSED,
+          tree.contains("role=button label=\"Enter password…\""),
+          tree);
+      assertTrue(message(tree).contains("shop-prod: " + c.title()), tree);
+    }
+    servers.heal(key);
+    run(app, "press role=button label=\"Try again\"\nframe\n" + SETTLE + "snap end\n");
+    assertTrue(rows(tree("end")).contains("  shop"), tree("end"));
+    assertFalse(tree("end").contains("role=note"), tree("end"));
+    noPassword();
+  }
+
+  @Test
+  void aRefusedLoginLeadsBackToThePassword() throws Exception {
+    downloaded();
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", PG_OUTLINE, "s3cret");
+    secrets.stored.put(SHOP.id(), PASSWORD);
+    var app = app(SHOP);
+    run(app, START + open("shop-prod") + SETTLE + """
+        snap refused
+        press role=button label="Enter password…"
+        frame
+        advance 1
+        frame
+        press role=textbox label="Password"
+        type "s3cret"
+        press role=button label="Connect"
+        frame
+        advance 1
+        frame
+        """ + SETTLE + "snap end\n");
+    assertTrue(tree("refused").contains("\"Login refused\""), tree("refused"));
+    assertEquals(List.of(PASSWORD, "s3cret"), servers.passwords);
+    assertTrue(rows(tree("end")).contains("  shop"), tree("end"));
+    assertFalse(tree("end").contains("s3cret"));
+    noPassword();
+  }
+
+  @Test
+  void eachLevelOpensWithItsLoadingRow() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(app, START + open("shop-prod") + SETTLE);
+    var schemas = servers.hold("schemas " + PG + "/shop");
+    run(app, open("shop") + "snap loading\n");
+    String loading = tree("loading");
+    assertTrue(loading.contains("\"Loading…\""), loading);
+    schemas.countDown();
+    run(
+        app,
+        SETTLE + "snap schemas\n" + open("public") + SETTLE + "snap tables\n" + open("orders")
+            + SETTLE + "snap columns\n");
+    assertEquals(
+        List.of(
+            "shop-prod",
+            "  shop",
+            "    public",
+            "    sales",
+            "    information_schema",
+            "    pg_catalog",
+            "    pg_toast",
+            "  analytics",
+            "  postgres",
+            "  template0",
+            "  template1"),
+        rows(tree("schemas")));
+    String tables = tree("tables");
+    assertEquals(
+        List.of("      customers", "      orders", "      order_totals"),
+        rows(tables).subList(3, 6));
+    assertTrue(row(tables, "customers").contains("label=\"table\""), tables);
+    assertTrue(row(tables, "order_totals").contains("label=\"eye\""), tables);
+    assertTrue(row(tables, "shop").contains("label=\"database\""), tables);
+    assertTrue(row(tables, "public").contains("label=\"folder\""), tables);
+    String columns = tree("columns");
+    assertEquals(
+        List.of(
+            "        id: bigint",
+            "        customer_id: integer",
+            "        placed_at: timestamp with time zone",
+            "        total: numeric(12,2)"),
+        rows(columns).subList(5, 9));
+    assertTrue(row(columns, "id: bigint").contains("label=\"key\""), columns);
+    assertTrue(row(columns, "total: numeric(12,2)").contains("label=\"column_single\""), columns);
+    assertTrue(line(columns, "label=\"id: bigint\"").contains("level=5"), columns);
+  }
+
+  @Test
+  void aServerWithoutSchemasHasItsTablesUnderTheDatabase() throws Exception {
+    var app = app(INVENTORY);
+    ready(app, INVENTORY);
+    run(app, START + open("inventory") + SETTLE + "snap databases\n");
+    // The connection and its database share the name: the database is the second row.
+    run(
+        app,
+        "press #row-1\nkey ArrowRight\nframe\n" + SETTLE + open("stock") + SETTLE + "snap end\n");
+    assertEquals(
+        List.of(
+            "inventory", "  inventory", "  information_schema", "  mysql", "  performance_schema"),
+        rows(tree("databases")));
+    assertEquals(
+        List.of(
+            "inventory",
+            "  inventory",
+            "    items",
+            "    stock",
+            "      item_id: int(11)",
+            "      warehouse: varchar(8)",
+            "      quantity: int(11)",
+            "    low_stock",
+            "  information_schema",
+            "  mysql",
+            "  performance_schema"),
+        rows(tree("end")));
+    String end = tree("end");
+    assertTrue(row(end, "warehouse: varchar(8)").contains("label=\"key\""), end);
+    assertTrue(row(end, "low_stock").contains("label=\"eye\""), end);
+    assertFalse(servers.calls.stream().anyMatch(c -> c.startsWith("schemas")), "no schemas");
+  }
+
+  @Test
+  void aSecondDatabaseOpensASecondConnection() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + open("analytics") + SETTLE + open("tracking") + SETTLE
+            + "snap end\n");
+    assertEquals(
+        List.of(
+            "shop-prod",
+            "  shop",
+            "  analytics",
+            "    tracking",
+            "      events",
+            "  postgres",
+            "  template0",
+            "  template1"),
+        rows(tree("end")));
+    assertEquals(
+        List.of(
+            "open " + PG + "/shop",
+            "databases " + PG,
+            "open " + PG + "/analytics",
+            "schemas " + PG + "/analytics",
+            "tables " + PG + "/analytics.tracking"),
+        servers.calls);
+    assertEquals(List.of(PASSWORD, PASSWORD), servers.passwords);
+  }
+
+  @Test
+  void aDatabaseThatCannotBeOpenedFailsAlone() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    servers.fail("open " + PG + "/postgres", FakeServers.notConnected(Failure.NO_SUCH_DATABASE));
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + open("postgres") + SETTLE
+            + "press role=treeitem label=\"The database could not be opened\"\nframe\nsnap failed\n"
+            + open("analytics") + SETTLE + open("shop") + SETTLE + "snap end\n");
+    String failed = tree("failed");
+    assertTrue(
+        line(failed, "role=note").contains("label=\"The database could not be opened\""), failed);
+    assertTrue(
+        failed.contains("The server has no database named postgres, or this user may not open it."),
+        failed);
+    List<String> end = rows(tree("end"));
+    assertTrue(end.contains("    tracking"), tree("end"));
+    assertTrue(end.contains("    public"), tree("end"));
+    assertTrue(end.contains("    The database could not be opened"), tree("end"));
+    servers.heal("open " + PG + "/postgres");
+    run(
+        app,
+        "press role=treeitem label=\"The database could not be opened\"\nframe\n"
+            + "press role=button label=\"Try again\"\nframe\n" + SETTLE + "snap again\n");
+    assertTrue(rows(tree("again")).contains("    reports"), tree("again"));
+  }
+
+  @Test
+  void twoConnectionsDoNotWaitForEachOther() throws Exception {
+    var app = app(SHOP, LEGACY);
+    ready(app, SHOP, LEGACY);
+    var slow = servers.hold("databases " + PG);
+    run(app, START + open("shop-prod") + open("legacy") + "snap both\n");
+    // The other server's databases were read while the first still had not answered.
+    eventually(() -> servers.done.contains("databases " + MYSQL));
+    assertEquals(1, slow.getCount());
+    assertFalse(servers.done.contains("databases " + PG));
+    slow.countDown();
+    run(app, SETTLE + "snap end\n");
+    assertEquals(
+        List.of(
+            "shop-prod",
+            "  shop",
+            "  analytics",
+            "  postgres",
+            "  template0",
+            "  template1",
+            "legacy",
+            "  legacy",
+            "  mysql",
+            "  sys"),
+        rows(tree("end")));
+  }
+
+  @Test
+  void readsOnOneConnectionNeverOverlapAndKeepTheirOrder() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("sales")
+            + SETTLE
+            + open("public")
+            + SETTLE);
+    var first = servers.hold("columns " + PG + "/shop.public.customers");
+    run(
+        app,
+        open("customers") + open("orders") + open("order_totals") + open("invoices")
+            + "snap asked\n");
+    // The first call is in the server, held, while the others are asked for behind it.
+    eventually(() -> servers.calls.contains("columns " + PG + "/shop.public.customers"));
+    first.countDown();
+    run(app, SETTLE + "snap end\n");
+    assertFalse(servers.overlapped, "two calls ran at once on one connection");
+    var columns = servers.calls.stream().filter(c -> c.startsWith("columns")).toList();
+    assertEquals(
+        List.of(
+            "columns " + PG + "/shop.public.customers",
+            "columns " + PG + "/shop.public.orders",
+            "columns " + PG + "/shop.public.order_totals",
+            "columns " + PG + "/shop.sales.invoices"),
+        columns);
+    assertTrue(rows(tree("end")).contains("        amount: numeric(12,2)"), tree("end"));
+  }
+
+  @Test
+  void eachCatalogueFailureShowsAtItsNode() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var key = "tables " + PG + "/shop.sales";
+    var cases = List.of(
+        new String[] {"NOT_FOUND", "Not found", "sales is no longer there, or this user may not"},
+        new String[] {"ACCESS_DENIED", "Access denied", "The server does not let this user read"},
+        new String[] {"WRONG_DATABASE", "Wrong database", "The connection is to another database"},
+        new String[] {"CANCELLED", "Cancelled", "The server cancelled the read."},
+        new String[] {"OTHER", "Could not be read", "The server could not tell what sales holds."});
+    run(app, START + open("shop-prod") + SETTLE + open("shop") + SETTLE);
+    boolean first = true;
+    for (var c : cases) {
+      var failure = dev.hoori.db.core.catalog.CatalogException.Failure.valueOf(c[0]);
+      servers.fail(key, FakeServers.notRead(failure));
+      String name = c[0].toLowerCase();
+      run(
+          app,
+          (first
+                  ? open("sales") + SETTLE + "press role=treeitem label=\"" + c[1] + "\"\nframe\n"
+                  : "press role=button label=\"Try again\"\nframe\n" + SETTLE)
+              + "snap " + name + "\n");
+      first = false;
+      String tree = tree(name);
+      assertTrue(rows(tree).contains("      " + c[1]), tree);
+      assertTrue(line(tree, "role=note").contains("label=\"" + c[1] + "\""), tree);
+      assertTrue(tree.contains(c[2]), tree);
+      assertTrue(tree.contains("the server's words for " + c[0]), tree);
+      assertTrue(rows(tree).contains("    public"), "the rest stays: " + tree);
+    }
+    servers.heal(key);
+    run(app, "press role=button label=\"Try again\"\nframe\n" + SETTLE + "snap end\n");
+    assertTrue(rows(tree("end")).contains("      invoices"), tree("end"));
+  }
+
+  @Test
+  void aLostConnectionMarksTheConnectionDisconnected() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var key = "tables " + PG + "/shop.public";
+    servers.fail(key, FakeServers.notRead(CatalogException.Failure.CONNECTION_LOST));
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + open("shop") + SETTLE + open("analytics") + SETTLE
+            + open("public") + SETTLE + "snap lost\n");
+    String lost = tree("lost");
+    assertEquals(List.of("shop-prod", "  Disconnected"), rows(lost));
+    assertTrue(message(lost).contains("shop-prod: the connection was lost"), lost);
+    assertTrue(
+        lost.contains("The connection was lost: the server closed it, or the network to it"), lost);
+    eventually(() -> servers.closed.containsAll(List.of(PG + "/shop", PG + "/analytics")));
+    servers.heal(key);
+    run(app, "press role=button label=\"Try again\"\nframe\n" + SETTLE + "snap end\n");
+    assertTrue(rows(tree("end")).contains("  shop"), tree("end"));
+  }
+
+  @Test
+  void refreshReadsAgainAndForgetsWhatWasBelow() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE);
+    servers.serve(
+        PG, Provider.POSTGRESQL, "16.4", PG_OUTLINE.replace("    orders\n", "    refunds\n"));
+    run(app, menu("public", "Refresh") + SETTLE + "snap end\n");
+    var end = rows(tree("end"));
+    assertTrue(end.contains("      refunds"), tree("end"));
+    assertFalse(end.contains("      orders"), tree("end"));
+    assertFalse(end.stream().anyMatch(r -> r.contains("bigint")), "what was below went");
+  }
+
+  @Test
+  void copyNameCopiesTheNameAlone() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE
+            + open("orders") + SETTLE + menu("placed_at: timestamp with time zone", "Copy name")
+            + "snap column\n" + menu("shop-prod", "Copy name") + "snap connection\n");
+    assertEquals(
+        "placed_at",
+        Files.readString(dir.resolve("out").resolve("column.clipboard.txt")).strip());
+    assertEquals(
+        "shop-prod",
+        Files.readString(dir.resolve("out").resolve("connection.clipboard.txt")).strip());
+  }
+
+  @Test
+  void disconnectClosesTheConnectionsAndFoldsTheNode() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(app, START + open("shop-prod") + SETTLE + open("analytics") + SETTLE + "snap menu\n");
+    run(app, menu("shop-prod", "Disconnect") + "snap end\n");
+    String end = tree("end");
+    assertEquals(List.of("shop-prod"), rows(end));
+    assertTrue(row(end, "shop-prod").contains("expanded=false"), end);
+    assertTrue(message(end).contains("Disconnected from shop-prod"), end);
+    eventually(() -> servers.closed.containsAll(List.of(PG + "/shop", PG + "/analytics")));
+    assertFalse(app.state().catalogue.active(SHOP.id()));
+  }
+
+  @Test
+  void editingOrDeletingAConnectedConnectionAsksToDisconnectFirst() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + menu("shop-prod", "Edit…") + "snap asked\n"
+            + "press role=button label=\"Disconnect\"\nframe\nadvance 1\nframe\nawait\nframe\n"
+            + "snap editing\nkey Escape\nframe\nadvance 1\nframe\n" + open("shop-prod") + SETTLE
+            + menu("shop-prod", "Delete…") + "snap delete\n"
+            + "press role=button label=\"Disconnect\"\nframe\nadvance 1\nframe\nsnap deleting\n");
+    String asked = tree("asked");
+    assertTrue(line(asked, "role=dialog").contains("label=\"Disconnect shop-prod?\""), asked);
+    assertTrue(asked.contains("shop-prod is connected. To edit it, HooriDB disconnects it first."));
+    String editing = tree("editing");
+    assertTrue(line(editing, "role=dialog").contains("\"Edit connection\""), editing);
+    assertEquals(List.of("shop-prod"), rows(editing));
+    assertTrue(tree("delete").contains("To delete it, HooriDB disconnects it first."));
+    assertTrue(line(tree("deleting"), "role=dialog").contains("\"Delete connection\""));
+    assertFalse(app.state().catalogue.active(SHOP.id()));
+  }
+
+  @Test
+  void aResultForANodeRefreshedMeanwhileIsIgnored() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(app, START + open("shop-prod") + SETTLE + open("shop") + SETTLE);
+    servers.dead = true; // the first read answers once the gate opens, cancelled or not
+    var gate = servers.hold("tables " + PG + "/shop.public");
+    run(app, open("public"));
+    eventually(() -> servers.calls.contains("tables " + PG + "/shop.public"));
+    servers.serve(
+        PG, Provider.POSTGRESQL, "16.4", PG_OUTLINE.replace("    orders\n", "    refunds\n"));
+    run(app, menu("public", "Refresh"));
+    gate.countDown();
+    run(app, SETTLE + "snap end\n");
+    var end = rows(tree("end"));
+    // The first read answered with orders, after the refresh; only the second one counts.
+    assertEquals(2, servers.done.stream().filter(c -> c.startsWith("tables")).count());
+    assertTrue(end.contains("      refunds"), tree("end"));
+    assertFalse(end.contains("      orders"), tree("end"));
+    assertFalse(servers.overlapped);
+  }
+
+  @Test
+  void aResultForAConnectionDisconnectedMeanwhileIsIgnored() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    servers.dead = true;
+    var gate = servers.hold("databases " + PG);
+    run(app, START + open("shop-prod") + menu("shop-prod", "Disconnect"));
+    gate.countDown();
+    eventually(() -> servers.done.contains("databases " + PG));
+    run(app, SETTLE + "snap end\n");
+    String end = tree("end");
+    assertEquals(List.of("shop-prod"), rows(end));
+    assertFalse(app.state().catalogue.active(SHOP.id()));
+    eventually(() -> servers.closed.contains(PG + "/shop"));
+  }
+
+  @Test
+  void closingTheWindowDoesNotWaitForAServer() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    servers.dead = true; // the read does not even end when it is interrupted
+    servers.hold("databases " + PG);
+    run(app, START + open("shop-prod"));
+    eventually(() -> servers.calls.contains("databases " + PG)); // the read is in the server
+    run(app, "close\nframe\n");
+    assertTrue(app.windows().all().isEmpty());
+    app.await(Duration.ofSeconds(1)); // nothing of the app waits for the server
+    assertTrue(servers.closed.isEmpty(), "the connection closes once the read has ended");
+  }
+
+  /**
+   * Shows that a cancel interrupts the lane's thread in the call, which the made-up server sees.
+   * It does not show that a cancel goes through core to the server: the made-up server stands
+   * where {@code Catalog} would, and core's own tests show its cancel against real servers.
+   */
+  @Test
+  void aRunningReadIsCancelledOnTheServer() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(app, START + open("shop-prod") + SETTLE);
+    servers.hold("schemas " + PG + "/shop");
+    run(app, open("shop") + menu("shop-prod", "Disconnect"));
+    eventually(() -> servers.interrupted.contains("schemas " + PG + "/shop"));
+    eventually(() -> servers.closed.contains(PG + "/shop"));
+  }
+
+  /** Every node that cannot be read shows why, the connection's own databases too. */
+  @Test
+  void aFailedReadOfTheDatabasesShowsAtTheConnection() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var key = "databases " + PG;
+    servers.fail(key, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    run(app, START + open("shop-prod") + SETTLE + "snap denied\n");
+    String denied = tree("denied");
+    assertEquals(List.of("shop-prod", "  Access denied"), rows(denied));
+    assertTrue(line(denied, "role=note").contains("label=\"Access denied\""), denied);
+    assertTrue(denied.contains("The server does not let this user read what shop-prod holds."));
+    servers.heal(key);
+    run(app, "press role=button label=\"Try again\"\nframe\n" + SETTLE + "snap end\n");
+    assertTrue(rows(tree("end")).contains("  shop"), tree("end"));
+  }
+
+  /** What a server says is checked against the password before anything of it is kept. */
+  @Test
+  void noFailureKeepsThePassword() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var words = "the server repeats " + PASSWORD;
+    servers.fail(
+        "tables " + PG + "/shop.public",
+        dev.hoori.db.core.catalog.CatalogException.of(
+            CatalogException.Failure.ACCESS_DENIED, words));
+    servers.fail(
+        "open " + PG + "/analytics",
+        dev.hoori.db.core.connect.ConnectionException.of(Failure.NO_SUCH_DATABASE, words));
+    servers.fail(
+        "tables " + PG + "/shop.sales",
+        dev.hoori.db.core.catalog.CatalogException.of(
+            CatalogException.Failure.CONNECTION_LOST, words));
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE
+            + "press role=treeitem label=\"Access denied\"\nframe\nsnap denied\n"
+            + open("analytics") + SETTLE
+            + "press role=treeitem label=\"The database could not be opened\"\nframe\n"
+            + "snap unopened\n");
+    var kept = new StringBuilder();
+    for (var live : app.state().catalogue.lives.values()) {
+      kept.append(live.phase).append(live.levels);
+    }
+    run(app, open("sales") + SETTLE + "snap lost\n");
+    for (var live : app.state().catalogue.lives.values()) {
+      kept.append(live.phase).append(live.levels);
+    }
+    assertTrue(tree("denied").contains(ConnectionException.WITHHELD), tree("denied"));
+    assertTrue(tree("unopened").contains(ConnectionException.WITHHELD), tree("unopened"));
+    assertTrue(tree("lost").contains(ConnectionException.WITHHELD), tree("lost"));
+    assertTrue(kept.toString().contains("Lost["), kept.toString());
+    assertFalse(kept.toString().contains(PASSWORD), kept.toString());
+    noPassword();
+  }
+
+  /** A refresh closes the connections to the databases it throws away, openings included. */
+  @Test
+  void aRefreshClosesAConnectionStillOpening() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var key = "open " + PG + "/analytics";
+    var opening = servers.hold(key);
+    servers.fail(key, FakeServers.notConnected(Failure.NO_SUCH_DATABASE));
+    run(app, START + open("shop-prod") + SETTLE + open("analytics"));
+    eventually(() -> servers.calls.contains(key));
+    run(app, menu("shop-prod", "Refresh"));
+    eventually(() -> servers.interrupted.contains(key));
+    opening.countDown();
+    servers.heal(key);
+    run(app, SETTLE + open("analytics") + SETTLE + "snap end\n");
+    assertTrue(rows(tree("end")).contains("    tracking"), tree("end"));
+    assertEquals(2, servers.calls.stream().filter(key::equals).count());
+  }
+
+  /** A password from the keyring is wiped also when its delivery is cancelled. */
+  @Test
+  void aPasswordReadForADisconnectedConnectionIsWiped() throws Exception {
+    downloaded();
+    secrets.stored.put(SHOP.id(), PASSWORD);
+    var app = app(SHOP);
+    app.state()
+        .drivers
+        .load(app, Driver.of(Provider.POSTGRESQL), FakeDrivers.VERSION, d -> {}, e -> {});
+    run(app, START + open("shop-prod"));
+    eventually(() -> secrets.given.size() == 1); // the keyring answered; the app has not taken it
+    run(app, menu("shop-prod", "Disconnect") + SETTLE);
+    var given = secrets.given.getFirst();
+    eventually(() -> new String(given).equals("\0".repeat(PASSWORD.length())));
+    assertTrue(servers.passwords.isEmpty(), "nothing connected");
+  }
+
+  /** A connection reported as gone is not used again, not even by the calls asked for behind. */
+  @Test
+  void aConnectionReportedAsGoneIsNotUsedAgain() throws Exception {
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(app, START + open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE);
+    var first = "columns " + PG + "/shop.public.customers";
+    var gate = servers.hold(first);
+    servers.fail(first, FakeServers.notRead(CatalogException.Failure.CONNECTION_LOST));
+    run(app, open("customers") + open("orders"));
+    eventually(() -> servers.calls.contains(first));
+    gate.countDown();
+    run(app, SETTLE + "snap end\n");
+    assertEquals(List.of("shop-prod", "  Disconnected"), rows(tree("end")));
+    assertFalse(servers.calls.contains("columns " + PG + "/shop.public.orders"), "used again");
+    eventually(() -> servers.closed.contains(PG + "/shop"));
+  }
+}

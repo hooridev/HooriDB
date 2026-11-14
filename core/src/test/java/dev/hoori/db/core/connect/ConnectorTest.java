@@ -22,6 +22,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -87,10 +88,11 @@ class ConnectorTest {
         assertFailure(
             Failure.TIMED_OUT,
             () -> Connector.open(
-                profile,
-                TestServer.password(),
-                TestServer.driver(provider),
-                Duration.ofSeconds(1)));
+                    profile,
+                    TestServer.password(),
+                    TestServer.driver(provider),
+                    Duration.ofSeconds(1))
+                .connection());
         var elapsed = Duration.ofNanos(System.nanoTime() - start);
         assertTrue(elapsed.compareTo(Duration.ofMillis(900)) > 0, elapsed::toString);
         assertTrue(elapsed.compareTo(Duration.ofMillis(2500)) < 0, elapsed::toString);
@@ -156,7 +158,7 @@ class ConnectorTest {
       var e = assertThrows(
           ConnectionException.class,
           () -> Connector.await(
-              CompletableFuture.completedFuture(connection),
+              CompletableFuture.completedFuture(new Opened(connection, null, null)),
               Thread.ofVirtual().unstarted(() -> {}),
               Duration.ofSeconds(1),
               thrown -> {
@@ -227,6 +229,38 @@ class ConnectorTest {
     }
   }
 
+  /**
+   * Opening reads the database the connection is on, which pgjdbc asks the server for with a
+   * query: a server that stops answering after the login fails the opening in time.
+   */
+  @Test
+  void aServerThatStopsAnsweringAfterTheLoginTimesOut() throws Exception {
+    try (var server = new FakePostgres(null, (in, out) -> {
+      FakePostgres.askPassword(out);
+      FakePostgres.readPassword(in);
+      FakePostgres.loggedIn(out);
+      // The driver's own SET after the login is answered; what it asks then goes unanswered.
+      while (in.read() == 'Q') {
+        var query = new String(in.readNBytes(in.readInt() - 4), StandardCharsets.UTF_8);
+        if (!query.startsWith("SET ")) {
+          break;
+        }
+        FakePostgres.done(out, "SET");
+      }
+      in.readAllBytes();
+    })) {
+      long start = System.nanoTime();
+      assertFailure(
+          Failure.TIMED_OUT,
+          () -> Connector.open(
+              postgres(server.port(), Tls.OFF),
+              TestServer.password(),
+              TestServer.driver(Provider.POSTGRESQL),
+              Duration.ofSeconds(2)));
+      assertTrue(Duration.ofNanos(System.nanoTime() - start).compareTo(Duration.ofSeconds(5)) < 0);
+    }
+  }
+
   @Test
   void noTlsIsToldApartFromAMissingPassword() throws Exception {
     // Without a password, a server that refuses TLS is still one that refuses TLS.
@@ -281,10 +315,11 @@ class ConnectorTest {
         assertFailure(
             Failure.CANCELLED,
             () -> Connector.open(
-                profile,
-                TestServer.password(),
-                TestServer.driver(provider),
-                Duration.ofSeconds(5)));
+                    profile,
+                    TestServer.password(),
+                    TestServer.driver(provider),
+                    Duration.ofSeconds(5))
+                .connection());
         assertTrue(Thread.currentThread().isInterrupted());
       } finally {
         Thread.interrupted();

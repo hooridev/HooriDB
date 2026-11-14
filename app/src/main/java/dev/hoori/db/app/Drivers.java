@@ -75,6 +75,16 @@ final class Drivers {
         error -> loading.remove(key).forEach(w -> w.failed().accept(error)));
   }
 
+  /** A version of the driver loaded in this session, or null while there is none. */
+  LoadedDriver loaded(Driver driver) {
+    for (var entry : loaded.entrySet()) {
+      if (entry.getKey().driver().equals(driver)) {
+        return entry.getValue();
+      }
+    }
+    return null;
+  }
+
   /**
    * Closes the drivers loaded so far. The app's end closes them by itself; a test closes them
    * before its folder goes, as Windows deletes no JAR that is open.

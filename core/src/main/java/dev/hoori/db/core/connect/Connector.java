@@ -35,15 +35,22 @@ public final class Connector {
   }
 
   /**
-   * Opens a connection to the profile's server as its user, with the password. The time limit
-   * applies to reaching the server and logging in; the connection has none afterwards.
+   * Opens a connection to the profile's server as its user, with the password, and reads which
+   * server it is and which database it is on. The time limit applies to reaching the server,
+   * logging in and those reads, which the driver may answer with a query; the connection has none
+   * afterwards.
    */
-  public static Connection open(
+  public static Opened open(
       ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout)
       throws ConnectionException {
     return connect(profile, password, driver, timeout, connection -> {
+      var metadata = connection.getMetaData();
+      var opened = new Opened(
+          connection,
+          new Server(metadata.getDatabaseProductName(), metadata.getDatabaseProductVersion()),
+          connection.getCatalog());
       connection.setNetworkTimeout(Runnable::run, 0);
-      return connection;
+      return opened;
     });
   }
 
@@ -155,8 +162,8 @@ public final class Connector {
       throw failure.apply(e.getCause());
     }
     if (Thread.currentThread().isInterrupted()) {
-      if (value instanceof Connection connection) {
-        close(connection);
+      if (value instanceof Opened opened) {
+        close(opened.connection());
       }
       throw cancelled();
     }
@@ -173,8 +180,8 @@ public final class Connector {
   private static void abandon(CompletableFuture<?> result, Thread worker) {
     if (!result.cancel(false)
         && result.state() == Future.State.SUCCESS
-        && result.resultNow() instanceof Connection connection) {
-      close(connection);
+        && result.resultNow() instanceof Opened opened) {
+      close(opened.connection());
     }
     worker.interrupt();
   }

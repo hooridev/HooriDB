@@ -1,5 +1,6 @@
 package dev.hoori.db.core.connection;
 
+import static dev.hoori.db.core.connection.Capability.CONNECTION_PER_DATABASE;
 import static dev.hoori.db.core.connection.Capability.ERROR_POSITION;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN_ANALYZE;
@@ -32,6 +33,7 @@ public enum Provider {
       null,
       Map.of(
           SCHEMAS, always(),
+          CONNECTION_PER_DATABASE, always(),
           TRANSACTIONAL_DDL, always(),
           ERROR_POSITION, always(),
           EXPLAIN, always("EXPLAIN "),

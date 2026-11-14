@@ -35,6 +35,14 @@ public final class CatalogException extends Exception {
     this.detail = detail;
   }
 
+  /**
+   * A failure as a stand-in for a server reports it, such as a made-up server in a test. The
+   * detail must not hold a password.
+   */
+  public static CatalogException of(Failure failure, String detail) {
+    return new CatalogException(failure, detail, null);
+  }
+
   public Failure failure() {
     return failure;
   }
