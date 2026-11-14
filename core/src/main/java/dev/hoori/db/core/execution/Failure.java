@@ -1,9 +1,12 @@
 package dev.hoori.db.core.execution;
 
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.query.Query;
+import dev.hoori.db.core.sql.Statements;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -162,19 +165,20 @@ public record Failure(
   public record Place(int start, int end) {}
 
   /**
-   * Where in the statement, as it was sent, the server says the failure is: the word or quoted
-   * name there, or the last word for the end of the statement. PostgreSQL names the character;
-   * MariaDB and MySQL a line and the text from there on, which is looked for on or after that
-   * line, or the whole line where it is not found; text that begins with a space follows the
-   * token that failed. Empty where the server names no place, or a
-   * place the statement does not have.
+   * Where in the statement, as it was sent, the server says the failure is: the word, string or
+   * quoted name there, or the last one for the end of the statement. PostgreSQL names the
+   * character. MariaDB and MySQL name a line and the statement's text from the failing token on,
+   * cut short: the place is its last occurrence on or after that line outside strings and
+   * comments, or the whole line where there is none; text that begins with a space follows the
+   * token that failed. Empty where the server names no place, or a place the statement does not
+   * have. A range never splits a character beyond the BMP.
    */
   public Optional<Place> place(String sql) {
     if (position > 0) {
       int at = position - 1 < sql.codePointCount(0, sql.length())
           ? sql.offsetByCodePoints(0, position - 1)
           : sql.length();
-      return Optional.of(token(sql, at));
+      return Optional.of(token(sql, at, Statements.pieces(sql, Provider.POSTGRESQL)));
     }
     if (line <= 0) {
       return Optional.empty();
@@ -187,55 +191,87 @@ public record Failure(
       }
       from = end + 1;
     }
+    // MariaDB's rules, which hold MySQL's but for its own kind of executable comment.
+    var pieces = Statements.pieces(sql, Provider.MARIADB);
     if (near.isEmpty()) {
-      return Optional.of(token(sql, sql.length()));
+      return Optional.of(token(sql, sql.length(), pieces));
     }
-    int found = sql.indexOf(near, from);
+    int found = -1;
+    for (int at = sql.indexOf(near, from); at >= 0; at = sql.indexOf(near, at + 1)) {
+      if (!quoted(pieces, at)) {
+        found = at;
+      }
+    }
     if (found > 0 && Character.isWhitespace(near.charAt(0))) {
       // MariaDB's lexer may have read the token it failed on already: the text is after it.
-      int start = found - 1;
-      while (start > 0 && word(sql.charAt(start)) && word(sql.charAt(start - 1))) {
-        start--;
-      }
-      return Optional.of(new Place(start, found));
+      return Optional.of(before(sql, found, pieces));
     }
     if (found >= 0) {
-      return Optional.of(token(sql, found));
+      return Optional.of(token(sql, found, pieces));
     }
     int to = sql.indexOf('\n', from);
     to = to < 0 ? sql.length() : to;
     return to > from ? Optional.of(new Place(from, to)) : Optional.empty();
   }
 
-  // The word, the quoted text or the character at the offset; at the end, the last word.
-  private static Place token(String sql, int at) {
+  // Whether the offset is inside a string or a comment, past its first character.
+  private static boolean quoted(List<Statements.Piece> pieces, int at) {
+    for (var piece : pieces) {
+      if (piece.kind() != Statements.Piece.Kind.CODE
+          && piece.kind() != Statements.Piece.Kind.QUOTED
+          && piece.start() < at
+          && at < piece.end()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // The word, the string or quoted name, or the character at the offset; at the end, the last.
+  private static Place token(String sql, int at, List<Statements.Piece> pieces) {
     int n = sql.length();
     if (at >= n) {
       int end = n;
       while (end > 0 && Character.isWhitespace(sql.charAt(end - 1))) {
         end--;
       }
-      int start = end;
-      while (start > 0 && word(sql.charAt(start - 1))) {
-        start--;
-      }
-      return start < end ? new Place(start, end) : new Place(Math.max(0, end - 1), end);
+      return end == 0 ? new Place(0, 0) : before(sql, end, pieces);
     }
-    char c = sql.charAt(at);
-    int end = at + 1;
-    if (word(c)) {
-      while (end < n && word(sql.charAt(end))) {
-        end++;
+    for (var piece : pieces) {
+      if (piece.start() == at && piece.kind() != Statements.Piece.Kind.CODE) {
+        // An unclosed one runs to the end of its line.
+        int line = sql.indexOf('\n', at);
+        return new Place(at, piece.open() && line >= 0 ? Math.min(line, piece.end()) : piece.end());
       }
-    } else if (c == '"' || c == '`' || c == '\'') {
-      int close = sql.indexOf(c, at + 1);
-      int line = sql.indexOf('\n', at + 1);
-      end = close >= 0 && (line < 0 || close < line) ? close + 1 : line < 0 ? n : line;
+    }
+    int c = sql.codePointAt(at);
+    int end = at + Character.charCount(c);
+    if (word(c)) {
+      while (end < n && word(sql.codePointAt(end))) {
+        end += Character.charCount(sql.codePointAt(end));
+      }
     }
     return new Place(at, end);
   }
 
-  private static boolean word(char c) {
+  // The word, the string or quoted name, or the character that ends at the offset.
+  private static Place before(String sql, int end, List<Statements.Piece> pieces) {
+    for (var piece : pieces) {
+      if (piece.end() == end && piece.kind() != Statements.Piece.Kind.CODE) {
+        return new Place(piece.start(), end);
+      }
+    }
+    int c = sql.codePointBefore(end);
+    int start = end - Character.charCount(c);
+    if (word(c)) {
+      while (start > 0 && word(sql.codePointBefore(start))) {
+        start -= Character.charCount(sql.codePointBefore(start));
+      }
+    }
+    return new Place(start, end);
+  }
+
+  private static boolean word(int c) {
     return Character.isLetterOrDigit(c) || c == '_' || c == '$';
   }
 

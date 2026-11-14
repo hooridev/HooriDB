@@ -54,6 +54,15 @@ class KeywordsTest {
     assertEquals("Window", Names.quoted("Window", MARIADB));
     assertEquals("\"window\"", Names.quoted("window", POSTGRESQL));
     assertEquals("`offset`", Names.quoted("offset", MARIADB));
+    // Reserved in MySQL 8.4 and 9, not on MariaDB; and the other way round.
+    assertEquals("`qualify`", Names.quoted("qualify", MYSQL));
+    assertEquals("`tablesample`", Names.quoted("tablesample", MYSQL));
+    assertEquals("qualify", Names.quoted("qualify", MARIADB));
+    assertEquals("`portion`", Names.quoted("portion", MARIADB));
+    assertEquals("portion", Names.quoted("portion", MYSQL));
+    // Reserved in MySQL 8.0 only, and from 9.7 on.
+    assertEquals("`master_bind`", Names.quoted("master_bind", MYSQL));
+    assertEquals("`library`", Names.quoted("library", MYSQL));
     assertEquals("offset", Names.quoted("offset", MYSQL));
   }
 }

@@ -34,6 +34,32 @@ public final class Statements {
   private final List<Integer> afters = new ArrayList<>();
   private String delimiter = ";";
   private int i;
+  // What the last token() skipped, and whether a caret right after it is still inside it.
+  private Piece.Kind kind;
+  private boolean open;
+
+  /**
+   * A piece of a text of SQL as the server reads it: a comment, a string, a quoted name, or one
+   * character of code; whitespace between them is none.
+   *
+   * @param open whether a caret right at its end is still inside it: a comment to the end of the
+   *     line, and a string, quoted name or comment that the text ends in before it is closed
+   */
+  public record Piece(Kind kind, int start, int end, boolean open) {
+
+    /** What a piece is. */
+    public enum Kind {
+      COMMENT,
+      STRING,
+      QUOTED,
+      CODE
+    }
+
+    /** Whether a caret at the offset is inside it, other than at its start. */
+    public boolean holds(int caret) {
+      return start < caret && (caret < end || caret == end && open);
+    }
+  }
 
   private Statements(String text, Provider provider) {
     this.text = text;
@@ -123,6 +149,58 @@ public final class Statements {
     return "";
   }
 
+  /**
+   * The pieces of the text, in order, by the same rules as the statements are split by; a
+   * {@code DELIMITER} line is not told apart, so this is for the text of one statement.
+   */
+  public static List<Piece> pieces(String text, Provider provider) {
+    var scan = new Statements(text, provider);
+    var pieces = new ArrayList<Piece>();
+    int n = text.length();
+    while (scan.i < n) {
+      if (whitespace(text.charAt(scan.i))) {
+        scan.i++;
+        continue;
+      }
+      int from = scan.i;
+      scan.kind = Piece.Kind.CODE;
+      scan.open = false;
+      scan.token();
+      pieces.add(new Piece(scan.kind, from, scan.i, scan.open));
+    }
+    return pieces;
+  }
+
+  /**
+   * The part of the text that a caret at the offset writes in: from after the terminator of the
+   * statement before up to after the terminator of its own, or to the end of the text where its
+   * statement has none or there is no statement after the last terminator. It holds the comments
+   * around the statement, and is empty of statements after the last terminator.
+   */
+  public Statement around(int caret) {
+    int at = Math.clamp(caret, 0, text.length());
+    int size = statements.size();
+    // The first statement whose terminator ends after the caret.
+    int low = 0;
+    int high = size;
+    while (low < high) {
+      int middle = (low + high) >>> 1;
+      if (afters.get(middle) > at) {
+        high = middle;
+      } else {
+        low = middle + 1;
+      }
+    }
+    boolean unterminated =
+        size > 0 && afters.get(size - 1) == statements.get(size - 1).end();
+    if (low == size && unterminated) {
+      low = size - 1; // the last statement goes on to the end of the text
+    }
+    int start = low == 0 ? 0 : afters.get(low - 1);
+    int end = low >= size || low == size - 1 && unterminated ? text.length() : afters.get(low);
+    return new Statement(start, end);
+  }
+
   private static Statements scan(String text, Provider provider) {
     var scan = new Statements(text, provider);
     scan.run();
@@ -189,6 +267,7 @@ public final class Statements {
       return false;
     }
     if (c == '/' && next == '*') {
+      kind = Piece.Kind.COMMENT;
       if (postgres) {
         skipNestedComment();
         return false;
@@ -198,16 +277,20 @@ public final class Statements {
       boolean code =
           third == '!' || (third == 'M' && charAt(i + 3) == '!' && provider == Provider.MARIADB);
       int close = text.indexOf("*/", i + 2);
+      open = close < 0;
       i = close < 0 ? text.length() : close + 2;
       return code;
     }
     if (postgres) {
       if (c == '\'') {
+        kind = Piece.Kind.STRING;
         skipQuoted('\'', false);
       } else if ((c == 'E' || c == 'e') && next == '\'' && !identifierBefore()) {
+        kind = Piece.Kind.STRING;
         i++;
         skipQuoted('\'', true);
       } else if (c == '"') {
+        kind = Piece.Kind.QUOTED;
         skipQuoted('"', false);
       } else if (c != '$' || identifierBefore() || !skipDollarQuoted()) {
         i++;
@@ -216,8 +299,10 @@ public final class Statements {
       skipLine();
       return false;
     } else if (c == '\'' || c == '"') {
+      kind = Piece.Kind.STRING;
       skipQuoted(c, true);
     } else if (c == '`') {
+      kind = Piece.Kind.QUOTED;
       skipQuoted('`', false);
     } else {
       i++;
@@ -226,6 +311,8 @@ public final class Statements {
   }
 
   private void skipLine() {
+    kind = Piece.Kind.COMMENT;
+    open = true;
     while (i < text.length() && text.charAt(i) != '\n' && text.charAt(i) != '\r') {
       i++;
     }
@@ -248,6 +335,7 @@ public final class Statements {
         i++;
       }
     }
+    open = true;
   }
 
   private void skipQuoted(char quote, boolean backslash) {
@@ -264,6 +352,7 @@ public final class Statements {
         i++;
       }
     }
+    open = true;
     i = n;
   }
 
@@ -280,6 +369,7 @@ public final class Statements {
     if (j >= n || text.charAt(j) != '$') {
       return false;
     }
+    kind = Piece.Kind.STRING;
     int length = j - i + 1;
     // Each failed comparison stops at a character that is no "$", so the scan stays linear.
     for (int k = text.indexOf('$', j + 1); k >= 0; k = text.indexOf('$', k + 1)) {
@@ -288,6 +378,7 @@ public final class Statements {
         return true;
       }
     }
+    open = true;
     i = n;
     return true;
   }

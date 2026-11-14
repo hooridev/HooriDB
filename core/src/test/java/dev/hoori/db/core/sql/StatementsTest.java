@@ -442,4 +442,22 @@ class StatementsTest {
       }
     }
   }
+
+  @Test
+  void aroundTheCaretIsTheStatementWithTheCommentsBeforeItUpToItsTerminator() {
+    var text = "SELECT 1;\n-- two\nSELECT 2;\n-- after";
+    var split = Statements.of(text, Provider.POSTGRESQL);
+    int second = text.indexOf("-- two");
+    assertEquals(new Statement(0, 9), split.around(0));
+    assertEquals(new Statement(9, text.indexOf("2;") + 2), split.around(second + 3));
+    // Right after a terminator, the next part; after the last, the rest.
+    assertEquals(new Statement(9, text.indexOf("2;") + 2), split.around(9));
+    assertEquals(new Statement(text.indexOf("2;") + 2, text.length()), split.around(text.length()));
+    // A statement without a terminator goes on to the end, spaces too.
+    var open = "SELECT 1; SELECT * FROM t WHERE ";
+    assertEquals(
+        new Statement(9, open.length()),
+        Statements.of(open, Provider.POSTGRESQL).around(open.length()));
+    assertEquals(new Statement(0, 0), Statements.of("", Provider.MYSQL).around(0));
+  }
 }

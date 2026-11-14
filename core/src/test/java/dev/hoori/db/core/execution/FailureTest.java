@@ -54,4 +54,35 @@ class FailureTest {
   void withoutAPlaceThereIsNone() {
     assertEquals(Optional.empty(), at(0).place("SELECT nothere"));
   }
+
+  @Test
+  void theNearTextIsItsLastOccurrenceOutsideStringsAndComments() {
+    var sql = "SELECT 'WHERE id = 1', id FROM reading WHERE WHERE id = 1";
+    int second = sql.lastIndexOf("WHERE");
+    assertEquals(place(second, second + 5), near(1, "WHERE id = 1").place(sql));
+    // Cut short, and once in a comment.
+    var cut = "SELECT a -- WHERE b = 1 AND c\nFROM t WHERE WHERE b = 1 AND c = 2";
+    int last = cut.lastIndexOf("WHERE");
+    assertEquals(place(last, last + 5), near(1, "WHERE b = 1 AND").place(cut));
+    // After the token: not the quote of a string that holds the same text.
+    var after = "SELECT ' 2)' AS a FROM t WHERE id IN (1,, 2)";
+    int comma = after.indexOf(",, 2") + 1;
+    assertEquals(place(comma, comma + 1), near(1, " 2)").place(after));
+  }
+
+  @Test
+  void aRangeTakesAQuotedNameWholeAndNeverHalfACharacter() {
+    var escaped = "SELECT \"a\"\"b\" FROM t";
+    assertEquals(place(7, 13), at(8).place(escaped));
+    var backtick = "SELECT `a``b` FROM t";
+    assertEquals(place(7, 13), near(1, "`a``b` FROM t").place(backtick));
+    // 𝒜 is one character, and two chars.
+    var astral = "SELECT 𝒜bc FROM t";
+    assertEquals(place(7, 11), at(8).place(astral));
+    assertEquals(place(12, 16), at(12).place(astral)); // FROM, the 12th character
+    assertEquals(place(7, 9), at(8).place("SELECT 😀+ FROM t"));
+    var end = "SELECT 1 + 𝒜";
+    assertEquals(place(11, 13), at(99).place(end));
+    assertEquals(place(11, 13), near(1, "").place(end));
+  }
 }
