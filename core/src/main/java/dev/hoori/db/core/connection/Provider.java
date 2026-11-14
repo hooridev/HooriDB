@@ -150,6 +150,10 @@ public enum Provider {
     }
     var url = "jdbc:" + scheme + "://" + host + ":" + profile.port() + "/";
     var properties = new HashMap<>(tls.get(profile.tls()));
+    if (this == MYSQL) {
+      // Else Connector/J applies JDBC escapes to a prepared statement, also inside a quoted name.
+      properties.put("processEscapeCodesForPrepStmts", "false");
+    }
     var database = profile.database();
     if (databaseProperty == null) {
       url += encode(database);

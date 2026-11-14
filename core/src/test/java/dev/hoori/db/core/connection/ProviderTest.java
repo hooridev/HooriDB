@@ -76,15 +76,29 @@ class ProviderTest {
   void mysql() throws Exception {
     assertParameters(
         "jdbc:mysql://db.example:3306/",
-        Map.of("sslMode", "DISABLED", "allowPublicKeyRetrieval", "true", "dbname", "shop"),
+        Map.of(
+            "sslMode",
+            "DISABLED",
+            "allowPublicKeyRetrieval",
+            "true",
+            "dbname",
+            "shop",
+            "processEscapeCodesForPrepStmts",
+            "false"),
         parameters(MYSQL, "db.example", "shop", Tls.OFF));
     assertParameters(
         "jdbc:mysql://db.example:3306/",
-        Map.of("sslMode", "REQUIRED", "dbname", "shop"),
+        Map.of("sslMode", "REQUIRED", "dbname", "shop", "processEscapeCodesForPrepStmts", "false"),
         parameters(MYSQL, "db.example", "shop", Tls.ENCRYPTED));
     assertParameters(
         "jdbc:mysql://db.example:3306/",
-        Map.of("sslMode", "VERIFY_IDENTITY", "dbname", "shop"),
+        Map.of(
+            "sslMode",
+            "VERIFY_IDENTITY",
+            "dbname",
+            "shop",
+            "processEscapeCodesForPrepStmts",
+            "false"),
         parameters(MYSQL, "db.example", "shop", Tls.VERIFIED));
   }
 
@@ -126,7 +140,13 @@ class ProviderTest {
         parameters(MARIADB, "h", "", Tls.OFF));
     assertParameters(
         "jdbc:mysql://h:3306/",
-        Map.of("sslMode", "DISABLED", "allowPublicKeyRetrieval", "true"),
+        Map.of(
+            "sslMode",
+            "DISABLED",
+            "allowPublicKeyRetrieval",
+            "true",
+            "processEscapeCodesForPrepStmts",
+            "false"),
         parameters(MYSQL, "h", "", Tls.OFF));
   }
 

@@ -604,20 +604,222 @@ class RowsServerTest {
     }
   }
 
-  private static Container sample(Provider provider) {
+  @Test
+  void anEnumNamedAfterABuiltInTypeIsText() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TYPE public.int8 AS ENUM ('x', 'not a number')",
+          "CREATE TABLE named (id integer PRIMARY KEY, n public.int8)",
+          "INSERT INTO named VALUES (1, 'not a number')");
+      try {
+        var table = table(provider, "named", Table.Kind.TABLE);
+        var page =
+            Rows.read(connection, provider, table, columns(connection, provider, table), 0, 1);
+        assertEquals(Kind.TEXT, page.fields().get(1).kind());
+        assertEquals(List.of(1L, "not a number"), page.rows().getFirst());
+      } finally {
+        execute(connection, "DROP TABLE named", "DROP TYPE public.int8");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aValueThatIsNoneOfItsKindIsItsTextAndFailsNothing(Provider provider) throws Exception {
+    try (var connection = open(provider)) {
+      execute(connection, "CREATE TABLE changed (id integer PRIMARY KEY, n integer)");
+      try {
+        var table = table(provider, "changed", Table.Kind.TABLE);
+        // The catalogue was read before the column changed its type.
+        var columns = columns(connection, provider, table);
+        execute(
+            connection,
+            "ALTER TABLE changed MODIFY n varchar(20)",
+            "INSERT INTO changed VALUES (1, 'secret 42')");
+        assertEquals(
+            List.of(List.of(1L, "secret 42")),
+            Rows.read(connection, provider, table, columns, 0, 1).rows());
+      } finally {
+        execute(connection, "DROP TABLE changed");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void spatialValuesAreBinaryAndCut(Provider provider) throws Exception {
+    var points =
+        IntStream.range(0, 1000).mapToObj(i -> i + " " + i).collect(Collectors.joining(", "));
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE shapes (id integer PRIMARY KEY, g geometry)",
+          "INSERT INTO shapes VALUES (1, ST_GeomFromText('POINT(1 2)')),"
+              + " (2, ST_GeomFromText('LINESTRING(" + points + ")'))");
+      try {
+        var table = table(provider, "shapes", Table.Kind.TABLE);
+        var page =
+            Rows.read(connection, provider, table, columns(connection, provider, table), 0, 2);
+        assertEquals(Kind.BINARY, page.fields().get(1).kind());
+        var point = assertInstanceOf(Binary.class, page.rows().get(0).get(1));
+        // An SRID, then the WKB: byte order, type 1, and two doubles.
+        assertEquals(25, point.length());
+        assertEquals(
+            "00000000" + "01" + "01000000" + "000000000000f03f" + "0000000000000040",
+            HexFormat.of().formatHex(point.bytes()));
+        var line = assertInstanceOf(Binary.class, page.rows().get(1).get(1));
+        assertTrue(line.cut());
+        assertEquals(Rows.LIMIT, line.bytes().length);
+        assertEquals(4 + 9 + 16_000, line.length());
+      } finally {
+        execute(connection, "DROP TABLE shapes");
+      }
+    }
+  }
+
+  @Test
+  void aLongCharIsCutWithItsPadding() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE padded (id integer PRIMARY KEY, c char(5000))",
+          "INSERT INTO padded VALUES (1, 'ab'), (2, NULL)");
+      try {
+        var table = table(provider, "padded", Table.Kind.TABLE);
+        var rows = Rows.read(
+                connection, provider, table, columns(connection, provider, table), 0, 2)
+            .rows();
+        assertEquals(
+            new Cut("ab" + " ".repeat(Rows.LIMIT - 2), 5000), rows.get(0).get(1));
+        assertNull(rows.get(1).get(1));
+      } finally {
+        execute(connection, "DROP TABLE padded");
+      }
+    }
+  }
+
+  @Test
+  void aForeignTableIsReadInTheOrderOfItsValues() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE EXTENSION IF NOT EXISTS file_fdw",
+          "COPY (SELECT n, 'row ' || n FROM generate_series(1, 50) n ORDER BY random())"
+              + " TO '/tmp/rows.csv' (FORMAT csv)",
+          "CREATE SERVER files FOREIGN DATA WRAPPER file_fdw",
+          "CREATE FOREIGN TABLE file_rows (n integer, t text) SERVER files"
+              + " OPTIONS (filename '/tmp/rows.csv', format 'csv')");
+      try {
+        var table = table(provider, "file_rows", Table.Kind.FOREIGN);
+        assertTrue(Catalog.tables(connection, provider, sample(provider)).contains(table));
+        var columns = columns(connection, provider, table);
+        var paged = new ArrayList<List<Object>>();
+        for (var from = 0; from < 50; from += 7) {
+          paged.addAll(
+              Rows.read(connection, provider, table, columns, from, from + 7).rows());
+        }
+        assertEquals(
+            IntStream.rangeClosed(1, 50)
+                .mapToObj(n -> List.<Object>of((long) n, "row " + n))
+                .toList(),
+            paged);
+      } finally {
+        execute(connection, "DROP SERVER files CASCADE", "DROP EXTENSION file_fdw");
+      }
+    }
+  }
+
+  @Test
+  void childrenThatRepeatTheKeysOfTheirParentAreEachReadOnce() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      // Enough rows of each key that how a sort of a page breaks ties shows.
+      execute(
+          connection,
+          "CREATE TABLE parent (id integer PRIMARY KEY, v text)",
+          "CREATE TABLE child () INHERITS (parent)",
+          "INSERT INTO parent SELECT n, 'p' || n FROM generate_series(1, 100) n",
+          "INSERT INTO child SELECT n % 100 + 1, 'c' || n FROM generate_series(1, 300) n");
+      try {
+        var table = table(provider, "parent", Table.Kind.TABLE);
+        var columns = columns(connection, provider, table);
+        var whole = Rows.read(connection, provider, table, columns, 0, 400).rows();
+        var paged = new ArrayList<List<Object>>();
+        for (var from = 0; from < 400; from += 13) {
+          paged.addAll(
+              Rows.read(connection, provider, table, columns, from, from + 13).rows());
+        }
+        assertEquals(400, whole.stream().map(row -> row.get(1)).distinct().count());
+        assertEquals(whole, paged);
+      } finally {
+        execute(connection, "DROP TABLE parent CASCADE");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void textsThatACollationTakesForEqualKeepTheirPlaces(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      // On PostgreSQL in a view, as a table without a key is read by the places of its rows.
+      execute(
+          connection,
+          pg
+              ? "CREATE COLLATION folded (provider = icu, locale = 'und-u-ks-level2',"
+                  + " deterministic = false)"
+              : "SELECT 1",
+          pg
+              ? "CREATE TABLE folding (t text COLLATE folded, n integer)"
+              : "CREATE TABLE folding (t varchar(10) COLLATE utf8mb4_general_ci, n integer)"
+                  + " DEFAULT CHARSET utf8mb4",
+          "INSERT INTO folding VALUES ('a', 1), ('A', 1), ('b', 1), ('a', 1), ('A', 1), ('B', 1)",
+          "CREATE VIEW folding_view AS SELECT t, n FROM folding");
+      try {
+        for (var table : List.of(
+            table(provider, "folding", Table.Kind.TABLE),
+            table(provider, "folding_view", Table.Kind.VIEW))) {
+          var columns = columns(connection, provider, table);
+          var whole = Rows.read(connection, provider, table, columns, 0, 6).rows();
+          var paged = new ArrayList<List<Object>>();
+          for (var from = 0; from < 6; from++) {
+            paged.addAll(
+                Rows.read(connection, provider, table, columns, from, from + 1).rows());
+          }
+          assertEquals(6, whole.size());
+          assertEquals(whole, paged, table.name());
+        }
+      } finally {
+        execute(connection, "DROP VIEW folding_view", "DROP TABLE folding");
+        if (pg) {
+          execute(connection, "DROP COLLATION folded");
+        }
+      }
+    }
+  }
+
+  static Container sample(Provider provider) {
     return provider == Provider.POSTGRESQL ? new Schema(HOORI, "public", false) : HOORI;
   }
 
-  private static Table table(Provider provider, String name, Table.Kind kind) {
+  static Table table(Provider provider, String name, Table.Kind kind) {
     return new Table(sample(provider), name, kind);
   }
 
-  private static List<Column> columns(Connection connection, Provider provider, Table table)
+  static List<Column> columns(Connection connection, Provider provider, Table table)
       throws Exception {
     return Catalog.columns(connection, provider, table);
   }
 
-  private static String qualified(Provider provider, String name) {
+  static String qualified(Provider provider, String name) {
     return provider.quote(sample(provider).name()) + "." + provider.quote(name);
   }
 
@@ -625,7 +827,7 @@ class RowsServerTest {
     return IntStream.range(from, to).mapToObj(i -> (long) i).toList();
   }
 
-  private static List<Object> ids(Page page) {
+  static List<Object> ids(Page page) {
     return page.rows().stream().map(row -> row.getFirst()).toList();
   }
 
@@ -652,13 +854,15 @@ class RowsServerTest {
         + " FROM digit a, digit b, digit c, digit e, digit f) numbers WHERE n <= " + to;
   }
 
-  private static Connection open(Provider provider) throws Exception {
+  static Connection open(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     return Connector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
   }
 
-  private static void execute(Connection connection, String... statements) throws SQLException {
+  static void execute(Connection connection, String... statements) throws SQLException {
     try (var statement = connection.createStatement()) {
+      // As it is, also a name that holds a JDBC escape.
+      statement.setEscapeProcessing(false);
       for (var sql : statements) {
         statement.execute(sql);
       }
