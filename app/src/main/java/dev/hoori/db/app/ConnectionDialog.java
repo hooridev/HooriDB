@@ -27,6 +27,7 @@ import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
@@ -56,6 +57,8 @@ final class ConnectionDialog {
       Part.of(ConnectionProfile::user, ConnectionProfile::withUser);
   static final Part<ConnectionProfile, Tls> TLS =
       Part.of(ConnectionProfile::tls, ConnectionProfile::withTls);
+  static final Part<ConnectionProfile, Colour> COLOUR =
+      Part.of(ConnectionProfile::colour, ConnectionProfile::withColour);
 
   final boolean isNew;
   final Editing<ConnectionProfile> editing;
@@ -379,6 +382,10 @@ final class ConnectionDialog {
             textField(t, locked(e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
                 .key("name")
                 .wFull()),
+        field(
+            "Colour",
+            Colours.choice(t, p.colour(), open ? v -> e.at(COLOUR).set(v) : null)
+                .key("colour")),
         field(
                 "Type",
                 Segmented.segmented(

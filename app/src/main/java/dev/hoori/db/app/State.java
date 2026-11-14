@@ -9,6 +9,7 @@ import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
@@ -198,7 +199,11 @@ final class State {
     }
     profiles = List.copyOf(list);
     selected = new Node.Connection(profile.id());
-    catalogue.drop(this, profile.id()); // what failed before the change is out of date
+    // A colour alone leaves a connection connected; its tabs take it.
+    boolean colour = old != null && old.withColour(profile.colour()).equals(profile);
+    if (!colour || !catalogue.active(profile.id())) {
+      catalogue.drop(this, profile.id()); // what failed before the change is out of date
+    }
     persist();
   }
 
@@ -477,6 +482,12 @@ final class State {
             600,
             options.frameless().minimumSize(480, 320).icon(HooriDb.ICON),
             window);
+  }
+
+  /** The colour of the connection, null for none or for a connection that is gone. */
+  Colour colour(UUID id) {
+    var profile = profile(id);
+    return profile == null ? null : profile.colour();
   }
 
   ConnectionProfile profile(UUID id) {

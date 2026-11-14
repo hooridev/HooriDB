@@ -1050,14 +1050,15 @@ final class Catalogue {
         case Lost l -> Icon.icon(t, Symbol.SERVER, Icon.Variant.DANGER);
         case null, default -> Icon.icon(t, Symbol.SERVER, Icon.Variant.MUTED);
       };
-      if (phase == null || phase instanceof Connected || ended(phase)) {
-        return icon;
-      }
-      return row()
+      El mark = row()
           .gap(t.space().s())
           .align(Style.Align.CENTER)
-          .child(icon)
-          .child(Progress.spinner(t).label("Connecting"));
+          .child(Colours.mark(t, s.colour(n.id())))
+          .child(icon);
+      if (phase == null || phase instanceof Connected || ended(phase)) {
+        return mark;
+      }
+      return mark.child(Progress.spinner(t).label("Connecting"));
     }
   }
 
@@ -1081,6 +1082,7 @@ final class Catalogue {
             copy,
             Menu.separator(),
             Menu.item("Edit…", () -> change(s, p, Then.EDIT)).icon(Symbol.EDIT),
+            Menu.submenu("Colour", colours(s, p)),
             Menu.item("Duplicate", () -> s.duplicate(p)).icon(Symbol.COPY),
             Menu.separator(),
             Menu.item("Delete…", () -> change(s, p, Then.DELETE)).icon(Symbol.DELETE));
@@ -1094,6 +1096,14 @@ final class Catalogue {
             copy);
       default -> List.of(refresh, copy);
     };
+  }
+
+  // Also while connected: a colour changes neither the connection nor its tabs.
+  private static List<Menu.Item> colours(State s, ConnectionProfile p) {
+    return Colours.CHOICES.stream()
+        .map(
+            c -> Menu.item(Colours.label(c), () -> s.put(p.withColour(c))).checked(c == p.colour()))
+        .toList();
   }
 
   /** The dialog that asks something for the catalogue, or null: one at a time. */

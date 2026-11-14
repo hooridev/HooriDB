@@ -92,7 +92,8 @@ final class Frame {
         tab -> switch (tab) {
           case TableTab x ->
             new Tabs.Tab(s.title(x))
-                .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE);
+                .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE)
+                .hue(Colours.hue(s.colour(x.id)));
         },
         tab -> switch (tab) {
           case null ->

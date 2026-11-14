@@ -531,7 +531,9 @@ final class TableTab implements Tab {
                 opening != null,
                 connected ? () -> open(s, true) : null)
             .key("refresh"));
-    El content = col().grow(1).minSize(0, 0).child(top).child(Divider.divider(t));
+    El line = Colours.line(t, s.colour(id));
+    El content =
+        col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider(t) : line);
     El note = note(t, s, connected);
     if (note != null) {
       content.child(col().padding(t.space().m()).shrink(0).child(note));
