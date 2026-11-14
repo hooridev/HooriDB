@@ -436,6 +436,62 @@ class CatalogServerTest {
     }
   }
 
+  @Test
+  void onlyTheKeyOfAPrimaryKeyCountsNotWhatItIncludes() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(TestServer.of(provider), TestServer.DATABASE)) {
+      execute(
+          connection, "CREATE TABLE included (id integer, j jsonb, PRIMARY KEY (id) INCLUDE (j))");
+      try {
+        var table = new Table(sample(provider), "included", Kind.TABLE);
+        assertEquals(
+            List.of(1, 0),
+            Catalog.columns(connection, provider, table).stream()
+                .map(Column::keyPosition)
+                .toList());
+      } finally {
+        execute(connection, "DROP TABLE included");
+      }
+    }
+  }
+
+  @Test
+  void aDomainThatIsNotNullMakesItsColumnsNotNull() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(TestServer.of(provider), TestServer.DATABASE)) {
+      execute(
+          connection,
+          "CREATE DOMAIN required AS integer NOT NULL",
+          "CREATE DOMAIN over_required AS required CHECK (VALUE > 0)",
+          "CREATE DOMAIN optional AS integer",
+          "CREATE TABLE domained (a required, b over_required, c optional, d integer)",
+          "CREATE VIEW domained_view AS SELECT * FROM domained");
+      try {
+        var table = new Table(sample(provider), "domained", Kind.TABLE);
+        assertEquals(
+            List.of(false, false, true, true),
+            Catalog.columns(connection, provider, table).stream()
+                .map(Column::nullable)
+                .toList());
+        // A view's column can be NULL whatever its domain, as of an outer join.
+        var view = new Table(sample(provider), "domained_view", Kind.VIEW);
+        assertEquals(
+            List.of(true, true, true, true),
+            Catalog.columns(connection, provider, view).stream()
+                .map(Column::nullable)
+                .toList());
+      } finally {
+        execute(
+            connection,
+            "DROP VIEW domained_view",
+            "DROP TABLE domained",
+            "DROP DOMAIN over_required",
+            "DROP DOMAIN required",
+            "DROP DOMAIN optional");
+      }
+    }
+  }
+
   private static Container sample(Provider provider) {
     return provider == Provider.POSTGRESQL ? new Schema(HOORI, "public", false) : HOORI;
   }

@@ -30,9 +30,10 @@ import java.util.function.Predicate;
  *
  * <p>An interrupt of the calling thread ends a call with {@link Failure#CANCELLED}, and leaves the
  * thread interrupted. The query is cancelled on the server and the connection stays usable; only
- * if the driver cannot stop it within {@link #GRACE}, as when the server no longer answers, is the
- * connection aborted, and closed from then on. On PostgreSQL with auto-commit off, a cancelled
- * query fails the transaction, which the caller then rolls back.
+ * if the driver cannot stop it within {@link #GRACE}, as when the server no longer answers, or a
+ * cancel may still be on its way, is the connection closed, with {@link Failure#ABORTED}, as
+ * {@link Query} says. On PostgreSQL with auto-commit off, a cancelled query fails the transaction,
+ * which the caller then rolls back.
  */
 public final class Catalog {
 
@@ -42,9 +43,23 @@ public final class Catalog {
   private static final Set<String> MYSQL_SYSTEM =
       Set.of("information_schema", "mysql", "performance_schema", "sys");
 
+  // PostgreSQL's operators, functions and types are named with their schema, so that what a user
+  // has created under the same names, with a better match or earlier in the search path, is
+  // never what runs.
+  private static final String EQ = " OPERATOR(pg_catalog.=) ";
+
   // Tables, partitioned and foreign tables, views and materialized views; not indexes, sequences,
   // composite types or TOAST tables.
-  private static final String PG_KINDS = "('r', 'p', 'f', 'v', 'm')";
+  private static final String PG_KINDS = EQ + "ANY ('{r,p,f,v,m}'::pg_catalog.\"char\"[])";
+
+  // Whether a domain in the chain of the column's type, a domain over a domain included, says NOT
+  // NULL; only of a table, as a view's outer join can give a domain's column NULL all the same.
+  private static final String DOMAIN_NOT_NULL = "WITH RECURSIVE d (base, required) AS ("
+      + "SELECT t.typbasetype, t.typnotnull FROM pg_catalog.pg_type t"
+      + " WHERE t.oid" + EQ + "a.atttypid"
+      + " UNION ALL SELECT t.typbasetype, t.typnotnull FROM pg_catalog.pg_type t"
+      + " JOIN d ON t.oid" + EQ + "d.base)"
+      + " SELECT FROM d WHERE d.required";
 
   private Catalog() {}
 
@@ -113,15 +128,21 @@ public final class Catalog {
     }
     requireConnectedTo(connection, provider, container.database());
     Row<Table> table = rows -> new Table(
-        container, rows.getString(1), rows.getBoolean(2) ? Table.Kind.VIEW : Table.Kind.TABLE);
+        container,
+        rows.getString(1),
+        switch (rows.getString(2)) {
+          case "v", "m" -> Table.Kind.VIEW;
+          case "f" -> Table.Kind.FOREIGN;
+          default -> Table.Kind.TABLE;
+        });
     var tables = switch (provider) {
       case POSTGRESQL ->
         query(
             connection,
             provider,
-            "SELECT c.relname, c.relkind IN ('v', 'm') FROM pg_catalog.pg_class c"
-                + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
-                + " WHERE n.nspname = ? AND c.relkind IN " + PG_KINDS + " ORDER BY c.relname",
+            "SELECT c.relname, c.relkind FROM pg_catalog.pg_class c"
+                + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+                + " WHERE n.nspname" + EQ + "? AND c.relkind" + PG_KINDS + " ORDER BY c.relname",
             table,
             container.name());
       // MariaDB's sequences are tables to the server; they come later, with PostgreSQL's.
@@ -129,7 +150,7 @@ public final class Catalog {
         query(
             connection,
             provider,
-            "SELECT TABLE_NAME, TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW')"
+            "SELECT TABLE_NAME, CASE WHEN TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') THEN 'v' ELSE 'r' END"
                 + " FROM information_schema.TABLES"
                 + " WHERE TABLE_SCHEMA = ? AND TABLE_TYPE <> 'SEQUENCE' ORDER BY TABLE_NAME",
             table,
@@ -137,7 +158,7 @@ public final class Catalog {
     };
     if (tables.isEmpty()) {
       var exists = switch (provider) {
-        case POSTGRESQL -> "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = ?";
+        case POSTGRESQL -> "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname" + EQ + "?";
         case MARIADB, MYSQL -> "SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?";
       };
       requireExists(connection, provider, exists, container.name());
@@ -157,18 +178,27 @@ public final class Catalog {
         query(
             connection,
             provider,
-            "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), NOT a.attnotnull,"
+            "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod),"
+                + " NOT a.attnotnull AND NOT (c.relkind" + EQ
+                + "ANY ('{r,p}'::pg_catalog.\"char\"[])"
+                + " AND EXISTS (" + DOMAIN_NOT_NULL + ")),"
+                // Of the index's attributes only its key, not those it merely includes.
                 + " (SELECT k.n FROM pg_catalog.pg_index i,"
-                + " unnest(i.indkey) WITH ORDINALITY k (attnum, n)"
-                + " WHERE i.indrelid = c.oid AND i.indisprimary AND k.attnum = a.attnum)"
+                + " pg_catalog.unnest(i.indkey) WITH ORDINALITY k (attnum, n)"
+                + " WHERE i.indrelid" + EQ + "c.oid AND i.indisprimary AND k.attnum" + EQ
+                + "a.attnum AND k.n OPERATOR(pg_catalog.<=) i.indnkeyatts)"
                 + " FROM pg_catalog.pg_class c"
-                + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
-                + " JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid"
-                + " WHERE n.nspname = ? AND c.relname = ? AND c.relkind IN " + PG_KINDS
-                + " AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
+                + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+                + " JOIN pg_catalog.pg_attribute a ON a.attrelid" + EQ + "c.oid"
+                + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS
+                + " AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
+                + " ORDER BY a.attnum",
             column,
             schema,
             table.name());
+      // shortcut: a temporary table of the session hides a persistent one of the same name from
+      // information_schema, so the columns are the temporary one's; tell them apart if the browsing
+      // connection ever creates temporary tables.
       case MARIADB, MYSQL ->
         query(
             connection,
@@ -188,8 +218,8 @@ public final class Catalog {
       var exists = switch (provider) {
         case POSTGRESQL ->
           "SELECT 1 FROM pg_catalog.pg_class c"
-              + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
-              + " WHERE n.nspname = ? AND c.relname = ? AND c.relkind IN " + PG_KINDS;
+              + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+              + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS;
         case MARIADB, MYSQL ->
           "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
       };

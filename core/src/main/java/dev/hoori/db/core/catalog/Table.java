@@ -4,8 +4,10 @@ package dev.hoori.db.core.catalog;
 public record Table(Container container, String name, Kind kind) {
 
   public enum Kind {
-    /** A table, also a partitioned or a foreign one. */
+    /** A table, also a partitioned one. */
     TABLE,
+    /** A foreign table of PostgreSQL, whose rows are elsewhere. */
+    FOREIGN,
     /** A view, also a materialized one. */
     VIEW
   }
