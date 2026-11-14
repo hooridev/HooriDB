@@ -166,6 +166,39 @@ public final class Catalog {
     return tables;
   }
 
+  /**
+   * The tables and views of every schema of the database that is not the system's, in one query,
+   * by schema and then by name, each with its schema as its container; where the provider has no
+   * schemas, those of the database, as {@link #tables} reads them. One query instead of one per
+   * schema, for finding a table by name in a database of many schemas. A schema without tables
+   * gives none; the schemas themselves come from {@link #schemas}.
+   */
+  public static List<Table> allTables(Connection connection, Provider provider, Database database)
+      throws CatalogException {
+    if (!hasSchemas(provider)) {
+      return tables(connection, provider, database);
+    }
+    requireConnectedTo(connection, provider, database);
+    return query(
+        connection,
+        provider,
+        "SELECT n.nspname, c.relname, c.relkind FROM pg_catalog.pg_class c"
+            + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+            + " WHERE c.relkind" + PG_KINDS
+            // The system's schemas, as schemas() tells them: pg_ before the name, or this one.
+            + " AND pg_catalog.left(n.nspname, 3) OPERATOR(pg_catalog.<>) 'pg_'"
+            + " AND n.nspname OPERATOR(pg_catalog.<>) 'information_schema'"
+            + " ORDER BY n.nspname, c.relname",
+        rows -> new Table(
+            new Schema(database, rows.getString(1), false),
+            rows.getString(2),
+            switch (rows.getString(3)) {
+              case "v", "m" -> Table.Kind.VIEW;
+              case "f" -> Table.Kind.FOREIGN;
+              default -> Table.Kind.TABLE;
+            }));
+  }
+
   /** The columns of the table or view, in their order, with their places in the primary key. */
   public static List<Column> columns(Connection connection, Provider provider, Table table)
       throws CatalogException {
