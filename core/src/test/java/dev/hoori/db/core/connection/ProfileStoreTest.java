@@ -7,10 +7,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -19,6 +22,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -226,5 +230,54 @@ class ProfileStoreTest {
 
   private Path write(byte[] content) throws IOException {
     return Files.write(folder.resolve(ProfileStore.FILE), content);
+  }
+
+  /** A failure of the file system: not unreadable, its cause kept, in HooriDB's words. */
+  private static IOException failure(Executable call, String says) {
+    var failure = assertThrows(IOException.class, call);
+    assertFalse(failure instanceof ProfileStore.UnreadableException, failure.getMessage());
+    assertTrue(failure.getMessage().contains(says), failure.getMessage());
+    assertTrue(failure.getCause() instanceof IOException, failure.getMessage());
+    return failure;
+  }
+
+  @Test
+  void aFolderInPlaceOfTheFileIsSaidSo(@TempDir Path folder) throws IOException {
+    Files.createDirectories(folder.resolve(ProfileStore.FILE));
+    var store = new ProfileStore(folder);
+    var file = folder.resolve(ProfileStore.FILE);
+    var read = failure(store::load, "it is a folder, not a file");
+    assertEquals(
+        "Cannot read the connections in " + file + ": it is a folder, not a file.",
+        read.getMessage());
+    failure(() -> store.save(PROFILES), "Cannot save the connections in " + file);
+  }
+
+  @Test
+  void aFileInPlaceOfTheFolderIsSaidSo(@TempDir Path folder) throws IOException {
+    var blocking = Files.writeString(folder.resolve("blocking"), "");
+    var store = new ProfileStore(blocking.resolve("hooridb"));
+    assertEquals(List.of(), store.load(), "there is no file below a file");
+    failure(() -> store.save(PROFILES), blocking + " is a file, not a folder");
+  }
+
+  @Test
+  void deniedAccessIsSaidSo(@TempDir Path folder) throws IOException {
+    assumeTrue(
+        folder.getFileSystem().supportedFileAttributeViews().contains("posix"),
+        "permissions are set the POSIX way");
+    var store = new ProfileStore(folder);
+    store.save(PROFILES);
+    var file = folder.resolve(ProfileStore.FILE);
+    Files.setPosixFilePermissions(file, Set.of());
+    Files.setPosixFilePermissions(folder, PosixFilePermissions.fromString("r-xr-xr-x"));
+    try {
+      assumeFalse(Files.isReadable(file), "an administrator may read any file");
+      failure(store::load, "access was denied");
+      failure(() -> store.save(PROFILES), "access was denied");
+    } finally {
+      Files.setPosixFilePermissions(folder, PosixFilePermissions.fromString("rwx------"));
+      Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
+    }
   }
 }
