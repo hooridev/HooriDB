@@ -276,6 +276,28 @@ class PaletteTest {
   }
 
   @Test
+  void typingInTheTreeFindsANodeAndLeavesItsKeysAlone() throws Exception {
+    var app = connected();
+    c.run(
+        app,
+        "press role=treeitem label=\"shop-prod\"\nframe\ntype \"ord\"\nframe\nsnap ord\n"
+            + "advance 2\ntype \"c\"\nframe\nsnap anew\n"
+            + "advance 2\ntype \"ord\"\nframe\nkey Enter\n" + SETTLE + "snap opened\n"
+            + "key F10 shift\n" + SHOWN + "snap menu\nkey Escape\n" + SHOWN
+            + "key N control\nframe\n" + SETTLE + "snap console\n");
+    var ord = c.tree("ord");
+    assertTrue(line(ord, "role=treeitem label=\"orders\"").contains("selected"), ord);
+    // A second later the search starts anew: c alone, not ordc.
+    var anew = c.tree("anew");
+    assertTrue(line(anew, "role=treeitem label=\"customers\"").contains("selected"), anew);
+    // Enter still opens the node found, once; the context menu key and Control+N still act.
+    assertEquals("orders", tabs(c.tree("opened")));
+    assertTrue(focused(c.tree("opened")).contains("role=tree "), focused(c.tree("opened")));
+    assertTrue(c.tree("menu").contains("role=menu"), c.tree("menu"));
+    assertEquals(1, app.state().consoles(null).size());
+  }
+
+  @Test
   void thePaletteAndItsKeysInATornOffWindowActOnItsTabs() throws Exception {
     var app = connected();
     c.run(
@@ -578,7 +600,8 @@ class PaletteTest {
             + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + SETTLE
             + GO_TO + "type \"stock\"\nframe\nkey Enter\n" + SHOWN + SETTLE
             + "press role=menuitem label=\"Go\"\n" + SHOWN + "snap menu-go-" + look + "\n"
-            + close,
+            + close + "press role=treeitem label=\"shop-prod\"\nframe\ntype \"ord\"\nframe\n"
+            + "snap tree-find-" + look + "\n",
         app,
         out);
   }
