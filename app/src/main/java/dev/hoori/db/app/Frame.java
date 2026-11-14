@@ -38,7 +38,6 @@ final class Frame {
 
   static El view(State s) {
     Theme t = s.theme;
-    s.forgetClosedWindows();
     var main = s.tabs.main();
     // One dialog at a time: what the catalogue asks waits for the others to close.
     El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, main) : null;
@@ -448,9 +447,9 @@ final class Frame {
    * Gives the focus to the content of the window's active tab: a table's grid, else where it was
    * there last, or the console's editor; as the window's last build shows them.
    */
-  // shortcut: a table's grid, not where the focus was in its tab, as the kit takes the first
-  // button there for a tab whose content never had the focus; leave it to the kit once a region
-  // can name what it prefers without that element taking the focus when it appears.
+  // shortcut: a table's grid, not where the focus was in its tab, as the kit's default focus
+  // misses a grid built after the focus moved in, and the tabs' panel remembers the focus of
+  // another tab by its key; leave it to the grid's defaultFocus once the kit covers both.
   private static void focusContent(State s, TabGroups.Group<Tab> group) {
     var app = app(s, group);
     El panel = find(find(app.tree(), "tabs"), "panel");

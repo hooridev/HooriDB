@@ -205,6 +205,7 @@ final class ConsoleTab implements Tab {
   String database; // the one it runs on: the profile's, or the one chosen; empty for none
   String text = "";
   final CodeEditor.State editor = new CodeEditor.State();
+  final ConsoleEditor help = new ConsoleEditor(this); // the error's place, completions
   Split.Position split = SPLIT;
   final Menu.State databases = new Menu.State();
   private Lane lane; // the session, or null until it is needed
@@ -287,13 +288,14 @@ final class ConsoleTab implements Tab {
     int from = Math.min(editor.caret(), editor.anchor());
     int to = Math.max(editor.caret(), editor.anchor());
     if (from < to) {
-      start(s, texts(text.substring(from, Math.min(to, text.length())), provider));
+      var selected = text.substring(from, Math.min(to, text.length()));
+      start(s, help.sent(text, from, Statements.split(selected, provider)));
     } else {
       start(
           s,
           statements(provider)
               .at(editor.caret())
-              .map(at -> List.of(text.substring(at.start(), at.end())))
+              .map(at -> help.sent(text, 0, List.of(at)))
               .orElse(List.of()));
     }
   }
@@ -302,18 +304,8 @@ final class ConsoleTab implements Tab {
   void runAll(State s) {
     var provider = provider(s);
     if (provider != null) {
-      start(
-          s,
-          statements(provider).statements().stream()
-              .map(at -> text.substring(at.start(), at.end()))
-              .toList());
+      start(s, help.sent(text, 0, statements(provider).statements()));
     }
-  }
-
-  private static List<String> texts(String text, Provider provider) {
-    return Statements.split(text, provider).stream()
-        .map(at -> text.substring(at.start(), at.end()))
-        .toList();
   }
 
   private Provider provider(State s) {
@@ -826,6 +818,7 @@ final class ConsoleTab implements Tab {
         doubt(sql, "the connection was lost while it ran");
       }
       fail(s, failure);
+      help.failed(sql, failure);
       if (before == outputs.size()) {
         shown = null; // nothing but the error: Messages says what ran
       }
@@ -1283,6 +1276,7 @@ final class ConsoleTab implements Tab {
           if (failure != null) {
             heard(Level.ERROR, sql, portion.elapsed(), outcome(portion));
             fail(s, failure);
+            help.failed(sql, failure); // where the server says, also in its later rows
           } else if (before < outputs.size()) {
             // Results after the rows: what the statement gave next.
             heard(Level.RAN, sql, portion.elapsed(), outcome(portion));
@@ -1486,6 +1480,7 @@ final class ConsoleTab implements Tab {
   @Override
   public void close() {
     closed = true;
+    help.close();
     end();
   }
 
@@ -1786,7 +1781,7 @@ final class ConsoleTab implements Tab {
   }
 
   /** The text's statements, scanned again only when the text changed. */
-  private Statements statements(Provider provider) {
+  Statements statements(Provider provider) {
     if (scanned == null || scannedText != text) { // each edit hands over a new string
       scanned = Statements.of(text, provider);
       scannedText = text;
@@ -1939,7 +1934,7 @@ final class ConsoleTab implements Tab {
       return false;
     };
     editor.onKey(editor.onKey() == null ? keys : keys.or(editor.onKey()));
-    return editor;
+    return help.editor(t, s, app, provider, editor);
   }
 
   /** The results of the last runs in tabs, with Messages; what went wrong above them. */
@@ -1981,7 +1976,8 @@ final class ConsoleTab implements Tab {
             at < 0 ? outputs.size() : at,
             i -> shown = i < outputs.size() ? outputs.get(i) : null,
             i -> {},
-            content)
+            content,
+            Tabs.options().switchKeys(false))
         .key("results")
         .grow(1);
     return col()

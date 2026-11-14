@@ -218,6 +218,23 @@ class PaletteTest {
   }
 
   @Test
+  void aPressOnAnEntryThatKeepsThePaletteOpenLeavesTheKeysToItsFieldAndEscapeClosesIt()
+      throws Exception {
+    var app = connected();
+    var held = c.servers.hold("all tables " + PG + "/analytics");
+    c.run(
+        app,
+        GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n" + SHOWN
+            + "snap pressed\nkey Escape\n" + SHOWN + "snap closed\n");
+    var pressed = c.tree("pressed");
+    assertTrue(option(pressed, "analytics").contains("reading its tables…"), pressed);
+    assertTrue(focused(pressed).contains("role=textbox"), focused(pressed));
+    assertFalse(c.tree("closed").contains("label=\"Command palette\""), c.tree("closed"));
+    held.countDown();
+    c.run(app, SETTLE);
+  }
+
+  @Test
   void withoutAnOpenConnectionThePaletteSaysWhereTablesComeFrom() throws Exception {
     var app = c.app(SHOP);
     c.run(app, START + GO_TO + "snap none\n");
@@ -273,6 +290,17 @@ class PaletteTest {
     assertTrue(focused(c.tree("new")).contains("#sql"), focused(c.tree("new")));
     assertTrue(focused(c.tree("tree")).contains("role=tree "), focused(c.tree("tree")));
     assertTrue(focused(c.tree("back")).contains("#database"), focused(c.tree("back")));
+  }
+
+  @Test
+  void controlOneOnATableTabThatNeverHadTheFocusGoesToItsGrid() throws Exception {
+    var app = connected();
+    c.run(
+        app,
+        "press role=treeitem label=\"orders\"\nkey Enter\nframe\n" + SETTLE + "snap opened\n"
+            + "key 1 control\nframe\nsnap content\n");
+    assertTrue(focused(c.tree("opened")).contains("role=tree "), focused(c.tree("opened")));
+    assertTrue(focused(c.tree("content")).contains("role=grid"), focused(c.tree("content")));
   }
 
   @Test
@@ -679,6 +707,12 @@ class PaletteTest {
             + "press role=menuitem label=\"Go\"\n" + SHOWN + "snap menu-go-" + look + "\n"
             + close + "press role=treeitem label=\"shop-prod\"\nframe\ntype \"ord\"\nframe\n"
             + "snap tree-find-" + look + "\n",
+        app,
+        out);
+    // A table's tab that never had the focus, after Control+1.
+    Script.run(
+        "key Escape\npress role=treeitem label=\"customers\"\nkey Enter\nframe\n" + SETTLE
+            + "key 1 control\nframe\nadvance 1\nframe\nsnap table-focus-" + look + "\n",
         app,
         out);
   }

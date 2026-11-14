@@ -663,19 +663,13 @@ final class State {
     palettes.computeIfAbsent(group, g -> new Palette()).reads.add(stop);
   }
 
-  /**
-   * Forgets the palettes of windows that closed, and stops what they read. The main window runs it
-   * as it builds its view, since nothing tells the app that a window closed.
-   */
-  void forgetClosedWindows() {
-    var groups = tabs.groups();
-    palettes.entrySet().removeIf(entry -> {
-      boolean gone = !groups.contains(entry.getKey());
-      if (gone) {
-        entry.getValue().stop();
-      }
-      return gone;
-    });
+  /** Forgets what the window of these tabs kept, which has closed, and stops what it read. */
+  private void closed(TabGroups.Group<Tab> group) {
+    var palette = palettes.remove(group);
+    if (palette != null) {
+      palette.stop();
+    }
+    catalogue.closed(group);
   }
 
   /** Closes the active tab of the window, as its cross does: a console asks first. */
@@ -880,13 +874,16 @@ final class State {
   Windows.Handle openWindow(TabGroups.Group<Tab> group, Window.Options options) {
     App<State> window = new App<>(this, s -> Frame.window(s, group));
     window.textRendering(app.textRendering());
-    return app.windows()
+    var handle = app.windows()
         .open(
             Frame.title(this, group.activeTab()),
             900,
             600,
             options.frameless().minimumSize(480, 320).icon(HooriDb.ICON),
             window);
+    // Not at exit, the last window's close, which ends everything anyway.
+    handle.onClosed(() -> closed(group));
+    return handle;
   }
 
   /**
