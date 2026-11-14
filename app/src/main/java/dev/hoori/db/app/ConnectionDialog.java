@@ -22,6 +22,7 @@ import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Editing;
 import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Format;
+import com.rethinkj.ui.kit.HuePicker;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Part;
 import com.rethinkj.ui.kit.Prop;
@@ -386,7 +387,11 @@ final class ConnectionDialog {
                 .wFull()),
         field(
             "Colour",
-            Colours.choice(t, p.colour(), open ? v -> e.at(COLOUR).set(v) : null)
+            HuePicker.huePicker(
+                    t,
+                    Colours.hue(p.colour()),
+                    Colours.label(null),
+                    open ? v -> e.at(COLOUR).set(Colours.colour(v)) : null)
                 .key("colour")));
     El server = Form.form(
         t,
@@ -473,8 +478,7 @@ final class ConnectionDialog {
             .help(keepNote == null ? note : note == null ? keepNote : keepNote + " " + note)
             .error(probe.error(Probe.At.PASSWORD)));
     El content = col()
-        // As wide as two fields, so that help and errors wrap below their field.
-        .w(2 * t.size().field())
+        .w(width(t))
         .gap(t.space().l())
         .child(named)
         .child(group(t, "Server", server))
@@ -518,6 +522,14 @@ final class ConnectionDialog {
         .child(Divider.divider(t))
         .child(Card.header(t, heading, null))
         .child(form);
+  }
+
+  /**
+   * The width of the dialog's content: the colours' swatches in one line, and help and errors
+   * wrapping below their field.
+   */
+  static float width(Theme t) {
+    return 2 * t.size().field() + 3 * t.size().control();
   }
 
   /** The prop, or one that cannot be written while the keyring is being changed. */

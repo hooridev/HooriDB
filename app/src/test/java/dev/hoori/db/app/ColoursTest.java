@@ -73,6 +73,7 @@ class ColoursTest {
         press role=radio label="Red"
         frame
         snap red
+        focus role=radiogroup label="Colour"
         key ArrowRight
         frame
         snap orange

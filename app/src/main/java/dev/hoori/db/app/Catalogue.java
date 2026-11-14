@@ -1119,7 +1119,7 @@ final class Catalogue {
           ? List.of(button(t, SECONDARY, "Cancel", stop))
           : List.of();
       // As wide as the connection dialog, so that the question wraps.
-      El content = col().w(2 * t.size().field()).child(fetch.view(t, s, stop));
+      El content = col().w(ConnectionDialog.width(t)).child(fetch.view(t, s, stop));
       return Dialog.dialog(t, "Driver needed", content, buttons, stop);
     }
     for (var live : lives.values()) {
