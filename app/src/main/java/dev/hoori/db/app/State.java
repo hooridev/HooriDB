@@ -37,7 +37,9 @@ final class State {
   Split.Position sidebar = SIDEBAR;
   final MenuBar.State bar = new MenuBar.State();
   // The tabs of every window: the first window's, and those torn off into windows of their own.
-  final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow).onClosed(Tab::close);
+  final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow)
+      .onCloseTab(this::closeTab)
+      .onClosed(Tab::close);
   String message; // in the status line for a while, or null
   private int messages; // told so far
 
@@ -353,6 +355,12 @@ final class State {
    * written, so that no password is in the keyring for a connection that is not saved.
    */
   void requestClose() {
+    // A console's open transaction first: its answer comes back here, or the window stays open.
+    for (var console : consoles(null)) {
+      if (console.asks(this, ConsoleTab.Then.QUIT, null)) {
+        return;
+      }
+    }
     if (dialog != null) {
       // A test or a download can always be done again: closing cancels them instead of waiting.
       dialog.probe.stop();
@@ -439,6 +447,14 @@ final class State {
       return;
     }
     tabs.add(tabs.main(), tabs.main().tabs().size(), new ConsoleTab(id, database(profile)));
+  }
+
+  /** The user closes a tab: a console with an open transaction asks first. */
+  private void closeTab(TabGroups.Group<Tab> group, int index) {
+    if (!(group.tabs().get(index) instanceof ConsoleTab x
+        && x.asks(this, ConsoleTab.Then.CLOSE, null))) {
+      tabs.close(group, index);
+    }
   }
 
   /** The consoles of every window, of the connection or of all where it is null. */

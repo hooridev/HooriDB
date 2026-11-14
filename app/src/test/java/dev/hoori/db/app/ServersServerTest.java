@@ -11,6 +11,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
+import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
 import java.util.List;
@@ -221,6 +222,48 @@ class ServersServerTest {
       lane.close(); // as closing the console's tab does
       eventually(() -> ((Number) value(watcher, sessions)).longValue() == 0);
     } finally {
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void manualCommitsAndRollsBackAsCommitAndRollbackRunThem(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    // As the console runs a statement: auto-commit as its mode says, then the statement.
+    Lane.Call<Portion> drop = link -> link.run("DROP TABLE IF EXISTS seam_tx").next(10);
+    try {
+      lane.submit(drop).get(20, TimeUnit.SECONDS);
+      lane.submit(link -> link.run("CREATE TABLE seam_tx (id integer)").next(10))
+          .get(20, TimeUnit.SECONDS);
+      for (var end : List.of(ConsoleTab.ROLLBACK, ConsoleTab.COMMIT)) {
+        var changed = lane.submit(link -> {
+              link.manual(true);
+              return link.run("INSERT INTO seam_tx VALUES (1)").next(10);
+            })
+            .get(20, TimeUnit.SECONDS);
+        assertEquals(Transaction.OPEN, changed.transaction());
+        assertEquals(Transaction.OPEN, lane.submit(Servers.Link::transaction).get());
+        assertEquals(0L, ((Number) value(watcher, "SELECT count(*) FROM seam_tx")).longValue());
+        var ended = lane.submit(link -> link.run(end).next(10)).get(20, TimeUnit.SECONDS);
+        assertEquals(Transaction.NONE, ended.transaction());
+        assertEquals(Transaction.NONE, lane.submit(Servers.Link::transaction).get());
+        assertEquals(
+            end.equals(ConsoleTab.COMMIT) ? 1L : 0L,
+            ((Number) value(watcher, "SELECT count(*) FROM seam_tx")).longValue());
+      }
+      // Back to Auto: each statement commits by itself.
+      lane.submit(link -> {
+            link.manual(false);
+            return link.run("INSERT INTO seam_tx VALUES (2)").next(10);
+          })
+          .get(20, TimeUnit.SECONDS);
+      assertEquals(2L, ((Number) value(watcher, "SELECT count(*) FROM seam_tx")).longValue());
+    } finally {
+      lane.submit(drop).get(20, TimeUnit.SECONDS);
       lane.close();
       watcher.close();
     }

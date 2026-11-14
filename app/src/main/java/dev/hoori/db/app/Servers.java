@@ -17,6 +17,7 @@ import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Portion;
+import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -73,6 +74,15 @@ interface Servers {
 
     /** Makes the database the connection's own, where the server switches on one connection. */
     void use(String database) throws QueryException;
+
+    /**
+     * Turns auto-commit off for a transaction that the user ends, or on again, where it is not so
+     * already. Turned on, pgjdbc commits a transaction that is open: the caller ends it first.
+     */
+    void manual(boolean manual) throws QueryException;
+
+    /** The connection's transaction as the server has it now, as {@link Transaction#of}. */
+    Transaction transaction() throws QueryException;
 
     /** Closes it; a failure to close is not reported. */
     void close();
@@ -150,6 +160,21 @@ interface Servers {
         connection.setCatalog(database);
         return null;
       });
+    }
+
+    @Override
+    public void manual(boolean manual) throws QueryException {
+      Query.run(connection, provider, () -> {
+        if (connection.getAutoCommit() == manual) {
+          connection.setAutoCommit(!manual);
+        }
+        return null;
+      });
+    }
+
+    @Override
+    public Transaction transaction() throws QueryException {
+      return Transaction.of(connection, provider);
     }
 
     @Override

@@ -107,7 +107,9 @@ final class Catalogue {
   /** What the question before an edit or a delete of a connected connection leads to. */
   enum Then {
     EDIT,
-    DELETE
+    DELETE,
+    /** Disconnect alone, which asks only where a console's transaction is open. */
+    DISCONNECT
   }
 
   record Disconnecting(ConnectionProfile profile, Then then) {}
@@ -865,7 +867,12 @@ final class Catalogue {
 
   /** Edit or Delete on a connection: asks to disconnect first while it is connected. */
   void change(State s, ConnectionProfile profile, Then then) {
-    if (active(profile.id())) {
+    boolean transaction = s.consoles(profile.id()).stream().anyMatch(ConsoleTab::open);
+    if (then == Then.DISCONNECT && !transaction) {
+      disconnect(s, profile.id());
+      return;
+    }
+    if (active(profile.id()) || transaction) {
       disconnecting = new Disconnecting(profile, then);
       return;
     }
@@ -877,6 +884,7 @@ final class Catalogue {
     switch (then) {
       case EDIT -> s.edit(profile);
       case DELETE -> s.askDelete(profile);
+      case DISCONNECT -> {}
     }
   }
 
@@ -1179,7 +1187,9 @@ final class Catalogue {
         yield List.of(
             Menu.item("New console", () -> s.openConsole(n.id())).icon(Symbol.CODE),
             Menu.separator(),
-            Menu.item("Disconnect", active(n.id()) ? () -> disconnect(s, n.id()) : null)
+            Menu.item(
+                    "Disconnect",
+                    active(n.id()) ? () -> change(s, s.profile(n.id()), Then.DISCONNECT) : null)
                 .icon(Symbol.PLUG_DISCONNECTED),
             refresh,
             copy,
@@ -1249,7 +1259,13 @@ final class Catalogue {
         "To edit it, HooriDB disconnects it first. If its server or database changes, its"
             + " open tabs close.";
       case DELETE -> "To delete it, HooriDB disconnects it first.";
+      case DISCONNECT -> "";
     };
+    // A console's connection ends with it, and its open transaction: said before it happens.
+    if (s.consoles(d.profile().id()).stream().anyMatch(ConsoleTab::open)) {
+      what += (what.isEmpty() ? "" : " ")
+          + "A console of it has a transaction open, which the server then rolls back.";
+    }
     El disconnect = button(t, PRIMARY, "Disconnect", () -> disconnectAndGo(s));
     return Dialog.dialog(
         t,

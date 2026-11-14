@@ -83,6 +83,7 @@ final class Frame {
     El asked =
         s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, s.tabs.main()) : null;
     root.overlay(asked);
+    root.overlay(question(s, s.tabs.main()));
     if (s.driverList != null && s.dialog == null && s.deleting == null && asked == null) {
       root.overlay(s.driverList.view(t, s)).overlay(s.driverList.question(t, s));
     }
@@ -100,8 +101,9 @@ final class Frame {
             new Tabs.Tab(s.title(x))
                 .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE)
                 .hue(Colours.hue(s.colour(x.id)));
+          // An open transaction is changes not yet committed: the tab's dot.
           case ConsoleTab x ->
-            new Tabs.Tab(s.title(x)).icon(Symbol.CODE).hue(Colours.hue(s.colour(x.id)));
+            new Tabs.Tab(s.title(x), true, x.open(), Symbol.CODE, Colours.hue(s.colour(x.id)));
         },
         tab -> switch (tab) {
           case null ->
@@ -148,7 +150,13 @@ final class Frame {
             .padding(0, t.space().m(), t.space().m(), t.space().m())
             .child(Card.flush(t, tabs.grow(1)).grow(1)))
         // What a console of this window asked for, such as a password.
-        .overlay(s.catalogue.dialog(t, s, group));
+        .overlay(s.catalogue.dialog(t, s, group))
+        .overlay(question(s, group));
+  }
+
+  /** What the window's console asks about its open transaction, or null. */
+  private static El question(State s, TabGroups.Group<Tab> group) {
+    return group.activeTab() instanceof ConsoleTab x ? x.question(s.theme, s) : null;
   }
 
   /** The connections: waiting while they load, then a tree of them or the empty state. */

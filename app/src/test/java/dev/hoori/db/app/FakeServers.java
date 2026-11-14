@@ -59,6 +59,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <database>}; a statement closed with rows unread notes {@code close <host> <sql>} among the
  * calls. A held statement that is interrupted ends as core's does: with a cancelled failure, the
  * thread left interrupted. Each portion took {@link #TOOK}.
+ *
+ * <p>Each connection keeps a transaction as the servers do. {@code BEGIN}, {@code START
+ * TRANSACTION}, {@code COMMIT} and {@code ROLLBACK} are known statements without results that open
+ * and end it; with auto-commit off any other statement opens it, and on MariaDB and MySQL one that
+ * begins with {@code CREATE}, {@code ALTER} or {@code DROP} commits it. On PostgreSQL a failure or
+ * a cancel within it fails it, and then every statement but a commit or a rollback fails as
+ * PostgreSQL's do; on MariaDB and MySQL it stays open, and a portion says it as core's do: not
+ * after a failure or a cancel, nor while rows are still to come. Turning auto-commit on commits
+ * it, and a change of auto-commit notes {@code autocommit <host> on} or {@code off} among the
+ * calls. Asking for it is keyed {@code transaction <host>}. After a statement that fails as a lost
+ * connection, a portion does not know it, as core's on a closed connection.
  */
 final class FakeServers implements Servers {
 
@@ -253,6 +264,10 @@ final class FakeServers implements Servers {
     private final Made made;
     private final String database;
     private final AtomicInteger busy = new AtomicInteger();
+    // The session's auto-commit and transaction, on the lane's thread only.
+    private boolean manual;
+    private Transaction transaction = Transaction.NONE;
+    private boolean lost; // a statement said the connection is gone: nothing is known of it
 
     // What the server holds now, which a test may change between two reads.
     private Outline root() {
@@ -449,13 +464,35 @@ final class FakeServers implements Servers {
 
     @Override
     public Run run(String sql) {
-      var answer = statements.getOrDefault(
-          sql,
-          new Answer(
-              List.of(serverError(
-                  Failure.Kind.INVALID,
-                  "syntax error at or near \"" + sql.split("\\s+", 2)[0] + "\"")),
-              List.of()));
+      var word = sql.strip().split("\\s+", 2)[0].toUpperCase(Locale.ROOT);
+      boolean ends = word.equals("COMMIT") || word.equals("ROLLBACK");
+      boolean pg = made.provider() == Provider.POSTGRESQL;
+      var answer = pg && transaction == Transaction.FAILED && !ends
+          ? new Answer(
+              List.of(new Failure(
+                  Failure.Kind.OTHER,
+                  "current transaction is aborted, commands ignored until end of transaction"
+                      + " block",
+                  "25P02",
+                  0,
+                  0,
+                  "",
+                  0,
+                  0,
+                  "",
+                  "",
+                  "",
+                  "")),
+              List.of())
+          : statements.getOrDefault(
+              sql,
+              ends || word.equals("BEGIN") || word.equals("START")
+                  ? new Answer(List.of(new Result.Count(0)), List.of())
+                  : new Answer(
+                      List.of(serverError(
+                          Failure.Kind.INVALID,
+                          "syntax error at or near \"" + sql.split("\\s+", 2)[0] + "\"")),
+                      List.of()));
       return new Run() {
         private int result; // of the answer, the one read next
         private long position; // in its rows
@@ -477,7 +514,23 @@ final class FakeServers implements Servers {
               over = true;
               var cancelled =
                   new Failure(Failure.Kind.CANCELLED, "", "57014", 0, 0, "", 0, 0, "", "", "", "");
-              return new Portion(List.of(cancelled), List.of(), false, TOOK, Transaction.NONE);
+              if (pg && (manual || transaction == Transaction.OPEN)) {
+                transaction = Transaction.FAILED;
+              }
+              return new Portion(List.of(cancelled), List.of(), false, TOOK, said(false, true));
+            }
+            boolean failed =
+                !answer.results().isEmpty() && answer.results().getLast() instanceof Failure;
+            lost = failed
+                && ((Failure) answer.results().getLast()).kind() == Failure.Kind.CONNECTION_LOST;
+            if (key.startsWith("run ")) {
+              transaction = switch (word) {
+                case "BEGIN", "START" -> Transaction.OPEN;
+                case "COMMIT", "ROLLBACK" -> Transaction.NONE;
+                case "CREATE", "ALTER", "DROP" ->
+                  pg ? opened(failed, pg) : Transaction.NONE; // DDL commits on MariaDB and MySQL
+                default -> opened(failed, pg);
+              };
             }
             var out = new ArrayList<Result>();
             boolean more = false;
@@ -501,7 +554,7 @@ final class FakeServers implements Servers {
             over = !more;
             done.add(key);
             var messages = key.startsWith("run ") ? answer.messages() : List.<Message>of();
-            return new Portion(out, messages, more, TOOK, Transaction.NONE);
+            return new Portion(out, messages, more, TOOK, said(more, failed));
           } finally {
             busy.decrementAndGet();
           }
@@ -515,6 +568,45 @@ final class FakeServers implements Servers {
           over = true;
         }
       };
+    }
+
+    // The transaction after a statement within it, or one that begins it with auto-commit off.
+    private Transaction opened(boolean failed, boolean pg) {
+      return failed && pg && (manual || transaction == Transaction.OPEN)
+          ? Transaction.FAILED
+          : !failed && manual ? Transaction.OPEN : transaction;
+    }
+
+    // What a portion says of the transaction, as core's do.
+    private Transaction said(boolean more, boolean failed) {
+      return lost || made.provider() != Provider.POSTGRESQL && (more || failed)
+          ? Transaction.UNKNOWN
+          : transaction;
+    }
+
+    @Override
+    public void manual(boolean manual) {
+      if (this.manual != manual) {
+        calls.add("autocommit " + host + (manual ? " off" : " on"));
+        this.manual = manual;
+        if (!manual) {
+          transaction = Transaction.NONE; // committed as auto-commit is turned on
+        }
+      }
+    }
+
+    @Override
+    public Transaction transaction() throws QueryException {
+      var key = "transaction " + host;
+      try {
+        call(key, queryFailure(QueryException.Failure.CANCELLED));
+      } catch (QueryException e) {
+        throw e;
+      } catch (Exception e) {
+        throw queryFailure(QueryException.Failure.OTHER);
+      }
+      done.add(key);
+      return transaction;
     }
 
     @Override

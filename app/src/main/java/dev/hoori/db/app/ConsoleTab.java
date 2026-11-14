@@ -12,24 +12,28 @@ import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
+import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.DataGrid.CellIcon;
+import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.EmptyState;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
+import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Sql;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
@@ -39,6 +43,8 @@ import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
+import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Statement;
 import dev.hoori.db.core.sql.Statements;
 import java.time.Duration;
@@ -57,9 +63,16 @@ import java.util.function.Predicate;
  * A console: SQL written in an editor, run on a connection of the console's own, and what it gave
  * below. The connection is opened from the tree's once the console first runs something, with the
  * password and driver the tree got, and serves the console alone, one call at a time on its lane:
- * a long statement holds up neither the tree nor a table tab. Auto-commit only. Rows are read a
- * portion at a time, the next as the grid nears the end of those read. Only the app's thread uses
- * it.
+ * a long statement holds up neither the tree nor a table tab. Rows are read a portion at a time,
+ * the next as the grid nears the end of those read. Only the app's thread uses it.
+ *
+ * <p>In {@link Mode#AUTO} each statement commits by itself, in {@link Mode#MANUAL} the user ends
+ * the transaction with Commit or Rollback, which run as the statements {@code COMMIT} and {@code
+ * ROLLBACK} and so also end one that a {@code BEGIN} began in Auto. What the console shows of the
+ * transaction is what the server last said: each portion says it, and where a portion could not, as
+ * on MariaDB and MySQL after a failure or a cancel, the console asks the server. What would end an
+ * open transaction asks first: closing the tab, switching to Auto or to another database, closing
+ * HooriDB.
  */
 final class ConsoleTab implements Tab {
 
@@ -111,6 +124,23 @@ final class ConsoleTab implements Tab {
   /** What the results area says went wrong, the server's words checked for the password. */
   record Problem(String title, String text) {}
 
+  /** Whether each statement commits by itself, or the user ends the transaction. */
+  enum Mode {
+    AUTO,
+    MANUAL
+  }
+
+  /** What would end the open transaction, which asks first, and goes on once it has ended. */
+  enum Then {
+    CLOSE,
+    AUTO,
+    DATABASE,
+    QUIT
+  }
+
+  static final String COMMIT = "COMMIT";
+  static final String ROLLBACK = "ROLLBACK";
+
   final UUID id;
   // shortcut: a USE the user runs is not followed, so this may name another database than the
   // session's; ask the session for its database after each run once that misleads.
@@ -148,6 +178,17 @@ final class ConsoleTab implements Tab {
   private boolean closed;
   String said; // what the tab says for a while in its status line, or null
   private int says;
+  Mode mode = Mode.AUTO;
+  // As the server last said, of the session; NONE without one. UNKNOWN: one may be open.
+  Transaction transaction = Transaction.NONE;
+  int inTransaction; // the statements run in it
+  Then asking; // the question about the open transaction, while it is shown
+  private String askedDatabase; // the database the question would switch to
+  private Then then; // what goes on once the Commit or Rollback the answer chose has ended
+  private String thenDatabase;
+  private boolean ending; // the statement under way is the COMMIT or ROLLBACK of Commit or Rollback
+  private Work probe; // the question to the server about the transaction, or null
+  private int learned; // what was learned of it, counted: an answer that comes late is dropped
 
   ConsoleTab(UUID id, String database) {
     this.id = id;
@@ -296,7 +337,9 @@ final class ConsoleTab implements Tab {
     running = sql;
     var held = new AtomicReference<Servers.Run>();
     open = held;
+    boolean manual = mode == Mode.MANUAL;
     var asked = lane.submit(link -> {
+      link.manual(manual);
       var run = link.run(sql);
       held.set(run);
       return run.next(PORTION);
@@ -354,10 +397,16 @@ final class ConsoleTab implements Tab {
   }
 
   private void ran(State s, String sql, Portion portion) {
+    var failure = failure(portion);
+    if (ending) {
+      ended(s, sql, portion, failure);
+      return;
+    }
     statements++;
     took = took.plus(portion.elapsed());
     var before = outputs.size();
-    var failure = failure(portion);
+    learn(portion);
+    inTransaction = transaction == Transaction.NONE ? 0 : inTransaction + 1;
     take(sql, portion);
     if (before < outputs.size()) {
       shown = outputs.get(before);
@@ -370,9 +419,93 @@ final class ConsoleTab implements Tab {
       if (before == outputs.size()) {
         shown = null; // nothing but the error: Messages says what ran
       }
-      return;
+    }
+    if (transaction == Transaction.UNKNOWN && !portion.more() && lane != null) {
+      check(s);
     }
     next(s);
+  }
+
+  /**
+   * Commit's or Rollback's statement ended: the results tabs stay as they were, and what waited
+   * for it goes on where the transaction is over.
+   */
+  private void ended(State s, String sql, Portion portion, Failure failure) {
+    ending = false;
+    var done = sql.equals(COMMIT) ? "Committed" : "Rolled back";
+    heard(
+        failure == null ? Level.RAN : Level.ERROR,
+        sql,
+        portion.elapsed(),
+        failure == null ? done : outcome(portion));
+    messages(portion);
+    learn(portion);
+    if (transaction == Transaction.NONE) {
+      inTransaction = 0;
+    }
+    var after = then;
+    then = null;
+    if (failure != null) {
+      fail(failure);
+    } else {
+      say(s, done);
+    }
+    if (transaction == Transaction.UNKNOWN && lane != null) {
+      check(s);
+    } else if (after != null && transaction == Transaction.NONE && failure == null) {
+      go(s, after);
+    }
+  }
+
+  /**
+   * What the portion says of the transaction. While rows are still to come MariaDB and MySQL do
+   * not say: it is what it was, as a query neither begins nor ends one in Auto, and may have begun
+   * one in Manual.
+   */
+  private void learn(Portion portion) {
+    var failure = failure(portion);
+    if (failure != null && failure.kind() == Failure.Kind.CONNECTION_LOST) {
+      return; // what was open before is gone with the session, as the failure then says
+    }
+    var said = portion.transaction();
+    if (said == Transaction.UNKNOWN && portion.more()) {
+      // shortcut: a procedure whose rows are still to come may have ended the transaction; ask
+      // the server once its rows are read, if one is ever seen to.
+      said = mode == Mode.MANUAL && transaction == Transaction.NONE
+          ? Transaction.UNKNOWN
+          : transaction;
+    }
+    transaction = said;
+    learned++;
+  }
+
+  /**
+   * Asks the server for the transaction, where a portion did not say; on the lane, before what is
+   * asked after it, while the console goes on. Its answer is dropped where something said more
+   * since, or the session is another.
+   */
+  private void check(State s) {
+    var on = lane;
+    int at = ++learned;
+    var asked = on.submit(Servers.Link::transaction);
+    probe = s.app.background(
+        "ask for the transaction",
+        () -> Lane.await(asked),
+        now -> {
+          probe = null;
+          if (learned == at && lane == on) {
+            transaction = now;
+            if (now == Transaction.NONE) {
+              inTransaction = 0;
+            }
+          }
+        },
+        error -> {
+          probe = null;
+          if (lane == on && !(error instanceof InterruptedException)) {
+            failed(s, "Transaction", error);
+          }
+        });
   }
 
   /** Puts the portion's results in tabs: rows from a position on go on with the result before. */
@@ -448,11 +581,18 @@ final class ConsoleTab implements Tab {
     if (!f.hint().isEmpty()) {
       text.append("\nHint: ").append(f.hint());
     }
+    if (f.kind() == Failure.Kind.CONNECTION_LOST && open()) {
+      text.append('\n').append(GONE);
+    }
     problem = heard(title(f.kind()), text.toString());
     if (f.kind() == Failure.Kind.CONNECTION_LOST) {
       closeSession();
     }
   }
+
+  static final String GONE =
+      "The open transaction is gone with the connection: the server rolls back what it did not"
+          + " commit.";
 
   private static String title(Failure.Kind kind) {
     return switch (kind) {
@@ -480,6 +620,12 @@ final class ConsoleTab implements Tab {
       problem = heard(
           Words.title(e.failure()),
           note == null ? detail : detail.isEmpty() ? note : note + "\n" + detail);
+    } else if (error instanceof QueryException e
+        && (e.failure() == QueryException.Failure.CONNECTION_LOST
+            || e.failure() == QueryException.Failure.ABORTED)) {
+      var detail = e.detail();
+      problem =
+          heard("Disconnected", !open() ? detail : detail.isEmpty() ? GONE : detail + "\n" + GONE);
     } else {
       problem = heard("The statement could not be run", State.message(error));
     }
@@ -506,6 +652,7 @@ final class ConsoleTab implements Tab {
           work = null;
           int before = outputs.size();
           take(sql, portion);
+          learn(portion);
           messages(portion);
           var failure = failure(portion);
           if (failure != null) {
@@ -514,6 +661,9 @@ final class ConsoleTab implements Tab {
           } else if (before < outputs.size()) {
             // Results after the rows: what the statement gave next.
             heard(Level.RAN, sql, portion.elapsed(), outcome(portion));
+          }
+          if (transaction == Transaction.UNKNOWN && !portion.more() && lane != null) {
+            check(s);
           }
         },
         error -> {
@@ -544,6 +694,9 @@ final class ConsoleTab implements Tab {
     }
     cancelled = true;
     log.add(new Logged(Level.WARNING, brief(running), null, "Cancelled"));
+    if (lane != null) {
+      check(s); // the server says what the cancel left of the transaction
+    }
   }
 
   /**
@@ -558,6 +711,9 @@ final class ConsoleTab implements Tab {
     var version = s.catalogue.version(id);
     if (lane == null || profile == null) {
       database = name; // the next session opens on it
+      return;
+    }
+    if (asks(s, Then.DATABASE, name)) {
       return;
     }
     if (version == null
@@ -599,9 +755,14 @@ final class ConsoleTab implements Tab {
     work.cancel();
     work = null;
     call.cancel(true);
+    ending = false;
+    then = null;
   }
 
-  /** The tree's connection was disconnected: what the console began ends with it. */
+  /**
+   * The tree's connection was disconnected: what the console began ends with it, and so does an
+   * open transaction, which the server rolls back, as the question before said.
+   */
   void end() {
     if (work != null) {
       stop();
@@ -610,10 +771,26 @@ final class ConsoleTab implements Tab {
     waiting = false;
     stranded = false;
     switching = null;
+    asking = null;
+    if (open()) {
+      problem = new Problem(
+          "Transaction rolled back",
+          "Disconnecting ended the console's connection, and the server rolled back what the"
+              + " transaction did not commit.");
+      log.add(
+          new Logged(Level.WARNING, "", null, "Rolled back as the connection was disconnected"));
+    }
     closeSession();
   }
 
   private void closeSession() {
+    transaction = Transaction.NONE;
+    inTransaction = 0;
+    learned++;
+    if (probe != null) {
+      probe.cancel();
+      probe = null;
+    }
     open = null; // closed with the connection
     if (reading != null && reading.more) {
       reading.more = false;
@@ -645,6 +822,109 @@ final class ConsoleTab implements Tab {
   /** Whether the session is open. */
   boolean connected() {
     return lane != null;
+  }
+
+  /** Whether a transaction is open, or may be: what the questions ask about. */
+  boolean open() {
+    return transaction != Transaction.NONE;
+  }
+
+  /** Whether Commit would commit: not a failed transaction, nor while something runs. */
+  boolean canCommit() {
+    return !busy() && (transaction == Transaction.OPEN || transaction == Transaction.UNKNOWN);
+  }
+
+  boolean canRollback() {
+    return !busy() && open();
+  }
+
+  /** Auto or Manual; to Auto asks first where a transaction is open. */
+  void mode(State s, Mode mode) {
+    if (busy() || mode == this.mode || mode == Mode.AUTO && asks(s, Then.AUTO, null)) {
+      return;
+    }
+    this.mode = mode; // the next statement's call sets the connection's auto-commit
+  }
+
+  /** Commit: the transaction's work, as the statement COMMIT, on the session's lane. */
+  void commit(State s) {
+    if (canCommit()) {
+      finish(s, COMMIT);
+    }
+  }
+
+  /** Rollback: as the statement ROLLBACK. */
+  void rollback(State s) {
+    if (canRollback()) {
+      finish(s, ROLLBACK);
+    }
+  }
+
+  private void finish(State s, String sql) {
+    ending = true;
+    problem = null;
+    queue.clear();
+    queue.add(sql);
+    next(s);
+  }
+
+  /**
+   * Asks what becomes of the open transaction before the console does what would end it, in the
+   * console's window, with its tab shown; false where none is open, and it may go on.
+   */
+  boolean asks(State s, Then what, String database) {
+    if (!open()) {
+      return false;
+    }
+    asking = what;
+    askedDatabase = database;
+    var group = s.tabs.groupOf(this);
+    if (group != null) {
+      s.tabs.select(group, group.tabs().indexOf(this));
+      if (group.window() != null) {
+        group.window().raise();
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The question's answer: Commit or Rollback, and what it asked about once that has ended; or
+   * Cancel, null, and nothing changes. A rollback while a statement runs cancels it first.
+   */
+  void answer(State s, String sql) {
+    var what = asking;
+    asking = null;
+    if (sql == null || what == null || sql.equals(COMMIT) && !canCommit()) {
+      return;
+    }
+    if (work != null) {
+      stop();
+      queue.clear();
+      leave();
+    }
+    if (!open()) {
+      go(s, what);
+      return;
+    }
+    then = what;
+    thenDatabase = askedDatabase;
+    finish(s, sql);
+  }
+
+  /** What the question was about, now that no transaction is open. */
+  private void go(State s, Then what) {
+    switch (what) {
+      case CLOSE -> {
+        var group = s.tabs.groupOf(this);
+        if (group != null) {
+          s.tabs.close(group, group.tabs().indexOf(this));
+        }
+      }
+      case AUTO -> mode(s, Mode.AUTO);
+      case DATABASE -> use(s, thenDatabase);
+      case QUIT -> s.requestClose();
+    }
   }
 
   /** Says something in the tab's status line, for a while. */
@@ -711,25 +991,57 @@ final class ConsoleTab implements Tab {
     var profile = s.profile(id);
     var provider = profile.provider();
     boolean busy = busy();
-    El top = Card.toolbar(
+    var actions = new ArrayList<El>();
+    actions.add(databases(t, s));
+    actions.add(Tooltip.tooltip(
         t,
-        State.name(profile),
-        provider.displayName(),
-        databases(t, s),
-        button(
+        Segmented.segmented(
                 t,
-                PRIMARY,
-                "Run",
-                () -> run(s),
-                Button.options().icon(Symbol.PLAY).busy(busy))
-            .key("run")
-            .keepFocus(),
-        button(t, SECONDARY, "Run all", busy ? null : () -> runAll(s))
-            .key("run-all")
-            .keepFocus(),
-        button(t, SECONDARY, "Cancel", busy ? () -> cancel(s) : null)
-            .key("cancel")
-            .keepFocus());
+                List.of(Mode.values()),
+                mode,
+                m -> m == Mode.AUTO ? "Auto" : "Manual",
+                busy ? null : m -> mode(s, m))
+            .key("mode")
+            .label("Transactions"),
+        "Auto commits each statement by itself; in Manual, Commit or Rollback ends the"
+            + " transaction"));
+    if (mode == Mode.MANUAL || open()) {
+      actions.add(Tooltip.tooltip(
+          t,
+          button(
+                  t,
+                  SECONDARY,
+                  "Commit",
+                  canCommit() ? () -> commit(s) : null,
+                  Button.options().icon(Symbol.CHECKMARK).busy(ending && COMMIT.equals(running)))
+              .key("commit")
+              .keepFocus(),
+          "Commit (Control+Shift+C)"));
+      actions.add(Tooltip.tooltip(
+          t,
+          button(
+                  t,
+                  SECONDARY,
+                  "Rollback",
+                  canRollback() ? () -> rollback(s) : null,
+                  Button.options().icon(Symbol.ARROW_UNDO).busy(ending && ROLLBACK.equals(running)))
+              .key("rollback")
+              .keepFocus(),
+          "Roll back (Control+Shift+R)"));
+    }
+    actions.add(button(
+            t, PRIMARY, "Run", () -> run(s), Button.options().icon(Symbol.PLAY).busy(busy))
+        .key("run")
+        .keepFocus());
+    actions.add(button(t, SECONDARY, "Run all", busy ? null : () -> runAll(s))
+        .key("run-all")
+        .keepFocus());
+    actions.add(button(t, SECONDARY, "Cancel", busy ? () -> cancel(s) : null)
+        .key("cancel")
+        .keepFocus());
+    El top =
+        // Without the provider's name, which the tree says: Commit and Rollback need its room.
+        Card.toolbar(t, State.name(profile), null, actions.toArray(El[]::new));
     El line = Colours.line(t, s.colour(id));
     El editor = editor(t, s, app, provider);
     El split = Split.split(
@@ -743,9 +1055,24 @@ final class ConsoleTab implements Tab {
             results(t, s, app),
             4 * t.size().control())
         .grow(1);
+    // Keys go up from the focused element: these work from the editor and from the grids.
+    Predicate<Key> keys = key -> {
+      if (key.modifiers() != (Key.CONTROL | Key.SHIFT)) {
+        return false;
+      }
+      switch (key.name()) {
+        case "C" -> commit(s);
+        case "R" -> rollback(s);
+        default -> {
+          return false;
+        }
+      }
+      return true;
+    };
     return col()
         .grow(1)
         .minSize(0, 0)
+        .onKey(keys)
         .child(top)
         .child(line == null ? Divider.divider(t) : line)
         .child(split)
@@ -765,7 +1092,8 @@ final class ConsoleTab implements Tab {
             databases,
             n -> use(s, n))
         .key("database")
-        .label("Database");
+        .label("Database")
+        .w(6 * t.size().control());
   }
 
   private El editor(Theme t, State s, App<State> app, Provider provider) {
@@ -872,11 +1200,25 @@ final class ConsoleTab implements Tab {
               actions.toArray(El[]::new))
           .key("unconnected");
     }
-    if (problem != null) {
-      return Callout.callout(t, Callout.Kind.DANGER, problem.title(), problem.text())
-          .key("problem");
+    El failed = transaction != Transaction.FAILED
+        ? null
+        : Callout.callout(
+                t,
+                Callout.Kind.WARNING,
+                "The transaction failed",
+                "The server ignores every statement in it until it is rolled back; its changes are"
+                    + " lost.",
+                button(t, SECONDARY, "Rollback", canRollback() ? () -> rollback(s) : null)
+                    .key("roll-back"))
+            .key("failed");
+    El shown = problem == null
+        ? null
+        : Callout.callout(t, Callout.Kind.DANGER, problem.title(), problem.text())
+            .key("problem");
+    if (failed == null || shown == null) {
+      return failed == null ? shown : failed;
     }
-    return null;
+    return col().gap(t.space().s()).child(shown).child(failed);
   }
 
   /** A result: its rows in the grid, or the number of rows it changed; whether it is pinned. */
@@ -991,9 +1333,83 @@ final class ConsoleTab implements Tab {
     } else {
       status = Label.label(t, Label.Variant.MUTED, status()).key("run-status").ellipsis();
     }
-    return said == null
-        ? Card.footer(t, status)
-        : Card.footer(t, status, Label.label(t, Label.Variant.MUTED, said).key("said"));
+    El badge = badge(t);
+    if (said == null) {
+      return badge == null ? Card.footer(t, status) : Card.footer(t, status, badge);
+    }
+    El words = Label.label(t, Label.Variant.MUTED, said).key("said");
+    return badge == null ? Card.footer(t, status, words) : Card.footer(t, status, words, badge);
+  }
+
+  /** The transaction, as the server last said it; in Auto none while none is open. */
+  private El badge(Theme t) {
+    var o = Badge.options().toolbar();
+    String text = switch (transaction) {
+      case NONE -> {
+        o.kind(Badge.Kind.NEUTRAL);
+        yield mode == Mode.MANUAL ? "No transaction" : null;
+      }
+      case OPEN -> {
+        o.kind(Badge.Kind.WARNING).strong().icon(Symbol.LOCK_OPEN);
+        yield "Transaction open"
+            + (inTransaction > 0
+                ? " · " + inTransaction + (inTransaction == 1 ? " statement" : " statements")
+                : "");
+      }
+      case FAILED -> {
+        o.kind(Badge.Kind.DANGER).strong().icon(Symbol.ERROR_CIRCLE);
+        yield "Transaction failed";
+      }
+      case UNKNOWN -> {
+        o.kind(Badge.Kind.WARNING).icon(Symbol.LOCK_OPEN);
+        yield "Transaction may be open";
+      }
+    };
+    return text == null ? null : Badge.badge(t, text, o).key("transaction");
+  }
+
+  /** The question about the open transaction, while it is asked; in the console's window. */
+  El question(Theme t, State s) {
+    if (asking == null) {
+      return null;
+    }
+    var name = s.title(this);
+    String before = switch (asking) {
+      case CLOSE -> "the console closes";
+      case AUTO -> "it switches to Auto";
+      case DATABASE ->
+        "it switches to " + (askedDatabase.isEmpty() ? "no database" : askedDatabase);
+      case QUIT -> "HooriDB closes";
+    };
+    String text;
+    if (busy()) {
+      text = "A statement still runs in the transaction of " + name + ". Roll it back, which"
+          + " cancels the statement, before " + before + ".";
+    } else if (transaction == Transaction.FAILED) {
+      text = "The transaction of " + name + " failed: the server takes nothing more in it but a"
+          + " rollback. Roll it back before " + before + ".";
+    } else {
+      text = name + " has a transaction open"
+          + (inTransaction > 0
+              ? ", after " + inTransaction + (inTransaction == 1 ? " statement" : " statements")
+              : "")
+          + ". Commit its changes or roll them back before " + before + ".";
+    }
+    var buttons = new ArrayList<El>();
+    buttons.add(button(t, SECONDARY, "Cancel", () -> answer(s, null)).key("answer-cancel"));
+    boolean commit = canCommit();
+    buttons.add(button(t, commit ? SECONDARY : PRIMARY, "Rollback", () -> answer(s, ROLLBACK))
+        .key("answer-rollback"));
+    if (commit) {
+      buttons.add(button(t, PRIMARY, "Commit", () -> answer(s, COMMIT)).key("answer-commit"));
+    }
+    return Dialog.dialog(
+            t,
+            commit ? "Commit the transaction?" : "Roll back the transaction?",
+            Label.label(t, text).wrapText().w(ConnectionDialog.width(t)),
+            buttons,
+            () -> answer(s, null))
+        .key("transaction-question");
   }
 
   /** "Ran in 12 ms · 3 rows": the last run's time on the server, and its rows. */
