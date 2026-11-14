@@ -41,9 +41,12 @@ class ConnectionsTest {
     volatile CountDownLatch gate;
     final List<char[]> given =
         new java.util.concurrent.CopyOnWriteArrayList<>(); // the passwords read
+    final List<char[]> received =
+        new java.util.concurrent.CopyOnWriteArrayList<>(); // the arrays it was given to store
 
     @Override
     public void store(UUID key, char[] secret) throws IOException {
+      received.add(secret);
       check();
       stored.put(key, new String(secret));
     }
@@ -171,18 +174,32 @@ class ConnectionsTest {
     assertEquals(5432, saved.port());
     assertEquals(Tls.ENCRYPTED, saved.tls());
     assertEquals(PASSWORD, secrets.stored.get(saved.id()));
+    assertEquals(1, secrets.received.size());
+    assertEquals("\0".repeat(PASSWORD.length()), new String(secrets.received.getFirst()), "wiped");
+    assertEquals("", app.state().dialog == null ? "" : app.state().dialog.password);
     String file = Files.readString(dir.resolve("config").resolve(ProfileStore.FILE));
     assertFalse(file.contains(PASSWORD), file);
   }
 
+  /** Neither hidden nor shown: a tree has the mask, and says whether the password shows. */
   @Test
   void thePasswordIsInNoTree() throws IOException {
     run(app(), NEW_SHOP + """
+        snap hidden
+        press role=button label="Show password"
+        frame
+        snap shown
+        press role=button label="Hide password"
+        frame
         snap end
         """);
-    String tree = tree("end");
-    assertTrue(line(tree, "label=\"Password\"").contains("\"" + "•".repeat(7) + "\""), tree);
-    assertFalse(tree.contains(PASSWORD), tree);
+    for (var snap : List.of("hidden", "shown", "end")) {
+      String tree = tree(snap);
+      var field = line(tree, "label=\"Password\"");
+      assertTrue(field.contains("\"" + "•".repeat(7) + "\""), tree);
+      assertEquals(snap.equals("shown"), field.contains("password revealed"), field);
+      assertFalse(tree.contains(PASSWORD), tree);
+    }
   }
 
   @Test

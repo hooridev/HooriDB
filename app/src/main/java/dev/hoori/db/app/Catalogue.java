@@ -125,6 +125,7 @@ final class Catalogue {
     final Map<Node, Level> levels = new HashMap<>();
     // The password dialog; the kit's field holds a String, which goes with the dialog.
     String typed = "";
+    boolean revealed;
     boolean keep;
 
     Live(ConnectionProfile profile) {
@@ -372,6 +373,7 @@ final class Catalogue {
   /** Back to the password, after the server refused it. */
   void askPassword(Live live) {
     live.typed = "";
+    live.revealed = false;
     live.keep = false;
     live.phase = new ForPassword();
   }
@@ -1145,9 +1147,14 @@ final class Catalogue {
         .w(t.size().field())
         .gap(t.space().m())
         .child(Label.label(t, "Enter the password of " + who + ".").wrapText())
-        .child(TextField.passwordField(t, Prop.of(() -> live.typed, v -> live.typed = v), null)
-            .key("password")
-            .label("Password")
+        .child(TextField.revealable(
+                t,
+                TextField.passwordField(t, Prop.of(() -> live.typed, v -> live.typed = v), null)
+                    .key("password")
+                    .label("Password")
+                    .wFull(),
+                live.revealed,
+                () -> live.revealed = !live.revealed)
             .wFull())
         .child(Checkbox.checkbox(
             t, Prop.of(() -> live.keep, v -> live.keep = v), "Keep it until HooriDB closes"))

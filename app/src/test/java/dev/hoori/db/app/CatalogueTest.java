@@ -284,6 +284,9 @@ class CatalogueTest {
         press role=checkbox label="Keep it until HooriDB closes"
         frame
         snap typed
+        press role=button label="Show password"
+        frame
+        snap shown
         press role=button label="Connect"
         frame
         advance 1
@@ -295,6 +298,8 @@ class CatalogueTest {
     assertTrue(row(asked, "shop-prod").contains("progressbar"), "it waits: " + asked);
     assertTrue(asked.contains("\"Waiting for the password…\""), asked);
     assertTrue(tree("typed").contains("\"" + "•".repeat(7) + "\""), tree("typed"));
+    var shown = line(tree("shown"), "label=\"Password\"");
+    assertTrue(shown.contains("\"" + "•".repeat(7) + "\"") && shown.contains("password revealed"));
     assertEquals(List.of(PASSWORD), servers.passwords);
     assertTrue(rows(tree("end")).contains("  shop"), tree("end"));
     assertTrue(app.state().remembers(SHOP.id()), "kept for this session");
