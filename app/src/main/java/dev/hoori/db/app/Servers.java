@@ -16,13 +16,14 @@ import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Execution;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Portion;
-import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
-import java.sql.SQLException;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
@@ -85,15 +86,8 @@ interface Servers {
      */
     void manual(boolean manual) throws QueryException;
 
-    /** The connection's transaction as the server has it now, as {@link Transaction#of}. */
-    Transaction transaction() throws QueryException;
-
-    /**
-     * Whether auto-commit is on, as the driver has it from the server after the last statement
-     * that ended: MariaDB Connector/J and MySQL Connector/J follow a {@code SET autocommit} the
-     * user ran. Asks nothing of the server; null where the driver cannot say, as once closed.
-     */
-    Boolean autoCommit();
+    /** The connection's transaction and auto-commit as they are now, as {@link Status#of}. */
+    Status status() throws QueryException;
 
     /** Closes it; a failure to close is not reported. */
     void close();
@@ -105,8 +99,11 @@ interface Servers {
     /** Its results up to the given number of rows, then as many more, as {@link Execution#next}. */
     Portion next(int count);
 
-    /** Ends it, abandoning the rows not read. */
-    void close();
+    /**
+     * Ends it, giving up the rows not read; what giving up failed with, as a commit of what the
+     * statement changed, or empty.
+     */
+    Optional<Failure> close();
   }
 
   /** A connection of a driver. */
@@ -163,8 +160,11 @@ interface Servers {
         }
 
         @Override
-        public void close() {
+        public Optional<Failure> close() {
+          // shortcut: Execution says nothing of how giving up went; take abandon()'s answer once it
+          // can say it.
           execution.close();
+          return Optional.empty();
         }
       };
     }
@@ -189,17 +189,8 @@ interface Servers {
     }
 
     @Override
-    public Transaction transaction() throws QueryException {
-      return Transaction.of(connection, provider);
-    }
-
-    @Override
-    public Boolean autoCommit() {
-      try {
-        return connection.getAutoCommit();
-      } catch (SQLException | RuntimeException e) {
-        return null;
-      }
+    public Status status() throws QueryException {
+      return Status.of(connection, provider);
     }
 
     @Override

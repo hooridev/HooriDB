@@ -897,7 +897,7 @@ final class Catalogue {
   private void disconnect(State s, UUID id, Runnable then) {
     var profile = s.profile(id);
     var name = profile == null ? "the connection" : State.name(profile);
-    if (s.asks(s.consoles(id), name + " disconnects", () -> disconnect(s, id, then))) {
+    if (s.asks(id, name + " disconnects", s.consoles(id), () -> disconnect(s, id, then))) {
       return;
     }
     var live = lives.get(id);

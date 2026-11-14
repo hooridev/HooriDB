@@ -19,6 +19,7 @@ import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Message;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
+import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
@@ -33,6 +34,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -124,6 +126,31 @@ final class FakeServers implements Servers {
   /** The statement begins a transaction by itself and leaves it open, as a procedure may. */
   FakeServers begins(String sql) {
     beginning.add(sql);
+    return this;
+  }
+
+  private final java.util.Set<String> turningOn = ConcurrentHashMap.newKeySet();
+  private final java.util.Set<String> blind = ConcurrentHashMap.newKeySet();
+  private final Map<String, Failure> givingUp = new ConcurrentHashMap<>();
+
+  /**
+   * The statement turns the server's auto-commit on, as a procedure that runs {@code SET
+   * autocommit=1} does, also where it then fails, and without the driver knowing.
+   */
+  FakeServers turnsAutoCommitOn(String sql) {
+    turningOn.add(sql);
+    return this;
+  }
+
+  /** The host's MariaDB or MySQL driver cannot read the server's status, as old ones cannot. */
+  FakeServers cannotReport(String host) {
+    blind.add(host);
+    return this;
+  }
+
+  /** Giving up the rest of the statement's rows fails so, as a commit of what it changed may. */
+  FakeServers failsAtGiveUp(String sql, Failure failure) {
+    givingUp.put(sql, failure);
     return this;
   }
 
@@ -330,7 +357,8 @@ final class FakeServers implements Servers {
     private final String database;
     private final AtomicInteger busy = new AtomicInteger();
     // The session's auto-commit and transaction, on the lane's thread only.
-    private boolean manual;
+    private boolean manual; // the server's auto-commit off, as its status says it
+    private boolean seen; // the driver's own idea of manual, which may lag the server's
     private Transaction transaction = Transaction.NONE;
     private boolean lost; // a statement said the connection is gone: nothing is known of it
     private boolean chain; // MariaDB's and MySQL's completion_type=1
@@ -610,7 +638,8 @@ final class FakeServers implements Servers {
               if (pg && (manual || transaction == Transaction.OPEN)) {
                 transaction = Transaction.FAILED;
               }
-              return new Portion(List.of(cancelled), List.of(), false, TOOK, said(false, true));
+              return new Portion(
+                  List.of(cancelled), List.of(), false, TOOK, said(false, true), mode(false, true));
             }
             var failure =
                 !answer.results().isEmpty() && answer.results().getLast() instanceof Failure f
@@ -643,18 +672,20 @@ final class FakeServers implements Servers {
             over = !more;
             done.add(key);
             var messages = key.startsWith("run ") ? answer.messages() : List.<Message>of();
-            return new Portion(out, messages, more, TOOK, said(more, failed));
+            return new Portion(out, messages, more, TOOK, said(more, failed), mode(more, failed));
           } finally {
             busy.decrementAndGet();
           }
         }
 
         @Override
-        public void close() {
-          if (!over) {
+        public Optional<Failure> close() {
+          boolean gaveUp = !over;
+          if (gaveUp) {
             calls.add("close " + host + " " + sql);
           }
           over = true;
+          return gaveUp ? Optional.ofNullable(givingUp.get(sql)) : Optional.empty();
         }
       };
     }
@@ -663,13 +694,21 @@ final class FakeServers implements Servers {
     private Transaction after(
         String word, String setting, String sql, Failure failure, boolean pg) {
       boolean failed = failure != null;
+      if (!failed && !pg) {
+        seen = manual; // the driver follows the server's status after what ended well
+      }
       if (beginning.contains(sql)) {
         return Transaction.OPEN;
+      }
+      if (turningOn.contains(sql) && manual) {
+        manual = false; // behind the driver's back, also where the statement then fails
+        return Transaction.NONE; // turned on from off, it commits
       }
       if (!failed && setting.startsWith("setautocommit=")) {
         boolean on = setting.endsWith("1");
         boolean was = manual;
         manual = !on;
+        seen = manual;
         return on && was ? Transaction.NONE : transaction; // turned on from off, it commits
       }
       if (!failed && setting.startsWith("setcompletion_type=")) {
@@ -681,6 +720,9 @@ final class FakeServers implements Servers {
           return failed ? transaction : Transaction.OPEN;
         }
         case "COMMIT", "ROLLBACK" -> {
+          if (!failed && sql.toUpperCase(Locale.ROOT).matches("ROLLBACK\\b.*\\bTO\\b.*")) {
+            return transaction; // to a savepoint: what came before it stays
+          }
           if (!failed) {
             return chain ? Transaction.OPEN : Transaction.NONE;
           }
@@ -704,32 +746,43 @@ final class FakeServers implements Servers {
       return manual ? Transaction.OPEN : transaction;
     }
 
+    private boolean blind() {
+      return made.provider() != Provider.POSTGRESQL && blind.contains(host);
+    }
+
     // What a portion says of the transaction, as core's do.
     private Transaction said(boolean more, boolean failed) {
-      return lost || made.provider() != Provider.POSTGRESQL && (more || failed)
+      return lost || blind() || made.provider() != Provider.POSTGRESQL && (more || failed)
           ? Transaction.UNKNOWN
           : transaction;
     }
 
+    // What a portion says of the auto-commit: as of the transaction, from the same status.
+    private Boolean mode(boolean more, boolean failed) {
+      return said(more, failed) == Transaction.UNKNOWN && made.provider() != Provider.POSTGRESQL
+              || lost
+          ? null
+          : !manual;
+    }
+
     @Override
     public void manual(boolean manual) {
-      if (this.manual != manual) {
-        calls.add("autocommit " + host + (manual ? " off" : " on"));
-        this.manual = manual;
-        if (!manual && transaction != Transaction.NONE) {
-          calls.add("commit by auto-commit " + host); // JDBC commits as auto-commit is turned on
-          transaction = Transaction.NONE;
-        }
+      // As JDBC drivers do: nothing is sent where the driver thinks it has that mode already.
+      if (seen == manual) {
+        return;
+      }
+      calls.add("autocommit " + host + (manual ? " off" : " on"));
+      seen = manual;
+      boolean was = this.manual;
+      this.manual = manual;
+      if (was && !manual && transaction != Transaction.NONE) {
+        calls.add("commit by auto-commit " + host); // turned on, it commits what is open
+        transaction = Transaction.NONE;
       }
     }
 
     @Override
-    public Boolean autoCommit() {
-      return lost ? null : !manual;
-    }
-
-    @Override
-    public Transaction transaction() throws QueryException {
+    public Status status() throws QueryException {
       var key = "transaction " + host;
       try {
         call(key, queryFailure(QueryException.Failure.CANCELLED));
@@ -739,7 +792,11 @@ final class FakeServers implements Servers {
         throw queryFailure(QueryException.Failure.OTHER);
       }
       done.add(key);
-      return transaction;
+      if (blind()) {
+        return new Status(Transaction.UNKNOWN, null);
+      }
+      seen = manual; // as core sets the driver's idea from the server's status
+      return new Status(transaction, !manual);
     }
 
     @Override

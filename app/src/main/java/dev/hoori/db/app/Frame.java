@@ -184,9 +184,9 @@ final class Frame {
 
   /** What a console of the window asks about what may be open in it, or null. */
   private static El question(State s, TabGroups.Group<Tab> group) {
-    var asked = s.asked;
-    return asked != null && s.tabs.groupOf(asked.console()) == group
-        ? asked.console().question(s.theme, s)
+    var pending = s.pending;
+    return pending != null && !pending.armed() && s.tabs.groupOf(pending.console()) == group
+        ? pending.console().question(s.theme, s)
         : null;
   }
 

@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -71,13 +72,12 @@ final class State {
   ConnectionDialog dialog; // null while closed
   DriversDialog driverList; // the Drivers dialog, null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
-  ConsoleTab.Asked asked; // the one way out that waits for a console's question, or null
+  Pending pending; // the one act that waits, or null
   // Its deletion runs: it waits for the keyring to be found, then for its password to go.
   boolean removing;
   String removeError; // why its password could not be removed, or null
   private Work saving; // the save of the profiles on its way, or null
   private boolean saveAgain; // the profiles changed while it ran
-  private boolean quitting; // the window closes once nothing is on its way and all is saved
   private boolean quitAnyway; // the last save at the end failed and the user was told
 
   /**
@@ -221,7 +221,7 @@ final class State {
       catalogue.drop(this, profile.id()); // what failed before the change is out of date
     }
     if (!colour) {
-      // Their sessions were opened with what changed; the save asked them first.
+      // Their sessions were opened with what changed; the save asked them first, and locked them.
       consoles(profile.id()).forEach(ConsoleTab::end);
     }
     persist();
@@ -240,7 +240,8 @@ final class State {
   void delete() {
     var profile = deleting;
     if (profile == null
-        || asks(consoles(profile.id()), name(profile) + " is deleted", this::delete, profile)) {
+        || asks(profile, name(profile) + " is deleted", consoles(profile.id()), this::delete)
+        || !lock(profile, name(profile) + " is being deleted", profile.id())) {
       return;
     }
     removing = true;
@@ -266,19 +267,14 @@ final class State {
         error -> {
           removing = false;
           removeError = message(error);
+          drop(profile);
           keyringFailed();
         });
   }
 
   private void deleted(ConnectionProfile profile) {
     removing = false;
-    // Again at the moment of the act: a console may have begun something while the keyring worked.
-    if (asks(
-        consoles(profile.id()), name(profile) + " is deleted", () -> deleted(profile), profile)) {
-      tell("The password of " + name(profile) + " is out of the keyring already; it is deleted"
-          + " once its console's question is answered.");
-      return;
-    }
+    drop(profile); // its consoles were locked meanwhile, and close now
     deleting = null;
     forgetPassword(profile.id());
     catalogue.drop(this, profile.id());
@@ -362,8 +358,8 @@ final class State {
           if (saveAgain) {
             saveAgain = false;
             persist();
-          } else if (quitting) {
-            quitting = false;
+          } else if (quitting()) {
+            pending = null;
             quitAnyway = true;
             tell("HooriDB stayed open, as the connections could not be saved. Close it again to"
                 + " quit without them.");
@@ -382,8 +378,7 @@ final class State {
    */
   void requestClose() {
     // The consoles first: their answers come back here, and Cancel gives up closing.
-    if (asks(consoles(null), "HooriDB closes", this::requestClose)) {
-      quitting = false;
+    if (asks(EXIT, "HooriDB closes", consoles(null), this::requestClose)) {
       return;
     }
     if (dialog != null) {
@@ -397,7 +392,9 @@ final class State {
       closeAll();
       return;
     }
-    quitting = true;
+    if (!lock(EXIT, "HooriDB is closing", null)) {
+      return;
+    }
     if (keyringBusy() || saving != null || unsaved) {
       tell("HooriDB closes once the connections are saved.");
     }
@@ -406,7 +403,7 @@ final class State {
 
   /** What was on its way has ended: the window closes now if it was asked to. */
   void settled() {
-    if (!quitting || keyringBusy() || saving != null) {
+    if (!quitting() || keyringBusy() || saving != null) {
       return;
     }
     if (unsaved) {
@@ -418,8 +415,8 @@ final class State {
 
   /** The keyring refused a change: the window stays open, so that the user sees why. */
   void keyringFailed() {
-    if (quitting) {
-      quitting = false;
+    if (quitting()) {
+      pending = null;
       tell("HooriDB stayed open, as the system keyring reported a problem.");
     }
   }
@@ -553,43 +550,87 @@ final class State {
   }
 
   /**
-   * The one guard of every way out that would end consoles' sessions or their transactions: the
-   * first of the consoles where something may be open ({@link ConsoleTab#atStake}) asks in its
-   * window what becomes of it, and {@code then} runs again once that is settled, where it asks the
-   * next one. True while one asks, and the caller goes no further; Cancel leaves it all as it was.
+   * The one act in the app that waits: what owns it, what it is, the console whose question it
+   * waits on and how it goes on once that is settled, or, once armed, which consoles it locks: those
+   * of a connection, or all of them for null.
    */
-  boolean asks(List<ConsoleTab> consoles, String before, Runnable then) {
-    return asks(consoles, before, then, null);
+  record Pending(
+      Object owner, String what, Runnable then, ConsoleTab console, boolean armed, UUID scope) {}
+
+  private static final Object EXIT = new Object();
+
+  /**
+   * The one guard of every way out that would end consoles' sessions or their transactions: the
+   * first of the consoles where something is at stake ({@link ConsoleTab#atStake}) asks in its
+   * window what becomes of it, and {@code then} runs again once that is settled. True while one
+   * asks, and the caller goes no further. While another act waits, one that would ask is refused,
+   * visibly, instead of taking its place.
+   */
+  boolean asks(Object owner, String what, List<ConsoleTab> consoles, Runnable then) {
+    var asking = consoles.stream().filter(ConsoleTab::atStake).findFirst().orElse(null);
+    boolean mine = pending != null && Objects.equals(pending.owner(), owner);
+    if (asking == null) {
+      if (mine && !pending.armed()) {
+        pending = null;
+      }
+      return false;
+    }
+    if (pending != null && !mine) {
+      refuse();
+      return true;
+    }
+    pending = new Pending(owner, what, then, asking, false, null);
+    asking.show(this);
+    return true;
   }
 
   /**
-   * As {@link #asks(List, String, Runnable)}, for a way out that something else asked for, as a
-   * dialog: when that is given up ({@link #drop(Object)}), so is the way out. There is one way out
-   * waiting at most, {@link #asked}: a newer one takes its place, and so a later Cancel gives up
-   * what an earlier one began. Called at the moment of the act, also where it asked before.
+   * Arms the act once nothing of its consoles is at stake: from now until it is done or given up
+   * ({@link #drop}), those consoles start nothing, so that nothing comes between the answers and the
+   * act. False, refused visibly, while another act waits.
    */
-  boolean asks(List<ConsoleTab> consoles, String before, Runnable then, Object owner) {
-    for (var console : consoles) {
-      if (console.atStake()) {
-        asked = new ConsoleTab.Asked(console, before, then, owner);
-        console.show(this);
-        return true;
-      }
+  boolean lock(Object owner, String what, UUID scope) {
+    if (pending != null && !Objects.equals(pending.owner(), owner)) {
+      refuse();
+      return false;
     }
-    return false;
+    pending = new Pending(owner, what, null, null, true, scope);
+    return true;
   }
 
-  /** Gives up the way out that waits, where the console's or what asked for it is given up. */
-  void drop(Object asker) {
-    if (asked != null && (asked.console() == asker || asked.owner() == asker)) {
-      asked = null;
+  private void refuse() {
+    if (pending.armed()) {
+      tell(pending.what() + ": that comes first.");
+    } else {
+      tell("A question about a console's transaction waits for its answer.");
+      pending.console().show(this);
     }
+  }
+
+  /** The act is done, or given up: with what owns it, or with the console it waited on. */
+  void drop(Object owner) {
+    if (pending != null && (Objects.equals(pending.owner(), owner) || pending.console() == owner)) {
+      pending = null;
+    }
+  }
+
+  /** Why the console may start nothing now, or null. */
+  String locked(ConsoleTab console) {
+    return pending != null
+            && pending.armed()
+            && (pending.scope() == null || pending.scope().equals(console.id))
+        ? pending.what()
+        : null;
+  }
+
+  private boolean quitting() {
+    return pending != null && pending.owner() == EXIT && pending.armed();
   }
 
   /** The user closes a tab, by its cross or Control+W: a console asks first. */
   private void closeTab(TabGroups.Group<Tab> group, int index) {
     if (!(group.tabs().get(index) instanceof ConsoleTab x
-        && asks(List.of(x), "the console closes", () -> closeTab(x)))) {
+        && asks(x, "the console closes", List.of(x), () -> closeTab(x)))) {
       tabs.close(group, index);
     }
   }
@@ -785,11 +826,6 @@ final class State {
   }
 
   private void closeAll() {
-    // Again, as a console may have begun something while the connections were saved.
-    if (asks(consoles(null), "HooriDB closes", this::requestClose)) {
-      quitting = false;
-      return;
-    }
     consoles(null).forEach(ConsoleTab::close);
     catalogue.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {

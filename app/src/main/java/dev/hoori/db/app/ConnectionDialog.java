@@ -202,8 +202,11 @@ final class ConnectionDialog {
     }
     var profile = editing.value();
     var id = profile.id();
-    // The consoles ask first, before anything is written, so that Cancel leaves it all as it was.
-    if (ends(s, profile) && s.asks(s.consoles(id), SAVED, () -> save(s), this)) {
+    // The consoles ask first, before anything is written, so that Cancel leaves it all as it was;
+    // then they start nothing until the save is done.
+    if (ends(s, profile)
+        && (s.asks(this, SAVED, s.consoles(id), () -> save(s))
+            || !s.lock(this, State.name(profile) + " is being saved", id))) {
       return;
     }
     var secrets = s.secrets();
@@ -240,9 +243,13 @@ final class ConnectionDialog {
           }
           return old;
         },
-        old -> saved(s, profile, put != null ? null : typed != null ? typed : old, put != null),
+        old -> {
+          stored = put != null; // where the password is now, as was done
+          saved(s, profile, put != null ? null : typed != null ? typed : old, put != null);
+        },
         error -> {
           changing = false;
+          s.drop(this);
           keyringError = State.message(error);
           if (put == null && typed != null) {
             Arrays.fill(typed, '\0');
@@ -267,16 +274,9 @@ final class ConnectionDialog {
 
   static final String SAVED = "the changed connection is saved";
 
-  /**
-   * Puts the profile in place and closes, where no console's question stops it at this moment: one
-   * may have begun something while the keyring worked. The password is moved already; the dialog
-   * stays open with its edits until the console's question is settled.
-   */
+  /** Puts the profile in place and closes; its consoles were locked since their answers. */
   private void apply(State s, ConnectionProfile profile) {
-    if (ends(s, profile)
-        && s.asks(s.consoles(profile.id()), SAVED, () -> apply(s, profile), this)) {
-      return;
-    }
+    s.drop(this);
     password = "";
     probe.close();
     versions.close();

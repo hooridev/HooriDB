@@ -236,19 +236,16 @@ class ConsoleTest {
   }
 
   @Test
-  void closingTheTabWhileAStatementRunsAsksThenCancelsItAndEndsItsConnection() throws Exception {
+  void closingTheTabWhileAPlainReadRunsCancelsItAndEndsItsConnection() throws Exception {
     var app = console(SHOP);
     c.run(app, type(COUNT + ";") + RUN);
     var key = "run " + PG + " " + ORDERS;
     servers.hold(key);
     c.run(app, type("\n" + ORDERS) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
-    // What runs may have begun a transaction: the console asks, and Rollback cancels it first.
-    c.run(app, "press #close-0\nframe\nadvance 1\nframe\nsnap asked\n");
-    assertTrue(
-        c.tree("asked").contains("role=dialog label=\"Roll back the transaction?\""),
-        c.tree("asked"));
-    c.run(app, "press #answer-rollback\nframe\n" + SETTLE + "snap closed\n");
+    // A plain read changes nothing: closing asks nothing.
+    c.run(app, "press #close-0\nframe\nframe\nsnap closed\n");
+    assertFalse(c.tree("closed").contains("role=dialog"), c.tree("closed"));
     eventually(() -> servers.interrupted.contains(key));
     // The console's connection closes; the tree's stays.
     eventually(() -> servers.closed.contains(PG + "/shop"));
@@ -437,7 +434,8 @@ class ConsoleTest {
     String ended = c.tree("ended");
     assertTrue(tabs(ended).endsWith("Result 1,Result 2,Messages"), tabs(ended));
     assertTrue(near(ended, "#result-status").contains("· 250 rows\""), ended);
-    assertTrue(status(ended).contains("\"Ran in 4 ms · 250 rows · 5 rows changed\""), ended);
+    // Not a plain read, it was read to its end: two portions' time.
+    assertTrue(status(ended).contains("\"Ran in 8 ms · 250 rows · 5 rows changed\""), ended);
   }
 
   @Test
