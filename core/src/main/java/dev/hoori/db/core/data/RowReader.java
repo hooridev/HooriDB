@@ -21,8 +21,7 @@ import java.util.List;
  *       the session's zone, as the server writes it, from which the moment cannot be told without
  *       asking the server for its zone.
  *   <li>Text and binary data come whole from the server and are cut here to {@link Rows#LIMIT};
- *       the length of a {@link Cut} is that of the text in UTF-8, which is the server's where the
- *       column is in UTF-8.
+ *       a {@link Cut} has no length, as the size the server stores is not known.
  * </ul>
  */
 public final class RowReader {

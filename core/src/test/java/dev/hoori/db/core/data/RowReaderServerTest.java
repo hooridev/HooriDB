@@ -19,6 +19,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.TimeZone;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -119,13 +120,90 @@ class RowReaderServerTest {
         var page = Rows.read(
             connection, provider, table, Catalog.columns(connection, provider, table), 0, 2);
         var query = query(connection, provider, "SELECT * FROM long_value ORDER BY id");
-        assertEquals(page.rows(), query.rows());
+        // The size the server stores is known of the table's column only.
+        assertEquals(page.rows().get(0), query.rows().get(0));
         assertEquals(
-            new Cut("😀".repeat(limit), 4L * (limit + 1)), query.rows().get(1).get(1));
-        assertInstanceOf(Binary.class, query.rows().get(1).get(2));
+            new Cut("😀".repeat(limit), OptionalLong.of(4L * (limit + 1))),
+            page.rows().get(1).get(1));
+        assertEquals(
+            new Cut("😀".repeat(limit), OptionalLong.empty()),
+            query.rows().get(1).get(1));
+        assertEquals(page.rows().get(1).get(2), query.rows().get(1).get(2));
       } finally {
         execute(connection, "DROP TABLE long_value");
       }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aZeroMonthOrDayIsTheServersTextInBothPaths(Provider provider) throws Exception {
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "SET SESSION sql_mode = ''",
+          "CREATE TABLE zero (id integer PRIMARY KEY, a datetime, b datetime(6), c date,"
+              + " d time(3), e timestamp NULL)",
+          "INSERT INTO zero VALUES (1, '2024-00-15 02:30:00', '2024-03-00 02:30:00.5',"
+              + " '2024-00-15', '-838:59:59', '2024-03-31 02:30:00')");
+      try {
+        var table = table(provider, "zero");
+        var page = Rows.read(
+            connection, provider, table, Catalog.columns(connection, provider, table), 0, 1);
+        var query = query(connection, provider, "SELECT * FROM zero");
+        var row = page.rows().getFirst();
+        assertEquals("2024-00-15 02:30:00", row.get(1));
+        assertEquals("2024-03-00 02:30:00.500000", row.get(2));
+        assertEquals("2024-00-15", row.get(3));
+        assertEquals("-838:59:59.000", row.get(4));
+        assertEquals(row.subList(0, 5), query.rows().getFirst().subList(0, 5));
+      } finally {
+        execute(connection, "DROP TABLE zero");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void theStoredSizeOfACutTextIsKnownOfATableOnly(Provider provider) throws Exception {
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE latin (id integer PRIMARY KEY, t text CHARACTER SET latin1)",
+          "INSERT INTO latin VALUES (1, REPEAT('é', 2000))");
+      try {
+        var table = table(provider, "latin");
+        var page = Rows.read(
+            connection, provider, table, Catalog.columns(connection, provider, table), 0, 1);
+        var start = "é".repeat(Rows.LIMIT);
+        assertEquals(
+            new Cut(start, OptionalLong.of(2000)), page.rows().getFirst().get(1));
+        assertEquals(
+            new Cut(start, OptionalLong.empty()),
+            query(connection, provider, "SELECT t FROM latin").rows().getFirst().getFirst());
+      } finally {
+        execute(connection, "DROP TABLE latin");
+      }
+    }
+  }
+
+  @org.junit.jupiter.api.Test
+  void aLongCharOfPostgresqlIsCutWithItsPadding() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      var row = query(
+              connection,
+              provider,
+              "SELECT repeat('x', 2048)::char(2048), 'ab'::char(2048), 'ab'::char(4)")
+          .rows()
+          .getFirst();
+      assertEquals(new Cut("x".repeat(Rows.LIMIT), OptionalLong.empty()), row.get(0));
+      assertEquals(new Cut("ab" + " ".repeat(Rows.LIMIT - 2), OptionalLong.empty()), row.get(1));
+      assertEquals("ab  ", row.get(2));
     }
   }
 
