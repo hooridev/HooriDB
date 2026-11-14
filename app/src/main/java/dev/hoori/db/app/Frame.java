@@ -38,6 +38,7 @@ final class Frame {
 
   static El view(State s) {
     Theme t = s.theme;
+    s.tidyPalettes();
     var main = s.tabs.main();
     // One dialog at a time: what the catalogue asks waits for the others to close.
     El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, main) : null;
@@ -147,6 +148,7 @@ final class Frame {
   /** The window of tabs torn off: its title bar over its tabs, whose status lines they show. */
   static El window(State s, TabGroups.Group<Tab> group) {
     Theme t = s.theme;
+    s.tidyPalettes();
     App<State> app = app(s, group);
     El tabs = tabs(s, group, app).key("tabs");
     // What a console of this window asked for, such as a password.
@@ -292,6 +294,8 @@ final class Frame {
   static List<Menu.Item> menus(State s, TabGroups.Group<Tab> group, boolean modal) {
     var palette = s.palette(group);
     var console = s.consoleFor(group);
+    // What opens a dialog of the main window waits for the one open there, from every window.
+    boolean free = !mainDialog(s);
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
     boolean several = group.tabs().size() > 1;
     boolean tree = group == s.tabs.main() && s.loaded && !s.profiles.isEmpty();
@@ -299,7 +303,7 @@ final class Frame {
         Menu.submenu(
             "&File",
             List.of(
-                Menu.item("New connection…", s.canChange() ? s::newConnection : null)
+                Menu.item("New connection…", free && s.canChange() ? s::newConnection : null)
                     .icon(Symbol.ADD),
                 Menu.item(
                         "New console", console == null ? null : () -> s.openConsole(console, group))
@@ -307,12 +311,7 @@ final class Frame {
                     .shortcut(Key.CONTROL, "N"),
                 Menu.item(
                     "Drivers…",
-                    s.drivers == null
-                            || s.dialog != null
-                            || s.deleting != null
-                            || s.driverList != null
-                        ? null
-                        : () -> s.driverList = DriversDialog.open(s)),
+                    s.drivers == null || !free ? null : () -> s.driverList = DriversDialog.open(s)),
                 Menu.separator(),
                 Menu.item("Close tab", close).icon(Symbol.DISMISS).shortcut(Key.CONTROL, "W"),
                 Menu.separator(),
@@ -343,6 +342,24 @@ final class Frame {
                     .shortcut(Key.CONTROL, "0"),
                 Menu.item("Tab content", close == null ? null : () -> focusContent(s, group))
                     .shortcut(Key.CONTROL, "1"))));
+  }
+
+  /** Whether a dialog of the main window is open: its own, or one the catalogue asks there. */
+  private static boolean mainDialog(State s) {
+    return s.dialog != null
+        || s.deleting != null
+        || s.driverList != null
+        || s.catalogue.dialog(s.theme, s, s.tabs.main()) != null;
+  }
+
+  /**
+   * Gives the focus to the content of the window's active tab once the window has built it: a
+   * handler, in that window or another, has just made the tab active, so the tree of the window
+   * still shows what was there before. The second step runs after the window's next build.
+   */
+  static void focusContentSoon(State s, TabGroups.Group<Tab> group) {
+    var app = app(s, group);
+    app.after(0, () -> app.after(0, () -> focusContent(s, group)));
   }
 
   /** Gives the focus to the tree of connections. */

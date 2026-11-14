@@ -25,7 +25,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 
 /** The app's state, which only the handlers change, on the app's thread. */
@@ -41,7 +40,14 @@ final class State {
   // The tabs of every window: the first window's, and those torn off into windows of their own.
   final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow).onClosed(Tab::close);
   // The command palette of each window, by its tabs; it goes with the window.
-  private final Map<TabGroups.Group<Tab>, CommandPalette.State> palettes = new WeakHashMap<>();
+  // The command palette of each window, by its tabs, and what Go to table began reading there.
+  final Map<TabGroups.Group<Tab>, Palette> palettes = new HashMap<>();
+
+  static final class Palette {
+    final CommandPalette.State state = new CommandPalette.State();
+    final List<Runnable> reads = new ArrayList<>(); // stops what it began reading
+  }
+
   String message; // in the status line for a while, or null
   private int messages; // told so far
 
@@ -403,8 +409,11 @@ final class State {
     openTable(id, table, tabs.main());
   }
 
-  /** As {@link #openTable(UUID, Table)}, a new tab in the window of these tabs. */
-  void openTable(UUID id, Table table, TabGroups.Group<Tab> into) {
+  /**
+   * As {@link #openTable(UUID, Table)}, a new tab in the window of these tabs; returns the tabs
+   * that hold it.
+   */
+  TabGroups.Group<Tab> openTable(UUID id, Table table, TabGroups.Group<Tab> into) {
     for (var group : tabs.groups()) {
       for (int i = 0; i < group.tabs().size(); i++) {
         if (group.tabs().get(i) instanceof TableTab x
@@ -412,20 +421,22 @@ final class State {
             && x.table.container().equals(table.container())
             && x.table.name().equals(table.name())) {
           tabs.select(group, i);
-          if (group.window() != null) {
-            group.window().raise();
+          var window = group.window() != null ? group.window() : app.windows().of(app);
+          if (window != null) {
+            window.raise();
           }
           if (!x.table.equals(table)) {
             x.table = table;
             x.open(this, true);
           }
-          return;
+          return group;
         }
       }
     }
     var tab = new TableTab(id, table);
     tabs.add(into, into.tabs().size(), tab);
     tab.open(this, false);
+    return into;
   }
 
   /** The table tabs of every window, of the connection or of all where it is null. */
@@ -472,7 +483,35 @@ final class State {
 
   /** The command palette of the window of these tabs. */
   CommandPalette.State palette(TabGroups.Group<Tab> group) {
-    return palettes.computeIfAbsent(group, g -> new CommandPalette.State());
+    return palettes.computeIfAbsent(group, g -> new Palette()).state;
+  }
+
+  /** Ends with the palette of the window: what it began reading, stopped by this. */
+  void readForPalette(TabGroups.Group<Tab> group, Runnable stop) {
+    palettes.computeIfAbsent(group, g -> new Palette()).reads.add(stop);
+  }
+
+  /**
+   * Stops what a palette that closed began reading, and forgets the palettes of windows that
+   * closed. Each window runs it as it builds its view, since the kit tells nobody that a palette
+   * closed.
+   */
+  // shortcut: a palette's last entries stay in the kit's state until it opens again, as the kit
+  // cannot drop them without the commands used last; upgrade when it can.
+  void tidyPalettes() {
+    var groups = tabs.groups();
+    for (var it = palettes.entrySet().iterator(); it.hasNext(); ) {
+      var entry = it.next();
+      var palette = entry.getValue();
+      boolean gone = !groups.contains(entry.getKey());
+      if (gone || !palette.state.isOpen()) {
+        palette.reads.forEach(Runnable::run);
+        palette.reads.clear();
+      }
+      if (gone) {
+        it.remove();
+      }
+    }
   }
 
   /** Closes the active tab of the window. */

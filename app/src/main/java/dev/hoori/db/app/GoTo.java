@@ -15,10 +15,10 @@ import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.ConnectionProfile;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -47,17 +47,19 @@ final class GoTo {
   /** The tables that match, best first, and then what is not read yet. */
   static List<FilterList.Entry> entries(State s, TabGroups.Group<Tab> group, String query) {
     var c = s.catalogue;
-    var q = query.strip().toLowerCase(Locale.ROOT);
+    var q = query.strip();
     var found = new ArrayList<Found>();
     var notes = new ArrayList<FilterList.Entry>();
-    boolean any = false;
+    var connected = c.lives.values().stream()
+        .filter(live -> live.phase instanceof Catalogue.Connected)
+        .map(live -> live.profile)
+        .toList();
     for (var live : c.lives.values()) {
       if (!(live.phase instanceof Catalogue.Connected)) {
         continue;
       }
-      any = true;
       var id = live.id();
-      var name = State.name(live.profile);
+      var name = label(live.profile, connected);
       var colour = s.colour(id);
       var databases = live.levels.get(new Node.Connection(id));
       if (!(databases instanceof Catalogue.Read read)) {
@@ -103,14 +105,23 @@ final class GoTo {
             }
           }
         }
-        if (db.database().system() || !(reading || unread)) {
+        // What the palette itself reads, or failed to.
+        var scan = live.scans.get(db);
+        if (scan != null) {
+          reading |= scan.work != null;
+          failed = scan.failed != null ? scan.failed : failed;
+        }
+        if (db.database().system() || !(reading || unread || failed != null)) {
           continue;
         }
         String database = db.database().name();
         Runnable readThem = () -> {
           var palette = s.palette(group);
           var text = palette.text();
-          c.readTables(s, db);
+          var started = c.scan(s, db);
+          if (started != null) {
+            s.readForPalette(group, () -> c.stop(db, started));
+          }
           palette.open(text); // it stays, and shows the tables as they come
         };
         notes.add(
@@ -135,11 +146,13 @@ final class GoTo {
       var table = f.table();
       var symbol = table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE;
       var colour = s.colour(f.id());
-      entries.add(FilterList.entry(table.name(), () -> s.openTable(f.id(), table, group))
+      entries.add(FilterList.entry(table.name(), () -> {
+            Frame.focusContentSoon(s, s.openTable(f.id(), table, group));
+          })
           .detail(f.where())
           .leading(t -> lead(t, colour, Icon.icon(t, symbol, Icon.Variant.MUTED))));
     }
-    if (!any) {
+    if (connected.isEmpty()) {
       entries.add(FilterList.entry("No connection is open", null)
           .detail("Open one in the tree to find its tables")
           .symbol(Symbol.INFO));
@@ -174,6 +187,27 @@ final class GoTo {
         .child(icon);
   }
 
+  /**
+   * What the palette calls a connection: its name, and where another connected one has the same,
+   * its user and server too, or its place among them where those are the same as well.
+   */
+  static String label(ConnectionProfile profile, List<ConnectionProfile> connected) {
+    var name = State.name(profile);
+    var same = connected.stream().filter(p -> State.name(p).equals(name)).toList();
+    if (same.size() < 2) {
+      return name;
+    }
+    var where = server(profile);
+    if (same.stream().filter(p -> server(p).equals(where)).count() < 2) {
+      return name + " (" + where + ")";
+    }
+    return name + " (" + (same.indexOf(profile) + 1) + ")";
+  }
+
+  private static String server(ConnectionProfile p) {
+    return (p.user().isBlank() ? "" : p.user() + "@") + p.host() + ":" + p.port();
+  }
+
   /** Where the table is: its connection, database and schema. */
   private static String where(String connection, Table table) {
     return switch (table.container()) {
@@ -190,36 +224,44 @@ final class GoTo {
   }
 
   /**
-   * How well a name matches what was typed, in lower case: 0 for the name itself, 1 for its start,
-   * 2 for the start of a word in it, 3 for the initials of its words ({@code oi} for {@code
-   * order_items}), 4 for anywhere in it; -1 for not at all. Everything matches nothing typed.
+   * How well a name matches what was typed, whatever the case: 0 for the name itself, 1 for its
+   * start, 2 for the start of a word in it, 3 for the initials of its words ({@code oi} for {@code
+   * order_items}), 4 for anywhere in it; -1 for not at all. Everything matches nothing typed. The
+   * name is compared as it is, a character at a time, as lower-casing can change its length.
    */
   static int rank(String name, String q) {
     if (q.isEmpty()) {
       return 0;
     }
-    var n = name.toLowerCase(Locale.ROOT);
-    if (n.equals(q)) {
+    if (name.equalsIgnoreCase(q)) {
       return 0;
     }
-    if (n.startsWith(q)) {
+    if (at(name, 0, q)) {
       return 1;
     }
     var initials = new StringBuilder();
     boolean wordStart = false;
+    boolean anywhere = false;
     for (int i = 0; i < name.length(); i++) {
+      boolean here = at(name, i, q);
+      anywhere |= here;
       if (starts(name, i)) {
-        initials.append(n.charAt(i));
-        wordStart |= n.startsWith(q, i);
+        initials.append(name.charAt(i));
+        wordStart |= here;
       }
     }
     if (wordStart) {
       return 2;
     }
-    if (initials.toString().startsWith(q)) {
+    if (at(initials.toString(), 0, q)) {
       return 3;
     }
-    return n.contains(q) ? 4 : -1;
+    return anywhere ? 4 : -1;
+  }
+
+  /** Whether the text holds what was typed at the index, whatever the case. */
+  private static boolean at(String text, int i, String q) {
+    return text.regionMatches(true, i, q, 0, q.length());
   }
 
   /** Whether a word begins at the index: after a separator, or a capital after a small letter. */

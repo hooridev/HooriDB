@@ -17,8 +17,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.catalog.CatalogException;
+import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.connection.Colour;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Provider;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -93,6 +97,10 @@ class PaletteTest {
     assertEquals(4, GoTo.rank("customers", "tom"));
     assertEquals(-1, GoTo.rank("customers", "oi"));
     assertEquals(0, GoTo.rank("customers", ""));
+    // Lower-casing İ makes two characters of one: positions are those of the name as it is.
+    assertEquals(3, GoTo.rank("İ_Order", "io"));
+    assertEquals(2, GoTo.rank("İ_Order", "ord"));
+    assertEquals(1, GoTo.rank("İ_Order", "i"));
   }
 
   @Test
@@ -176,7 +184,7 @@ class PaletteTest {
   @Test
   void aDatabaseNotReadYetSaysSoAndIsReadWhenChosen() throws Exception {
     var app = connected();
-    var held = c.servers.hold("tables " + PG + "/analytics.tracking");
+    var held = c.servers.hold("all tables " + PG + "/analytics");
     c.run(app, GO_TO + "type \"ev\"\nframe\nsnap unread\n");
     var unread = c.tree("unread");
     assertTrue(unread.contains("role=group label=\"" + GoTo.UNREAD + "\""), unread);
@@ -186,7 +194,7 @@ class PaletteTest {
     assertFalse(options(unread).contains("events"), unread);
     // The system's databases need no word.
     assertFalse(options(unread).contains("template0"), unread);
-    c.run(app, "press role=option label=\"analytics\"\n" + SHOWN + "await\nframe\nsnap reading\n");
+    c.run(app, "press role=option label=\"analytics\"\n" + SHOWN + "snap reading\n");
     var reading = c.tree("reading");
     assertTrue(line(reading, "role=dialog").contains("label=\"Command palette\""), reading);
     assertTrue(option(reading, "analytics").contains("reading its tables…"), reading);
@@ -273,6 +281,216 @@ class PaletteTest {
     assertEquals(
         List.of("orders"),
         app.state().tables(null).stream().map(x -> x.table.name()).toList());
+  }
+
+  /** Orders and customers open in the main window, customers then moved to a window of its own. */
+  App<State> torn() throws Exception {
+    var app = connected();
+    c.run(
+        app,
+        GO_TO + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + SETTLE
+            + GO_TO + "type \"customers\"\nframe\nkey Enter\n" + SHOWN + SETTLE
+            + "press #tab-1 right\n" + SHOWN
+            + "press role=menuitem label=\"Move to new window\"\n" + SHOWN);
+    return app;
+  }
+
+  @Test
+  void aCommandThatOpensADialogWaitsForTheOneOpenInTheMainWindowFromEveryWindow() throws Exception {
+    var app = torn();
+    c.run(
+        app,
+        "press role=button label=\"Add connection\"\n" + SHOWN
+            + "press role=textbox label=\"Name\"\ntype \"half done\"\nframe\n"
+            + "window \"customers\"\n" + PALETTE + "snap all\ntype \"new connection\"\nframe\n"
+            + "snap asked\nkey Enter\n" + SHOWN + "window main\nframe\nsnap main\n");
+    var dialog = app.state().dialog;
+    var asked = c.tree("customers-asked");
+    assertTrue(line(asked, "label=\"File: New connection…\"").contains("disabled"), asked);
+    var all = c.tree("customers-all");
+    assertTrue(line(all, "label=\"File: Drivers…\"").contains("disabled"), all);
+    assertTrue(c.tree("main").contains("\"half done\""), "the dialog is as it was");
+    assertSame(dialog, app.state().dialog);
+  }
+
+  @Test
+  void twoConnectionsOfOneNameAreToldApartAndEnterOpensTheChosenOnesTable() throws Exception {
+    var first = SHOP.withName("local");
+    var second = ConnectionProfile.of(Provider.POSTGRESQL)
+        .withName("local")
+        .withHost(PG)
+        .withDatabase("shop")
+        .withUser("shop_app");
+    var app = c.app(first, second);
+    c.ready(app, first, second);
+    c.run(app, START);
+    var s = app.state();
+    for (var p : List.of(first, second)) {
+      var db = new Node.OfDatabase(p.id(), new Database("shop", false));
+      s.catalogue.toggle(s, new Node.Connection(p.id()), true);
+      c.run(app, SETTLE);
+      s.catalogue.toggle(s, db, true);
+      c.run(app, SETTLE);
+      s.catalogue.toggle(
+          s, new Node.OfSchema(p.id(), new Schema(db.database(), "public", false)), true);
+      c.run(app, SETTLE);
+    }
+    c.run(
+        app,
+        GO_TO + "type \"orders\"\nframe\nkey ArrowDown\nframe\nframe\nsnap chosen\n" + "key Enter\n"
+            + SHOWN + SETTLE);
+    var chosen = c.tree("chosen");
+    var orders =
+        chosen.lines().filter(l -> l.contains("role=option label=\"orders\"")).toList();
+    assertEquals(2, orders.size(), chosen);
+    assertTrue(orders.get(1).contains("selected"), "the second stays chosen: " + chosen);
+    assertTrue(chosen.contains("\"local (1) · shop · public\""), chosen);
+    assertTrue(chosen.contains("\"local (2) · shop · public\""), chosen);
+    assertEquals(second.id(), s.tables(null).getFirst().id);
+  }
+
+  @Test
+  void aConnectionIsCalledByItsServerWhereThatTellsItApart() {
+    var here = SHOP.withName("local");
+    var there = SHOP.withName("local").withHost("other.example.com");
+    var alone = INVENTORY;
+    var all = List.of(here, there, alone);
+    assertEquals("local (shop_app@" + PG + ":5432)", GoTo.label(here, all));
+    assertEquals("local (shop_app@other.example.com:5432)", GoTo.label(there, all));
+    assertEquals("inventory", GoTo.label(alone, all));
+  }
+
+  @Test
+  void closingThePaletteStopsWhatItBeganReadingAndLeavesTheTreesReads() throws Exception {
+    var app = connected();
+    var held = c.servers.hold("columns " + PG + "/shop.public.orders");
+    c.run(app, open("orders"));
+    CatalogueTest.eventually(
+        () -> c.servers.calls.contains("columns " + PG + "/shop.public.orders"));
+    // Shop's sales schema is not read: its scan waits behind the held read, on the same lane.
+    c.run(
+        app,
+        GO_TO + "type \"inv\"\nframe\npress role=option label=\"shop\"\n" + SHOWN
+            + "snap reading\nkey Escape\n" + SHOWN + open("customers"));
+    assertTrue(option(c.tree("reading"), "shop").contains("reading its tables…"));
+    held.countDown();
+    c.run(app, SETTLE + GO_TO + "type \"inv\"\nframe\nsnap after\n");
+    assertFalse(c.servers.calls.contains("all tables " + PG + "/shop"), c.servers.calls.toString());
+    assertTrue(c.servers.done.contains("columns " + PG + "/shop.public.orders"));
+    assertTrue(c.servers.done.contains("columns " + PG + "/shop.public.customers"));
+    var after = c.tree("after");
+    assertTrue(option(after, "shop").contains("choose to read its tables"), after);
+    assertFalse(options(after).contains("invoices"), after);
+  }
+
+  @Test
+  void whatThePaletteReadsWaitsBehindWhatTheTreeAsksFor() throws Exception {
+    var app = torn();
+    var held = c.servers.hold("columns " + PG + "/shop.public.orders");
+    c.run(app, "window main\n" + open("orders"));
+    CatalogueTest.eventually(
+        () -> c.servers.calls.contains("columns " + PG + "/shop.public.orders"));
+    // The palette of the other window stays open while the tree is used.
+    c.run(
+        app,
+        "window \"customers\"\n" + GO_TO + "type \"inv\"\nframe\n"
+            + "press role=option label=\"shop\"\n" + SHOWN + "window main\n"
+            + open("order_totals"));
+    held.countDown();
+    c.run(app, SETTLE + "window \"customers\"\nframe\nsnap found\n");
+    var calls = c.servers.calls;
+    int tree = calls.indexOf("columns " + PG + "/shop.public.order_totals");
+    int palette = calls.indexOf("all tables " + PG + "/shop");
+    assertTrue(tree >= 0 && palette > tree, calls.toString());
+    assertTrue(options(c.tree("customers-found")).contains("invoices"), c.tree("customers-found"));
+  }
+
+  @Test
+  void aReadThePaletteBeganThatFailsSaysSoThereAndIsOfferedAgain() throws Exception {
+    var app = connected();
+    var key = "all tables " + PG + "/analytics";
+    c.servers.fail(key, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    c.run(
+        app,
+        GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n" + SHOWN + SETTLE
+            + "snap failed\n");
+    var failed = c.tree("failed");
+    assertTrue(
+        option(failed, "analytics").contains("\"shop-prod · Access denied, choose to try again\""),
+        failed);
+    assertFalse(line(failed, "role=option label=\"analytics\"").contains("disabled"), failed);
+    // Not in the tree, whose node was never opened.
+    assertFalse(CatalogueTest.rows(failed).contains("    tracking"), failed);
+    c.servers.heal(key);
+    c.run(app, "press role=option label=\"analytics\"\n" + SHOWN + SETTLE + "snap read\n");
+    assertEquals("events", options(c.tree("read")).getFirst(), c.tree("read"));
+  }
+
+  @Test
+  void aRefreshOrADisconnectStopsWhatThePaletteReads() throws Exception {
+    var app = torn();
+    var key = "all tables " + PG + "/shop";
+    var held = c.servers.hold(key);
+    var pick = "window \"customers\"\n" + GO_TO + "type \"inv\"\nframe\n"
+        + "press role=option label=\"shop\"\n" + SHOWN;
+    c.run(app, pick);
+    CatalogueTest.eventually(() -> c.servers.calls.contains(key));
+    c.run(app, "window main\n" + CatalogueTest.menu("shop-prod", "Refresh") + SETTLE);
+    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    c.run(app, "window \"customers\"\nframe\nsnap refreshed\n");
+    var refreshed = c.tree("customers-refreshed");
+    assertTrue(option(refreshed, "shop").contains("choose to read its tables"), refreshed);
+    assertFalse(options(refreshed).contains("invoices"), refreshed);
+    c.servers.interrupted.clear();
+    c.run(app, pick);
+    CatalogueTest.eventually(() -> c.servers.interrupted.isEmpty()
+        && c.servers.calls.stream().filter(key::equals).count() == 2);
+    c.run(app, "window main\n" + CatalogueTest.menu("shop-prod", "Disconnect") + SETTLE);
+    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    held.countDown();
+    c.run(app, SETTLE);
+    assertTrue(app.state().catalogue.live(SHOP.id()) == null);
+  }
+
+  @Test
+  void aClosedWindowsPaletteIsForgotten() throws Exception {
+    var app = torn();
+    c.run(
+        app,
+        "window \"customers\"\n" + PALETTE + "key Escape\n" + SHOWN + PALETTE
+            + "type \"close tab\"\nframe\nkey Enter\n" + SHOWN + SETTLE);
+    assertEquals(1, app.windows().all().size());
+    var s = app.state();
+    assertEquals(java.util.Set.of(s.tabs.main()), s.palettes.keySet());
+  }
+
+  @Test
+  void aTableOpenInTheMainWindowChosenInAnotherBringsTheMainWindowForwardWithTheFocusOnIt()
+      throws Exception {
+    var app = torn();
+    var main = app.windows().of(app);
+    c.run(app, "window \"customers\"\nframe\n");
+    assertTrue(app.windows().place(app, 100, 100).window() != main, "the other lies on top");
+    c.run(
+        app,
+        GO_TO + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + "frame\n"
+            + "window main\nframe\nsnap main\n");
+    assertSame(main, app.windows().place(app, 100, 100).window(), "the main window is on top");
+    var tree = c.tree("main");
+    assertEquals("orders", active(tree));
+    assertTrue(focused(tree).contains("role=grid"), focused(tree));
+  }
+
+  @Test
+  void tiesGoToTheShorterNameAndThenInTheOrderOfTheTree() throws Exception {
+    var app = connected();
+    c.run(app, GO_TO + "type \"o\"\nframe\nsnap ties\n");
+    var all = options(c.tree("ties"));
+    // Its start, then anywhere: stock before customers and low_stock, which are as long.
+    assertEquals(
+        List.of("orders", "order_totals", "stock", "customers", "low_stock"),
+        all.subList(0, 5),
+        c.tree("ties"));
   }
 
   /** The active tab's label. */
