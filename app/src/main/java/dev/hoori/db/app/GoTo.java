@@ -108,7 +108,7 @@ final class GoTo {
         // What the palette itself reads, or failed to.
         var scan = live.scans.get(db);
         if (scan != null) {
-          reading |= scan.work != null;
+          reading |= scan.asked != null;
           failed = scan.failed != null ? scan.failed : failed;
         }
         if (db.database().system() || !(reading || unread || failed != null)) {

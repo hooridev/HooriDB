@@ -93,9 +93,9 @@ final class Catalogue {
   /** What is known of a node's children. */
   sealed interface Level {}
 
-  /** They are being read; the work is set once it is asked for. */
+  /** They are being read; the call is set once it is asked for. */
   static final class Reading implements Level {
-    Work work;
+    Lane.Asked asked;
   }
 
   record Read(List<Node> children) implements Level {}
@@ -117,7 +117,8 @@ final class Catalogue {
   static final class Live {
     final ConnectionProfile profile; // as it was when opened
     Phase phase;
-    Work work; // the step under way: reading the password or connecting; or null
+    Work work; // reading the password, or null
+    Lane.Asked connecting; // the wait for the first connection, or null
     Handover handover; // the password on its way from the keyring, or null
     LoadedDriver driver;
     // The tabs whose window asks for the password: a console's there; null for the main window.
@@ -395,18 +396,16 @@ final class Catalogue {
     live.password = password;
     live.phase = new Connecting();
     live.lane = lane(s, live);
-    var opening = live.lane.open(servers, live.profile, password, live.driver);
-    // Its databases are asked for right behind it, on its lane: they need no answer before.
-    read(s, live, new Node.Connection(live.id()));
+    live.lane.open(servers, live.profile, password, live.driver);
     record Opened(ServerVersion version, String database) {}
-    live.work = s.app.background(
+    // Right behind the opening, which it fails as.
+    live.connecting = live.lane.ask(
+        s.app,
         "connect to " + State.name(live.profile),
-        () -> {
-          var link = Lane.await(opening);
-          return new Opened(link.version(), link.database());
-        },
+        Lane.Priority.VIEW,
+        link -> new Opened(link.version(), link.database()),
         opened -> {
-          live.work = null;
+          live.connecting = null;
           var provider = live.profile.provider();
           var version = opened.version();
           // Where a connection reads one database only, the others get connections of their own.
@@ -419,7 +418,7 @@ final class Catalogue {
           s.connected(live.id());
         },
         error -> {
-          live.work = null;
+          live.connecting = null;
           var checked = checked(live, error);
           var failure = checked instanceof ConnectionException e
               ? e.failure()
@@ -429,6 +428,8 @@ final class Catalogue {
           s.unconnected(live.id());
           s.tell(State.name(live.profile) + ": " + Words.title(failure));
         });
+    // Its databases are asked for right behind it, on its lane: they need no answer before.
+    read(s, live, new Node.Connection(live.id()));
   }
 
   /** Reads the children of the node on the connection that reads its database. */
@@ -464,10 +465,11 @@ final class Catalogue {
     var lane = lane(s, live, database(node));
     var reading = new Reading();
     live.levels.put(node, reading);
-    var asked = lane.submit(call);
-    reading.work = s.app.background(
+    reading.asked = lane.ask(
+        s.app,
         "read " + label(s, node),
-        () -> Lane.await(asked),
+        Lane.Priority.VIEW,
+        call,
         children -> {
           if (live.levels.get(node) == reading) {
             live.levels.put(node, new Read(children));
@@ -496,7 +498,7 @@ final class Catalogue {
 
   /** Go to table's read of a whole database: under way while it has work, else why it failed. */
   static final class Scan {
-    Work work;
+    Lane.Asked asked;
     String failed;
   }
 
@@ -512,21 +514,20 @@ final class Catalogue {
     var live = lives.get(node.id());
     if (live == null
         || !(live.phase instanceof Connected c)
-        || live.scans.get(node) instanceof Scan x && x.work != null) {
+        || live.scans.get(node) instanceof Scan x && x.asked != null) {
       return null;
     }
     var database = node.database();
     boolean schemas = c.schemas();
     var lane = lane(s, live, database.name());
     record Found(List<Schema> schemas, List<Table> tables) {}
-    var asked = lane.submit(
-        Lane.Priority.AHEAD,
-        link -> new Found(schemas ? link.schemas(database) : null, link.allTables(database)));
     var scan = new Scan();
     live.scans.put(node, scan);
-    scan.work = s.app.background(
+    scan.asked = lane.ask(
+        s.app,
         "read the tables of " + database.name(),
-        () -> Lane.await(asked),
+        Lane.Priority.AHEAD,
+        link -> new Found(schemas ? link.schemas(database) : null, link.allTables(database)),
         found -> {
           if (live.scans.get(node) == scan) {
             live.scans.remove(node);
@@ -537,7 +538,7 @@ final class Catalogue {
           if (live.scans.get(node) != scan) {
             return;
           }
-          scan.work = null;
+          scan.asked = null;
           var checked = checked(live, error);
           if (checked instanceof ConnectionException) {
             if (live.lanes.remove(database.name(), lane)) {
@@ -561,8 +562,8 @@ final class Catalogue {
     var live = lives.get(node.id());
     if (live != null && live.scans.get(node) == scan) {
       live.scans.remove(node);
-      if (scan.work != null) {
-        scan.work.cancel();
+      if (scan.asked != null) {
+        scan.asked.cancel();
       }
     }
   }
@@ -597,13 +598,16 @@ final class Catalogue {
     }
   }
 
-  /** Stops the scans of databases at or below the node, or of the database the node is in. */
-  private static void stopScans(Live live, Node node) {
+  /**
+   * Takes the scans of databases at or below the node, or of the database the node is in, and adds
+   * what they asked for to what is given up.
+   */
+  private static void stopScans(Live live, Node node, List<Lane.Asked> gone) {
     for (var entry : List.copyOf(live.scans.entrySet())) {
       if (entry.getKey().within(node) || node.within(entry.getKey())) {
         live.scans.remove(entry.getKey());
-        if (entry.getValue().work != null) {
-          entry.getValue().work.cancel();
+        if (entry.getValue().asked != null) {
+          gone.add(entry.getValue().asked);
         }
       }
     }
@@ -850,15 +854,17 @@ final class Catalogue {
       return;
     }
     forgetBelow(s, node);
-    stopScans(live, node);
+    var gone = new ArrayList<Lane.Asked>();
+    stopScans(live, node, gone);
     for (var entry : List.copyOf(live.levels.entrySet())) {
       if (entry.getKey().within(node)) {
         if (entry.getValue() instanceof Reading r) {
-          r.work.cancel();
+          gone.add(r.asked);
         }
         live.levels.remove(entry.getKey());
       }
     }
+    Lane.cancel(gone);
     if (node instanceof Node.Connection) {
       // The databases are read anew: their connections go, those still opening too.
       live.lanes.values().forEach(Lane::close);
@@ -939,13 +945,19 @@ final class Catalogue {
       live.handover.drop();
       live.handover = null;
     }
+    var gone = new ArrayList<Lane.Asked>();
+    if (live.connecting != null) {
+      gone.add(live.connecting);
+      live.connecting = null;
+    }
     for (var level : live.levels.values()) {
       if (level instanceof Reading r) {
-        r.work.cancel();
+        gone.add(r.asked);
       }
     }
+    stopScans(live, new Node.Connection(live.id()), gone);
+    Lane.cancel(gone);
     live.levels.clear();
-    stopScans(live, new Node.Connection(live.id()));
     if (live.lane != null) {
       live.lane.close();
       live.lane = null;

@@ -453,6 +453,28 @@ class PaletteTest {
   }
 
   @Test
+  void aRefreshNeverStartsThePalettesReadThatWaits() throws Exception {
+    var app = torn();
+    var columns = "columns " + PG + "/shop.public.orders";
+    var held = c.servers.hold(columns);
+    c.run(app, "window main\n" + open("orders"));
+    CatalogueTest.eventually(() -> c.servers.calls.contains(columns));
+    c.run(
+        app,
+        "window \"customers\"\n" + GO_TO + "type \"inv\"\nframe\n"
+            + "press role=option label=\"shop\"\n" + SHOWN + "snap asked\nwindow main\n"
+            + CatalogueTest.menu("shop", "Refresh"));
+    var asked = c.tree("customers-asked");
+    assertTrue(option(asked, "shop").contains("reading its tables…"), asked);
+    // The tree's read that runs is interrupted, which lets the lane go on at once: the palette's
+    // read behind it has left the lane by then.
+    CatalogueTest.eventually(() -> c.servers.interrupted.contains(columns));
+    held.countDown();
+    c.run(app, SETTLE);
+    assertFalse(c.servers.calls.contains("all tables " + PG + "/shop"), c.servers.calls.toString());
+  }
+
+  @Test
   void aClosedWindowsPaletteIsForgotten() throws Exception {
     var app = torn();
     c.run(
