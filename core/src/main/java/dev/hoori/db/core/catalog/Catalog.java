@@ -4,23 +4,16 @@ import dev.hoori.db.core.catalog.CatalogException.Failure;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.query.Query;
+import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.SQLNonTransientConnectionException;
-import java.sql.SQLRecoverableException;
-import java.sql.Statement;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.function.Predicate;
 
 /**
@@ -44,7 +37,7 @@ import java.util.function.Predicate;
 public final class Catalog {
 
   /** How long a cancelled query has to end before its connection is aborted. */
-  public static final Duration GRACE = Duration.ofSeconds(2);
+  public static final Duration GRACE = Query.GRACE;
 
   private static final Set<String> MYSQL_SYSTEM =
       Set.of("information_schema", "mysql", "performance_schema", "sys");
@@ -52,9 +45,6 @@ public final class Catalog {
   // Tables, partitioned and foreign tables, views and materialized views; not indexes, sequences,
   // composite types or TOAST tables.
   private static final String PG_KINDS = "('r', 'p', 'f', 'v', 'm')";
-
-  // MySQL error codes: no access to a database, a table, a column, or without a privilege.
-  private static final Set<Integer> MYSQL_ACCESS_DENIED = Set.of(1044, 1142, 1143, 1227);
 
   private Catalog() {}
 
@@ -237,120 +227,38 @@ public final class Catalog {
     }
   }
 
-  /**
-   * Runs the query on a thread of its own, so that an interrupt of the caller can cancel it on the
-   * server: an interrupt of a virtual thread that is in a driver's call closes the driver's socket,
-   * and a platform thread's is not noticed until the server answers.
-   */
   static <T> List<T> query(Connection connection, String sql, Row<T> row, String... parameters)
       throws CatalogException {
-    if (Thread.currentThread().isInterrupted()) {
-      throw new CatalogException(Failure.CANCELLED, "", null);
-    }
-    PreparedStatement statement = null;
     try {
-      statement = connection.prepareStatement(sql);
-      for (var i = 0; i < parameters.length; i++) {
-        statement.setString(i + 1, parameters[i]);
-      }
-    } catch (SQLException | RuntimeException e) {
-      close(statement);
-      throw failure(connection, e);
-    }
-    var prepared = statement;
-    var result = new CompletableFuture<List<T>>();
-    Thread.ofVirtual().name("catalog").start(() -> {
-      try (prepared;
-          var rows = prepared.executeQuery()) {
-        var read = new ArrayList<T>();
-        while (rows.next()) {
-          read.add(row.read(rows));
+      return Query.run(connection, sql, statement -> {
+        for (var i = 0; i < parameters.length; i++) {
+          statement.setString(i + 1, parameters[i]);
         }
-        result.complete(read);
-      } catch (Throwable e) {
-        result.completeExceptionally(e);
-      }
-    });
-    try {
-      return result.get();
-    } catch (InterruptedException e) {
-      cancel(connection, prepared, result);
-      Thread.currentThread().interrupt();
-      throw new CatalogException(Failure.CANCELLED, "", null);
-    } catch (ExecutionException e) {
-      throw failure(connection, e.getCause());
+        try (var rows = statement.executeQuery()) {
+          var read = new ArrayList<T>();
+          while (rows.next()) {
+            read.add(row.read(rows));
+          }
+          return read;
+        }
+      });
+    } catch (QueryException e) {
+      throw failure(e);
     }
   }
 
-  // Waits for the cancel as well as for the query: a cancel that reaches the server late would
-  // stop the caller's next statement instead.
-  private static void cancel(Connection connection, Statement statement, Future<?> result) {
-    var canceller = Thread.ofVirtual().name("catalog cancel").start(() -> {
-      try {
-        statement.cancel();
-      } catch (SQLException | RuntimeException e) {
-        // The query is over, or the connection is gone; either way nothing runs any more.
-      }
-    });
-    var deadline = System.nanoTime() + GRACE.toNanos();
-    boolean ended;
-    try {
-      try {
-        result.get(GRACE.toNanos(), TimeUnit.NANOSECONDS);
-      } catch (ExecutionException e) {
-        // What a cancelled query throws.
-      }
-      ended = canceller.join(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())));
-    } catch (TimeoutException | InterruptedException e) {
-      ended = false;
-    }
-    if (!ended) {
-      try {
-        connection.abort(task -> Thread.ofVirtual().start(task));
-      } catch (SQLException | RuntimeException e) {
-        // Not even an abort is possible; the connection stays as the driver left it.
-      }
-    }
+  private static CatalogException failure(Connection connection, SQLException thrown) {
+    return failure(Query.failure(connection, thrown));
   }
 
-  private static CatalogException failure(Connection connection, Throwable thrown) {
-    var message = thrown.getMessage() == null ? thrown.getClass().getName() : thrown.getMessage();
-    if (!(thrown instanceof SQLException e)) {
-      return new CatalogException(Failure.OTHER, message, thrown);
-    }
-    var state = e.getSQLState() == null ? "" : e.getSQLState();
-    Failure failure;
-    if (state.startsWith("08")
-        || e instanceof SQLNonTransientConnectionException
-        || e instanceof SQLRecoverableException
-        || closed(connection)) {
-      failure = Failure.CONNECTION_LOST;
-    } else if (state.equals("57014") || state.equals("70100")) {
-      // PostgreSQL's query_canceled, and MariaDB's and MySQL's "Query execution was interrupted".
-      failure = Failure.CANCELLED;
-    } else if (state.equals("42501") || MYSQL_ACCESS_DENIED.contains(e.getErrorCode())) {
-      failure = Failure.ACCESS_DENIED;
-    } else {
-      failure = Failure.OTHER;
-    }
-    return new CatalogException(failure, message, thrown);
-  }
-
-  private static boolean closed(Connection connection) {
-    try {
-      return connection.isClosed();
-    } catch (SQLException | RuntimeException e) {
-      return true;
-    }
-  }
-
-  private static void close(Statement statement) {
-    try {
-      if (statement != null) {
-        statement.close();
-      }
-    } catch (SQLException | RuntimeException e) {
-      // A statement that never ran holds nothing worth reporting.
-    }
+  private static CatalogException failure(QueryException e) {
+    var failure = switch (e.failure()) {
+      case CONNECTION_LOST -> Failure.CONNECTION_LOST;
+      case NOT_FOUND -> Failure.NOT_FOUND;
+      case ACCESS_DENIED -> Failure.ACCESS_DENIED;
+      case CANCELLED -> Failure.CANCELLED;
+      case OTHER -> Failure.OTHER;
+    };
+    return new CatalogException(failure, e.detail(), e.getCause());
   }
 }
