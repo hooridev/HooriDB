@@ -119,7 +119,7 @@ public final class ProfileStore {
           integer(node, where, "port"),
           text(node, where, "database"),
           text(node, where, "user"),
-          field(node, where, "tls", JsonNode::isBoolean, "true or false").booleanValue());
+          tls(node, where));
       if (!ids.add(profile.id())) {
         throw unreadable(where + " has the id " + profile.id() + " of an earlier profile");
       }
@@ -141,12 +141,12 @@ public final class ProfileStore {
       list.addObject()
           .put("id", profile.id().toString())
           .put("name", profile.name())
-          .put("provider", profile.provider().name())
+          .put("provider", stored(profile.provider()))
           .put("host", profile.host())
           .put("port", profile.port())
           .put("database", profile.database())
           .put("user", profile.user())
-          .put("tls", profile.tls());
+          .put("tls", stored(profile.tls()));
     }
     var bytes = ByteBuffer.wrap(JSON.writeValueAsBytes(root));
 
@@ -210,11 +210,39 @@ public final class ProfileStore {
 
   private Provider provider(JsonNode profile, String where) throws UnreadableException {
     var value = text(profile, where, "provider");
-    try {
-      return Provider.valueOf(value);
-    } catch (IllegalArgumentException unknown) {
-      throw unreadable(where + " is for \"" + value + "\", a database HooriDB does not know");
+    for (var provider : Provider.values()) {
+      if (stored(provider).equals(value)) {
+        return provider;
+      }
     }
+    throw unreadable(where + " is for \"" + value + "\", a database HooriDB does not know");
+  }
+
+  private Tls tls(JsonNode profile, String where) throws UnreadableException {
+    var value = text(profile, where, "tls");
+    for (var tls : Tls.values()) {
+      if (stored(tls).equals(value)) {
+        return tls;
+      }
+    }
+    throw unreadable("in " + where + ", \"tls\" is not \"off\", \"encrypted\" or \"verified\"");
+  }
+
+  // The names in the file, spelt out so that renaming a constant cannot change it.
+  private static String stored(Provider provider) {
+    return switch (provider) {
+      case POSTGRESQL -> "postgresql";
+      case MARIADB -> "mariadb";
+      case MYSQL -> "mysql";
+    };
+  }
+
+  private static String stored(Tls tls) {
+    return switch (tls) {
+      case OFF -> "off";
+      case ENCRYPTED -> "encrypted";
+      case VERIFIED -> "verified";
+    };
   }
 
   private UnreadableException unreadable(String why) {
