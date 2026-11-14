@@ -9,11 +9,9 @@ import static com.rethinkj.ui.kit.Button.button;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
-import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Checkbox;
 import com.rethinkj.ui.kit.Dialog;
-import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
@@ -22,7 +20,6 @@ import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
-import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Table;
@@ -715,11 +712,17 @@ final class Catalogue {
   /** The text of a node's row. */
   String label(State s, Node node) {
     return switch (node) {
-      // shortcut: the kit's tree has no muted text after a row's name, so the type follows the
-      // name in the label; move it there once the tree has it.
-      case Node.OfColumn n -> n.column().name() + ": " + n.column().type();
       case Node.Problem n -> problem(s, n.of()).title();
       default -> name(s, node);
+    };
+  }
+
+  /** The muted text after a node's name: a column's type, a connection's kind of server. */
+  String detail(State s, Node node) {
+    return switch (node) {
+      case Node.OfColumn n -> n.column().type();
+      case Node.Connection n -> s.profile(n.id()).provider().displayName();
+      default -> null;
     };
   }
 
@@ -828,13 +831,8 @@ final class Catalogue {
       actions.add(button(t, SECONDARY, "Enter password…", () -> askPassword(live)));
     }
     actions.add(button(t, SECONDARY, "Try again", () -> retry(s, node)));
-    // shortcut: a callout puts its buttons beside its text, which squeezes it into a narrow column
-    // in the sidebar, so they go below it; pass them to the callout once it can put them there.
-    return col()
-        .wFull()
-        .gap(t.space().s())
-        .child(Callout.callout(t, Callout.Kind.DANGER, trouble.title(), trouble.text()))
-        .child(Form.buttons(t, actions.toArray(El[]::new)));
+    return Callout.callout(
+        t, Callout.Kind.DANGER, trouble.title(), trouble.text(), actions.toArray(El[]::new));
   }
 
   /** The tree's nodes, as the state holds them. */
@@ -871,6 +869,11 @@ final class Catalogue {
     @Override
     public String label(Node node) {
       return s.catalogue.label(s, node);
+    }
+
+    @Override
+    public String detail(Node node) {
+      return s.catalogue.detail(s, node);
     }
 
     @Override
@@ -918,30 +921,16 @@ final class Catalogue {
       };
     }
 
-    // shortcut: the kit has no symbol per database, so a badge names the provider; its colour
-    // says whether it is connected.
+    // The kind of server is the row's muted text; the icon's colour says whether it is connected.
     private El connection(Node.Connection n) {
-      var profile = s.profile(n.id());
-      var provider = profile.provider();
-      String code = switch (provider) {
-        case POSTGRESQL -> "PG";
-        case MARIADB -> "MA";
-        case MYSQL -> "MY";
-      };
       var live = s.catalogue.lives.get(n.id());
       Phase phase = live == null ? null : live.phase;
-      Badge.Kind kind = switch (phase) {
-        case Connected c -> Badge.Kind.SUCCESS;
-        case Failed f -> Badge.Kind.DANGER;
-        case Lost l -> Badge.Kind.DANGER;
-        case null, default -> Badge.Kind.NEUTRAL;
+      El icon = switch (phase) {
+        case Connected c -> Icon.icon(t, Symbol.SERVER, Icon.Variant.SUCCESS);
+        case Failed f -> Icon.icon(t, Symbol.SERVER, Icon.Variant.DANGER);
+        case Lost l -> Icon.icon(t, Symbol.SERVER, Icon.Variant.DANGER);
+        case null, default -> Icon.icon(t, Symbol.SERVER, Icon.Variant.MUTED);
       };
-      // One width for the three, so that the names line up.
-      El badge = Badge.badge(t, kind, code)
-          .label(provider.displayName())
-          .w(t.size().control() + t.space().s())
-          .justify(Style.Content.CENTER);
-      El icon = Tooltip.tooltip(t, badge, provider.displayName());
       if (phase == null || phase instanceof Connected || ended(phase)) {
         return icon;
       }

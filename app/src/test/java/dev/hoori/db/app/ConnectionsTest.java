@@ -826,9 +826,9 @@ class ConnectionsTest {
         ConnectionProfile.of(Provider.MARIADB).withName("analytics").withHost("db.example.com"),
         ConnectionProfile.of(Provider.MYSQL).withName("legacy").withHost("localhost"));
     String tree = run(app(), "snap end\n");
-    assertTrue(after(tree, "label=\"shop-prod\"").contains("label=\"PostgreSQL\""), tree);
-    assertTrue(after(tree, "label=\"analytics\"").contains("label=\"MariaDB\""), tree);
-    assertTrue(after(tree, "label=\"legacy\"").contains("label=\"MySQL\""), tree);
+    assertTrue(after(tree, "label=\"shop-prod\"").contains("value=\"PostgreSQL\""), tree);
+    assertTrue(after(tree, "label=\"analytics\"").contains("value=\"MariaDB\""), tree);
+    assertTrue(after(tree, "label=\"legacy\"").contains("value=\"MySQL\""), tree);
   }
 
   /** The lines of the tree from the first that contains the text to the next row. */

@@ -498,15 +498,16 @@ class CatalogueTest {
     assertTrue(row(tables, "public").contains("label=\"folder\""), tables);
     String columns = tree("columns");
     assertEquals(
-        List.of(
-            "        id: bigint",
-            "        customer_id: integer",
-            "        placed_at: timestamp with time zone",
-            "        total: numeric(12,2)"),
+        List.of("        id", "        customer_id", "        placed_at", "        total"),
         rows(columns).subList(5, 9));
-    assertTrue(row(columns, "id: bigint").contains("label=\"key\""), columns);
-    assertTrue(row(columns, "total: numeric(12,2)").contains("label=\"column_single\""), columns);
-    assertTrue(line(columns, "label=\"id: bigint\"").contains("level=5"), columns);
+    // The type is the row's muted text, after its name.
+    assertTrue(line(columns, "label=\"id\"").contains("value=\"bigint\""), columns);
+    assertTrue(
+        line(columns, "label=\"placed_at\"").contains("value=\"timestamp with time zone\""),
+        columns);
+    assertTrue(row(columns, "id").contains("label=\"key\""), columns);
+    assertTrue(row(columns, "total").contains("label=\"column_single\""), columns);
+    assertTrue(line(columns, "label=\"id\"").contains("level=5"), columns);
   }
 
   @Test
@@ -528,16 +529,16 @@ class CatalogueTest {
             "  inventory",
             "    items",
             "    stock",
-            "      item_id: int(11)",
-            "      warehouse: varchar(8)",
-            "      quantity: int(11)",
+            "      item_id",
+            "      warehouse",
+            "      quantity",
             "    low_stock",
             "  information_schema",
             "  mysql",
             "  performance_schema"),
         rows(tree("end")));
     String end = tree("end");
-    assertTrue(row(end, "warehouse: varchar(8)").contains("label=\"key\""), end);
+    assertTrue(row(end, "warehouse").contains("label=\"key\""), end);
     assertTrue(row(end, "low_stock").contains("label=\"eye\""), end);
     assertFalse(servers.calls.stream().anyMatch(c -> c.startsWith("schemas")), "no schemas");
   }
@@ -660,7 +661,7 @@ class CatalogueTest {
             "columns " + PG + "/shop.public.order_totals",
             "columns " + PG + "/shop.sales.invoices"),
         columns);
-    assertTrue(rows(tree("end")).contains("        amount: numeric(12,2)"), tree("end"));
+    assertTrue(rows(tree("end")).contains("        amount"), tree("end"));
   }
 
   @Test
@@ -751,7 +752,7 @@ class CatalogueTest {
     run(
         app,
         START + open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE
-            + open("orders") + SETTLE + menu("placed_at: timestamp with time zone", "Copy name")
+            + open("orders") + SETTLE + menu("placed_at", "Copy name")
             + "snap column\n" + menu("shop-prod", "Copy name") + "snap connection\n");
     assertEquals(
         "placed_at",

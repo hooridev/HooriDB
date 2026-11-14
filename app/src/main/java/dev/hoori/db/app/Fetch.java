@@ -9,7 +9,7 @@ import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Callout;
-import com.rethinkj.ui.kit.Form;
+import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Provider;
@@ -18,7 +18,6 @@ import dev.hoori.db.core.driver.DriverException;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.driver.LoadedDriver;
 import java.time.Instant;
-import java.util.Locale;
 import java.util.function.BiConsumer;
 
 /**
@@ -347,8 +346,6 @@ final class Fetch {
     };
   }
 
-  // shortcut: a callout puts its buttons beside its text, which squeezes a long question into a
-  // narrow column, so they go below it; pass them to the callout once it can put them there.
   private El question(Theme t, State s, Found found, Runnable stop) {
     var name = name(found.provider());
     var address = s.drivers.address(Driver.of(found.provider()), found.version());
@@ -360,23 +357,16 @@ final class Fetch {
         "To connect, HooriDB needs this driver" + size + ", which it downloads from "
             + s.drivers.source + ":\n" + address
             + "\nA driver is program code. It will run on this computer, with your rights. It is"
-            + " downloaded once, checked against its checksum and kept for later.");
-    return col()
-        .wFull()
-        .gap(t.space().m())
-        .key("question")
-        .child(callout)
-        .child(Form.buttons(
-            t,
-            button(t, SECONDARY, "Download", () -> agree(s)),
-            button(t, SECONDARY, "Not now", stop)));
+            + " downloaded once, checked against its checksum and kept for later.",
+        button(t, SECONDARY, "Download", () -> agree(s)),
+        button(t, SECONDARY, "Not now", stop));
+    return col().wFull().key("question").child(callout);
   }
 
   private static El downloading(Theme t, Downloading d, Runnable stop) {
     var found = d.found();
-    String detail = d.total() > 0
-        ? amount(d.done(), d.total()) + " of " + size(d.total())
-        : size(Math.max(0, d.done()));
+    String detail =
+        d.total() > 0 ? size(d.done()) + " of " + size(d.total()) : size(Math.max(0, d.done()));
     String title = "Downloading " + name(found.provider());
     El bar = d.total() > 0
         ? Progress.labeled(t, title, (double) d.done() / d.total(), detail)
@@ -398,17 +388,7 @@ final class Fetch {
     }
   }
 
-  /** Bytes as megabytes with one decimal, or as kilobytes below one megabyte. */
-  // shortcut: the kit's Format has no size in bytes; use it once it has one.
   static String size(long bytes) {
-    // A space that does not break keeps the number with its unit.
-    return amount(bytes, bytes) + (bytes < 1_000_000 ? " kB" : " MB");
-  }
-
-  /** The bytes in the unit that the total is shown in, without the unit. */
-  private static String amount(long bytes, long total) {
-    return total < 1_000_000
-        ? String.valueOf(Math.round(bytes / 1e3))
-        : String.format(Locale.ROOT, "%.1f", bytes / 1e6);
+    return Format.BYTES.text(bytes);
   }
 }

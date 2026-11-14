@@ -182,8 +182,8 @@ class TestConnectionTest {
     run(app, SETTLE + "snap missing\n");
     assertTrue(
         tree("missing")
-            .contains("\"PostgreSQL JDBC 42.7.14, not downloaded yet (1\u00a0kB, from Maven"
-                + " Central)\""),
+            .contains(
+                "\"PostgreSQL JDBC 42.7.14, not downloaded yet (657 B, from Maven" + " Central)\""),
         tree("missing"));
     repository.offline = true;
     run(app, """
@@ -351,8 +351,8 @@ class TestConnectionTest {
         line(asked, "role=note").contains("label=\"Download PostgreSQL JDBC 42.7.14?\""), asked);
     // The tree shows the start and the end of a long text.
     assertTrue(
-        asked.contains("To connect, HooriDB needs this driver (1\u00a0kB), which it downloads"
-            + " from Maven Central:\\nhttps://repo.ma"),
+        asked.contains("To connect, HooriDB needs this driver (657 B), which it downloads"
+            + " from Maven Central:\\nhttps://repo.m"),
         asked);
     assertEquals(
         "https://repo.maven.apache.org/maven2/org/postgresql/postgresql/42.7.14/"
@@ -364,7 +364,7 @@ class TestConnectionTest {
     String downloading = tree("downloading");
     assertTrue(
         line(downloading, "label=\"Downloading PostgreSQL JDBC\"").contains("0%"), downloading);
-    assertTrue(downloading.contains("\"0 of 1\u00a0kB\""), downloading);
+    assertTrue(downloading.contains("\"0 B of 657 B\""), downloading);
     run(app, SETTLE + SETTLE + SETTLE + "snap end\n");
     String end = tree("end");
     assertTrue(end.contains("role=status label=\"Connected to PostgreSQL 16.4\""), end);
