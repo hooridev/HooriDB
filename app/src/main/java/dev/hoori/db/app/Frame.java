@@ -467,9 +467,9 @@ final class Frame {
    * Gives the focus to the content of the window's active tab: a table's grid, else where it was
    * there last, or the console's editor; as the window's last build shows them.
    */
-  // shortcut: a table's grid, not where the focus was in its tab, as the kit's default focus
-  // misses a grid built after the focus moved in, and the tabs' panel remembers the focus of
-  // another tab by its key; leave it to the grid's defaultFocus once the kit covers both.
+  // shortcut: a table's grid, not where the focus was in its tab, as a focus that fell into the
+  // tab before its grid was built stays there and counts as its last place in the tab; leave it
+  // to the grid's defaultFocus once the kit waits for the grid there too.
   private static void focusContent(State s, TabGroups.Group<Tab> group) {
     var app = app(s, group);
     El panel = find(find(app.tree(), "tabs"), "panel");
