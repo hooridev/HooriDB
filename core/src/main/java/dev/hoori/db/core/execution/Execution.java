@@ -86,6 +86,9 @@ public final class Execution implements AutoCloseable {
   // Whether auto-commit was turned off for this statement, to be turned on again when it is over.
   private boolean ownTransaction;
   private boolean over;
+  // Its end was given up for its deadline and the connection aborted: a worker that wakes up
+  // after that does nothing more on it, neither commit, rollback nor auto-commit.
+  private volatile boolean aborted;
   // The result set being read, how it is read, how many of its rows were read, and whether it is
   // on a row not yet read.
   private ResultSet rows;
@@ -167,7 +170,8 @@ public final class Execution implements AutoCloseable {
     var said = new CopyOnWriteArrayList<Message>();
     Failure failure;
     try {
-      failure = Query.within(connection, ENDING, () -> end(Ending.GAVE_UP, -1, said));
+      failure = Query.within(
+          connection, ENDING, () -> end(Ending.GAVE_UP, -1, said), () -> aborted = true);
     } catch (QueryException e) {
       over = true;
       failure = new Failure(
@@ -397,6 +401,9 @@ public final class Execution implements AutoCloseable {
         // What it said is gone with what failed, which the ending says.
       }
     }
+    if (aborted) {
+      return Failure.connectionLost();
+    }
     var closeables = new ArrayList<AutoCloseable>(ended);
     closeables.add(rows);
     closeables.add(statement);
@@ -412,10 +419,13 @@ public final class Execution implements AutoCloseable {
       }
     }
     Failure failure = null;
+    if (aborted) {
+      return Failure.connectionLost();
+    }
     if (ownTransaction) {
       ownTransaction = false;
       var commit = ending != Ending.FAILED;
-      if (commit) {
+      if (commit && !aborted) {
         try {
           connection.clearWarnings();
           connection.commit();
@@ -428,6 +438,9 @@ public final class Execution implements AutoCloseable {
           commit = false;
         }
       }
+      if (aborted) {
+        return Failure.connectionLost();
+      }
       if (!commit) {
         try {
           connection.rollback();
@@ -436,7 +449,7 @@ public final class Execution implements AutoCloseable {
         }
       }
       // pgjdbc commits as it turns auto-commit on, which after a failed rollback it must not.
-      if (!lost) {
+      if (!lost && !aborted) {
         try {
           connection.setAutoCommit(true);
         } catch (SQLException e) {

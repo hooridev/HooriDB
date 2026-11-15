@@ -2332,25 +2332,23 @@ class ConsoleTransactionTest {
    */
   @Test
   void aClosingWhoseDriverCallNeverReturnsEnds() throws Exception {
-    var stuck = new java.util.concurrent.atomic.AtomicBoolean();
-    var release = new CountDownLatch(1);
+    var stuck = new dev.hoori.db.core.execution.Stuck();
     try {
-      var connection = dev.hoori.db.core.execution.Stuck.connection(stuck, release);
+      var connection = stuck.connection();
       var lane = new Lane(e -> {});
       lane.open(
-          (profile, password, driver) -> new Servers.Real(
+          (profile, password, driver) -> Servers.Real.of(
               connection,
               Provider.POSTGRESQL,
               dev.hoori.db.core.connection.ServerVersion.UNKNOWN,
-              "shop",
-              new java.util.concurrent.atomic.AtomicReference<>()),
+              "shop"),
           SHOP,
           ConnectionsTest.PASSWORD.toCharArray(),
           null);
       var first = lane.submit(link -> link.run("SELECT a FROM t").next(10))
           .get(10, java.util.concurrent.TimeUnit.SECONDS);
       assertTrue(first.more(), "left open");
-      stuck.set(true);
+      stuck.arm();
       var ended =
           new java.util.concurrent.CompletableFuture<dev.hoori.db.core.execution.Abandoned>();
       var closing = lane.close(ended::complete);
@@ -2362,7 +2360,68 @@ class ConsoleTransactionTest {
           Failure.Kind.CONNECTION_LOST,
           ended.getNow(null).failure().orElseThrow().kind());
     } finally {
-      release.countDown();
+      stuck.release();
+    }
+  }
+
+  /**
+   * The last re-check: a give-up that its deadline cut off ends the session at once and for good.
+   * The statement that asked for it never reaches the old link, the console says the connection
+   * ended, the next run opens a new session, and the old worker that wakes up changes nothing.
+   */
+  @Test
+  void aGiveUpCutOffByItsDeadlineEndsTheSession() throws Exception {
+    var stuck = new dev.hoori.db.core.execution.Stuck();
+    var opens = new java.util.concurrent.atomic.AtomicInteger();
+    // The tree's connection and the later ones made up; the console's first one stuck.
+    Servers mixed = (profile, password, driver) -> opens.getAndIncrement() == 1
+        ? Servers.Real.of(
+            stuck.connection(),
+            Provider.POSTGRESQL,
+            dev.hoori.db.core.connection.ServerVersion.UNKNOWN,
+            "shop")
+        : servers.open(profile, password, driver);
+    try {
+      var app = c.app(mixed, () -> new Keyring.Available(c.secrets), SHOP);
+      c.ready(app, SHOP);
+      c.run(app, CatalogueTest.START + menu("shop-prod", "New console") + SETTLE);
+      var tab = k.tab(app);
+      c.run(app, type("SELECT a FROM t") + RUN);
+      assertTrue(tab.outputs.getFirst().more, "a read left open on the stuck connection");
+      stuck.arm();
+      // Its give-up runs to its deadline, longer than an await waits by default.
+      c.run(
+          app,
+          type(";\n" + COUNT) + "key Enter control\nframe\nawait 30\nframe\n" + SETTLE
+              + "snap ended\n");
+      String ended = c.tree("ended");
+      assertFalse(tab.connected(), "the session is over");
+      assertTrue(line(ended, "#problem").contains("Disconnected"), ended);
+      assertEquals(
+          1,
+          stuck.calls.stream().filter("createStatement"::equals).count(),
+          "nothing more reached the old link: " + stuck.calls);
+      // The old worker wakes up, and changes nothing on the connection given up.
+      int before = stuck.calls.size();
+      var worker = stuck.stuck();
+      stuck.release();
+      assertTrue(worker.join(java.time.Duration.ofSeconds(10)));
+      var after = stuck.calls.subList(before, stuck.calls.size());
+      assertTrue(
+          after.stream()
+              .noneMatch(
+                  x -> x.equals("commit") || x.equals("rollback") || x.startsWith("setAutoCommit")),
+          after.toString());
+      // The next run opens a new session.
+      c.run(app, "press #sql\n" + RUN);
+      assertTrue(servers.calls.contains("run " + PG + " " + COUNT), servers.calls.toString());
+      assertTrue(tab.connected());
+      assertEquals(
+          1,
+          stuck.calls.stream().filter("createStatement"::equals).count(),
+          "still nothing on the old link: " + stuck.calls);
+    } finally {
+      stuck.release();
     }
   }
 

@@ -17,6 +17,7 @@ import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.Query;
+import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
@@ -64,7 +65,12 @@ class ServersServerTest {
 
   /** The one value of a statement's first row. */
   static Object value(Servers.Link link, String sql) {
-    var run = link.run(sql);
+    Servers.Run run;
+    try {
+      run = link.run(sql);
+    } catch (QueryException e) {
+      throw new AssertionError(e);
+    }
     try {
       return rows(run.next(1)).getFirst().getFirst();
     } finally {

@@ -6,21 +6,50 @@ import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.Statement;
 import java.sql.Types;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * A made-up JDBC connection whose one statement has endless rows of one text column, and whose
- * statement's {@code getWarnings}, once {@code stuck} is set, never returns until released,
- * interrupted or not: a driver call that survives the interrupt and the abort, as a hung native
- * socket call can.
+ * A made-up JDBC connection, to PostgreSQL as core sees it, with no transaction open and
+ * auto-commit on, whose one statement has endless rows of one text column. Once {@link #arm}ed,
+ * the statement's {@code getWarnings} never returns until {@link #release}d, interrupted or not:
+ * a driver call that survives the interrupt and the abort, as a hung native socket call can. It
+ * keeps the names of the calls made on the connection and its statement, and the thread that got
+ * stuck.
  */
 public final class Stuck {
 
-  private Stuck() {}
+  /** pgjdbc's way to the transaction's state, which core asks by reflection. */
+  public interface Pg {
+    Object getTransactionState();
+  }
 
-  /** The connection; {@code release} lets the stuck call return. */
-  public static Connection connection(AtomicBoolean stuck, CountDownLatch release) {
+  private final AtomicBoolean armed = new AtomicBoolean();
+  private final CountDownLatch released = new CountDownLatch(1);
+  private final AtomicReference<Thread> stuck = new AtomicReference<>();
+
+  /** The calls made on the connection and its statement, by name, in order. */
+  public final List<String> calls = new CopyOnWriteArrayList<>();
+
+  /** From now on, the statement's {@code getWarnings} hangs. */
+  public void arm() {
+    armed.set(true);
+  }
+
+  /** Lets the stuck call return. */
+  public void release() {
+    released.countDown();
+  }
+
+  /** The thread stuck in the call, or null. */
+  public Thread stuck() {
+    return stuck.get();
+  }
+
+  public Connection connection() {
     ResultSetMetaData meta = proxy(ResultSetMetaData.class, (name, args) -> switch (name) {
       case "getColumnCount" -> 1;
       case "getColumnTypeName" -> "text";
@@ -34,28 +63,40 @@ public final class Stuck {
       case "getString", "getObject" -> "x";
       default -> null;
     });
-    Statement statement = proxy(Statement.class, (name, args) -> switch (name) {
-      case "execute" -> true;
-      case "getResultSet" -> rows;
-      case "getLargeUpdateCount" -> -1L;
-      case "getWarnings" -> {
-        while (stuck.get()) {
-          try {
-            release.await();
-            break;
-          } catch (InterruptedException e) {
-            // Ignored, as such a call does.
+    Statement statement = proxy(Statement.class, (name, args) -> {
+      calls.add("statement." + name);
+      return switch (name) {
+        case "execute" -> true;
+        case "getResultSet" -> rows;
+        case "getLargeUpdateCount" -> -1L;
+        case "getWarnings" -> {
+          if (armed.get()) {
+            stuck.set(Thread.currentThread());
+            while (true) {
+              try {
+                released.await();
+                break;
+              } catch (InterruptedException e) {
+                // Ignored, as such a call does.
+              }
+            }
           }
+          yield null;
         }
-        yield null;
-      }
-      default -> null;
+        default -> null;
+      };
     });
-    return proxy(Connection.class, (name, args) -> switch (name) {
-      case "createStatement" -> statement;
-      case "getAutoCommit" -> true;
-      default -> null;
-    });
+    return (Connection) Proxy.newProxyInstance(
+        Stuck.class.getClassLoader(), new Class<?>[] {Connection.class, Pg.class}, (p, m, args) -> {
+          var name = m.getName();
+          calls.add(name + (args != null && args.length == 1 ? "(" + args[0] + ")" : ""));
+          return switch (name) {
+            case "createStatement" -> statement;
+            case "getAutoCommit" -> true;
+            case "getTransactionState" -> "IDLE";
+            default -> fallback(m.getReturnType());
+          };
+        });
   }
 
   private interface Answer {
@@ -67,23 +108,23 @@ public final class Stuck {
     return (T) Proxy.newProxyInstance(
         Stuck.class.getClassLoader(), new Class<?>[] {type}, (p, m, args) -> {
           var value = answer.answer(m.getName(), args);
-          if (value != null) {
-            return value;
-          }
-          var r = m.getReturnType();
-          if (r == boolean.class) {
-            return false;
-          }
-          if (r == int.class) {
-            return 0;
-          }
-          if (r == long.class) {
-            return 0L;
-          }
-          if (r == double.class || r == float.class) {
-            return 0.0;
-          }
-          return null;
+          return value != null ? value : fallback(m.getReturnType());
         });
+  }
+
+  private static Object fallback(Class<?> type) {
+    if (type == boolean.class) {
+      return false;
+    }
+    if (type == int.class) {
+      return 0;
+    }
+    if (type == long.class) {
+      return 0L;
+    }
+    if (type == double.class || type == float.class) {
+      return 0.0;
+    }
+    return null;
   }
 }

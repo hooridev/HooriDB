@@ -17,6 +17,7 @@ import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.query.Query;
@@ -25,6 +26,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -38,13 +40,11 @@ interface Servers {
   /** Through the driver to the real server, with {@link Connector} and {@link Catalog}. */
   Servers SERVER = (profile, password, driver) -> {
     var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
-    return new Real(
-        opened.connection(),
-        profile.provider(),
-        opened.server().parsed(),
-        opened.database(),
-        new AtomicReference<>());
+    return Real.of(
+        opened.connection(), profile.provider(), opened.server().parsed(), opened.database());
   };
+
+  String GONE = "The connection was lost or given up: nothing more is sent on it.";
 
   /** Opens a connection to the profile's server and database. */
   Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
@@ -79,8 +79,13 @@ interface Servers {
     /** The rows from {@code from} up to {@code to}, fewer at the end, as {@link Rows#read}. */
     Page read(Table table, List<Column> columns, long from, long to) throws QueryException;
 
-    /** A statement to run, as {@link Execution} runs it; nothing runs before its first next. */
-    Run run(String sql);
+    /**
+     * A statement to run, as {@link Execution} runs it; nothing runs before its first next.
+     *
+     * @throws QueryException {@link QueryException.Failure#CONNECTION_LOST} on a link that core
+     *     reported lost
+     */
+    Run run(String sql) throws QueryException;
 
     /** Makes the database the connection's own, where the server switches on one connection. */
     void use(String database) throws QueryException;
@@ -121,75 +126,127 @@ interface Servers {
     Abandoned close();
   }
 
-  /** A connection of a driver. */
+  /**
+   * A connection of a driver. Once core has said that it is lost or given up, as when ending a
+   * statement found the server gone or ran past its deadline, it is gone for good: every later
+   * call fails as lost, before it touches the connection.
+   */
   record Real(
       Connection connection,
       Provider provider,
       ServerVersion version,
       String database,
-      AtomicReference<Execution> open) // the statement whose rows are not all read, or null
+      AtomicReference<Execution> open, // the statement whose rows are not all read, or null
+      AtomicBoolean gone)
       implements Link {
+
+    static Real of(
+        Connection connection, Provider provider, ServerVersion version, String database) {
+      return new Real(
+          connection, provider, version, database, new AtomicReference<>(), new AtomicBoolean());
+    }
+
+    private void usable() throws QueryException {
+      if (gone.get()) {
+        throw QueryException.of(QueryException.Failure.CONNECTION_LOST, GONE);
+      }
+    }
+
+    private void readable() throws CatalogException {
+      if (gone.get()) {
+        throw CatalogException.of(CatalogException.Failure.CONNECTION_LOST, GONE);
+      }
+    }
+
+    /** What core said: a failure that leaves the connection lost makes the link gone. */
+    private <T> T saw(T said, Failure failure) {
+      if (failure != null && failure.kind() == Failure.Kind.CONNECTION_LOST) {
+        gone.set(true);
+      }
+      return said;
+    }
+
+    private Abandoned saw(Abandoned ended) {
+      return saw(ended, ended.failure().orElse(null));
+    }
 
     @Override
     public List<Database> databases() throws CatalogException {
+      readable();
       return Catalog.databases(connection, provider);
     }
 
     @Override
     public List<Schema> schemas(Database database) throws CatalogException {
+      readable();
       return Catalog.schemas(connection, provider, database);
     }
 
     @Override
     public List<Table> tables(Container container) throws CatalogException {
+      readable();
       return Catalog.tables(connection, provider, container);
     }
 
     @Override
     public List<Table> allTables(Database database) throws CatalogException {
+      readable();
       return Catalog.allTables(connection, provider, database);
     }
 
     @Override
     public List<Column> columns(Table table) throws CatalogException {
+      readable();
       return Catalog.columns(connection, provider, table);
     }
 
     @Override
     public OptionalLong estimate(Table table) throws QueryException {
+      usable();
       return Rows.estimate(connection, provider, table);
     }
 
     @Override
     public long count(Table table) throws QueryException {
+      usable();
       return Rows.count(connection, provider, table);
     }
 
     @Override
     public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
+      usable();
       return Rows.read(connection, provider, table, columns, from, to);
     }
 
     @Override
-    public Run run(String sql) {
+    public Run run(String sql) throws QueryException {
+      usable();
       var execution = new Execution(connection, provider, sql);
       open.set(execution);
       return new Run() {
         @Override
         public Portion next(int count) {
-          return execution.next(count);
+          var portion = execution.next(count);
+          Failure lost = null;
+          for (var result : portion.results()) {
+            if (result instanceof Failure f && f.kind() == Failure.Kind.CONNECTION_LOST) {
+              lost = f;
+            }
+          }
+          return saw(portion, lost);
         }
 
         @Override
         public Abandoned close() {
           open.compareAndSet(execution, null);
-          return execution.abandon();
+          return saw(execution.abandon());
         }
       };
     }
 
     @Override
     public void use(String database) throws QueryException {
+      usable();
       // Through core's worker, so that an interrupt never lands in the driver's socket I/O.
       Query.run(connection, provider, () -> {
         connection.setCatalog(database);
@@ -199,6 +256,7 @@ interface Servers {
 
     @Override
     public void manual(boolean manual) throws QueryException {
+      usable();
       Query.run(connection, provider, () -> {
         if (connection.getAutoCommit() == manual) {
           connection.setAutoCommit(!manual);
@@ -209,6 +267,7 @@ interface Servers {
 
     @Override
     public Status status() throws QueryException {
+      usable();
       return Status.of(connection, provider);
     }
 
@@ -216,7 +275,7 @@ interface Servers {
     public Abandoned giveUp() {
       // A statement that ran well keeps what it changed, though its rows were not all read.
       var left = open.getAndSet(null);
-      return left == null ? Abandoned.NOTHING : left.abandon();
+      return left == null ? Abandoned.NOTHING : saw(left.abandon());
     }
 
     @Override

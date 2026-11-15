@@ -1461,6 +1461,20 @@ final class ConsoleTab implements Tab {
     if (closed || error instanceof InterruptedException) {
       return; // the session closed under it, which says why where it says anything
     }
+    if (error instanceof GaveUp g && g.failure.kind() == Failure.Kind.CONNECTION_LOST) {
+      // Ending it lost the connection, or ran past its deadline: the session is over, at once
+      // and for good, as with any lost connection; the next run opens another.
+      s.drop(this);
+      failedRun = true;
+      var gone = gone();
+      problem = heard(
+          "Disconnected",
+          brief(g.sql) + " could not be ended, and the connection was given up: "
+              + g.failure.message() + (gone == null ? "" : "\n" + gone));
+      log.add(new Logged(Level.ERROR, brief(sql), null, "Not run: the connection ended"));
+      closeSession();
+      return;
+    }
     if (error instanceof GaveUp g) {
       // Its notice is the app's already; here the console stops, and an act that waited too.
       s.drop(this);

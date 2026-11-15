@@ -213,6 +213,16 @@ public final class Query {
    */
   public static <T> T within(Connection connection, Duration limit, Step<T> step)
       throws QueryException {
+    return within(connection, limit, step, () -> {});
+  }
+
+  /**
+   * As {@link #within(Connection, Duration, Step)}, and {@code passed} runs as the limit passes,
+   * before the connection is given up, so that the step, should it wake up after all, can see that
+   * it was.
+   */
+  public static <T> T within(Connection connection, Duration limit, Step<T> step, Runnable passed)
+      throws QueryException {
     var result = new CompletableFuture<T>();
     var worker = Thread.ofVirtual().name("query within").start(() -> {
       try {
@@ -232,6 +242,7 @@ public final class Query {
         } catch (ExecutionException e) {
           throw failure(connection, e.getCause());
         } catch (TimeoutException e) {
+          passed.run();
           var canceller = Thread.ofVirtual().unstarted(() -> {});
           canceller.start();
           abandon(connection, worker, canceller);
