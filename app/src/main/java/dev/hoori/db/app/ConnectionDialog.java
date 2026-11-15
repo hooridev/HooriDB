@@ -85,6 +85,8 @@ final class ConnectionDialog {
   String keyringError; // what the keyring answered when it failed, or null
   Work asking; // the keyring's answer whether it holds a password, or null
   private int lookups; // counted, so that a late patience is dropped
+  // Asked and not answered: whether the keyring holds a password for the profile is not known.
+  private boolean unknown;
   // A change of the keyring runs: the dialog stays, unchanged, until its answer has come.
   boolean changing;
   boolean slow; // the keyring has not answered for a while: Cancel gives up waiting for it
@@ -156,6 +158,7 @@ final class ConnectionDialog {
       if (asking != null && lookups == at) {
         asking.cancel(); // stops waiting: the keyring does not answer, and it stays unknown
         asking = null;
+        unknown = true;
       }
     });
     asking = s.app.background(
@@ -169,10 +172,12 @@ final class ConnectionDialog {
           asking = null;
           stored = found;
           savePassword = found;
+          unknown = false;
         },
         error -> {
           asking = null;
           keyringError = State.message(error);
+          unknown = true;
         });
   }
 
@@ -181,7 +186,9 @@ final class ConnectionDialog {
     return editing.changed()
         || portTyped()
         || !password.isEmpty()
-        || !isNew && stored != null && savePassword != stored;
+        || !isNew && stored != null && savePassword != stored
+        // Not known to match: the choice is one to carry out.
+        || !isNew && stored == null && unknown;
   }
 
   /** Whether Save can go: the profile can connect, and something changed. */
@@ -272,6 +279,7 @@ final class ConnectionDialog {
           held = null;
           slow = false;
           stored = put != null; // where the password is now, as was done
+          unknown = false;
           saved(s, profile, put != null ? null : typed != null ? typed : old, put != null);
         },
         error -> {
@@ -324,6 +332,7 @@ final class ConnectionDialog {
     changing = false;
     slow = false;
     stored = null; // not known now, and asked again before it counts
+    unknown = true;
     if (held != null) {
       Arrays.fill(held, '\0');
       held = null;

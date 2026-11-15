@@ -575,42 +575,99 @@ final class ConsoleTab implements Tab {
    * before, the app's thread where the outcome was there and not taken.
    */
   static final class Delivery {
-    private static final int PENDING = 0;
+    static final int PENDING = 0;
     private static final int DONE = 1;
     private static final int DELIVERED = 2;
     private static final int GIVEN_UP = 3;
 
-    private final AtomicInteger state = new AtomicInteger(PENDING);
+    private final Cell state;
     private final Tell tell;
     private final String sql; // what a notice names; null for a call whose outcome tells nothing
     private final boolean plain;
     private volatile Object outcome; // the value, or the exception
 
     Delivery(Tell tell, String sql, boolean plain) {
+      this(tell, sql, plain, Cell.of(PENDING));
+    }
+
+    Delivery(Tell tell, String sql, boolean plain, Cell state) {
       this.tell = tell;
       this.sql = sql;
       this.plain = plain;
+      this.state = state;
+    }
+
+    /** The one atomic variable of its state; a test steps the two threads through it. */
+    interface Cell {
+      int get();
+
+      boolean compareAndSet(int expected, int next);
+
+      static Cell of(int initial) {
+        var value = new AtomicInteger(initial);
+        return new Cell() {
+          @Override
+          public int get() {
+            return value.get();
+          }
+
+          @Override
+          public boolean compareAndSet(int expected, int next) {
+            return value.compareAndSet(expected, next);
+          }
+        };
+      }
     }
 
     /** On the lane: the call has its outcome. */
     void done(Object outcome) {
       this.outcome = outcome;
-      if (!state.compareAndSet(PENDING, DONE)) {
-        post(); // the console gave it up before
+      while (true) {
+        int now = state.get();
+        if (now == PENDING && state.compareAndSet(PENDING, DONE)) {
+          return; // the console takes it, or gives it up and posts it
+        }
+        if (now == GIVEN_UP) {
+          post(); // the console gave it up before
+          return;
+        }
+        if (now == DELIVERED) {
+          return; // the lane failed before the call, which the console took as its outcome
+        }
       }
     }
 
-    /** On the app's thread: whether the outcome may go to the console, which then has it. */
+    /**
+     * On the app's thread, with the call's result or failure: whether it goes to the console, which
+     * then has it. Also where the lane ended the call without making it, as when it could not open
+     * its connection or was closed: what came instead is the outcome.
+     */
     boolean deliver() {
-      return state.compareAndSet(DONE, DELIVERED);
+      while (true) {
+        int now = state.get();
+        if (now == GIVEN_UP || now == DELIVERED) {
+          return false;
+        }
+        if (state.compareAndSet(now, DELIVERED)) {
+          return true;
+        }
+      }
     }
 
     /** On the app's thread: the console no longer waits for it. */
     void giveUp() {
-      if (state.compareAndSet(DONE, GIVEN_UP)) {
-        post(); // there, and not taken
-      } else {
-        state.compareAndSet(PENDING, GIVEN_UP);
+      while (true) {
+        int now = state.get();
+        if (now == PENDING && state.compareAndSet(PENDING, GIVEN_UP)) {
+          return; // the lane posts it, once it has it
+        }
+        if (now == DONE && state.compareAndSet(DONE, GIVEN_UP)) {
+          post(); // there, and not taken
+          return;
+        }
+        if (now == GIVEN_UP || now == DELIVERED) {
+          return;
+        }
       }
     }
 
@@ -729,24 +786,55 @@ final class ConsoleTab implements Tab {
 
   /**
    * The session's {@link Tell}: the server's words checked against its own copy of the password,
-   * which it wipes once the session has closed and said so.
+   * which it wipes once the session has closed and said so. A call given up may still answer
+   * after that: a wiped Teller then posts no word of the server's, only that the outcome came too
+   * late to be shown. The check and the wipe hold the same lock, so no text ever goes unchecked.
    */
-  record Teller(App<State> app, State state, String connection, char[] password, ConsoleTab of)
-      implements Tell {
+  static final class Teller implements Tell {
+    private final App<State> app;
+    private final State state;
+    private final String connection;
+    private final char[] password; // null where the session has none
+    private final ConsoleTab of;
+    private boolean wiped;
+
+    Teller(App<State> app, State state, String connection, char[] password, ConsoleTab of) {
+      this.app = app;
+      this.state = state;
+      this.connection = connection;
+      this.password = password;
+      this.of = of;
+    }
+
+    App<State> app() {
+      return app;
+    }
+
+    State state() {
+      return state;
+    }
+
     @Override
     public void tell(String sql, String what, boolean failure) {
-      var said = words(password, what);
+      String said;
+      synchronized (this) {
+        said = wiped ? TOO_LATE : words(password, what);
+      }
       var statement = brief(sql == null ? "" : sql);
       app.post(() -> state.notice(connection, statement, said, failure, of));
     }
 
     /** The session has closed and said all it had to: the password goes. */
-    void wipe() {
+    synchronized void wipe() {
+      wiped = true;
       if (password != null) {
         Arrays.fill(password, '\0');
       }
     }
   }
+
+  static final String TOO_LATE =
+      "Its outcome arrived after its session had closed, too late to be shown; check what it did.";
 
   static final String SESSION_ENDED = "As its session ended, giving up its rest failed: ";
 

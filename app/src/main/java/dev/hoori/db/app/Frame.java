@@ -309,6 +309,7 @@ final class Frame {
    * height above the tree, with Dismiss all where there are several.
    */
   private static El notices(Theme t, State s) {
+    int shown = s.notices.getLast().number(); // the newest this view shows
     var list = col().gap(t.space().s()).key("notices").label("Notices");
     for (var notice : s.notices.reversed()) {
       list.child(Callout.callout(
@@ -326,7 +327,12 @@ final class Frame {
         .child(
             s.notices.size() > 3
                 ? row()
-                    .child(button(t, Button.Variant.SECONDARY, "Dismiss all", s::dismissAll)
+                    .child(button(
+                            t,
+                            Button.Variant.SECONDARY,
+                            "Dismiss all",
+                            // Those shown: a notice that comes before the press stays.
+                            () -> s.dismissUpTo(shown))
                         .key("dismiss-all"))
                 : null)
         // shortcut: bounded by the field size, the theme having no size for a panel's part.

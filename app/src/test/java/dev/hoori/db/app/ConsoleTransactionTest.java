@@ -2324,6 +2324,124 @@ class ConsoleTransactionTest {
     never.countDown();
   }
 
+  // The re-check of the sixth round.
+
+  /**
+   * 5: a session whose read is left open closes, and the driver's call as its statement ends never
+   * returns: the closing thread ends within its bound all the same, and says what it could not.
+   */
+  @Test
+  void aClosingWhoseDriverCallNeverReturnsEnds() throws Exception {
+    var stuck = new java.util.concurrent.atomic.AtomicBoolean();
+    var release = new CountDownLatch(1);
+    try {
+      var connection = dev.hoori.db.core.execution.Stuck.connection(stuck, release);
+      var lane = new Lane(e -> {});
+      lane.open(
+          (profile, password, driver) -> new Servers.Real(
+              connection,
+              Provider.POSTGRESQL,
+              dev.hoori.db.core.connection.ServerVersion.UNKNOWN,
+              "shop",
+              new java.util.concurrent.atomic.AtomicReference<>()),
+          SHOP,
+          ConnectionsTest.PASSWORD.toCharArray(),
+          null);
+      var first = lane.submit(link -> link.run("SELECT a FROM t").next(10))
+          .get(10, java.util.concurrent.TimeUnit.SECONDS);
+      assertTrue(first.more(), "left open");
+      stuck.set(true);
+      var ended =
+          new java.util.concurrent.CompletableFuture<dev.hoori.db.core.execution.Abandoned>();
+      var closing = lane.close(ended::complete);
+      var bound = Lane.ENDS
+          .plus(dev.hoori.db.core.execution.Execution.ENDING)
+          .plus(dev.hoori.db.core.query.Query.GRACE.multipliedBy(4));
+      assertTrue(closing.join(bound), "the closing thread ended within " + bound);
+      assertEquals(
+          Failure.Kind.CONNECTION_LOST,
+          ended.getNow(null).failure().orElseThrow().kind());
+    } finally {
+      release.countDown();
+    }
+  }
+
+  /**
+   * 2: the lane could not open the console's connection, so it never made the call: the console
+   * does not stay busy, and says why.
+   */
+  @Test
+  void aConnectionThatCannotOpenEndsTheCallItWasFor() throws Exception {
+    var app = k.console(SHOP);
+    // A session, lost: the next statement opens another, behind the tree's connection.
+    c.run(app, type(COUNT + ";") + RUN + type("\n" + KILL) + RUN);
+    assertFalse(k.tab(app).connected());
+    servers.fail(
+        "open " + PG + "/shop",
+        FakeServers.notConnected(
+            dev.hoori.db.core.connect.ConnectionException.Failure.UNREACHABLE));
+    c.run(app, type(";\n" + COUNT) + RUN + "snap failed\n");
+    assertFalse(k.tab(app).busy(), "not busy");
+    assertTrue(line(c.tree("failed"), "#problem").contains("role=note"), c.tree("failed"));
+  }
+
+  /** 3: a Teller wiped with its session posts no word of the server's that arrives after. */
+  @Test
+  void aTellerWipedPostsNoUncheckedWords() throws Exception {
+    var app = k.console(SHOP);
+    var teller = new ConsoleTab.Teller(
+        app, app.state(), "shop-prod", ConnectionsTest.PASSWORD.toCharArray(), null);
+    teller.wipe();
+    teller.tell(PAY, "password authentication failed for " + ConnectionsTest.PASSWORD, true);
+    c.run(app, SETTLE);
+    assertFalse(noticed(app).contains(ConnectionsTest.PASSWORD), noticed(app));
+    assertTrue(noticed(app).contains(ConsoleTab.TOO_LATE), noticed(app));
+  }
+
+  /**
+   * 4: Password empty, saving unchecked, the delete given up, and it and the refresh failed: what
+   * the keyring holds is not known, so the choice still counts, and Save asks again to delete.
+   */
+  @Test
+  void anUnknownKeyringWithNothingElseChangedCanStillBeAskedToDelete() throws Exception {
+    c.secrets.stored.put(SHOP.id(), "old");
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(app, CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
+    var late = new CountDownLatch(1);
+    c.secrets.late = late;
+    c.run(
+        app,
+        "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
+            + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED);
+    c.secrets.fails = true;
+    late.countDown();
+    c.run(app, SETTLE);
+    c.secrets.fails = false;
+    // Save's handler, as its button or Enter calls it, whether or not it would go.
+    app.state().dialog.save(app.state());
+    c.run(app, "frame\n" + SETTLE);
+    assertFalse(c.secrets.stored.containsKey(SHOP.id()), "asked to delete, as chosen");
+  }
+
+  /** 6: Dismiss all dismisses the notices shown when it was pressed, not one that came since. */
+  @Test
+  void dismissAllLeavesANoticeThatCameDuringThePress() throws Exception {
+    var app = k.console(SHOP);
+    var s = app.state();
+    for (int i = 1; i <= 4; i++) {
+      int n = i;
+      app.post(() -> s.notice("shop-prod", "SELECT " + n, "shown " + n, true, null));
+    }
+    c.run(app, "await\nframe\n" + OPENED + "down #dismiss-all\nframe\n");
+    // Between the press and the release, and not shown: no frame was built since.
+    s.notice("shop-prod", "SELECT 5", "came during the press", true, null);
+    c.run(app, "up #dismiss-all\nframe\n");
+    assertEquals(1, s.notices.size(), noticed(app));
+    assertTrue(noticed(app).contains("came during the press"), noticed(app));
+  }
+
   /** The pictures of what the fifth round changed, light and dark, as {@link #pictures}. */
   @ParameterizedTest
   @ValueSource(strings = {"dark", "light"})

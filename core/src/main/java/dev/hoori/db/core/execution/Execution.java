@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
 
 /**
@@ -161,7 +162,9 @@ public final class Execution implements AutoCloseable {
     if (over) {
       return Abandoned.NOTHING;
     }
-    var said = new ArrayList<Message>();
+    // Written by the worker, read here without a lock it could hold through a JDBC call that
+    // never returns: after the deadline, nothing here waits.
+    var said = new CopyOnWriteArrayList<Message>();
     Failure failure;
     try {
       failure = Query.within(connection, ENDING, () -> end(Ending.GAVE_UP, -1, said));
@@ -182,9 +185,7 @@ public final class Execution implements AutoCloseable {
           "",
           "");
     }
-    synchronized (said) {
-      return new Abandoned(Optional.ofNullable(failure), said);
-    }
+    return new Abandoned(Optional.ofNullable(failure), said);
   }
 
   /** As {@link #abandon}, without what it says; a caller that reports it uses that. */
@@ -391,9 +392,7 @@ public final class Execution implements AutoCloseable {
     }
     if (said != null && statement != null && !lost) {
       try {
-        synchronized (said) {
-          collect(statement.getWarnings(), said);
-        }
+        collect(statement.getWarnings(), said);
       } catch (SQLException e) {
         // What it said is gone with what failed, which the ending says.
       }
@@ -421,9 +420,7 @@ public final class Execution implements AutoCloseable {
           connection.clearWarnings();
           connection.commit();
           if (said != null) {
-            synchronized (said) {
-              collect(connection.getWarnings(), said); // pgjdbc's notices of the commit
-            }
+            collect(connection.getWarnings(), said); // pgjdbc's notices of the commit
             connection.clearWarnings();
           }
         } catch (SQLException e) {

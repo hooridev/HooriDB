@@ -276,8 +276,9 @@ final class State {
     notices.remove(notice);
   }
 
-  void dismissAll() {
-    notices.clear();
+  /** Dismiss all: those up to the newest the user was shown, by their numbers. */
+  void dismissUpTo(int shown) {
+    notices.removeIf(n -> n.number() <= shown);
   }
 
   /** A console's session begins to close, off the app's thread; {@link #closed} when it has. */
