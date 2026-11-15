@@ -16,9 +16,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * connection does over a slow network, and {@link #freeze} holds everything, as a server that is
  * paused does.
  */
-final class Relay implements AutoCloseable {
+public final class Relay implements AutoCloseable {
 
-  static final String HOST = "127.0.0.1";
+  public static final String HOST = "127.0.0.1";
 
   private final ServerSocket server;
   private final String host;
@@ -28,24 +28,24 @@ final class Relay implements AutoCloseable {
   private volatile boolean frozen;
   private int accepted;
 
-  Relay(String host, int port) throws IOException {
+  public Relay(String host, int port) throws IOException {
     this.server = new ServerSocket(0, 50, InetAddress.getByName(HOST));
     this.host = host;
     this.port = port;
     Thread.ofVirtual().start(this::accept);
   }
 
-  int port() {
+  public int port() {
     return server.getLocalPort();
   }
 
   /** How long every connection after the first waits before it reaches the server. */
-  void delay(Duration delay) {
+  public void delay(Duration delay) {
     this.delay = delay;
   }
 
   /** From now on nothing goes through, and new connections wait. */
-  void freeze() {
+  public void freeze() {
     frozen = true;
   }
 

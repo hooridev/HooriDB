@@ -15,6 +15,7 @@ import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Message;
 import dev.hoori.db.core.execution.Portion;
@@ -133,6 +134,7 @@ final class FakeServers implements Servers {
   private final java.util.Set<String> turningOn = ConcurrentHashMap.newKeySet();
   private final java.util.Set<String> blind = ConcurrentHashMap.newKeySet();
   private final Map<String, Failure> givingUp = new ConcurrentHashMap<>();
+  private final Map<String, Message> givingUpSays = new ConcurrentHashMap<>();
 
   /**
    * The statement turns the server's auto-commit on, as a procedure that runs {@code SET
@@ -146,6 +148,12 @@ final class FakeServers implements Servers {
   /** The host's MariaDB or MySQL driver cannot read the server's status, as old ones cannot. */
   FakeServers cannotReport(String host) {
     blind.add(host);
+    return this;
+  }
+
+  /** Giving up the rest of the statement's rows says this, as a commit's notice may. */
+  FakeServers warnsAtGiveUp(String sql, Message message) {
+    givingUpSays.put(sql, message);
     return this;
   }
 
@@ -705,7 +713,7 @@ final class FakeServers implements Servers {
         }
 
         @Override
-        public Optional<Failure> close() {
+        public Abandoned close() {
           boolean gaveUp = !over;
           if (gaveUp) {
             calls.add("close " + host + " " + sql);
@@ -720,7 +728,8 @@ final class FakeServers implements Servers {
           } else if (failure.isPresent() && pg && transaction == Transaction.OPEN) {
             transaction = Transaction.FAILED; // in the user's transaction, the failure fails it
           }
-          return failure;
+          var says = gaveUp ? givingUpSays.get(sql) : null;
+          return new Abandoned(failure, says == null ? List.of() : List.of(says));
         }
       };
     }
@@ -851,16 +860,21 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public Optional<Failure> giveUp() {
+    public Abandoned giveUp() {
       var left = giving;
       giving = null;
-      return left == null ? Optional.empty() : left.close();
+      return left == null ? Abandoned.NOTHING : left.close();
     }
 
     @Override
-    public Optional<Failure> close() {
+    public Abandoned close() {
       closed.add(host + (database == null ? "" : "/" + database));
       return giveUp();
+    }
+
+    @Override
+    public void abort() {
+      closed.add("aborted " + host + (database == null ? "" : "/" + database));
     }
   }
 

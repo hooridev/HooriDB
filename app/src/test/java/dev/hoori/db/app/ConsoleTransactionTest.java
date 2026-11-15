@@ -1702,8 +1702,8 @@ class ConsoleTransactionTest {
       }
 
       @Override
-      public java.util.Optional<Failure> close() {
-        return java.util.Optional.empty();
+      public dev.hoori.db.core.execution.Abandoned close() {
+        return dev.hoori.db.core.execution.Abandoned.NOTHING;
       }
     }
     var whole = new Endless(0);
@@ -2114,6 +2114,216 @@ class ConsoleTransactionTest {
     gate.countDown();
   }
 
+  // The sixth review: every outcome of a lane call reaches its console or the notices.
+
+  /** Delivered, then the tab closed: the console showed it, and no notice repeats it. */
+  @Test
+  void anOutcomeTakenIsNoNotice() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(MISSING) + RUN + "press #close-0\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.state().consoles(null).isEmpty());
+    assertTrue(app.state().notices.isEmpty(), noticed(app));
+  }
+
+  /** The lane had the outcome, the console had not taken it, and Cancel came: the app posts it. */
+  @Test
+  void anOutcomeThereAndNotTakenBecomesANotice() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN); // the session is open
+    var tab = k.tab(app);
+    c.run(app, type("\n" + BROKEN) + "key Enter control\nframe\nframe\n");
+    eventually(tab::outcomeWaiting);
+    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE);
+    assertTrue(noticed(app).contains("relation \"missing\" does not exist"), noticed(app));
+    assertTrue(app.state().notices.getFirst().failure());
+  }
+
+  /** Cancel came first, the outcome after it: the lane posts it, as the console gave it up. */
+  @Test
+  void anOutcomeAfterItWasGivenUpBecomesANotice() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN);
+    servers.dead = true; // the held call answers once its gate opens, cancelled or not
+    var key = "run " + PG + " " + BROKEN;
+    var gate = servers.hold(key);
+    c.run(app, type("\n" + BROKEN) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    gate.countDown();
+    c.run(app, SETTLE);
+    assertTrue(noticed(app).contains("relation \"missing\" does not exist"), noticed(app));
+  }
+
+  /** A typed ROLLBACK that rolled back only in part, cancelled before the console took it. */
+  @Test
+  void aTypedRollbackInPartCancelledIsANotice() throws Exception {
+    servers.statement(ConsoleTab.ROLLBACK, List.of(new Result.Count(0)), NOT_ROLLED_BACK);
+    var app = open(INVENTORY);
+    var tab = k.tab(app);
+    c.run(app, type(";\n" + ConsoleTab.ROLLBACK) + "key Enter control\nframe\nframe\n");
+    eventually(tab::outcomeWaiting);
+    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE);
+    assertTrue(noticed(app).contains(ConsoleTab.PARTLY), noticed(app));
+  }
+
+  static final String LAST = "SELECT note(id) FROM orders LIMIT 250";
+
+  /**
+   * The last portion of a read, whose own transaction's commit failed, there and not taken as the
+   * tab closes: nothing asks at that close, and the app has it.
+   */
+  @Test
+  void aReadsLastPortionFailingAtTheCloseIsANotice() throws Exception {
+    servers.statement(
+        LAST,
+        List.of(
+            FakeServers.made(250, "id: bigint"),
+            FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE)));
+    var app = k.console(SHOP);
+    var tab = k.tab(app);
+    c.run(app, type(LAST) + RUN + "scroll #grid row 180\nframe\nframe\n");
+    eventually(tab::outcomeWaiting);
+    c.run(app, "press #close-0\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.state().consoles(null).isEmpty(), "nothing asked");
+    assertTrue(noticed(app).contains(DUPLICATE), noticed(app));
+  }
+
+  /**
+   * 3: Exit after the connections file failed to save goes without the file, as the user was
+   * told, but not without the sessions' reports: one that fails keeps HooriDB open.
+   */
+  @Test
+  void quittingWithoutTheFileStillWaitsForTheSessions() throws Exception {
+    servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS) + RUN);
+    var file = dir.resolve("config").resolve(dev.hoori.db.core.connection.ProfileStore.FILE);
+    Files.delete(file);
+    Files.createDirectories(file); // the store cannot write here
+    app.state().put(SHOP.withColour(Colour.GREEN)); // a change to save
+    c.run(app, SETTLE + "close\nframe\n" + SETTLE + "snap unsaved\n");
+    assertTrue(c.tree("unsaved").contains("Close it again to quit without them."));
+    assertFalse(app.windows().all().isEmpty());
+    c.run(app, "close\nframe\n" + SETTLE + "snap reported\n");
+    assertFalse(app.windows().all().isEmpty(), "the session's report keeps it open");
+    assertTrue(noticed(app).contains(DUPLICATE), noticed(app));
+    c.run(app, "close\nframe\n" + SETTLE);
+    assertTrue(app.windows().all().isEmpty(), "and then it goes, without the file");
+  }
+
+  /**
+   * 4: a Rollback that keeps failing, the connection still there, does not keep the console: the
+   * next question offers to end the connection, and the app keeps that it was.
+   */
+  @Test
+  void aRollbackThatKeepsFailingCanBeLeft() throws Exception {
+    servers.statement(
+        ConsoleTab.ROLLBACK,
+        List.of(FakeServers.serverError(Failure.Kind.OTHER, "Error writing file")));
+    var app = open(INVENTORY);
+    c.run(
+        app,
+        "press #close-0\nframe\n" + OPENED + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
+    assertEquals(1, app.state().consoles(null).size(), "the failed Rollback stopped the close");
+    c.run(app, "press #close-0\nframe\n" + OPENED + "snap again\n");
+    assertTrue(c.tree("again").contains("End the connection"), c.tree("again"));
+    c.run(app, "press #answer-go-on\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.state().consoles(null).isEmpty());
+    assertTrue(noticed(app).contains(ConsoleTab.WENT_ON), noticed(app));
+  }
+
+  /** 4: a Commit the server does not answer can be left once it has kept the question waiting. */
+  @Test
+  void aCommitThatDoesNotAnswerCanBeLeft() throws Exception {
+    var app = open(INVENTORY);
+    var key = "run " + MARIA + " " + ConsoleTab.COMMIT;
+    servers.hold(key);
+    c.run(app, "press #close-0\nframe\n" + OPENED + "press #answer-commit\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    c.run(app, "frame\nsnap waiting\n");
+    assertFalse(c.tree("waiting").contains("End the connection"), "not at once");
+    c.run(app, "advance " + ConsoleTab.FIRM_SECONDS + "\nframe\n" + OPENED + "snap overdue\n");
+    assertTrue(c.tree("overdue").contains("End the connection"), c.tree("overdue"));
+    c.run(app, "press #answer-go-on\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.state().consoles(null).isEmpty());
+    assertTrue(noticed(app).contains(ConsoleTab.WENT_ON), noticed(app));
+  }
+
+  /**
+   * 2: after a give-up whose delete and refresh both failed, the dialog does not know what the
+   * keyring holds; choosing not to keep the password there then asks it to delete, not nothing.
+   */
+  @Test
+  void anUnknownKeyringIsNotTakenForAnEmptyOne() throws Exception {
+    c.secrets.stored.put(SHOP.id(), "old");
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(app, CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE + "snap kept\n");
+    assertTrue(line(c.tree("kept"), "role=checkbox").contains("checked"), "it says it holds one");
+    var late = new CountDownLatch(1);
+    c.secrets.late = late;
+    c.run(
+        app,
+        "press role=textbox label=\"Password\"\ntype \"fresh\"\n"
+            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
+            + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED);
+    c.secrets.fails = true; // the delete given up fails, and so does the refresh behind it
+    late.countDown();
+    c.run(app, SETTLE + "snap unknown\n");
+    assertTrue(c.tree("unknown").contains("is not known"), c.tree("unknown"));
+    assertTrue(c.secrets.stored.containsKey(SHOP.id()), "still there");
+    c.secrets.fails = false;
+    c.run(app, "press role=button label=\"Save\"\nframe\n" + SETTLE);
+    assertFalse(c.secrets.stored.containsKey(SHOP.id()), "asked to delete, as chosen");
+    assertEquals(null, app.state().dialog);
+  }
+
+  /**
+   * 5: a keyring read that never returns keeps no connection from its password: after the
+   * keyring's patience, the connection asks for it, and says why.
+   */
+  @Test
+  void aKeyringReadThatNeverReturnsGoesToThePasswordQuestion() throws Exception {
+    c.secrets.stored.put(SHOP.id(), ConnectionsTest.PASSWORD);
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    app.state().forgetPassword(SHOP.id()); // from the keyring, not this session
+    var never = new CountDownLatch(1);
+    c.secrets.late = never;
+    c.run(
+        app,
+        CatalogueTest.START + CatalogueTest.open("shop-prod") + "frame\nadvance "
+            + State.KEYRING_SECONDS + "\nframe\n" + OPENED + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains("The system keyring did not answer"), asked);
+    c.run(
+        app,
+        "press role=textbox label=\"Password\"\ntype \"" + ConnectionsTest.PASSWORD + "\"\n"
+            + "press role=button label=\"Connect\"\nframe\n" + SETTLE);
+    assertTrue(app.state().catalogue.connected(SHOP.id()));
+    never.countDown();
+  }
+
+  /** 5: the edit dialog's look into a keyring that does not answer does not hold Save back. */
+  @Test
+  void aLookupThatNeverReturnsDoesNotHoldSaveBack() throws Exception {
+    c.secrets.stored.put(SHOP.id(), "old");
+    var never = new CountDownLatch(1);
+    c.secrets.late = never;
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED
+            + "press role=textbox label=\"User\"\ntype \"2\"\nframe\nadvance "
+            + State.KEYRING_SECONDS + "\nframe\nadvance 1\nframe\nsnap ready\n");
+    String ready = c.tree("ready");
+    assertFalse(line(ready, "role=button label=\"Save\"").contains("disabled"), ready);
+    assertTrue(ready.contains("is not known"), ready);
+    never.countDown();
+  }
+
   /** The pictures of what the fifth round changed, light and dark, as {@link #pictures}. */
   @ParameterizedTest
   @ValueSource(strings = {"dark", "light"})
@@ -2154,6 +2364,56 @@ class ConsoleTransactionTest {
     late.countDown();
     Script.run(SETTLE, keyring, out);
     for (var name : List.of("main-exit-stayed-open", "dialog-keyring-behind")) {
+      assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
+    }
+  }
+
+  /** The pictures of what the sixth round changed, light and dark, as {@link #pictures}. */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void picturesOfTheSixthRound(String look) throws Exception {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    var out = Files.createDirectories(Path.of(review));
+    var theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    // A Rollback that keeps failing: the question offers to end the connection.
+    servers.statement(
+        ConsoleTab.ROLLBACK,
+        List.of(FakeServers.serverError(Failure.Kind.OTHER, "Error writing file")));
+    var maria = open(INVENTORY);
+    maria.state().theme = theme;
+    Script.run(
+        "press #close-0\nframe\n" + OPENED + "press #answer-rollback\nframe\n" + OPENED + SETTLE
+            + "press #close-0\nframe\n" + OPENED + "snap console-end-the-connection-" + look + "\n",
+        maria,
+        out);
+    // Many notices, scrolling, with Dismiss all.
+    servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
+    var many = k.console(SHOP);
+    many.state().theme = theme;
+    for (int i = 0; i < 4; i++) {
+      Script.run(menu("shop-prod", "New console") + SETTLE + type(ORDERS) + RUN, many, out);
+    }
+    Script.run(
+        menu("shop-prod", "Disconnect") + OPENED + SETTLE + "snap main-notices-" + look + "\n",
+        many,
+        out);
+    // A keyring that does not give the password: the password question says so.
+    c.secrets.stored.put(SHOP.id(), ConnectionsTest.PASSWORD);
+    var asked = c.app(SHOP);
+    c.ready(asked, SHOP);
+    asked.state().forgetPassword(SHOP.id());
+    asked.state().theme = theme;
+    var never = new CountDownLatch(1);
+    c.secrets.late = never;
+    Script.run(
+        CatalogueTest.START + CatalogueTest.open("shop-prod") + "frame\nadvance "
+            + State.KEYRING_SECONDS + "\nframe\n" + OPENED + "snap main-keyring-silent-" + look
+            + "\n",
+        asked,
+        out);
+    never.countDown();
+    for (var name : List.of("console-end-the-connection", "main-notices", "main-keyring-silent")) {
       assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
     }
   }

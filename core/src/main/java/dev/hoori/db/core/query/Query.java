@@ -203,6 +203,51 @@ public final class Query {
     return value;
   }
 
+  /**
+   * Runs a step that must end, such as a commit or a rollback as a statement is given up, within
+   * the limit: an interrupt does not stop it, and where it has not ended by then, the connection
+   * is given up, as a server that no longer answers is, and the step with it.
+   *
+   * @throws QueryException {@link Failure#ABORTED} where the limit passed, the step's own failure
+   *     otherwise
+   */
+  public static <T> T within(Connection connection, Duration limit, Step<T> step)
+      throws QueryException {
+    var result = new CompletableFuture<T>();
+    var worker = Thread.ofVirtual().name("query within").start(() -> {
+      try {
+        result.complete(step.run());
+      } catch (Throwable e) {
+        result.completeExceptionally(e);
+      }
+    });
+    var interrupted = false;
+    var deadline = System.nanoTime() + limit.toNanos();
+    try {
+      while (true) {
+        try {
+          return result.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+          interrupted = true; // the step ends all the same, within the limit
+        } catch (ExecutionException e) {
+          throw failure(connection, e.getCause());
+        } catch (TimeoutException e) {
+          var canceller = Thread.ofVirtual().unstarted(() -> {});
+          canceller.start();
+          abandon(connection, worker, canceller);
+          throw new QueryException(
+              Failure.ABORTED,
+              "The server did not answer within " + limit.toSeconds() + " seconds",
+              null);
+        }
+      }
+    } finally {
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
+    }
+  }
+
   /** The failure that the driver's exception means, on the connection that threw it. */
   public static QueryException failure(Connection connection, Throwable thrown) {
     var message = thrown.getMessage() == null ? thrown.getClass().getName() : thrown.getMessage();

@@ -9,11 +9,14 @@ import com.rethinkj.ui.App;
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.execution.Abandoned;
+import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
@@ -664,7 +667,7 @@ class ServersServerTest {
             return run.close();
           })
           .get(30, TimeUnit.SECONDS);
-      assertTrue(gaveUp.isEmpty(), gaveUp.toString());
+      assertTrue(gaveUp.failure().isEmpty(), gaveUp.toString());
       long kept = count(watcher, "seam_noted");
       if (pg) {
         // Its own transaction, committed as it was given up: what it did until then, no more.
@@ -947,6 +950,134 @@ class ServersServerTest {
           ConsoleTransactionTest.noticed(app).contains(ConsoleTab.PARTLY),
           ConsoleTransactionTest.noticed(app));
       assertEquals(0L, count(watcher, "seam_kept"));
+      assertEquals(1L, count(watcher, "seam_plain"), "MyISAM keeps it");
+    } finally {
+      if (c != null) {
+        c.tearDown();
+      }
+      statement(lane, "DROP TABLE IF EXISTS seam_plain, seam_kept", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /**
+   * The sixth review's fourth finding: a read left open, the server stops answering, the session
+   * closes: the thread that closes it ends within its bound, the connection given up, and says
+   * so. The process waits for that thread, so the bound is the process's.
+   */
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.EnumSource(Provider.class)
+  void closingASessionWhoseServerStoppedAnsweringEnds(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    try (var relay = new dev.hoori.db.core.query.Relay(server.host(), server.port())) {
+      var lane = new Lane(e -> {});
+      lane.open(
+          Servers.SERVER,
+          server.profile().withHost(dev.hoori.db.core.query.Relay.HOST).withPort(relay.port()),
+          TestServer.password(),
+          server.driver());
+      lane.submit(link -> link).get(30, TimeUnit.SECONDS);
+      var many = provider == Provider.POSTGRESQL
+          ? "SELECT n FROM generate_series(1, 100000) n"
+          : "WITH d (n) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3"
+              + " UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7"
+              + " UNION ALL SELECT 8 UNION ALL SELECT 9)"
+              + " SELECT a.n + 10 * b.n + 100 * c.n + 1000 * e.n + 10000 * f.n AS n"
+              + " FROM d a, d b, d c, d e, d f";
+      var read = statement(lane, many, ConsoleTab.Mode.AUTO, true);
+      assertTrue(read.portion().more(), "left open");
+      relay.freeze();
+      var ended = new java.util.concurrent.CompletableFuture<Abandoned>();
+      var closing = lane.close(ended::complete);
+      var bound = Lane.ENDS.plus(Execution.ENDING).plus(Query.GRACE.multipliedBy(4));
+      assertTrue(closing.join(bound), "the closing thread ended within " + bound);
+      var failure = ended.getNow(null).failure().orElseThrow();
+      assertEquals(Failure.Kind.CONNECTION_LOST, failure.kind());
+    }
+  }
+
+  /**
+   * The sixth review's first finding, (a): PostgreSQL, Auto, a read whose function breaks a
+   * deferred constraint, read as the grid scrolls; its last portion commits its own transaction,
+   * which fails, and the tab closes before the console takes it: the app has it.
+   */
+  @Test
+  void aReadsLastCommitFailingAsItsTabClosesIsANotice() throws Exception {
+    var server = TestServer.of(Provider.POSTGRESQL);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    var apps = new ArrayList<App<State>>();
+    CatalogueTest c = null;
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS seam_once",
+          "CREATE TABLE seam_once (id integer,"
+              + " CONSTRAINT seam_once_id UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)",
+          "CREATE OR REPLACE FUNCTION seam_twice(n integer) RETURNS integer AS"
+              + " 'INSERT INTO seam_once VALUES (1) RETURNING id' LANGUAGE sql")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      c = app(server, apps);
+      var app = apps.getFirst();
+      var tab = app.state().consoles(null).getFirst();
+      c.run(
+          app,
+          ConsoleTest.type("SELECT seam_twice(n) FROM generate_series(1, 250) n")
+              + ConsoleTest.RUN
+              + "scroll #grid row 180\nframe\nframe\n");
+      eventually(tab::outcomeWaiting);
+      c.run(app, "press #close-0\nframe\n" + ConsoleTransactionTest.OPENED + CatalogueTest.SETTLE);
+      assertTrue(app.state().consoles(null).isEmpty(), "nothing asked");
+      assertTrue(
+          ConsoleTransactionTest.noticed(app).contains("duplicate key"),
+          ConsoleTransactionTest.noticed(app));
+      assertEquals(0L, count(watcher, "seam_once"), "rolled back");
+    } finally {
+      if (c != null) {
+        c.tearDown();
+      }
+      statement(lane, "DROP FUNCTION IF EXISTS seam_twice", ConsoleTab.Mode.AUTO);
+      statement(lane, "DROP TABLE IF EXISTS seam_once", ConsoleTab.Mode.AUTO);
+      lane.close();
+      watcher.close();
+    }
+  }
+
+  /**
+   * The sixth review's first finding, (b): MariaDB, Manual, a typed ROLLBACK that could not undo
+   * a MyISAM table's change, cancelled before the console takes its answer: the app has it.
+   */
+  @Test
+  void aTypedRollbackInPartCancelledIsANotice() throws Exception {
+    var server = TestServer.of(Provider.MARIADB);
+    var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
+    var apps = new ArrayList<App<State>>();
+    CatalogueTest c = null;
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS seam_plain, seam_kept",
+          "CREATE TABLE seam_plain (id integer) ENGINE=MyISAM",
+          "CREATE TABLE seam_kept (id integer) ENGINE=InnoDB")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      c = app(server, apps);
+      var app = apps.getFirst();
+      var tab = app.state().consoles(null).getFirst();
+      c.run(
+          app,
+          ConsoleTransactionTest.MANUAL
+              + ConsoleTest.type(
+                  "INSERT INTO seam_kept VALUES (1);\nINSERT INTO seam_plain VALUES (1);")
+              + ConsoleTest.RUN_ALL
+              + ConsoleTest.type("\nROLLBACK")
+              + "key Enter control\nframe\nframe\n");
+      eventually(tab::outcomeWaiting);
+      c.run(app, "press role=button label=\"Cancel\"\nframe\n" + CatalogueTest.SETTLE);
+      assertTrue(
+          ConsoleTransactionTest.noticed(app).contains(ConsoleTab.PARTLY),
+          ConsoleTransactionTest.noticed(app));
       assertEquals(1L, count(watcher, "seam_plain"), "MyISAM keeps it");
     } finally {
       if (c != null) {

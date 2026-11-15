@@ -38,6 +38,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Message;
 import dev.hoori.db.core.execution.Portion;
@@ -58,6 +59,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -220,7 +222,7 @@ final class ConsoleTab implements Tab {
   private AtomicReference<Servers.Run> sent = new AtomicReference<>();
   private Output reading; // the result whose rows it has
   private final ArrayDeque<String> queue = new ArrayDeque<>(); // the run's statements still to run
-  private Lane.Asked work; // the statement, the rows or the switch under way, or null
+  private Asking work; // the statement, the rows or the switch under way, or null
   private String running; // the statement under way, or the one whose rows are read
   boolean waiting; // for the tree's connection, which the session is opened from
   boolean stranded; // the tree's connection failed while it waited: Try again goes on
@@ -254,6 +256,10 @@ final class ConsoleTab implements Tab {
   // to its end, or Commit, Rollback, a switch of auto-commit or of the database. Cut short or
   // lost, what it did is not known.
   private boolean writes;
+  private boolean overdue; // the Commit, Rollback or switch under way has not answered for long
+  private int firms; // counted, so that a late patience is dropped
+  // The last Commit or Rollback failed, the connection still there: ending it is a way out.
+  private boolean endFailed;
   // The call is a plain read ({@link #reads}): read whole in a transaction, and at stake while it
   // runs there, but what it did, cut short, is the transaction's, which the server says.
   private boolean plain;
@@ -265,7 +271,9 @@ final class ConsoleTab implements Tab {
   // Why the outcome of what may have ended the transaction is not known, until the user has read
   // it; null for nothing in doubt.
   String doubt;
-  private Lane.Asked probe; // the question to the server about the transaction, or null
+  private Asking probe; // the question to the server about the transaction, or null
+  // The calls whose outcomes have not reached the console yet, given up when the session ends.
+  private final List<Delivery> outstanding = new ArrayList<>();
   Check probing; // which one it is
   private int learned; // what was learned of it, counted: an answer that comes late is dropped
 
@@ -289,14 +297,9 @@ final class ConsoleTab implements Tab {
     int to = Math.max(editor.caret(), editor.anchor());
     if (from < to) {
       var selected = text.substring(from, Math.min(to, text.length()));
-      start(s, help.sent(text, from, Statements.split(selected, provider)));
+      start(s, from, Statements.split(selected, provider));
     } else {
-      start(
-          s,
-          statements(provider)
-              .at(editor.caret())
-              .map(at -> help.sent(text, 0, List.of(at)))
-              .orElse(List.of()));
+      start(s, 0, statements(provider).at(editor.caret()).map(List::of).orElse(List.of()));
     }
   }
 
@@ -304,7 +307,7 @@ final class ConsoleTab implements Tab {
   void runAll(State s) {
     var provider = provider(s);
     if (provider != null) {
-      start(s, help.sent(text, 0, statements(provider).statements()));
+      start(s, 0, statements(provider).statements());
     }
   }
 
@@ -313,14 +316,17 @@ final class ConsoleTab implements Tab {
     return profile == null ? null : profile.provider();
   }
 
-  private void start(State s, List<String> sql) {
+  /** The statements, with offsets from {@code from} in the text, run once the console takes them. */
+  private void start(State s, int from, List<Statement> chosen) {
+    s.acted();
     if (busy() || locked(s) != null) {
-      return;
+      return; // refused: what the run under way sent stays its own
     }
-    if (sql.isEmpty()) {
+    if (chosen.isEmpty()) {
       say(s, "No statement to run");
       return;
     }
+    var sql = help.sent(text, from, chosen); // where an error of each is, from now on
     // A session open goes on, also after the tree lost its connection.
     if (lane == null && !s.catalogue.connected(id) && !s.catalogue.active(id)) {
       s.catalogue.connect(s, id); // as the tree connects: the driver, the password, the server
@@ -487,25 +493,189 @@ final class ConsoleTab implements Tab {
    * session's status itself, as nothing the app's thread believed authorises anything on it. Once
    * its result or failure is taken, the question sees whether what it waits for may go on.
    */
-  private <T> Lane.Asked ask(
+  private <T> Asking ask(
       State s, String what, Lane.Call<T> call, Consumer<T> done, Consumer<Exception> failed) {
+    return ask(s, what, running, call, done, failed);
+  }
+
+  /** As {@link #ask}, its outcome named in a notice by {@code sql}; null for none. */
+  private <T> Asking ask(
+      State s,
+      String what,
+      String sql,
+      Lane.Call<T> call,
+      Consumer<T> done,
+      Consumer<Exception> failed) {
     var leftSql = openSql;
     open = null; // given up on the lane, also where this call never starts
     leave(); // and its rows end where they are
     var tell = teller;
-    return lane.ask(
+    return through(s, what, sql, link -> after(link, tell, leftSql, call), done, failed);
+  }
+
+  /**
+   * The one way the console's calls reach the lane. Each call's outcome either reaches the console
+   * or, once the console no longer waits for it, the app's notices: never neither ({@link
+   * Delivery}). Once the outcome is taken, the question sees whether what it waits for may go on.
+   */
+  private <T> Asking through(
+      State s,
+      String what,
+      String sql,
+      Lane.Call<T> call,
+      Consumer<T> done,
+      Consumer<Exception> failed) {
+    var delivery = new Delivery(teller, sql, plain);
+    outstanding.add(delivery);
+    var asked = lane.ask(
         s.app,
         what,
         Lane.Priority.VIEW,
-        link -> after(link, tell, leftSql, call),
+        link -> {
+          T value;
+          try {
+            value = call.call(link);
+          } catch (Exception e) {
+            delivery.done(e);
+            throw e;
+          }
+          delivery.done(value);
+          return value;
+        },
         value -> {
-          done.accept(value);
-          settle(s);
+          outstanding.remove(delivery);
+          if (delivery.deliver()) {
+            done.accept(value);
+            settle(s);
+          }
         },
         error -> {
-          failed.accept(error);
-          settle(s);
+          outstanding.remove(delivery);
+          if (delivery.deliver()) {
+            failed.accept(error);
+            settle(s);
+          }
         });
+    return new Asking(asked, delivery);
+  }
+
+  /** A call asked for through {@link #through}: giving it up gives up its outcome's delivery. */
+  record Asking(Lane.Asked asked, Delivery delivery) {
+    void cancel() {
+      asked.cancel(); // a call that waits never begins; one that runs is cancelled on the server
+      delivery.giveUp();
+    }
+  }
+
+  /**
+   * One call's outcome between the lane and the console: pending, done (the lane has it),
+   * delivered (the console took it), or given up (cancelled, or its session ended). The two
+   * threads meet here atomically, and whichever comes second of the outcome and the giving up
+   * posts what matters of it as a notice ({@link #matters}): the lane where it was given up
+   * before, the app's thread where the outcome was there and not taken.
+   */
+  static final class Delivery {
+    private static final int PENDING = 0;
+    private static final int DONE = 1;
+    private static final int DELIVERED = 2;
+    private static final int GIVEN_UP = 3;
+
+    private final AtomicInteger state = new AtomicInteger(PENDING);
+    private final Tell tell;
+    private final String sql; // what a notice names; null for a call whose outcome tells nothing
+    private final boolean plain;
+    private volatile Object outcome; // the value, or the exception
+
+    Delivery(Tell tell, String sql, boolean plain) {
+      this.tell = tell;
+      this.sql = sql;
+      this.plain = plain;
+    }
+
+    /** On the lane: the call has its outcome. */
+    void done(Object outcome) {
+      this.outcome = outcome;
+      if (!state.compareAndSet(PENDING, DONE)) {
+        post(); // the console gave it up before
+      }
+    }
+
+    /** On the app's thread: whether the outcome may go to the console, which then has it. */
+    boolean deliver() {
+      return state.compareAndSet(DONE, DELIVERED);
+    }
+
+    /** On the app's thread: the console no longer waits for it. */
+    void giveUp() {
+      if (state.compareAndSet(DONE, GIVEN_UP)) {
+        post(); // there, and not taken
+      } else {
+        state.compareAndSet(PENDING, GIVEN_UP);
+      }
+    }
+
+    /** Whether the lane has the outcome and the console has not taken it yet. */
+    boolean waiting() {
+      return state.get() == DONE;
+    }
+
+    private void post() {
+      if (sql != null && tell != null) {
+        matters(outcome, plain).forEach(m -> tell.tell(sql, m.what(), m.failure()));
+      }
+    }
+  }
+
+  /** What a notice says of an outcome: its words, and whether it is a failure. */
+  record Matter(String what, boolean failure) {}
+
+  /**
+   * What matters of an outcome the console did not take: any failure, and any warning the server
+   * sent with a statement that is not a plain read. Not what the giving up itself made, a cancel,
+   * nor what is said already: a statement not sent, a give-up's failure, Commit's and Rollback's
+   * own outcome ({@link #finish} tells it).
+   */
+  static List<Matter> matters(Object outcome, boolean plain) {
+    return switch (outcome) {
+      case Ran r -> matters(r.portion(), plain);
+      case Portion p -> matters(p, plain);
+      case InterruptedException e -> List.of();
+      case NotRun e -> List.of();
+      case GaveUp e -> List.of();
+      case QueryException e when e.failure() == QueryException.Failure.CANCELLED -> List.of();
+      case ConnectionException e
+      when e.failure() == ConnectionException.Failure.CANCELLED -> List.of();
+      case Exception e -> List.of(new Matter("It failed: " + State.message(e), true));
+      case null, default -> List.of();
+    };
+  }
+
+  private static List<Matter> matters(Portion portion, boolean plain) {
+    var all = new ArrayList<Matter>();
+    var failure = failure(portion);
+    if (failure != null && failure.kind() != Failure.Kind.CANCELLED) {
+      all.add(new Matter("It failed: " + failure.message(), true));
+    }
+    if (!plain) {
+      for (var m : portion.messages()) {
+        all.add(
+            m.code() == NOT_ROLLED_BACK
+                ? new Matter(PARTLY + ": " + m.text() + ". Those changes stand.", true)
+                : new Matter(warned(m), false));
+      }
+    }
+    return all;
+  }
+
+  /** A warning of the server's, with its code. */
+  static String warned(Message m) {
+    var code = !m.state().isEmpty() ? m.state() : m.code() != 0 ? String.valueOf(m.code()) : "";
+    return "The server warned: " + m.text() + (code.isEmpty() ? "" : " (" + code + ")");
+  }
+
+  /** For a test: whether an outcome is there that the console has not taken. */
+  boolean outcomeWaiting() {
+    return outstanding.stream().anyMatch(Delivery::waiting);
   }
 
   /**
@@ -517,12 +687,20 @@ final class ConsoleTab implements Tab {
    */
   static <T> T after(Servers.Link link, Tell tell, String left, Lane.Call<T> call)
       throws Exception {
-    var failure = link.giveUp();
-    if (failure.isPresent()) {
-      tell.tell(left, ENDED + failure.get().message() + MAY_NOT_STAND, true);
-      throw new GaveUp(left, failure.get());
+    var ended = link.giveUp();
+    told(ended, left, ENDED, tell);
+    if (ended.failure().isPresent()) {
+      throw new GaveUp(left, ended.failure().get());
     }
     return call.call(link);
+  }
+
+  /** What giving up a statement said, its failure and the server's warnings, told as notices. */
+  static void told(Abandoned ended, String sql, String how, Tell tell) {
+    ended.failure().ifPresent(f -> tell.tell(sql, how + f.message() + MAY_NOT_STAND, true));
+    for (var m : ended.messages()) {
+      tell.tell(sql, warned(m), false);
+    }
   }
 
   static final String ENDED = "Its end, as the console went on, failed: ";
@@ -570,8 +748,7 @@ final class ConsoleTab implements Tab {
     }
   }
 
-  static final String SESSION_ENDED =
-      "Its change was to be committed as the session ended, but the commit failed: ";
+  static final String SESSION_ENDED = "As its session ended, giving up its rest failed: ";
 
   // On the lane: what the console's calls do with the session.
 
@@ -883,6 +1060,7 @@ final class ConsoleTab implements Tab {
         portion.elapsed(),
         failure == null ? done : outcome(portion));
     // Its warnings came as notices, which Messages shows too ({@link #noticed}).
+    endFailed = failure != null && failure.kind() != Failure.Kind.CONNECTION_LOST;
     if (failure == null) {
       learn(portion, false);
       follow(portion.autoCommit());
@@ -1008,6 +1186,7 @@ final class ConsoleTab implements Tab {
     probe = ask(
         s,
         "ask for the transaction",
+        null, // its answer, or its failure, tells nothing of a statement
         Servers.Link::status,
         now -> probed(asked, now),
         e -> probed(s, asked, e));
@@ -1256,11 +1435,11 @@ final class ConsoleTab implements Tab {
     var sql = running;
     writes = false; // only a plain read in Auto, with nothing open, is read so
     plain = true;
-    // Straight on the lane, as the read goes on rather than being given up.
-    work = lane.ask(
-        s.app,
+    // Not through ask, as the read goes on rather than being given up.
+    work = through(
+        s,
         "read rows",
-        Lane.Priority.VIEW,
+        sql,
         link -> held.get().next(PORTION),
         portion -> {
           work = null;
@@ -1284,12 +1463,10 @@ final class ConsoleTab implements Tab {
           if (transaction == Transaction.UNKNOWN && !portion.more() && lane != null) {
             check(s);
           }
-          settle(s);
         },
         error -> {
           work = null;
           failed(s, sql, error);
-          settle(s);
         });
   }
 
@@ -1398,7 +1575,8 @@ final class ConsoleTab implements Tab {
    * leave it to run.
    */
   private void stop() {
-    work.cancel(); // a call that waits never begins; one that runs is cancelled on the server
+    work.cancel(); // its outcome, if the lane has it already, becomes a notice
+    outstanding.remove(work.delivery());
     work = null;
     firm = false;
   }
@@ -1440,6 +1618,11 @@ final class ConsoleTab implements Tab {
       probe = null;
       probing = null;
     }
+    endFailed = false;
+    overdue = false;
+    // What the session still owes the console it owes the app now.
+    outstanding.forEach(Delivery::giveUp);
+    outstanding.clear();
     open = null; // closed with the connection
     if (reading != null && reading.more) {
       reading.more = false;
@@ -1448,16 +1631,15 @@ final class ConsoleTab implements Tab {
     reading = null;
     if (lane != null) {
       // Interrupts what runs, which core cancels, gives up what is still open, as a read whose
-      // rest was not read, and closes the connection. A commit of what that read changed, which
-      // fails then, goes to the app's notices; the app counts the session closing until then.
-      // The app counts the session until it has, which a background work waits for, so that
-      // Exit can wait for it as for any work.
+      // rest was not read, and closes the connection, each within a bound. What that says goes
+      // to the app's notices. The app counts the session until it has, which a background work
+      // waits for, so that Exit can wait for it as for any work.
       var sql = openSql;
       var tell = teller;
       var said = new CompletableFuture<Void>();
-      lane.close(failure -> {
+      lane.close(ended -> {
         try {
-          failure.ifPresent(f -> tell.tell(sql, SESSION_ENDED + f.message() + MAY_NOT_STAND, true));
+          told(ended, sql, SESSION_ENDED, tell);
         } finally {
           tell.wipe();
           said.complete(null);
@@ -1557,6 +1739,7 @@ final class ConsoleTab implements Tab {
     }
     boolean empty = this.empty;
     firm = true;
+    watchFirm(s);
     writes = true;
     plain = false;
     running = "Auto-commit";
@@ -1608,6 +1791,7 @@ final class ConsoleTab implements Tab {
     queue.clear();
     problem = null;
     firm = true;
+    watchFirm(s);
     writes = true;
     plain = false;
     running = sql;
@@ -1625,8 +1809,25 @@ final class ConsoleTab implements Tab {
           work = null;
           firm = false;
           failed(s, sql, error);
+          endFailed = lane != null; // it failed, and the connection is still there
         });
   }
+
+  /**
+   * Commit, Rollback or a switch of auto-commit runs to its end, which nothing stops; once it has
+   * not answered for {@link #FIRM_SECONDS}, the question offers to end the connection instead.
+   */
+  private void watchFirm(State s) {
+    int at = ++firms;
+    overdue = false;
+    s.app.after(FIRM_SECONDS, () -> {
+      if (firm && firms == at) {
+        overdue = true;
+      }
+    });
+  }
+
+  static final double FIRM_SECONDS = 10;
 
   /** Shows the console's tab, in its window raised, for the question {@link State#asks} put. */
   void show(State s) {
@@ -1671,15 +1872,10 @@ final class ConsoleTab implements Tab {
       case GO_ON -> {
         s.pending = null;
         var cut = running;
-        end();
-        if (!closed) { // the console stays, and its Messages keep what was cut off
-          log.add(new Logged(
-              Level.ERROR,
-              brief(cut),
-              null,
-              "Went on before it ended: the connection ended, the server rolls back what was not"
-                  + " committed, and what this statement did is not known"));
+        if (teller != null) {
+          teller.tell(cut, WENT_ON, true); // the app keeps it, whatever becomes of the console
         }
+        end();
         asked.then().run();
         return;
       }
@@ -1703,6 +1899,10 @@ final class ConsoleTab implements Tab {
     }
     settle(s);
   }
+
+  static final String WENT_ON =
+      "The connection was ended before this was done, as asked: the server rolls back what was"
+          + " not committed, and what this statement did is not known.";
 
   static final String CONTINUE = "CONTINUE";
   static final String GO_ON = "GO_ON";
@@ -2246,6 +2446,11 @@ final class ConsoleTab implements Tab {
           ? "Waiting for the commit"
           : ROLLBACK.equals(running) ? "Waiting for the rollback" : "Waiting for the server";
       text = name + " waits for the server's answer. Once nothing is left open, " + before + ".";
+      if (overdue) {
+        text += " It has not answered for a while. Or end the connection now: it is closed, the"
+            + " server rolls back what was not committed, and what this did is not known.";
+        buttons.add(endIt(t, s));
+      }
     } else if (waits) {
       // What it promises nothing of: no Rollback, which could not say what it undid.
       title = "Waiting for " + brief(running);
@@ -2287,6 +2492,11 @@ final class ConsoleTab implements Tab {
           button(t, SECONDARY, "Rollback", () -> answer(s, ROLLBACK)).key("answer-rollback"));
       buttons.add(button(t, PRIMARY, "Commit", () -> answer(s, COMMIT)).key("answer-commit"));
     }
+    if (endFailed && !firm && work == null && doubt == null) {
+      text += " Or end the connection: it is closed, and the server rolls back what was not"
+          + " committed.";
+      buttons.add(1, endIt(t, s));
+    }
     El content = col()
         .w(ConnectionDialog.width(t))
         .gap(t.space().m())
@@ -2307,6 +2517,17 @@ final class ConsoleTab implements Tab {
                     .key("question-problem"));
     return Dialog.dialog(t, title, content, buttons, () -> answer(s, null))
         .key("transaction-question");
+  }
+
+  /** The way out where the server does not answer, or its answer keeps failing. */
+  private El endIt(Theme t, State s) {
+    return button(
+            t,
+            SECONDARY,
+            "End the connection",
+            () -> answer(s, GO_ON),
+            Button.options().tone(Button.Tone.DANGER))
+        .key("answer-go-on");
   }
 
   /** "Ran in 12 ms · 3 rows": the last run's time on the server, and its rows. */

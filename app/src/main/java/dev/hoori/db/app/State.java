@@ -15,6 +15,8 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.execution.Execution;
+import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.nio.file.Path;
@@ -95,7 +97,8 @@ final class State {
   private int closing; // consoles' sessions whose closing has not said how it ended
   private int exitAt = -1; // the notices counted when Exit began to wait for the sessions, or -1
   private int exits; // counted, so that a late patience is dropped
-  private boolean unconfirmed; // the sessions did not all say in time: the next Exit goes
+  // Sessions that did not say in time how they closed, which the next Exit does not wait for.
+  private int waived;
   private Work saving; // the save of the profiles on its way, or null
   private boolean saveAgain; // the profiles changed while it ran
   private boolean quitAnyway; // the last save at the end failed and the user was told
@@ -273,6 +276,10 @@ final class State {
     notices.remove(notice);
   }
 
+  void dismissAll() {
+    notices.clear();
+  }
+
   /** A console's session begins to close, off the app's thread; {@link #closed} when it has. */
   void closing() {
     closing++;
@@ -281,10 +288,24 @@ final class State {
   /** A console's session has closed, after what its closing had to say. */
   void closed() {
     closing--;
+    waived = Math.min(waived, closing);
     settled();
   }
 
-  static final double EXIT_SECONDS = 10; // how long Exit waits for the sessions to say they closed
+  /**
+   * The user did something other than exit, such as run a statement or connect: what an Exit was
+   * told to waive no longer holds.
+   */
+  void acted() {
+    waived = 0;
+    if (!quitting()) {
+      quitAnyway = false;
+    }
+  }
+
+  // How long Exit waits for the sessions to say how they closed: longer than their closing takes.
+  static final double EXIT_SECONDS =
+      Lane.ENDS.plus(Execution.ENDING).plus(Query.GRACE.multipliedBy(5)).toSeconds();
 
   /** Whether a dialog is open, which an act that opens one must not replace. */
   boolean dialogOpen() {
@@ -437,6 +458,9 @@ final class State {
    * until a write of it has succeeded.
    */
   void persist() {
+    if (!quitting()) {
+      quitAnyway = false; // a change since: the next Exit tries to save it
+    }
     unsaved = true;
     if (saving != null) {
       saveAgain = true;
@@ -511,14 +535,10 @@ final class State {
       giveUpDelete();
       return;
     }
-    if (quitAnyway && !keyringBusy() && saving == null) {
-      closeAll();
-      return;
-    }
     if (!lock(EXIT, "HooriDB is closing", null)) {
       return;
     }
-    if (keyringBusy() || saving != null || unsaved) {
+    if (keyringBusy() || saving != null || unsaved && !quitAnyway) {
       tell("HooriDB closes once the connections are saved.");
     }
     settled();
@@ -529,25 +549,29 @@ final class State {
     if (!quitting() || keyringBusy() || saving != null) {
       return;
     }
-    if (unsaved) {
+    // The one way out: the file saved, unless the user chose to go without it ("anyway" waives
+    // that alone); then every console's session ends, and HooriDB waits for each to say how, as
+    // long as their closing is bounded, waiving only those it said it could not confirm.
+    if (unsaved && !quitAnyway) {
       persist();
       return;
     }
     if (exitAt < 0) {
-      // The consoles' sessions end first, and HooriDB waits for each to say how it ended.
       exitAt = noticed;
       consoles(null).forEach(ConsoleTab::end);
       int at = ++exits;
       app.after(EXIT_SECONDS, () -> {
-        if (exits == at && quitting() && closing > 0) {
-          stay(closing + (closing == 1 ? " session" : " sessions")
+        if (exits == at && quitting() && closing > waived) {
+          int silent = closing - waived;
+          stay(silent + (silent == 1 ? " session" : " sessions")
               + " did not say in time that it closed, so what it finished is not confirmed."
-              + " HooriDB stayed open; close it again to quit without waiting.");
-          unconfirmed = true;
+              + " HooriDB stayed open; close it again to quit without waiting for "
+              + (silent == 1 ? "it." : "them."));
+          waived = closing;
         }
       });
     }
-    if (closing > 0 && !unconfirmed) {
+    if (closing > waived) {
       return;
     }
     if (noticed > exitAt) {

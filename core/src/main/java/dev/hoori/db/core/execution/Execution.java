@@ -147,18 +147,47 @@ public final class Execution implements AutoCloseable {
     }
   }
 
+  /** How long ending a statement that is given up may take before its connection is. */
+  public static final Duration ENDING = Duration.ofSeconds(10);
+
   /**
    * Ends the statement where it is not over, giving up what is left of its rows; where it ran in a
-   * transaction of its own, that is committed, as auto-commit would have. The failure, if any: of
-   * that commit, such as a deferred constraint's, or that the connection is lost.
+   * transaction of its own, that is committed, as auto-commit would have. Its failure, if any: of
+   * that commit, such as a deferred constraint's, or that the connection is lost; and the warnings
+   * the server sent as it ended. It ends within {@link #ENDING}, an interrupt or not: a server that
+   * does not answer by then has its connection aborted, and the failure says so.
    */
-  public Optional<Failure> abandon() {
-    return over
-        ? Optional.empty()
-        : Optional.ofNullable(withoutInterrupt(() -> end(Ending.GAVE_UP)));
+  public Abandoned abandon() {
+    if (over) {
+      return Abandoned.NOTHING;
+    }
+    var said = new ArrayList<Message>();
+    Failure failure;
+    try {
+      failure = Query.within(connection, ENDING, () -> end(Ending.GAVE_UP, -1, said));
+    } catch (QueryException e) {
+      over = true;
+      failure = new Failure(
+          Failure.Kind.CONNECTION_LOST,
+          e.getMessage() + " as the statement was ended: the connection was closed, and whether"
+              + " its end took effect is not known.",
+          "",
+          0,
+          0,
+          "",
+          0,
+          0,
+          "",
+          "",
+          "",
+          "");
+    }
+    synchronized (said) {
+      return new Abandoned(Optional.ofNullable(failure), said);
+    }
   }
 
-  /** As {@link #abandon}, without its failure; a caller that reports one uses that. */
+  /** As {@link #abandon}, without what it says; a caller that reports it uses that. */
   @Override
   public void close() {
     abandon();
@@ -340,7 +369,11 @@ public final class Execution implements AutoCloseable {
   }
 
   private Failure end(Ending ending) {
-    return end(ending, -1);
+    return end(ending, -1, null);
+  }
+
+  private Failure end(Ending ending, int status) {
+    return end(ending, status, null);
   }
 
   // Ends the statement: where it did not run to its end, has MariaDB and MySQL stop sending and
@@ -348,11 +381,22 @@ public final class Execution implements AutoCloseable {
   // and the statement; and ends its own transaction, committing it unless it failed. The failure
   // of the commit, if any; where the connection is left in a state that cannot be known, it is
   // aborted, and the failure says it is lost.
-  private Failure end(Ending ending, int status) {
+  // With said, it also keeps what the server says as it ends: the statement's warnings, and those
+  // of the commit of its own transaction.
+  private Failure end(Ending ending, int status, List<Message> said) {
     over = true;
     var lost = false;
     if (ending != Ending.RAN && provider != Provider.POSTGRESQL && statement != null) {
       lost = !drain();
+    }
+    if (said != null && statement != null && !lost) {
+      try {
+        synchronized (said) {
+          collect(statement.getWarnings(), said);
+        }
+      } catch (SQLException e) {
+        // What it said is gone with what failed, which the ending says.
+      }
     }
     var closeables = new ArrayList<AutoCloseable>(ended);
     closeables.add(rows);
@@ -374,7 +418,14 @@ public final class Execution implements AutoCloseable {
       var commit = ending != Ending.FAILED;
       if (commit) {
         try {
+          connection.clearWarnings();
           connection.commit();
+          if (said != null) {
+            synchronized (said) {
+              collect(connection.getWarnings(), said); // pgjdbc's notices of the commit
+            }
+            connection.clearWarnings();
+          }
         } catch (SQLException e) {
           failure = Failure.of(connection, e);
           commit = false;

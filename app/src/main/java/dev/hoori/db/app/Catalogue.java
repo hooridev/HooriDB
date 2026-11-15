@@ -66,8 +66,8 @@ final class Catalogue {
   /** For the keyring to give the password. */
   record ReadingPassword() implements Phase {}
 
-  /** For the user to give the password. */
-  record ForPassword() implements Phase {}
+  /** For the user to give the password; silent, as the keyring did not answer in time. */
+  record ForPassword(boolean silent) implements Phase {}
 
   record Connecting() implements Phase {}
 
@@ -215,6 +215,7 @@ final class Catalogue {
 
   /** Connects anew, as far as is needed: the driver, the password, the server. */
   void connect(State s, UUID id) {
+    s.acted();
     var profile = s.profile(id);
     if (profile == null) {
       return;
@@ -302,14 +303,16 @@ final class Catalogue {
     }
     if (s.keyring == null) {
       live.phase = new ForKeyring();
+      patience(s, live);
       return;
     }
     var secrets = s.secrets();
     if (secrets == null) {
-      live.phase = new ForPassword();
+      live.phase = new ForPassword(false);
       return;
     }
     live.phase = new ReadingPassword();
+    patience(s, live);
     var handover = new Handover();
     live.handover = handover;
     live.work = s.app.background(
@@ -323,7 +326,7 @@ final class Catalogue {
           live.handover = null;
           char[] password = given.take();
           if (password == null) {
-            live.phase = new ForPassword();
+            live.phase = new ForPassword(false);
           } else {
             connect(s, live, password);
           }
@@ -331,8 +334,30 @@ final class Catalogue {
         error -> {
           live.work = null;
           live.handover = null;
-          live.phase = new ForPassword(); // the user can still type it
+          live.phase = new ForPassword(false); // the user can still type it
         });
+  }
+
+  /**
+   * Waiting for the keyring, to be found or to give the password, lasts at most {@link
+   * State#KEYRING_SECONDS}: then the connection asks the user, and what the keyring says later is
+   * dropped. A call to it that never returns keeps no connection from its password.
+   */
+  private void patience(State s, Live live) {
+    var waiting = live.phase;
+    s.app.after(State.KEYRING_SECONDS, () -> {
+      if (live.phase == waiting && lives.get(live.id()) == live) {
+        if (live.work != null) {
+          live.work.cancel();
+          live.work = null;
+        }
+        if (live.handover != null) {
+          live.handover.drop();
+          live.handover = null;
+        }
+        live.phase = new ForPassword(true);
+      }
+    });
   }
 
   /**
@@ -391,7 +416,7 @@ final class Catalogue {
     live.typed = "";
     live.revealed = false;
     live.keep = false;
-    live.phase = new ForPassword();
+    live.phase = new ForPassword(false);
   }
 
   /** Opens the first connection, with the password, which is the live's now. */
@@ -1502,7 +1527,13 @@ final class Catalogue {
             .wFull())
         .child(Checkbox.checkbox(
             t, Prop.of(() -> live.keep, v -> live.keep = v), "Keep it until HooriDB closes"))
-        .child(Label.label(t, Label.Variant.MUTED, "It is not saved in the system keyring.")
+        .child(Label.label(
+                t,
+                Label.Variant.MUTED,
+                live.phase instanceof ForPassword(var silent) && silent
+                    ? "The system keyring did not answer, so the password typed here is used for"
+                        + " this session only."
+                    : "It is not saved in the system keyring.")
             .wrapText());
     return Dialog.dialog(
         t,

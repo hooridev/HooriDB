@@ -1,6 +1,7 @@
 package dev.hoori.db.app;
 
 import static com.rethinkj.ui.El.col;
+import static com.rethinkj.ui.El.row;
 import static com.rethinkj.ui.kit.Button.button;
 import static com.rethinkj.ui.kit.EmptyState.emptyState;
 import static com.rethinkj.ui.kit.Label.label;
@@ -302,10 +303,13 @@ final class Frame {
    * The notices of what finishing something on a console's session did, the newest first, each
    * until dismissed: a failure as a danger, a warning as such.
    */
-  // shortcut: the notices stack above the tree without a limit; put them in a list that scrolls
-  // once several at a time are common.
+  /**
+   * The notices of what finishing something on a console's session did, the newest first, each
+   * until dismissed: a failure as a danger, a warning as such. They scroll in a region of bounded
+   * height above the tree, with Dismiss all where there are several.
+   */
   private static El notices(Theme t, State s) {
-    var list = col().gap(t.space().s()).padding(t.space().s()).key("notices").label("Notices");
+    var list = col().gap(t.space().s()).key("notices").label("Notices");
     for (var notice : s.notices.reversed()) {
       list.child(Callout.callout(
               t,
@@ -316,7 +320,17 @@ final class Frame {
                   .key("dismiss-" + notice.number()))
           .key("notice-" + notice.number()));
     }
-    return list;
+    return col()
+        .gap(t.space().s())
+        .padding(t.space().s())
+        .child(
+            s.notices.size() > 3
+                ? row()
+                    .child(button(t, Button.Variant.SECONDARY, "Dismiss all", s::dismissAll)
+                        .key("dismiss-all"))
+                : null)
+        // shortcut: bounded by the field size, the theme having no size for a panel's part.
+        .child(list.scroll().maxSize(Float.MAX_VALUE, t.size().field()));
   }
 
   private static El tryAgain(Theme t, Runnable action) {

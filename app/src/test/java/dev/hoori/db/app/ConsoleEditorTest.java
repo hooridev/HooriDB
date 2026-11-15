@@ -127,6 +127,24 @@ class ConsoleEditorTest {
     assertNull(help(app).underlined());
   }
 
+  /** The sixth review's sixth finding: a Run refused while one runs leaves that one's underline. */
+  @Test
+  void aRunRefusedWhileOneRunsLeavesItsUnderline() throws Exception {
+    var app = console.console(SHOP);
+    var text = COUNT + ";\n" + WRONG + ";";
+    int at = text.indexOf(WRONG) + WRONG.indexOf("WHERE id");
+    var key = "run " + PG + " " + WRONG;
+    console.c.run(app, type(COUNT + ";") + RUN); // the session is open
+    var held = servers.hold(key);
+    console.c.run(app, type("\n" + WRONG + ";") + "key Enter control\nframe\nframe\n");
+    CatalogueTest.eventually(() -> servers.calls.contains(key));
+    // Another statement, refused: something runs.
+    console.c.run(app, "key Home control\nkey Enter control\nframe\n");
+    held.countDown();
+    console.c.run(app, SETTLE);
+    assertEquals(new Failure.Place(at, at + 5), help(app).underlined());
+  }
+
   /** In Manual a statement is read whole in its one call; its error is underlined all the same. */
   @Test
   void anErrorInManualIsUnderlinedToo() throws Exception {

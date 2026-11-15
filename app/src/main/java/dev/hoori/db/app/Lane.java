@@ -6,8 +6,12 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.execution.Abandoned;
+import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
+import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
@@ -256,30 +260,63 @@ final class Lane {
    * dev.hoori.db.core.catalog.Catalog#GRACE} after a server that no longer answers.
    */
   void close() {
-    close(failure -> {});
+    close(ended -> {});
   }
 
   /**
-   * Closes it as {@link #close()} does, and hands what giving up a statement still open on the
-   * connection failed with, or empty, to {@code gaveUp}, on the thread that closes it.
+   * How long the closing waits for the call that runs to end: core ends one within {@link
+   * Execution#ENDING} of giving up its statement, and a cancelled one within two of {@link
+   * Query#GRACE}, after which it gives up the connection.
    */
-  void close(Consumer<Optional<Failure>> gaveUp) {
+  static final Duration ENDS = Execution.ENDING.plus(Query.GRACE.multipliedBy(3));
+
+  /**
+   * Closes it as {@link #close()} does, and hands how it ended to {@code ended}, on the thread
+   * that closes it: what giving up a statement still open on the connection said. Where the call
+   * that runs has not ended within {@link #ENDS}, the connection is aborted, and that is what it
+   * says. The thread is returned, which ends within a bound: {@link #ENDS}, and the close's own.
+   */
+  Thread close(Consumer<Abandoned> ended) {
     for (var dropped : thread.shutdownNow()) {
       if (dropped == opening) {
         Arrays.fill(copy, '\0'); // the opening never started
       }
       ((Future<?>) dropped).cancel(false);
     }
-    // Not a daemon: the process does not end while a connection closes and says how, which takes
-    // at most core's grace after a server that no longer answers.
-    Thread.ofPlatform().daemon(false).name("close a connection").start(() -> {
+    // Not a daemon: the process does not end while a connection closes and says how.
+    return Thread.ofPlatform().daemon(false).name("close a connection").start(() -> {
+      boolean done;
       try {
-        thread.awaitTermination(Long.MAX_VALUE, TimeUnit.DAYS);
+        done = thread.awaitTermination(ENDS.toNanos(), TimeUnit.NANOSECONDS);
       } catch (InterruptedException e) {
-        gaveUp.accept(Optional.empty());
-        return;
+        done = false;
       }
-      gaveUp.accept(link != null ? link.close() : Optional.empty());
+      var link = this.link;
+      if (link == null) {
+        ended.accept(Abandoned.NOTHING);
+      } else if (done) {
+        ended.accept(link.close());
+      } else {
+        link.abort();
+        ended.accept(new Abandoned(Optional.of(unanswered()), List.of()));
+      }
     });
+  }
+
+  private static Failure unanswered() {
+    return new Failure(
+        Failure.Kind.CONNECTION_LOST,
+        "Its last call did not end within " + ENDS.toSeconds() + " seconds as the session"
+            + " closed: the connection was given up, and what that call did is not known.",
+        "",
+        0,
+        0,
+        "",
+        0,
+        0,
+        "",
+        "",
+        "",
+        "");
   }
 }

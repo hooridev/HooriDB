@@ -46,7 +46,7 @@ class AbandonedServerTest {
       try {
         var execution = new Execution(connection, provider, PAY);
         assertTrue(execution.next(10).more());
-        assertEquals(Optional.empty(), execution.abandon());
+        assertEquals(Optional.empty(), execution.abandon().failure());
         assertTrue(connection.getAutoCommit());
         assertEquals(1000, selectLong(other, "SELECT count(*) FROM orders WHERE paid"));
       } finally {
@@ -69,7 +69,7 @@ class AbandonedServerTest {
                 + " SELECT id, pg_sleep(30) AS slow FROM changed");
         var portion = interrupted(() -> execution.next(10), () -> awaitRunning(provider, "slow"));
         assertEquals(Failure.Kind.CANCELLED, failure(portion.results()).kind());
-        assertEquals(Optional.empty(), execution.abandon());
+        assertEquals(Optional.empty(), execution.abandon().failure());
         assertTrue(connection.getAutoCommit());
         assertEquals(0, selectLong(other, "SELECT count(*) FROM orders WHERE paid"));
       } finally {
@@ -110,7 +110,7 @@ class AbandonedServerTest {
       var execution =
           new Execution(connection, provider, "SELECT n FROM generate_series(1, 100000) n");
       assertTrue(execution.next(10).more());
-      assertEquals(Optional.empty(), execution.abandon());
+      assertEquals(Optional.empty(), execution.abandon().failure());
       assertTrue(connection.getAutoCommit());
       assertEquals(Transaction.NONE, Drivers.transaction(connection));
       assertEquals(List.of(List.of(1L)), rows(run(connection, provider, "SELECT 1")));
@@ -169,7 +169,8 @@ class AbandonedServerTest {
 
         var early = new Execution(connection, provider, twice);
         assertTrue(early.next(1).more());
-        assertEquals(Failure.Kind.CONSTRAINT, early.abandon().orElseThrow().kind());
+        assertEquals(
+            Failure.Kind.CONSTRAINT, early.abandon().failure().orElseThrow().kind());
         assertTrue(connection.getAutoCommit());
         assertFalse(connection.isClosed());
         assertEquals(1, selectLong(connection, "SELECT count(*) FROM deferred"));
@@ -433,6 +434,69 @@ class AbandonedServerTest {
       return method.invoke(target, args);
     } catch (InvocationTargetException e) {
       throw e.getCause();
+    }
+  }
+
+  /** What the server says as a statement's own transaction is committed at the give-up. */
+  @Test
+  void aCommitsWarningAtTheGiveUpIsSaid() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE warned (id integer)",
+          "CREATE FUNCTION warned_note() RETURNS trigger AS $$ BEGIN RAISE WARNING 'checked at"
+              + " commit'; RETURN NULL; END $$ LANGUAGE plpgsql",
+          "CREATE CONSTRAINT TRIGGER warned_check AFTER INSERT ON warned DEFERRABLE INITIALLY"
+              + " DEFERRED FOR EACH ROW EXECUTE FUNCTION warned_note()");
+      try {
+        var early = new Execution(
+            connection,
+            provider,
+            "WITH x AS (INSERT INTO warned VALUES (1), (2) RETURNING *) SELECT * FROM x");
+        assertTrue(early.next(1).more());
+        var ended = early.abandon();
+        assertEquals(Optional.empty(), ended.failure());
+        assertTrue(
+            ended.messages().stream().anyMatch(m -> m.text().contains("checked at commit")),
+            ended.messages().toString());
+        assertEquals(2, selectLong(connection, "SELECT count(*) FROM warned"));
+      } finally {
+        execute(connection, "DROP TABLE warned", "DROP FUNCTION warned_note");
+      }
+    }
+  }
+
+  /**
+   * A server that stops answering while a statement is given up: the give-up ends within its
+   * bound all the same, the connection given up, and says so.
+   */
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aGiveUpTheServerNeverAnswersEndsWithinItsBound(Provider provider) throws Exception {
+    var server = dev.hoori.db.core.TestServer.of(provider);
+    try (var relay = new dev.hoori.db.core.query.Relay(server.host(), server.port());
+        var connection = dev.hoori.db.core.connect.Connector.open(
+                server
+                    .profile()
+                    .withHost(dev.hoori.db.core.query.Relay.HOST)
+                    .withPort(relay.port()),
+                dev.hoori.db.core.TestServer.password(),
+                server.driver(),
+                java.time.Duration.ofSeconds(10))
+            .connection()) {
+      var read = new Execution(connection, provider, million(provider));
+      assertTrue(read.next(10).more());
+      relay.freeze();
+      long started = System.nanoTime();
+      var ended = read.abandon();
+      var took = java.time.Duration.ofNanos(System.nanoTime() - started);
+      assertTrue(
+          took.compareTo(Execution.ENDING.plus(dev.hoori.db.core.query.Query.GRACE.multipliedBy(2)))
+              < 0,
+          took.toString());
+      assertEquals(Failure.Kind.CONNECTION_LOST, ended.failure().orElseThrow().kind());
+      assertTrue(connection.isClosed());
     }
   }
 }

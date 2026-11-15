@@ -84,6 +84,7 @@ final class ConnectionDialog {
   Boolean stored; // whether the keyring holds a password for the profile; null while unknown
   String keyringError; // what the keyring answered when it failed, or null
   Work asking; // the keyring's answer whether it holds a password, or null
+  private int lookups; // counted, so that a late patience is dropped
   // A change of the keyring runs: the dialog stays, unchanged, until its answer has come.
   boolean changing;
   boolean slow; // the keyring has not answered for a while: Cancel gives up waiting for it
@@ -150,6 +151,13 @@ final class ConnectionDialog {
       return;
     }
     var id = editing.original().id();
+    int at = ++lookups;
+    s.app.after(State.KEYRING_SECONDS, () -> {
+      if (asking != null && lookups == at) {
+        asking.cancel(); // stops waiting: the keyring does not answer, and it stays unknown
+        asking = null;
+      }
+    });
     asking = s.app.background(
         "look for a password",
         () -> {
@@ -219,7 +227,8 @@ final class ConnectionDialog {
     boolean inKeyring = Boolean.TRUE.equals(stored);
     char[] typed = password.isEmpty() ? null : password.toCharArray();
     char[] put = !keep ? null : typed != null ? typed : inKeyring ? null : s.rememberedCopy(id);
-    boolean takeOut = !keep && secrets != null && inKeyring;
+    // Unknown is not absent: where the keyring may hold one, it is asked to delete it.
+    boolean takeOut = !keep && secrets != null && !Boolean.FALSE.equals(stored);
     keyringError = null;
     if (put == null && !takeOut) {
       saved(s, profile, keep ? null : typed, false);
@@ -464,7 +473,9 @@ final class ConnectionDialog {
           + " The password is kept until HooriDB closes.";
     }
     if (stored == null) {
-      return asking != null ? "Looking for a saved password…" : null;
+      return asking != null
+          ? "Looking for a saved password…"
+          : "Whether the system keyring holds a password for this connection is not known.";
     }
     return savePassword ? null : "The password is kept until HooriDB closes.";
   }
@@ -482,7 +493,8 @@ final class ConnectionDialog {
         Button.options().enabled(changing || ready()).busy(changing));
     El cancel =
         button(t, SECONDARY, "Cancel", open ? () -> cancel(s) : slow ? () -> giveUp(s) : null);
-    boolean canSave = s.secrets() != null && stored != null;
+    // Also where it is not known whether the keyring holds one: the choice is the user's.
+    boolean canSave = s.secrets() != null && (stored != null || asking == null);
     boolean inKeyring = Boolean.TRUE.equals(stored);
     boolean inSession = !isNew && s.remembers(e.original().id());
     String keepNote = password.isEmpty() && (inKeyring || inSession)

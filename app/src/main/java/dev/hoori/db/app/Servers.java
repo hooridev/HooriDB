@@ -15,15 +15,15 @@ import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
-import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
-import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -95,16 +95,20 @@ interface Servers {
     Status status() throws QueryException;
 
     /**
-     * Gives up the statement whose rows are not all read, if one is: what that failed with, as a
-     * commit of what it changed, or empty.
+     * Gives up the statement whose rows are not all read, if one is, as {@link Execution#abandon}:
+     * what its end failed with, as a commit of what it changed, and what the server said.
      */
-    Optional<Failure> giveUp();
+    Abandoned giveUp();
 
     /**
-     * Closes it, giving up a statement whose rows are not all read first; what giving that up failed
-     * with, as a commit of what it changed, or empty. A failure to close is not reported.
+     * Closes it, giving up a statement whose rows are not all read first, as {@link #giveUp} says;
+     * each within a limit, after which the connection is aborted. A failure to close is not
+     * reported.
      */
-    Optional<Failure> close();
+    Abandoned close();
+
+    /** Gives the connection up at once, from any thread, as one whose call never ends is. */
+    void abort();
   }
 
   /** A statement run on a link, as {@link Execution}: it has the link until it is over. */
@@ -113,11 +117,8 @@ interface Servers {
     /** Its results up to the given number of rows, then as many more, as {@link Execution#next}. */
     Portion next(int count);
 
-    /**
-     * Ends it, giving up the rows not read; what giving up failed with, as a commit of what the
-     * statement changed, or empty.
-     */
-    Optional<Failure> close();
+    /** Ends it, giving up the rows not read, as {@link Execution#abandon} says. */
+    Abandoned close();
   }
 
   /** A connection of a driver. */
@@ -180,7 +181,7 @@ interface Servers {
         }
 
         @Override
-        public Optional<Failure> close() {
+        public Abandoned close() {
           open.compareAndSet(execution, null);
           return execution.abandon();
         }
@@ -212,17 +213,40 @@ interface Servers {
     }
 
     @Override
-    public Optional<Failure> giveUp() {
+    public Abandoned giveUp() {
       // A statement that ran well keeps what it changed, though its rows were not all read.
       var left = open.getAndSet(null);
-      return left == null ? Optional.empty() : left.abandon();
+      return left == null ? Abandoned.NOTHING : left.abandon();
     }
 
     @Override
-    public Optional<Failure> close() {
-      var failure = giveUp();
-      Connector.close(connection);
-      return failure;
+    public Abandoned close() {
+      var ended = giveUp();
+      try {
+        Query.within(connection, Query.GRACE, () -> {
+          Connector.close(connection);
+          return null;
+        });
+      } catch (QueryException e) {
+        // Given up: what mattered, the statement's end, is said already.
+      }
+      return ended;
+    }
+
+    @Override
+    public void abort() {
+      var aborter = Thread.ofVirtual().name("abort a connection").start(() -> {
+        try {
+          connection.abort(Runnable::run);
+        } catch (SQLException | RuntimeException e) {
+          // Not even an abort is possible; the connection is given up all the same.
+        }
+      });
+      try {
+        aborter.join(Query.GRACE);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 }
