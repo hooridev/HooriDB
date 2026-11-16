@@ -475,11 +475,14 @@ final class ConsoleTab implements Tab {
       var verb = every.get().verb().equals("DELETE") ? "delete" : "update";
       var table = every.get().table();
       running = sql;
+      var of = table.isEmpty() ? "its table" : table;
       confirming = new Confirm(
           sql,
           (verb.equals("delete") ? "Delete" : "Update") + " every row?",
-          brief(sql) + " has no WHERE clause: it would " + verb + " every row of "
-              + (table.isEmpty() ? "its table" : table) + ".",
+          every.get().certain()
+              ? brief(sql) + " has no WHERE clause: it would " + verb + " every row of " + of + "."
+              : "Could not tell whether " + brief(sql) + " is limited by a WHERE clause; it may "
+                  + verb + " every row of " + of + ".",
           true);
     } else {
       send(s, sql, true);

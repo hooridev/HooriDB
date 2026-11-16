@@ -44,6 +44,8 @@ class ConsoleConfirmationTest {
 
   static final String BIG = "SELECT * FROM events";
   static final String WIPE = "UPDATE orders SET paid = false";
+  // Bounded unless standard_conforming_strings is off, where the string runs on past the WHERE.
+  static final String ODD = "UPDATE orders SET note = 'C:\\' WHERE id = 1";
   static final String LARGE = "role=dialog label=\"Read about 5,000,000 rows?\"";
   static final String EVERY = "role=dialog label=\"Update every row?\"";
   static final String CANCEL = "press #confirm-cancel\nframe\n" + OPENED;
@@ -334,6 +336,15 @@ class ConsoleConfirmationTest {
     assertEquals(notRun(WIPE), tab(app).log.getLast());
     c.run(app, RUN + ANYWAY + "snap anyway\n");
     assertTrue(ran(WIPE), servers.calls.toString());
+    // Where the text cannot tell, it says so.
+    c.run(app, type(";\n" + ODD.replace("\\", "\\\\")) + RUN + "snap odd\n");
+    assertTrue(c.tree("odd").contains("role=dialog label=\"Update every row?\""), c.tree("odd"));
+    assertTrue(
+        c.tree("odd")
+            .contains("Could not tell whether " + ODD.replace("\\", "\\\\")
+                + " is limited by a WHERE clause; it may update every row of orders."),
+        c.tree("odd"));
+    c.run(app, CANCEL);
     // With a WHERE, nothing is asked.
     c.run(app, type(";\n" + PAY) + RUN + "snap pay\n");
     assertTrue(ran(PAY), servers.calls.toString());
@@ -354,10 +365,13 @@ class ConsoleConfirmationTest {
     app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
     Script.run(
         type(";\n" + BIG) + RUN + "snap console-large-read-" + look + "\n" + CANCEL
-            + type(";\n" + WIPE) + RUN + "snap console-every-row-" + look + "\n" + CANCEL,
+            + type(";\n" + WIPE) + RUN + "snap console-every-row-" + look + "\n" + CANCEL
+            + type(";\n" + ODD.replace("\\", "\\\\")) + RUN + "snap console-may-be-every-row-"
+            + look + "\n" + CANCEL,
         app,
         out);
-    for (var name : List.of("console-large-read", "console-every-row")) {
+    for (var name :
+        List.of("console-large-read", "console-every-row", "console-may-be-every-row")) {
       assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
     }
   }
