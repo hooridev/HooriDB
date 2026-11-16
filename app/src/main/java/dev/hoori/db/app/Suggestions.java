@@ -25,8 +25,12 @@ import java.util.Map;
  */
 final class Suggestions {
 
-  /** A name it may suggest, and whether it belongs to the statement's tables. */
-  private record Candidate(String name, String text, Symbol symbol, String kind, boolean own) {}
+  /**
+   * A name it may suggest, as it is listed, and as it is put in, quoted where it needs to be; and
+   * whether it belongs to the statement's tables.
+   */
+  private record Candidate(
+      String name, String shown, String text, Symbol symbol, String kind, boolean own) {}
 
   private final ConsoleTab tab;
   private final Map<Node, Catalogue.Scan> asked = new HashMap<>(); // the reads it started
@@ -85,7 +89,7 @@ final class Suggestions {
       }
       default -> {
         for (var keyword : Keywords.offered(provider)) {
-          candidates.add(new Candidate(keyword, keyword, null, "keyword", false));
+          candidates.add(new Candidate(keyword, keyword, keyword, null, "keyword", false));
         }
         known.schemas(candidates);
         known.tables(candidates);
@@ -103,7 +107,7 @@ final class Suggestions {
       once.putIfAbsent(c.text() + "\0" + c.symbol(), c);
     }
     return Ranking.rank(once.values(), Candidate::name, Candidate::own, word).stream()
-        .map(c -> new Completion.Entry(c.text(), c.symbol(), c.kind()))
+        .map(c -> new Completion.Entry(c.shown(), c.symbol(), c.kind(), c.text()))
         .toList();
   }
 
@@ -325,6 +329,7 @@ final class Suggestions {
           boolean view = table.kind() == Table.Kind.VIEW;
           qualified.add(new Candidate(
               table.name(),
+              x.name() + "." + table.name(),
               Names.quoted(x.name(), provider) + "." + Names.quoted(table.name(), provider),
               view ? Symbol.EYE : Symbol.TABLE,
               view ? "view" : "table",
@@ -352,12 +357,12 @@ final class Suggestions {
       for (var column : columns) {
         var name = column.name();
         into.add(new Candidate(
-            name, Names.quoted(name, provider), Symbol.COLUMN_SINGLE, column.type(), true));
+            name, name, Names.quoted(name, provider), Symbol.COLUMN_SINGLE, column.type(), true));
       }
     }
 
     private Candidate candidate(String name, Symbol symbol, String kind) {
-      return new Candidate(name, Names.quoted(name, provider), symbol, kind, false);
+      return new Candidate(name, name, Names.quoted(name, provider), symbol, kind, false);
     }
   }
 }

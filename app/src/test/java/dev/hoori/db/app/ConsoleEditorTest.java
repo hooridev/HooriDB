@@ -320,6 +320,7 @@ class ConsoleEditorTest {
     assertEquals("total", options(console.c.tree("columns")).getFirst());
   }
 
+  /** A name that needs quotes is listed as it is and put in quoted. */
   @Test
   void aNameThatNeedsQuotesIsInsertedQuoted() throws Exception {
     servers.serve(QUOTED, Provider.POSTGRESQL, "16.4", """
@@ -329,16 +330,27 @@ class ConsoleEditorTest {
               *id: integer
             user
               name: text
+          Sales
+            Invoices
+              *id: integer
         """);
     var app = console.console(ODD);
     console.c.run(
         app,
         open("odd") + SETTLE + type("SELECT * FROM O") + "type \"r\"\nframe\n" + SETTLE
             + "type \"d\"\n" + "frame\nadvance 1\nframe\nsnap odd\nkey Enter\nframe\n");
-    assertEquals(List.of("\"Order Items\""), options(console.c.tree("odd")));
+    assertEquals(List.of("Order Items"), options(console.c.tree("odd")));
     assertEquals("SELECT * FROM \"Order Items\"", console.tab(app).text);
     console.c.run(app, "type \" JOIN u\"\ntype \"s\"\nframe\nadvance 1\nframe\nkey Enter\nframe\n");
     assertEquals("SELECT * FROM \"Order Items\" JOIN \"user\"", console.tab(app).text);
+    // Off the search path, with its schema.
+    console.c.run(
+        app,
+        "type \" JOIN I\"\ntype \"n\"\nframe\nadvance 1\nframe\nsnap other\nkey Enter\nframe\n");
+    assertEquals(List.of("Sales.Invoices"), options(console.c.tree("other")));
+    assertEquals(
+        "SELECT * FROM \"Order Items\" JOIN \"user\" JOIN \"Sales\".\"Invoices\"",
+        console.tab(app).text);
   }
 
   @Test
