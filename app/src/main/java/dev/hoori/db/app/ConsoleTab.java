@@ -46,6 +46,7 @@ import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sql.EveryRow;
 import dev.hoori.db.core.sql.Statement;
 import dev.hoori.db.core.sql.Statements;
 import java.time.Duration;
@@ -172,6 +173,12 @@ final class ConsoleTab implements Tab {
    */
   record Ended(Transaction before, Portion portion) {}
 
+  /**
+   * What is asked before a statement is sent: a read of more rows than the console keeps, or a
+   * change of every row, which is a danger.
+   */
+  record Confirm(String sql, String title, String text, boolean danger) {}
+
   /** A switch of auto-commit: whether the session has the mode asked for now, and its status. */
   record Switched(boolean done, Status now) {}
 
@@ -187,6 +194,21 @@ final class ConsoleTab implements Tab {
       super(why);
       this.status = status;
       this.unverifiable = unverifiable;
+    }
+  }
+
+  /**
+   * A read not sent, as the console would read it whole and the planner estimates more rows than
+   * it keeps: the user is asked first. With the session's status, its mode made sure of.
+   */
+  static final class TooMany extends Exception {
+    final long rows;
+    final Status status;
+
+    TooMany(long rows, Status status) {
+      super(rows(rows));
+      this.rows = rows;
+      this.status = status;
     }
   }
 
@@ -244,6 +266,8 @@ final class ConsoleTab implements Tab {
   private boolean cancelled; // the last run was cancelled
   private boolean failedRun; // a statement of the last run failed, or could not be run
   private boolean closed;
+  // The statement held before it is sent until the user says whether it runs, or null.
+  Confirm confirming;
   String said; // what the tab says for a while in its status line, or null
   private int says;
   // Auto-commit as the session last had it from the server, or what the next session takes.
@@ -426,17 +450,42 @@ final class ConsoleTab implements Tab {
     }
   }
 
-  /** Runs the next statement of the run, on the session; its rows before are left as read. */
+  /**
+   * Runs the next statement of the run, on the session; its rows before are left as read. An UPDATE
+   * or DELETE of every row, and a read the console would read whole of more rows than it keeps,
+   * wait for the user's answer first ({@link #confirming}).
+   */
   private void next(State s) {
     var sql = queue.poll();
     if (sql == null || !gate(s, sql)) {
       return;
     }
-    var lane = session(s);
-    if (lane == null) {
+    if (session(s) == null) {
       queue.clear();
       return;
     }
+    var provider = s.profile(id).provider();
+    var every = EveryRow.of(sql, provider);
+    if (every.isPresent()) {
+      var verb = every.get().verb().equals("DELETE") ? "delete" : "update";
+      var table = every.get().table();
+      running = sql;
+      confirming = new Confirm(
+          sql,
+          (verb.equals("delete") ? "Delete" : "Update") + " every row?",
+          brief(sql) + " has no WHERE clause: it would " + verb + " every row of "
+              + (table.isEmpty() ? "its table" : table) + ".",
+          true);
+    } else {
+      send(s, sql, true);
+    }
+  }
+
+  /**
+   * Sends the statement on the session. A plain read that the session reads whole is first
+   * estimated, unless {@code estimate} is off as the user said to run it anyway.
+   */
+  private void send(State s, String sql, boolean estimate) {
     leave();
     running = sql;
     var provider = s.profile(id).provider();
@@ -445,6 +494,7 @@ final class ConsoleTab implements Tab {
     boolean lazy = reads(sql, provider) && mode == Mode.AUTO && transaction == Transaction.NONE;
     writes = !lazy;
     plain = reads(sql, provider);
+    boolean planned = estimate && plain;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
     empty = false;
@@ -454,13 +504,26 @@ final class ConsoleTab implements Tab {
     work = ask(
         s,
         "run a statement",
-        link -> start(link, sql, mode, lazy, held, KEPT),
+        link -> start(link, sql, mode, lazy, held, KEPT, planned),
         ran -> {
           work = null;
           ran(s, sql, ran);
         },
         error -> {
           work = null;
+          if (error instanceof TooMany e) {
+            applied = true; // the session's mode was made sure of
+            knew(e.status);
+            confirming = new Confirm(
+                sql,
+                "Read about " + rows(e.rows) + "?",
+                brief(sql) + " gives about " + rows(e.rows) + ", as the server estimates. In"
+                    + " Manual, and while a transaction may be open, the console reads a result"
+                    + " whole: it would read all of them from the server and keep the first "
+                    + rows(KEPT) + ".",
+                false);
+            return;
+          }
           failedRun = true;
           if (error instanceof NotRun e) {
             notRun(s, sql, e);
@@ -726,6 +789,7 @@ final class ConsoleTab implements Tab {
       case Portion p -> matters(p, plain);
       case InterruptedException e -> List.of();
       case NotRun e -> List.of();
+      case TooMany e -> List.of();
       case GaveUp e -> List.of();
       case QueryException e when e.failure() == QueryException.Failure.CANCELLED -> List.of();
       case ConnectionException e
@@ -902,6 +966,8 @@ final class ConsoleTab implements Tab {
    * by the server's word, gives its first portion and the rest as the grid scrolls; any other
    * statement is read to its end here, so that no execution is ever left open inside a
    * transaction or of anything that may change data, keeping at most {@code keep} rows a result.
+   * Such a read, where {@code estimate} says, is not sent where the planner estimates more rows
+   * than that: {@link TooMany}.
    */
   static Ran start(
       Servers.Link link,
@@ -909,8 +975,9 @@ final class ConsoleTab implements Tab {
       Mode mode,
       boolean lazy,
       AtomicReference<Servers.Run> held,
-      int keep)
-      throws QueryException, NotRun, InterruptedException {
+      int keep,
+      boolean estimate)
+      throws QueryException, NotRun, TooMany, InterruptedException {
     var now = link.status();
     if (now.autoCommit() == null && mode == Mode.MANUAL) {
       throw new NotRun(UNVERIFIABLE, now, true);
@@ -929,10 +996,26 @@ final class ConsoleTab implements Tab {
       }
       now = switched.now();
     }
+    boolean whole =
+        !(lazy && Boolean.TRUE.equals(now.autoCommit()) && now.transaction() == Transaction.NONE);
+    if (estimate && whole) {
+      long rows;
+      try {
+        rows = link.estimate(sql).orElse(0);
+      } catch (QueryException e) {
+        if (lost(e) || e.failure() == QueryException.Failure.CANCELLED) {
+          throw e;
+        }
+        rows = 0; // no plan, as of a statement that EXPLAIN does not take: no question
+      }
+      if (rows > keep) {
+        throw new TooMany(rows, now);
+      }
+    }
     var run = link.run(sql);
     held.set(run); // sent: cut short now, what it did is in doubt; and the rest as the grid scrolls
     var first = run.next(PORTION);
-    if (lazy && Boolean.TRUE.equals(now.autoCommit()) && now.transaction() == Transaction.NONE) {
+    if (!whole) {
       return new Ran(first, Collections.nCopies(first.results().size(), 0L), true);
     }
     return drained(run, first, keep);
@@ -1608,6 +1691,10 @@ final class ConsoleTab implements Tab {
    * doubt until the user has read that.
    */
   void cancel(State s) {
+    if (confirming != null) {
+      decline();
+      return;
+    }
     if (waiting) {
       waiting = false;
       queue.clear();
@@ -1726,6 +1813,7 @@ final class ConsoleTab implements Tab {
     waiting = false;
     stranded = false;
     switching = null;
+    confirming = null;
     if (stake) {
       problem = new Problem(
           "The connection ended",
@@ -1804,6 +1892,11 @@ final class ConsoleTab implements Tab {
 
   /** Whether something runs or waits to. */
   boolean busy() {
+    return working() || confirming != null;
+  }
+
+  /** Whether something runs or waits for its connection, as a spinner shows: not a question. */
+  boolean working() {
     return work != null || waiting;
   }
 
@@ -2168,7 +2261,7 @@ final class ConsoleTab implements Tab {
             PRIMARY,
             "Run",
             firm || locked != null ? null : () -> run(s),
-            Button.options().icon(Symbol.PLAY).busy(busy && !firm))
+            Button.options().icon(Symbol.PLAY).busy(working() && !firm))
         .key("run")
         .keepFocus());
     actions.add(button(SECONDARY, "Run all", busy || locked != null ? null : () -> runAll(s))
@@ -2265,7 +2358,7 @@ final class ConsoleTab implements Tab {
   private El results(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     El note = note(s);
-    if (outputs.isEmpty() && log.isEmpty() && busy()) {
+    if (outputs.isEmpty() && log.isEmpty() && working()) {
       return col()
           .grow(1)
           .center()
@@ -2479,7 +2572,9 @@ final class ConsoleTab implements Tab {
   private El footer(State s) {
     Theme t = Theme.CURRENT.get();
     El status;
-    if (busy()) {
+    if (confirming != null) {
+      status = Label.label(Label.Variant.MUTED, "Waiting for your answer").key("run-status");
+    } else if (busy()) {
       var what = waiting
           ? "Connecting…"
           : switching != null
@@ -2638,6 +2733,56 @@ final class ConsoleTab implements Tab {
                     .key("question-problem"));
     return Dialog.dialog(title, content, buttons, () -> answer(s, null))
         .key("transaction-question");
+  }
+
+  /** Run anyway: the statement asked about is sent, through the gate again. */
+  void proceed(State s) {
+    var asked = confirming;
+    if (asked == null) {
+      return;
+    }
+    confirming = null;
+    if (!gate(s, asked.sql())) {
+      return;
+    }
+    if (session(s) == null) {
+      queue.clear();
+      return;
+    }
+    send(s, asked.sql(), false);
+  }
+
+  /** Cancel: neither the statement asked about nor those after it run. */
+  void decline() {
+    var asked = confirming;
+    if (asked == null) {
+      return;
+    }
+    confirming = null;
+    queue.clear();
+    cancelled = true;
+    log.add(new Logged(Level.WARNING, brief(asked.sql()), null, "Not run"));
+  }
+
+  /** What is asked before a statement is sent, while it is; in the console's window. */
+  El confirmation(State s) {
+    Theme t = Theme.CURRENT.get();
+    var asked = confirming;
+    if (asked == null) {
+      return null;
+    }
+    var options = asked.danger() ? Button.options().tone(Button.Tone.DANGER) : Button.options();
+    return Dialog.dialog(
+            asked.title(),
+            col()
+                .w(ConnectionDialog.width())
+                .gap(t.space().m())
+                .child(Label.label(asked.text()).wrapText()),
+            List.of(
+                button(SECONDARY, "Cancel", this::decline).key("confirm-cancel"),
+                button(PRIMARY, "Run anyway", () -> proceed(s), options).key("confirm-run")),
+            this::decline)
+        .key("run-question");
   }
 
   /** The way out where the server does not answer, or its answer keeps failing. */

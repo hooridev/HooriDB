@@ -82,7 +82,9 @@ public final class Rows {
       Pattern.compile("(\\d\\d):(\\d\\d):(\\d\\d)(?:\\.(\\d{1,9}))?([+-]\\d\\d(?::\\d\\d){0,2})?");
   private static final DateTimeFormatter MYSQL_DATE_TIME =
       DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSSSSS");
-  private static final Pattern PLAN_ROWS = Pattern.compile(" rows=(\\d+) ");
+  // The rows of a plan's node, "rows=900" in PostgreSQL's and "rows=238e+6" in MySQL's tree.
+  private static final Pattern PLAN_ROWS =
+      Pattern.compile("[( ]rows=(\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?)[ )]");
 
   // The alias of the table in every statement that reads its rows, and of the table joined to it
   // whose columns say what the table's are now.
@@ -149,12 +151,11 @@ public final class Rows {
     return switch (provider) {
       // The first line of the plan is its top: "Seq Scan on t  (cost=0.00..19.00 rows=900 ...".
       case POSTGRESQL ->
-        Query.query(connection, provider, "EXPLAIN " + select, rows -> {
-          var matcher = PLAN_ROWS.matcher(rows.next() ? rows.getString(1) : "");
-          return matcher.find()
-              ? OptionalLong.of(Long.parseLong(matcher.group(1)))
-              : OptionalLong.empty();
-        });
+        Query.query(
+            connection,
+            provider,
+            "EXPLAIN " + select,
+            rows -> planned(rows.next() ? rows.getString(1) : ""));
       // Rather than information_schema.TABLES.TABLE_ROWS, which MySQL keeps for a day.
       case MARIADB, MYSQL -> {
         if (table.kind() == Table.Kind.VIEW) {
@@ -170,6 +171,18 @@ public final class Rows {
         });
       }
     };
+  }
+
+  /**
+   * The rows the top of a plan estimates, from its first line as PostgreSQL's {@code EXPLAIN} and
+   * MySQL's {@code EXPLAIN FORMAT=TREE} write it, such as {@code Limit  (cost=0.00..0.14 rows=10
+   * width=8)}; empty where it says none.
+   */
+  public static OptionalLong planned(String plan) {
+    var matcher = PLAN_ROWS.matcher(plan.lines().findFirst().orElse(""));
+    return matcher.find()
+        ? OptionalLong.of((long) Double.parseDouble(matcher.group(1)))
+        : OptionalLong.empty();
   }
 
   /** The exact number of rows of the table or view, which the server counts one by one. */

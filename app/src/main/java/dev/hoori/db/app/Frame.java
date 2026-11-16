@@ -43,11 +43,19 @@ final class Frame {
     // One dialog at a time: what the catalog asks waits for the others to close.
     El asked = s.dialog == null && s.deleting == null ? s.catalog.dialog(s, main) : null;
     El question = question(s, main);
+    El confirmation = s.dialog == null
+            && s.deleting == null
+            && asked == null
+            && s.driverList == null
+            && question == null
+        ? confirmation(s, main)
+        : null;
     boolean modal = s.dialog != null
         || s.deleting != null
         || asked != null
         || s.driverList != null
-        || question != null;
+        || question != null
+        || confirmation != null;
     closePalette(s, main, modal);
     List<Menu.Item> menus = menus(s, main, modal);
     El catalog = catalog(s).key("catalog").label("Catalog");
@@ -88,6 +96,7 @@ final class Frame {
     root.overlay(s.deleting == null ? null : deleteDialog(s));
     root.overlay(asked);
     root.overlay(question);
+    root.overlay(confirmation);
     if (s.driverList != null && s.dialog == null && s.deleting == null && asked == null) {
       root.overlay(s.driverList.view(s)).overlay(s.driverList.question(s));
     }
@@ -191,8 +200,9 @@ final class Frame {
     El asked = s.catalog.dialog(s, group);
     // What its console asks about what may be open in it.
     El question = question(s, group);
+    El confirmation = asked == null && question == null ? confirmation(s, group) : null;
     // The menus' commands without the bar, acting on this window's tabs.
-    boolean modal = asked != null || question != null;
+    boolean modal = asked != null || question != null || confirmation != null;
     List<Menu.Item> menus = menus(s, group, modal);
     closePalette(s, group, modal);
     return col()
@@ -209,7 +219,8 @@ final class Frame {
             .child(Card.flush(tabs.grow(1)).grow(1)))
         .overlay(asked)
         .overlay(question)
-        .overlay(asked != null || question != null ? null : palette(s, group, menus));
+        .overlay(confirmation)
+        .overlay(modal ? null : palette(s, group, menus));
   }
 
   /** What a console of the window asks about what may be open in it, or null. */
@@ -218,6 +229,14 @@ final class Frame {
     return pending != null && !pending.armed() && s.tabs.groupOf(pending.console()) == group
         ? pending.console().question(s)
         : null;
+  }
+
+  /**
+   * What the window's console in front asks before it sends a statement, or null; that of a
+   * console behind another tab waits until its tab is shown.
+   */
+  private static El confirmation(State s, TabGroups.Group<Tab> group) {
+    return group.activeTab() instanceof ConsoleTab console ? console.confirmation(s) : null;
   }
 
   /** The app of the window of these tabs. */

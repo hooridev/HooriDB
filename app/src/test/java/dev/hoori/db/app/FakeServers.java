@@ -264,6 +264,17 @@ final class FakeServers implements Servers {
     failures.remove(key);
   }
 
+  private final Map<String, OptionalLong> plans = new ConcurrentHashMap<>();
+
+  /**
+   * The server's plan of the statement estimates so many rows, none without this; its call is
+   * keyed {@code explain <host> <sql>}, and leaves the transaction as it was, as core's does.
+   */
+  FakeServers plans(String sql, long rows) {
+    plans.put(sql, OptionalLong.of(rows));
+    return this;
+  }
+
   /** The table at the path has so many rows, of which the server estimates so many, or none. */
   FakeServers rows(String path, long count, OptionalLong estimate) {
     counts.put(path, count);
@@ -557,6 +568,23 @@ final class FakeServers implements Servers {
     public OptionalLong estimate(Table t) throws QueryException {
       var path = path(t);
       return rows("estimate " + path, t, table -> estimates.getOrDefault(path, OptionalLong.of(3)));
+    }
+
+    @Override
+    public OptionalLong estimate(String sql) throws QueryException {
+      if (made.provider() == Provider.POSTGRESQL && transaction == Transaction.FAILED) {
+        return OptionalLong.empty(); // as core, which sends nothing in a failed transaction
+      }
+      var key = "explain " + host + " " + sql;
+      try {
+        call(key, queryFailure(QueryException.Failure.CANCELLED));
+      } catch (QueryException e) {
+        throw e;
+      } catch (Exception e) {
+        throw queryFailure(QueryException.Failure.OTHER);
+      }
+      done.add(key);
+      return plans.getOrDefault(sql, OptionalLong.empty());
     }
 
     @Override

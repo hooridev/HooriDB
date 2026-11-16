@@ -3,6 +3,8 @@ package dev.hoori.db.app;
 import static dev.hoori.db.app.CatalogTreeTest.eventually;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
@@ -22,6 +24,7 @@ import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -298,8 +301,67 @@ class ServersServerTest {
       throws Exception {
     return lane.submit(link -> unit(
             link,
-            l -> ConsoleTab.start(l, sql, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT)))
+            l -> ConsoleTab.start(
+                l, sql, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT, false)))
         .get(20, TimeUnit.SECONDS);
+  }
+
+  /**
+   * A read the console reads whole, in Manual, is not sent where the planner estimates more rows
+   * than it keeps; the transaction stays open with what it holds. A read the server has no plan
+   * for is sent and fails as itself.
+   */
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aLargeReadInManualIsEstimatedFirst(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    Lane.Call<Portion> drop =
+        link -> link.run("DROP TABLE IF EXISTS seam_large").next(10);
+    try {
+      lane.submit(drop).get(20, TimeUnit.SECONDS);
+      lane.submit(link -> link.run("CREATE TABLE seam_large (id integer)").next(10))
+          .get(20, TimeUnit.SECONDS);
+      statement(lane, "INSERT INTO seam_large VALUES (1), (2), (3)", ConsoleTab.Mode.MANUAL);
+      var asked = assertThrows(
+          ExecutionException.class,
+          () -> lane.submit(link -> unit(
+                  link,
+                  l -> ConsoleTab.start(
+                      l,
+                      "SELECT * FROM seam_large a, seam_large b",
+                      ConsoleTab.Mode.MANUAL,
+                      false,
+                      new AtomicReference<>(),
+                      1,
+                      true)))
+              .get(20, TimeUnit.SECONDS));
+      var tooMany = assertInstanceOf(ConsoleTab.TooMany.class, asked.getCause());
+      assertTrue(tooMany.rows > 1, String.valueOf(tooMany.rows));
+      assertEquals(Transaction.OPEN, tooMany.status.transaction());
+      var counted = statement(lane, "SELECT count(*) FROM seam_large", ConsoleTab.Mode.MANUAL);
+      assertEquals(3L, ((Number) rows(counted.portion()).getFirst().getFirst()).longValue());
+      var missing = lane.submit(link -> unit(
+              link,
+              l -> ConsoleTab.start(
+                  l,
+                  "SELECT * FROM seam_missing",
+                  ConsoleTab.Mode.MANUAL,
+                  false,
+                  new AtomicReference<>(),
+                  1,
+                  true)))
+          .get(20, TimeUnit.SECONDS);
+      assertInstanceOf(Failure.class, missing.portion().results().getLast());
+    } finally {
+      lane.submit(link -> {
+            link.run("ROLLBACK").next(1);
+            link.manual(false);
+            return drop.call(link);
+          })
+          .get(20, TimeUnit.SECONDS);
+      lane.close();
+    }
   }
 
   /** A switch of auto-commit as the console's unit does it. */
@@ -557,7 +619,8 @@ class ServersServerTest {
               ConsoleTab.Mode.AUTO,
               false,
               held,
-              ConsoleTab.KEPT)));
+              ConsoleTab.KEPT,
+              false)));
       eventually(update::isDone);
       update.cancel(true); // too late, as the console's Cancel or close can be: its answer is lost
       var rolledBack = end(lane, ConsoleTab.ROLLBACK);

@@ -52,7 +52,7 @@ class ConsoleTransactionTest {
 
   static final String DDL = "CREATE TABLE notes (id int)";
   // A change that fails: not a plain read, so that what it left is asked of the server.
-  static final String BROKEN = "UPDATE missing SET x = 1";
+  static final String BROKEN = "UPDATE missing SET x = 1 WHERE id = 1";
   static final String KILL = "SELECT pg_terminate_backend(pg_backend_pid())";
   // On an open session the switch asks the server first.
   static final String MANUAL = "press role=radio label=\"Manual\"\nframe\n" + SETTLE;
@@ -1325,7 +1325,7 @@ class ConsoleTransactionTest {
     // In Manual, a Rollback while one is in doubt runs, and does not claim to have undone it.
     servers.openAll();
     var manual = open(SHOP);
-    var change = "UPDATE orders SET paid = false";
+    var change = "UPDATE orders SET paid = false WHERE id < 4";
     servers.statement(change, List.of(new Result.Count(3)));
     servers.hold("run " + PG + " " + change);
     c.run(manual, type(";\n" + change) + "key Enter control\nframe\nframe\n");
