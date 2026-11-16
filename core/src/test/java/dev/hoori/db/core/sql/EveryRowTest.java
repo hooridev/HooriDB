@@ -188,6 +188,33 @@ class EveryRowTest {
     }
   }
 
+  /**
+   * Keywords fold by ASCII's letters alone, as the servers fold them: a Turkish İ or ı, which Java's
+   * case folding takes for an I, makes a name. WHERE, UPDATE and DELETE hold no I; LIMIT and WITH
+   * do.
+   */
+  @Test
+  void aKeywordIsSpelledInAsciiLetters() {
+    for (var provider : Provider.values()) {
+      every(provider, "UPDATE accounts SET L\u0130M\u0130T = 5000", "UPDATE", "accounts");
+      every(provider, "UPDATE accounts SET l\u0131m\u0131t = 5000", "UPDATE", "accounts");
+      bounded(provider, "update accounts set x = 1 where id = 1");
+    }
+    for (var provider : new Provider[] {MARIADB, MYSQL}) {
+      every(provider, "UPDATE accounts SET LIM\u0130T = 5000", "UPDATE", "accounts");
+      every(provider, "UPDATE accounts SET x = l\u0131mit", "UPDATE", "accounts");
+      every(provider, "UPDATE accounts SET x = 1 /*! L\u0130MIT 1 */", "UPDATE", "accounts");
+      bounded(provider, "UPDATE accounts SET x = 1 limit 1");
+      assertEquals(
+          OptionalLong.empty(), Statements.limit("SELECT * FROM t L\u0130MIT 3", provider));
+    }
+    // A WITH spelled so is no WITH, and what follows it no statement of one.
+    bounded(POSTGRESQL, "W\u0130TH x AS (SELECT 1) DELETE FROM t");
+    // Nor is DELIMITER spelled so the client's command.
+    assertEquals(
+        2, Statements.split("DEL\u0130MITER //\nSELECT 1; SELECT 2", MYSQL).size());
+  }
+
   /** A WHERE after RETURNING names a column. */
   @Test
   void aWhereAfterReturningIsNone() {

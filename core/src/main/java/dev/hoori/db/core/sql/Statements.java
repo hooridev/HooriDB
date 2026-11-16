@@ -428,7 +428,8 @@ public final class Statements {
   private boolean delimiterCommand() {
     int n = text.length();
     int j = i + "DELIMITER".length();
-    if (!text.regionMatches(true, i, "DELIMITER", 0, "DELIMITER".length())
+    if (j > n
+        || !Tokens.keyword(text.substring(i, j)).equals("DELIMITER")
         || (j < n && text.charAt(j) != ' ' && text.charAt(j) != '\t' && !lineEnd(text.charAt(j)))) {
       return false;
     }

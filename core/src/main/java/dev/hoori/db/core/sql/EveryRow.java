@@ -2,7 +2,6 @@ package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 
@@ -61,8 +60,8 @@ public record EveryRow(String verb, String table, boolean certain) {
       }
       certain &= read;
       if (found == null) {
-        found = new EveryRow(
-            tokens.get(verb).text().toUpperCase(Locale.ROOT), table(sql, tokens, verb), true);
+        found =
+            new EveryRow(Tokens.keyword(tokens.get(verb).text()), table(sql, tokens, verb), true);
       }
     }
     return found == null
@@ -96,7 +95,7 @@ public record EveryRow(String verb, String table, boolean certain) {
     int at = verb + 1;
     while (at < tokens.size()
         && !tokens.get(at).ident()
-        && BEFORE_TABLE.contains(tokens.get(at).text().toUpperCase(Locale.ROOT))) {
+        && BEFORE_TABLE.contains(Tokens.keyword(tokens.get(at).text()))) {
       at++;
     }
     var table = "";
@@ -151,6 +150,6 @@ public record EveryRow(String verb, String table, boolean certain) {
   }
 
   private static boolean verb(Tokens.Token token) {
-    return !token.ident() && VERBS.contains(token.text().toUpperCase(Locale.ROOT));
+    return !token.ident() && VERBS.contains(Tokens.keyword(token.text()));
   }
 }

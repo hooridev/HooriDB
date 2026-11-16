@@ -17,7 +17,7 @@ final class Tokens {
   record Token(String text, int start, int end, int depth, boolean ident) {
 
     boolean is(String word) {
-      return !ident && text.equalsIgnoreCase(word);
+      return !ident && keyword(text).equals(word);
     }
 
     boolean name() {
@@ -133,5 +133,22 @@ final class Tokens {
 
   private static boolean ascii(char c) {
     return c < 0x80;
+  }
+
+  /**
+   * The word in upper case as a keyword, by ASCII's letters alone, as the servers fold keywords; a
+   * word with any other character, such as {@code LİMİT} or {@code lımıt}, is a name, and is given
+   * back unchanged, so that it equals no keyword.
+   */
+  static String keyword(String word) {
+    var upper = new StringBuilder(word.length());
+    for (int k = 0; k < word.length(); k++) {
+      char c = word.charAt(k);
+      if (!ascii(c)) {
+        return word;
+      }
+      upper.append(c >= 'a' && c <= 'z' ? (char) (c - 'a' + 'A') : c);
+    }
+    return upper.toString();
   }
 }
