@@ -68,7 +68,9 @@ public final class Plan {
       try {
         return explain(connection, provider, sql);
       } finally {
-        Query.within(connection, Query.GRACE, () -> execute(connection, "ROLLBACK"));
+        // MariaDB's and MySQL's ROLLBACK would chain or disconnect as completion_type says.
+        var rollback = pg ? "ROLLBACK" : "ROLLBACK AND NO CHAIN NO RELEASE";
+        Query.within(connection, Query.GRACE, () -> execute(connection, rollback));
       }
     } finally {
       if (switches && own != null && !own.isEmpty()) {

@@ -83,6 +83,27 @@ class PlanServerTest {
     }
   }
 
+  /**
+   * MariaDB's and MySQL's completion_type would make a bare ROLLBACK begin the next transaction or
+   * close the connection: the estimate's ends neither way, whether it plans or fails.
+   */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void completionTypeNeitherChainsNorReleases(Provider provider) throws Exception {
+    for (int type : new int[] {1, 2}) {
+      try (var connection = open(provider)) {
+        execute(connection, "SET SESSION completion_type = " + type);
+        Plan.rows(connection, provider, null, "SELECT 1 FROM dual");
+        assertEquals(Transaction.NONE, Transaction.of(connection, provider), "type " + type);
+        assertThrows(QueryException.class, () -> Plan.rows(connection, provider, null, MISSING));
+        assertEquals(Transaction.NONE, Transaction.of(connection, provider), "type " + type);
+        assertEquals(1, selectLong(connection, "SELECT 1"));
+      }
+    }
+  }
+
   private static String dual(Provider provider) {
     return provider == Provider.POSTGRESQL ? "(SELECT 1) AS d" : "dual";
   }
