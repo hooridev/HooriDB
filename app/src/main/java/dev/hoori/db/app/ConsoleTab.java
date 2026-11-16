@@ -204,7 +204,7 @@ final class ConsoleTab implements Tab {
 
   /**
    * A read not sent, as the console would read it whole and the planner estimates more rows than
-   * it keeps: the user is asked first. With the session's status, its mode made sure of.
+   * it keeps: the user is asked first. With the session's status, read before anything was sent.
    */
   static final class TooMany extends Exception {
     final long rows;
