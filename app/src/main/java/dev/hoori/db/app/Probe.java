@@ -252,43 +252,44 @@ final class Probe {
   }
 
   /** What the test shows below the form: the question, the progress or the outcome; or null. */
-  El view(Theme t, State s) {
+  El view(State s) {
     return switch (step) {
       case null -> null;
       case Fetching f ->
         switch (fetch.step) {
-          case Fetch.Waiting w -> status(t, "Looking up the driver…");
-          case Fetch.Loading l -> status(t, "Loading " + Fetch.name(l.found().provider()) + "…");
+          case Fetch.Waiting w -> status("Looking up the driver…");
+          case Fetch.Loading l -> status("Loading " + Fetch.name(l.found().provider()) + "…");
           case null -> null;
-          default -> fetch.view(t, s, this::stop);
+          default -> fetch.view(s, this::stop);
         };
-      case ForKeyring k -> status(t, "Looking for the system keyring…");
-      case Testing x -> status(t, "Connecting to " + x.host() + "…");
+      case ForKeyring k -> status("Looking for the system keyring…");
+      case Testing x -> status("Connecting to " + x.host() + "…");
       case Failed f when !holds(f.tried()) -> null;
       case Failed f ->
         Callout.callout(
-            t,
             Callout.Kind.DANGER,
             "The connection could not be tested",
             State.message(f.error()),
-            button(t, SECONDARY, "Try again", () -> test(s)));
-      case Done d -> outcome(t);
+            button(SECONDARY, "Try again", () -> test(s)));
+      case Done d -> outcomeView();
     };
   }
 
-  private El status(Theme t, String text) {
+  private El status(String text) {
+    Theme t = Theme.CURRENT.get();
     return row()
         .wFull()
         .gap(t.space().s())
         .align(Style.Align.CENTER)
         .role("status")
         .label(text)
-        .child(Progress.spinner(t))
-        .child(label(t, text).wrapText().grow(1))
-        .child(button(t, SECONDARY, "Cancel", this::stop).label("Cancel test"));
+        .child(Progress.spinner())
+        .child(label(text).wrapText().grow(1))
+        .child(button(SECONDARY, "Cancel", this::stop).label("Cancel test"));
   }
 
-  private El outcome(Theme t) {
+  private El outcomeView() {
+    Theme t = Theme.CURRENT.get();
     var done = outcome();
     if (done == null) {
       return null;
@@ -301,12 +302,11 @@ final class Probe {
             .align(Style.Align.CENTER)
             .role("status")
             .label(text)
-            .child(Icon.icon(t, Symbol.CHECKMARK_CIRCLE, Icon.Variant.SUCCESS))
-            .child(label(t, text).wrapText());
+            .child(Icon.icon(Symbol.CHECKMARK_CIRCLE, Icon.Variant.SUCCESS))
+            .child(label(text).wrapText());
       }
       case Tester.Refused r ->
         Callout.callout(
-            t,
             Callout.Kind.DANGER,
             Words.title(r.failure()),
             r.detail().isEmpty() ? null : r.detail());

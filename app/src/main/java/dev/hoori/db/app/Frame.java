@@ -38,10 +38,10 @@ final class Frame {
   private Frame() {}
 
   static El view(State s) {
-    Theme t = s.theme;
+    Theme t = Theme.CURRENT.get();
     var main = s.tabs.main();
     // One dialog at a time: what the catalogue asks waits for the others to close.
-    El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(t, s, main) : null;
+    El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(s, main) : null;
     El question = question(s, main);
     boolean modal = s.dialog != null
         || s.deleting != null
@@ -50,7 +50,7 @@ final class Frame {
         || question != null;
     closePalette(s, main, modal);
     List<Menu.Item> menus = menus(s, main, modal);
-    El catalogue = catalogue(t, s).key("catalogue").label("Catalogue");
+    El catalogue = catalogue(s).key("catalogue").label("Catalogue");
     El tabs = tabs(s, main, s.app).key("tabs");
     El root = col()
         .wFull()
@@ -59,13 +59,11 @@ final class Frame {
         .onKey(keys(MenuBar.keys(s.bar, menus), s.bar, s.palette(main), modal, tabs))
         .onKeyUp(MenuBar.keysUp(s.bar, menus))
         .child(withMenus(
-            t,
             HooriDb.NAME,
             HooriDb.COLOUR,
-            MenuBar.menuBar(t, s.bar, menus),
+            MenuBar.menuBar(s.bar, menus),
             s.app != null && s.app.windowMaximized()))
         .child(Split.cards(
-                t,
                 Split.Direction.ROW,
                 s.sidebar,
                 State.SIDEBAR,
@@ -77,8 +75,7 @@ final class Frame {
             .grow(1)
             .padding(0, t.space().m(), 0, t.space().m()))
         .child(StatusBar.statusBar(
-            t,
-            s.message == null ? List.of() : List.of(StatusBar.text(t, s.message).key("message")),
+            s.message == null ? List.of() : List.of(StatusBar.text(s.message).key("message")),
             List.of()));
     // The window closes once what was begun has ended and the connections are written.
     Windows.Handle window = s.app == null ? null : s.app.windows().of(s.app);
@@ -86,13 +83,13 @@ final class Frame {
       window.onCloseRequest(s::requestClose);
     }
     if (s.dialog != null) {
-      root.overlay(s.dialog.view(t, s)).overlay(s.dialog.question(t, s));
+      root.overlay(s.dialog.view(s)).overlay(s.dialog.question(s));
     }
-    root.overlay(s.deleting == null ? null : deleteDialog(t, s));
+    root.overlay(s.deleting == null ? null : deleteDialog(s));
     root.overlay(asked);
     root.overlay(question);
     if (s.driverList != null && s.dialog == null && s.deleting == null && asked == null) {
-      root.overlay(s.driverList.view(t, s)).overlay(s.driverList.question(t, s));
+      root.overlay(s.driverList.view(s)).overlay(s.driverList.question(s));
     }
     return root.overlay(modal ? null : palette(s, main, menus));
   }
@@ -138,14 +135,12 @@ final class Frame {
   /** The window's command palette, over the commands of its menus and its tables after @. */
   private static El palette(State s, TabGroups.Group<Tab> group, List<Menu.Item> menus) {
     return CommandPalette.palette(
-        s.theme, s.palette(group), CommandPalette.commands(menus), List.of(GoTo.source(s, group)));
+        s.palette(group), CommandPalette.commands(menus), List.of(GoTo.source(s, group)));
   }
 
   /** The tabs of a window, each with its content; the main window's empty one says what goes in. */
   private static El tabs(State s, TabGroups.Group<Tab> group, App<State> app) {
-    Theme t = s.theme;
     return s.tabs.tabs(
-        t,
         group,
         tab -> switch (tab) {
           case TableTab x ->
@@ -162,15 +157,14 @@ final class Frame {
           case null ->
             group == s.tabs.main()
                 ? emptyState(
-                    t,
                     Symbol.TABLE,
                     "No tabs open",
                     "Open a table in the tree, with a double press or Enter, to see its rows, or"
                         + " a console from a connection's menu to run statements.",
                     null)
                 : null;
-          case TableTab x -> x.view(t, s, app);
-          case ConsoleTab x -> x.view(t, s, app);
+          case TableTab x -> x.view(s, app);
+          case ConsoleTab x -> x.view(s, app);
         });
   }
 
@@ -185,11 +179,11 @@ final class Frame {
 
   /** The window of tabs torn off: its title bar over its tabs, whose status lines they show. */
   static El window(State s, TabGroups.Group<Tab> group) {
-    Theme t = s.theme;
+    Theme t = Theme.CURRENT.get();
     App<State> app = app(s, group);
     El tabs = tabs(s, group, app).key("tabs");
     // What a console of this window asked for, such as a password.
-    El asked = s.catalogue.dialog(t, s, group);
+    El asked = s.catalogue.dialog(s, group);
     // What its console asks about what may be open in it.
     El question = question(s, group);
     // The menus' commands without the bar, acting on this window's tabs.
@@ -202,12 +196,12 @@ final class Frame {
         .fill(t.surface().window())
         .onKey(keys(Menu.shortcuts(menus), null, s.palette(group), modal, tabs))
         .child(TitleBar.titleBar(
-            t, title(s, group.activeTab()), HooriDb.COLOUR, app != null && app.windowMaximized()))
+            title(s, group.activeTab()), HooriDb.COLOUR, app != null && app.windowMaximized()))
         .child(col()
             .grow(1)
             .minSize(0, 0)
             .padding(0, t.space().m(), t.space().m(), t.space().m())
-            .child(Card.flush(t, tabs.grow(1)).grow(1)))
+            .child(Card.flush(tabs.grow(1)).grow(1)))
         .overlay(asked)
         .overlay(question)
         .overlay(asked != null || question != null ? null : palette(s, group, menus));
@@ -217,7 +211,7 @@ final class Frame {
   private static El question(State s, TabGroups.Group<Tab> group) {
     var pending = s.pending;
     return pending != null && !pending.armed() && s.tabs.groupOf(pending.console()) == group
-        ? pending.console().question(s.theme, s)
+        ? pending.console().question(s)
         : null;
   }
 
@@ -228,24 +222,20 @@ final class Frame {
   }
 
   /** The connections: waiting while they load, then a tree of them or the empty state. */
-  private static El catalogue(Theme t, State s) {
+  private static El catalogue(State s) {
+    Theme t = Theme.CURRENT.get();
     Runnable create = s.canChange() ? s::newConnection : null;
     El problem = null;
     if (s.loadError != null) {
       // A file that could not be read for another reason is still there: nothing may replace it.
       problem = Callout.callout(
-          t,
           Callout.Kind.DANGER,
           "Connections could not be read",
           s.loadError,
-          s.canChange() ? new El[0] : new El[] {tryAgain(t, s::reload)});
+          s.canChange() ? new El[0] : new El[] {tryAgain(s::reload)});
     } else if (s.saveError != null) {
       problem = Callout.callout(
-          t,
-          Callout.Kind.DANGER,
-          "Connections could not be saved",
-          s.saveError,
-          tryAgain(t, s::persist));
+          Callout.Kind.DANGER, "Connections could not be saved", s.saveError, tryAgain(s::persist));
     }
     El body;
     if (!s.loaded) {
@@ -255,12 +245,11 @@ final class Frame {
           .grow(1)
           .center()
           .gap(t.space().m())
-          .child(Progress.spinner(t))
-          .child(label(t, Label.Variant.MUTED, "Loading connections…"));
+          .child(Progress.spinner())
+          .child(label(Label.Variant.MUTED, "Loading connections…"));
     } else if (!s.profiles.isEmpty()) {
       var c = s.catalogue;
       El tree = Tree.tree(
-              t,
               new Catalogue.Model(t, s),
               c.open::contains,
               s.selected,
@@ -269,8 +258,8 @@ final class Frame {
               node -> c.activate(s, node))
           .key("connections")
           .label("Connections");
-      body = Card.inset(t, Menu.contextMenu(t, tree, c.menu, c.items(s, s.selected)));
-      El callout = c.callout(t, s);
+      body = Card.inset(Menu.contextMenu(tree, c.menu, c.items(s, s.selected)));
+      El callout = c.callout(s);
       if (callout != null) {
         body = col()
             .grow(1)
@@ -279,23 +268,20 @@ final class Frame {
       }
     } else if (s.loadError == null) {
       body = emptyState(
-          t,
           Symbol.DATABASE,
           "No connections yet",
           "Connections to your databases will be listed here.",
-          button(t, Button.Variant.PRIMARY, Symbol.ADD, "New connection", create));
+          button(Button.Variant.PRIMARY, Symbol.ADD, "New connection", create));
     } else {
       body = null;
     }
     return Card.flush(
-        t,
         Card.toolbar(
-            t,
             "Connections",
             null,
-            Button.icon(t, Button.Variant.GHOST, Symbol.ADD, "Add connection", create)),
+            Button.icon(Button.Variant.GHOST, Symbol.ADD, "Add connection", create)),
         problem == null ? null : col().padding(t.space().s()).child(problem),
-        s.notices.isEmpty() ? null : notices(t, s),
+        s.notices.isEmpty() ? null : notices(s),
         body);
   }
 
@@ -308,16 +294,16 @@ final class Frame {
    * until dismissed: a failure as a danger, a warning as such. They scroll in a region of bounded
    * height above the tree, with Dismiss all where there are several.
    */
-  private static El notices(Theme t, State s) {
+  private static El notices(State s) {
+    Theme t = Theme.CURRENT.get();
     int shown = s.notices.getLast().number(); // the newest this view shows
     var list = col().gap(t.space().s()).key("notices").label("Notices");
     for (var notice : s.notices.reversed()) {
       list.child(Callout.callout(
-              t,
               notice.failure() ? Callout.Kind.DANGER : Callout.Kind.WARNING,
               notice.connection() + " · " + notice.statement(),
               notice.what(),
-              button(t, Button.Variant.SECONDARY, "Dismiss", () -> s.dismiss(notice))
+              button(Button.Variant.SECONDARY, "Dismiss", () -> s.dismiss(notice))
                   .key("dismiss-" + notice.number()))
           .key("notice-" + notice.number()));
     }
@@ -328,7 +314,6 @@ final class Frame {
             s.notices.size() > 3
                 ? row()
                     .child(button(
-                            t,
                             Button.Variant.SECONDARY,
                             "Dismiss all",
                             // Those shown: a notice that comes before the press stays.
@@ -339,31 +324,29 @@ final class Frame {
         .child(list.scroll().maxSize(Float.MAX_VALUE, t.size().field()));
   }
 
-  private static El tryAgain(Theme t, Runnable action) {
-    return button(t, Button.Variant.SECONDARY, "Try again", action);
+  private static El tryAgain(Runnable action) {
+    return button(Button.Variant.SECONDARY, "Try again", action);
   }
 
-  private static El deleteDialog(Theme t, State s) {
+  private static El deleteDialog(State s) {
+    Theme t = Theme.CURRENT.get();
     El delete = button(
-        t,
         Button.Variant.PRIMARY,
         "Delete",
         s::delete,
         Button.options().tone(Button.Tone.DANGER).busy(s.removing));
     El content = col()
         .gap(t.space().m())
-        .child(label(t, "Delete the connection " + State.name(s.deleting) + "?"))
+        .child(label("Delete the connection " + State.name(s.deleting) + "?"))
         .child(
             s.tables(s.deleting.id()).isEmpty() && s.consoles(s.deleting.id()).isEmpty()
                 ? null
-                : label(t, Label.Variant.MUTED, "Its open tabs close."))
+                : label(Label.Variant.MUTED, "Its open tabs close."))
         .child(label(
-            t,
             Label.Variant.MUTED,
             "If its password is saved in the system keyring, it is deleted there too."));
     if (s.removingSlow) {
       content.child(Callout.callout(
-          t,
           Callout.Kind.WARNING,
           "The system keyring does not answer",
           "Cancel gives up waiting: the password may then still be in the keyring or not, and the"
@@ -371,16 +354,14 @@ final class Frame {
               + (s.keyringWorker.behind() ? ConnectionDialog.BEHIND : "")));
     }
     if (s.removeError != null) {
-      content.child(Callout.callout(
-          t, Callout.Kind.DANGER, "The password could not be deleted", s.removeError));
+      content.child(
+          Callout.callout(Callout.Kind.DANGER, "The password could not be deleted", s.removeError));
     }
     return Dialog.dialog(
-        t,
         "Delete connection",
         content,
         List.of(
             button(
-                t,
                 Button.Variant.SECONDARY,
                 "Cancel",
                 s.removing && !s.removingSlow ? null : s::cancelDelete),
@@ -455,7 +436,7 @@ final class Frame {
     return s.dialog != null
         || s.deleting != null
         || s.driverList != null
-        || s.catalogue.dialog(s.theme, s, s.tabs.main()) != null;
+        || s.catalogue.dialog(s, s.tabs.main()) != null;
   }
 
   /** Gives the focus to the tree of connections. */

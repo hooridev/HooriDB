@@ -897,7 +897,8 @@ final class State {
    * status lines, over the same state.
    */
   Windows.Handle openWindow(TabGroups.Group<Tab> group, Window.Options options) {
-    App<State> window = new App<>(this, s -> Frame.window(s, group));
+    App<State> window =
+        new App<>(this, s -> Frame.window(s, group)).provide(Theme.CURRENT, s -> s.theme);
     window.textRendering(app.textRendering());
     var handle = app.windows()
         .open(

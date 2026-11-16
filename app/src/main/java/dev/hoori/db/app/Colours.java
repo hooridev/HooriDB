@@ -44,13 +44,26 @@ final class Colours {
           case AMBER -> Theme.Hue.AMBER;
           case GREEN -> Theme.Hue.GREEN;
           case TEAL -> Theme.Hue.TEAL;
-          case GREY -> Theme.Hue.GREY;
+          case GREY -> Theme.Hue.GRAY;
         };
   }
 
   /** The colour of the theme's hue; null for none. */
   static Colour colour(Theme.Hue hue) {
-    return hue == null ? null : Colour.valueOf(hue.name());
+    return hue == null
+        ? null
+        : switch (hue) {
+          case BLUE -> Colour.BLUE;
+          case VIOLET -> Colour.VIOLET;
+          case PURPLE -> Colour.PURPLE;
+          case PINK -> Colour.PINK;
+          case RED -> Colour.RED;
+          case ORANGE -> Colour.ORANGE;
+          case AMBER -> Colour.AMBER;
+          case GREEN -> Colour.GREEN;
+          case TEAL -> Colour.TEAL;
+          case GRAY -> Colour.GREY;
+        };
   }
 
   /** What a colour is called: "None", "Red", as the kit's hue picker says. */
@@ -64,7 +77,8 @@ final class Colours {
   }
 
   /** The line a colour is drawn as, in its hue's edge, which stands out on every surface. */
-  private static int edge(Theme t, Colour colour) {
+  private static int edge(Colour colour) {
+    Theme t = Theme.CURRENT.get();
     return t.withAccent(hue(colour)).accent().edge();
   }
 
@@ -72,17 +86,19 @@ final class Colours {
    * The mark before a connection's icon in the tree: an upright line in its colour, or as much
    * room without one, so that the icons of all connections line up.
    */
-  static El mark(Theme t, Colour colour) {
+  static El mark(Colour colour) {
+    Theme t = Theme.CURRENT.get();
     float w = t.size().indicator();
     El mark = el().size(w, t.size().icon()).shrink(0).radius(w / 2);
-    return colour == null ? mark : mark.key("colour").value(value(colour)).fill(edge(t, colour));
+    return colour == null ? mark : mark.key("colour").value(value(colour)).fill(edge(colour));
   }
 
   /**
    * The line under a tab's header in its connection's colour, also in a window torn off; null for
    * none.
    */
-  static El line(Theme t, Colour colour) {
+  static El line(Colour colour) {
+    Theme t = Theme.CURRENT.get();
     return colour == null
         ? null
         : el().key("colour")
@@ -90,6 +106,6 @@ final class Colours {
             .h(t.size().indicator())
             .wFull()
             .shrink(0)
-            .fill(edge(t, colour));
+            .fill(edge(colour));
   }
 }

@@ -517,39 +517,37 @@ final class TableTab implements Tab {
   }
 
   /** The tab's content: its toolbar, why it cannot read, the grid, and its status line. */
-  El view(Theme t, State s, App<State> app) {
+  El view(State s, App<State> app) {
+    Theme t = Theme.CURRENT.get();
     var connected = s.catalogue.connected(id);
     var profile = s.profile(id);
     String where = profile == null ? null : State.name(profile);
     El top = Card.toolbar(
-        t,
         path(),
         where,
         button(
-                t,
                 SECONDARY,
                 Symbol.CALCULATOR,
                 counting == null ? "Count rows" : "Stop counting",
                 connected && columns != null && !ending ? () -> count(s) : null)
             .key("count"),
         button(
-                t,
                 SECONDARY,
                 Symbol.ARROW_CLOCKWISE,
                 "Refresh",
                 opening != null,
                 connected ? () -> open(s, true) : null)
             .key("refresh"));
-    El line = Colours.line(t, s.colour(id));
+    El line = Colours.line(s.colour(id));
     El content =
-        col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider(t) : line);
-    El note = note(t, s, connected);
+        col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
+    El note = note(s, connected);
     if (note != null) {
       content.child(col().padding(t.space().m()).shrink(0).child(note));
     }
     // Loading cells only while something is read, or was: not for a table that failed at once.
     if (columns != null && (fields != null || failure == null)) {
-      content.child(grid(t, s, app).grow(1));
+      content.child(grid(s, app).grow(1));
     } else if (opening != null) {
       content.child(col()
           .grow(1)
@@ -557,8 +555,8 @@ final class TableTab implements Tab {
           .gap(t.space().m())
           .role("status")
           .label("Reading " + table.name())
-          .child(Progress.spinner(t))
-          .child(Label.label(t, Label.Variant.MUTED, "Reading " + path() + "…")));
+          .child(Progress.spinner())
+          .child(Label.label(Label.Variant.MUTED, "Reading " + path() + "…")));
     } else {
       content.child(col().grow(1));
     }
@@ -566,17 +564,16 @@ final class TableTab implements Tab {
         ? row()
             .gap(t.space().s())
             .align(Style.Align.CENTER)
-            .child(Progress.spinner(t).label("Reading"))
-            .child(Label.label(t, Label.Variant.MUTED, "Reading rows…"))
+            .child(Progress.spinner().label("Reading"))
+            .child(Label.label(Label.Variant.MUTED, "Reading rows…"))
             .key("read-status")
-        : Label.label(t, Label.Variant.MUTED, readText()).key("read-status");
+        : Label.label(Label.Variant.MUTED, readText()).key("read-status");
     El rowsStatus =
-        Label.label(t, Label.Variant.MUTED, rowsText()).key("rows-status").ellipsis();
+        Label.label(Label.Variant.MUTED, rowsText()).key("rows-status").ellipsis();
     return content.child(
         said == null
-            ? Card.footer(t, rowsStatus, read)
-            : Card.footer(
-                t, rowsStatus, Label.label(t, Label.Variant.MUTED, said).key("said"), read));
+            ? Card.footer(rowsStatus, read)
+            : Card.footer(rowsStatus, Label.label(Label.Variant.MUTED, said).key("said"), read));
   }
 
   /** How many rows, and what the number rests on; empty before the first read. */
@@ -607,7 +604,7 @@ final class TableTab implements Tab {
   }
 
   /** Why the tab cannot read, with what the user can do; null while it can. */
-  private El note(Theme t, State s, boolean connected) {
+  private El note(State s, boolean connected) {
     var name = table.name();
     if (!connected) {
       boolean connecting = s.catalogue.active(id);
@@ -615,13 +612,12 @@ final class TableTab implements Tab {
       String text = lost != null ? Catalogue.why(lost) : "Its connection is closed.";
       text += " What shows was read before, and may have changed since.";
       return Callout.callout(
-          t,
           Callout.Kind.WARNING,
           connecting ? "Connecting…" : "Disconnected",
           text,
           connecting
               ? new El[0]
-              : new El[] {button(t, SECONDARY, "Connect", () -> s.catalogue.connect(s, id))});
+              : new El[] {button(SECONDARY, "Connect", () -> s.catalogue.connect(s, id))});
     }
     if (failure == null) {
       return null;
@@ -650,15 +646,12 @@ final class TableTab implements Tab {
         ? failure.detail()
         : failure.detail().isEmpty() ? words[1] : words[1] + "\n" + failure.detail();
     return Callout.callout(
-        t,
-        Callout.Kind.DANGER,
-        words[0],
-        text,
-        button(t, SECONDARY, "Try again", () -> open(s, true)));
+        Callout.Kind.DANGER, words[0], text, button(SECONDARY, "Try again", () -> open(s, true)));
   }
 
   /** The rows in the grid, late: a row not read yet shows the grid's loading cells. */
-  private El grid(Theme t, State s, App<State> app) {
+  private El grid(State s, App<State> app) {
+    Theme t = Theme.CURRENT.get();
     var shown = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < columns.size(); c++) {
       var column = columns.get(c);
@@ -691,7 +684,7 @@ final class TableTab implements Tab {
         .contextMenu(
             menu, List.of(Menu.item("Refresh", () -> open(s, true)).icon(Symbol.ARROW_CLOCKWISE)))
         .loading(this::loaded, (first, last) -> want(s, first, last));
-    return DataGrid.dataGrid(t, shown, (int) Math.min(shown(), GRID_ROWS), options)
+    return DataGrid.dataGrid(shown, (int) Math.min(shown(), GRID_ROWS), options)
         .key("grid")
         .label("Rows of " + table.name())
         .defaultFocus();

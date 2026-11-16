@@ -419,8 +419,8 @@ final class ConnectionDialog {
   }
 
   /** The text field, with the look of an error where a test's failure concerns it too. */
-  private El marked(Theme t, Probe.At at, El field) {
-    return probe.marks(at) ? TextField.invalid(t, field) : field;
+  private El marked(Probe.At at, El field) {
+    return probe.marks(at) ? TextField.invalid(field) : field;
   }
 
   private static String or(String first, String second) {
@@ -489,19 +489,18 @@ final class ConnectionDialog {
     return savePassword ? null : "The password is kept until HooriDB closes.";
   }
 
-  El view(Theme t, State s) {
+  El view(State s) {
+    Theme t = Theme.CURRENT.get();
     var e = editing;
     var p = e.value();
     var problems = p.problems();
     boolean open = !changing; // nothing changes while the keyring is being changed
     El save = button(
-        t,
         PRIMARY,
         "Save",
         () -> save(s),
         Button.options().enabled(changing || ready()).busy(changing));
-    El cancel =
-        button(t, SECONDARY, "Cancel", open ? () -> cancel(s) : slow ? () -> giveUp(s) : null);
+    El cancel = button(SECONDARY, "Cancel", open ? () -> cancel(s) : slow ? () -> giveUp(s) : null);
     // Also where it is not known whether the keyring holds one: the choice is the user's.
     boolean canSave = s.secrets() != null && (stored != null || asking == null);
     boolean inKeyring = Boolean.TRUE.equals(stored);
@@ -514,17 +513,15 @@ final class ConnectionDialog {
         Prop.of(() -> canSave && savePassword, canSave && open ? v -> savePassword = v : null);
     String fallback = String.valueOf(p.provider().defaultPort());
     El form = Form.form(
-        t,
         Form.Labels.BESIDE,
         field(
             "Name",
-            textField(t, locked(e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
+            textField(locked(e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
                 .key("name")
                 .wFull()),
         field(
             "Colour",
             HuePicker.huePicker(
-                    t,
                     Colours.hue(p.colour()),
                     Colours.label(null),
                     open ? v -> e.at(COLOUR).set(Colours.colour(v)) : null)
@@ -534,21 +531,19 @@ final class ConnectionDialog {
                 field(
                     "Type",
                     Segmented.segmented(
-                        t,
                         List.of(Provider.values()),
                         p.provider(),
                         Provider::displayName,
                         open ? v -> provider(s, v) : null)),
-                field("Driver", driverVersion(t, s, open))
+                field("Driver", driverVersion(s, open))
                     .help(driverHelp(s))
                     .warning(youngWarning(s)),
                 Form.row(
                     field(
                             "Host",
                             marked(
-                                t,
                                 Probe.At.HOST,
-                                textField(t, p.host(), "Name or address", open ? this::host : null)
+                                textField(p.host(), "Name or address", open ? this::host : null)
                                     .key("host")
                                     .wFull()))
                         .required()
@@ -557,7 +552,6 @@ final class ConnectionDialog {
                     field(
                             "Port",
                             valueField(
-                                    t,
                                     Format.INTEGER,
                                     p.port(),
                                     fallback,
@@ -572,7 +566,7 @@ final class ConnectionDialog {
                             probe.error(Probe.At.PORT)))),
                 field(
                         "Database",
-                        textField(t, locked(e.at(DATABASE)), "Optional")
+                        textField(locked(e.at(DATABASE)), "Optional")
                             .key("database")
                             .wFull())
                     .error(or(
@@ -581,7 +575,6 @@ final class ConnectionDialog {
                 field(
                         "TLS",
                         Select.select(
-                                t,
                                 List.of(Tls.values()),
                                 p.tls(),
                                 ConnectionDialog::tlsLabel,
@@ -598,9 +591,8 @@ final class ConnectionDialog {
                 field(
                         "User",
                         marked(
-                            t,
                             Probe.At.USER,
-                            textField(t, locked(e.at(USER))).key("user").wFull()))
+                            textField(locked(e.at(USER))).key("user").wFull()))
                     .error(error(problems, ConnectionProfile.Field.USER)),
                 field(
                         "Password",
@@ -608,9 +600,7 @@ final class ConnectionDialog {
                             .wFull()
                             .gap(t.space().s())
                             .child(revealable(
-                                    t,
                                     passwordField(
-                                            t,
                                             Prop.of(() -> password, open ? this::password : null),
                                             inKeyring
                                                 ? "Saved in the system keyring"
@@ -620,13 +610,13 @@ final class ConnectionDialog {
                                     revealed,
                                     () -> revealed = !revealed)
                                 .wFull())
-                            .child(checkbox(t, keyring, "Save password in the system keyring")))
+                            .child(checkbox(keyring, "Save password in the system keyring")))
                     .help(keepNote == null ? note : note == null ? keepNote : keepNote + " " + note)
                     .error(probe.error(Probe.At.PASSWORD)))
             .divided()
             .level(3));
     El content = col()
-        .w(width(t))
+        .w(width())
         .gap(t.space().l())
         .child(form)
         // Enter while Save cannot go shows what keeps it, the empty host too.
@@ -639,7 +629,6 @@ final class ConnectionDialog {
         });
     if (slow) {
       content.child(Callout.callout(
-          t,
           Callout.Kind.WARNING,
           "The system keyring does not answer",
           "Cancel gives up waiting: the keyring may then hold the password, the old one or the"
@@ -648,24 +637,22 @@ final class ConnectionDialog {
     }
     if (keyringError != null) {
       content.child(Callout.callout(
-          t, Callout.Kind.DANGER, "The system keyring reported a problem", keyringError));
+          Callout.Kind.DANGER, "The system keyring reported a problem", keyringError));
     }
-    El tried = probe.view(t, s);
+    El tried = probe.view(s);
     if (tried != null) {
       content.child(tried);
     }
     El test = button(
-        t,
         SECONDARY,
         "Test connection",
         () -> probe.test(s),
         Button.options().enabled(probe.running() || probe.canTest(s)).busy(probe.running()));
     var options = Dialog.options().start(test).defaultButton(save);
     if (p.colour() != null) {
-      options = options.leading(Colours.mark(t, p.colour()));
+      options = options.leading(Colours.mark(p.colour()));
     }
     return Dialog.dialog(
-        t,
         isNew ? "New connection" : "Edit connection",
         content,
         List.of(cancel, save),
@@ -674,10 +661,10 @@ final class ConnectionDialog {
   }
 
   /** The version of the driver: Recommended or one of the list, which is read in the background. */
-  private El driverVersion(Theme t, State s, boolean open) {
+  private El driverVersion(State s, boolean open) {
+    Theme t = Theme.CURRENT.get();
     var chosen = editing.value().driverVersion();
     El box = ComboBox.items(
-            t,
             versions.values(chosen),
             chosen,
             versions::item,
@@ -691,10 +678,9 @@ final class ConnectionDialog {
       var waiting = versions.dating != null
           ? "Looking up when " + versions.dating + " was published"
           : "Reading the versions";
-      line.child(col().role("status").label(waiting).child(Progress.spinner(t)));
+      line.child(col().role("status").label(waiting).child(Progress.spinner()));
     } else if (versions.problem(s.drivers) != null) {
       line.child(Button.icon(
-          t,
           Button.Variant.GHOST,
           Symbol.ARROW_CLOCKWISE,
           "Read the versions again",
@@ -732,7 +718,8 @@ final class ConnectionDialog {
    * The width of the dialog's content: the colours' swatches in one line, and help and errors
    * wrapping below their field.
    */
-  static float width(Theme t) {
+  static float width() {
+    Theme t = Theme.CURRENT.get();
     return 2 * t.size().field() + 3 * t.size().control();
   }
 
@@ -742,22 +729,17 @@ final class ConnectionDialog {
   }
 
   /** The question whether to throw the changes away, or null while it is not asked. */
-  El question(Theme t, State s) {
+  El question(State s) {
     if (!discarding) {
       return null;
     }
     return Dialog.dialog(
-            t,
             "Discard changes?",
-            label(t, "The changes to this connection have not been saved."),
+            label("The changes to this connection have not been saved."),
             List.of(
-                button(t, SECONDARY, "Keep editing", () -> discarding = false),
+                button(SECONDARY, "Keep editing", () -> discarding = false),
                 button(
-                    t,
-                    PRIMARY,
-                    "Discard",
-                    () -> close(s),
-                    Button.options().tone(Button.Tone.DANGER))),
+                    PRIMARY, "Discard", () -> close(s), Button.options().tone(Button.Tone.DANGER))),
             () -> discarding = false)
         .key("discard");
   }

@@ -4,7 +4,6 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.kit.Completion;
-import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.sql.Statement;
@@ -83,7 +82,7 @@ final class ConsoleEditor {
    * The editor as built, with its completions; it is kept for the caret. The underline goes where
    * the text has changed.
    */
-  El editor(Theme t, State s, App<State> app, Provider provider, El editor) {
+  El editor(State s, App<State> app, Provider provider, El editor) {
     if (marked != null && !marked.equals(tab.text)) {
       clear();
     }
@@ -93,7 +92,7 @@ final class ConsoleEditor {
       suggestions.forget();
     }
     El completing = Completion.complete(
-        t, app, editor, tab.editor.caret(), completion, word -> suggestions.at(s, provider, word));
+        app, editor, tab.editor.caret(), completion, word -> suggestions.at(s, provider, word));
     // Control+Space asks anew, with what was read since the list was made.
     var keys = completing.onKey();
     return completing.onKey(k -> {

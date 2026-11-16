@@ -219,63 +219,55 @@ final class DriversDialog {
     return Fetch.text(error, s.drivers);
   }
 
-  El view(Theme t, State s) {
-    El content = col().w(ConnectionDialog.width(t)).gap(t.space().xl());
+  El view(State s) {
+    Theme t = Theme.CURRENT.get();
+    El content = col().w(ConnectionDialog.width()).gap(t.space().xl());
     for (var kind : kinds) {
-      content.child(kind(t, s, kind));
+      content.child(kind(s, kind));
     }
     Runnable close = () -> close(s);
-    return Dialog.dialog(
-        t, "Drivers", content, List.of(button(t, SECONDARY, "Close", close)), close);
+    return Dialog.dialog("Drivers", content, List.of(button(SECONDARY, "Close", close)), close);
   }
 
-  private El kind(Theme t, State s, Kind kind) {
+  private El kind(State s, Kind kind) {
+    Theme t = Theme.CURRENT.get();
     var versions = kind.versions;
     var read = versions.read;
     var rows = new ArrayList<El>();
     if (read == null && versions.failed == null) {
-      rows.add(Group.box(
-          t,
-          row()
-              .gap(t.space().s())
-              .align(Style.Align.CENTER)
-              .role("status")
-              .label("Reading the versions of " + kind.name())
-              .child(Progress.spinner(t))
-              .child(label(t, Label.Variant.MUTED, "Reading…"))));
+      rows.add(Group.box(row()
+          .gap(t.space().s())
+          .align(Style.Align.CENTER)
+          .role("status")
+          .label("Reading the versions of " + kind.name())
+          .child(Progress.spinner())
+          .child(label(Label.Variant.MUTED, "Reading…"))));
     } else if (read == null) {
       // The callout below says why.
     } else if (read.sizes().isEmpty()) {
       rows.add(Group.row(
-          t,
-          "None downloaded",
-          "A connection downloads the version it needs, after asking.",
-          null));
+          "None downloaded", "A connection downloads the version it needs, after asking.", null));
     } else {
-      read.sizes().forEach((version, size) -> rows.add(version(t, s, kind, version, size)));
+      read.sizes().forEach((version, size) -> rows.add(version(s, kind, version, size)));
     }
-    rows.add(kind.download != null ? downloading(t, kind) : downloadRow(t, s, kind));
+    rows.add(kind.download != null ? downloading(kind) : downloadRow(s, kind));
     El section = col()
         .wFull()
         .gap(t.space().s())
-        .child(label(t, Label.Variant.STRONG, kind.name()).role("heading").label(kind.name()))
-        .child(Group.group(t, rows.toArray(El[]::new)));
+        .child(label(Label.Variant.STRONG, kind.name()).role("heading").label(kind.name()))
+        .child(Group.group(rows.toArray(El[]::new)));
     var problem = versions.failed != null ? versions.problem(s.drivers) : null;
     if (problem != null) {
       section.child(
-          Callout.callout(t, Callout.Kind.DANGER, kind.name() + " could not be listed", problem));
+          Callout.callout(Callout.Kind.DANGER, kind.name() + " could not be listed", problem));
     }
     var p = kind.problem;
     if (p != null) {
       section.child(
           p.download() == null
-              ? Callout.callout(t, Callout.Kind.DANGER, p.title(), p.text())
+              ? Callout.callout(Callout.Kind.DANGER, p.title(), p.text())
               : Callout.callout(
-                  t,
-                  Callout.Kind.DANGER,
-                  p.title(),
-                  p.text(),
-                  button(t, SECONDARY, "Try again", () -> {
+                  Callout.Kind.DANGER, p.title(), p.text(), button(SECONDARY, "Try again", () -> {
                     kind.pick = p.download();
                     download(s, kind);
                   })));
@@ -284,7 +276,7 @@ final class DriversDialog {
   }
 
   /** A downloaded version: its size, what it is to HooriDB, and Delete. */
-  private El version(Theme t, State s, Kind kind, String version, long size) {
+  private El version(State s, Kind kind, String version, long size) {
     var notes = new ArrayList<String>();
     notes.add(Fetch.size(size));
     if (version.equals(kind.versions.recommended())) {
@@ -296,11 +288,9 @@ final class DriversDialog {
     }
     boolean free = users.isEmpty() && kind.work == null;
     return Group.row(
-        t,
         version,
         String.join(", ", notes),
         Button.icon(
-            t,
             Button.Variant.GHOST,
             Symbol.DELETE,
             "Delete " + kind.name() + " " + version,
@@ -309,7 +299,8 @@ final class DriversDialog {
   }
 
   /** The version to download, Recommended or one of the list, and Download. */
-  private El downloadRow(Theme t, State s, Kind kind) {
+  private El downloadRow(State s, Kind kind) {
+    Theme t = Theme.CURRENT.get();
     var versions = kind.versions;
     var target = target(kind);
     String note;
@@ -323,38 +314,31 @@ final class DriversDialog {
     } else {
       note = null;
     }
-    El box = ComboBox.items(
-            t, versions.values(kind.pick), kind.pick, versions::item, kind.box, v -> {
-              kind.pick = v;
-              versions.date(s, v);
-            })
+    El box = ComboBox.items(versions.values(kind.pick), kind.pick, versions::item, kind.box, v -> {
+          kind.pick = v;
+          versions.date(s, v);
+        })
         .key("version-" + kind.provider.name())
         .label(kind.name() + " version")
         .w(t.size().field());
     boolean can = target != null && !downloaded(kind, target) && kind.work == null;
-    El download = button(t, SECONDARY, "Download", can ? () -> download(s, kind) : null)
+    El download = button(SECONDARY, "Download", can ? () -> download(s, kind) : null)
         .label("Download " + kind.name());
     return Group.row(
-        t,
         "Download",
         note,
         row().gap(t.space().s()).align(Style.Align.CENTER).child(box).child(download));
   }
 
-  private El downloading(Theme t, Kind kind) {
+  private El downloading(Kind kind) {
     var d = kind.download;
-    return Group.box(
-        t,
-        Fetch.downloading(
-            t,
-            "Downloading " + kind.name() + " " + d.version(),
-            d.done(),
-            d.total(),
-            () -> cancel(kind)));
+    return Group.box(Fetch.downloading(
+        "Downloading " + kind.name() + " " + d.version(), d.done(), d.total(), () -> cancel(kind)));
   }
 
   /** The question before a delete, or null while none is asked. */
-  El question(Theme t, State s) {
+  El question(State s) {
+    Theme t = Theme.CURRENT.get();
     if (asking == null) {
       return null;
     }
@@ -367,9 +351,8 @@ final class DriversDialog {
     El content = col()
         .w(t.size().field() * 2)
         .gap(t.space().m())
-        .child(label(t, "Its file is removed from this computer.").wrapText())
+        .child(label("Its file is removed from this computer.").wrapText())
         .child(label(
-                t,
                 Label.Variant.MUTED,
                 chosenBy.isEmpty()
                     ? "A connection that needs it again downloads it again, after asking."
@@ -377,16 +360,14 @@ final class DriversDialog {
                         + " chose this version, and will download it again, after asking.")
             .wrapText());
     El delete = button(
-        t,
         PRIMARY,
         "Delete",
         () -> delete(s),
         Button.options().tone(Button.Tone.DANGER).busy(removing));
     return Dialog.dialog(
-            t,
             "Delete " + name + "?",
             content,
-            List.of(button(t, SECONDARY, "Cancel", removing ? null : this::cancelDelete), delete),
+            List.of(button(SECONDARY, "Cancel", removing ? null : this::cancelDelete), delete),
             this::cancelDelete)
         .key("delete-driver");
   }

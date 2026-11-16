@@ -31,8 +31,8 @@ public final class HooriDb {
   static final int COLOUR = Colors.rgb(0x0F766E);
 
   /** The icon of the app's windows. */
-  static final WindowIcon ICON =
-      WindowIcon.of(size -> AppIcon.appIcon(Theme.DARK, size, COLOUR, Symbol.DATABASE));
+  static final WindowIcon ICON = WindowIcon.of(
+      size -> Theme.CURRENT.with(Theme.DARK, () -> AppIcon.appIcon(size, COLOUR, Symbol.DATABASE)));
 
   private HooriDb() {}
 
@@ -60,7 +60,8 @@ public final class HooriDb {
    */
   static App<State> app(
       Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester, Servers servers) {
-    App<State> app = new App<>(new State(folder, keyring, drivers, tester, servers), Frame::view);
+    App<State> app = new App<>(new State(folder, keyring, drivers, tester, servers), Frame::view)
+        .provide(Theme.CURRENT, s -> s.theme);
     app.state().app = app;
     // A script's images must not depend on the platform they were made on.
     app.textRendering(TextRendering.LINUX);

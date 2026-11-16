@@ -80,19 +80,13 @@ class ConsoleTest {
     return app;
   }
 
-  /** Types the text into the editor, a line at a time. */
+  /**
+   * Puts the text into the editor at its caret as it is, in one edit, as a paste does: typed, its
+   * words would open completions that a later Enter takes. A backslash is the caller's to escape.
+   */
   static String type(String text) {
-    var out = new StringBuilder("press #sql\n");
-    var lines = text.split("\n", -1);
-    for (int i = 0; i < lines.length; i++) {
-      if (i > 0) {
-        out.append("key Enter\n");
-      }
-      if (!lines[i].isEmpty()) {
-        out.append("type \"").append(lines[i].replace("\"", "\\\"")).append("\"\n");
-      }
-    }
-    return out.toString();
+    return "press #sql\nclipboard \"" + text.replace("\"", "\\\"").replace("\n", "\\n")
+        + "\"\nkey V control\n";
   }
 
   static final String RUN = "key Enter control\n" + SETTLE;

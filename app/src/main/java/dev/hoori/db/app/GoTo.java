@@ -150,7 +150,7 @@ final class GoTo {
               table.name(), () -> Frame.focusContentSoon(s, s.openTable(f.id(), table, group)))
           .key(key(f.id(), table))
           .detail(f.where())
-          .leading(t -> lead(t, colour, Icon.icon(t, symbol, Icon.Variant.MUTED))));
+          .leading(() -> lead(colour, Icon.icon(symbol, Icon.Variant.MUTED))));
     }
     if (connected.isEmpty()) {
       entries.add(FilterList.entry("No connection is open", null)
@@ -171,19 +171,19 @@ final class GoTo {
     return FilterList.entry(what, read)
         .detail(detail)
         .group(UNREAD)
-        .leading(t -> lead(
-            t,
+        .leading(() -> lead(
             colour,
             waits
-                ? Progress.spinner(t).label("Reading")
-                : Icon.icon(t, Symbol.DATABASE, Icon.Variant.MUTED)));
+                ? Progress.spinner().label("Reading")
+                : Icon.icon(Symbol.DATABASE, Icon.Variant.MUTED)));
   }
 
-  private static El lead(Theme t, Colour colour, El icon) {
+  private static El lead(Colour colour, El icon) {
+    Theme t = Theme.CURRENT.get();
     return row()
         .gap(t.space().s())
         .align(Style.Align.CENTER)
-        .child(Colours.mark(t, colour))
+        .child(Colours.mark(colour))
         .child(icon);
   }
 

@@ -369,53 +369,52 @@ final class Fetch {
    *
    * @param stop what Not now and Cancel download do
    */
-  El view(Theme t, State s, Runnable stop) {
+  El view(State s, Runnable stop) {
     return switch (step) {
-      case Asking a -> question(t, s, a.found(), stop);
+      case Asking a -> question(s, a.found(), stop);
       case Downloading d ->
-        downloading(t, "Downloading " + name(d.found().provider()), d.done(), d.total(), stop);
+        downloading("Downloading " + name(d.found().provider()), d.done(), d.total(), stop);
       case Failed f ->
         Callout.callout(
-            t,
             Callout.Kind.DANGER,
             title(f.stage()),
             text(f.error(), s.drivers),
-            button(t, SECONDARY, "Try again", () -> again(s, f.stage())));
+            button(SECONDARY, "Try again", () -> again(s, f.stage())));
       case Waiting w -> null;
       case Loading l -> null;
       case null -> null;
     };
   }
 
-  private El question(Theme t, State s, Found found, Runnable stop) {
+  private El question(State s, Found found, Runnable stop) {
     var name = name(found.provider());
     var address = s.drivers.address(Driver.of(found.provider()), found.version());
     String size = found.size() >= 0 ? " (" + size(found.size()) + ")" : "";
     El callout = Callout.callout(
-        t,
         Callout.Kind.INFO,
         "Download " + name + " " + found.version() + "?",
         "To connect, HooriDB needs this driver" + size + ", which it downloads from "
             + s.drivers.source + ":\n" + address
             + "\nA driver is program code. It will run on this computer, with your rights. It is"
             + " downloaded once, checked against its checksum and kept for later.",
-        button(t, SECONDARY, "Download", () -> agree(s)),
-        button(t, SECONDARY, "Not now", stop));
+        button(SECONDARY, "Download", () -> agree(s)),
+        button(SECONDARY, "Not now", stop));
     return col().wFull().key("question").child(callout);
   }
 
   /** A download's bar, with its title, and Cancel download beside it. */
-  static El downloading(Theme t, String title, long done, long total, Runnable stop) {
+  static El downloading(String title, long done, long total, Runnable stop) {
+    Theme t = Theme.CURRENT.get();
     String detail = total > 0 ? size(done) + " of " + size(total) : size(Math.max(0, done));
     El bar = total > 0
-        ? Progress.labeled(t, title, (double) done / total, detail)
-        : Progress.labeled(t, title, 0, detail);
+        ? Progress.labeled(title, (double) done / total, detail)
+        : Progress.labeled(title, 0, detail);
     return row()
         .wFull()
         .gap(t.space().m())
         .align(Style.Align.END)
         .child(bar.grow(1))
-        .child(button(t, SECONDARY, "Cancel", stop).label("Cancel download"));
+        .child(button(SECONDARY, "Cancel", stop).label("Cancel download"));
   }
 
   /** The size of the version's file, or -1: it is a courtesy, and the download says what fails. */

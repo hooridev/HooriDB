@@ -2092,19 +2092,18 @@ final class ConsoleTab implements Tab {
   }
 
   /** The tab's content: its toolbar, the editor over the results, and its status line. */
-  El view(Theme t, State s, App<State> app) {
+  El view(State s, App<State> app) {
+    Theme t = Theme.CURRENT.get();
     var profile = s.profile(id);
     var provider = profile.provider();
     boolean busy = busy();
     var locked = s.locked(this);
     var actions = new ArrayList<El>();
-    actions.add(databases(t, s));
+    actions.add(databases(s));
     // Off where Manual cannot be made sure of, which its tooltip and a note say.
     boolean switchable = !busy && locked == null && unavailable == null;
     actions.add(Tooltip.tooltip(
-        t,
         Segmented.segmented(
-                t,
                 List.of(Mode.values()),
                 mode,
                 m -> m == Mode.AUTO ? "Auto" : "Manual",
@@ -2117,9 +2116,7 @@ final class ConsoleTab implements Tab {
                 + " transaction"));
     if (mode == Mode.MANUAL || transaction != Transaction.NONE) {
       actions.add(Tooltip.tooltip(
-          t,
           button(
-                  t,
                   SECONDARY,
                   "Commit",
                   // A busy button needs its handler, which does nothing while it runs.
@@ -2129,9 +2126,7 @@ final class ConsoleTab implements Tab {
               .keepFocus(),
           "Commit (Control+Shift+C)"));
       actions.add(Tooltip.tooltip(
-          t,
           button(
-                  t,
                   SECONDARY,
                   "Rollback",
                   canRollback() || firm && ROLLBACK.equals(running) ? () -> rollback(s) : null,
@@ -2141,33 +2136,31 @@ final class ConsoleTab implements Tab {
           "Roll back (Control+Shift+R)"));
     }
     actions.add(button(
-            t,
             PRIMARY,
             "Run",
             firm || locked != null ? null : () -> run(s),
             Button.options().icon(Symbol.PLAY).busy(busy && !firm))
         .key("run")
         .keepFocus());
-    actions.add(button(t, SECONDARY, "Run all", busy || locked != null ? null : () -> runAll(s))
+    actions.add(button(SECONDARY, "Run all", busy || locked != null ? null : () -> runAll(s))
         .key("run-all")
         .keepFocus());
-    actions.add(button(t, SECONDARY, "Cancel", busy && !firm ? () -> cancel(s) : null)
+    actions.add(button(SECONDARY, "Cancel", busy && !firm ? () -> cancel(s) : null)
         .key("cancel")
         .keepFocus());
     El top =
         // Without the provider's name, which the tree says: Commit and Rollback need its room.
-        Card.toolbar(t, State.name(profile), null, actions.toArray(El[]::new));
-    El line = Colours.line(t, s.colour(id));
-    El editor = editor(t, s, app, provider);
+        Card.toolbar(State.name(profile), null, actions.toArray(El[]::new));
+    El line = Colours.line(s.colour(id));
+    El editor = editor(s, app, provider);
     El split = Split.split(
-            t,
             Split.Direction.COLUMN,
             this.split,
             SPLIT,
             p -> this.split = p,
             editor,
             3 * t.size().control(),
-            results(t, s, app),
+            results(s, app),
             4 * t.size().control())
         .grow(1);
     // Keys go up from the focused element: these work from the editor and from the grids.
@@ -2189,18 +2182,18 @@ final class ConsoleTab implements Tab {
         .minSize(0, 0)
         .onKey(keys)
         .child(top)
-        .child(line == null ? Divider.divider(t) : line)
+        .child(line == null ? Divider.divider() : line)
         .child(split)
-        .child(footer(t, s));
+        .child(footer(s));
   }
 
   /** The databases to switch to: those the tree read, and the one it is on. */
-  private El databases(Theme t, State s) {
+  private El databases(State s) {
+    Theme t = Theme.CURRENT.get();
     var names = new LinkedHashSet<String>();
     names.add(database);
     names.addAll(s.catalogue.databases(id));
     return Select.select(
-            t,
             List.copyOf(names),
             database,
             n -> n.isEmpty() ? "No database" : n,
@@ -2211,11 +2204,11 @@ final class ConsoleTab implements Tab {
         .w(6 * t.size().control());
   }
 
-  private El editor(Theme t, State s, App<State> app, Provider provider) {
+  private El editor(State s, App<State> app, Provider provider) {
     var dialect = provider == Provider.POSTGRESQL ? Sql.Dialect.POSTGRES : Sql.Dialect.MYSQL;
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
-    El editor = CodeEditor.codeEditor(t, app, text, this.editor, Sql.of(t, dialect), v -> text = v)
+    El editor = CodeEditor.codeEditor(app, text, this.editor, Sql.of(dialect), v -> text = v)
         .key("sql")
         .label("SQL")
         .autofocus(this)
@@ -2236,20 +2229,21 @@ final class ConsoleTab implements Tab {
       return false;
     };
     editor.onKey(editor.onKey() == null ? keys : keys.or(editor.onKey()));
-    return help.editor(t, s, app, provider, editor);
+    return help.editor(s, app, provider, editor);
   }
 
   /** The results of the last runs in tabs, with Messages; what went wrong above them. */
-  private El results(Theme t, State s, App<State> app) {
-    El note = note(t, s);
+  private El results(State s, App<State> app) {
+    Theme t = Theme.CURRENT.get();
+    El note = note(s);
     if (outputs.isEmpty() && log.isEmpty() && busy()) {
       return col()
           .grow(1)
           .center()
           .gap(t.space().m())
           .label("Results")
-          .child(Progress.spinner(t))
-          .child(Label.label(t, Label.Variant.MUTED, waiting ? "Connecting…" : "Running…"));
+          .child(Progress.spinner())
+          .child(Label.label(Label.Variant.MUTED, waiting ? "Connecting…" : "Running…"));
     }
     if (outputs.isEmpty() && log.isEmpty()) {
       return col()
@@ -2258,7 +2252,6 @@ final class ConsoleTab implements Tab {
           .label("Results")
           .child(note == null ? null : col().padding(t.space().m()).shrink(0).child(note))
           .child(EmptyState.emptyState(
-              t,
               Symbol.PLAY,
               "Nothing run yet",
               "Control+Enter runs the statement at the caret, Control+Shift+Enter all of them.",
@@ -2271,9 +2264,8 @@ final class ConsoleTab implements Tab {
     }
     tabs.add(new Tabs.Tab("Messages", false, false, Symbol.TEXT_BULLET_LIST_LTR));
     int at = shown == null ? -1 : outputs.indexOf(shown);
-    El content = at < 0 ? messages(t) : output(t, s, app, shown);
+    El content = at < 0 ? messages() : output(s, app, shown);
     El bar = Tabs.tabs(
-            t,
             tabs,
             at < 0 ? outputs.size() : at,
             i -> shown = i < outputs.size() ? outputs.get(i) : null,
@@ -2291,16 +2283,16 @@ final class ConsoleTab implements Tab {
   }
 
   /** Why nothing runs or what failed, with what the user can do; null for nothing. */
-  private El note(Theme t, State s) {
+  private El note(State s) {
+    Theme t = Theme.CURRENT.get();
     if (stranded) {
       var trouble = s.catalogue.problem(s, new Node.Connection(id));
       var actions = new ArrayList<El>();
       if (trouble != null && trouble.password()) {
-        actions.add(button(t, SECONDARY, "Enter password…", () -> retry(s, true)));
+        actions.add(button(SECONDARY, "Enter password…", () -> retry(s, true)));
       }
-      actions.add(button(t, SECONDARY, "Try again", () -> retry(s, false)).key("try-again"));
+      actions.add(button(SECONDARY, "Try again", () -> retry(s, false)).key("try-again"));
       return Callout.callout(
-              t,
               Callout.Kind.DANGER,
               trouble == null ? "Not connected" : trouble.title(),
               trouble == null ? null : trouble.text(),
@@ -2313,39 +2305,35 @@ final class ConsoleTab implements Tab {
     El lock = locked == null
         ? null
         : Callout.callout(
-                t,
                 Callout.Kind.INFO,
                 locked,
                 "Nothing runs on this console until that is done or given up.")
             .key("locked");
     El manual = unavailable == null || mode != Mode.AUTO
         ? null
-        : Callout.callout(t, Callout.Kind.WARNING, "Manual is unavailable", unavailable)
+        : Callout.callout(Callout.Kind.WARNING, "Manual is unavailable", unavailable)
             .key("manual-unavailable");
     El doubted = doubt == null
         ? null
         : Callout.callout(
-                t,
                 Callout.Kind.DANGER,
                 UNSURE,
                 doubt,
-                button(t, SECONDARY, "Acknowledge", () -> acknowledge(s)).key("acknowledge"))
+                button(SECONDARY, "Acknowledge", () -> acknowledge(s)).key("acknowledge"))
             .key("doubt");
     El failed = transaction != Transaction.FAILED
         ? null
         : Callout.callout(
-                t,
                 Callout.Kind.WARNING,
                 "The transaction failed",
                 "The server ignores every statement in it until it is rolled back; its changes are"
                     + " lost.",
-                button(t, SECONDARY, "Rollback", canRollback() ? () -> rollback(s) : null)
+                button(SECONDARY, "Rollback", canRollback() ? () -> rollback(s) : null)
                     .key("roll-back"))
             .key("failed");
     El shown = problem == null
         ? null
-        : Callout.callout(t, Callout.Kind.DANGER, problem.title(), problem.text())
-            .key("problem");
+        : Callout.callout(Callout.Kind.DANGER, problem.title(), problem.text()).key("problem");
     var notes = new ArrayList<El>();
     for (var note : new El[] {lock, doubted, shown, manual, failed}) {
       if (note != null) {
@@ -2360,19 +2348,19 @@ final class ConsoleTab implements Tab {
   }
 
   /** A result: its rows in the grid, or the number of rows it changed; whether it is pinned. */
-  private El output(Theme t, State s, App<State> app, Output o) {
+  private El output(State s, App<State> app, Output o) {
     El pin = Button.toggleIcon(
-            t, Symbol.PIN, o.pinned ? "Unpin" : "Pin", o.pinned, on -> o.pinned = on)
+            Symbol.PIN, o.pinned ? "Unpin" : "Pin", o.pinned, on -> o.pinned = on)
         .key("pin");
     if (o.fields == null) {
       return col()
           .grow(1)
           .minSize(0, 0)
-          .child(EmptyState.emptyState(
-                  t, Symbol.CHECKMARK_CIRCLE, rows(o.count) + " changed", null, null)
-              .key("changed"))
-          .child(Card.footer(
-              t, Label.label(t, Label.Variant.MUTED, brief(o.statement)).ellipsis(), pin));
+          .child(
+              EmptyState.emptyState(Symbol.CHECKMARK_CIRCLE, rows(o.count) + " changed", null, null)
+                  .key("changed"))
+          .child(
+              Card.footer(Label.label(Label.Variant.MUTED, brief(o.statement)).ellipsis(), pin));
     }
     String count = rows(o.rows.size());
     String about = brief(o.statement) + " · "
@@ -2387,13 +2375,14 @@ final class ConsoleTab implements Tab {
     return col()
         .grow(1)
         .minSize(0, 0)
-        .child(grid(t, s, app, o).grow(1))
+        .child(grid(s, app, o).grow(1))
         .child(Card.footer(
-            t, Label.label(t, Label.Variant.MUTED, about).key("result-status").ellipsis(), pin));
+            Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(), pin));
   }
 
   /** The result's rows, read-only, with the table tab's cells. */
-  private El grid(Theme t, State s, App<State> app, Output o) {
+  private El grid(State s, App<State> app, Output o) {
+    Theme t = Theme.CURRENT.get();
     var columns = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < o.fields.size(); c++) {
       var field = o.fields.get(c);
@@ -2421,13 +2410,14 @@ final class ConsoleTab implements Tab {
         .copy(app.clipboard())
         .loading(row -> row < o.rows.size(), (first, last) -> want(s, o, first, last));
     int shown = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), TableTab.GRID_ROWS);
-    return DataGrid.dataGrid(t, columns, shown, options)
+    return DataGrid.dataGrid(columns, shown, options)
         .key("grid")
         .label("Rows of result " + o.number);
   }
 
   /** What ran, how long it took, what it gave, and what the server said along the way. */
-  private El messages(Theme t) {
+  private El messages() {
+    Theme t = Theme.CURRENT.get();
     float unit = t.size().control();
     var columns = List.of(
         new DataGrid.Column(
@@ -2450,14 +2440,15 @@ final class ConsoleTab implements Tab {
               case ERROR -> CellIcon.before(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
             }));
     return DataGrid.dataGrid(
-            t, columns, log.size(), DataGrid.options().select(logSelection).rowNumbers())
+            columns, log.size(), DataGrid.options().select(logSelection).rowNumbers())
         .key("messages")
         .label("Messages")
         .grow(1);
   }
 
   /** The last run's time and rows, or that it runs. */
-  private El footer(Theme t, State s) {
+  private El footer(State s) {
+    Theme t = Theme.CURRENT.get();
     El status;
     if (busy()) {
       var what = waiting
@@ -2472,26 +2463,26 @@ final class ConsoleTab implements Tab {
       status = row()
           .gap(t.space().s())
           .align(Style.Align.CENTER)
-          .child(Progress.spinner(t).label("Running"))
-          .child(Label.label(t, Label.Variant.MUTED, what))
+          .child(Progress.spinner().label("Running"))
+          .child(Label.label(Label.Variant.MUTED, what))
           .key("run-status");
     } else {
-      status = Label.label(t, Label.Variant.MUTED, status()).key("run-status").ellipsis();
+      status = Label.label(Label.Variant.MUTED, status()).key("run-status").ellipsis();
     }
-    El badge = badge(t);
+    El badge = badge();
     if (said == null) {
-      return badge == null ? Card.footer(t, status) : Card.footer(t, status, badge);
+      return badge == null ? Card.footer(status) : Card.footer(status, badge);
     }
-    El words = Label.label(t, Label.Variant.MUTED, said).key("said");
-    return badge == null ? Card.footer(t, status, words) : Card.footer(t, status, words, badge);
+    El words = Label.label(Label.Variant.MUTED, said).key("said");
+    return badge == null ? Card.footer(status, words) : Card.footer(status, words, badge);
   }
 
   /** The transaction, as the server last said it; in Auto none while none is open. */
-  private El badge(Theme t) {
+  private El badge() {
     var o = Badge.options().toolbar();
     if (doubt != null) {
       o.kind(Badge.Kind.DANGER).strong().icon(Symbol.ERROR_CIRCLE);
-      return Badge.badge(t, "Outcome not known", o).key("transaction");
+      return Badge.badge("Outcome not known", o).key("transaction");
     }
     String text = switch (transaction) {
       case NONE -> {
@@ -2518,7 +2509,7 @@ final class ConsoleTab implements Tab {
         yield "Transaction may be open";
       }
     };
-    return text == null ? null : Badge.badge(t, text, o).key("transaction");
+    return text == null ? null : Badge.badge(text, o).key("transaction");
   }
 
   /**
@@ -2526,7 +2517,8 @@ final class ConsoleTab implements Tab {
    * offers follows what is known: Commit only where the server said a transaction is open,
    * Rollback where anything may be, and while Commit or Rollback runs nothing but waiting.
    */
-  El question(Theme t, State s) {
+  El question(State s) {
+    Theme t = Theme.CURRENT.get();
     var asked = asked(s);
     if (asked == null) {
       return null;
@@ -2534,15 +2526,15 @@ final class ConsoleTab implements Tab {
     var name = s.title(this);
     var before = asked.what();
     var buttons = new ArrayList<El>();
-    buttons.add(button(t, SECONDARY, "Cancel", () -> answer(s, null)).key("answer-cancel"));
-    El rollback = button(t, PRIMARY, "Rollback", () -> answer(s, ROLLBACK)).key("answer-rollback");
+    buttons.add(button(SECONDARY, "Cancel", () -> answer(s, null)).key("answer-cancel"));
+    El rollback = button(PRIMARY, "Rollback", () -> answer(s, ROLLBACK)).key("answer-rollback");
     String title;
     String text;
     boolean waits = firm || work != null && changes();
     if (doubt != null) {
       title = UNSURE;
       text = "On " + name + ", " + doubt + " Go on, and " + before + "?";
-      buttons.add(button(t, PRIMARY, "Continue", () -> answer(s, CONTINUE)).key("answer-continue"));
+      buttons.add(button(PRIMARY, "Continue", () -> answer(s, CONTINUE)).key("answer-continue"));
     } else if (firm) {
       title = COMMIT.equals(running)
           ? "Waiting for the commit"
@@ -2551,7 +2543,7 @@ final class ConsoleTab implements Tab {
       if (overdue) {
         text += " It has not answered for a while. Or end the connection now: it is closed, the"
             + " server rolls back what was not committed, and what this did is not known.";
-        buttons.add(endIt(t, s));
+        buttons.add(endIt(s));
       }
     } else if (waits) {
       // What it promises nothing of: no Rollback, which could not say what it undid.
@@ -2560,7 +2552,6 @@ final class ConsoleTab implements Tab {
           + " left open, " + before + ". Or go on now: the connection ends, the server rolls back"
           + " what was not committed, and what it did with this statement will not be known.";
       buttons.add(button(
-              t,
               SECONDARY,
               "Go on now",
               () -> answer(s, GO_ON),
@@ -2590,41 +2581,39 @@ final class ConsoleTab implements Tab {
               ? ", after " + inTransaction + (inTransaction == 1 ? " statement" : " statements")
               : "")
           + ". Commit it or roll it back before " + before + ".";
-      buttons.add(
-          button(t, SECONDARY, "Rollback", () -> answer(s, ROLLBACK)).key("answer-rollback"));
-      buttons.add(button(t, PRIMARY, "Commit", () -> answer(s, COMMIT)).key("answer-commit"));
+      buttons.add(button(SECONDARY, "Rollback", () -> answer(s, ROLLBACK)).key("answer-rollback"));
+      buttons.add(button(PRIMARY, "Commit", () -> answer(s, COMMIT)).key("answer-commit"));
     }
     if (endFailed && !firm && work == null && doubt == null) {
       text += " Or end the connection: it is closed, and the server rolls back what was not"
           + " committed.";
-      buttons.add(1, endIt(t, s));
+      buttons.add(1, endIt(s));
     }
     El content = col()
-        .w(ConnectionDialog.width(t))
+        .w(ConnectionDialog.width())
         .gap(t.space().m())
-        .child(Label.label(t, text).wrapText())
+        .child(Label.label(text).wrapText())
         .child(
             waits && doubt == null
                 ? row()
                     .gap(t.space().s())
                     .align(Style.Align.CENTER)
-                    .child(Progress.spinner(t).label("Waiting"))
-                    .child(Label.label(t, Label.Variant.MUTED, "Waiting for the server…"))
+                    .child(Progress.spinner().label("Waiting"))
+                    .child(Label.label(Label.Variant.MUTED, "Waiting for the server…"))
                 : null)
         // Why the last Commit or Rollback did not end it, where it did not.
         .child(
             problem == null || waits || doubt != null
                 ? null
-                : Callout.callout(t, Callout.Kind.DANGER, problem.title(), problem.text())
+                : Callout.callout(Callout.Kind.DANGER, problem.title(), problem.text())
                     .key("question-problem"));
-    return Dialog.dialog(t, title, content, buttons, () -> answer(s, null))
+    return Dialog.dialog(title, content, buttons, () -> answer(s, null))
         .key("transaction-question");
   }
 
   /** The way out where the server does not answer, or its answer keeps failing. */
-  private El endIt(Theme t, State s) {
+  private El endIt(State s) {
     return button(
-            t,
             SECONDARY,
             "End the connection",
             () -> answer(s, GO_ON),

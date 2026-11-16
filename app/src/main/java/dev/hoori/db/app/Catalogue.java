@@ -1266,7 +1266,7 @@ final class Catalogue {
   }
 
   /** The callout under the tree for the selected node or its failure row, or null. */
-  El callout(Theme t, State s) {
+  El callout(State s) {
     var node = s.selected instanceof Node.Problem p ? p.of() : s.selected;
     if (node == null) {
       return null;
@@ -1278,14 +1278,14 @@ final class Catalogue {
     var live = lives.get(node.id());
     var actions = new ArrayList<El>();
     if (trouble.password()) {
-      actions.add(button(t, SECONDARY, "Enter password…", () -> askPassword(live)));
+      actions.add(button(SECONDARY, "Enter password…", () -> askPassword(live)));
     }
     // The tree's row of a node's failed read has Try again itself.
     if (failedWhole(live, node)) {
-      actions.add(button(t, SECONDARY, "Try again", () -> retry(s, node)));
+      actions.add(button(SECONDARY, "Try again", () -> retry(s, node)));
     }
     return Callout.callout(
-        t, Callout.Kind.DANGER, trouble.title(), trouble.text(), actions.toArray(El[]::new));
+        Callout.Kind.DANGER, trouble.title(), trouble.text(), actions.toArray(El[]::new));
   }
 
   /** The tree's nodes, as the state holds them. */
@@ -1373,15 +1373,15 @@ final class Catalogue {
           icon(n.table().kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE, system(n.table()));
         case Node.OfColumn n ->
           n.column().keyPosition() > 0
-              ? Icon.icon(t, Symbol.KEY, Icon.Variant.WARNING)
+              ? Icon.icon(Symbol.KEY, Icon.Variant.WARNING)
               : icon(Symbol.COLUMN_SINGLE, false);
-        case Node.Problem n -> Icon.icon(t, Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
+        case Node.Problem n -> Icon.icon(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
       };
     }
 
     // A system object's icon is quieter too, as its name is muted.
     private El icon(Symbol symbol, boolean system) {
-      return Icon.icon(t, symbol, system ? Icon.Variant.DISABLED : Icon.Variant.MUTED);
+      return Icon.icon(symbol, system ? Icon.Variant.DISABLED : Icon.Variant.MUTED);
     }
 
     private static boolean system(Table table) {
@@ -1396,20 +1396,20 @@ final class Catalogue {
       var live = s.catalogue.lives.get(n.id());
       Phase phase = live == null ? null : live.phase;
       El icon = switch (phase) {
-        case Connected c -> Icon.icon(t, Symbol.SERVER, Icon.Variant.SUCCESS);
-        case Failed f -> Icon.icon(t, Symbol.SERVER, Icon.Variant.DANGER);
-        case Lost l -> Icon.icon(t, Symbol.SERVER, Icon.Variant.DANGER);
-        case null, default -> Icon.icon(t, Symbol.SERVER, Icon.Variant.MUTED);
+        case Connected c -> Icon.icon(Symbol.SERVER, Icon.Variant.SUCCESS);
+        case Failed f -> Icon.icon(Symbol.SERVER, Icon.Variant.DANGER);
+        case Lost l -> Icon.icon(Symbol.SERVER, Icon.Variant.DANGER);
+        case null, default -> Icon.icon(Symbol.SERVER, Icon.Variant.MUTED);
       };
       El mark = row()
           .gap(t.space().s())
           .align(Style.Align.CENTER)
-          .child(Colours.mark(t, s.colour(n.id())))
+          .child(Colours.mark(s.colour(n.id())))
           .child(icon);
       if (phase == null || phase instanceof Connected || ended(phase)) {
         return mark;
       }
-      return mark.child(Progress.spinner(t).label("Connecting"));
+      return mark.child(Progress.spinner().label("Connecting"));
     }
   }
 
@@ -1457,39 +1457,39 @@ final class Catalogue {
         .map(c -> {
           var item =
               Menu.item(Colours.label(c), () -> s.put(p.withColour(c))).checked(c == p.colour());
-          return c == null ? item : item.leading(t -> HuePicker.swatch(t, Colours.hue(c)));
+          return c == null ? item : item.leading(() -> HuePicker.swatch(Colours.hue(c)));
         })
         .toList();
   }
 
   /** The dialog that asks something for the catalogue, or null: one at a time. */
-  El dialog(Theme t, State s, TabGroups.Group<Tab> group) {
+  El dialog(State s, TabGroups.Group<Tab> group) {
     boolean main = group == s.tabs.main();
     if (main && disconnecting != null) {
-      return disconnectDialog(t, s);
+      return disconnectDialog(s);
     }
     var fetch = main ? asking() : null;
     if (fetch != null) {
       var want = want(fetch);
       Runnable stop = () -> stopFetch(s, want);
       List<El> buttons = fetch.step instanceof Fetch.Failed
-          ? List.of(button(t, SECONDARY, "Cancel", stop))
+          ? List.of(button(SECONDARY, "Cancel", stop))
           : List.of();
       // As wide as the connection dialog, so that the question wraps.
-      El content = col().w(ConnectionDialog.width(t)).child(fetch.view(t, s, stop));
-      return Dialog.dialog(t, "Driver needed", content, buttons, stop);
+      El content = col().w(ConnectionDialog.width()).child(fetch.view(s, stop));
+      return Dialog.dialog("Driver needed", content, buttons, stop);
     }
     for (var live : lives.values()) {
       // In the window that asked, while it is open; else in the main one, where its tabs went.
       var asked = live.window != null ? live.window : s.tabs.main();
       if (live.phase instanceof ForPassword && asked == group) {
-        return passwordDialog(t, s, live);
+        return passwordDialog(s, live);
       }
     }
     return null;
   }
 
-  private El disconnectDialog(Theme t, State s) {
+  private El disconnectDialog(State s) {
     var d = disconnecting;
     String name = State.name(d.profile());
     String what = switch (d.then()) {
@@ -1498,27 +1498,26 @@ final class Catalogue {
             + " open tabs close.";
       case DELETE -> "To delete it, HooriDB disconnects it first.";
     };
-    El disconnect = button(t, PRIMARY, "Disconnect", () -> disconnectAndGo(s));
+    El disconnect = button(PRIMARY, "Disconnect", () -> disconnectAndGo(s));
     return Dialog.dialog(
-        t,
         "Disconnect " + name + "?",
-        Label.label(t, name + " is connected. " + what).wrapText(),
-        List.of(button(t, SECONDARY, "Cancel", () -> disconnecting = null), disconnect),
+        Label.label(name + " is connected. " + what).wrapText(),
+        List.of(button(SECONDARY, "Cancel", () -> disconnecting = null), disconnect),
         disconnect,
         () -> disconnecting = null);
   }
 
-  private El passwordDialog(Theme t, State s, Live live) {
+  private El passwordDialog(State s, Live live) {
+    Theme t = Theme.CURRENT.get();
     var p = live.profile;
     String who = p.user().isBlank() ? p.host() : p.user() + " on " + p.host();
-    El connect = button(t, PRIMARY, "Connect", () -> connectWith(s, live));
+    El connect = button(PRIMARY, "Connect", () -> connectWith(s, live));
     El content = col()
         .w(t.size().field())
         .gap(t.space().m())
-        .child(Label.label(t, "Enter the password of " + who + ".").wrapText())
+        .child(Label.label("Enter the password of " + who + ".").wrapText())
         .child(TextField.revealable(
-                t,
-                TextField.passwordField(t, Prop.of(() -> live.typed, v -> live.typed = v), null)
+                TextField.passwordField(Prop.of(() -> live.typed, v -> live.typed = v), null)
                     .key("password")
                     .label("Password")
                     .wFull(),
@@ -1526,9 +1525,8 @@ final class Catalogue {
                 () -> live.revealed = !live.revealed)
             .wFull())
         .child(Checkbox.checkbox(
-            t, Prop.of(() -> live.keep, v -> live.keep = v), "Keep it until HooriDB closes"))
+            Prop.of(() -> live.keep, v -> live.keep = v), "Keep it until HooriDB closes"))
         .child(Label.label(
-                t,
                 Label.Variant.MUTED,
                 live.phase instanceof ForPassword(var silent) && silent
                     ? "The system keyring did not answer, so the password typed here is used for"
@@ -1536,10 +1534,9 @@ final class Catalogue {
                     : "It is not saved in the system keyring.")
             .wrapText());
     return Dialog.dialog(
-        t,
         "Password for " + State.name(p),
         content,
-        List.of(button(t, SECONDARY, "Cancel", () -> drop(s, live.id())), connect),
+        List.of(button(SECONDARY, "Cancel", () -> drop(s, live.id())), connect),
         connect,
         () -> drop(s, live.id()));
   }
