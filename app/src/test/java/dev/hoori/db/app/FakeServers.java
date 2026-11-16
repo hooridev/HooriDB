@@ -572,8 +572,8 @@ final class FakeServers implements Servers {
 
     @Override
     public OptionalLong estimate(String sql) throws QueryException {
-      if (made.provider() == Provider.POSTGRESQL && transaction == Transaction.FAILED) {
-        return OptionalLong.empty(); // as core, which sends nothing in a failed transaction
+      if (transaction != Transaction.NONE && transaction != Transaction.OPEN || blind()) {
+        return OptionalLong.empty(); // as core, which sends nothing where it is failed or unknown
       }
       var key = "explain " + host + " " + sql;
       try {

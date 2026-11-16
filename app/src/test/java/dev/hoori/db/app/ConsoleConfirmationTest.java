@@ -5,6 +5,9 @@ import static dev.hoori.db.app.CatalogTreeTest.MARIA;
 import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
+import static dev.hoori.db.app.CatalogTreeTest.eventually;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
+import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.ConsoleTest.COUNT;
 import static dev.hoori.db.app.ConsoleTest.ORDERS;
 import static dev.hoori.db.app.ConsoleTest.PAY;
@@ -141,6 +144,84 @@ class ConsoleConfirmationTest {
     assertFalse(servers.calls.contains("run " + MARIA + " " + BIG), servers.calls.toString());
     assertTrue(badge(cancelled).contains("Transaction open · empty"), cancelled);
     assertFalse(tab(app).atStake());
+  }
+
+  static final String EXPLAIN = "explain " + PG + " " + BIG;
+
+  /** The console in Manual, with nothing open, its estimate of the read held. */
+  private App<State> estimating() throws Exception {
+    var app = t.k.console(SHOP);
+    c.run(app, type(COUNT) + RUN + MANUAL); // connected, then Manual with nothing open
+    servers.hold(EXPLAIN);
+    c.run(app, type(";\n" + BIG) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(EXPLAIN));
+    return app;
+  }
+
+  @Test
+  void theToolbarsCancelStopsTheEstimate() throws Exception {
+    var app = estimating();
+    c.run(app, "snap estimating\n");
+    assertTrue(line(c.tree("estimating"), "#run").contains("busy"), c.tree("estimating"));
+    c.run(app, "press #cancel\nframe\n" + SETTLE + MESSAGES + "snap cancelled\n");
+    String cancelled = c.tree("cancelled");
+    assertTrue(servers.interrupted.contains(EXPLAIN), servers.interrupted.toString());
+    assertFalse(ran(BIG), servers.calls.toString());
+    assertFalse(cancelled.contains("role=dialog"), cancelled);
+    assertFalse(cancelled.contains("#doubt"), cancelled);
+    assertTrue(badge(cancelled).contains("No transaction"), cancelled);
+    assertFalse(tab(app).busy());
+    assertTrue(app.state().notices.isEmpty(), app.state().notices.toString());
+  }
+
+  @Test
+  void closingTheTabStopsTheEstimate() throws Exception {
+    var app = estimating();
+    c.run(app, "key W control\nframe\n" + OPENED + "snap closing\n");
+    String closing = c.tree("closing");
+    // A whole read in Manual waits or is rolled back, as any does.
+    assertTrue(closing.contains("role=dialog label=\"Roll back the transaction?\""), closing);
+    c.run(app, "press #answer-rollback\nframe\n" + OPENED + SETTLE + "snap closed\n");
+    assertTrue(app.state().consoles(null).isEmpty(), c.tree("closed"));
+    assertTrue(servers.interrupted.contains(EXPLAIN), servers.interrupted.toString());
+    assertFalse(ran(BIG), servers.calls.toString());
+    assertTrue(app.state().notices.isEmpty(), app.state().notices.toString());
+  }
+
+  @Test
+  void disconnectingStopsTheEstimate() throws Exception {
+    var app = estimating();
+    c.run(app, menu(SHOP.name(), "Disconnect") + OPENED + "snap asked\n");
+    assertTrue(c.tree("asked").contains("role=dialog"), c.tree("asked"));
+    c.run(app, "press #answer-rollback\nframe\n" + OPENED + SETTLE + "snap gone\n");
+    assertFalse(tab(app).connected(), c.tree("gone"));
+    assertFalse(tab(app).busy(), c.tree("gone"));
+    assertTrue(servers.interrupted.contains(EXPLAIN), servers.interrupted.toString());
+    assertFalse(ran(BIG), servers.calls.toString());
+  }
+
+  @Test
+  void theDatabaseStaysWhileTheEstimateRunsOrTheQuestionIsOpen() throws Exception {
+    var app = estimating();
+    tab(app).use(app.state(), "analytics");
+    assertEquals("shop", tab(app).database);
+    servers.openAll();
+    c.run(app, SETTLE + "snap asked\n");
+    assertTrue(c.tree("asked").contains(LARGE), c.tree("asked"));
+    tab(app).use(app.state(), "analytics");
+    assertEquals("shop", tab(app).database);
+    assertFalse(servers.calls.contains("use " + PG + " analytics"), servers.calls.toString());
+  }
+
+  /** With the question open, the window's close button ends HooriDB, and nothing of it runs. */
+  @Test
+  void closingTheWindowDropsTheQuestion() throws Exception {
+    var app = t.k.console(SHOP);
+    c.run(app, MANUAL + type(BIG) + RUN + "snap asked\n");
+    assertTrue(c.tree("asked").contains(LARGE), c.tree("asked"));
+    c.run(app, "close\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.windows().all().isEmpty());
+    assertFalse(ran(BIG), servers.calls.toString());
   }
 
   @Test
