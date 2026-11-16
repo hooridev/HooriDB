@@ -339,6 +339,30 @@ class PlanServerTest {
     }
   }
 
+  /**
+   * PostgreSQL's citext installs functions in SQL that the planner may evaluate: an extension owns
+   * them, as an administrator installed it, so the estimate stays.
+   */
+  @ParameterizedTest
+  @EnumSource(value = Provider.class, names = "POSTGRESQL")
+  void anExtensionsOwnFunctionsKeepTheEstimate(Provider provider) throws Exception {
+    try (var connection = open(provider)) {
+      execute(connection, "CREATE EXTENSION IF NOT EXISTS citext");
+      try {
+        assertTrue(selectLong(
+                connection,
+                "SELECT count(*) FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang"
+                    + " WHERE l.lanname = 'sql' AND p.provolatile <> 'v'"
+                    + " AND p.proname LIKE 'regexp%' AND p.pronamespace = 'public'::regnamespace")
+            > 0);
+        assertTrue(Plan.rows(connection, provider, null, "SELECT 1 FROM (SELECT 1) AS d")
+            .isPresent());
+      } finally {
+        execute(connection, "DROP EXTENSION citext");
+      }
+    }
+  }
+
   // An estimate that runs no function: none, or a failure where writing failed.
   private static void estimate(Connection connection, Provider provider, String sql) {
     try {

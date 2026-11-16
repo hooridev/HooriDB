@@ -80,13 +80,14 @@ public final class Plan {
    * Whether planning may run code of the user's that reaches beyond the read-only transaction, as
    * through another connection: on PostgreSQL a function outside the system's schemas that the
    * planner evaluates, immutable or stable, in a language that can call other code, as one that
-   * calls dblink_exec; on MariaDB and MySQL any stored function outside the system's schemas,
+   * calls dblink_exec, unless an extension owns it; on MariaDB and MySQL any stored function outside the system's schemas,
    * which may call a loadable function. A write to a table of any engine, FEDERATED among them,
    * the read-only transaction fails by itself.
    */
-  // shortcut: a C or internal function of PostgreSQL, a loadable function of MariaDB or MySQL used
-  // as it is, and a stored function only a view's definer may see are not counted: native code
-  // that writes behind its label is its extension's bug. Check for them where one turns up.
+  // shortcut: PostgreSQL's C and internal functions and those an extension owns, such as
+  // PostGIS's in SQL, a loadable function of MariaDB or MySQL used as it is, and a stored function
+  // only a view's definer may see are not counted: what an administrator installed and writes
+  // behind its label is its extension's bug. Check for them where one turns up.
   private static boolean callsOut(Connection connection, Provider provider) throws QueryException {
     var sql = provider == Provider.POSTGRESQL
         ? "SELECT 1 FROM pg_catalog.pg_proc p"
@@ -96,7 +97,11 @@ public final class Plan {
             + " AND n.nspname OPERATOR(pg_catalog.<>) 'pg_catalog'"
             + " AND n.nspname OPERATOR(pg_catalog.<>) 'information_schema'"
             + " AND l.lanname OPERATOR(pg_catalog.<>) 'c'"
-            + " AND l.lanname OPERATOR(pg_catalog.<>) 'internal' LIMIT 1"
+            + " AND l.lanname OPERATOR(pg_catalog.<>) 'internal'"
+            + " AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d"
+            + " WHERE d.classid OPERATOR(pg_catalog.=) 'pg_catalog.pg_proc'::pg_catalog.regclass"
+            + " AND d.objid OPERATOR(pg_catalog.=) p.oid"
+            + " AND d.deptype OPERATOR(pg_catalog.=) 'e') LIMIT 1"
         : "SELECT 1 FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'"
             + " AND ROUTINE_SCHEMA NOT IN ('sys', 'mysql', 'information_schema',"
             + " 'performance_schema') LIMIT 1";
