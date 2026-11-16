@@ -168,6 +168,26 @@ class EveryRowTest {
     unsure(POSTGRESQL, "WITH broken UPDATE orders SET x = 1", "UPDATE", "orders");
   }
 
+  /** An unquoted name that begins with WHERE or LIMIT is one name, whatever follows in it. */
+  @Test
+  void aNameThatBeginsWithAKeywordIsOneName() {
+    for (var provider : Provider.values()) {
+      every(provider, "UPDATE accounts SET where\u20ac = 5000", "UPDATE", "accounts");
+      every(provider, "UPDATE accounts SET whereß = 1", "UPDATE", "accounts");
+      every(provider, "UPDATE accounts SET where\u0300 = 1", "UPDATE", "accounts");
+      every(provider, "UPDATE accounts SET x = where\u20ac", "UPDATE", "accounts");
+      every(provider, "DELETE FROM where\u0301s", "DELETE", "where\u0301s");
+      every(provider, "UPDATE accounts SET x = 1 WHERE\u00a0", "UPDATE", "accounts");
+      bounded(provider, "UPDATE accounts SET where\u20ac = 5000 WHERE id = 1");
+    }
+    for (var provider : new Provider[] {MARIADB, MYSQL}) {
+      every(provider, "UPDATE accounts SET limit\u20ac = 5000", "UPDATE", "accounts");
+      every(provider, "UPDATE accounts SET limit\u0300 = 5000", "UPDATE", "accounts");
+      every(provider, "UPDATE accounts SET x = limitß", "UPDATE", "accounts");
+      bounded(provider, "UPDATE accounts SET limit\u20ac = 5000 LIMIT 1");
+    }
+  }
+
   /** A WHERE after RETURNING names a column. */
   @Test
   void aWhereAfterReturningIsNone() {

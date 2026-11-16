@@ -21,7 +21,8 @@ final class Tokens {
     }
 
     boolean name() {
-      return ident || Character.isLetterOrDigit(text.charAt(0)) || text.charAt(0) == '_';
+      char c = text.charAt(0);
+      return ident || c >= 0x80 || c == '_' || ascii(c) && Character.isLetterOrDigit(c);
     }
   }
 
@@ -73,7 +74,7 @@ final class Tokens {
           int body = reading.code() ? executable(sql, start, provider) : 0;
           if (body > 0) {
             int end = from + piece.end() - (piece.open() ? 0 : 2);
-            while (body < end && Character.isDigit(sql.charAt(body))) {
+            while (body < end && sql.charAt(body) >= '0' && sql.charAt(body) <= '9') {
               body++; // the version from which the server runs it
             }
             depth = add(tokens, sql, body, Math.max(body, end), provider, reading, depth);
@@ -120,10 +121,17 @@ final class Tokens {
     return provider == Provider.MARIADB && sql.startsWith("/*M!", at) ? at + 4 : 0;
   }
 
+  // Of an unquoted identifier: ASCII letters, digits, _ and $, and every character beyond ASCII,
+  // as both servers take them (combining marks among them); on MariaDB and MySQL a variable's @.
   private static boolean word(char c, Provider provider) {
-    return Character.isLetterOrDigit(c)
+    return ascii(c) && Character.isLetterOrDigit(c)
         || c == '_'
         || c == '$'
+        || c >= 0x80
         || c == '@' && provider != Provider.POSTGRESQL;
+  }
+
+  private static boolean ascii(char c) {
+    return c < 0x80;
   }
 }
