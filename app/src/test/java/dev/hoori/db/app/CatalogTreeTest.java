@@ -30,8 +30,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** The catalogue: connections that open onto what their servers hold. */
-class CatalogueTest {
+/** The catalog: connections that open onto what their servers hold. */
+class CatalogTreeTest {
 
   static final String PG = "pg.example.com";
   static final String MARIA = "maria.example.com";
@@ -133,7 +133,7 @@ class CatalogueTest {
     servers.openAll();
     for (var app : apps) {
       app.await(Duration.ofSeconds(10));
-      app.state().catalogue.closeAll();
+      app.state().catalog.closeAll();
       app.state().drivers.close();
     }
   }
@@ -685,7 +685,7 @@ class CatalogueTest {
   }
 
   @Test
-  void eachCatalogueFailureShowsAtItsNode() throws Exception {
+  void eachCatalogFailureShowsAtItsNode() throws Exception {
     var app = app(SHOP);
     ready(app, SHOP);
     var key = "tables " + PG + "/shop.sales";
@@ -793,7 +793,7 @@ class CatalogueTest {
     assertTrue(row(end, "shop-prod").contains("expanded=false"), end);
     assertTrue(message(end).contains("Disconnected from shop-prod"), end);
     eventually(() -> servers.closed.containsAll(List.of(PG + "/shop", PG + "/analytics")));
-    assertFalse(app.state().catalogue.active(SHOP.id()));
+    assertFalse(app.state().catalog.active(SHOP.id()));
   }
 
   @Test
@@ -815,7 +815,7 @@ class CatalogueTest {
     assertEquals(List.of("shop-prod"), rows(editing));
     assertTrue(tree("delete").contains("To delete it, HooriDB disconnects it first."));
     assertTrue(line(tree("deleting"), "role=dialog").contains("\"Delete connection\""));
-    assertFalse(app.state().catalogue.active(SHOP.id()));
+    assertFalse(app.state().catalog.active(SHOP.id()));
   }
 
   @Test
@@ -871,7 +871,7 @@ class CatalogueTest {
     run(app, SETTLE + "snap end\n");
     String end = tree("end");
     assertEquals(List.of("shop-prod"), rows(end));
-    assertFalse(app.state().catalogue.active(SHOP.id()));
+    assertFalse(app.state().catalog.active(SHOP.id()));
     eventually(() -> servers.closed.contains(PG + "/shop"));
   }
 
@@ -947,11 +947,11 @@ class CatalogueTest {
             + "press role=treeitem label=\"The database could not be opened\"\nframe\n"
             + "snap unopened\n");
     var kept = new StringBuilder();
-    for (var live : app.state().catalogue.lives.values()) {
+    for (var live : app.state().catalog.lives.values()) {
       kept.append(live.phase).append(live.levels);
     }
     run(app, open("sales") + SETTLE + "snap lost\n");
-    for (var live : app.state().catalogue.lives.values()) {
+    for (var live : app.state().catalog.lives.values()) {
       kept.append(live.phase).append(live.levels);
     }
     assertTrue(tree("denied").contains(ConnectionException.WITHHELD), tree("denied"));

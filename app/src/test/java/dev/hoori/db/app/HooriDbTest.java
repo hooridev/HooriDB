@@ -38,7 +38,7 @@ class HooriDbTest {
     assertTrue(tree.contains("role=menubar"), tree);
     assertTrue(tree.contains("role=menuitem label=\"File\""), tree);
     assertTrue(tree.contains("role=menuitem label=\"View\""), tree);
-    assertTrue(tree.contains("#catalogue"), tree);
+    assertTrue(tree.contains("#catalog"), tree);
     assertTrue(tree.contains("#tabs"), tree);
     assertTrue(tree.contains("role=status label=\"No tabs open\""), tree);
     assertTrue(tree.contains("role=status label=\"Status bar\""), tree);

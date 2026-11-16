@@ -52,7 +52,7 @@ import java.util.function.Consumer;
  * serves one call at a time; connections do not wait for one another. Only the app's thread uses
  * it.
  */
-final class Catalogue {
+final class CatalogTree {
 
   /** Where a connection the user opened is. */
   sealed interface Phase {}
@@ -160,7 +160,7 @@ final class Catalogue {
   final Menu.State menu = new Menu.State();
   Disconnecting disconnecting; // the question before an edit or a delete, or null
 
-  Catalogue(Servers servers) {
+  CatalogTree(Servers servers) {
     this.servers = servers;
   }
 
@@ -289,7 +289,7 @@ final class Catalogue {
         return entry.getKey();
       }
     }
-    throw new IllegalArgumentException("Not a fetch of the catalogue");
+    throw new IllegalArgumentException("Not a fetch of the catalog");
   }
 
   /** The password kept for this session, else the one in the keyring, else the user's. */
@@ -1074,7 +1074,7 @@ final class Catalogue {
 
   /** The window closes: everything ends, without waiting for a server. */
   void closeAll() {
-    lives.values().forEach(Catalogue::end);
+    lives.values().forEach(CatalogTree::end);
     lives.clear();
     fetches.values().forEach(Fetch::close);
   }
@@ -1298,7 +1298,7 @@ final class Catalogue {
 
     @Override
     public List<Node> children(Node node) {
-      var live = s.catalogue.lives.get(node.id());
+      var live = s.catalog.lives.get(node.id());
       if (live == null) {
         return List.of();
       }
@@ -1310,7 +1310,7 @@ final class Catalogue {
 
     @Override
     public Tree.Failure failure(Node node) {
-      var c = s.catalogue;
+      var c = s.catalog;
       var live = c.lives.get(node.id());
       if (live == null || failedWhole(live, node)) {
         return null;
@@ -1339,17 +1339,17 @@ final class Catalogue {
 
     @Override
     public String label(Node node) {
-      return s.catalogue.label(s, node);
+      return s.catalog.label(s, node);
     }
 
     @Override
     public String detail(Node node) {
-      return s.catalogue.detail(s, node);
+      return s.catalog.detail(s, node);
     }
 
     @Override
     public String loading(Node node) {
-      var live = s.catalogue.lives.get(node.id());
+      var live = s.catalog.lives.get(node.id());
       if (!(node instanceof Node.Connection) || live == null) {
         return "Loading…";
       }
@@ -1391,9 +1391,9 @@ final class Catalogue {
       };
     }
 
-    // The kind of server is the row's muted text; the icon's colour says whether it is connected.
+    // The kind of server is the row's muted text; the icon's color says whether it is connected.
     private El connection(Node.Connection n) {
-      var live = s.catalogue.lives.get(n.id());
+      var live = s.catalog.lives.get(n.id());
       Phase phase = live == null ? null : live.phase;
       El icon = switch (phase) {
         case Connected c -> Icon.icon(Symbol.SERVER, Icon.Variant.SUCCESS);
@@ -1404,7 +1404,7 @@ final class Catalogue {
       El mark = row()
           .gap(t.space().s())
           .align(Style.Align.CENTER)
-          .child(Colours.mark(s.colour(n.id())))
+          .child(ConnectionColors.mark(s.color(n.id())))
           .child(icon);
       if (phase == null || phase instanceof Connected || ended(phase)) {
         return mark;
@@ -1435,7 +1435,7 @@ final class Catalogue {
             copy,
             Menu.separator(),
             Menu.item("Edit…", () -> change(s, p, Then.EDIT)).icon(Symbol.EDIT),
-            Menu.submenu("Colour", colours(s, p)),
+            Menu.submenu("Color", colors(s, p)),
             Menu.item("Duplicate", () -> s.duplicate(p)).icon(Symbol.COPY),
             Menu.separator(),
             Menu.item("Delete…", () -> change(s, p, Then.DELETE)).icon(Symbol.DELETE));
@@ -1451,18 +1451,18 @@ final class Catalogue {
     };
   }
 
-  // Also while connected: a colour changes neither the connection nor its tabs.
-  private static List<Menu.Item> colours(State s, ConnectionProfile p) {
-    return Colours.CHOICES.stream()
+  // Also while connected: a color changes neither the connection nor its tabs.
+  private static List<Menu.Item> colors(State s, ConnectionProfile p) {
+    return ConnectionColors.CHOICES.stream()
         .map(c -> {
-          var item =
-              Menu.item(Colours.label(c), () -> s.put(p.withColour(c))).checked(c == p.colour());
-          return c == null ? item : item.leading(() -> HuePicker.swatch(Colours.hue(c)));
+          var item = Menu.item(ConnectionColors.label(c), () -> s.put(p.withColor(c)))
+              .checked(c == p.color());
+          return c == null ? item : item.leading(() -> HuePicker.swatch(ConnectionColors.hue(c)));
         })
         .toList();
   }
 
-  /** The dialog that asks something for the catalogue, or null: one at a time. */
+  /** The dialog that asks something for the catalog, or null: one at a time. */
   El dialog(State s, TabGroups.Group<Tab> group) {
     boolean main = group == s.tabs.main();
     if (main && disconnecting != null) {

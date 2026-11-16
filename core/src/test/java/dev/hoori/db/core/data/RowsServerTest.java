@@ -471,11 +471,11 @@ class RowsServerTest {
         var inserted = Rows.estimate(connection, provider, table).orElseThrow();
         assertEquals(20_000, Rows.count(connection, provider, table));
         execute(connection, pg ? "ANALYZE counted" : "ANALYZE TABLE counted");
-        var analysed = Rows.estimate(connection, provider, table).orElseThrow();
+        var analyzed = Rows.estimate(connection, provider, table).orElseThrow();
         System.out.println(provider + " estimates of 20000 rows: " + empty + " when empty, "
-            + inserted + " right after inserting them, " + analysed + " after analysing");
+            + inserted + " right after inserting them, " + analyzed + " after analyzing");
         assertTrue(empty >= 0 && inserted > 0);
-        assertTrue(analysed > 10_000 && analysed < 40_000, String.valueOf(analysed));
+        assertTrue(analyzed > 10_000 && analyzed < 40_000, String.valueOf(analyzed));
 
         var view = table(provider, "active_customer", Table.Kind.VIEW);
         assertEquals(pg, Rows.estimate(connection, provider, view).isPresent());
@@ -638,7 +638,7 @@ class RowsServerTest {
       execute(connection, "CREATE TABLE changed (id integer PRIMARY KEY, n integer)");
       try {
         var table = table(provider, "changed", Table.Kind.TABLE);
-        // The catalogue was read before the column changed its type.
+        // The catalog was read before the column changed its type.
         var columns = columns(connection, provider, table);
         execute(
             connection,

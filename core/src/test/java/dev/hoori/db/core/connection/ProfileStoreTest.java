@@ -55,7 +55,7 @@ class ProfileStoreTest {
           "shop/€",
           "ünïcode user",
           Tls.OFF,
-          Colour.RED,
+          Color.RED,
           null),
       new ConnectionProfile(
           UUID.randomUUID(), "", Provider.MYSQL, "", 0, "", "", Tls.ENCRYPTED, null, "8.4.0"),
@@ -68,7 +68,7 @@ class ProfileStoreTest {
           "x",
           "y",
           Tls.VERIFIED,
-          Colour.GREY,
+          Color.GRAY,
           "3.5.1"));
 
   @TempDir
@@ -110,13 +110,13 @@ class ProfileStoreTest {
     var root = JsonMapper.builder().build().readTree(text);
     assertEquals(Set.of("version", "profiles"), Set.copyOf(root.propertyNames()));
     var fields = Set.of("id", "name", "provider", "host", "port", "database", "user", "tls");
-    var withColour = new java.util.HashSet<>(fields);
-    withColour.add("colour");
+    var withColor = new java.util.HashSet<>(fields);
+    withColor.add("color");
     var profiles = root.get("profiles");
-    assertEquals(withColour, Set.copyOf(profiles.get(0).propertyNames()));
+    assertEquals(withColor, Set.copyOf(profiles.get(0).propertyNames()));
     var withDriver = new java.util.HashSet<>(fields);
     withDriver.add("driverVersion");
-    assertEquals(withDriver, Set.copyOf(profiles.get(1).propertyNames()), "no colour, no field");
+    assertEquals(withDriver, Set.copyOf(profiles.get(1).propertyNames()), "no color, no field");
   }
 
   @Test
@@ -130,29 +130,29 @@ class ProfileStoreTest {
           profile.get("provider").stringValue() + " " + profile.get("tls").stringValue());
     }
     assertEquals(List.of("postgresql off", "mysql encrypted", "mariadb verified"), stored);
-    var colours = new ArrayList<String>();
-    for (var colour : Colour.values()) {
-      new ProfileStore(folder).save(List.of(PROFILES.get(1).withColour(colour)));
+    var colors = new ArrayList<String>();
+    for (var color : Color.values()) {
+      new ProfileStore(folder).save(List.of(PROFILES.get(1).withColor(color)));
       var text = Files.readString(folder.resolve(ProfileStore.FILE));
-      colours.add(JsonMapper.builder()
+      colors.add(JsonMapper.builder()
           .build()
           .readTree(text)
           .get("profiles")
           .get(0)
-          .get("colour")
+          .get("color")
           .stringValue());
-      assertEquals(colour, new ProfileStore(folder).load().getFirst().colour());
+      assertEquals(color, new ProfileStore(folder).load().getFirst().color());
     }
     assertEquals(
         List.of(
-            "blue", "violet", "purple", "pink", "red", "orange", "amber", "green", "teal", "grey"),
-        colours);
+            "blue", "violet", "purple", "pink", "red", "orange", "amber", "green", "teal", "gray"),
+        colors);
   }
 
   @Test
-  void aFileWithoutColoursLoadsWithNone() throws IOException {
+  void aFileWithoutColorsLoadsWithNone() throws IOException {
     write(VALID.getBytes(UTF_8));
-    assertEquals(null, new ProfileStore(folder).load().getFirst().colour());
+    assertEquals(null, new ProfileStore(folder).load().getFirst().color());
   }
 
   @Test
@@ -198,9 +198,9 @@ class ProfileStoreTest {
         broken(VALID.replace("\"off\"", "\"strict\""), "\"tls\" is not \"off\", \"encrypted\""),
         broken(VALID.replace("\"off\"", "\"OFF\""), "\"tls\" is not \"off\", \"encrypted\""),
         broken(VALID.replace("\"off\"", "false"), "\"tls\" is not text"),
-        broken(VALID.replace("\"off\"", "\"off\", \"colour\": \"crimson\""), "\"colour\" is not a"),
-        broken(VALID.replace("\"off\"", "\"off\", \"colour\": \"RED\""), "\"colour\" is not a"),
-        broken(VALID.replace("\"off\"", "\"off\", \"colour\": null"), "\"colour\" is not text"),
+        broken(VALID.replace("\"off\"", "\"off\", \"color\": \"crimson\""), "\"color\" is not a"),
+        broken(VALID.replace("\"off\"", "\"off\", \"color\": \"RED\""), "\"color\" is not a"),
+        broken(VALID.replace("\"off\"", "\"off\", \"color\": null"), "\"color\" is not text"),
         broken(
             VALID.replace("\"off\"", "\"off\", \"driverVersion\": \"../1\""),
             "\"driverVersion\" is not a version"),
@@ -243,7 +243,7 @@ class ProfileStoreTest {
         VALID.replace("\"version\": 1", "\"version\": \"s3cret\""),
         VALID.replace("0f8fad5b-d9cb-469f", "s3cret"),
         VALID.replace("postgresql", "s3cret"),
-        VALID.replace("\"off\"", "\"off\", \"colour\": \"s3cret\""),
+        VALID.replace("\"off\"", "\"off\", \"color\": \"s3cret\""),
         VALID.replace("\"off\"", "\"off\", \"driverVersion\": \"s3cret/\""));
     for (var content : broken) {
       write(content.getBytes(UTF_8));

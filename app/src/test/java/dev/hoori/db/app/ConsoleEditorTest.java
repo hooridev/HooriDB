@@ -1,10 +1,10 @@
 package dev.hoori.db.app;
 
-import static dev.hoori.db.app.CatalogueTest.INVENTORY;
-import static dev.hoori.db.app.CatalogueTest.PG;
-import static dev.hoori.db.app.CatalogueTest.SETTLE;
-import static dev.hoori.db.app.CatalogueTest.SHOP;
-import static dev.hoori.db.app.CatalogueTest.open;
+import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
+import static dev.hoori.db.app.CatalogTreeTest.PG;
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.SHOP;
+import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.ConsoleTest.COUNT;
 import static dev.hoori.db.app.ConsoleTest.RUN;
@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
-import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
@@ -142,7 +142,7 @@ class ConsoleEditorTest {
     console.c.run(app, type(COUNT + ";") + RUN); // the session is open
     var held = servers.hold(key);
     console.c.run(app, type("\n" + WRONG + ";") + "key Enter control\nframe\nframe\n");
-    CatalogueTest.eventually(() -> servers.calls.contains(key));
+    CatalogTreeTest.eventually(() -> servers.calls.contains(key));
     // Another statement, refused: something runs.
     console.c.run(app, "key Home control\nkey Enter control\nframe\n");
     held.countDown();
@@ -160,7 +160,7 @@ class ConsoleEditorTest {
     console.c.run(app, type(COUNT + ";") + RUN); // the session is open
     var held = servers.hold(key);
     console.c.run(app, type("\n" + WRONG + ";") + "key Enter control\nframe\nframe\n");
-    CatalogueTest.eventually(() -> servers.calls.contains(key));
+    CatalogTreeTest.eventually(() -> servers.calls.contains(key));
     console.c.run(app, "key N control\nframe\nadvance 1\nframe\nsnap other\n");
     var other = console.c.tree("other");
     held.countDown();
@@ -360,9 +360,9 @@ class ConsoleEditorTest {
     var held = servers.hold(tables);
     console.c.run(
         app, open("shop-prod") + SETTLE + type("SELECT * FROM o") + "type \"r\"\n" + "frame\n");
-    CatalogueTest.eventually(() -> servers.calls.contains(tables));
+    CatalogTreeTest.eventually(() -> servers.calls.contains(tables));
     console.c.run(app, "key W control\nframe\n" + SETTLE + "snap closed\n");
-    CatalogueTest.eventually(() -> servers.interrupted.contains(tables));
+    CatalogTreeTest.eventually(() -> servers.interrupted.contains(tables));
     assertFalse(servers.done.contains(tables), servers.done.toString());
     held.countDown();
   }
@@ -446,7 +446,7 @@ class ConsoleEditorTest {
     // The tree reads the columns of orders, held; the console wants them too meanwhile.
     console.c.run(
         app, open("orders") + type("SELECT * FROM orders o WHERE ") + COMPLETE + "frame\n");
-    CatalogueTest.eventually(() -> servers.calls.contains(key));
+    CatalogTreeTest.eventually(() -> servers.calls.contains(key));
     held.countDown();
     console.c.run(app, SETTLE + COMPLETE + "snap read\n");
     assertEquals(1, servers.calls.stream().filter(key::equals).count(), servers.calls.toString());
@@ -461,9 +461,9 @@ class ConsoleEditorTest {
         app, open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE);
     var held = servers.hold(key);
     console.c.run(app, type("SELECT * FROM customers c WHERE ") + COMPLETE + "frame\n");
-    CatalogueTest.eventually(() -> servers.calls.contains(key));
+    CatalogTreeTest.eventually(() -> servers.calls.contains(key));
     console.c.run(app, "key Escape\n" + open("customers"));
-    CatalogueTest.eventually(() -> servers.interrupted.contains(key));
+    CatalogTreeTest.eventually(() -> servers.interrupted.contains(key));
     held.countDown();
     console.c.run(app, SETTLE + "snap tree\n");
     assertTrue(console.c.tree("tree").contains("role=treeitem label=\"email\""));
@@ -540,7 +540,7 @@ class ConsoleEditorTest {
     assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
     var out = Files.createDirectories(Path.of(review));
     var theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
-    var app = console.console(SHOP.withColour(Colour.TEAL));
+    var app = console.console(SHOP.withColor(Color.TEAL));
     app.state().theme = theme;
     Script.run(
         type(COUNT + ";\n" + WRONG + ";") + RUN_ALL + "snap editor-error-" + look + "\n", app, out);
@@ -557,7 +557,7 @@ class ConsoleEditorTest {
         type("SELECT * FROM public.") + COMPLETE + "snap editor-tables-",
         type("SELECT o") + "type \"r\"\ntype \"d\"\nframe\nadvance 1\nframe\nsnap editor-mixed-");
     for (var shot : shots) {
-      var completing = console.console(SHOP.withColour(Colour.TEAL));
+      var completing = console.console(SHOP.withColor(Color.TEAL));
       completing.state().theme = theme;
       console.c.run(completing, TREE);
       Script.run(shot + look + "\n", completing, out);

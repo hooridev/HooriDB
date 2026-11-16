@@ -24,7 +24,7 @@ import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-/** Reading the catalogue of real servers, with the sample schema of {@link TestServer}. */
+/** Reading the catalog of real servers, with the sample schema of {@link TestServer}. */
 class CatalogServerTest {
 
   private static final Duration TIMEOUT = Duration.ofSeconds(10);
@@ -457,7 +457,7 @@ class CatalogServerTest {
   }
 
   @Test
-  void aCatalogueTheUserMayNotReadIsAccessDenied() throws Exception {
+  void aCatalogTheUserMayNotReadIsAccessDenied() throws Exception {
     var server = TestServer.of(Provider.POSTGRESQL);
     var customer = new Table(sample(Provider.POSTGRESQL), "customer", Kind.TABLE);
     try (var admin = open(server, TestServer.DATABASE)) {

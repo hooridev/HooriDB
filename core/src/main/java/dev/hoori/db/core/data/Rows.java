@@ -138,7 +138,7 @@ public final class Rows {
   /**
    * The number of rows of the table or view as the server's planner estimates it, without reading
    * them; empty where it has no estimate, as MariaDB and MySQL have none for a view. It can be far
-   * off: PostgreSQL takes an empty table that was never analysed for one of ten pages, and every
+   * off: PostgreSQL takes an empty table that was never analyzed for one of ten pages, and every
    * server reports at least 1 for an empty table; after many rows were inserted or deleted, it
    * lags behind until the server gathers its statistics again.
    */
@@ -293,7 +293,7 @@ public final class Rows {
 
   /**
    * Whether the witness's columns, after the {@code selected} expressions of the reads, are the
-   * given columns, by name and in order, each read the way its catalogue type is read.
+   * given columns, by name and in order, each read the way its catalog type is read.
    */
   private static boolean same(
       Provider provider,
@@ -318,7 +318,7 @@ public final class Rows {
       var now = mysql(
           provider,
           new Source(metadata.getColumnLabel(at), type, ALIAS),
-          catalogueType(provider, type, precision));
+          catalogType(provider, type, precision));
       if (!metadata.getColumnLabel(at).equals(columns.get(i).name())
           || !bit && now.field().kind() != reads.get(i).field().kind()
           || unsignedBigint(type.toLowerCase(Locale.ROOT)) != unsignedBigint(given)) {
@@ -355,7 +355,7 @@ public final class Rows {
     return order.isEmpty() ? "" : " ORDER BY " + String.join(", ", order);
   }
 
-  // MariaDB's and MySQL's catalogue names each type exactly, where their drivers report tinyint(1),
+  // MariaDB's and MySQL's catalog names each type exactly, where their drivers report tinyint(1),
   // bit(1) and bit(8) alike as BIT. PostgreSQL's types are told from what pgjdbc reports of a
   // query that reads no row, which is the base type of a domain.
   private static Described reads(
@@ -415,7 +415,7 @@ public final class Rows {
 
   /**
    * How the columns of a statement's result are read, as {@link #read} reads a table's where the
-   * metadata of the result tells as much as the catalogue: see {@link RowReader}.
+   * metadata of the result tells as much as the catalog: see {@link RowReader}.
    */
   static List<Read> reads(Provider provider, ResultSetMetaData metadata) throws SQLException {
     var reads = new ArrayList<Read>();
@@ -425,7 +425,7 @@ public final class Rows {
       reads.add(
           provider == Provider.POSTGRESQL
               ? postgresql(source, field(metadata, i, "getOID"), metadata.getColumnType(i))
-              : mysql(provider, source, catalogueType(provider, type, metadata.getPrecision(i))));
+              : mysql(provider, source, catalogType(provider, type, metadata.getPrecision(i))));
     }
     return reads;
   }
@@ -450,11 +450,11 @@ public final class Rows {
     }
   }
 
-  // The type as the catalogue would name it, from what the driver reports: MariaDB Connector/J
-  // names tinyint(1) BOOLEAN and its json JSON, which the catalogue calls longtext, while MySQL
+  // The type as the catalog would name it, from what the driver reports: MariaDB Connector/J
+  // names tinyint(1) BOOLEAN and its json JSON, which the catalog calls longtext, while MySQL
   // Connector/J reports tinyint(1) and bit(1) alike as a BIT of precision 1, which is taken for the
   // tinyint(1), as a whole number holds either.
-  private static String catalogueType(Provider provider, String type, int precision) {
+  private static String catalogType(Provider provider, String type, int precision) {
     return switch (type.toLowerCase(Locale.ROOT)) {
       case "boolean" -> "tinyint(1)";
       case "bit" ->
@@ -524,8 +524,8 @@ public final class Rows {
     };
   }
 
-  private static Read mysql(Provider provider, Source source, String catalogueType) {
-    var type = catalogueType.toLowerCase(Locale.ROOT);
+  private static Read mysql(Provider provider, Source source, String catalogType) {
+    var type = catalogType.toLowerCase(Locale.ROOT);
     UnaryOperator<String> asText = name -> "CAST(" + name + " AS CHAR)";
     // Of a statement's result, MySQL Connector/J's getString() writes a time in its own way, and
     // its getBytes() gives the server's text. MariaDB Connector/J's getBytes() refuses a time, and

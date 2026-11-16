@@ -22,7 +22,7 @@ import java.util.function.Predicate;
  * schemas, of a database, and the columns of a table or view. Names come in the order the server
  * compares them, user objects before system ones.
  *
- * <p>Each call blocks, without a time limit, and runs a query of the server's own catalogue on the
+ * <p>Each call blocks, without a time limit, and runs a query of the server's own catalog on the
  * given connection. A connection serves one call at a time: the caller does not use it for anything
  * else until the call returns. On PostgreSQL a connection sees only its own database, so the
  * children of a database are read on a connection to it; MariaDB and MySQL read every database on

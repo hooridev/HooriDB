@@ -1,13 +1,13 @@
 package dev.hoori.db.app;
 
-import static dev.hoori.db.app.CatalogueTest.PG;
-import static dev.hoori.db.app.CatalogueTest.SETTLE;
-import static dev.hoori.db.app.CatalogueTest.SHOP;
-import static dev.hoori.db.app.CatalogueTest.START;
-import static dev.hoori.db.app.CatalogueTest.eventually;
-import static dev.hoori.db.app.CatalogueTest.menu;
-import static dev.hoori.db.app.CatalogueTest.open;
-import static dev.hoori.db.app.CatalogueTest.rows;
+import static dev.hoori.db.app.CatalogTreeTest.PG;
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.SHOP;
+import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.eventually;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
+import static dev.hoori.db.app.CatalogTreeTest.open;
+import static dev.hoori.db.app.CatalogTreeTest.rows;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -82,7 +82,7 @@ class TableTabTest {
   @TempDir
   Path dir;
 
-  final CatalogueTest c = new CatalogueTest();
+  final CatalogTreeTest c = new CatalogTreeTest();
   FakeServers servers;
 
   @BeforeEach

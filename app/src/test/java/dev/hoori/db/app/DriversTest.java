@@ -49,7 +49,7 @@ class DriversTest {
   final ConnectionsTest.Secrets secrets = new ConnectionsTest.Secrets();
   final FakeDrivers.FakeServer server = new FakeDrivers.FakeServer();
   final FakeServers servers =
-      new FakeServers().serve(CatalogueTest.PG, Provider.POSTGRESQL, "16.4", "shop\n  public\n");
+      new FakeServers().serve(CatalogTreeTest.PG, Provider.POSTGRESQL, "16.4", "shop\n  public\n");
   FakeDrivers repository;
   final List<App<State>> apps = new ArrayList<>();
 
@@ -77,7 +77,7 @@ class DriversTest {
     servers.openAll();
     for (var app : apps) {
       app.await(Duration.ofSeconds(10));
-      app.state().catalogue.closeAll();
+      app.state().catalog.closeAll();
       app.state().drivers.close();
     }
   }
@@ -429,11 +429,11 @@ class DriversTest {
   @Test
   void aVersionAConnectionUsesCannotBeDeleted() throws Exception {
     downloaded(FakeDrivers.VERSION, OLD);
-    var shop = CatalogueTest.SHOP.withDriverVersion(OLD);
+    var shop = CatalogTreeTest.SHOP.withDriverVersion(OLD);
     var app = app(shop);
     run(app, START);
     app.state().rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
-    run(app, CatalogueTest.open("shop-prod") + SETTLE + SETTLE + OPEN_DRIVERS + "snap used\n");
+    run(app, CatalogTreeTest.open("shop-prod") + SETTLE + SETTLE + OPEN_DRIVERS + "snap used\n");
     String used = tree("used");
     assertTrue(
         block(used, "\"" + OLD + "\"")
@@ -443,28 +443,28 @@ class DriversTest {
     assertTrue(line(used, "label=\"Delete PostgreSQL JDBC 42.7.10\"").endsWith("disabled"), used);
     assertFalse(line(used, "label=\"Delete PostgreSQL JDBC 42.7.14\"").endsWith("disabled"));
     // The connection connected with the version it chose.
-    var live = app.state().catalogue.lives.get(shop.id());
+    var live = app.state().catalog.lives.get(shop.id());
     assertSame(app.state().drivers.loaded(FakeDrivers.DRIVER, OLD), live.driver);
   }
 
   @Test
   void aVersionOnlyAConsoleUsesCannotBeDeleted() throws Exception {
     downloaded(FakeDrivers.VERSION, OLD);
-    var shop = CatalogueTest.SHOP.withDriverVersion(OLD);
+    var shop = CatalogTreeTest.SHOP.withDriverVersion(OLD);
     var app = app(shop);
     run(app, START);
     var s = app.state();
     s.rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
     run(
         app,
-        CatalogueTest.menu("shop-prod", "New console") + SETTLE
-            + "press #sql\ntype \"SELECT 1\"\nkey Enter control\n" + CatalogueTest.SETTLE);
+        CatalogTreeTest.menu("shop-prod", "New console") + SETTLE
+            + "press #sql\ntype \"SELECT 1\"\nkey Enter control\n" + CatalogTreeTest.SETTLE);
     var console = s.consoles(null).getFirst();
     // The console's own connection has the version the connection chose, as the tree's has.
     assertSame(s.drivers.loaded(FakeDrivers.DRIVER, OLD), console.driver);
     // The tree's connection is lost; the console's goes on, and holds the version alone.
-    s.catalogue.lost(s, s.catalogue.live(shop.id()), "gone", false);
-    assertTrue(s.catalogue.users(s, FakeDrivers.DRIVER, OLD).isEmpty());
+    s.catalog.lost(s, s.catalog.live(shop.id()), "gone", false);
+    assertTrue(s.catalog.users(s, FakeDrivers.DRIVER, OLD).isEmpty());
     run(app, OPEN_DRIVERS + "snap used\n");
     String used = tree("used");
     assertTrue(
@@ -529,13 +529,13 @@ class DriversTest {
   @Test
   void aVersionBeingLoadedCannotBeDeleted() throws Exception {
     downloaded(FakeDrivers.VERSION, OLD);
-    var shop = CatalogueTest.SHOP.withDriverVersion(OLD);
+    var shop = CatalogTreeTest.SHOP.withDriverVersion(OLD);
     var app = app(shop);
     run(app, START);
     app.state().rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
     Files.writeString(jarFolder(OLD).resolve(FakeDrivers.HOLD), "");
     // The lookup decides on the version; its load then waits at the hold.
-    run(app, CatalogueTest.open("shop-prod") + "await\nframe\n");
+    run(app, CatalogTreeTest.open("shop-prod") + "await\nframe\n");
     for (int i = 0; !app.state().drivers.loading(FakeDrivers.DRIVER, OLD); i++) {
       assertTrue(i < 500, "the load began");
       Thread.sleep(10);
@@ -547,8 +547,8 @@ class DriversTest {
     assertEquals(List.of(), app.state().users(FakeDrivers.DRIVER, FakeDrivers.VERSION));
     Files.delete(jarFolder(OLD).resolve(FakeDrivers.HOLD));
     run(app, SETTLE + SETTLE);
-    var live = app.state().catalogue.lives.get(shop.id());
-    assertTrue(live.phase instanceof Catalogue.Connected, String.valueOf(live.phase));
+    var live = app.state().catalog.lives.get(shop.id());
+    assertTrue(live.phase instanceof CatalogTree.Connected, String.valueOf(live.phase));
     assertEquals(List.of(FakeDrivers.VERSION, OLD), store().downloaded(FakeDrivers.DRIVER));
   }
 
@@ -556,19 +556,19 @@ class DriversTest {
   @Test
   void aConnectionDuringADeleteAsksForTheDriver() throws Exception {
     downloaded(OLD);
-    var shop = CatalogueTest.SHOP.withDriverVersion(OLD);
+    var shop = CatalogTreeTest.SHOP.withDriverVersion(OLD);
     var app = app(shop);
     run(app, START);
     var s = app.state();
     s.rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
     assertTrue(s.claimForDelete(FakeDrivers.DRIVER, OLD));
-    run(app, CatalogueTest.open("shop-prod") + SETTLE + SETTLE + "snap asked\n");
+    run(app, CatalogTreeTest.open("shop-prod") + SETTLE + SETTLE + "snap asked\n");
     String asked = tree("asked");
     assertTrue(
         line(asked, "role=note").contains("\"Download PostgreSQL JDBC " + OLD + "?\""), asked);
     s.drivers.deleting(FakeDrivers.DRIVER, OLD, false); // the delete failed: the file is there
     run(app, "press role=button label=\"Download\"\nframe\n" + SETTLE + SETTLE + SETTLE);
-    assertTrue(s.catalogue.lives.get(shop.id()).phase instanceof Catalogue.Connected);
+    assertTrue(s.catalog.lives.get(shop.id()).phase instanceof CatalogTree.Connected);
   }
 
   /** Its file went, then its folder could not be renamed away: the version is gone, as it says. */

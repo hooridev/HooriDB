@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Opens connections to servers, reads their catalogue and the rows of their tables, and runs
+ * Opens connections to servers, reads their catalog and the rows of their tables, and runs
  * statements. Each call blocks, off the app's thread, and an interrupt of the calling thread cancels it. The app gets it from outside, so that a test
  * can put made-up servers in its place.
  */

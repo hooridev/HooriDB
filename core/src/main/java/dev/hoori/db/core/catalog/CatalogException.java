@@ -1,7 +1,7 @@
 package dev.hoori.db.core.catalog;
 
 /**
- * Why the catalogue could not be read. The message is the failure and the driver's or the server's
+ * Why the catalog could not be read. The message is the failure and the driver's or the server's
  * own words, or the name of what is missing.
  */
 public final class CatalogException extends Exception {
@@ -11,7 +11,7 @@ public final class CatalogException extends Exception {
     CONNECTION_LOST,
     /** What was asked about does not exist, or no longer, or the user may not see it. */
     NOT_FOUND,
-    /** The server refused the user to read its catalogue. */
+    /** The server refused the user to read its catalog. */
     ACCESS_DENIED,
     /** On PostgreSQL, the connection is to another database than the one asked about. */
     WRONG_DATABASE,

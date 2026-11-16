@@ -22,17 +22,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 
-/** The app's name and colour, and its window. */
+/** The app's name and color, and its window. */
 public final class HooriDb {
 
   static final String NAME = "HooriDB";
 
-  /** The app's own colour, for its icon and its mark in the title bar. */
-  static final int COLOUR = Colors.rgb(0x0F766E);
+  /** The app's own color, for its icon and its mark in the title bar. */
+  static final int COLOR = Colors.rgb(0x0F766E);
 
   /** The icon of the app's windows. */
   static final WindowIcon ICON = WindowIcon.of(
-      size -> Theme.CURRENT.with(Theme.DARK, () -> AppIcon.appIcon(size, COLOUR, Symbol.DATABASE)));
+      size -> Theme.CURRENT.with(Theme.DARK, () -> AppIcon.appIcon(size, COLOR, Symbol.DATABASE)));
 
   private HooriDb() {}
 

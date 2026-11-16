@@ -33,8 +33,8 @@ final class Suggestions {
       String name, String shown, String text, Symbol symbol, String kind, boolean own) {}
 
   private final ConsoleTab tab;
-  private final Map<Node, Catalogue.Scan> asked = new HashMap<>(); // the reads it started
-  private Catalogue catalogue; // where they were asked, once they are
+  private final Map<Node, CatalogTree.Scan> asked = new HashMap<>(); // the reads it started
+  private CatalogTree catalog; // where they were asked, once they are
   // The last entries, and what they were made for: the list keeps them while only its highlight
   // moves, and until it closes.
   private List<Completion.Entry> entries;
@@ -146,22 +146,22 @@ final class Suggestions {
 
   /** Gives up the reads it asked for that have not delivered. */
   void close() {
-    if (catalogue != null) {
-      asked.forEach(catalogue::stop);
+    if (catalog != null) {
+      asked.forEach(catalog::stop);
     }
     asked.clear();
   }
 
   /** Reads the node's tables or columns, unless it did already and that is under way or failed. */
-  private void want(State s, Catalogue.Live live, Node node) {
+  private void want(State s, CatalogTree.Live live, Node node) {
     var mine = asked.get(node);
     if (mine != null && live.scans.get(node) == mine) {
       return; // a failed read is not tried again from here: the tree and the palette say why
     }
-    catalogue = s.catalogue;
+    catalog = s.catalog;
     var scan = node instanceof Node.OfTable t
-        ? catalogue.scan(s, t)
-        : catalogue.scan(s, (Node.OfDatabase) node);
+        ? catalog.scan(s, t)
+        : catalog.scan(s, (Node.OfDatabase) node);
     if (scan != null) {
       asked.put(node, scan);
     }
@@ -171,7 +171,7 @@ final class Suggestions {
   private final class Known {
     private final State s;
     private final Provider provider;
-    private final Catalogue.Live live; // null while not connected
+    private final CatalogTree.Live live; // null while not connected
     private final boolean schemas; // whether the server has schemas within its databases
     private final Node.OfDatabase database; // the console's, or null
     // Where PostgreSQL looks for a name without a schema, in order.
@@ -182,8 +182,8 @@ final class Suggestions {
     Known(State s, Provider provider) {
       this.s = s;
       this.provider = provider;
-      var live = s.catalogue.live(tab.id);
-      var connected = live != null && live.phase instanceof Catalogue.Connected c ? c : null;
+      var live = s.catalog.live(tab.id);
+      var connected = live != null && live.phase instanceof CatalogTree.Connected c ? c : null;
       this.live = connected == null ? null : live;
       schemas = connected != null && connected.schemas();
       var name = !tab.database.isEmpty() || connected == null ? tab.database : connected.database();
@@ -198,7 +198,7 @@ final class Suggestions {
     }
 
     private List<Node> read(Node node) {
-      return live != null && live.levels.get(node) instanceof Catalogue.Read r
+      return live != null && live.levels.get(node) instanceof CatalogTree.Read r
           ? r.children()
           : List.of();
     }
@@ -233,13 +233,13 @@ final class Suggestions {
         return List.of();
       }
       var tables = new ArrayList<Table>();
-      boolean unread = !(live.levels.get(database) instanceof Catalogue.Read);
+      boolean unread = !(live.levels.get(database) instanceof CatalogTree.Read);
       for (var node : read(database)) {
         switch (node) {
           case Node.OfTable t -> tables.add(t.table());
           case Node.OfSchema x
           when !x.schema().system() -> {
-            unread |= Catalogue.unread(live.levels.get(x));
+            unread |= CatalogTree.unread(live.levels.get(x));
             read(x).forEach(n -> tables.add(((Node.OfTable) n).table()));
           }
           default -> {}
@@ -272,7 +272,7 @@ final class Suggestions {
         return null;
       }
       boolean system = container instanceof Node.OfSchema x && x.schema().system();
-      if (!system && Catalogue.unread(live.levels.get(container))) {
+      if (!system && CatalogTree.unread(live.levels.get(container))) {
         want(s, live, container instanceof Node.OfDatabase d ? d : database);
       }
       return read(container).stream().map(n -> ((Node.OfTable) n).table()).toList();
@@ -349,7 +349,7 @@ final class Suggestions {
 
     /** The table's columns, of the statement, with their types; read if need be. */
     void columns(Table table, List<Candidate> into) {
-      var columns = s.catalogue.columns(tab.id, table);
+      var columns = s.catalog.columns(tab.id, table);
       if (columns == null) {
         want(s, live, new Node.OfTable(tab.id, table));
         return;

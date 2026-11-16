@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
 /**
  * How to reach one database. The strings may be empty, as while a form edits a new profile, and
  * {@link #problems} says what keeps it from connecting. The password is not part of it: it is kept
- * in the system keyring under the id. The colour that marks it is null for none, and the version
+ * in the system keyring under the id. The color that marks it is null for none, and the version
  * of its driver is null for the recommended one.
  */
 public record ConnectionProfile(
@@ -26,7 +26,7 @@ public record ConnectionProfile(
     String database,
     String user,
     Tls tls,
-    Colour colour,
+    Color color,
     String driverVersion) {
 
   private static final Pattern LABEL =
@@ -224,46 +224,46 @@ public record ConnectionProfile(
 
   public ConnectionProfile withName(String name) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, colour, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion);
   }
 
   public ConnectionProfile withProvider(Provider provider) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, colour, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion);
   }
 
   public ConnectionProfile withHost(String host) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, colour, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion);
   }
 
   public ConnectionProfile withPort(int port) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, colour, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion);
   }
 
   public ConnectionProfile withDatabase(String database) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, colour, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion);
   }
 
   public ConnectionProfile withUser(String user) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, colour, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion);
   }
 
   public ConnectionProfile withTls(Tls tls) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, colour, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion);
   }
 
-  public ConnectionProfile withColour(Colour colour) {
+  public ConnectionProfile withColor(Color color) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, colour, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion);
   }
 
   public ConnectionProfile withDriverVersion(String driverVersion) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, colour, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion);
   }
 }

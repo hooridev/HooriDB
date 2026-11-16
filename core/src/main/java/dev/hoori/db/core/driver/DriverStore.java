@@ -59,7 +59,7 @@ import org.xml.sax.helpers.DefaultHandler;
  * so that a file that cannot be deleted, as one that is open on Windows, leaves it whole. Its file has matched the repository's checksum, which is recorded beside it and
  * checked again before the file is loaded. What is downloaded works without a network. Every
  * method blocks; interrupting the thread cancels it with {@link DriverException.Failure#CANCELLED}
- * and leaves the thread interrupted, except while a driver's own class initialisation runs during
+ * and leaves the thread interrupted, except while a driver's own class initialization runs during
  * {@link #load}, which cannot be interrupted.
  */
 public final class DriverStore {

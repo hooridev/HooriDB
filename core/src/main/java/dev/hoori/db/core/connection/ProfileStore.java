@@ -46,7 +46,8 @@ public final class ProfileStore {
 
   private static final Object SAVING = new Object();
 
-  // The tree model with the field names spelt out here, so that renaming a component of the record
+  // The tree model with the field names spelled out here, so that renaming a component of the
+  // record
   // cannot change the file. Each field's node type is checked, so nothing is coerced.
   private static final JsonMapper JSON = JsonMapper.builder()
       .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
@@ -159,7 +160,7 @@ public final class ProfileStore {
           text(node, where, "database"),
           text(node, where, "user"),
           tls(node, where),
-          colour(node, where),
+          color(node, where),
           driverVersion(node, where));
       if (!ids.add(profile.id())) {
         throw unreadable(where + " has the id " + profile.id() + " of an earlier profile");
@@ -196,8 +197,8 @@ public final class ProfileStore {
           .put("database", profile.database())
           .put("user", profile.user())
           .put("tls", stored(profile.tls()));
-      if (profile.colour() != null) {
-        object.put("colour", stored(profile.colour()));
+      if (profile.color() != null) {
+        object.put("color", stored(profile.color()));
       }
       if (profile.driverVersion() != null) {
         object.put("driverVersion", profile.driverVersion());
@@ -305,18 +306,18 @@ public final class ProfileStore {
     throw unreadable("in " + where + ", \"tls\" is not \"off\", \"encrypted\" or \"verified\"");
   }
 
-  // Left out for none, as in a file written before there were colours.
-  private Colour colour(JsonNode profile, String where) throws UnreadableException {
-    if (profile.get("colour") == null) {
+  // Left out for none, as in a file written before there were colors.
+  private Color color(JsonNode profile, String where) throws UnreadableException {
+    if (profile.get("color") == null) {
       return null;
     }
-    var value = text(profile, where, "colour");
-    for (var colour : Colour.values()) {
-      if (stored(colour).equals(value)) {
-        return colour;
+    var value = text(profile, where, "color");
+    for (var color : Color.values()) {
+      if (stored(color).equals(value)) {
+        return color;
       }
     }
-    throw unreadable("in " + where + ", \"colour\" is not a colour HooriDB knows");
+    throw unreadable("in " + where + ", \"color\" is not a color HooriDB knows");
   }
 
   // Left out for the recommended one, as in a file written before a version could be chosen.
@@ -331,7 +332,7 @@ public final class ProfileStore {
     return value;
   }
 
-  // The names in the file, spelt out so that renaming a constant cannot change it.
+  // The names in the file, spelled out so that renaming a constant cannot change it.
   private static String stored(Provider provider) {
     return switch (provider) {
       case POSTGRESQL -> "postgresql";
@@ -348,8 +349,8 @@ public final class ProfileStore {
     };
   }
 
-  private static String stored(Colour colour) {
-    return switch (colour) {
+  private static String stored(Color color) {
+    return switch (color) {
       case BLUE -> "blue";
       case VIOLET -> "violet";
       case PURPLE -> "purple";
@@ -359,7 +360,7 @@ public final class ProfileStore {
       case AMBER -> "amber";
       case GREEN -> "green";
       case TEAL -> "teal";
-      case GREY -> "grey";
+      case GRAY -> "gray";
     };
   }
 

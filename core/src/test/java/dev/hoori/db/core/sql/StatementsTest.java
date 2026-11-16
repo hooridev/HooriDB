@@ -352,7 +352,7 @@ class StatementsTest {
     assertEquals(Optional.of("SELECT 2"), at("SELECT 1; SELECT 2", 100));
   }
 
-  // Behaviour on large and random input
+  // Behavior on large and random input
 
   @Test
   void megabytesSplitInLinearTime() {

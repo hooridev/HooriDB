@@ -84,7 +84,7 @@ import java.util.regex.Pattern;
  *       and is none; every other statement, and every one in Manual or in a transaction, is read
  *       to its end in its one call, so that none is ever left open inside a transaction.
  *   <li>Each call gives up first what is still open on the session and reads its status fresh
- *       ({@link #after}, {@link #start}); nothing the app's thread believed authorises it. The
+ *       ({@link #after}, {@link #start}); nothing the app's thread believed authorizes it. The
  *       mode is verified, or the statement is not sent: by the server's word on MariaDB and
  *       MySQL, pgjdbc's on PostgreSQL. Auto-commit changes only in {@link
  *       #setMode}, where the server has just said that nothing is open; the mode shown follows the
@@ -328,8 +328,8 @@ final class ConsoleTab implements Tab {
     }
     var sql = help.sent(text, from, chosen); // where an error of each is, from now on
     // A session open goes on, also after the tree lost its connection.
-    if (lane == null && !s.catalogue.connected(id) && !s.catalogue.active(id)) {
-      s.catalogue.connect(s, id); // as the tree connects: the driver, the password, the server
+    if (lane == null && !s.catalog.connected(id) && !s.catalog.active(id)) {
+      s.catalog.connect(s, id); // as the tree connects: the driver, the password, the server
       askHere(s);
     }
     stranded = false;
@@ -350,9 +350,9 @@ final class ConsoleTab implements Tab {
 
   /** Runs on where it can, waits for the tree's connection where it connects, else is stranded. */
   private void follow(State s) {
-    if (lane != null || s.catalogue.connected(id)) {
+    if (lane != null || s.catalog.connected(id)) {
       next(s);
-    } else if (s.catalogue.active(id)) {
+    } else if (s.catalog.active(id)) {
       waiting = true;
     } else {
       stranded = true;
@@ -381,11 +381,11 @@ final class ConsoleTab implements Tab {
   /** Try again, or Enter password…: connects the tree's connection again, and goes on. */
   void retry(State s, boolean password) {
     stranded = false;
-    var live = s.catalogue.live(id);
+    var live = s.catalog.live(id);
     if (password && live != null) {
-      s.catalogue.askPassword(live);
+      s.catalog.askPassword(live);
     } else {
-      s.catalogue.connect(s, id);
+      s.catalog.connect(s, id);
     }
     askHere(s);
     follow(s);
@@ -393,7 +393,7 @@ final class ConsoleTab implements Tab {
 
   /** What the tree's connection asks for, its password, it asks in this console's window. */
   private void askHere(State s) {
-    var live = s.catalogue.live(id);
+    var live = s.catalog.live(id);
     if (live != null) {
       live.window = s.tabs.groupOf(this);
     }
@@ -474,7 +474,7 @@ final class ConsoleTab implements Tab {
   /** The session, opened now where it is not; null while the tree's connection is not connected. */
   private Lane session(State s) {
     if (lane == null) {
-      var session = s.catalogue.session(id, database);
+      var session = s.catalog.session(id, database);
       if (session == null) {
         return null;
       }
@@ -490,7 +490,7 @@ final class ConsoleTab implements Tab {
   /**
    * The one way the console's calls reach the session: in the same lane call, the read still open
    * on it is given up first, and what that failed with is said; then the call, which reads the
-   * session's status itself, as nothing the app's thread believed authorises anything on it. Once
+   * session's status itself, as nothing the app's thread believed authorizes anything on it. Once
    * its result or failure is taken, the question sees whether what it waits for may go on.
    */
   private <T> Asking ask(
@@ -1008,8 +1008,8 @@ final class ConsoleTab implements Tab {
   // First words of statements that only read, the same on every provider; anything else may change
   // data or the transaction, by itself, inside or with an implicit commit, and is treated as such.
   // SELECT reads, but for what a function it calls does, which no word tells, and INTO, below.
-  // SHOW reads settings and the catalogue, on PostgreSQL, MariaDB and MySQL alike. VALUES and
-  // TABLE are a SELECT's own forms. EXPLAIN is not on it: its options, ANALYZE however spelt,
+  // SHOW reads settings and the catalog, on PostgreSQL, MariaDB and MySQL alike. VALUES and
+  // TABLE are a SELECT's own forms. EXPLAIN is not on it: its options, ANALYZE however spelled,
   // run what it explains; nor DESCRIBE and DESC, the same statement on MariaDB and MySQL.
   private static final Set<String> READS = Set.of("SELECT", "SHOW", "VALUES", "TABLE");
   // A word that makes a read write: SELECT … INTO makes a table on PostgreSQL and sets variables or
@@ -1627,7 +1627,7 @@ final class ConsoleTab implements Tab {
       return;
     }
     var profile = s.profile(id);
-    var version = s.catalogue.version(id);
+    var version = s.catalog.version(id);
     if (lane == null || profile == null) {
       database = name; // the next session opens on it
       return;
@@ -2151,7 +2151,7 @@ final class ConsoleTab implements Tab {
     El top =
         // Without the provider's name, which the tree says: Commit and Rollback need its room.
         Card.toolbar(State.name(profile), null, actions.toArray(El[]::new));
-    El line = Colours.line(s.colour(id));
+    El line = ConnectionColors.line(s.color(id));
     El editor = editor(s, app, provider);
     El split = Split.split(
             Split.Direction.COLUMN,
@@ -2192,7 +2192,7 @@ final class ConsoleTab implements Tab {
     Theme t = Theme.CURRENT.get();
     var names = new LinkedHashSet<String>();
     names.add(database);
-    names.addAll(s.catalogue.databases(id));
+    names.addAll(s.catalog.databases(id));
     return Select.select(
             List.copyOf(names),
             database,
@@ -2286,7 +2286,7 @@ final class ConsoleTab implements Tab {
   private El note(State s) {
     Theme t = Theme.CURRENT.get();
     if (stranded) {
-      var trouble = s.catalogue.problem(s, new Node.Connection(id));
+      var trouble = s.catalog.problem(s, new Node.Connection(id));
       var actions = new ArrayList<El>();
       if (trouble != null && trouble.password()) {
         actions.add(button(SECONDARY, "Enter password…", () -> retry(s, true)));

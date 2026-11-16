@@ -7,7 +7,7 @@ import dev.hoori.db.core.catalog.Table;
 import java.util.UUID;
 
 /**
- * A row of the catalogue: a connection, or what its server holds, as the records core read. Nodes
+ * A row of the catalog: a connection, or what its server holds, as the records core read. Nodes
  * compare with {@code equals}, so that the selection and what is open survive a new read.
  */
 sealed interface Node {

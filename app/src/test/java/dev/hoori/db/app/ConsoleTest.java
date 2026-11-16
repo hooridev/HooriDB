@@ -1,13 +1,13 @@
 package dev.hoori.db.app;
 
-import static dev.hoori.db.app.CatalogueTest.INVENTORY;
-import static dev.hoori.db.app.CatalogueTest.MARIA;
-import static dev.hoori.db.app.CatalogueTest.PG;
-import static dev.hoori.db.app.CatalogueTest.SETTLE;
-import static dev.hoori.db.app.CatalogueTest.SHOP;
-import static dev.hoori.db.app.CatalogueTest.START;
-import static dev.hoori.db.app.CatalogueTest.eventually;
-import static dev.hoori.db.app.CatalogueTest.menu;
+import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
+import static dev.hoori.db.app.CatalogTreeTest.MARIA;
+import static dev.hoori.db.app.CatalogTreeTest.PG;
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.SHOP;
+import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.eventually;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.ConnectionsTest.PASSWORD;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.TableTabTest.cell;
@@ -21,7 +21,7 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connect.ConnectionException;
-import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
@@ -44,12 +44,12 @@ class ConsoleTest {
   static final String ORDERS = "SELECT * FROM orders";
   static final String PAY = "UPDATE orders SET paid = true WHERE id < 4";
   static final String MISSING = "SELECT * FROM missing";
-  static final ConnectionProfile RED = SHOP.withColour(Colour.RED);
+  static final ConnectionProfile RED = SHOP.withColor(Color.RED);
 
   @TempDir
   Path dir;
 
-  final CatalogueTest c = new CatalogueTest();
+  final CatalogTreeTest c = new CatalogTreeTest();
   FakeServers servers;
 
   @BeforeEach
@@ -270,7 +270,7 @@ class ConsoleTest {
     eventually(() -> servers.closed.contains(PG + "/shop"));
     assertEquals(1, servers.closed.size(), servers.closed.toString());
     assertTrue(app.state().consoles(null).isEmpty());
-    assertTrue(app.state().catalogue.connected(SHOP.id()));
+    assertTrue(app.state().catalog.connected(SHOP.id()));
   }
 
   @Test
@@ -395,7 +395,7 @@ class ConsoleTest {
 
   @Test
   void aConsoleTornOffSaysWhyItCouldNotConnectAndTriesAgainItself() throws Exception {
-    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogueTest.PG_OUTLINE, "another");
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.PG_OUTLINE, "another");
     var app = console(SHOP);
     c.run(
         app,
@@ -408,7 +408,7 @@ class ConsoleTest {
     assertFalse(line(window, "#run ").contains("busy"), window);
     assertTrue(line(window, "#cancel").contains("disabled"), window);
     assertFalse(status(window).contains("Ran"), window);
-    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogueTest.PG_OUTLINE, PASSWORD);
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.PG_OUTLINE, PASSWORD);
     c.run(
         app,
         "window \"shop-prod: shop\"\npress role=button label=\"Try again\"\nframe\n" + SETTLE
@@ -420,7 +420,7 @@ class ConsoleTest {
 
   @Test
   void aTornOffConsoleAsksForThePasswordInItsOwnWindow() throws Exception {
-    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogueTest.PG_OUTLINE, "another");
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.PG_OUTLINE, "another");
     var app = console(SHOP);
     c.run(
         app,
@@ -442,7 +442,7 @@ class ConsoleTest {
 
   @Test
   void thePasswordAskedInAWindowThatClosesIsAskedInTheMainOne() throws Exception {
-    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogueTest.PG_OUTLINE, "another");
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.PG_OUTLINE, "another");
     var app = console(SHOP);
     c.run(
         app,
@@ -538,7 +538,7 @@ class ConsoleTest {
     var review = System.getProperty("review");
     assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
     var out = Files.createDirectories(Path.of(review));
-    var app = console(SHOP.withColour(Colour.TEAL));
+    var app = console(SHOP.withColor(Color.TEAL));
     app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
     var multi = "SELECT id, total\nFROM orders\nWHERE total > 10";
     servers.statement(multi, List.of(FakeServers.made(1000, "id: bigint", "total: numeric(12,2)")));

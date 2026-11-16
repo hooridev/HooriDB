@@ -33,7 +33,7 @@ import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
-import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
@@ -65,8 +65,8 @@ final class ConnectionDialog {
       Part.of(ConnectionProfile::user, ConnectionProfile::withUser);
   static final Part<ConnectionProfile, Tls> TLS =
       Part.of(ConnectionProfile::tls, ConnectionProfile::withTls);
-  static final Part<ConnectionProfile, Colour> COLOUR =
-      Part.of(ConnectionProfile::colour, ConnectionProfile::withColour);
+  static final Part<ConnectionProfile, Color> COLOR =
+      Part.of(ConnectionProfile::color, ConnectionProfile::withColor);
   static final Part<ConnectionProfile, String> DRIVER_VERSION =
       Part.of(ConnectionProfile::driverVersion, ConnectionProfile::withDriverVersion);
 
@@ -355,10 +355,10 @@ final class ConnectionDialog {
     s.put(profile);
   }
 
-  /** Whether saving the profile ends its consoles' sessions: a change but of the colour. */
+  /** Whether saving the profile ends its consoles' sessions: a change but of the color. */
   private static boolean ends(State s, ConnectionProfile profile) {
     var before = s.profile(profile.id());
-    return before != null && !before.withColour(profile.colour()).equals(profile);
+    return before != null && !before.withColor(profile.color()).equals(profile);
   }
 
   /** Cancel and Escape: closes, after asking when there are changes. */
@@ -520,12 +520,12 @@ final class ConnectionDialog {
                 .key("name")
                 .wFull()),
         field(
-            "Colour",
+            "Color",
             HuePicker.huePicker(
-                    Colours.hue(p.colour()),
-                    Colours.label(null),
-                    open ? v -> e.at(COLOUR).set(Colours.colour(v)) : null)
-                .key("colour")),
+                    ConnectionColors.hue(p.color()),
+                    ConnectionColors.label(null),
+                    open ? v -> e.at(COLOR).set(ConnectionColors.color(v)) : null)
+                .key("color")),
         Form.group(
                 "Server",
                 field(
@@ -649,8 +649,8 @@ final class ConnectionDialog {
         () -> probe.test(s),
         Button.options().enabled(probe.running() || probe.canTest(s)).busy(probe.running()));
     var options = Dialog.options().start(test).defaultButton(save);
-    if (p.colour() != null) {
-      options = options.leading(Colours.mark(p.colour()));
+    if (p.color() != null) {
+      options = options.leading(ConnectionColors.mark(p.color()));
     }
     return Dialog.dialog(
         isNew ? "New connection" : "Edit connection",
@@ -715,7 +715,7 @@ final class ConnectionDialog {
   }
 
   /**
-   * The width of the dialog's content: the colours' swatches in one line, and help and errors
+   * The width of the dialog's content: the colors' swatches in one line, and help and errors
    * wrapping below their field.
    */
   static float width() {

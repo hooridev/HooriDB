@@ -29,7 +29,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 /**
  * A statement's result read as {@link Rows#read} reads a table: for every type that {@link
  * RowsServerTest} reads, {@code SELECT *} of the table gives the same kinds and values, but where
- * the result's metadata does not tell as much as the catalogue.
+ * the result's metadata does not tell as much as the catalog.
  */
 class RowReaderServerTest {
 

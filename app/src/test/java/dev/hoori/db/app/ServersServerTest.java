@@ -1,6 +1,6 @@
 package dev.hoori.db.app;
 
-import static dev.hoori.db.app.CatalogueTest.eventually;
+import static dev.hoori.db.app.CatalogTreeTest.eventually;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -858,8 +858,8 @@ class ServersServerTest {
    * the tree and the console open their connections through {@link Servers#SERVER}, with the
    * server's own driver and password.
    */
-  CatalogueTest app(TestServer server, List<App<State>> apps) throws Exception {
-    var c = new CatalogueTest();
+  CatalogTreeTest app(TestServer server, List<App<State>> apps) throws Exception {
+    var c = new CatalogTreeTest();
     c.dir = dir;
     c.setUp();
     Servers real = (profile, password, driver) ->
@@ -872,7 +872,9 @@ class ServersServerTest {
     c.ready(app, profile);
     c.run(
         app,
-        CatalogueTest.START + CatalogueTest.menu("real", "New console") + CatalogueTest.SETTLE);
+        CatalogTreeTest.START
+            + CatalogTreeTest.menu("real", "New console")
+            + CatalogTreeTest.SETTLE);
     apps.add(app);
     return c;
   }
@@ -888,7 +890,7 @@ class ServersServerTest {
     var lane = lane(server, TestServer.DATABASE);
     var watcher = open(server);
     var apps = new ArrayList<App<State>>();
-    CatalogueTest c = null;
+    CatalogTreeTest c = null;
     try {
       for (var sql : List.of(
           "DROP TABLE IF EXISTS seam_once, seam_after",
@@ -933,7 +935,7 @@ class ServersServerTest {
     var lane = lane(server, TestServer.DATABASE);
     var watcher = open(server);
     var apps = new ArrayList<App<State>>();
-    CatalogueTest c = null;
+    CatalogTreeTest c = null;
     try {
       for (var sql : List.of(
           "DROP TABLE IF EXISTS seam_plain, seam_kept",
@@ -950,7 +952,7 @@ class ServersServerTest {
                   "INSERT INTO seam_kept VALUES (1);\nINSERT INTO seam_plain VALUES (1);")
               + ConsoleTest.RUN_ALL + "press #close-0\nframe\n" + ConsoleTransactionTest.OPENED
               + "press #answer-rollback\nframe\n" + ConsoleTransactionTest.OPENED
-              + CatalogueTest.SETTLE);
+              + CatalogTreeTest.SETTLE);
       assertEquals(1, app.state().consoles(null).size(), "the close stopped");
       assertTrue(
           ConsoleTransactionTest.noticed(app).contains(ConsoleTab.PARTLY),
@@ -1014,7 +1016,7 @@ class ServersServerTest {
     var lane = lane(server, TestServer.DATABASE);
     var watcher = open(server);
     var apps = new ArrayList<App<State>>();
-    CatalogueTest c = null;
+    CatalogTreeTest c = null;
     try {
       for (var sql : List.of(
           "DROP TABLE IF EXISTS seam_once",
@@ -1033,7 +1035,8 @@ class ServersServerTest {
               + ConsoleTest.RUN
               + "scroll #grid row 180\nframe\nframe\n");
       eventually(tab::outcomeWaiting);
-      c.run(app, "press #close-0\nframe\n" + ConsoleTransactionTest.OPENED + CatalogueTest.SETTLE);
+      c.run(
+          app, "press #close-0\nframe\n" + ConsoleTransactionTest.OPENED + CatalogTreeTest.SETTLE);
       assertTrue(app.state().consoles(null).isEmpty(), "nothing asked");
       assertTrue(
           ConsoleTransactionTest.noticed(app).contains("duplicate key"),
@@ -1060,7 +1063,7 @@ class ServersServerTest {
     var lane = lane(server, TestServer.DATABASE);
     var watcher = open(server);
     var apps = new ArrayList<App<State>>();
-    CatalogueTest c = null;
+    CatalogTreeTest c = null;
     try {
       for (var sql : List.of(
           "DROP TABLE IF EXISTS seam_plain, seam_kept",
@@ -1080,7 +1083,7 @@ class ServersServerTest {
               + ConsoleTest.type("\nROLLBACK")
               + "key Enter control\nframe\nframe\n");
       eventually(tab::outcomeWaiting);
-      c.run(app, "press role=button label=\"Cancel\"\nframe\n" + CatalogueTest.SETTLE);
+      c.run(app, "press role=button label=\"Cancel\"\nframe\n" + CatalogTreeTest.SETTLE);
       assertTrue(
           ConsoleTransactionTest.noticed(app).contains(ConsoleTab.PARTLY),
           ConsoleTransactionTest.noticed(app));

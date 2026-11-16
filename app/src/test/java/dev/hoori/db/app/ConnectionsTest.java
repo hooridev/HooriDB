@@ -7,7 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
-import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
@@ -409,7 +409,7 @@ class ConnectionsTest {
 
   @Test
   void aDuplicateHasANewIdAndDeletingTakesThePasswordAlong() throws IOException {
-    var shop = shop().withColour(Colour.RED);
+    var shop = shop().withColor(Color.RED);
     store(shop);
     secrets.stored.put(shop.id(), PASSWORD);
     run(app(), """
@@ -464,7 +464,7 @@ class ConnectionsTest {
             copy.database(),
             copy.user(),
             copy.tls(),
-            copy.colour(),
+            copy.color(),
             copy.driverVersion()));
   }
 

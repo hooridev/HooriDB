@@ -14,7 +14,7 @@ import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
-import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -46,25 +46,25 @@ final class GoTo {
 
   /** The tables that match, best first, and then what is not read yet. */
   static List<FilterList.Entry> entries(State s, TabGroups.Group<Tab> group, String query) {
-    var c = s.catalogue;
+    var c = s.catalog;
     var q = query.strip();
     var found = new ArrayList<Found>();
     var notes = new ArrayList<FilterList.Entry>();
     var connected = c.lives.values().stream()
-        .filter(live -> live.phase instanceof Catalogue.Connected)
+        .filter(live -> live.phase instanceof CatalogTree.Connected)
         .map(live -> live.profile)
         .toList();
     for (var live : c.lives.values()) {
-      if (!(live.phase instanceof Catalogue.Connected)) {
+      if (!(live.phase instanceof CatalogTree.Connected)) {
         continue;
       }
       var id = live.id();
       var name = label(live.profile, connected);
-      var colour = s.colour(id);
+      var color = s.color(id);
       var databases = live.levels.get(new Node.Connection(id));
-      if (!(databases instanceof Catalogue.Read read)) {
-        if (databases instanceof Catalogue.Reading) { // a failure shows in the tree
-          notes.add(note(name, "reading its databases…", colour, true, null));
+      if (!(databases instanceof CatalogTree.Read read)) {
+        if (databases instanceof CatalogTree.Reading) { // a failure shows in the tree
+          notes.add(note(name, "reading its databases…", color, true, null));
         }
         continue;
       }
@@ -76,15 +76,15 @@ final class GoTo {
         String failed = null;
         var level = live.levels.get(db);
         var kids = new ArrayList<Node>();
-        if (level instanceof Catalogue.Read r) {
+        if (level instanceof CatalogTree.Read r) {
           for (var child : r.children()) {
             if (child instanceof Node.OfSchema x) {
               var below = live.levels.get(x);
-              if (below instanceof Catalogue.Read rx) {
+              if (below instanceof CatalogTree.Read rx) {
                 kids.addAll(rx.children());
               } else if (!x.schema().system()) {
-                reading |= below instanceof Catalogue.Reading;
-                unread |= Catalogue.unread(below);
+                reading |= below instanceof CatalogTree.Reading;
+                unread |= CatalogTree.unread(below);
                 failed =
                     failed != null || !failed(below) ? failed : c.problem(s, x).title();
               }
@@ -93,8 +93,8 @@ final class GoTo {
             }
           }
         } else {
-          reading = level instanceof Catalogue.Reading;
-          unread = Catalogue.unread(level);
+          reading = level instanceof CatalogTree.Reading;
+          unread = CatalogTree.unread(level);
           failed = failed(level) ? c.problem(s, db).title() : null;
         }
         for (var kid : kids) {
@@ -124,16 +124,15 @@ final class GoTo {
         };
         var key = String.join("\0", id.toString(), database);
         notes.add((reading
-                ? note(database, name + " · reading its tables…", colour, true, null)
+                ? note(database, name + " · reading its tables…", color, true, null)
                 : failed != null
                     ? note(
                         database,
                         name + " · " + failed + ", choose to try again",
-                        colour,
+                        color,
                         false,
                         readThem)
-                    : note(
-                        database, name + " · choose to read its tables", colour, false, readThem))
+                    : note(database, name + " · choose to read its tables", color, false, readThem))
             .key(key)
             .keepsOpen(true));
       }
@@ -145,12 +144,12 @@ final class GoTo {
     for (var f : found) {
       var table = f.table();
       var symbol = table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE;
-      var colour = s.colour(f.id());
+      var color = s.color(f.id());
       entries.add(FilterList.entry(
               table.name(), () -> Frame.focusContentSoon(s, s.openTable(f.id(), table, group)))
           .key(key(f.id(), table))
           .detail(f.where())
-          .leading(() -> lead(colour, Icon.icon(symbol, Icon.Variant.MUTED))));
+          .leading(() -> lead(color, Icon.icon(symbol, Icon.Variant.MUTED))));
     }
     if (connected.isEmpty()) {
       entries.add(FilterList.entry("No connection is open", null)
@@ -161,29 +160,29 @@ final class GoTo {
     return entries;
   }
 
-  private static boolean failed(Catalogue.Level level) {
-    return level instanceof Catalogue.NotRead || level instanceof Catalogue.NotOpened;
+  private static boolean failed(CatalogTree.Level level) {
+    return level instanceof CatalogTree.NotRead || level instanceof CatalogTree.NotOpened;
   }
 
   /** A row below the tables about a database whose tables are not known. */
   private static FilterList.Entry note(
-      String what, String detail, Colour colour, boolean waits, Runnable read) {
+      String what, String detail, Color color, boolean waits, Runnable read) {
     return FilterList.entry(what, read)
         .detail(detail)
         .group(UNREAD)
         .leading(() -> lead(
-            colour,
+            color,
             waits
                 ? Progress.spinner().label("Reading")
                 : Icon.icon(Symbol.DATABASE, Icon.Variant.MUTED)));
   }
 
-  private static El lead(Colour colour, El icon) {
+  private static El lead(Color color, El icon) {
     Theme t = Theme.CURRENT.get();
     return row()
         .gap(t.space().s())
         .align(Style.Align.CENTER)
-        .child(Colours.mark(colour))
+        .child(ConnectionColors.mark(color))
         .child(icon);
   }
 

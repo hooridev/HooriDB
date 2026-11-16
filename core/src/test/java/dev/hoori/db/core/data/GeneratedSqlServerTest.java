@@ -22,7 +22,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 /**
- * What the catalogue and the rows send to the server means what it says, whatever the names in it
+ * What the catalog and the rows send to the server means what it says, whatever the names in it
  * and whatever a user has created on PostgreSQL.
  */
 class GeneratedSqlServerTest {
@@ -195,14 +195,14 @@ class GeneratedSqlServerTest {
       // the key's.
       execute(
           connection,
-          "CREATE TABLE labelled (t text, j " + (provider == Provider.POSTGRESQL ? "jsonb" : "json")
+          "CREATE TABLE labeled (t text, j " + (provider == Provider.POSTGRESQL ? "jsonb" : "json")
               + ", " + provider.quote("substr") + " integer PRIMARY KEY, "
               + provider.quote("substring") + " integer, " + provider.quote("octet_length")
               + " integer, " + provider.quote("concat") + " integer)",
-          "INSERT INTO labelled VALUES ('b', '2', 2, 20, 200, 2000),"
+          "INSERT INTO labeled VALUES ('b', '2', 2, 20, 200, 2000),"
               + " ('a', '1', 1, 30, 300, 3000), ('c', '3', 3, 10, 100, 1000)");
       try {
-        var table = table(provider, "labelled", Table.Kind.TABLE);
+        var table = table(provider, "labeled", Table.Kind.TABLE);
         assertEquals(
             List.of(1L, 2L, 3L),
             Rows.read(connection, provider, table, columns(connection, provider, table), 0, 10)
@@ -211,7 +211,7 @@ class GeneratedSqlServerTest {
                 .map(row -> row.get(2))
                 .toList());
       } finally {
-        execute(connection, "DROP TABLE labelled");
+        execute(connection, "DROP TABLE labeled");
       }
     }
   }

@@ -32,7 +32,7 @@ import dev.hoori.db.core.catalog.Table;
 import java.util.List;
 import java.util.function.Predicate;
 
-/** The main window: menus in the title bar, the catalogue beside the tabs, the status line. */
+/** The main window: menus in the title bar, the catalog beside the tabs, the status line. */
 final class Frame {
 
   private Frame() {}
@@ -40,8 +40,8 @@ final class Frame {
   static El view(State s) {
     Theme t = Theme.CURRENT.get();
     var main = s.tabs.main();
-    // One dialog at a time: what the catalogue asks waits for the others to close.
-    El asked = s.dialog == null && s.deleting == null ? s.catalogue.dialog(s, main) : null;
+    // One dialog at a time: what the catalog asks waits for the others to close.
+    El asked = s.dialog == null && s.deleting == null ? s.catalog.dialog(s, main) : null;
     El question = question(s, main);
     boolean modal = s.dialog != null
         || s.deleting != null
@@ -50,7 +50,7 @@ final class Frame {
         || question != null;
     closePalette(s, main, modal);
     List<Menu.Item> menus = menus(s, main, modal);
-    El catalogue = catalogue(s).key("catalogue").label("Catalogue");
+    El catalog = catalog(s).key("catalog").label("Catalog");
     El tabs = tabs(s, main, s.app).key("tabs");
     El root = col()
         .wFull()
@@ -60,7 +60,7 @@ final class Frame {
         .onKeyUp(MenuBar.keysUp(s.bar, menus))
         .child(withMenus(
             HooriDb.NAME,
-            HooriDb.COLOUR,
+            HooriDb.COLOR,
             MenuBar.menuBar(s.bar, menus),
             s.app != null && s.app.windowMaximized()))
         .child(Split.cards(
@@ -68,7 +68,7 @@ final class Frame {
                 s.sidebar,
                 State.SIDEBAR,
                 p -> s.sidebar = p,
-                catalogue,
+                catalog,
                 160,
                 tabs,
                 320)
@@ -146,12 +146,17 @@ final class Frame {
           case TableTab x ->
             new Tabs.Tab(s.title(x))
                 .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE)
-                .hue(Colours.hue(s.colour(x.id)))
+                .hue(ConnectionColors.hue(s.color(x.id)))
                 .busy(x.opening != null || x.counting != null);
           // What may be open is changes not yet committed: the tab's dot.
           case ConsoleTab x ->
             new Tabs.Tab(
-                s.title(x), true, x.atStake(), Symbol.CODE, Colours.hue(s.colour(x.id)), x.busy());
+                s.title(x),
+                true,
+                x.atStake(),
+                Symbol.CODE,
+                ConnectionColors.hue(s.color(x.id)),
+                x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -183,7 +188,7 @@ final class Frame {
     App<State> app = app(s, group);
     El tabs = tabs(s, group, app).key("tabs");
     // What a console of this window asked for, such as a password.
-    El asked = s.catalogue.dialog(s, group);
+    El asked = s.catalog.dialog(s, group);
     // What its console asks about what may be open in it.
     El question = question(s, group);
     // The menus' commands without the bar, acting on this window's tabs.
@@ -196,7 +201,7 @@ final class Frame {
         .fill(t.surface().window())
         .onKey(keys(Menu.shortcuts(menus), null, s.palette(group), modal, tabs))
         .child(TitleBar.titleBar(
-            title(s, group.activeTab()), HooriDb.COLOUR, app != null && app.windowMaximized()))
+            title(s, group.activeTab()), HooriDb.COLOR, app != null && app.windowMaximized()))
         .child(col()
             .grow(1)
             .minSize(0, 0)
@@ -222,7 +227,7 @@ final class Frame {
   }
 
   /** The connections: waiting while they load, then a tree of them or the empty state. */
-  private static El catalogue(State s) {
+  private static El catalog(State s) {
     Theme t = Theme.CURRENT.get();
     Runnable create = s.canChange() ? s::newConnection : null;
     El problem = null;
@@ -248,9 +253,9 @@ final class Frame {
           .child(Progress.spinner())
           .child(label(Label.Variant.MUTED, "Loading connections…"));
     } else if (!s.profiles.isEmpty()) {
-      var c = s.catalogue;
+      var c = s.catalog;
       El tree = Tree.tree(
-              new Catalogue.Model(t, s),
+              new CatalogTree.Model(t, s),
               c.open::contains,
               s.selected,
               node -> s.selected = node,
@@ -431,12 +436,12 @@ final class Frame {
                     .shortcut(Key.CONTROL, "1"))));
   }
 
-  /** Whether a dialog of the main window is open: its own, or one the catalogue asks there. */
+  /** Whether a dialog of the main window is open: its own, or one the catalog asks there. */
   private static boolean mainDialog(State s) {
     return s.dialog != null
         || s.deleting != null
         || s.driverList != null
-        || s.catalogue.dialog(s, s.tabs.main()) != null;
+        || s.catalog.dialog(s, s.tabs.main()) != null;
   }
 
   /** Gives the focus to the tree of connections. */

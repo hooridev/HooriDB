@@ -1,13 +1,13 @@
 package dev.hoori.db.app;
 
-import static dev.hoori.db.app.CatalogueTest.PG;
-import static dev.hoori.db.app.CatalogueTest.SETTLE;
-import static dev.hoori.db.app.CatalogueTest.SHOP;
-import static dev.hoori.db.app.CatalogueTest.START;
-import static dev.hoori.db.app.CatalogueTest.menu;
-import static dev.hoori.db.app.CatalogueTest.open;
-import static dev.hoori.db.app.CatalogueTest.row;
-import static dev.hoori.db.app.CatalogueTest.rows;
+import static dev.hoori.db.app.CatalogTreeTest.PG;
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.SHOP;
+import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
+import static dev.hoori.db.app.CatalogTreeTest.open;
+import static dev.hoori.db.app.CatalogTreeTest.row;
+import static dev.hoori.db.app.CatalogTreeTest.rows;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.TableTabTest.table;
 import static dev.hoori.db.app.TableTabTest.tabs;
@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
-import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Files;
@@ -26,13 +26,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** A connection's colour: chosen in its dialog, shown at its row and at its tabs. */
-class ColoursTest {
+/** A connection's color: chosen in its dialog, shown at its row and at its tabs. */
+class ConnectionColorsTest {
 
   @TempDir
   Path dir;
 
-  final CatalogueTest c = new CatalogueTest();
+  final CatalogTreeTest c = new CatalogTreeTest();
 
   @BeforeEach
   void setUp() throws Exception {
@@ -57,15 +57,15 @@ class ColoursTest {
     return app;
   }
 
-  /** How many marks of the colour the text has: a tree row's, a tab header's. */
-  static long marks(String text, String colour) {
+  /** How many marks of the color the text has: a tree row's, a tab header's. */
+  static long marks(String text, String color) {
     return text.lines()
-        .filter(l -> l.contains("#colour ") && l.contains("value=\"" + colour + "\""))
+        .filter(l -> l.contains("#color ") && l.contains("value=\"" + color + "\""))
         .count();
   }
 
   @Test
-  void aColourChosenInTheDialogShowsAtTheRowAndSurvivesARestart() throws Exception {
+  void aColorChosenInTheDialogShowsAtTheRowAndSurvivesARestart() throws Exception {
     var app = c.app(SHOP);
     c.run(
         app,
@@ -73,7 +73,7 @@ class ColoursTest {
         press role=radio label="Red"
         frame
         snap red
-        focus role=radiogroup label="Colour"
+        focus role=radiogroup label="Color"
         key ArrowRight
         frame
         snap orange
@@ -85,9 +85,9 @@ class ColoursTest {
         frame
         """ + SETTLE
             + "snap saved\n");
-    assertFalse(row(c.tree("none"), "shop-prod").contains("#colour "), "a file without colours");
+    assertFalse(row(c.tree("none"), "shop-prod").contains("#color "), "a file without colors");
     String red = c.tree("red");
-    assertTrue(line(red, "role=radiogroup").contains("label=\"Colour\""), red);
+    assertTrue(line(red, "role=radiogroup").contains("label=\"Color\""), red);
     assertTrue(line(red, "role=radio label=\"None\"").contains("checked=false"), red);
     assertTrue(line(red, "role=radio label=\"Red\"").contains("checked"), red);
     assertFalse(line(red, "role=radio label=\"Red\"").contains("checked=false"), red);
@@ -99,15 +99,15 @@ class ColoursTest {
     assertFalse(saved.contains("role=dialog"), saved);
     assertTrue(marks(row(saved, "shop-prod"), "red") == 1, saved);
     assertEquals(
-        Colour.RED, new ProfileStore(dir.resolve("config")).load().getFirst().colour());
+        Color.RED, new ProfileStore(dir.resolve("config")).load().getFirst().color());
 
     c.run(restart(), START + "snap restarted\n");
     assertTrue(marks(row(c.tree("restarted"), "shop-prod"), "red") == 1);
   }
 
   @Test
-  void aTabTakesItsConnectionsColourAlsoWhenItChanges() throws Exception {
-    var shop = SHOP.withColour(Colour.RED);
+  void aTabTakesItsConnectionsColorAlsoWhenItChanges() throws Exception {
+    var shop = SHOP.withColor(Color.RED);
     var app = c.app(shop);
     c.ready(app, shop);
     c.run(
@@ -122,7 +122,7 @@ class ColoursTest {
 
     c.run(
         app,
-        menu("shop-prod", "Colour")
+        menu("shop-prod", "Color")
             + "press role=menuitem label=\"Green\"\nframe\nadvance 1\nframe\n" + SETTLE
             + "snap green\n");
     String green = c.tree("green");
@@ -133,19 +133,19 @@ class ColoursTest {
     assertEquals(
         1, c.servers.calls.stream().filter(("open " + PG + "/shop")::equals).count());
     assertEquals(
-        Colour.GREEN, new ProfileStore(dir.resolve("config")).load().getFirst().colour());
+        Color.GREEN, new ProfileStore(dir.resolve("config")).load().getFirst().color());
   }
 
   @Test
-  void anUnknownColourIsRefusedAsABrokenFile() throws Exception {
+  void anUnknownColorIsRefusedAsABrokenFile() throws Exception {
     new ProfileStore(dir.resolve("config")).save(java.util.List.of(SHOP));
     var file = dir.resolve("config").resolve(ProfileStore.FILE);
     Files.writeString(
-        file, Files.readString(file).replace("\"tls\"", "\"colour\": \"crimson\", \"tls\""));
+        file, Files.readString(file).replace("\"tls\"", "\"color\": \"crimson\", \"tls\""));
     c.run(restart(), START + "snap end\n");
     String end = c.tree("end");
     assertTrue(end.contains("Connections could not be read"), end);
-    assertTrue(end.contains("\\\"colour\\\" is not a colour HooriDB knows"), end);
+    assertTrue(end.contains("\\\"color\\\" is not a color HooriDB knows"), end);
     assertFalse(end.contains("crimson"), end);
   }
 }

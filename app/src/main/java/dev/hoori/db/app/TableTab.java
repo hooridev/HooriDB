@@ -94,7 +94,7 @@ final class TableTab implements Tab {
 
   final UUID id;
   Table table; // its kind may change, as a table replaced by a view of its name
-  List<Column> columns; // as the catalogue read them; null until then
+  List<Column> columns; // as the catalog read them; null until then
   float[] widths; // of the columns, which the user may change
   private List<Field> fields; // as the last read gave them, which each page has to match
   long rows; // known to be there, or as estimated
@@ -126,12 +126,12 @@ final class TableTab implements Tab {
   }
 
   /**
-   * Reads the table: its columns from the catalogue, anew unless the tree has them and this is
+   * Reads the table: its columns from the catalog, anew unless the tree has them and this is
    * not a refresh, the server's estimate of its rows, and the page at the first row in view, all
    * in one call. The rows read before go; the place in view stays.
    */
   void open(State s, boolean anew) {
-    var lane = closed ? null : s.catalogue.lane(s, id, table);
+    var lane = closed ? null : s.catalog.lane(s, id, table);
     if (lane == null) {
       return; // what was read stays, and the view says that it is not connected
     }
@@ -141,13 +141,13 @@ final class TableTab implements Tab {
     countedFirst = false;
     pages.clear();
     if (columns == null) {
-      columns = s.catalogue.columns(id, table);
+      columns = s.catalog.columns(id, table);
       if (columns != null) {
         shape(columns);
         rows = PAGE; // loading rows until the estimate comes
       }
     }
-    var live = s.catalogue.live(id);
+    var live = s.catalog.live(id);
     var known = anew ? null : columns;
     boolean recount = anew && counted == Counted.EXACT; // a refresh counts again what was counted
     var of = table;
@@ -168,7 +168,7 @@ final class TableTab implements Tab {
           opening = null;
           if (!opened.columns().equals(columns)) {
             shape(opened.columns());
-            s.catalogue.columnsRead(id, table, opened.columns());
+            s.catalog.columnsRead(id, table, opened.columns());
           }
           columns = opened.columns();
           fields = opened.page().fields();
@@ -249,11 +249,11 @@ final class TableTab implements Tab {
     if (have != null && have.size() >= Math.min(PAGE, rows - page * PAGE)) {
       return;
     }
-    var lane = s.catalogue.lane(s, id, table);
+    var lane = s.catalog.lane(s, id, table);
     if (lane == null) {
       return;
     }
-    var live = s.catalogue.live(id);
+    var live = s.catalog.live(id);
     var of = table;
     var with = columns;
     long from = page * PAGE;
@@ -353,11 +353,11 @@ final class TableTab implements Tab {
     if (closed || counting != null) {
       return;
     }
-    var lane = s.catalogue.lane(s, id, table);
+    var lane = s.catalog.lane(s, id, table);
     if (lane == null) {
       return;
     }
-    var live = s.catalogue.live(id);
+    var live = s.catalog.live(id);
     var of = table;
     counting = lane.ask(
         s.app,
@@ -388,13 +388,13 @@ final class TableTab implements Tab {
    *
    * @param again whether opening anew may help: not after the columns were just read
    */
-  private void failed(State s, Exception error, boolean again, Catalogue.Live live) {
+  private void failed(State s, Exception error, boolean again, CatalogTree.Live live) {
     stop();
     if (closed) {
       return;
     }
     if (error instanceof InterruptedException) {
-      if (s.catalogue.connected(id)) {
+      if (s.catalog.connected(id)) {
         if (columns == null || fields == null) {
           open(s, false);
         } else {
@@ -430,7 +430,7 @@ final class TableTab implements Tab {
       open(s, true);
       return;
     }
-    var detail = Catalogue.words(live, detail(error));
+    var detail = CatalogTree.words(live, detail(error));
     if (error instanceof ConnectionException e) {
       var profile = s.profile(id);
       var note = profile == null
@@ -441,7 +441,7 @@ final class TableTab implements Tab {
     }
     failure = new Failure(problem, detail);
     if (problem == Problem.LOST || problem == Problem.DISCARDED) {
-      s.catalogue.lost(s, live, detail, problem == Problem.DISCARDED);
+      s.catalog.lost(s, live, detail, problem == Problem.DISCARDED);
     }
   }
 
@@ -519,7 +519,7 @@ final class TableTab implements Tab {
   /** The tab's content: its toolbar, why it cannot read, the grid, and its status line. */
   El view(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
-    var connected = s.catalogue.connected(id);
+    var connected = s.catalog.connected(id);
     var profile = s.profile(id);
     String where = profile == null ? null : State.name(profile);
     El top = Card.toolbar(
@@ -538,7 +538,7 @@ final class TableTab implements Tab {
                 opening != null,
                 connected ? () -> open(s, true) : null)
             .key("refresh"));
-    El line = Colours.line(s.colour(id));
+    El line = ConnectionColors.line(s.color(id));
     El content =
         col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
     El note = note(s, connected);
@@ -607,9 +607,9 @@ final class TableTab implements Tab {
   private El note(State s, boolean connected) {
     var name = table.name();
     if (!connected) {
-      boolean connecting = s.catalogue.active(id);
-      var lost = s.catalogue.lost(id);
-      String text = lost != null ? Catalogue.why(lost) : "Its connection is closed.";
+      boolean connecting = s.catalog.active(id);
+      var lost = s.catalog.lost(id);
+      String text = lost != null ? CatalogTree.why(lost) : "Its connection is closed.";
       text += " What shows was read before, and may have changed since.";
       return Callout.callout(
           Callout.Kind.WARNING,
@@ -617,7 +617,7 @@ final class TableTab implements Tab {
           text,
           connecting
               ? new El[0]
-              : new El[] {button(SECONDARY, "Connect", () -> s.catalogue.connect(s, id))});
+              : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
     if (failure == null) {
       return null;

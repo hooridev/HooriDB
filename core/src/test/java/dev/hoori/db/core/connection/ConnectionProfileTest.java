@@ -35,7 +35,7 @@ class ConnectionProfileTest {
         .withDatabase("shop")
         .withUser("app")
         .withTls(Tls.VERIFIED)
-        .withColour(Colour.TEAL);
+        .withColor(Color.TEAL);
     assertEquals(
         new ConnectionProfile(
             p.id(),
@@ -46,10 +46,10 @@ class ConnectionProfileTest {
             "shop",
             "app",
             Tls.VERIFIED,
-            Colour.TEAL,
+            Color.TEAL,
             null),
         q);
-    assertEquals(null, p.colour());
+    assertEquals(null, p.color());
     assertEquals("", p.name());
     assertEquals(Provider.MARIADB, p.provider());
     assertEquals(Tls.ENCRYPTED, p.tls());
@@ -65,7 +65,7 @@ class ConnectionProfileTest {
     assertEquals(a, b);
     assertEquals(a.hashCode(), b.hashCode());
     assertNotEquals(a, b.withUser("v"));
-    assertNotEquals(a, b.withColour(Colour.RED));
+    assertNotEquals(a, b.withColor(Color.RED));
     assertNotEquals(a, b.withDriverVersion("42.7.10"));
   }
 

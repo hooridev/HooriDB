@@ -10,7 +10,7 @@ import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
-import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
@@ -68,7 +68,7 @@ final class State {
   final KeyringWorker keyringWorker = new KeyringWorker();
   final Drivers drivers; // null in a script run, which downloads none
   final Tester tester;
-  final Catalogue catalogue;
+  final CatalogTree catalog;
   List<ConnectionProfile> profiles = List.of(); // in the order shown and saved
   boolean loaded; // whether the profiles were loaded, or failed to
   String loadError; // why the profiles could not be loaded, or null
@@ -79,7 +79,7 @@ final class State {
   private boolean lookingForKeyring;
   // Passwords typed but not saved, for this session only.
   private final Map<UUID, char[]> passwords = new HashMap<>();
-  Node selected; // the selected node of the catalogue, or null
+  Node selected; // the selected node of the catalog, or null
   ConnectionDialog dialog; // null while closed
   DriversDialog driverList; // the Drivers dialog, null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
@@ -108,14 +108,14 @@ final class State {
    * @param keyring finds the system keyring, off the app's thread
    * @param drivers where drivers are kept and come from, or null for none
    * @param tester tests a connection, off the app's thread
-   * @param servers opens connections and reads their catalogue, off the app's thread
+   * @param servers opens connections and reads their catalog, off the app's thread
    */
   State(Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester, Servers servers) {
     this.store = new ProfileStore(folder);
     this.findKeyring = keyring;
     this.drivers = drivers;
     this.tester = tester;
-    this.catalogue = new Catalogue(servers);
+    this.catalog = new CatalogTree(servers);
   }
 
   /** Loads the profiles, then looks up the keyring. */
@@ -172,7 +172,7 @@ final class State {
       dialog.lookUp(this);
       dialog.probe.keyringFound(this);
     }
-    catalogue.keyringFound(this);
+    catalog.keyringFound(this);
     if (removing) {
       delete();
     }
@@ -211,7 +211,7 @@ final class State {
         profile.database(),
         profile.user(),
         profile.tls(),
-        profile.colour(),
+        profile.color(),
         profile.driverVersion());
     var list = new ArrayList<>(profiles);
     list.add(list.indexOf(profile) + 1, copy);
@@ -243,12 +243,12 @@ final class State {
     }
     profiles = List.copyOf(list);
     selected = new Node.Connection(profile.id());
-    // A colour alone leaves a connection connected, and its consoles' sessions; its tabs take it.
-    boolean colour = old != null && old.withColour(profile.colour()).equals(profile);
-    if (!colour || !catalogue.active(profile.id())) {
-      catalogue.drop(this, profile.id()); // what failed before the change is out of date
+    // A color alone leaves a connection connected, and its consoles' sessions; its tabs take it.
+    boolean color = old != null && old.withColor(profile.color()).equals(profile);
+    if (!color || !catalog.active(profile.id())) {
+      catalog.drop(this, profile.id()); // what failed before the change is out of date
     }
-    if (!colour) {
+    if (!color) {
       // Their sessions were opened with what changed; the save asked them first, and locked them.
       consoles(profile.id()).forEach(ConsoleTab::end);
     }
@@ -383,7 +383,7 @@ final class State {
     drop(deleteAct(profile)); // its consoles were locked meanwhile, and close now
     deleting = null;
     forgetPassword(profile.id());
-    catalogue.drop(this, profile.id());
+    catalog.drop(this, profile.id());
     closeTabs(profile.id());
     profiles = profiles.stream().filter(p -> !p.id().equals(profile.id())).toList();
     if (selected != null && selected.id().equals(profile.id())) {
@@ -694,7 +694,7 @@ final class State {
     if (palette != null) {
       palette.stop();
     }
-    catalogue.closed(group);
+    catalog.closed(group);
   }
 
   /** Closes the active tab of the window, as its cross does: a console asks first. */
@@ -919,7 +919,7 @@ final class State {
    * is opened, which may outlive the tree's, until it is closed.
    */
   List<String> users(Driver driver, String version) {
-    var named = new LinkedHashSet<>(catalogue.users(this, driver, version));
+    var named = new LinkedHashSet<>(catalog.users(this, driver, version));
     for (var console : consoles(null)) {
       var profile = profile(console.id);
       if (console.driver != null
@@ -948,10 +948,10 @@ final class State {
     return true;
   }
 
-  /** The colour of the connection, null for none or for a connection that is gone. */
-  Colour colour(UUID id) {
+  /** The color of the connection, null for none or for a connection that is gone. */
+  Color color(UUID id) {
     var profile = profile(id);
-    return profile == null ? null : profile.colour();
+    return profile == null ? null : profile.color();
   }
 
   ConnectionProfile profile(UUID id) {
@@ -1001,7 +1001,7 @@ final class State {
 
   private void closeAll() {
     consoles(null).forEach(ConsoleTab::close);
-    catalogue.closeAll(); // nothing waits for a server
+    catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();
     }

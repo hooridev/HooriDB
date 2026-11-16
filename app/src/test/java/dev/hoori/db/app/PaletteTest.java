@@ -1,11 +1,11 @@
 package dev.hoori.db.app;
 
-import static dev.hoori.db.app.CatalogueTest.INVENTORY;
-import static dev.hoori.db.app.CatalogueTest.PG;
-import static dev.hoori.db.app.CatalogueTest.SETTLE;
-import static dev.hoori.db.app.CatalogueTest.SHOP;
-import static dev.hoori.db.app.CatalogueTest.START;
-import static dev.hoori.db.app.CatalogueTest.open;
+import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
+import static dev.hoori.db.app.CatalogTreeTest.PG;
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.SHOP;
+import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.TableTabTest.tabs;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -20,7 +20,7 @@ import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
-import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import java.nio.file.Files;
@@ -39,7 +39,7 @@ class PaletteTest {
   @TempDir
   Path dir;
 
-  final CatalogueTest c = new CatalogueTest();
+  final CatalogTreeTest c = new CatalogTreeTest();
 
   @BeforeEach
   void setUp() throws Exception {
@@ -212,7 +212,7 @@ class PaletteTest {
     assertFalse(options(read).contains("analytics"), read);
     // The tree did not open it.
     assertFalse(
-        app.state().catalogue.open.stream().anyMatch(n -> n.toString().contains("analytics")));
+        app.state().catalog.open.stream().anyMatch(n -> n.toString().contains("analytics")));
     c.run(app, "press role=option label=\"events\"\n" + SHOWN + SETTLE + "snap end\n");
     assertEquals("events", tabs(c.tree("end")));
   }
@@ -374,9 +374,9 @@ class PaletteTest {
     var key = "all tables " + PG + "/analytics";
     var held = c.servers.hold(key);
     c.run(app, GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n" + SHOWN);
-    CatalogueTest.eventually(() -> c.servers.calls.contains(key));
+    CatalogTreeTest.eventually(() -> c.servers.calls.contains(key));
     c.run(app, "key Escape\n" + SHOWN + GO_TO + "type \"ord\"\nframe\nsnap again\n");
-    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    CatalogTreeTest.eventually(() -> c.servers.interrupted.contains(key));
     held.countDown();
     c.run(app, SETTLE + "snap after\n");
     for (var snap : List.of("again", "after")) {
@@ -397,7 +397,7 @@ class PaletteTest {
         app,
         "window main\n" + GO_TO + "type \"ev\"\nframe\npress role=option label=\"analytics\"\n"
             + SHOWN);
-    CatalogueTest.eventually(() -> c.servers.calls.contains(key));
+    CatalogTreeTest.eventually(() -> c.servers.calls.contains(key));
     c.run(
         app,
         "window \"customers\"\n" + PALETTE + "type \"new connection\"\nframe\nkey Enter\n" + SHOWN
@@ -405,7 +405,7 @@ class PaletteTest {
     var main = c.tree("main");
     assertTrue(main.contains("role=dialog label=\"New connection\""), main);
     assertFalse(app.state().palette(app.state().tabs.main()).isOpen());
-    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    CatalogTreeTest.eventually(() -> c.servers.interrupted.contains(key));
     held.countDown();
     c.run(app, "key Escape\n" + SHOWN + SETTLE + GO_TO + "type \"ev\"\nframe\nsnap after\n");
     assertTrue(option(c.tree("after"), "analytics").contains("choose to read its tables"));
@@ -508,11 +508,11 @@ class PaletteTest {
     var s = app.state();
     for (var p : List.of(first, second)) {
       var db = new Node.OfDatabase(p.id(), new Database("shop", false));
-      s.catalogue.toggle(s, new Node.Connection(p.id()), true);
+      s.catalog.toggle(s, new Node.Connection(p.id()), true);
       c.run(app, SETTLE);
-      s.catalogue.toggle(s, db, true);
+      s.catalog.toggle(s, db, true);
       c.run(app, SETTLE);
-      s.catalogue.toggle(
+      s.catalog.toggle(
           s, new Node.OfSchema(p.id(), new Schema(db.database(), "public", false)), true);
       c.run(app, SETTLE);
     }
@@ -546,7 +546,7 @@ class PaletteTest {
     var app = connected();
     var held = c.servers.hold("columns " + PG + "/shop.public.orders");
     c.run(app, open("orders"));
-    CatalogueTest.eventually(
+    CatalogTreeTest.eventually(
         () -> c.servers.calls.contains("columns " + PG + "/shop.public.orders"));
     // Shop's sales schema is not read: its scan waits behind the held read, on the same lane.
     c.run(
@@ -569,7 +569,7 @@ class PaletteTest {
     var app = torn();
     var held = c.servers.hold("columns " + PG + "/shop.public.orders");
     c.run(app, "window main\n" + open("orders"));
-    CatalogueTest.eventually(
+    CatalogTreeTest.eventually(
         () -> c.servers.calls.contains("columns " + PG + "/shop.public.orders"));
     // The palette of the other window stays open while the tree is used.
     c.run(
@@ -601,7 +601,7 @@ class PaletteTest {
         failed);
     assertFalse(line(failed, "role=option label=\"analytics\"").contains("disabled"), failed);
     // Not in the tree, whose node was never opened.
-    assertFalse(CatalogueTest.rows(failed).contains("    tracking"), failed);
+    assertFalse(CatalogTreeTest.rows(failed).contains("    tracking"), failed);
     c.servers.heal(key);
     c.run(app, "press role=option label=\"analytics\"\n" + SHOWN + SETTLE + "snap read\n");
     assertEquals("events", options(c.tree("read")).getFirst(), c.tree("read"));
@@ -615,22 +615,22 @@ class PaletteTest {
     var pick = "window \"customers\"\n" + GO_TO + "type \"inv\"\nframe\n"
         + "press role=option label=\"shop\"\n" + SHOWN;
     c.run(app, pick);
-    CatalogueTest.eventually(() -> c.servers.calls.contains(key));
-    c.run(app, "window main\n" + CatalogueTest.menu("shop-prod", "Refresh") + SETTLE);
-    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    CatalogTreeTest.eventually(() -> c.servers.calls.contains(key));
+    c.run(app, "window main\n" + CatalogTreeTest.menu("shop-prod", "Refresh") + SETTLE);
+    CatalogTreeTest.eventually(() -> c.servers.interrupted.contains(key));
     c.run(app, "window \"customers\"\nframe\nsnap refreshed\n");
     var refreshed = c.tree("customers-refreshed");
     assertTrue(option(refreshed, "shop").contains("choose to read its tables"), refreshed);
     assertFalse(options(refreshed).contains("invoices"), refreshed);
     c.servers.interrupted.clear();
     c.run(app, pick);
-    CatalogueTest.eventually(() -> c.servers.interrupted.isEmpty()
+    CatalogTreeTest.eventually(() -> c.servers.interrupted.isEmpty()
         && c.servers.calls.stream().filter(key::equals).count() == 2);
-    c.run(app, "window main\n" + CatalogueTest.menu("shop-prod", "Disconnect") + SETTLE);
-    CatalogueTest.eventually(() -> c.servers.interrupted.contains(key));
+    c.run(app, "window main\n" + CatalogTreeTest.menu("shop-prod", "Disconnect") + SETTLE);
+    CatalogTreeTest.eventually(() -> c.servers.interrupted.contains(key));
     held.countDown();
     c.run(app, SETTLE);
-    assertTrue(app.state().catalogue.live(SHOP.id()) == null);
+    assertTrue(app.state().catalog.live(SHOP.id()) == null);
   }
 
   @Test
@@ -639,17 +639,17 @@ class PaletteTest {
     var columns = "columns " + PG + "/shop.public.orders";
     var held = c.servers.hold(columns);
     c.run(app, "window main\n" + open("orders"));
-    CatalogueTest.eventually(() -> c.servers.calls.contains(columns));
+    CatalogTreeTest.eventually(() -> c.servers.calls.contains(columns));
     c.run(
         app,
         "window \"customers\"\n" + GO_TO + "type \"inv\"\nframe\n"
             + "press role=option label=\"shop\"\n" + SHOWN + "snap asked\nwindow main\n"
-            + CatalogueTest.menu("shop", "Refresh"));
+            + CatalogTreeTest.menu("shop", "Refresh"));
     var asked = c.tree("customers-asked");
     assertTrue(option(asked, "shop").contains("reading its tables…"), asked);
     // The tree's read that runs is interrupted, which lets the lane go on at once: the palette's
     // read behind it has left the lane by then.
-    CatalogueTest.eventually(() -> c.servers.interrupted.contains(columns));
+    CatalogTreeTest.eventually(() -> c.servers.interrupted.contains(columns));
     held.countDown();
     c.run(app, SETTLE);
     assertFalse(c.servers.calls.contains("all tables " + PG + "/shop"), c.servers.calls.toString());
@@ -719,7 +719,7 @@ class PaletteTest {
     var review = System.getProperty("review");
     assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
     var out = Files.createDirectories(Path.of(review));
-    var app = connected(SHOP.withColour(Colour.TEAL), INVENTORY.withColour(Colour.ORANGE));
+    var app = connected(SHOP.withColor(Color.TEAL), INVENTORY.withColor(Color.ORANGE));
     app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
     var held = c.servers.hold("schemas " + PG + "/analytics");
     var close = "key Escape\n" + SHOWN;

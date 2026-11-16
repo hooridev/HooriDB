@@ -1,12 +1,12 @@
 package dev.hoori.db.app;
 
-import static dev.hoori.db.app.CatalogueTest.INVENTORY;
-import static dev.hoori.db.app.CatalogueTest.MARIA;
-import static dev.hoori.db.app.CatalogueTest.PG;
-import static dev.hoori.db.app.CatalogueTest.SETTLE;
-import static dev.hoori.db.app.CatalogueTest.SHOP;
-import static dev.hoori.db.app.CatalogueTest.eventually;
-import static dev.hoori.db.app.CatalogueTest.menu;
+import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
+import static dev.hoori.db.app.CatalogTreeTest.MARIA;
+import static dev.hoori.db.app.CatalogTreeTest.PG;
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.SHOP;
+import static dev.hoori.db.app.CatalogTreeTest.eventually;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.ConsoleTest.COUNT;
 import static dev.hoori.db.app.ConsoleTest.MISSING;
@@ -27,7 +27,7 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.CatalogException;
-import dev.hoori.db.core.connection.Colour;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
@@ -68,7 +68,7 @@ class ConsoleTransactionTest {
   Path dir;
 
   final ConsoleTest k = new ConsoleTest();
-  CatalogueTest c;
+  CatalogTreeTest c;
   FakeServers servers;
 
   @BeforeEach
@@ -385,7 +385,7 @@ class ConsoleTransactionTest {
     assertTrue(asked.contains("role=dialog label=\"Commit the transaction?\""), asked);
     assertTrue(asked.contains("before shop-prod disconnects."), asked);
     c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE);
-    assertTrue(app.state().catalogue.connected(SHOP.id()));
+    assertTrue(app.state().catalog.connected(SHOP.id()));
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
     assertTrue(servers.closed.isEmpty(), servers.closed.toString());
     c.run(
@@ -393,7 +393,7 @@ class ConsoleTransactionTest {
         menu("shop-prod", "Disconnect") + OPENED + "press #answer-rollback\nframe\n" + OPENED
             + SETTLE + "snap ended\n");
     assertTrue(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
-    assertFalse(app.state().catalogue.connected(SHOP.id()));
+    assertFalse(app.state().catalog.connected(SHOP.id()));
     assertFalse(k.tab(app).connected());
     assertFalse(c.tree("ended").contains("role=dialog"), c.tree("ended"));
     eventually(() -> servers.closed.contains(PG + "/shop"));
@@ -635,21 +635,21 @@ class ConsoleTransactionTest {
     assertTrue(badge(c.tree("again")).contains("Transaction open"), c.tree("again"));
   }
 
-  /** 7: the tree's connection is not the console's: a colour while it is lost ends nothing. */
+  /** 7: the tree's connection is not the console's: a color while it is lost ends nothing. */
   @Test
-  void aColourWhileTheTreeIsLostLeavesTheConsoleAlone() throws Exception {
+  void aColorWhileTheTreeIsLostLeavesTheConsoleAlone() throws Exception {
     var app = open(SHOP);
     servers.fail(
         "tables " + PG + "/shop.public",
         FakeServers.notRead(CatalogException.Failure.CONNECTION_LOST));
-    c.run(app, CatalogueTest.open("shop") + SETTLE + CatalogueTest.open("public") + SETTLE);
-    assertFalse(app.state().catalogue.active(SHOP.id()), "the tree's connection is lost");
-    app.state().put(SHOP.withColour(Colour.RED));
+    c.run(app, CatalogTreeTest.open("shop") + SETTLE + CatalogTreeTest.open("public") + SETTLE);
+    assertFalse(app.state().catalog.active(SHOP.id()), "the tree's connection is lost");
+    app.state().put(SHOP.withColor(Color.RED));
     // And as the tree's connection is given up, as when its password is not given.
-    app.state().catalogue.drop(app.state(), SHOP.id());
-    c.run(app, "frame\n" + SETTLE + "snap coloured\n");
-    String coloured = c.tree("coloured");
-    assertFalse(coloured.contains("role=dialog"), coloured);
+    app.state().catalog.drop(app.state(), SHOP.id());
+    c.run(app, "frame\n" + SETTLE + "snap colored\n");
+    String colored = c.tree("colored");
+    assertFalse(colored.contains("role=dialog"), colored);
     assertTrue(k.tab(app).connected());
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
   }
@@ -692,7 +692,7 @@ class ConsoleTransactionTest {
     var app = open(SHOP);
     c.run(app, EXIT + "press #answer-cancel\nframe\n" + OPENED);
     assertEquals(null, app.state().pending);
-    app.state().put(SHOP.withColour(Colour.GREEN)); // a save of the connections, which settles
+    app.state().put(SHOP.withColor(Color.GREEN)); // a save of the connections, which settles
     c.run(app, "frame\n" + SETTLE + "press #sql\n" + RUN + COMMIT_BUTTON + SETTLE);
     assertFalse(app.windows().all().isEmpty());
   }
@@ -842,18 +842,18 @@ class ConsoleTransactionTest {
     c.run(app, edit + "snap asked\n");
     assertTrue(c.tree("asked").contains("before shop-prod disconnects."), c.tree("asked"));
     c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE + "snap stayed\n");
-    assertTrue(app.state().catalogue.connected(SHOP.id()));
+    assertTrue(app.state().catalog.connected(SHOP.id()));
     assertEquals(null, app.state().dialog, "no edit before the console's answer");
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
     c.run(app, edit + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
     assertTrue(app.state().dialog != null, "the edit goes on");
     assertFalse(k.tab(app).connected());
-    // A colour leaves the console's session as it is.
-    var coloured = open(SHOP);
-    coloured.state().put(SHOP.withColour(Colour.BLUE));
-    c.run(coloured, "frame\n" + SETTLE);
-    assertTrue(k.tab(coloured).connected());
-    assertEquals(Transaction.OPEN, k.tab(coloured).transaction);
+    // A color leaves the console's session as it is.
+    var colored = open(SHOP);
+    colored.state().put(SHOP.withColor(Color.BLUE));
+    c.run(colored, "frame\n" + SETTLE);
+    assertTrue(k.tab(colored).connected());
+    assertEquals(Transaction.OPEN, k.tab(colored).transaction);
   }
 
   @Test
@@ -899,7 +899,7 @@ class ConsoleTransactionTest {
   @Test
   void aCancelledFirstSetupStillLeavesTheNextStatementInManual() throws Exception {
     var app = k.console(SHOP);
-    c.run(app, CatalogueTest.open("shop-prod") + SETTLE + "press #sql\n" + MANUAL);
+    c.run(app, CatalogTreeTest.open("shop-prod") + SETTLE + "press #sql\n" + MANUAL);
     var open = "open " + PG + "/shop";
     var opening = servers.hold(open);
     c.run(app, type(PAY) + "key Enter control\nframe\nframe\n");
@@ -1048,7 +1048,7 @@ class ConsoleTransactionTest {
           "CREATE TABLE t (id int)",
           "SELECT * INTO copy FROM orders",
           "EXPLAIN ANALYZE DELETE FROM orders",
-          // The fourth review's F4: ANALYZE spelt so that no pattern finds it.
+          // The fourth review's F4: ANALYZE spelled so that no pattern finds it.
           "EXPLAIN (U&\"\\0061nalyze\" true) UPDATE orders SET paid = true",
           "EXPLAIN SELECT 1",
           "DESCRIBE orders",
@@ -1856,7 +1856,7 @@ class ConsoleTransactionTest {
   void aKeyringThatDoesNotAnswerCanBeGivenUp() throws Exception {
     var app = c.app(SHOP);
     c.ready(app, SHOP);
-    c.run(app, CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
+    c.run(app, CatalogTreeTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
     c.secrets.gate = new CountDownLatch(1);
     c.run(
         app,
@@ -1918,7 +1918,7 @@ class ConsoleTransactionTest {
     var app = c.app(SHOP);
     c.ready(app, SHOP);
     app.state().theme = theme;
-    Script.run(CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE, app, out);
+    Script.run(CatalogTreeTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE, app, out);
     c.secrets.gate = new CountDownLatch(1);
     Script.run(
         "press role=textbox label=\"User\"\ntype \"2\"\n"
@@ -1995,7 +1995,7 @@ class ConsoleTransactionTest {
   void aKeyringChangeGivenUpRunsBeforeTheNextOne() throws Exception {
     var app = c.app(SHOP);
     c.ready(app, SHOP);
-    c.run(app, CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
+    c.run(app, CatalogTreeTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
     var late = new CountDownLatch(1);
     c.secrets.late = late;
     c.run(
@@ -2200,7 +2200,7 @@ class ConsoleTransactionTest {
     var file = dir.resolve("config").resolve(dev.hoori.db.core.connection.ProfileStore.FILE);
     Files.delete(file);
     Files.createDirectories(file); // the store cannot write here
-    app.state().put(SHOP.withColour(Colour.GREEN)); // a change to save
+    app.state().put(SHOP.withColor(Color.GREEN)); // a change to save
     c.run(app, SETTLE + "close\nframe\n" + SETTLE + "snap unsaved\n");
     assertTrue(c.tree("unsaved").contains("Close it again to quit without them."));
     assertFalse(app.windows().all().isEmpty());
@@ -2258,7 +2258,8 @@ class ConsoleTransactionTest {
     c.secrets.stored.put(SHOP.id(), "old");
     var app = c.app(SHOP);
     c.ready(app, SHOP);
-    c.run(app, CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE + "snap kept\n");
+    c.run(
+        app, CatalogTreeTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE + "snap kept\n");
     assertTrue(line(c.tree("kept"), "role=checkbox").contains("checked"), "it says it holds one");
     var late = new CountDownLatch(1);
     c.secrets.late = late;
@@ -2293,7 +2294,7 @@ class ConsoleTransactionTest {
     c.secrets.late = never;
     c.run(
         app,
-        CatalogueTest.START + CatalogueTest.open("shop-prod") + "frame\nadvance "
+        CatalogTreeTest.START + CatalogTreeTest.open("shop-prod") + "frame\nadvance "
             + State.KEYRING_SECONDS + "\nframe\n" + OPENED + "snap asked\n");
     String asked = c.tree("asked");
     assertTrue(asked.contains("The system keyring did not answer"), asked);
@@ -2301,7 +2302,7 @@ class ConsoleTransactionTest {
         app,
         "press role=textbox label=\"Password\"\ntype \"" + ConnectionsTest.PASSWORD + "\"\n"
             + "press role=button label=\"Connect\"\nframe\n" + SETTLE);
-    assertTrue(app.state().catalogue.connected(SHOP.id()));
+    assertTrue(app.state().catalog.connected(SHOP.id()));
     never.countDown();
   }
 
@@ -2315,7 +2316,7 @@ class ConsoleTransactionTest {
     c.ready(app, SHOP);
     c.run(
         app,
-        CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED
+        CatalogTreeTest.START + menu("shop-prod", "Edit…") + OPENED
             + "press role=textbox label=\"User\"\ntype \"2\"\nframe\nadvance "
             + State.KEYRING_SECONDS + "\nframe\nadvance 1\nframe\nsnap ready\n");
     String ready = c.tree("ready");
@@ -2384,7 +2385,7 @@ class ConsoleTransactionTest {
     try {
       var app = c.app(mixed, () -> new Keyring.Available(c.secrets), SHOP);
       c.ready(app, SHOP);
-      c.run(app, CatalogueTest.START + menu("shop-prod", "New console") + SETTLE);
+      c.run(app, CatalogTreeTest.START + menu("shop-prod", "New console") + SETTLE);
       var tab = k.tab(app);
       c.run(app, type("SELECT a FROM t") + RUN);
       assertTrue(tab.outputs.getFirst().more, "a read left open on the stuck connection");
@@ -2466,7 +2467,7 @@ class ConsoleTransactionTest {
     c.secrets.stored.put(SHOP.id(), "old");
     var app = c.app(SHOP);
     c.ready(app, SHOP);
-    c.run(app, CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
+    c.run(app, CatalogTreeTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
     var late = new CountDownLatch(1);
     c.secrets.late = late;
     c.run(
@@ -2523,7 +2524,7 @@ class ConsoleTransactionTest {
     c.ready(keyring, SHOP);
     keyring.state().theme = theme;
     var late = new CountDownLatch(1);
-    Script.run(CatalogueTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE, keyring, out);
+    Script.run(CatalogTreeTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE, keyring, out);
     c.secrets.late = late;
     Script.run(
         "press role=textbox label=\"User\"\ntype \"2\"\n"
@@ -2584,7 +2585,7 @@ class ConsoleTransactionTest {
     var never = new CountDownLatch(1);
     c.secrets.late = never;
     Script.run(
-        CatalogueTest.START + CatalogueTest.open("shop-prod") + "frame\nadvance "
+        CatalogTreeTest.START + CatalogTreeTest.open("shop-prod") + "frame\nadvance "
             + State.KEYRING_SECONDS + "\nframe\n" + OPENED + "snap main-keyring-silent-" + look
             + "\n",
         asked,
