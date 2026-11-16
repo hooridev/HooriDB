@@ -13,7 +13,12 @@ import org.junit.jupiter.api.Test;
 class EveryRowTest {
 
   private static void every(Provider provider, String sql, String verb, String table) {
-    assertEquals(Optional.of(new EveryRow(verb, table)), EveryRow.of(sql, provider), sql);
+    assertEquals(Optional.of(new EveryRow(verb, table, true)), EveryRow.of(sql, provider), sql);
+  }
+
+  /** It asks, as the text cannot tell whether a WHERE bounds it. */
+  private static void unsure(Provider provider, String sql, String verb, String table) {
+    assertEquals(Optional.of(new EveryRow(verb, table, false)), EveryRow.of(sql, provider), sql);
   }
 
   private static void bounded(Provider provider, String sql) {
@@ -111,8 +116,14 @@ class EveryRowTest {
       every(provider, "/*!DELETE*/ FROM orders", "DELETE", "orders");
       every(provider, "DELETE /*! FROM orders */", "DELETE", "orders");
       // Bounded only where the server runs the comment, which an older one does not.
-      every(provider, "DELETE FROM orders /*! WHERE id = 1 */", "DELETE", "orders");
-      every(provider, "DELETE FROM orders /*!80000 LIMIT 1 */", "DELETE", "orders");
+      unsure(provider, "DELETE FROM orders /*! WHERE id = 1 */", "DELETE", "orders");
+      unsure(provider, "DELETE FROM orders /*!80000 LIMIT 1 */", "DELETE", "orders");
+      // The depth goes on across a comment: as code, its WHERE is the subquery's.
+      unsure(
+          provider,
+          "UPDATE t SET x = /*! ( */ SELECT 7 FROM (SELECT 1 AS k) u WHERE k = 1 /*! ) */",
+          "UPDATE",
+          "t");
       bounded(provider, "/*! DELETE FROM orders WHERE id = 1 */ ");
       bounded(provider, "DELETE FROM orders WHERE id = 1 /*! AND 1 */");
       assertEquals(
@@ -134,16 +145,51 @@ class EveryRowTest {
             + " UPDATE orders SET x = 1",
         "UPDATE",
         "orders");
-    every(
+    // SEARCH and CYCLE are a shape it does not read: it asks.
+    unsure(
         POSTGRESQL,
         "WITH RECURSIVE t (id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM t)"
             + " CYCLE id SET seen USING path DELETE FROM orders",
         "DELETE",
         "orders");
+    unsure(
+        POSTGRESQL,
+        "WITH RECURSIVE r (n) AS (SELECT 1) SEARCH DEPTH FIRST BY n SET replace DELETE FROM t",
+        "DELETE",
+        "t");
+    unsure(
+        POSTGRESQL,
+        "WITH RECURSIVE r (n) AS (SELECT 1) SEARCH DEPTH FIRST BY n SET o DELETE FROM t WHERE x",
+        "DELETE",
+        "t");
     bounded(POSTGRESQL, "WITH replace AS (SELECT 1) SELECT * FROM replace");
     bounded(POSTGRESQL, "WITH delete_me AS (SELECT 1) DELETE FROM orders WHERE id = 1");
-    // Of no shape it can read: an UPDATE at the top level is taken for the statement.
-    every(POSTGRESQL, "WITH broken UPDATE orders SET x = 1", "UPDATE", "orders");
+    // Of no shape it can read: an UPDATE at the top level may be the statement.
+    unsure(POSTGRESQL, "WITH broken UPDATE orders SET x = 1", "UPDATE", "orders");
+  }
+
+  /** A WHERE after RETURNING names a column. */
+  @Test
+  void aWhereAfterReturningIsNone() {
+    every(POSTGRESQL, "UPDATE t SET x = 10 RETURNING 1 AS where", "UPDATE", "t");
+    every(POSTGRESQL, "DELETE FROM t RETURNING id AS where, 2 AS limit", "DELETE", "t");
+    every(MARIADB, "DELETE FROM t RETURNING id AS `where`, 1 AS limit", "DELETE", "t");
+    bounded(POSTGRESQL, "UPDATE t SET x = 10 WHERE id = 1 RETURNING 1 AS where");
+  }
+
+  /** A backslash read as an escape and as not: where the readings differ, it asks. */
+  @Test
+  void aStringEndsWhereEitherReadingSays() {
+    for (var provider : new Provider[] {MARIADB, MYSQL}) {
+      // NO_BACKSLASH_ESCAPES ends the first string at its backslash: the WHERE is in a string.
+      unsure(provider, "UPDATE t SET note = 'a\\', x = length(' WHERE ')", "UPDATE", "t");
+      unsure(provider, "UPDATE t SET note = \"a\\\", x = length(\" WHERE \")", "UPDATE", "t");
+      unsure(provider, "UPDATE t SET note = 'a\\'' WHERE id = 1", "UPDATE", "t");
+      bounded(provider, "UPDATE t SET note = 'it''s' WHERE id = 1");
+    }
+    // PostgreSQL with standard_conforming_strings off reads one so too.
+    unsure(POSTGRESQL, "UPDATE t SET note = 'a\\' WHERE id = 1 --'", "UPDATE", "t");
+    bounded(POSTGRESQL, "UPDATE t SET note = E'a\\'' WHERE id = 1");
   }
 
   @Test

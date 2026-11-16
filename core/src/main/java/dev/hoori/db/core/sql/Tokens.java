@@ -13,14 +13,8 @@ final class Tokens {
    * A word, a name or one other character of code, at its depth of parentheses.
    *
    * @param ident a name however it is spelled: quoted, or a word after a period, as {@code t.where}
-   * @param comment where the executable comment of MariaDB or MySQL it is in begins, which the
-   *     server runs unless it is older than the version the comment names; -1 for none
    */
-  record Token(String text, int start, int end, int depth, boolean ident, int comment) {
-
-    boolean commented() {
-      return comment >= 0;
-    }
+  record Token(String text, int start, int end, int depth, boolean ident) {
 
     boolean is(String word) {
       return !ident && text.equalsIgnoreCase(word);
@@ -31,40 +25,63 @@ final class Tokens {
     }
   }
 
-  // The code of the text, without its comments and strings: words joined from their characters,
-  // a MariaDB or MySQL variable such as @where one word, and executable comments as their code.
-  static List<Token> of(String sql, Provider provider) {
+  /**
+   * One way a server may read the text, by settings the text does not show.
+   *
+   * @param escapes whether a backslash escapes in a plain string
+   * @param code whether MariaDB's and MySQL's executable comments are code, as a server new enough
+   *     for the version they name reads them, or comments, as an older one does
+   */
+  record Reading(boolean escapes, boolean code) {}
+
+  /** Every way it may be read, the provider's default first. */
+  static List<Reading> readings(Provider provider) {
+    boolean mysql = provider != Provider.POSTGRESQL;
+    var all = new ArrayList<Reading>();
+    for (boolean code : mysql ? new boolean[] {true, false} : new boolean[] {false}) {
+      for (boolean escapes : new boolean[] {mysql, !mysql}) {
+        all.add(new Reading(escapes, code));
+      }
+    }
+    return all;
+  }
+
+  // The code of the text, as the reading reads it, without its comments and strings: words joined
+  // from their characters, a MariaDB or MySQL variable such as @where one word.
+  static List<Token> of(String sql, Provider provider, Reading reading) {
     var tokens = new ArrayList<Token>();
-    add(tokens, sql, 0, sql.length(), provider, 0, -1);
+    add(tokens, sql, 0, sql.length(), provider, reading, 0);
     return tokens;
   }
 
-  private static void add(
-      List<Token> tokens, String sql, int from, int to, Provider provider, int depth, int comment) {
-    var pieces = Statements.pieces(sql.substring(from, to), provider);
+  // Adds the tokens of the text between the offsets, from the depth given; the depth after them.
+  private static int add(
+      List<Token> tokens,
+      String sql,
+      int from,
+      int to,
+      Provider provider,
+      Reading reading,
+      int depth) {
+    var pieces = Statements.pieces(sql.substring(from, to), provider, reading.escapes());
     for (int k = 0; k < pieces.size(); k++) {
       var piece = pieces.get(k);
       int start = from + piece.start();
       switch (piece.kind()) {
         case STRING -> {}
         case COMMENT -> {
-          int body = executable(sql, start, provider);
+          int body = reading.code() ? executable(sql, start, provider) : 0;
           if (body > 0) {
             int end = from + piece.end() - (piece.open() ? 0 : 2);
             while (body < end && Character.isDigit(sql.charAt(body))) {
               body++; // the version from which the server runs it
             }
-            add(tokens, sql, body, Math.max(body, end), provider, depth, start);
+            depth = add(tokens, sql, body, Math.max(body, end), provider, reading, depth);
           }
         }
         case QUOTED ->
           tokens.add(new Token(
-              sql.substring(start, from + piece.end()),
-              start,
-              from + piece.end(),
-              depth,
-              true,
-              comment));
+              sql.substring(start, from + piece.end()), start, from + piece.end(), depth, true));
         case CODE -> {
           char c = sql.charAt(start);
           if (c == ')') {
@@ -81,14 +98,15 @@ final class Tokens {
             }
           }
           var before = tokens.isEmpty() ? null : tokens.getLast();
-          boolean afterPeriod = word && before != null && !before.ident() && before.is(".");
-          tokens.add(new Token(sql.substring(start, end), start, end, depth, afterPeriod, comment));
+          boolean afterPeriod = word && before != null && before.is(".");
+          tokens.add(new Token(sql.substring(start, end), start, end, depth, afterPeriod));
           if (c == '(') {
             depth++;
           }
         }
       }
     }
+    return depth;
   }
 
   // Where the code of an executable comment at the offset begins, or 0 where it is none.

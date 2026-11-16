@@ -62,10 +62,15 @@ public final class Statements {
     }
   }
 
+  // Whether a backslash escapes in a plain string: as MariaDB and MySQL read one by default, and
+  // PostgreSQL only with standard_conforming_strings off.
+  private boolean escapes;
+
   private Statements(String text, Provider provider) {
     this.text = text;
     this.provider = provider;
     this.postgres = provider == Provider.POSTGRESQL;
+    this.escapes = !postgres;
   }
 
   /** The statements of the text, in order. */
@@ -156,12 +161,12 @@ public final class Statements {
    * a subquery limits only that; empty where it has none.
    */
   public static OptionalLong limit(String sql, Provider provider) {
-    var tokens = Tokens.of(sql, provider);
+    // Not one in an executable comment, which an older server skips.
+    var tokens =
+        Tokens.of(sql, provider, new Tokens.Reading(provider != Provider.POSTGRESQL, false));
     var limit = OptionalLong.empty();
     for (int k = 0; k + 1 < tokens.size(); k++) {
-      if (tokens.get(k).depth() == 0
-          && !tokens.get(k).commented()
-          && tokens.get(k).is("LIMIT")) {
+      if (tokens.get(k).depth() == 0 && tokens.get(k).is("LIMIT")) {
         int at = k + 1;
         if (at + 2 < tokens.size() && tokens.get(at + 1).text().equals(",")) {
           at += 2;
@@ -180,7 +185,16 @@ public final class Statements {
    * {@code DELIMITER} line is not told apart, so this is for the text of one statement.
    */
   public static List<Piece> pieces(String text, Provider provider) {
+    return pieces(text, provider, provider != Provider.POSTGRESQL);
+  }
+
+  /**
+   * As {@link #pieces(String, Provider)}, with a backslash in a plain string an escape or not, as
+   * MariaDB's and MySQL's NO_BACKSLASH_ESCAPES or PostgreSQL's standard_conforming_strings say.
+   */
+  static List<Piece> pieces(String text, Provider provider, boolean escapes) {
     var scan = new Statements(text, provider);
+    scan.escapes = escapes;
     var pieces = new ArrayList<Piece>();
     int n = text.length();
     while (scan.i < n) {
@@ -310,7 +324,7 @@ public final class Statements {
     if (postgres) {
       if (c == '\'') {
         kind = Piece.Kind.STRING;
-        skipQuoted('\'', false);
+        skipQuoted('\'', escapes);
       } else if ((c == 'E' || c == 'e') && next == '\'' && !identifierBefore()) {
         kind = Piece.Kind.STRING;
         i++;
@@ -326,7 +340,7 @@ public final class Statements {
       return false;
     } else if (c == '\'' || c == '"') {
       kind = Piece.Kind.STRING;
-      skipQuoted(c, true);
+      skipQuoted(c, escapes);
     } else if (c == '`') {
       kind = Piece.Kind.QUOTED;
       skipQuoted('`', false);

@@ -7,20 +7,22 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * An {@code UPDATE} or {@code DELETE} without a {@code WHERE} at its top level, which changes every
- * row of its table: one in a subquery does not count, nor one in a comment, a string or a quoted
- * name, nor a word after a period, as {@code t.where}, nor a MariaDB or MySQL user variable of
- * that name. On MariaDB and MySQL a {@code LIMIT} at its top level bounds it as a {@code WHERE} does;
- * one in an executable comment does not, unless the statement is in the same one, while an UPDATE
- * or DELETE in one counts. Read from the
- * statement's text alone, by the lexical rules of {@link Statements}; where it cannot be read for
- * certain, it is taken for such a change.
+ * An {@code UPDATE} or {@code DELETE} that may change every row of its table: one that is bounded
+ * only where every way the server may read its text finds a bare {@code WHERE} at its top level
+ * before any {@code RETURNING}, and on MariaDB and MySQL also a {@code LIMIT}. One in a subquery
+ * does not count, nor one in a comment, a string or a quoted name, nor a word after a period, as
+ * {@code t.where}, nor a MariaDB or MySQL user variable of that name. The ways it may be read are
+ * with a backslash in a string an escape and not, and MariaDB's and MySQL's executable comments
+ * read as code and as comments. Read from the statement's text alone, by the lexical rules of
+ * {@link Statements}; whatever it cannot read for certain, as a WITH of another shape, asks.
  *
  * @param verb {@code UPDATE} or {@code DELETE}
  * @param table the first table it names, as written, such as {@code shop."order lines"}; empty
  *     where none can be read
+ * @param certain whether every way of reading it finds no such bound, so that it has none; else
+ *     the text could not tell
  */
-public record EveryRow(String verb, String table) {
+public record EveryRow(String verb, String table, boolean certain) {
 
   // What may stand before the table: MariaDB's and MySQL's modifiers, PostgreSQL's ONLY, FROM.
   private static final Set<String> BEFORE_TABLE =
@@ -32,34 +34,65 @@ public record EveryRow(String verb, String table) {
 
   /** The text's one statement as such a change, or empty where it is none. */
   public static Optional<EveryRow> of(String sql, Provider provider) {
-    var tokens = Tokens.of(sql, provider);
-    int verb = 0;
-    if (!tokens.isEmpty() && tokens.getFirst().is("WITH")) {
-      verb = afterWith(tokens);
-      if (verb < 0) {
-        // Not read with certainty: an UPDATE or DELETE at the top level is taken for the statement.
-        verb = 1;
-        while (verb < tokens.size()
-            && !(tokens.get(verb).depth() == 0
-                && (tokens.get(verb).is("UPDATE") || tokens.get(verb).is("DELETE")))) {
-          verb++;
+    EveryRow found = null;
+    boolean certain = true;
+    for (var reading : Tokens.readings(provider)) {
+      var tokens = Tokens.of(sql, provider, reading);
+      int verb = 0;
+      boolean read = true;
+      if (!tokens.isEmpty() && tokens.getFirst().is("WITH")) {
+        verb = afterWith(tokens);
+        if (verb < 0) {
+          // Of a shape it does not read: an UPDATE or DELETE at its top level may be the statement.
+          read = false;
+          verb = 1;
+          while (verb < tokens.size()
+              && !(tokens.get(verb).depth() == 0 && changes(tokens.get(verb)))) {
+            verb++;
+          }
         }
       }
-    }
-    if (verb >= tokens.size()
-        || !tokens.get(verb).is("UPDATE") && !tokens.get(verb).is("DELETE")) {
-      return Optional.empty();
-    }
-    // One in an executable comment but its own does not bound it: an older server skips it.
-    int comment = tokens.get(verb).comment();
-    for (int k = verb + 1; k < tokens.size(); k++) {
-      var token = tokens.get(k);
-      if (token.depth() == 0
-          && (!token.commented() || token.comment() == comment)
-          && (token.is("WHERE") || provider != Provider.POSTGRESQL && token.is("LIMIT"))) {
-        return Optional.empty();
+      if (verb >= tokens.size() || !changes(tokens.get(verb))) {
+        continue; // no such change, as read so
+      }
+      if (read && bounded(tokens, verb, provider)) {
+        certain = false;
+        continue;
+      }
+      certain &= read;
+      if (found == null) {
+        found = new EveryRow(
+            tokens.get(verb).text().toUpperCase(Locale.ROOT), table(sql, tokens, verb), true);
       }
     }
+    return found == null
+        ? Optional.empty()
+        : Optional.of(new EveryRow(found.verb(), found.table(), certain));
+  }
+
+  private static boolean changes(Tokens.Token token) {
+    return token.is("UPDATE") || token.is("DELETE");
+  }
+
+  // Whether a bare WHERE, or MariaDB's and MySQL's LIMIT, stands at its top level, before any
+  // RETURNING, whose names may be spelled so.
+  private static boolean bounded(List<Tokens.Token> tokens, int verb, Provider provider) {
+    for (int k = verb + 1; k < tokens.size(); k++) {
+      var token = tokens.get(k);
+      if (token.depth() != 0) {
+        continue;
+      }
+      if (token.is("RETURNING")) {
+        return false;
+      }
+      if (token.is("WHERE") || provider != Provider.POSTGRESQL && token.is("LIMIT")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static String table(String sql, List<Tokens.Token> tokens, int verb) {
     int at = verb + 1;
     while (at < tokens.size()
         && !tokens.get(at).ident()
@@ -77,13 +110,13 @@ public record EveryRow(String verb, String table) {
       }
       table = sql.substring(tokens.get(at).start(), tokens.get(end).end());
     }
-    return Optional.of(new EveryRow(tokens.get(verb).text().toUpperCase(Locale.ROOT), table));
+    return table;
   }
 
   /**
-   * The index of the statement a WITH leads into, past its common table expressions: each a name,
-   * its columns, AS, the body in parentheses, and PostgreSQL's SEARCH or CYCLE; -1 where they are
-   * not of that shape.
+   * The index of the statement a WITH leads into, past its common table expressions, each a name,
+   * its columns, AS, [NOT] MATERIALIZED and the body in parentheses; -1 where they are of another
+   * shape, as with PostgreSQL's SEARCH or CYCLE.
    */
   private static int afterWith(List<Tokens.Token> tokens) {
     int n = tokens.size();
@@ -104,15 +137,14 @@ public record EveryRow(String verb, String table) {
         k++;
       }
       k++;
-      while (k < n
-          && !(tokens.get(k).depth() == 0 && (tokens.get(k).is(",") || verb(tokens.get(k))))) {
-        k++;
-      }
       if (k >= n) {
         return -1;
       }
       if (verb(tokens.get(k))) {
         return k;
+      }
+      if (!tokens.get(k).is(",")) {
+        return -1;
       }
       k++;
     }
