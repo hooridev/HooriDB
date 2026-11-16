@@ -47,13 +47,16 @@ public final class ProfileStore {
   private static final Object SAVING = new Object();
 
   // The tree model with the field names spelled out here, so that renaming a component of the
-  // record
-  // cannot change the file. Each field's node type is checked, so nothing is coerced.
-  private static final JsonMapper JSON = JsonMapper.builder()
-      .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
-      .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
-      .enable(SerializationFeature.INDENT_OUTPUT)
-      .build();
+  // record cannot change the file. Each field's node type is checked, so nothing is coerced.
+  // Made at the first load or save, which run off the app's thread: making it takes a few hundred
+  // milliseconds, which the app's start, where the store is made, would wait for.
+  private static final class Json {
+    static final JsonMapper MAPPER = JsonMapper.builder()
+        .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+        .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+        .enable(SerializationFeature.INDENT_OUTPUT)
+        .build();
+  }
 
   private final Path folder;
   private final Path file;
@@ -106,7 +109,7 @@ public final class ProfileStore {
   private List<ConnectionProfile> parse(byte[] bytes) throws UnreadableException {
     JsonNode root;
     try {
-      root = JSON.readTree(bytes);
+      root = Json.MAPPER.readTree(bytes);
     } catch (JacksonException malformed) {
       // Only the place: Jackson's own message quotes the text, and with it what a user typed.
       var at = malformed.getLocation();
@@ -184,7 +187,7 @@ public final class ProfileStore {
     if (profiles.stream().map(ConnectionProfile::id).distinct().count() != profiles.size()) {
       throw new IllegalArgumentException("Two profiles have the same id");
     }
-    var root = JSON.createObjectNode();
+    var root = Json.MAPPER.createObjectNode();
     root.put("version", VERSION);
     var list = root.putArray("profiles");
     for (var profile : profiles) {
@@ -204,7 +207,7 @@ public final class ProfileStore {
         object.put("driverVersion", profile.driverVersion());
       }
     }
-    var bytes = ByteBuffer.wrap(JSON.writeValueAsBytes(root));
+    var bytes = ByteBuffer.wrap(Json.MAPPER.writeValueAsBytes(root));
 
     // Two saves at once would each find the unreadable file, and the second would copy the first
     // one's new file over the copy of it.

@@ -90,6 +90,9 @@ public final class HooriDb {
       Script.handle(rest.toArray(String[]::new), app(folder, () -> none));
       return;
     }
+    // The GPU device on a thread of its own from here, not only from Window.open, so that it
+    // overlaps with the rest of the start; a script, which draws without a window, needs none.
+    GpuPresenter.prepare();
     var folders = AppFolders.find();
     var central = MavenRepository.central();
     var drivers = new Drivers(

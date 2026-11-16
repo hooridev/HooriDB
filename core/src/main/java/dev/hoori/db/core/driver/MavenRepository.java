@@ -40,7 +40,9 @@ public final class MavenRepository implements Repository {
   private static final Duration STALL_TIMEOUT = Duration.ofSeconds(30);
 
   private final URI base;
-  private final HttpClient client;
+  // Made at the first request, which runs off the app's thread: making a client takes a few
+  // hundred milliseconds, which the app's start, where the repository is made, would wait for.
+  private HttpClient client; // guarded by this
 
   public MavenRepository(URI base) {
     // The URL is never part of a message: it may carry a secret.
@@ -54,11 +56,17 @@ public final class MavenRepository implements Repository {
       throw new IllegalArgumentException("A repository URL must not have a query or fragment");
     }
     this.base = base.getRawPath().endsWith("/") ? base : URI.create(base + "/");
-    // NORMAL follows redirects, but never one from HTTPS to HTTP.
-    this.client = HttpClient.newBuilder()
-        .connectTimeout(CONNECT_TIMEOUT)
-        .followRedirects(HttpClient.Redirect.NORMAL)
-        .build();
+  }
+
+  private synchronized HttpClient client() {
+    if (client == null) {
+      // NORMAL follows redirects, but never one from HTTPS to HTTP.
+      client = HttpClient.newBuilder()
+          .connectTimeout(CONNECT_TIMEOUT)
+          .followRedirects(HttpClient.Redirect.NORMAL)
+          .build();
+    }
+    return client;
   }
 
   public static MavenRepository central() {
@@ -119,7 +127,7 @@ public final class MavenRepository implements Repository {
       String path, HttpRequest.Builder request, HttpResponse.BodyHandler<T> handler)
       throws IOException, InterruptedException {
     try {
-      return client.send(request.build(), handler);
+      return client().send(request.build(), handler);
     } catch (IllegalArgumentException e) {
       // The request is well formed, so this is the client refusing the response, such as one
       // whose Content-Length is no number or does not fit a long.
