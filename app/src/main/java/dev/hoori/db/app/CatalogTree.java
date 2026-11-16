@@ -25,6 +25,7 @@ import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -507,6 +508,7 @@ final class CatalogTree {
         children -> {
           if (live.levels.get(node) == reading) {
             live.levels.put(node, new Read(children));
+            databasesRead(s, node);
           }
         },
         error -> {
@@ -527,6 +529,7 @@ final class CatalogTree {
           } else {
             lose(s, live, detail(checked), discarded(checked));
           }
+          databasesRead(s, node);
         });
   }
 
@@ -763,6 +766,36 @@ final class CatalogTree {
     return List.of();
   }
 
+  /**
+   * The connection's one database that is not a system database, as the tree read them; empty
+   * where it read none or several.
+   */
+  String onlyDatabase(UUID id) {
+    var live = lives.get(id);
+    if (live != null && live.levels.get(new Node.Connection(id)) instanceof Read r) {
+      var names = r.children().stream()
+          .map(n -> ((Node.OfDatabase) n).database())
+          .filter(d -> !d.system())
+          .map(Database::name)
+          .toList();
+      return names.size() == 1 ? names.getFirst() : "";
+    }
+    return "";
+  }
+
+  /** Whether the tree reads the connection's databases now. */
+  boolean readsDatabases(UUID id) {
+    var live = lives.get(id);
+    return live != null && live.levels.get(new Node.Connection(id)) instanceof Reading;
+  }
+
+  // The consoles that waited for the databases, to take the one there is, go on, read or not.
+  private static void databasesRead(State s, Node node) {
+    if (node instanceof Node.Connection n) {
+      s.consoles(n.id()).forEach(c -> c.databasesRead(s));
+    }
+  }
+
   /** The version of the connected server, or null while it is not connected. */
   ServerVersion version(UUID id) {
     var live = lives.get(id);
@@ -907,6 +940,7 @@ final class CatalogTree {
     end(live);
     s.ended(live.id());
     live.phase = new Lost(detail, discarded);
+    s.unconnected(live.id()); // a console that waited for the databases, whose read ended too
     var root = new Node.Connection(live.id());
     forgetBelow(s, root);
     s.tell(State.name(live.profile) + ": the connection was lost");

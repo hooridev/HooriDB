@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
 import static dev.hoori.db.app.CatalogTreeTest.MARIA;
+import static dev.hoori.db.app.CatalogTreeTest.MARIA_OUTLINE;
 import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
@@ -361,6 +362,11 @@ class ConsoleTest {
     eventually(() -> servers.closed.contains(PG + "/shop"));
   }
 
+  /** MariaDB with a second database of the user's, so that a console takes none by itself. */
+  static void twoDatabases(FakeServers servers) {
+    servers.serve(MARIA, Provider.MARIADB, "11.4.2-MariaDB", MARIA_OUTLINE + "archive\n");
+  }
+
   @Test
   void aConsoleOpensOnTheDatabaseSelectedInTheTree() throws Exception {
     var app = c.app(SHOP);
@@ -375,13 +381,32 @@ class ConsoleTest {
   }
 
   @Test
+  void aConsoleTakesTheOneDatabaseOfTheUsersWhereTheProfileNamesNone() throws Exception {
+    // Run before the tree connected: the console waits for its databases, then takes inventory.
+    var app = console(INVENTORY);
+    c.run(app, type(COUNT) + RUN + "snap ran\n");
+    String ran = c.tree("ran");
+    assertTrue(near(ran, "#database").contains("\"inventory\""), ran);
+    assertTrue(tabs(ran).startsWith("inventory: inventory"), ran);
+    // Opened once the tree read them, it shows that one before anything runs.
+    c.run(app, "key N control\nframe\nadvance 1\nframe\nsnap second\n");
+    String second = c.tree("second");
+    assertTrue(near(second, "#database").contains("\"inventory\""), second);
+    assertEquals("inventory", app.state().consoles(null).getLast().database);
+  }
+
+  @Test
   void mariaDbSwitchesTheDatabaseOnItsConnection() throws Exception {
+    twoDatabases(servers);
     var app = console(INVENTORY);
     c.run(app, "snap none\n");
     assertTrue(near(c.tree("none"), "#database").contains("\"No database\""), c.tree("none"));
+    // Of two databases of the user's, the console takes neither by itself.
+    c.run(app, type(COUNT) + RUN + "snap ran\n");
+    assertTrue(near(c.tree("ran"), "#database").contains("\"No database\""), c.tree("ran"));
     c.run(
         app,
-        type(COUNT) + RUN + "press #database\nframe\nadvance 1\nframe\n"
+        "press #database\nframe\nadvance 1\nframe\n"
             + "press role=menuitem label=\"inventory\"\nframe\nadvance 1\nframe\n" + SETTLE
             + "snap inventory\n");
     assertTrue(servers.calls.contains("use " + MARIA + " inventory"), servers.calls.toString());
@@ -472,6 +497,7 @@ class ConsoleTest {
 
   @Test
   void aCancelledSwitchLeavesTheDatabaseTheConnectionIsOn() throws Exception {
+    twoDatabases(servers);
     var app = console(INVENTORY);
     c.run(app, type(COUNT) + RUN);
     var key = "use " + MARIA + " inventory";

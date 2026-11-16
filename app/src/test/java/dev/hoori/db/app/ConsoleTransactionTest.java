@@ -700,6 +700,7 @@ class ConsoleTransactionTest {
   /** 9: the switch the question asked about goes on to its own database once nothing is open. */
   @Test
   void aSwitchAskedWhileTheServerWasAskedGoesToItsDatabase() throws Exception {
+    ConsoleTest.twoDatabases(servers);
     var app = open(INVENTORY);
     var probe = servers.hold("transaction " + MARIA, 1); // past the statement's own
     long asked = probes(MARIA);

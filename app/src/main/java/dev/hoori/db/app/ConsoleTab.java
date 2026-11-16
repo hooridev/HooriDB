@@ -202,9 +202,11 @@ final class ConsoleTab implements Tab {
   static final String ROLLBACK = "ROLLBACK";
 
   final UUID id;
+  // The one it runs on: the tree node's, the profile's, the one chosen, or else the one database of
+  // the user's the tree read, until the session opens; empty for none.
   // shortcut: a USE the user runs is not followed, so this may name another database than the
   // session's; ask the session for its database after each run once that misleads.
-  String database; // the one it runs on: the profile's, or the one chosen; empty for none
+  String database;
   String text = "";
   final CodeEditor.State editor = new CodeEditor.State();
   final ConsoleEditor help = new ConsoleEditor(this); // the error's place, completions
@@ -225,6 +227,7 @@ final class ConsoleTab implements Tab {
   private Asking work; // the statement, the rows or the switch under way, or null
   private String running; // the statement under way, or the one whose rows are read
   boolean waiting; // for the tree's connection, which the session is opened from
+  private boolean chosen; // the user chose the database: none is taken for them
   boolean stranded; // the tree's connection failed while it waited: Try again goes on
   String switching; // the database it switches to, while it does; the old one shows meanwhile
   private Statements scanned; // the statements of the text it was made from, as the caret moves
@@ -350,7 +353,7 @@ final class ConsoleTab implements Tab {
 
   /** Runs on where it can, waits for the tree's connection where it connects, else is stranded. */
   private void follow(State s) {
-    if (lane != null || s.catalog.connected(id)) {
+    if (lane != null || s.catalog.connected(id) && !picks(s)) {
       next(s);
     } else if (s.catalog.active(id)) {
       waiting = true;
@@ -363,11 +366,35 @@ final class ConsoleTab implements Tab {
   void connected(State s) {
     stranded = false;
     if (waiting) {
+      if (picks(s)) {
+        return; // the databases are read right behind the connection
+      }
       waiting = false;
       next(s);
     } else {
       queue.clear();
     }
+  }
+
+  /** The tree read the connection's databases, or could not: what waited for them goes on. */
+  void databasesRead(State s) {
+    take(s);
+    if (waiting) {
+      waiting = false;
+      follow(s);
+    }
+  }
+
+  /** Takes the one database of the user's the tree read, while no session or choice says else. */
+  void take(State s) {
+    if (lane == null && database.isEmpty() && !chosen) {
+      database = s.catalog.onlyDatabase(id);
+    }
+  }
+
+  /** Whether the session waits for the tree's databases, to open on the one there is. */
+  private boolean picks(State s) {
+    return lane == null && database.isEmpty() && !chosen && s.catalog.readsDatabases(id);
   }
 
   /** The tree's connection failed while the console waited for it: it says so, with Try again. */
@@ -474,6 +501,7 @@ final class ConsoleTab implements Tab {
   /** The session, opened now where it is not; null while the tree's connection is not connected. */
   private Lane session(State s) {
     if (lane == null) {
+      take(s);
       var session = s.catalog.session(id, database);
       if (session == null) {
         return null;
@@ -1626,6 +1654,7 @@ final class ConsoleTab implements Tab {
     if (busy() || name.equals(database) || locked(s) != null) {
       return;
     }
+    chosen = true;
     var profile = s.profile(id);
     var version = s.catalog.version(id);
     if (lane == null || profile == null) {
