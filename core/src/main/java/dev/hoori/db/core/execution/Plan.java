@@ -4,6 +4,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sql.Statements;
 import java.sql.Connection;
 import java.util.Objects;
 import java.util.OptionalLong;
@@ -23,8 +24,8 @@ public final class Plan {
    * The rows the statement gives as the planner estimates them; empty where its plan says none, as
    * MySQL's for an aggregate. On PostgreSQL and MySQL it is the top of the plan's own; on MariaDB,
    * whose plan gives only the rows read of each table, the product over the tables of the
-   * outermost select, the size of their join before a condition, a grouping or a LIMIT cuts it
-   * down.
+   * outermost select, at most its LIMIT: the size of their join before a condition or a grouping
+   * cuts it down.
    *
    * <p>It leaves the connection's transaction as it was, also where the {@code EXPLAIN} fails or is
    * interrupted: on PostgreSQL inside a savepoint where one is open, as a failure fails it there,
@@ -112,7 +113,10 @@ public final class Plan {
               any = true;
             }
           }
-          return any ? OptionalLong.of(product) : OptionalLong.empty();
+          var limit = Statements.limit(sql, provider);
+          return !any
+              ? OptionalLong.empty()
+              : OptionalLong.of(Math.min(product, limit.orElse(Long.MAX_VALUE)));
         });
     };
   }

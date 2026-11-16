@@ -497,6 +497,7 @@ final class ConsoleTab implements Tab {
     boolean planned = estimate && plain;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
+    boolean wasEmpty = empty;
     empty = false;
     var held = new AtomicReference<Servers.Run>();
     sent = held;
@@ -514,10 +515,11 @@ final class ConsoleTab implements Tab {
           if (error instanceof TooMany e) {
             applied = true; // the session's mode was made sure of
             knew(e.status);
+            empty |= wasEmpty; // nothing was sent
             confirming = new Confirm(
                 sql,
                 "Read about " + rows(e.rows) + "?",
-                brief(sql) + " gives about " + rows(e.rows) + ", as the server estimates. In"
+                brief(sql) + " may give about " + rows(e.rows) + ", as its plan estimates. In"
                     + " Manual, and while a transaction may be open, the console reads a result"
                     + " whole: it would read all of them from the server and keep the first "
                     + rows(KEPT) + ".",

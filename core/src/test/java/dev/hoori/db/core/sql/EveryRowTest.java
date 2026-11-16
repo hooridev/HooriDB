@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import dev.hoori.db.core.connection.Provider;
 import java.util.Optional;
+import java.util.OptionalLong;
 import org.junit.jupiter.api.Test;
 
 class EveryRowTest {
@@ -80,6 +81,24 @@ class EveryRowTest {
       bounded(provider, "DELETE FROM a USING a JOIN b ON a.id = b.id WHERE b.gone");
       bounded(provider, "DELETE FROM orders ORDER BY id LIMIT 100");
       bounded(provider, "UPDATE orders SET x = 1 LIMIT 10");
+    }
+  }
+
+  @Test
+  void theLimitOfAStatementIsItsOwnAtItsTopLevel() {
+    for (var provider : new Provider[] {MARIADB, MYSQL}) {
+      assertEquals(OptionalLong.of(10), Statements.limit("SELECT * FROM t LIMIT 10", provider));
+      assertEquals(OptionalLong.of(10), Statements.limit("SELECT * FROM t LIMIT 5, 10", provider));
+      assertEquals(
+          OptionalLong.of(10), Statements.limit("select * from t limit 10 offset 5", provider));
+      assertEquals(
+          OptionalLong.empty(),
+          Statements.limit("SELECT * FROM t WHERE id IN (SELECT id FROM u LIMIT 3)", provider));
+      assertEquals(OptionalLong.empty(), Statements.limit("SELECT 'LIMIT 3' FROM t", provider));
+      assertEquals(OptionalLong.empty(), Statements.limit("SELECT * FROM t -- LIMIT 3", provider));
+      assertEquals(
+          OptionalLong.empty(),
+          Statements.limit("SELECT * FROM t LIMIT ROWS EXAMINED 9", provider));
     }
   }
 

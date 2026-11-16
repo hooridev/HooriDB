@@ -1,5 +1,7 @@
 package dev.hoori.db.app;
 
+import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
+import static dev.hoori.db.app.CatalogTreeTest.MARIA;
 import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
@@ -9,6 +11,7 @@ import static dev.hoori.db.app.ConsoleTest.PAY;
 import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.RUN_ALL;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.ConsoleTransactionTest.CHAIN;
 import static dev.hoori.db.app.ConsoleTransactionTest.MANUAL;
 import static dev.hoori.db.app.ConsoleTransactionTest.OPENED;
 import static dev.hoori.db.app.ConsoleTransactionTest.badge;
@@ -120,6 +123,24 @@ class ConsoleConfirmationTest {
     assertTrue(ran(BIG), servers.calls.toString());
     assertTrue(ran(ORDERS), servers.calls.toString());
     assertFalse(c.tree("anyway").contains("role=dialog"), c.tree("anyway"));
+  }
+
+  /** Cancelled in the empty transaction a chained Commit began, it leaves that empty. */
+  @Test
+  void aCancelledReadLeavesTheChainedTransactionEmpty() throws Exception {
+    var app = t.k.console(INVENTORY);
+    c.run(
+        app,
+        type(CHAIN) + RUN + MANUAL + type(";\n" + PAY) + RUN
+            + "press role=button label=\"Commit\"\nframe\n" + SETTLE + "snap empty\n");
+    assertTrue(badge(c.tree("empty")).contains("Transaction open · empty"), c.tree("empty"));
+    c.run(app, type(";\n" + BIG) + RUN + "snap asked\n");
+    assertTrue(c.tree("asked").contains(LARGE), c.tree("asked"));
+    c.run(app, CANCEL + "snap cancelled\n");
+    String cancelled = c.tree("cancelled");
+    assertFalse(servers.calls.contains("run " + MARIA + " " + BIG), servers.calls.toString());
+    assertTrue(badge(cancelled).contains("Transaction open · empty"), cancelled);
+    assertFalse(tab(app).atStake());
   }
 
   @Test

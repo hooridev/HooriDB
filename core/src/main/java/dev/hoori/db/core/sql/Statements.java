@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /**
  * Where the statements of a text of SQL begin and end, by the lexical rules of a provider's server.
@@ -147,6 +148,29 @@ public final class Statements {
       }
     }
     return "";
+  }
+
+  /**
+   * The rows the statement's own {@code LIMIT} lets through, of MariaDB's and MySQL's forms {@code
+   * LIMIT n}, {@code LIMIT m, n} and {@code LIMIT n OFFSET m}: the last at its top level, as one of
+   * a subquery limits only that; empty where it has none.
+   */
+  public static OptionalLong limit(String sql, Provider provider) {
+    var tokens = Tokens.of(sql, provider);
+    var limit = OptionalLong.empty();
+    for (int k = 0; k + 1 < tokens.size(); k++) {
+      if (tokens.get(k).depth() == 0 && tokens.get(k).is("LIMIT")) {
+        int at = k + 1;
+        if (at + 2 < tokens.size() && tokens.get(at + 1).text().equals(",")) {
+          at += 2;
+        }
+        var count = tokens.get(at).text();
+        limit = count.chars().allMatch(Character::isDigit) && count.length() < 19
+            ? OptionalLong.of(Long.parseLong(count))
+            : OptionalLong.empty();
+      }
+    }
+    return limit;
   }
 
   /**

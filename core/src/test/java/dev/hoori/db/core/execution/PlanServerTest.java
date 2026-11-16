@@ -4,6 +4,7 @@ import static dev.hoori.db.core.execution.ExecutionServerTest.execute;
 import static dev.hoori.db.core.execution.ExecutionServerTest.open;
 import static dev.hoori.db.core.execution.ExecutionServerTest.selectLong;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -11,6 +12,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
 import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -39,12 +41,9 @@ class PlanServerTest {
       try {
         long all = Plan.rows(connection, provider, "SELECT * FROM planned").orElseThrow();
         assertTrue(all >= 500, provider + ": " + all);
-        if (provider != Provider.MARIADB) {
-          // What the statement gives, not the rows it reads.
-          assertEquals(
-              OptionalLong.of(10),
-              Plan.rows(connection, provider, "SELECT * FROM planned LIMIT 10"));
-        }
+        // What the statement gives, not the rows it reads.
+        assertEquals(
+            OptionalLong.of(10), Plan.rows(connection, provider, "SELECT * FROM planned LIMIT 10"));
         long joined = Plan.rows(connection, provider, "SELECT * FROM planned a, planned b")
             .orElseThrow();
         assertTrue(joined > 100 * all, provider + ": " + joined);
@@ -116,6 +115,47 @@ class PlanServerTest {
         }
         connection.rollback();
         connection.setAutoCommit(true);
+      }
+    }
+  }
+
+  /** An EXPLAIN interrupted as it waits for a lock: PostgreSQL's transaction stays open. */
+  @ParameterizedTest
+  @EnumSource(value = Provider.class, names = "POSTGRESQL")
+  void anInterruptLeavesTheOpenTransaction(Provider provider) throws Exception {
+    try (var connection = open(provider);
+        var locker = open(provider)) {
+      execute(connection, "DROP TABLE IF EXISTS locked", "CREATE TABLE locked (id integer)");
+      try {
+        locker.setAutoCommit(false);
+        execute(locker, "LOCK TABLE locked IN ACCESS EXCLUSIVE MODE");
+        connection.setAutoCommit(false);
+        execute(connection, "SELECT 1"); // begins the transaction, which pgjdbc keeps open
+        var failure = new AtomicReference<Exception>();
+        var explaining = Thread.ofVirtual().start(() -> {
+          try {
+            Plan.rows(connection, provider, "SELECT * FROM locked");
+          } catch (Exception e) {
+            failure.set(e);
+          }
+        });
+        var waiting = "SELECT count(*) FROM pg_locks WHERE NOT granted"
+            + " AND relation = 'locked'::regclass";
+        for (int i = 0; i < 500 && selectLong(locker, waiting) == 0; i++) {
+          Thread.sleep(20);
+        }
+        assertEquals(1, selectLong(locker, waiting), "the EXPLAIN waits for the lock");
+        explaining.interrupt();
+        explaining.join();
+        var cancelled = assertInstanceOf(QueryException.class, failure.get());
+        assertEquals(QueryException.Failure.CANCELLED, cancelled.failure());
+        assertEquals(Transaction.OPEN, Transaction.of(connection, provider));
+        assertEquals(1, selectLong(connection, "SELECT 1"));
+      } finally {
+        locker.rollback();
+        connection.rollback();
+        connection.setAutoCommit(true);
+        execute(connection, "DROP TABLE locked");
       }
     }
   }
