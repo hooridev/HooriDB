@@ -6,6 +6,7 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Statements;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.HashSet;
@@ -40,7 +41,9 @@ public final class Plan {
    * fails or is interrupted. Planning may run the user's functions, as PostgreSQL folds an
    * immutable or stable one and MariaDB and MySQL fill a derived table or a constant subquery; one
    * that writes then fails, also to a MyISAM table, while what one sets in the session, such as a
-   * variable, stays with that connection. It is given up after {@link #LIMIT}.
+   * variable, stays with that connection. Where the server has functions that may reach beyond the
+   * transaction, as through another connection, it gives no estimate. It is given up after {@link
+   * #LIMIT}.
    *
    * <p>On MariaDB and MySQL it puts the connection on {@code database}, where the statement's
    * names are read, and leaves it there.
@@ -63,12 +66,41 @@ public final class Plan {
     // Not cut short by an interrupt, so that the transaction it begins always reaches its end.
     Query.within(connection, Query.GRACE, () -> execute(connection, begin));
     try {
-      return explain(connection, provider, sql);
+      return callsOut(connection, provider)
+          ? OptionalLong.empty()
+          : explain(connection, provider, sql);
     } finally {
       // MariaDB's and MySQL's ROLLBACK would chain or disconnect as completion_type says.
       var rollback = pg ? "ROLLBACK" : "ROLLBACK AND NO CHAIN NO RELEASE";
       Query.within(connection, Query.GRACE, () -> execute(connection, rollback));
     }
+  }
+
+  /**
+   * Whether planning may run code of the user's that reaches beyond the read-only transaction, as
+   * through another connection: on PostgreSQL a function outside the system's schemas that the
+   * planner evaluates, immutable or stable, in a language that can call other code, as one that
+   * calls dblink_exec; on MariaDB and MySQL any stored function outside the system's schemas,
+   * which may call a loadable function. A write to a table of any engine, FEDERATED among them,
+   * the read-only transaction fails by itself.
+   */
+  // shortcut: a C or internal function of PostgreSQL, a loadable function of MariaDB or MySQL used
+  // as it is, and a stored function only a view's definer may see are not counted: native code
+  // that writes behind its label is its extension's bug. Check for them where one turns up.
+  private static boolean callsOut(Connection connection, Provider provider) throws QueryException {
+    var sql = provider == Provider.POSTGRESQL
+        ? "SELECT 1 FROM pg_catalog.pg_proc p"
+            + " JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace"
+            + " JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) p.prolang"
+            + " WHERE p.provolatile OPERATOR(pg_catalog.<>) 'v'"
+            + " AND n.nspname OPERATOR(pg_catalog.<>) 'pg_catalog'"
+            + " AND n.nspname OPERATOR(pg_catalog.<>) 'information_schema'"
+            + " AND l.lanname OPERATOR(pg_catalog.<>) 'c'"
+            + " AND l.lanname OPERATOR(pg_catalog.<>) 'internal' LIMIT 1"
+        : "SELECT 1 FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'"
+            + " AND ROUTINE_SCHEMA NOT IN ('sys', 'mysql', 'information_schema',"
+            + " 'performance_schema') LIMIT 1";
+    return query(connection, provider, sql, ResultSet::next);
   }
 
   private static Void execute(Connection connection, String sql) throws SQLException {

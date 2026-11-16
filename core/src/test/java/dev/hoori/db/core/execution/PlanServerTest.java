@@ -279,6 +279,66 @@ class PlanServerTest {
     }
   }
 
+  /**
+   * A function that reaches beyond the read-only transaction: on PostgreSQL an immutable one in
+   * PL/pgSQL that writes through dblink, which the planner folds, as a plain EXPLAIN shows; on
+   * MariaDB and MySQL any stored function, which may call a loadable function. Where one exists
+   * there is no estimate, and nothing is called through it; where none does, there is one, also
+   * beside dblink's own functions, which are in C.
+   */
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aFunctionThatMayCallOutStopsTheEstimate(Provider provider) throws Exception {
+    boolean pg = provider == Provider.POSTGRESQL;
+    var sql = "SELECT id, plan_remote() FROM plan_rows";
+    try (var connection = open(provider);
+        var owner = pg ? open(provider) : root(provider)) {
+      execute(
+          connection,
+          "DROP TABLE IF EXISTS plan_rows",
+          "DROP TABLE IF EXISTS plan_remote_log",
+          "CREATE TABLE plan_rows (id integer PRIMARY KEY)",
+          "INSERT INTO plan_rows VALUES (1), (2)",
+          "CREATE TABLE plan_remote_log (n integer)");
+      if (pg) {
+        execute(
+            owner,
+            "CREATE EXTENSION IF NOT EXISTS dblink",
+            "CREATE FUNCTION plan_remote() RETURNS integer IMMUTABLE LANGUAGE plpgsql AS $$ BEGIN"
+                + " PERFORM dblink_exec('dbname=" + TestServer.DATABASE + " user=" + TestServer.USER
+                + "', 'INSERT INTO plan_remote_log VALUES (1)'); RETURN 1; END $$");
+      } else {
+        execute(
+            owner,
+            "CREATE FUNCTION " + TestServer.DATABASE + ".plan_remote() RETURNS integer"
+                + " DETERMINISTIC RETURN 1");
+      }
+      try {
+        long called = 0;
+        if (pg) {
+          // The door: planning commits through the other connection, read-only or not.
+          execute(connection, "BEGIN READ ONLY", "EXPLAIN " + sql, "ROLLBACK");
+          called = selectLong(connection, "SELECT count(*) FROM plan_remote_log");
+          assertEquals(1, called);
+        }
+        assertEquals(OptionalLong.empty(), Plan.rows(connection, provider, null, sql));
+        assertEquals(called, selectLong(connection, "SELECT count(*) FROM plan_remote_log"));
+        assertEquals(Transaction.NONE, Transaction.of(connection, provider));
+        execute(owner, "DROP FUNCTION " + (pg ? "" : TestServer.DATABASE + ".") + "plan_remote");
+        assertTrue(
+            Plan.rows(connection, provider, null, "SELECT id FROM plan_rows").isPresent());
+      } finally {
+        execute(
+            owner,
+            "DROP FUNCTION IF EXISTS " + (pg ? "" : TestServer.DATABASE + ".") + "plan_remote");
+        if (pg) {
+          execute(owner, "DROP EXTENSION IF EXISTS dblink");
+        }
+        execute(connection, "DROP TABLE plan_rows", "DROP TABLE plan_remote_log");
+      }
+    }
+  }
+
   // An estimate that runs no function: none, or a failure where writing failed.
   private static void estimate(Connection connection, Provider provider, String sql) {
     try {
