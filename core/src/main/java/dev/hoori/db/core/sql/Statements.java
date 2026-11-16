@@ -159,7 +159,9 @@ public final class Statements {
     var tokens = Tokens.of(sql, provider);
     var limit = OptionalLong.empty();
     for (int k = 0; k + 1 < tokens.size(); k++) {
-      if (tokens.get(k).depth() == 0 && tokens.get(k).is("LIMIT")) {
+      if (tokens.get(k).depth() == 0
+          && !tokens.get(k).commented()
+          && tokens.get(k).is("LIMIT")) {
         int at = k + 1;
         if (at + 2 < tokens.size() && tokens.get(at + 1).text().equals(",")) {
           at += 2;

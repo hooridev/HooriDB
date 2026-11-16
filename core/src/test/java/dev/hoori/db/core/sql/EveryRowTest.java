@@ -85,6 +85,68 @@ class EveryRowTest {
   }
 
   @Test
+  void aVariableOrAQualifiedNameIsNoClause() {
+    for (var provider : new Provider[] {MARIADB, MYSQL}) {
+      every(provider, "UPDATE orders SET paid = @where", "UPDATE", "orders");
+      every(provider, "UPDATE orders SET paid = @limit", "UPDATE", "orders");
+      every(provider, "UPDATE orders SET paid = @@where", "UPDATE", "orders");
+      every(provider, "UPDATE orders SET paid = @`where`", "UPDATE", "orders");
+      every(provider, "UPDATE orders SET paid = @'limit'", "UPDATE", "orders");
+      every(provider, "UPDATE orders o SET o.paid = o.limit", "UPDATE", "orders");
+      bounded(provider, "UPDATE orders SET paid = @x WHERE id = @where");
+      bounded(provider, "UPDATE orders SET paid = @x LIMIT 1");
+    }
+    for (var provider : Provider.values()) {
+      every(provider, "UPDATE orders o SET paid = o.where", "UPDATE", "orders");
+      every(provider, "UPDATE orders o SET paid = o . where", "UPDATE", "orders");
+      every(provider, "DELETE FROM orders USING orders, shop.where", "DELETE", "orders");
+    }
+  }
+
+  @Test
+  void executableCommentsAreCode() {
+    for (var provider : new Provider[] {MARIADB, MYSQL}) {
+      every(provider, "/*! DELETE FROM orders */", "DELETE", "orders");
+      every(provider, "/*!50700 DELETE FROM orders */", "DELETE", "orders");
+      every(provider, "/*!DELETE*/ FROM orders", "DELETE", "orders");
+      every(provider, "DELETE /*! FROM orders */", "DELETE", "orders");
+      // Bounded only where the server runs the comment, which an older one does not.
+      every(provider, "DELETE FROM orders /*! WHERE id = 1 */", "DELETE", "orders");
+      every(provider, "DELETE FROM orders /*!80000 LIMIT 1 */", "DELETE", "orders");
+      bounded(provider, "/*! DELETE FROM orders WHERE id = 1 */ ");
+      bounded(provider, "DELETE FROM orders WHERE id = 1 /*! AND 1 */");
+      assertEquals(
+          OptionalLong.empty(), Statements.limit("SELECT * FROM t /*! LIMIT 3 */", provider));
+    }
+    every(MARIADB, "/*M!100500 DELETE FROM orders */", "DELETE", "orders");
+    // MySQL takes it for a comment, as PostgreSQL takes every one.
+    bounded(MYSQL, "/*M! DELETE FROM orders */");
+    bounded(POSTGRESQL, "/*! DELETE FROM orders */");
+  }
+
+  @Test
+  void aWithIsReadByItsShape() {
+    every(POSTGRESQL, "WITH replace AS (SELECT 1) DELETE FROM orders", "DELETE", "orders");
+    every(POSTGRESQL, "WITH update AS (SELECT 1) DELETE FROM orders", "DELETE", "orders");
+    every(
+        POSTGRESQL,
+        "WITH RECURSIVE a (n) AS (SELECT 1), \"delete\" AS NOT MATERIALIZED (SELECT 2)"
+            + " UPDATE orders SET x = 1",
+        "UPDATE",
+        "orders");
+    every(
+        POSTGRESQL,
+        "WITH RECURSIVE t (id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM t)"
+            + " CYCLE id SET seen USING path DELETE FROM orders",
+        "DELETE",
+        "orders");
+    bounded(POSTGRESQL, "WITH replace AS (SELECT 1) SELECT * FROM replace");
+    bounded(POSTGRESQL, "WITH delete_me AS (SELECT 1) DELETE FROM orders WHERE id = 1");
+    // Of no shape it can read: an UPDATE at the top level is taken for the statement.
+    every(POSTGRESQL, "WITH broken UPDATE orders SET x = 1", "UPDATE", "orders");
+  }
+
+  @Test
   void theLimitOfAStatementIsItsOwnAtItsTopLevel() {
     for (var provider : new Provider[] {MARIADB, MYSQL}) {
       assertEquals(OptionalLong.of(10), Statements.limit("SELECT * FROM t LIMIT 10", provider));
