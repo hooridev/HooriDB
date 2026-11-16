@@ -41,18 +41,42 @@ public final class Plan {
    * one and MariaDB and MySQL fill a derived table or a constant subquery; one that writes then
    * fails, also to a MyISAM table. It is given up after {@link #LIMIT}.
    *
+   * <p>On MariaDB and MySQL the connection is on {@code database} while it plans, so that the
+   * statement's names are read as there, and is put back on its own afterwards. One that was on
+   * none stays on {@code database}, as these servers have no way back to none.
+   *
+   * @param database where the statement's names are read; null for the connection's own, as on
+   *     PostgreSQL, whose connection is on one database for good
    * @throws QueryException as {@link Query} reports it, such as for a statement that has no plan,
    *     one whose plan ran a function that wrote, or one that took too long
    */
-  public static OptionalLong rows(Connection connection, Provider provider, String sql)
-      throws QueryException {
-    var begin = provider == Provider.POSTGRESQL ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY";
-    // Not cut short by an interrupt, so that the transaction it begins always reaches its end.
-    Query.within(connection, Query.GRACE, () -> execute(connection, begin));
+  public static OptionalLong rows(
+      Connection connection, Provider provider, String database, String sql) throws QueryException {
+    boolean pg = provider == Provider.POSTGRESQL;
+    // Not cut short by an interrupt, so that what is begun or switched always reaches its end.
+    String own = Query.within(connection, Query.GRACE, connection::getCatalog);
+    boolean switches = !pg && database != null && !database.isEmpty() && !database.equals(own);
+    if (switches) {
+      Query.within(connection, Query.GRACE, () -> {
+        connection.setCatalog(database);
+        return null;
+      });
+    }
     try {
-      return explain(connection, provider, sql);
+      var begin = pg ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY";
+      Query.within(connection, Query.GRACE, () -> execute(connection, begin));
+      try {
+        return explain(connection, provider, sql);
+      } finally {
+        Query.within(connection, Query.GRACE, () -> execute(connection, "ROLLBACK"));
+      }
     } finally {
-      Query.within(connection, Query.GRACE, () -> execute(connection, "ROLLBACK"));
+      if (switches && own != null && !own.isEmpty()) {
+        Query.within(connection, Query.GRACE, () -> {
+          connection.setCatalog(own);
+          return null;
+        });
+      }
     }
   }
 

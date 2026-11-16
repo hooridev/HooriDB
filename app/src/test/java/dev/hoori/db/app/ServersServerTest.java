@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.TestServer;
+import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Abandoned;
@@ -304,7 +306,7 @@ class ServersServerTest {
     return lane.submit(link -> unit(
             link,
             l -> ConsoleTab.start(
-                l, sql, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT, null)))
+                l, sql, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT, null, null)))
         .get(20, TimeUnit.SECONDS);
   }
 
@@ -343,7 +345,8 @@ class ServersServerTest {
                       false,
                       new AtomicReference<>(),
                       1,
-                      planner)))
+                      planner,
+                      TestServer.DATABASE)))
               .get(20, TimeUnit.SECONDS));
       var tooMany = assertInstanceOf(ConsoleTab.TooMany.class, asked.getCause());
       assertTrue(tooMany.rows > 1, String.valueOf(tooMany.rows));
@@ -359,7 +362,8 @@ class ServersServerTest {
                   false,
                   new AtomicReference<>(),
                   1,
-                  planner)))
+                  planner,
+                  TestServer.DATABASE)))
           .get(20, TimeUnit.SECONDS);
       assertInstanceOf(Failure.class, missing.portion().results().getLast());
     } finally {
@@ -402,7 +406,8 @@ class ServersServerTest {
                   false,
                   new AtomicReference<>(),
                   1,
-                  planner)))
+                  planner,
+                  TestServer.DATABASE)))
           .get(30, TimeUnit.SECONDS);
       var took = Duration.ofNanos(System.nanoTime() - began);
       assertTrue(took.compareTo(Plan.LIMIT.plusSeconds(5)) < 0, took.toString());
@@ -416,6 +421,73 @@ class ServersServerTest {
           .get(20, TimeUnit.SECONDS);
       lane.close();
       planner.close();
+    }
+  }
+
+  /**
+   * The tree's one connection on MariaDB and MySQL plans on the console's database, and goes back
+   * to its own, or stays there where it was on none, which these servers cannot go back to; what
+   * the tree reads on it after that qualifies its names, and reads as before.
+   */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void theTreesConnectionPlansOnTheConsolesDatabase(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var none = lane(server, "");
+    var spaced = lane(server, TestServer.SPACED_DATABASE);
+    var database = new Database(TestServer.DATABASE, false);
+    var table = new Table(database, "seam_switch", Table.Kind.TABLE);
+    try {
+      for (var sql : List.of(
+          "DROP TABLE IF EXISTS seam_switch",
+          "CREATE TABLE seam_switch (id integer)",
+          "INSERT INTO seam_switch VALUES (1), (2), (3)",
+          "ANALYZE TABLE seam_switch")) {
+        statement(lane, sql, ConsoleTab.Mode.AUTO);
+      }
+      assertEquals(null, none.submit(l -> value(l, "SELECT DATABASE()")).get(20, TimeUnit.SECONDS));
+      for (var planner : List.of(none, spaced)) {
+        var asked = assertThrows(
+            ExecutionException.class,
+            () -> lane.submit(link -> unit(
+                    link,
+                    l -> ConsoleTab.start(
+                        l,
+                        "SELECT * FROM seam_switch a, seam_switch b",
+                        ConsoleTab.Mode.MANUAL,
+                        false,
+                        new AtomicReference<>(),
+                        1,
+                        planner,
+                        TestServer.DATABASE)))
+                .get(20, TimeUnit.SECONDS));
+        assertInstanceOf(ConsoleTab.TooMany.class, asked.getCause());
+      }
+      assertEquals(
+          TestServer.SPACED_DATABASE,
+          spaced.submit(l -> value(l, "SELECT DATABASE()")).get(20, TimeUnit.SECONDS));
+      assertEquals(
+          TestServer.DATABASE,
+          none.submit(l -> value(l, "SELECT DATABASE()")).get(20, TimeUnit.SECONDS));
+      for (var tree : List.of(none, spaced)) {
+        assertEquals(3L, tree.submit(l -> l.count(table)).get(20, TimeUnit.SECONDS));
+        assertEquals(
+            3,
+            tree.submit(l -> l.read(table, l.columns(table), 0, 10))
+                .get(20, TimeUnit.SECONDS)
+                .rows()
+                .size());
+        assertTrue(
+            tree.submit(l -> l.tables(database)).get(20, TimeUnit.SECONDS).contains(table));
+      }
+    } finally {
+      statement(lane, "DROP TABLE seam_switch", ConsoleTab.Mode.AUTO);
+      lane.close();
+      none.close();
+      spaced.close();
     }
   }
 
@@ -675,6 +747,7 @@ class ServersServerTest {
               false,
               held,
               ConsoleTab.KEPT,
+              null,
               null)));
       eventually(update::isDone);
       update.cancel(true); // too late, as the console's Cancel or close can be: its answer is lost

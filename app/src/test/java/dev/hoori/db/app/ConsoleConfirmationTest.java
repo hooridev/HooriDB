@@ -1,6 +1,7 @@
 package dev.hoori.db.app;
 
 import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
+import static dev.hoori.db.app.CatalogTreeTest.LEGACY;
 import static dev.hoori.db.app.CatalogTreeTest.MARIA;
 import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
@@ -232,16 +233,35 @@ class ConsoleConfirmationTest {
   }
 
   /**
-   * Where the tree has no connection on the console's database, nothing is estimated and the read
-   * runs: on MariaDB the tree's one connection is on the profile's database, which names none; on
-   * PostgreSQL it has none of its own to a database it has not read.
+   * A MariaDB or MySQL profile that names no database, its console on the user's one database: the
+   * tree's one connection, on none, plans on the console's for the estimate, and the tree reads on
+   * as before.
    */
+  @ParameterizedTest
+  @ValueSource(strings = {"inventory", "legacy"})
+  void onMariaDbAndMySqlTheEstimateIsOnTheConsolesDatabase(String database) throws Exception {
+    var profile = database.equals("inventory") ? INVENTORY : LEGACY;
+    assertTrue(profile.database().isBlank());
+    var app = t.k.console(profile);
+    c.run(app, MANUAL + type(BIG) + RUN + "snap asked\n");
+    assertEquals(database, tab(app).database);
+    assertTrue(c.tree("asked").contains(LARGE), c.tree("asked"));
+    assertEquals(database, servers.estimatedOn);
+    // The connection is named as its database: the database's row is the one at the second level.
+    c.run(
+        app,
+        CANCEL + "press role=treeitem label=\"" + database + "\" level=2\nkey ArrowRight\nframe\n"
+            + SETTLE + "snap tree\n");
+    String tree = c.tree("tree");
+    assertTrue(
+        tree.contains(
+            "role=treeitem label=\"" + (database.equals("inventory") ? "items" : "accounts")),
+        tree);
+  }
+
+  /** On PostgreSQL the tree has no connection of its own to a database it has not read. */
   @Test
-  void withoutTheTreesConnectionToTheDatabaseNothingIsEstimated() throws Exception {
-    var maria = t.k.console(INVENTORY);
-    c.run(maria, MANUAL + type(BIG) + RUN + "snap ran\n");
-    assertFalse(c.tree("ran").contains("role=dialog"), c.tree("ran"));
-    assertTrue(servers.calls.contains("run " + MARIA + " " + BIG), servers.calls.toString());
+  void onPostgreSqlADatabaseTheTreeHasNotReadIsNotEstimated() throws Exception {
     var pg = t.k.console(SHOP);
     c.run(
         pg,

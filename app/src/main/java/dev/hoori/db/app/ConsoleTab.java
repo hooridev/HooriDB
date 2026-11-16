@@ -503,6 +503,7 @@ final class ConsoleTab implements Tab {
     writes = !lazy;
     plain = reads(sql, provider);
     var planner = estimate && plain ? s.catalog.planner(id, database) : null;
+    var on = database;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
     boolean wasEmpty = empty;
@@ -513,7 +514,7 @@ final class ConsoleTab implements Tab {
     work = ask(
         s,
         "run a statement",
-        link -> start(link, sql, mode, lazy, held, KEPT, planner),
+        link -> start(link, sql, mode, lazy, held, KEPT, planner, on),
         ran -> {
           work = null;
           ran(s, sql, ran);
@@ -976,7 +977,8 @@ final class ConsoleTab implements Tab {
    * statement is read to its end here, so that no execution is ever left open inside a
    * transaction or of anything that may change data, keeping at most {@code keep} rows a result.
    * Such a read is not sent where the planner estimates more rows than that on {@code planner}, a
-   * connection of the app's own, or null for no estimate: {@link TooMany}.
+   * connection of the app's own, or null for no estimate, with its names read on {@code database}:
+   * {@link TooMany}.
    */
   static Ran start(
       Servers.Link link,
@@ -985,7 +987,8 @@ final class ConsoleTab implements Tab {
       boolean lazy,
       AtomicReference<Servers.Run> held,
       int keep,
-      Lane planner)
+      Lane planner,
+      String database)
       throws QueryException, NotRun, TooMany, InterruptedException {
     var now = link.status();
     if (now.autoCommit() == null && mode == Mode.MANUAL) {
@@ -995,7 +998,7 @@ final class ConsoleTab implements Tab {
     // mode; estimated before anything is sent on the session, which then stays as it was.
     if (planner != null
         && !(lazy && now.transaction() == Transaction.NONE && now.autoCommit() != null)) {
-      long rows = estimate(planner, sql);
+      long rows = estimate(planner, database, sql);
       if (rows > keep) {
         throw new TooMany(rows, now);
       }
@@ -1031,10 +1034,11 @@ final class ConsoleTab implements Tab {
   // shortcut: that connection does not see the session's uncommitted DDL, temporary tables or
   // settings such as search_path or a USE run in the console: there the EXPLAIN fails or plans
   // something else, and no question or another is asked. Plan on the session once that misleads.
-  private static long estimate(Lane planner, String sql) throws InterruptedException {
+  private static long estimate(Lane planner, String database, String sql)
+      throws InterruptedException {
     Future<OptionalLong> asked;
     try {
-      asked = planner.submit(link -> link.estimate(sql));
+      asked = planner.submit(link -> link.estimate(database, sql));
     } catch (RejectedExecutionException e) {
       return 0; // its lane has closed
     }

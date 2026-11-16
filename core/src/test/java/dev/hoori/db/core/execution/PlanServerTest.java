@@ -43,21 +43,24 @@ class PlanServerTest {
     try (var connection = open(provider)) {
       table(connection, provider);
       try {
-        long all = Plan.rows(connection, provider, "SELECT * FROM planned").orElseThrow();
+        long all =
+            Plan.rows(connection, provider, null, "SELECT * FROM planned").orElseThrow();
         assertTrue(all >= 500, provider + ": " + all);
         // What the statement gives, not the rows it reads.
         assertEquals(
-            OptionalLong.of(10), Plan.rows(connection, provider, "SELECT * FROM planned LIMIT 10"));
-        long joined = Plan.rows(connection, provider, "SELECT * FROM planned a, planned b")
+            OptionalLong.of(10),
+            Plan.rows(connection, provider, null, "SELECT * FROM planned LIMIT 10"));
+        long joined = Plan.rows(connection, provider, null, "SELECT * FROM planned a, planned b")
             .orElseThrow();
         assertTrue(joined > 100 * all, provider + ": " + joined);
         // A small select and a large one after it: both count.
         long union = Plan.rows(
-                connection, provider, "SELECT 0 AS id UNION ALL SELECT id FROM planned")
+                connection, provider, null, "SELECT 0 AS id UNION ALL SELECT id FROM planned")
             .orElseThrow();
         assertTrue(union >= all, provider + ": " + union);
-        assertThrows(QueryException.class, () -> Plan.rows(connection, provider, MISSING));
-        assertThrows(QueryException.class, () -> Plan.rows(connection, provider, "SHOW TABLES"));
+        assertThrows(QueryException.class, () -> Plan.rows(connection, provider, null, MISSING));
+        assertThrows(
+            QueryException.class, () -> Plan.rows(connection, provider, null, "SHOW TABLES"));
       } finally {
         execute(connection, "DROP TABLE planned");
       }
@@ -69,11 +72,11 @@ class PlanServerTest {
   @EnumSource(Provider.class)
   void nothingIsLeftOpen(Provider provider) throws Exception {
     try (var connection = open(provider)) {
-      assertTrue(
-          Plan.rows(connection, provider, "SELECT 1 FROM " + dual(provider)).isPresent()
-              || provider == Provider.MARIADB);
+      assertTrue(Plan.rows(connection, provider, null, "SELECT 1 FROM " + dual(provider))
+              .isPresent()
+          || provider == Provider.MARIADB);
       assertEquals(Transaction.NONE, Transaction.of(connection, provider));
-      assertThrows(QueryException.class, () -> Plan.rows(connection, provider, MISSING));
+      assertThrows(QueryException.class, () -> Plan.rows(connection, provider, null, MISSING));
       assertEquals(Transaction.NONE, Transaction.of(connection, provider));
       assertTrue(connection.getAutoCommit());
       assertEquals(1, selectLong(connection, "SELECT 1"));
@@ -82,6 +85,51 @@ class PlanServerTest {
 
   private static String dual(Provider provider) {
     return provider == Provider.POSTGRESQL ? "(SELECT 1) AS d" : "dual";
+  }
+
+  /**
+   * On MariaDB and MySQL the plan reads the statement's names on the database given, as the
+   * console's, and the connection goes back to its own afterwards; one on none stays there, as
+   * these servers have no way back to none.
+   */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void theDatabaseIsTheOneGivenWhileItPlans(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    try (var connection = open(provider);
+        var spaced = on(server, TestServer.SPACED_DATABASE);
+        var none = on(server, "")) {
+      table(connection, provider);
+      try {
+        assertEquals(TestServer.SPACED_DATABASE, spaced.getCatalog());
+        assertTrue(Plan.rows(spaced, provider, TestServer.DATABASE, "SELECT * FROM planned")
+            .isPresent());
+        assertEquals(TestServer.SPACED_DATABASE, spaced.getCatalog());
+        assertThrows(
+            QueryException.class, () -> Plan.rows(spaced, provider, null, "SELECT * FROM planned"));
+        assertTrue(Plan.rows(none, provider, TestServer.DATABASE, "SELECT * FROM planned")
+            .isPresent());
+        assertEquals(TestServer.DATABASE, none.getCatalog());
+        // A failure puts it back too.
+        assertThrows(
+            QueryException.class, () -> Plan.rows(spaced, provider, TestServer.DATABASE, MISSING));
+        assertEquals(TestServer.SPACED_DATABASE, spaced.getCatalog());
+        assertEquals(Transaction.NONE, Transaction.of(spaced, provider));
+      } finally {
+        execute(connection, "DROP TABLE planned");
+      }
+    }
+  }
+
+  private static Connection on(TestServer server, String database) throws Exception {
+    return Connector.open(
+            server.profile().withDatabase(database),
+            TestServer.password(),
+            server.driver(),
+            Duration.ofSeconds(10))
+        .connection();
   }
 
   /**
@@ -105,7 +153,8 @@ class PlanServerTest {
         }
         long began = System.nanoTime();
         assertThrows(
-            QueryException.class, () -> Plan.rows(connection, provider, "SELECT * FROM locked"));
+            QueryException.class,
+            () -> Plan.rows(connection, provider, null, "SELECT * FROM locked"));
         var took = Duration.ofNanos(System.nanoTime() - began);
         assertTrue(took.compareTo(Plan.LIMIT.plusSeconds(5)) < 0, took.toString());
         assertEquals(Transaction.NONE, Transaction.of(connection, provider));
@@ -135,7 +184,7 @@ class PlanServerTest {
         var failure = new AtomicReference<Exception>();
         var explaining = Thread.ofVirtual().start(() -> {
           try {
-            Plan.rows(connection, provider, "SELECT * FROM locked");
+            Plan.rows(connection, provider, null, "SELECT * FROM locked");
           } catch (Exception e) {
             failure.set(e);
           }
@@ -218,7 +267,7 @@ class PlanServerTest {
   // An estimate that runs no function: none, or a failure where writing failed.
   private static void estimate(Connection connection, Provider provider, String sql) {
     try {
-      assertEquals(OptionalLong.empty(), Plan.rows(connection, provider, sql));
+      assertEquals(OptionalLong.empty(), Plan.rows(connection, provider, null, sql));
     } catch (QueryException e) {
       assertTrue(e.getMessage().toLowerCase(Locale.ROOT).contains("read"), e.getMessage());
     }

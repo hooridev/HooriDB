@@ -78,10 +78,10 @@ interface Servers {
     long count(Table table) throws QueryException;
 
     /**
-     * The planner's estimate of the rows the statement gives, without running it, as {@link
-     * Plan#rows}: the transaction stays as it was.
+     * The planner's estimate of the rows the statement gives, without running it, its names read on
+     * the database, as {@link Plan#rows}: the transaction stays as it was.
      */
-    OptionalLong estimate(String sql) throws QueryException;
+    OptionalLong estimate(String database, String sql) throws QueryException;
 
     /** The rows from {@code from} up to {@code to}, fewer at the end, as {@link Rows#read}. */
     Page read(Table table, List<Column> columns, long from, long to) throws QueryException;
@@ -214,9 +214,9 @@ interface Servers {
     }
 
     @Override
-    public OptionalLong estimate(String sql) throws QueryException {
+    public OptionalLong estimate(String database, String sql) throws QueryException {
       usable();
-      return Plan.rows(connection, provider, sql);
+      return Plan.rows(connection, provider, database, sql);
     }
 
     @Override

@@ -278,6 +278,9 @@ final class FakeServers implements Servers {
     return this;
   }
 
+  /** The database the last estimate read its names on. */
+  volatile String estimatedOn;
+
   /** The table at the path has so many rows, of which the server estimates so many, or none. */
   FakeServers rows(String path, long count, OptionalLong estimate) {
     counts.put(path, count);
@@ -383,6 +386,7 @@ final class FakeServers implements Servers {
           "FATAL: database \"" + database + "\" does not exist");
     }
     var link = new FakeLink(profile.host(), made, perDatabase ? database : null);
+    link.current = perDatabase || profile.database().isBlank() ? null : profile.database();
     links.add(link);
     return link;
   }
@@ -407,6 +411,9 @@ final class FakeServers implements Servers {
     private boolean manual; // the server's auto-commit off, as its status says it
     private boolean seen; // the driver's own idea of manual, which may lag the server's
     private Transaction transaction = Transaction.NONE;
+    // MariaDB's and MySQL's database, as the profile named it or an estimate left it; null for
+    // none.
+    private String current;
     private boolean lost; // a statement said the connection is gone: nothing is known of it
     private boolean chain; // MariaDB's and MySQL's completion_type=1
     // A statement whose rows are not all read, which closing the link gives up first, as Real's.
@@ -587,8 +594,29 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public OptionalLong estimate(String sql) throws QueryException {
+    public OptionalLong estimate(String on, String sql) throws QueryException {
       var key = "explain " + host + " " + sql;
+      // A PostgreSQL link is on its one database; MariaDB's and MySQL's switch to the one given,
+      // and stay on it where they were on none.
+      String at;
+      if (database != null) {
+        if (on != null && !on.isEmpty() && !on.equals(database)) {
+          throw queryFailure(QueryException.Failure.OTHER);
+        }
+        at = database;
+      } else {
+        at = on == null || on.isEmpty() ? current : on;
+      }
+      if (at == null) {
+        throw queryFailure(QueryException.Failure.OTHER); // no database selected
+      }
+      if (find(root(), at) == null) {
+        throw queryFailure(QueryException.Failure.NOT_FOUND);
+      }
+      if (database == null && current == null) {
+        current = at;
+      }
+      estimatedOn = at;
       try {
         note(key);
         call(key, queryFailure(QueryException.Failure.CANCELLED));

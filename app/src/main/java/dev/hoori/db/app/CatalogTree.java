@@ -729,7 +729,8 @@ final class CatalogTree {
   /**
    * The tree's lane already open on the database, for what a console asks of the server beside its
    * session, as an estimate; null where there is none, or the connection is not connected. It opens
-   * none: a database the tree has not read has no lane of its.
+   * none: on PostgreSQL a database the tree has not read has no lane of its. On MariaDB and MySQL
+   * it is the one connection, which the estimate puts on the database for its while.
    */
   Lane planner(UUID id, String database) {
     var live = lives.get(id);
@@ -738,8 +739,8 @@ final class CatalogTree {
     }
     Lane lane;
     if (c.database() == null) {
-      // One connection reads every database, and is on the profile's.
-      lane = database.equals(live.profile.database()) ? live.lane : null;
+      // One connection reads every database, whose names it qualifies: the estimate switches it.
+      lane = live.lane;
     } else {
       lane = database.equals(c.database()) ? live.lane : live.lanes.get(database);
     }
