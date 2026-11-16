@@ -14,6 +14,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
+import dev.hoori.db.core.execution.Plan;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
@@ -22,6 +23,7 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.sql.Statements;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
@@ -302,7 +304,7 @@ class ServersServerTest {
     return lane.submit(link -> unit(
             link,
             l -> ConsoleTab.start(
-                l, sql, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT, false)))
+                l, sql, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT, null)))
         .get(20, TimeUnit.SECONDS);
   }
 
@@ -316,6 +318,7 @@ class ServersServerTest {
   void aLargeReadInManualIsEstimatedFirst(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var lane = lane(server, TestServer.DATABASE);
+    var planner = lane(server, TestServer.DATABASE); // the tree's, beside the session
     Lane.Call<Portion> drop =
         link -> link.run("DROP TABLE IF EXISTS seam_large").next(10);
     try {
@@ -340,7 +343,7 @@ class ServersServerTest {
                       false,
                       new AtomicReference<>(),
                       1,
-                      true)))
+                      planner)))
               .get(20, TimeUnit.SECONDS));
       var tooMany = assertInstanceOf(ConsoleTab.TooMany.class, asked.getCause());
       assertTrue(tooMany.rows > 1, String.valueOf(tooMany.rows));
@@ -356,7 +359,7 @@ class ServersServerTest {
                   false,
                   new AtomicReference<>(),
                   1,
-                  true)))
+                  planner)))
           .get(20, TimeUnit.SECONDS);
       assertInstanceOf(Failure.class, missing.portion().results().getLast());
     } finally {
@@ -367,6 +370,52 @@ class ServersServerTest {
           })
           .get(20, TimeUnit.SECONDS);
       lane.close();
+      planner.close();
+    }
+  }
+
+  /**
+   * The session's own transaction holds a lock the plan on the other connection waits for: the
+   * estimate gives up in time, and the read runs on the session without a question.
+   */
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aLockOfTheSessionDoesNotHoldItsRead(Provider provider) throws Exception {
+    boolean pg = provider == Provider.POSTGRESQL;
+    var server = TestServer.of(provider);
+    var lane = lane(server, TestServer.DATABASE);
+    var planner = lane(server, TestServer.DATABASE);
+    try {
+      statement(lane, "DROP TABLE IF EXISTS seam_locked", ConsoleTab.Mode.AUTO);
+      statement(lane, "CREATE TABLE seam_locked (id integer)", ConsoleTab.Mode.AUTO);
+      statement(
+          lane,
+          pg ? "ALTER TABLE seam_locked ADD COLUMN note integer" : "LOCK TABLES seam_locked WRITE",
+          ConsoleTab.Mode.MANUAL);
+      long began = System.nanoTime();
+      var read = lane.submit(link -> unit(
+              link,
+              l -> ConsoleTab.start(
+                  l,
+                  "SELECT * FROM seam_locked",
+                  ConsoleTab.Mode.MANUAL,
+                  false,
+                  new AtomicReference<>(),
+                  1,
+                  planner)))
+          .get(30, TimeUnit.SECONDS);
+      var took = Duration.ofNanos(System.nanoTime() - began);
+      assertTrue(took.compareTo(Plan.LIMIT.plusSeconds(5)) < 0, took.toString());
+      assertInstanceOf(Result.Rows.class, read.portion().results().getFirst());
+    } finally {
+      lane.submit(link -> {
+            link.run(pg ? "ROLLBACK" : "UNLOCK TABLES").next(1);
+            link.manual(false);
+            return link.run("DROP TABLE seam_locked").next(1);
+          })
+          .get(20, TimeUnit.SECONDS);
+      lane.close();
+      planner.close();
     }
   }
 
@@ -626,7 +675,7 @@ class ServersServerTest {
               false,
               held,
               ConsoleTab.KEPT,
-              false)));
+              null)));
       eventually(update::isDone);
       update.cancel(true); // too late, as the console's Cancel or close can be: its answer is lost
       var rolledBack = end(lane, ConsoleTab.ROLLBACK);

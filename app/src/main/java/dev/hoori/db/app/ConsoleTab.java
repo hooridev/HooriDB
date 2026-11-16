@@ -57,9 +57,14 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -494,7 +499,7 @@ final class ConsoleTab implements Tab {
     boolean lazy = reads(sql, provider) && mode == Mode.AUTO && transaction == Transaction.NONE;
     writes = !lazy;
     plain = reads(sql, provider);
-    boolean planned = estimate && plain;
+    var planner = estimate && plain ? s.catalog.planner(id, database) : null;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
     boolean wasEmpty = empty;
@@ -505,7 +510,7 @@ final class ConsoleTab implements Tab {
     work = ask(
         s,
         "run a statement",
-        link -> start(link, sql, mode, lazy, held, KEPT, planned),
+        link -> start(link, sql, mode, lazy, held, KEPT, planner),
         ran -> {
           work = null;
           ran(s, sql, ran);
@@ -513,7 +518,6 @@ final class ConsoleTab implements Tab {
         error -> {
           work = null;
           if (error instanceof TooMany e) {
-            applied = true; // the session's mode was made sure of
             knew(e.status);
             empty |= wasEmpty; // nothing was sent
             confirming = new Confirm(
@@ -968,8 +972,8 @@ final class ConsoleTab implements Tab {
    * by the server's word, gives its first portion and the rest as the grid scrolls; any other
    * statement is read to its end here, so that no execution is ever left open inside a
    * transaction or of anything that may change data, keeping at most {@code keep} rows a result.
-   * Such a read, where {@code estimate} says, is not sent where the planner estimates more rows
-   * than that: {@link TooMany}.
+   * Such a read is not sent where the planner estimates more rows than that on {@code planner}, a
+   * connection of the app's own, or null for no estimate: {@link TooMany}.
    */
   static Ran start(
       Servers.Link link,
@@ -978,11 +982,20 @@ final class ConsoleTab implements Tab {
       boolean lazy,
       AtomicReference<Servers.Run> held,
       int keep,
-      boolean estimate)
+      Lane planner)
       throws QueryException, NotRun, TooMany, InterruptedException {
     var now = link.status();
     if (now.autoCommit() == null && mode == Mode.MANUAL) {
       throw new NotRun(UNVERIFIABLE, now, true);
+    }
+    // Read whole, as it is unless it is a lazy read with nothing open, once the session has the
+    // mode; estimated before anything is sent on the session, which then stays as it was.
+    if (planner != null
+        && !(lazy && now.transaction() == Transaction.NONE && now.autoCommit() != null)) {
+      long rows = estimate(planner, sql);
+      if (rows > keep) {
+        throw new TooMany(rows, now);
+      }
     }
     if (now.autoCommit() != null && now.autoCommit() != (mode == Mode.AUTO)) {
       var switched = setMode(link, mode == Mode.MANUAL, false, now);
@@ -998,29 +1011,38 @@ final class ConsoleTab implements Tab {
       }
       now = switched.now();
     }
-    boolean whole =
-        !(lazy && Boolean.TRUE.equals(now.autoCommit()) && now.transaction() == Transaction.NONE);
-    if (estimate && whole) {
-      long rows;
-      try {
-        rows = link.estimate(sql).orElse(0);
-      } catch (QueryException e) {
-        if (lost(e) || e.failure() == QueryException.Failure.CANCELLED) {
-          throw e;
-        }
-        rows = 0; // no plan, as of a statement that EXPLAIN does not take: no question
-      }
-      if (rows > keep) {
-        throw new TooMany(rows, now);
-      }
-    }
     var run = link.run(sql);
     held.set(run); // sent: cut short now, what it did is in doubt; and the rest as the grid scrolls
     var first = run.next(PORTION);
-    if (!whole) {
+    if (lazy && Boolean.TRUE.equals(now.autoCommit()) && now.transaction() == Transaction.NONE) {
       return new Ran(first, Collections.nCopies(first.results().size(), 0L), true);
     }
     return drained(run, first, keep);
+  }
+
+  /**
+   * The planner's estimate of the read's rows, asked on the app's own connection to the database,
+   * so that nothing of it touches the session or its transaction; 0 where it has none, so that the
+   * read runs without a question. An interrupt gives it up there too.
+   */
+  // shortcut: that connection does not see the session's uncommitted DDL, temporary tables or
+  // settings such as search_path or a USE run in the console: there the EXPLAIN fails or plans
+  // something else, and no question or another is asked. Plan on the session once that misleads.
+  private static long estimate(Lane planner, String sql) throws InterruptedException {
+    Future<OptionalLong> asked;
+    try {
+      asked = planner.submit(link -> link.estimate(sql));
+    } catch (RejectedExecutionException e) {
+      return 0; // its lane has closed
+    }
+    try {
+      return asked.get().orElse(0);
+    } catch (InterruptedException e) {
+      asked.cancel(true);
+      throw e;
+    } catch (ExecutionException | CancellationException e) {
+      return 0;
+    }
   }
 
   /**

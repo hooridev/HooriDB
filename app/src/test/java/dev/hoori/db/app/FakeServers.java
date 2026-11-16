@@ -94,6 +94,8 @@ final class FakeServers implements Servers {
   private final Map<String, AtomicInteger> passes = new ConcurrentHashMap<>(); // before the gate
   private final Map<String, Exception> failures = new ConcurrentHashMap<>();
   final List<String> calls = new CopyOnWriteArrayList<>(); // in the order they began
+  // The calls of the links, each after the link's number, from 1 in the order they were opened.
+  final List<String> linked = new CopyOnWriteArrayList<>();
   final List<String> done = new CopyOnWriteArrayList<>(); // the reads that returned
   final List<String> passwords = new CopyOnWriteArrayList<>();
   final List<String> closed = new CopyOnWriteArrayList<>(); // the links closed, by database
@@ -268,7 +270,8 @@ final class FakeServers implements Servers {
 
   /**
    * The server's plan of the statement estimates so many rows, none without this; its call is
-   * keyed {@code explain <host> <sql>}, and leaves the transaction as it was, as core's does.
+   * keyed {@code explain <host> <sql>}, and leaves the transaction as it was, as core's does on a
+   * connection of the app's own.
    */
   FakeServers plans(String sql, long rows) {
     plans.put(sql, OptionalLong.of(rows));
@@ -385,6 +388,17 @@ final class FakeServers implements Servers {
   }
 
   private final class FakeLink implements Link {
+    private final int number = links.size() + 1;
+
+    private void note(String key) {
+      linked.add(number + " " + key);
+    }
+
+    private void noted(String key) {
+      calls.add(key);
+      note(key);
+    }
+
     private final String host;
     private final Made made;
     private final String database;
@@ -433,6 +447,7 @@ final class FakeServers implements Servers {
         // What the server holds when the call begins, as a query sees it.
         var read = reader.read();
         try {
+          note(key);
           call(key, false);
         } catch (CatalogException e) {
           throw e;
@@ -545,6 +560,7 @@ final class FakeServers implements Servers {
             container(t.container()) == null ? null : find(container(t.container()), t.name());
         var result = table == null ? null : call.call(table);
         try {
+          note(key);
           call(key, queryFailure(QueryException.Failure.CANCELLED));
         } catch (QueryException e) {
           throw e;
@@ -572,11 +588,9 @@ final class FakeServers implements Servers {
 
     @Override
     public OptionalLong estimate(String sql) throws QueryException {
-      if (transaction != Transaction.NONE && transaction != Transaction.OPEN || blind()) {
-        return OptionalLong.empty(); // as core, which sends nothing where it is failed or unknown
-      }
       var key = "explain " + host + " " + sql;
       try {
+        note(key);
         call(key, queryFailure(QueryException.Failure.CANCELLED));
       } catch (QueryException e) {
         throw e;
@@ -685,6 +699,7 @@ final class FakeServers implements Servers {
                 started ? "next " + host + " " + sql + " " + position : "run " + host + " " + sql;
             started = true;
             try {
+              note(key);
               call(key, queryFailure(QueryException.Failure.CANCELLED));
             } catch (Exception e) {
               over = true;
@@ -744,7 +759,7 @@ final class FakeServers implements Servers {
         public Abandoned close() {
           boolean gaveUp = !over;
           if (gaveUp) {
-            calls.add("close " + host + " " + sql);
+            noted("close " + host + " " + sql);
           }
           over = true;
           if (giving == this) {
@@ -843,12 +858,12 @@ final class FakeServers implements Servers {
       if (seen == manual) {
         return;
       }
-      calls.add("autocommit " + host + (manual ? " off" : " on"));
+      noted("autocommit " + host + (manual ? " off" : " on"));
       seen = manual;
       boolean was = this.manual;
       this.manual = manual;
       if (was && !manual && transaction != Transaction.NONE) {
-        calls.add("commit by auto-commit " + host); // turned on, it commits what is open
+        noted("commit by auto-commit " + host); // turned on, it commits what is open
         transaction = Transaction.NONE;
       }
     }
@@ -857,6 +872,7 @@ final class FakeServers implements Servers {
     public Status status() throws QueryException {
       var key = "transaction " + host;
       try {
+        note(key);
         call(key, queryFailure(QueryException.Failure.CANCELLED));
       } catch (QueryException e) {
         throw e;
@@ -878,6 +894,7 @@ final class FakeServers implements Servers {
     public void use(String name) throws QueryException {
       var key = "use " + host + " " + name;
       try {
+        note(key);
         call(key, queryFailure(QueryException.Failure.CANCELLED));
       } catch (QueryException e) {
         throw e;

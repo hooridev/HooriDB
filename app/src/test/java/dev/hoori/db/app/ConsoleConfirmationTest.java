@@ -131,7 +131,8 @@ class ConsoleConfirmationTest {
   /** Cancelled in the empty transaction a chained Commit began, it leaves that empty. */
   @Test
   void aCancelledReadLeavesTheChainedTransactionEmpty() throws Exception {
-    var app = t.k.console(INVENTORY);
+    // Its database named, which the tree's one connection is on, where the estimate runs.
+    var app = t.k.console(INVENTORY.withDatabase("inventory"));
     c.run(
         app,
         type(CHAIN) + RUN + MANUAL + type(";\n" + PAY) + RUN
@@ -172,6 +173,10 @@ class ConsoleConfirmationTest {
     assertTrue(badge(cancelled).contains("No transaction"), cancelled);
     assertFalse(tab(app).busy());
     assertTrue(app.state().notices.isEmpty(), app.state().notices.toString());
+    // The tree's lane, which it held, takes the next call.
+    c.run(app, type(";\n" + ORDERS) + RUN);
+    assertTrue(servers.done.contains("explain " + PG + " " + ORDERS), servers.done.toString());
+    assertTrue(ran(ORDERS), servers.calls.toString());
   }
 
   @Test
@@ -222,6 +227,59 @@ class ConsoleConfirmationTest {
     c.run(app, "close\nframe\n" + OPENED + SETTLE);
     assertTrue(app.windows().all().isEmpty());
     assertFalse(ran(BIG), servers.calls.toString());
+  }
+
+  /**
+   * Where the tree has no connection on the console's database, nothing is estimated and the read
+   * runs: on MariaDB the tree's one connection is on the profile's database, which names none; on
+   * PostgreSQL it has none of its own to a database it has not read.
+   */
+  @Test
+  void withoutTheTreesConnectionToTheDatabaseNothingIsEstimated() throws Exception {
+    var maria = t.k.console(INVENTORY);
+    c.run(maria, MANUAL + type(BIG) + RUN + "snap ran\n");
+    assertFalse(c.tree("ran").contains("role=dialog"), c.tree("ran"));
+    assertTrue(servers.calls.contains("run " + MARIA + " " + BIG), servers.calls.toString());
+    var pg = t.k.console(SHOP);
+    c.run(
+        pg,
+        type(COUNT) + RUN + "press #database\nframe\n" + OPENED
+            + "press role=menuitem label=\"analytics\"\nframe\n"
+            + OPENED
+            + MANUAL + type(";\n" + BIG) + RUN + "snap pg\n");
+    assertEquals("analytics", tab(pg).database);
+    assertFalse(c.tree("pg").contains("role=dialog"), c.tree("pg"));
+    assertTrue(ran(BIG), servers.calls.toString());
+    assertTrue(
+        servers.calls.stream().noneMatch(k -> k.startsWith("explain ")), servers.calls.toString());
+  }
+
+  /**
+   * Between Run and the answer, the console's session gets nothing but the question for its
+   * status, and after Cancel nothing at all: the estimate runs on the tree's connection.
+   */
+  @Test
+  void theSessionGetsNothingButItsStatusUntilTheAnswer() throws Exception {
+    var app = t.k.console(SHOP);
+    c.run(app, type(COUNT) + RUN + MANUAL);
+    var session = servers.linked.stream()
+        .filter(k -> k.endsWith("run " + PG + " " + COUNT))
+        .findFirst()
+        .orElseThrow()
+        .split(" ", 2)[0];
+    int from = servers.linked.size();
+    c.run(app, type(";\n" + BIG) + RUN + "snap asked\n" + CANCEL + SETTLE);
+    assertTrue(c.tree("asked").contains(LARGE), c.tree("asked"));
+    var since = servers.linked.subList(from, servers.linked.size());
+    assertEquals(
+        List.of(session + " transaction " + PG),
+        since.stream().filter(k -> k.startsWith(session + " ")).toList(),
+        since.toString());
+    assertTrue(
+        since.stream()
+            .anyMatch(
+                k -> k.endsWith(" explain " + PG + " " + BIG) && !k.startsWith(session + " ")),
+        since.toString());
   }
 
   @Test

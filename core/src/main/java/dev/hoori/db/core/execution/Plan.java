@@ -6,8 +6,8 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Statements;
 import java.sql.Connection;
-import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,7 +20,11 @@ import java.util.OptionalLong;
  */
 public final class Plan {
 
-  private static final String SAVEPOINT = "hooridb_estimate";
+  /**
+   * How long an estimate may take, waiting for a lock among it, before it is given up: a lock that
+   * the user's own transaction holds on another connection would make it wait for good.
+   */
+  public static final Duration LIMIT = Duration.ofSeconds(2);
 
   private Plan() {}
 
@@ -31,60 +35,24 @@ public final class Plan {
    * of the outermost UNION, summed, at most its LIMIT: the size of their join before a condition or
    * a grouping cuts it down.
    *
-   * <p>Planning may run the user's functions, as PostgreSQL folds an immutable or stable one and
-   * MariaDB and MySQL fill a derived table or a constant subquery, and they may write. So the
-   * {@code EXPLAIN} runs where writing fails, or is undone: on PostgreSQL in a read-only transaction
-   * of its own or a read-only savepoint of the one open; on MariaDB and MySQL in a read-only
-   * transaction where none is open, or in a savepoint where one is, which cannot be made read-only
-   * there, so that no estimate is made where the server has a stored function. Either way the
-   * transaction is left as it was, also where the {@code EXPLAIN} fails or is interrupted, and the
-   * savepoint's name is the user's to keep: PostgreSQL nests one of the same name, while MariaDB
-   * and MySQL would replace it. In a failed transaction, or one whose state is not known, it sends
-   * nothing.
+   * <p>It is for a connection of the app's own in auto-commit, not the user's: it runs in a
+   * read-only transaction of its own that it rolls back, also where the {@code EXPLAIN} fails or is
+   * interrupted. Planning may run the user's functions, as PostgreSQL folds an immutable or stable
+   * one and MariaDB and MySQL fill a derived table or a constant subquery; one that writes then
+   * fails, also to a MyISAM table. It is given up after {@link #LIMIT}.
    *
    * @throws QueryException as {@link Query} reports it, such as for a statement that has no plan,
-   *     or one whose plan ran a function that wrote
+   *     one whose plan ran a function that wrote, or one that took too long
    */
-  // shortcut: a loadable function of MariaDB or MySQL, or a stored one that only a view's definer
-  // may see, is not found; inside a transaction what it writes to a table that is not
-  // transactional stays. Ask the server for them where that matters.
   public static OptionalLong rows(Connection connection, Provider provider, String sql)
       throws QueryException {
-    var before = Status.of(connection, provider);
-    boolean pg = provider == Provider.POSTGRESQL;
-    boolean open = before.transaction() == Transaction.OPEN;
-    if (!open && before.transaction() != Transaction.NONE) {
-      return OptionalLong.empty();
-    }
-    var begin = open
-        ? "SAVEPOINT " + SAVEPOINT
-        : !pg
-            ? "START TRANSACTION READ ONLY"
-            // pgjdbc begins the transaction itself where auto-commit is off.
-            : Boolean.TRUE.equals(before.autoCommit())
-                ? "BEGIN READ ONLY"
-                : "SET TRANSACTION READ ONLY";
-    // Not cut short by an interrupt, so that what it makes always reaches its end below.
+    var begin = provider == Provider.POSTGRESQL ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY";
+    // Not cut short by an interrupt, so that the transaction it begins always reaches its end.
     Query.within(connection, Query.GRACE, () -> execute(connection, begin));
     try {
-      if (open && pg) {
-        Query.run(
-            connection,
-            provider,
-            () -> execute(connection, "SET LOCAL transaction_read_only = on"));
-      }
-      if (open && !pg && functions(connection, provider)) {
-        return OptionalLong.empty();
-      }
       return explain(connection, provider, sql);
     } finally {
-      Query.within(connection, Query.GRACE, () -> {
-        if (open) {
-          execute(connection, "ROLLBACK TO SAVEPOINT " + SAVEPOINT);
-          return execute(connection, "RELEASE SAVEPOINT " + SAVEPOINT);
-        }
-        return execute(connection, pg ? "ROLLBACK" : "ROLLBACK AND NO CHAIN NO RELEASE");
-      });
+      Query.within(connection, Query.GRACE, () -> execute(connection, "ROLLBACK"));
     }
   }
 
@@ -95,35 +63,46 @@ public final class Plan {
     return null;
   }
 
-  // Whether the server has a stored function the user may call, other than its own.
-  private static boolean functions(Connection connection, Provider provider) throws QueryException {
-    return Query.query(
-        connection,
-        provider,
-        "SELECT 1 FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'"
-            + " AND ROUTINE_SCHEMA NOT IN ('sys', 'mysql', 'information_schema',"
-            + " 'performance_schema') LIMIT 1",
-        ResultSet::next);
+  // The text as a plain query, read so, given up after LIMIT by the driver's own timeout.
+  private static <T> T query(
+      Connection connection, Provider provider, String sql, Query.Result<T> result)
+      throws QueryException {
+    try (var statement = connection.createStatement()) {
+      statement.setEscapeProcessing(false);
+      statement.setQueryTimeout((int) LIMIT.toSeconds());
+      return Query.run(
+          connection,
+          provider,
+          statement::cancel,
+          () -> {
+            try (var rows = statement.executeQuery(sql)) {
+              return result.read(rows);
+            }
+          },
+          value -> false);
+    } catch (SQLException e) {
+      throw Query.failure(connection, e);
+    }
   }
 
   private static OptionalLong explain(Connection connection, Provider provider, String sql)
       throws QueryException {
     return switch (provider) {
       case POSTGRESQL ->
-        Query.query(
+        query(
             connection,
             provider,
             "EXPLAIN " + sql,
             rows -> rows.next() ? Rows.planned(rows.getString(1)) : OptionalLong.empty());
       // The tree, from MySQL 8.0.18, estimates what each node gives; the table only the rows read.
       case MYSQL ->
-        Query.query(
+        query(
             connection,
             provider,
             "EXPLAIN FORMAT=TREE " + sql,
             rows -> rows.next() ? Rows.planned(rows.getString(1)) : OptionalLong.empty());
       case MARIADB ->
-        Query.query(connection, provider, "EXPLAIN " + sql, rows -> {
+        query(connection, provider, "EXPLAIN " + sql, rows -> {
           // Each select's tables, by its id, joined; and the selects of a UNION inside another.
           var products = new LinkedHashMap<Object, Long>();
           var unions = new HashSet<Object>();

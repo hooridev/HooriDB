@@ -64,82 +64,74 @@ class PlanServerTest {
     }
   }
 
-  /** A failing EXPLAIN in an open transaction: it stays open, with what it holds, and usable. */
+  /** Whatever becomes of the EXPLAIN, its connection is left with nothing open, in auto-commit. */
   @ParameterizedTest
   @EnumSource(Provider.class)
-  void aFailureLeavesTheOpenTransaction(Provider provider) throws Exception {
+  void nothingIsLeftOpen(Provider provider) throws Exception {
     try (var connection = open(provider)) {
-      execute(connection, "DROP TABLE IF EXISTS kept_open", "CREATE TABLE kept_open (id integer)");
-      try {
-        connection.setAutoCommit(false);
-        execute(connection, "INSERT INTO kept_open VALUES (1)");
-        assertThrows(QueryException.class, () -> Plan.rows(connection, provider, MISSING));
-        assertEquals(Transaction.OPEN, Transaction.of(connection, provider));
-        assertTrue(Plan.rows(connection, provider, "SELECT * FROM kept_open").isPresent());
-        assertEquals(1, selectLong(connection, "SELECT count(*) FROM kept_open"));
-        assertEquals(Transaction.OPEN, Transaction.of(connection, provider));
-      } finally {
-        connection.rollback();
-        connection.setAutoCommit(true);
-        execute(connection, "DROP TABLE kept_open");
-      }
+      assertTrue(
+          Plan.rows(connection, provider, "SELECT 1 FROM " + dual(provider)).isPresent()
+              || provider == Provider.MARIADB);
+      assertEquals(Transaction.NONE, Transaction.of(connection, provider));
+      assertThrows(QueryException.class, () -> Plan.rows(connection, provider, MISSING));
+      assertEquals(Transaction.NONE, Transaction.of(connection, provider));
+      assertTrue(connection.getAutoCommit());
+      assertEquals(1, selectLong(connection, "SELECT 1"));
     }
   }
 
-  /** A BEGIN typed in auto-commit: PostgreSQL's transaction stays open past a failure too. */
+  private static String dual(Provider provider) {
+    return provider == Provider.POSTGRESQL ? "(SELECT 1) AS d" : "dual";
+  }
+
+  /**
+   * The user's transaction on another connection holds a lock the plan waits for, which the server
+   * cannot tell from a deadlock of the app's: the estimate gives up after its limit, and leaves its
+   * connection usable.
+   */
   @ParameterizedTest
   @EnumSource(Provider.class)
-  void aFailureLeavesATransactionBegunInAutoCommit(Provider provider) throws Exception {
-    try (var connection = open(provider)) {
+  void aLockOfTheUsersTransactionEndsItInTime(Provider provider) throws Exception {
+    boolean pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(provider);
+        var user = open(provider)) {
+      execute(connection, "DROP TABLE IF EXISTS locked", "CREATE TABLE locked (id integer)");
       try {
-        execute(connection, "BEGIN");
-        assertThrows(QueryException.class, () -> Plan.rows(connection, provider, MISSING));
-        assertEquals(Transaction.OPEN, Transaction.of(connection, provider));
+        if (pg) {
+          user.setAutoCommit(false);
+          execute(user, "ALTER TABLE locked ADD COLUMN note integer");
+        } else {
+          execute(user, "LOCK TABLES locked WRITE");
+        }
+        long began = System.nanoTime();
+        assertThrows(
+            QueryException.class, () -> Plan.rows(connection, provider, "SELECT * FROM locked"));
+        var took = Duration.ofNanos(System.nanoTime() - began);
+        assertTrue(took.compareTo(Plan.LIMIT.plusSeconds(5)) < 0, took.toString());
+        assertEquals(Transaction.NONE, Transaction.of(connection, provider));
         assertEquals(1, selectLong(connection, "SELECT 1"));
       } finally {
-        execute(connection, "ROLLBACK");
+        if (pg) {
+          user.rollback();
+          user.setAutoCommit(true);
+        } else {
+          execute(user, "UNLOCK TABLES");
+        }
+        execute(connection, "DROP TABLE locked");
       }
     }
   }
 
-  /** With auto-commit off and nothing open, nothing is open after it, also with a chain. */
-  @ParameterizedTest
-  @EnumSource(Provider.class)
-  void nothingOpenStaysSo(Provider provider) throws Exception {
-    boolean pg = provider == Provider.POSTGRESQL;
-    try (var connection = open(provider)) {
-      try {
-        connection.setAutoCommit(false);
-        if (!pg) {
-          execute(connection, "SET completion_type=1");
-        }
-        assertEquals(Transaction.NONE, Transaction.of(connection, provider));
-        assertTrue(Plan.rows(connection, provider, "SELECT * FROM customer").isPresent());
-        assertEquals(Transaction.NONE, Transaction.of(connection, provider));
-        assertThrows(QueryException.class, () -> Plan.rows(connection, provider, MISSING));
-        assertEquals(Transaction.NONE, Transaction.of(connection, provider));
-      } finally {
-        if (!pg) {
-          execute(connection, "SET completion_type=0");
-        }
-        connection.rollback();
-        connection.setAutoCommit(true);
-      }
-    }
-  }
-
-  /** An EXPLAIN interrupted as it waits for a lock: PostgreSQL's transaction stays open. */
+  /** An EXPLAIN interrupted as it waits for a lock: its transaction is rolled back all the same. */
   @ParameterizedTest
   @EnumSource(value = Provider.class, names = "POSTGRESQL")
-  void anInterruptLeavesTheOpenTransaction(Provider provider) throws Exception {
+  void anInterruptLeavesNothingOpen(Provider provider) throws Exception {
     try (var connection = open(provider);
         var locker = open(provider)) {
       execute(connection, "DROP TABLE IF EXISTS locked", "CREATE TABLE locked (id integer)");
       try {
         locker.setAutoCommit(false);
         execute(locker, "LOCK TABLE locked IN ACCESS EXCLUSIVE MODE");
-        connection.setAutoCommit(false);
-        execute(connection, "SELECT 1"); // begins the transaction, which pgjdbc keeps open
         var failure = new AtomicReference<Exception>();
         var explaining = Thread.ofVirtual().start(() -> {
           try {
@@ -148,9 +140,9 @@ class PlanServerTest {
             failure.set(e);
           }
         });
-        var waiting = "SELECT count(*) FROM pg_locks WHERE NOT granted"
-            + " AND relation = 'locked'::regclass";
-        for (int i = 0; i < 500 && selectLong(locker, waiting) == 0; i++) {
+        var waiting =
+            "SELECT count(*) FROM pg_locks WHERE NOT granted AND relation = 'locked'::regclass";
+        for (int i = 0; i < 50 && selectLong(locker, waiting) == 0; i++) {
           Thread.sleep(20);
         }
         assertEquals(1, selectLong(locker, waiting), "the EXPLAIN waits for the lock");
@@ -158,12 +150,9 @@ class PlanServerTest {
         explaining.join();
         var cancelled = assertInstanceOf(QueryException.class, failure.get());
         assertEquals(QueryException.Failure.CANCELLED, cancelled.failure());
-        assertEquals(Transaction.OPEN, Transaction.of(connection, provider));
-        assertEquals(1, selectLong(connection, "SELECT 1"));
+        assertEquals(Transaction.NONE, Transaction.of(connection, provider));
       } finally {
         locker.rollback();
-        connection.rollback();
-        connection.setAutoCommit(true);
         execute(connection, "DROP TABLE locked");
       }
     }
@@ -171,9 +160,9 @@ class PlanServerTest {
 
   /**
    * A function that writes, which planning runs: PostgreSQL folds an immutable one that calls it,
-   * MariaDB fills a derived table, MySQL a constant subquery. No estimate runs it, in an open
-   * transaction or none, and what it would write is never there. MariaDB's and MySQL's are made
-   * as root, as MySQL's binary log asks for its privilege.
+   * MariaDB fills a derived table, MySQL a constant subquery. The estimate's read-only transaction
+   * fails it, also where it writes to a MyISAM table, which no rollback would undo. MariaDB's and
+   * MySQL's are made as root, as MySQL's binary log asks for its privilege.
    */
   @ParameterizedTest
   @EnumSource(Provider.class)
@@ -194,7 +183,7 @@ class PlanServerTest {
           "DROP TABLE IF EXISTS plan_log",
           "CREATE TABLE plan_table (id integer PRIMARY KEY)",
           "INSERT INTO plan_table VALUES (1), (2)",
-          "CREATE TABLE plan_log (n integer)");
+          "CREATE TABLE plan_log (n integer)" + (pg ? "" : " ENGINE=MyISAM"));
       if (pg) {
         execute(
             owner,
@@ -210,30 +199,15 @@ class PlanServerTest {
                 + ".plan_log VALUES (x); RETURN x; END");
       }
       try {
-        // As the guard is not there: the function writes as the plan is made.
-        if (pg) {
-          execute(connection, "EXPLAIN " + sql);
-        }
-        long before = selectLong(connection, "SELECT count(*) FROM plan_log");
-        assertTrue(!pg || before == 1, "PostgreSQL folds the function: " + before);
-        // None open, with auto-commit on and off.
-        for (boolean auto : new boolean[] {true, false}) {
-          connection.setAutoCommit(auto);
-          estimate(connection, provider, sql);
-          assertEquals(Transaction.NONE, Transaction.of(connection, provider));
-          connection.setAutoCommit(true);
-        }
-        // One open, with what it holds.
-        connection.setAutoCommit(false);
-        execute(connection, "INSERT INTO plan_table VALUES (3)");
+        // Without the read-only transaction, the plan runs the function, which writes.
+        execute(
+            connection, (provider == Provider.MYSQL ? "EXPLAIN FORMAT=TREE " : "EXPLAIN ") + sql);
+        long wrote = selectLong(connection, "SELECT count(*) FROM plan_log");
+        assertTrue(wrote > 0, provider + " ran no function");
         estimate(connection, provider, sql);
-        assertEquals(Transaction.OPEN, Transaction.of(connection, provider));
-        assertEquals(3, selectLong(connection, "SELECT count(*) FROM plan_table"));
-        connection.rollback();
-        connection.setAutoCommit(true);
-        assertEquals(before, selectLong(connection, "SELECT count(*) FROM plan_log"));
+        assertEquals(Transaction.NONE, Transaction.of(connection, provider));
+        assertEquals(wrote, selectLong(connection, "SELECT count(*) FROM plan_log"));
       } finally {
-        connection.setAutoCommit(true);
         execute(owner, pg ? "DROP FUNCTION plan_fold" : "SELECT 1");
         execute(owner, "DROP FUNCTION " + (pg ? "" : TestServer.DATABASE + ".") + "plan_write");
         execute(connection, "DROP TABLE plan_table", "DROP TABLE plan_log");
@@ -258,53 +232,5 @@ class PlanServerTest {
             server.driver(),
             Duration.ofSeconds(10))
         .connection();
-  }
-
-  /**
-   * Interrupted as its savepoint is made, which is made all the same, the estimate still ends it:
-   * a user's savepoint of the same name, which PostgreSQL nests, is again the one a ROLLBACK TO
-   * goes back to.
-   */
-  @ParameterizedTest
-  @EnumSource(value = Provider.class, names = "POSTGRESQL")
-  void anInterruptAtTheSavepointLeavesNone(Provider provider) throws Exception {
-    try (var connection = open(provider)) {
-      execute(connection, "DROP TABLE IF EXISTS saved", "CREATE TABLE saved (id integer)");
-      try {
-        connection.setAutoCommit(false);
-        execute(connection, "SAVEPOINT hooridb_estimate", "INSERT INTO saved VALUES (1)");
-        Thread.currentThread().interrupt();
-        var cancelled =
-            assertThrows(QueryException.class, () -> Plan.rows(connection, provider, "SELECT 1"));
-        assertTrue(Thread.interrupted());
-        assertEquals(QueryException.Failure.CANCELLED, cancelled.failure());
-        assertEquals(Transaction.OPEN, Transaction.of(connection, provider));
-        execute(connection, "ROLLBACK TO SAVEPOINT hooridb_estimate");
-        assertEquals(0, selectLong(connection, "SELECT count(*) FROM saved"));
-      } finally {
-        Thread.interrupted();
-        connection.rollback();
-        connection.setAutoCommit(true);
-        execute(connection, "DROP TABLE saved");
-      }
-    }
-  }
-
-  /** PostgreSQL's failed transaction takes nothing but a rollback: nothing is sent. */
-  @ParameterizedTest
-  @EnumSource(value = Provider.class, names = "POSTGRESQL")
-  void aFailedTransactionGetsNoEstimate(Provider provider) throws Exception {
-    try (var connection = open(provider)) {
-      try {
-        connection.setAutoCommit(false);
-        assertThrows(Exception.class, () -> execute(connection, MISSING));
-        assertEquals(Transaction.FAILED, Transaction.of(connection, provider));
-        assertEquals(OptionalLong.empty(), Plan.rows(connection, provider, "SELECT 1"));
-        assertEquals(Transaction.FAILED, Transaction.of(connection, provider));
-      } finally {
-        connection.rollback();
-        connection.setAutoCommit(true);
-      }
-    }
   }
 }

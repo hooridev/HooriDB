@@ -726,6 +726,26 @@ final class CatalogTree {
     return lives.get(id);
   }
 
+  /**
+   * The tree's lane already open on the database, for what a console asks of the server beside its
+   * session, as an estimate; null where there is none, or the connection is not connected. It opens
+   * none: a database the tree has not read has no lane of its.
+   */
+  Lane planner(UUID id, String database) {
+    var live = lives.get(id);
+    if (live == null || !(live.phase instanceof Connected c)) {
+      return null;
+    }
+    Lane lane;
+    if (c.database() == null) {
+      // One connection reads every database, and is on the profile's.
+      lane = database.equals(live.profile.database()) ? live.lane : null;
+    } else {
+      lane = database.equals(c.database()) ? live.lane : live.lanes.get(database);
+    }
+    return lane == null || lane.broken() ? null : lane;
+  }
+
   /** Whether the connection is connected, so that its lanes can be used. */
   boolean connected(UUID id) {
     var live = lives.get(id);
