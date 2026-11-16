@@ -103,7 +103,8 @@ public final class Plan {
             + " AND d.objid OPERATOR(pg_catalog.=) p.oid"
             + " AND d.deptype OPERATOR(pg_catalog.=) 'e') LIMIT 1"
         : "SELECT 1 FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'"
-            + " AND ROUTINE_SCHEMA NOT IN ('sys', 'mysql', 'information_schema',"
+            // As bytes: MariaDB compares names without case and accents, which takes SYS for sys.
+            + " AND CAST(ROUTINE_SCHEMA AS BINARY) NOT IN ('sys', 'mysql', 'information_schema',"
             + " 'performance_schema') LIMIT 1";
     return query(connection, provider, sql, ResultSet::next);
   }

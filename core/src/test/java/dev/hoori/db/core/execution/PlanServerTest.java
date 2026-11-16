@@ -339,6 +339,36 @@ class PlanServerTest {
     }
   }
 
+  /** A schema named as a system one in other letters, such as SYS, is a user's: it is checked. */
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aFunctionInASchemaNamedLikeASystemOneStopsTheEstimate(Provider provider) throws Exception {
+    try (var connection = open(provider);
+        var owner = root(provider)) {
+      execute(
+          connection,
+          "DROP TABLE IF EXISTS plan_rows",
+          "CREATE TABLE plan_rows (id integer PRIMARY KEY)",
+          "INSERT INTO plan_rows VALUES (1), (2)");
+      execute(
+          owner,
+          "CREATE DATABASE `SYS`",
+          "CREATE FUNCTION `SYS`.f() RETURNS integer DETERMINISTIC RETURN 1",
+          // Only a function the user may call is listed to them, as only such a one can be called.
+          "GRANT EXECUTE ON `SYS`.* TO '" + TestServer.USER + "'@'%'");
+      try {
+        assertEquals(
+            OptionalLong.empty(),
+            Plan.rows(connection, provider, null, "SELECT id FROM plan_rows"));
+      } finally {
+        execute(owner, "DROP DATABASE `SYS`");
+        execute(connection, "DROP TABLE plan_rows");
+      }
+    }
+  }
+
   /**
    * PostgreSQL's citext installs functions in SQL that the planner may evaluate: an extension owns
    * them, as an administrator installed it, so the estimate stays.
