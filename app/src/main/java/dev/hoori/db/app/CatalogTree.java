@@ -129,6 +129,8 @@ final class CatalogTree {
     char[] password;
     Lane lane; // the first connection
     final Map<String, Lane> lanes = new HashMap<>(); // further connections, by database
+    // The connections of the consoles' estimates, by database on PostgreSQL, else one under "".
+    final Map<String, Lane> planners = new HashMap<>();
     final Map<Node, Level> levels = new HashMap<>();
     // The background reads of go to table and of completions: a database's tables, a table's
     // columns.
@@ -727,24 +729,31 @@ final class CatalogTree {
   }
 
   /**
-   * The tree's lane already open on the database, for what a console asks of the server beside its
-   * session, as an estimate; null where there is none, or the connection is not connected. It opens
-   * none: on PostgreSQL a database the tree has not read has no lane of its. On MariaDB and MySQL
-   * it is the one connection, which the estimate puts on the database for its while.
+   * The connection for a console's estimates on the database, opened the first time it is asked
+   * for, and anew where it could not be or is gone; null while the tree's connection is not
+   * connected. Nothing else runs on it, as a function the plan runs may change its session for
+   * good: on PostgreSQL one per database, on MariaDB and MySQL one, which each estimate puts on
+   * its database. It is opened as the tree's further connections are, with the password the tree
+   * keeps while connected, and closes with them.
    */
   Lane planner(UUID id, String database) {
     var live = lives.get(id);
-    if (live == null || !(live.phase instanceof Connected c)) {
+    if (live == null || !(live.phase instanceof Connected c) || live.password == null) {
       return null;
     }
-    Lane lane;
-    if (c.database() == null) {
-      // One connection reads every database, whose names it qualifies: the estimate switches it.
-      lane = live.lane;
-    } else {
-      lane = database.equals(c.database()) ? live.lane : live.lanes.get(database);
+    var key = c.database() == null ? "" : database;
+    var lane = live.planners.get(key);
+    if (lane == null || lane.broken()) {
+      if (lane != null) {
+        lane.close();
+      }
+      // Its loss is the estimate's alone, which then fails and asks nothing.
+      lane = new Lane(e -> {});
+      var profile = key.isEmpty() ? live.profile : live.profile.withDatabase(key);
+      lane.open(servers, profile, live.password, live.driver);
+      live.planners.put(key, lane);
     }
-    return lane == null || lane.broken() ? null : lane;
+    return lane;
   }
 
   /** Whether the connection is connected, so that its lanes can be used. */
@@ -1111,6 +1120,8 @@ final class CatalogTree {
     }
     live.lanes.values().forEach(Lane::close);
     live.lanes.clear();
+    live.planners.values().forEach(Lane::close);
+    live.planners.clear();
     if (live.password != null) {
       Arrays.fill(live.password, '\0');
       live.password = null;

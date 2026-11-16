@@ -134,7 +134,7 @@ class ConsoleConfirmationTest {
   /** Cancelled in the empty transaction a chained Commit began, it leaves that empty. */
   @Test
   void aCancelledReadLeavesTheChainedTransactionEmpty() throws Exception {
-    // Its database named, which the tree's one connection is on, where the estimate runs.
+    // Its database named, as the estimates' connection is too.
     var app = t.k.console(INVENTORY.withDatabase("inventory"));
     c.run(
         app,
@@ -176,7 +176,7 @@ class ConsoleConfirmationTest {
     assertTrue(badge(cancelled).contains("No transaction"), cancelled);
     assertFalse(tab(app).busy());
     assertTrue(app.state().notices.isEmpty(), app.state().notices.toString());
-    // The tree's lane, which it held, takes the next call.
+    // The estimates' lane, which it held, takes the next call.
     c.run(app, type(";\n" + ORDERS) + RUN);
     assertTrue(servers.done.contains("explain " + PG + " " + ORDERS), servers.done.toString());
     assertTrue(ran(ORDERS), servers.calls.toString());
@@ -234,8 +234,8 @@ class ConsoleConfirmationTest {
 
   /**
    * A MariaDB or MySQL profile that names no database, its console on the user's one database: the
-   * tree's one connection, on none, plans on the console's for the estimate, and the tree reads on
-   * as before.
+   * estimates' connection, opened on none, plans on the console's, and the tree reads on as
+   * before.
    */
   @ParameterizedTest
   @ValueSource(strings = {"inventory", "legacy"})
@@ -259,9 +259,12 @@ class ConsoleConfirmationTest {
         tree);
   }
 
-  /** On PostgreSQL the tree has no connection of its own to a database it has not read. */
+  /**
+   * On PostgreSQL the estimates have a connection of their own to each database, also one the
+   * tree has not read, opened as the first estimate there needs it.
+   */
   @Test
-  void onPostgreSqlADatabaseTheTreeHasNotReadIsNotEstimated() throws Exception {
+  void onPostgreSqlEachDatabaseHasTheEstimatesConnection() throws Exception {
     var pg = t.k.console(SHOP);
     c.run(
         pg,
@@ -270,25 +273,27 @@ class ConsoleConfirmationTest {
             + OPENED
             + MANUAL + type(";\n" + BIG) + RUN + "snap pg\n");
     assertEquals("analytics", tab(pg).database);
-    assertFalse(c.tree("pg").contains("role=dialog"), c.tree("pg"));
-    assertTrue(ran(BIG), servers.calls.toString());
-    assertTrue(
-        servers.calls.stream().noneMatch(k -> k.startsWith("explain ")), servers.calls.toString());
+    assertTrue(c.tree("pg").contains(LARGE), c.tree("pg"));
+    assertEquals("analytics", servers.estimatedOn);
+    // The console's session and the estimates' connection to it; the tree reads none there.
+    assertEquals(
+        2,
+        servers.calls.stream()
+            .filter(k -> k.equals("open " + PG + "/analytics"))
+            .count());
   }
 
   /**
    * Between Run and the answer, the console's session gets nothing but the question for its
-   * status, and after Cancel nothing at all: the estimate runs on the tree's connection.
+   * status, and after Cancel nothing at all. The estimate runs on a connection of its own, which
+   * nothing else ever uses, and the tree's gets no EXPLAIN.
    */
   @Test
   void theSessionGetsNothingButItsStatusUntilTheAnswer() throws Exception {
     var app = t.k.console(SHOP);
     c.run(app, type(COUNT) + RUN + MANUAL);
-    var session = servers.linked.stream()
-        .filter(k -> k.endsWith("run " + PG + " " + COUNT))
-        .findFirst()
-        .orElseThrow()
-        .split(" ", 2)[0];
+    var session = number("run " + PG + " " + COUNT);
+    var tree = number("databases " + PG);
     int from = servers.linked.size();
     c.run(app, type(";\n" + BIG) + RUN + "snap asked\n" + CANCEL + SETTLE);
     assertTrue(c.tree("asked").contains(LARGE), c.tree("asked"));
@@ -297,11 +302,25 @@ class ConsoleConfirmationTest {
         List.of(session + " transaction " + PG),
         since.stream().filter(k -> k.startsWith(session + " ")).toList(),
         since.toString());
+    var planner = number("explain " + PG + " " + BIG);
+    assertFalse(planner.equals(session) || planner.equals(tree), servers.linked.toString());
     assertTrue(
-        since.stream()
-            .anyMatch(
-                k -> k.endsWith(" explain " + PG + " " + BIG) && !k.startsWith(session + " ")),
-        since.toString());
+        servers.linked.stream()
+            .filter(k -> k.startsWith(planner + " "))
+            .allMatch(k -> k.startsWith(planner + " explain ")),
+        servers.linked.toString());
+    assertTrue(
+        servers.linked.stream().noneMatch(k -> k.startsWith(tree + " explain ")),
+        servers.linked.toString());
+  }
+
+  // The number of the link the first call of the key ran on.
+  private String number(String key) {
+    return servers.linked.stream()
+        .filter(k -> k.endsWith(" " + key))
+        .findFirst()
+        .orElseThrow()
+        .split(" ", 2)[0];
   }
 
   @Test

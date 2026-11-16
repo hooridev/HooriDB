@@ -110,34 +110,28 @@ class PlanServerTest {
 
   /**
    * On MariaDB and MySQL the plan reads the statement's names on the database given, as the
-   * console's, and the connection goes back to its own afterwards; one on none stays there, as
-   * these servers have no way back to none.
+   * console's, and the connection, the estimate's own, stays there.
    */
   @ParameterizedTest
   @EnumSource(
       value = Provider.class,
       names = {"MARIADB", "MYSQL"})
-  void theDatabaseIsTheOneGivenWhileItPlans(Provider provider) throws Exception {
+  void theDatabaseIsTheOneGiven(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var connection = open(provider);
-        var spaced = on(server, TestServer.SPACED_DATABASE);
         var none = on(server, "")) {
       table(connection, provider);
       try {
-        assertEquals(TestServer.SPACED_DATABASE, spaced.getCatalog());
-        assertTrue(Plan.rows(spaced, provider, TestServer.DATABASE, "SELECT * FROM planned")
-            .isPresent());
-        assertEquals(TestServer.SPACED_DATABASE, spaced.getCatalog());
         assertThrows(
-            QueryException.class, () -> Plan.rows(spaced, provider, null, "SELECT * FROM planned"));
+            QueryException.class, () -> Plan.rows(none, provider, null, "SELECT * FROM planned"));
         assertTrue(Plan.rows(none, provider, TestServer.DATABASE, "SELECT * FROM planned")
             .isPresent());
         assertEquals(TestServer.DATABASE, none.getCatalog());
-        // A failure puts it back too.
         assertThrows(
-            QueryException.class, () -> Plan.rows(spaced, provider, TestServer.DATABASE, MISSING));
-        assertEquals(TestServer.SPACED_DATABASE, spaced.getCatalog());
-        assertEquals(Transaction.NONE, Transaction.of(spaced, provider));
+            QueryException.class,
+            () -> Plan.rows(none, provider, TestServer.SPACED_DATABASE, "SELECT * FROM planned"));
+        assertEquals(TestServer.SPACED_DATABASE, none.getCatalog());
+        assertEquals(Transaction.NONE, Transaction.of(none, provider));
       } finally {
         execute(connection, "DROP TABLE planned");
       }

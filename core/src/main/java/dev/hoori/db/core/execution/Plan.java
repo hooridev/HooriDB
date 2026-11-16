@@ -35,15 +35,15 @@ public final class Plan {
    * of the outermost UNION, summed, at most its LIMIT: the size of their join before a condition or
    * a grouping cuts it down.
    *
-   * <p>It is for a connection of the app's own in auto-commit, not the user's: it runs in a
-   * read-only transaction of its own that it rolls back, also where the {@code EXPLAIN} fails or is
-   * interrupted. Planning may run the user's functions, as PostgreSQL folds an immutable or stable
-   * one and MariaDB and MySQL fill a derived table or a constant subquery; one that writes then
-   * fails, also to a MyISAM table. It is given up after {@link #LIMIT}.
+   * <p>It is for a connection of the app's own in auto-commit, on which nothing else runs: it
+   * runs in a read-only transaction of its own that it rolls back, also where the {@code EXPLAIN}
+   * fails or is interrupted. Planning may run the user's functions, as PostgreSQL folds an
+   * immutable or stable one and MariaDB and MySQL fill a derived table or a constant subquery; one
+   * that writes then fails, also to a MyISAM table, while what one sets in the session, such as a
+   * variable, stays with that connection. It is given up after {@link #LIMIT}.
    *
-   * <p>On MariaDB and MySQL the connection is on {@code database} while it plans, so that the
-   * statement's names are read as there, and is put back on its own afterwards. One that was on
-   * none stays on {@code database}, as these servers have no way back to none.
+   * <p>On MariaDB and MySQL it puts the connection on {@code database}, where the statement's
+   * names are read, and leaves it there.
    *
    * @param database where the statement's names are read; null for the connection's own, as on
    *     PostgreSQL, whose connection is on one database for good
@@ -53,32 +53,21 @@ public final class Plan {
   public static OptionalLong rows(
       Connection connection, Provider provider, String database, String sql) throws QueryException {
     boolean pg = provider == Provider.POSTGRESQL;
-    // Not cut short by an interrupt, so that what is begun or switched always reaches its end.
-    String own = Query.within(connection, Query.GRACE, connection::getCatalog);
-    boolean switches = !pg && database != null && !database.isEmpty() && !database.equals(own);
-    if (switches) {
-      Query.within(connection, Query.GRACE, () -> {
+    if (!pg && database != null && !database.isEmpty()) {
+      Query.run(connection, provider, () -> {
         connection.setCatalog(database);
         return null;
       });
     }
+    var begin = pg ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY";
+    // Not cut short by an interrupt, so that the transaction it begins always reaches its end.
+    Query.within(connection, Query.GRACE, () -> execute(connection, begin));
     try {
-      var begin = pg ? "BEGIN READ ONLY" : "START TRANSACTION READ ONLY";
-      Query.within(connection, Query.GRACE, () -> execute(connection, begin));
-      try {
-        return explain(connection, provider, sql);
-      } finally {
-        // MariaDB's and MySQL's ROLLBACK would chain or disconnect as completion_type says.
-        var rollback = pg ? "ROLLBACK" : "ROLLBACK AND NO CHAIN NO RELEASE";
-        Query.within(connection, Query.GRACE, () -> execute(connection, rollback));
-      }
+      return explain(connection, provider, sql);
     } finally {
-      if (switches && own != null && !own.isEmpty()) {
-        Query.within(connection, Query.GRACE, () -> {
-          connection.setCatalog(own);
-          return null;
-        });
-      }
+      // MariaDB's and MySQL's ROLLBACK would chain or disconnect as completion_type says.
+      var rollback = pg ? "ROLLBACK" : "ROLLBACK AND NO CHAIN NO RELEASE";
+      Query.within(connection, Query.GRACE, () -> execute(connection, rollback));
     }
   }
 

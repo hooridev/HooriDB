@@ -502,7 +502,8 @@ final class ConsoleTab implements Tab {
     boolean lazy = reads(sql, provider) && mode == Mode.AUTO && transaction == Transaction.NONE;
     writes = !lazy;
     plain = reads(sql, provider);
-    var planner = estimate && plain ? s.catalog.planner(id, database) : null;
+    // Not for a read Auto keeps open: no connection is opened for an estimate never asked for.
+    var planner = estimate && plain && !lazy ? s.catalog.planner(id, database) : null;
     var on = database;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
