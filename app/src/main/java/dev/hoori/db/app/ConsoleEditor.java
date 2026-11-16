@@ -25,9 +25,6 @@ final class ConsoleEditor {
   private final Map<String, Integer> sent = new IdentityHashMap<>();
   private String sentFrom; // the text they were taken from
   private String marked; // the text the underline is in, or null for none
-  private Failure.Place underlined; // where in it, or null
-  private El built; // the editor of the last build, and the app of its window
-  private App<State> app;
   private final Completion.State completion = new Completion.State();
   final Suggestions suggestions;
 
@@ -65,29 +62,15 @@ final class ConsoleEditor {
       return;
     }
     int from = at + place.start();
-    underlined = new Failure.Place(from, at + place.end());
-    tab.editor.error(from, underlined.end());
+    tab.editor.error(from, at + place.end()).select(from, from);
     marked = tab.text;
-    if (built != null) {
-      try {
-        app.select(built, from, from);
-      } catch (IllegalArgumentException e) {
-        // shortcut: the editor is not in its window's last frame, as another tab is shown there,
-        // so the caret stays; move it as the tab is shown once the kit can set it from the state.
-      }
-    }
   }
 
-  /**
-   * The editor as built, with its completions; it is kept for the caret. The underline goes where
-   * the text has changed.
-   */
+  /** The editor as built, with its completions. The underline goes where the text has changed. */
   El editor(State s, App<State> app, Provider provider, El editor) {
     if (marked != null && !marked.equals(tab.text)) {
       clear();
     }
-    this.app = app;
-    built = editor;
     if (!completion.isOpen()) {
       suggestions.forget();
     }
@@ -108,14 +91,8 @@ final class ConsoleEditor {
     suggestions.close();
   }
 
-  /** What the editor underlines, in the whole text, or null; the kit's state does not say. */
-  Failure.Place underlined() {
-    return underlined;
-  }
-
   private void clear() {
     tab.editor.noError();
     marked = null;
-    underlined = null;
   }
 }

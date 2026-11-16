@@ -304,6 +304,37 @@ class PaletteTest {
   }
 
   @Test
+  void goToATableFromAnotherFocusesItsGridOnceItIsBuiltAndControlOneGoesBackToItsLastPlace()
+      throws Exception {
+    var app = connected();
+    var columns = "columns " + PG + "/shop.public.customers";
+    var held = c.servers.hold(columns);
+    c.run(
+        app,
+        GO_TO + "type \"orders\"\nframe\nkey Enter\n" + SHOWN + SETTLE + "snap orders\n" + GO_TO
+            + "type \"customers\"\nframe\nkey Enter\n" + SHOWN + "snap waiting\n");
+    assertTrue(focused(c.tree("orders")).contains("role=grid"), focused(c.tree("orders")));
+    var waiting = c.tree("waiting");
+    assertEquals("customers", active(waiting));
+    assertFalse(focused(waiting).contains("role=grid"), focused(waiting));
+    // Control+1 while the grid is still missing: it takes the focus once it is built.
+    c.run(app, "key 0 control\nframe\nkey 1 control\nframe\nsnap still\n");
+    assertFalse(focused(c.tree("still")).contains("role=tree "), focused(c.tree("still")));
+    held.countDown();
+    c.run(app, SETTLE + "frame\nsnap built\n");
+    var built = c.tree("built");
+    assertTrue(line(built, "role=grid").contains("customers"), built);
+    assertTrue(focused(built).contains("role=grid"), focused(built));
+    // Where the focus was last in the tab, not its grid.
+    c.run(
+        app,
+        "focus role=button label=\"Refresh\"\nframe\nkey 0 control\nframe\nsnap tree\n"
+            + "key 1 control\nframe\nsnap back\n");
+    assertTrue(focused(c.tree("tree")).contains("role=tree "), focused(c.tree("tree")));
+    assertTrue(focused(c.tree("back")).contains("label=\"Refresh\""), focused(c.tree("back")));
+  }
+
+  @Test
   void goToATableOpenBehindAConsoleFocusesItsGrid() throws Exception {
     var app = connected();
     c.run(

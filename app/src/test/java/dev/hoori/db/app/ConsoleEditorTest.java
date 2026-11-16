@@ -92,8 +92,12 @@ class ConsoleEditorTest {
     console.tearDown();
   }
 
-  ConsoleEditor help(App<State> app) {
-    return console.tab(app).help;
+  /** What the console's editor underlines, or null for nothing. */
+  Failure.Place underlined(App<State> app) {
+    var editor = console.tab(app).editor;
+    return editor.errorFrom() == editor.errorTo()
+        ? null
+        : new Failure.Place(editor.errorFrom(), editor.errorTo());
   }
 
   static String caret(String tree) {
@@ -108,23 +112,24 @@ class ConsoleEditorTest {
     int at = text.indexOf(WRONG) + WRONG.indexOf("WHERE id");
     console.c.run(app, type(text) + RUN_ALL + "snap failed\n");
     String failed = console.c.tree("failed");
-    assertEquals(new Failure.Place(at, at + 5), help(app).underlined());
+    assertEquals(new Failure.Place(at, at + 5), underlined(app));
     assertEquals(String.valueOf(at), caret(failed), line(failed, "#sql"));
+    assertTrue(line(failed, "#sql").contains("underline " + at + "-" + (at + 5)), failed);
     assertTrue(failed.contains("\"syntax error at or near \\\"WHERE\\\"\""), failed);
     // Typing drops it, and the message stays.
     console.c.run(app, "type \" \"\nframe\nsnap typed\n");
-    assertNull(help(app).underlined());
+    assertNull(underlined(app));
     assertTrue(
         console.c.tree("typed").contains("syntax error at or near"), console.c.tree("typed"));
     // Run again, it comes back; while the next run runs, it is gone.
     console.c.run(app, "key Backspace\n" + RUN_ALL);
-    assertEquals(new Failure.Place(at, at + 5), help(app).underlined());
+    assertEquals(new Failure.Place(at, at + 5), underlined(app));
     var held = servers.hold("run " + PG + " " + COUNT);
     console.c.run(app, "key Home control\nkey Enter control\nframe\n");
-    assertNull(help(app).underlined());
+    assertNull(underlined(app));
     held.countDown();
     console.c.run(app, SETTLE);
-    assertNull(help(app).underlined());
+    assertNull(underlined(app));
   }
 
   /** The sixth review's sixth finding: a Run refused while one runs leaves that one's underline. */
@@ -142,7 +147,28 @@ class ConsoleEditorTest {
     console.c.run(app, "key Home control\nkey Enter control\nframe\n");
     held.countDown();
     console.c.run(app, SETTLE);
-    assertEquals(new Failure.Place(at, at + 5), help(app).underlined());
+    assertEquals(new Failure.Place(at, at + 5), underlined(app));
+  }
+
+  /** An error that comes while another tab is shown puts the caret there all the same. */
+  @Test
+  void anErrorWhileAnotherTabIsShownPutsTheCaretThereAsTheTabIsShown() throws Exception {
+    var app = console.console(SHOP);
+    var text = COUNT + ";\n" + WRONG + ";";
+    int at = text.indexOf(WRONG) + WRONG.indexOf("WHERE id");
+    var key = "run " + PG + " " + WRONG;
+    console.c.run(app, type(COUNT + ";") + RUN); // the session is open
+    var held = servers.hold(key);
+    console.c.run(app, type("\n" + WRONG + ";") + "key Enter control\nframe\nframe\n");
+    CatalogueTest.eventually(() -> servers.calls.contains(key));
+    console.c.run(app, "key N control\nframe\nadvance 1\nframe\nsnap other\n");
+    var other = console.c.tree("other");
+    held.countDown();
+    console.c.run(app, SETTLE + "key PageUp control\nframe\nadvance 1\nframe\nsnap shown\n");
+    assertEquals(2, app.state().consoles(null).size(), other);
+    assertEquals(new Failure.Place(at, at + 5), underlined(app));
+    var shown = console.c.tree("shown");
+    assertEquals(String.valueOf(at), caret(shown), line(shown, "#sql"));
   }
 
   /** In Manual a statement is read whole in its one call; its error is underlined all the same. */
@@ -151,7 +177,7 @@ class ConsoleEditorTest {
     var app = console.console(SHOP);
     int at = WRONG.indexOf("WHERE id");
     console.c.run(app, ConsoleTransactionTest.MANUAL + type(WRONG) + RUN);
-    assertEquals(new Failure.Place(at, at + 5), help(app).underlined());
+    assertEquals(new Failure.Place(at, at + 5), underlined(app));
   }
 
   static final String LATE = "SELECT id / (300 - id) FROM orders";
@@ -179,7 +205,7 @@ class ConsoleEditorTest {
                 "")));
     var app = console.console(SHOP);
     console.c.run(app, type(LATE) + RUN + "scroll #grid row 180\nframe\nframe\n" + SETTLE);
-    assertEquals(new Failure.Place(at, at + 1), help(app).underlined());
+    assertEquals(new Failure.Place(at, at + 1), underlined(app));
   }
 
   @Test
@@ -194,7 +220,7 @@ class ConsoleEditorTest {
         type(text) + "key Home control\nkey ArrowDown\nkey End control shift\nframe\n" + RUN
             + "snap failed\n");
     String failed = console.c.tree("failed");
-    assertEquals(new Failure.Place(at, at + 1), help(app).underlined());
+    assertEquals(new Failure.Place(at, at + 1), underlined(app));
     assertEquals(String.valueOf(at), caret(failed), line(failed, "#sql"));
   }
 
@@ -459,7 +485,7 @@ class ConsoleEditorTest {
             + "type \"d\"\nframe\nadvance 1\nframe\nsnap there\nkey Escape\nkey A control\n"
             + type(text).replaceFirst("press #sql\n", "") + RUN_ALL + "snap failed\n");
     assertEquals(List.of("order_totals", "orders"), options(window("there")));
-    assertEquals(new Failure.Place(at, at + 5), help(app).underlined());
+    assertEquals(new Failure.Place(at, at + 5), underlined(app));
     assertEquals(String.valueOf(at), caret(window("failed")), line(window("failed"), "#sql"));
   }
 
