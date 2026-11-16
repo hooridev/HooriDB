@@ -1165,7 +1165,9 @@ final class ConsoleTab implements Tab {
    * needless caution.
    */
   static boolean reads(String sql, Provider provider) {
-    var word = Statements.firstWord(sql, provider).toUpperCase(Locale.ROOT);
+    var word = Statements.firstWord(sql, provider);
+    // ASCII's case alone, as the servers fold keywords: ſELECT is no SELECT.
+    word = word.chars().allMatch(c -> c < 0x80) ? word.toUpperCase(Locale.ROOT) : "";
     // shortcut: INTO in a literal or comment makes a read count as a change, a needless caution.
     return READS.contains(word) && !WRITING.matcher(sql).find();
   }
