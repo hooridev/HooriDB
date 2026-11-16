@@ -891,7 +891,7 @@ final class CatalogTree {
   }
 
   /** The database whose content the node is, or null for a connection. */
-  private static String database(Node node) {
+  static String database(Node node) {
     return switch (node) {
       case Node.Connection n -> null;
       case Node.OfDatabase n -> n.database().name();

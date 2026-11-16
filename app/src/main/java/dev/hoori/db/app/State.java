@@ -649,7 +649,10 @@ final class State {
     return all;
   }
 
-  /** Opens a console on the connection, on the database its profile names. */
+  /**
+   * Opens a console on the connection: on the database of the node selected in the tree under it,
+   * else on the one its profile names.
+   */
   void openConsole(UUID id) {
     openConsole(id, tabs.main());
   }
@@ -660,7 +663,10 @@ final class State {
     if (profile == null) {
       return;
     }
-    tabs.add(group, group.tabs().size(), new ConsoleTab(id, database(profile)));
+    var at = group == tabs.main() && selected != null && selected.id().equals(id)
+        ? CatalogTree.database(selected)
+        : null;
+    tabs.add(group, group.tabs().size(), new ConsoleTab(id, at == null ? database(profile) : at));
   }
 
   /**

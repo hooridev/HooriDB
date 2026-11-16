@@ -8,6 +8,7 @@ import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
 import static dev.hoori.db.app.CatalogTreeTest.eventually;
 import static dev.hoori.db.app.CatalogTreeTest.menu;
+import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.PASSWORD;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.TableTabTest.cell;
@@ -358,6 +359,19 @@ class ConsoleTest {
     assertTrue(servers.calls.contains("open " + PG + "/analytics"), servers.calls.toString());
     // The connection to shop closes on a thread of its own, which nothing in the script awaits.
     eventually(() -> servers.closed.contains(PG + "/shop"));
+  }
+
+  @Test
+  void aConsoleOpensOnTheDatabaseSelectedInTheTree() throws Exception {
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START + open("shop-prod") + SETTLE + "press role=treeitem label=\"analytics\"\n"
+            + "key N control\nframe\nadvance 1\nframe\n" + SETTLE + "snap opened\n");
+    String opened = c.tree("opened");
+    assertTrue(near(opened, "#database").contains("\"analytics\""), opened);
+    assertTrue(tabs(opened).startsWith("shop-prod: analytics"), opened);
   }
 
   @Test
