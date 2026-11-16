@@ -25,7 +25,7 @@ final class ConsoleEditor {
   private final Map<String, Integer> sent = new IdentityHashMap<>();
   private String sentFrom; // the text they were taken from
   private String marked; // the text the underline is in, or null for none
-  private final Completion.State completion = new Completion.State();
+  private final Completion.State completion = new Completion.State().openAfter(".");
   final Suggestions suggestions;
 
   ConsoleEditor(ConsoleTab tab) {

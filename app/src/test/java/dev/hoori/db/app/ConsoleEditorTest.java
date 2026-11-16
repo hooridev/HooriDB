@@ -276,6 +276,23 @@ class ConsoleEditorTest {
     assertEquals(List.of("customers", "order_totals", "orders"), options(console.c.tree("tables")));
   }
 
+  /** A dot typed after a schema or an alias opens the list at once; one after a number does not. */
+  @Test
+  void aDotTypedOpensTheListOfWhatComesAfterIt() throws Exception {
+    var app = console.console(SHOP);
+    console.c.run(
+        app,
+        TREE + type("SELECT * FROM public") + "type \".\"\nframe\nadvance 1\nframe\nsnap tables\n"
+            + "key A control\nkey Delete\n" + type("SELECT  FROM orders o") + "key Home\n"
+            + "key ArrowRight\n".repeat(7) + "type \"o.\"\nframe\nadvance 1\nframe\nsnap columns\n"
+            + "key Escape\nkey A control\nkey Delete\n" + type("SELECT 1")
+            + "type \".\"\nframe\nadvance 1\nframe\nsnap number\n");
+    assertEquals(List.of("customers", "order_totals", "orders"), options(console.c.tree("tables")));
+    assertEquals(
+        List.of("customer_id", "id", "placed_at", "total"), options(console.c.tree("columns")));
+    assertFalse(console.c.tree("number").contains("#completions"), console.c.tree("number"));
+  }
+
   @Test
   void whatIsNotReadYetIsReadOnTheTreesConnectionAndOfferedAtTheNextKeystroke() throws Exception {
     var app = console.console(SHOP);
