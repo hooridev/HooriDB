@@ -322,7 +322,13 @@ class ServersServerTest {
       lane.submit(drop).get(20, TimeUnit.SECONDS);
       lane.submit(link -> link.run("CREATE TABLE seam_large (id integer)").next(10))
           .get(20, TimeUnit.SECONDS);
-      statement(lane, "INSERT INTO seam_large VALUES (1), (2), (3)", ConsoleTab.Mode.MANUAL);
+      statement(lane, "INSERT INTO seam_large VALUES (1), (2), (3)", ConsoleTab.Mode.AUTO);
+      // Statistics as they are, which a table just made may not have yet.
+      statement(
+          lane,
+          provider == Provider.POSTGRESQL ? "ANALYZE seam_large" : "ANALYZE TABLE seam_large",
+          ConsoleTab.Mode.AUTO);
+      statement(lane, "INSERT INTO seam_large VALUES (4)", ConsoleTab.Mode.MANUAL);
       var asked = assertThrows(
           ExecutionException.class,
           () -> lane.submit(link -> unit(
@@ -340,7 +346,7 @@ class ServersServerTest {
       assertTrue(tooMany.rows > 1, String.valueOf(tooMany.rows));
       assertEquals(Transaction.OPEN, tooMany.status.transaction());
       var counted = statement(lane, "SELECT count(*) FROM seam_large", ConsoleTab.Mode.MANUAL);
-      assertEquals(3L, ((Number) rows(counted.portion()).getFirst().getFirst()).longValue());
+      assertEquals(4L, ((Number) rows(counted.portion()).getFirst().getFirst()).longValue());
       var missing = lane.submit(link -> unit(
               link,
               l -> ConsoleTab.start(
@@ -746,6 +752,7 @@ class ServersServerTest {
         assertTrue(kept == 0 || kept == 1000, "kept " + kept);
       }
     } finally {
+      statement(lane, "DROP FUNCTION seam_note", ConsoleTab.Mode.AUTO);
       statement(lane, "DROP TABLE seam_noted", ConsoleTab.Mode.AUTO);
       lane.close();
       watcher.close();
