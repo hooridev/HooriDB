@@ -483,6 +483,11 @@ class DriversTest {
   /** As on Windows, where a driver used since HooriDB started keeps its file open. */
   @Test
   void aDeleteThatFailsKeepsTheVersion() throws Exception {
+    // Before the load: on Windows, a driver loaded by a test that stops later keeps its file open,
+    // and the test's folder cannot be deleted.
+    assumeTrue(
+        dir.getFileSystem().supportedFileAttributeViews().contains("posix"),
+        "a folder can be read-only");
     downloaded(FakeDrivers.VERSION, OLD);
     var app = app();
     run(app, START);

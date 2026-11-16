@@ -15,7 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
+import com.rethinkj.ui.Key;
 import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Database;
@@ -143,10 +145,11 @@ class PaletteTest {
             + "press role=menuitem label=\"Command palette…\"\n" + SHOWN + "snap palette\n");
     var go = c.tree("go");
     assertTrue(line(go, "role=menuitem label=\"Next tab\"").contains("disabled"), go);
-    // Of its two keys, the first shows.
+    // Of its two keys, the first shows, in the platform's words: "Ctrl+PgDn" on Windows.
     var next = ConnectionsTest.after(go, "role=menuitem label=\"Next tab\"");
     next = next.substring(0, next.indexOf("role=menuitem label=\"Previous tab\""));
-    assertTrue(next.contains("\"Ctrl+Page Down\"") && !next.contains("Ctrl+Tab"), next);
+    var pageDown = Menu.shortcutText(new Key("PageDown", Key.CONTROL, false));
+    assertTrue(next.contains("\"" + pageDown + "\"") && !next.contains("Ctrl+Tab"), next);
     assertTrue(
         ConnectionsTest.after(go, "role=menuitem label=\"Connections\"").contains("\"Ctrl+0\""),
         go);
