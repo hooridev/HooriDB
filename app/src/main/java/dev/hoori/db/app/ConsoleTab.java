@@ -315,6 +315,7 @@ final class ConsoleTab implements Tab {
   private int learned; // what was learned of it, counted: an answer that comes late is dropped
   // The user's statement sent and not yet ended, for the history; null for none.
   private Sent recording;
+  private HistoryEntry recorded; // the last statement that went into the history, or null
   HistoryDialog history; // the History dialog, null while closed
 
   /** A statement of the user's on its way to the server, and since when. */
@@ -340,13 +341,14 @@ final class ConsoleTab implements Tab {
       return;
     }
     recording = null;
-    s.ran(new HistoryEntry(
+    recorded = new HistoryEntry(
         id,
         sent.sql(),
         sent.started(),
         (took != null ? took : Duration.between(sent.started(), Instant.now()))
             .truncatedTo(ChronoUnit.MILLIS), // as it is kept
-        outcome));
+        outcome);
+    s.ran(recorded);
   }
 
   /** How the first part of a statement's outcome ended, its failure first. */
@@ -472,6 +474,9 @@ final class ConsoleTab implements Tab {
   void take(State s) {
     if (lane == null && database.isEmpty() && !chosen) {
       database = s.catalog.onlyDatabase(id);
+      if (!database.isEmpty()) {
+        s.edited(); // kept, so that it opens there next time too
+      }
     }
   }
 
@@ -1769,6 +1774,12 @@ final class ConsoleTab implements Tab {
           var failure = failure(portion);
           if (failure != null) {
             heard(Level.ERROR, sql, portion.elapsed(), outcome(portion));
+            if (recorded != null && recorded.statement().equals(sql)) { // the read's own entry
+              var was = recorded;
+              recorded = new HistoryEntry(
+                  was.connection(), sql, was.started(), was.took(), outcomeOf(portion));
+              s.ranAgain(was, recorded);
+            }
             fail(s, failure);
             help.failed(sql, failure); // where the server says, also in its later rows
           } else if (before < outputs.size()) {
@@ -1898,8 +1909,13 @@ final class ConsoleTab implements Tab {
    * leave it to run.
    */
   private void stop() {
-    if (recording != null && teller != null) {
-      record(teller.state(), new Outcome.Cancelled(), null); // none comes from here on
+    if (recording != null && teller != null) { // none comes from here on
+      var done = work.delivery().waiting() ? work.delivery().outcome : null;
+      if (done instanceof Ran r) { // it ran to its end before the cancel
+        record(teller.state(), outcomeOf(r.portion()), r.portion().elapsed());
+      } else {
+        record(teller.state(), new Outcome.Cancelled(), null);
+      }
     }
     work.cancel(); // its outcome, if the lane has it already, becomes a notice
     outstanding.remove(work.delivery());

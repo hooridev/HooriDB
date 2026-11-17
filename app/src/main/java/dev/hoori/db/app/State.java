@@ -231,7 +231,7 @@ final class State {
   private void historyLoaded(boolean canSave) {
     historyKept.canSave = canSave;
     if (historyKept.unsaved) {
-      persist(historyKept);
+      save(historyKept);
     }
   }
 
@@ -255,7 +255,7 @@ final class State {
     restoring = null;
     consolesKept.canSave = true;
     if (consolesKept.unsaved) {
-      persist(consolesKept);
+      save(consolesKept);
     }
   }
 
@@ -268,7 +268,7 @@ final class State {
     int at = ++edits;
     app.after(EDIT_SECONDS, () -> {
       if (edits == at) {
-        persist(consolesKept);
+        save(consolesKept);
       }
     });
   }
@@ -278,6 +278,17 @@ final class State {
     var before = history;
     history = HistoryStore.add(history, entry);
     if (history != before) {
+      persist(historyKept);
+    }
+  }
+
+  /** A statement's outcome turned out otherwise, as a read that failed in its later rows. */
+  void ranAgain(HistoryEntry was, HistoryEntry now) {
+    int at = history.lastIndexOf(was);
+    if (at >= 0) { // else gone, by the cap or a clear
+      var list = new ArrayList<>(history);
+      list.set(at, now);
+      history = List.copyOf(list);
       persist(historyKept);
     }
   }
@@ -306,6 +317,11 @@ final class State {
       kept.quitAnyway = false;
     }
     kept.unsaved = true;
+    save(kept);
+  }
+
+  /** Writes what changed before, as {@link #persist(Kept)} does; a change since waits for it. */
+  private void save(Kept kept) {
     if (!kept.canSave) {
       return; // its load saves it, if it may
     }
@@ -328,7 +344,7 @@ final class State {
           kept.saveError = null;
           if (kept.again) {
             kept.again = false;
-            persist(kept);
+            save(kept);
             return;
           }
           kept.unsaved = kept == consolesKept && edits != at;
@@ -340,7 +356,7 @@ final class State {
           kept.saveError = message(error);
           if (kept.again) {
             kept.again = false;
-            persist(kept);
+            save(kept);
           } else if (quitting()) {
             kept.quitAnyway = true;
             stay("HooriDB stayed open, as the " + kept.what + " could not be saved. Close it again"
@@ -458,8 +474,7 @@ final class State {
   /**
    * Puts the profile in place of the one with its id, or at the end, and selects it. Where it
    * reaches another server or database now, the tabs of its tables close: their records name
-   * tables of the old one. Its consoles stay with their texts, and one on the database it opened on
-   * moves to the new one.
+   * tables of the old one. Its consoles stay, with their texts and databases.
    */
   void put(ConnectionProfile profile) {
     var old = profile(profile.id());
@@ -469,12 +484,6 @@ final class State {
             || old.port() != profile.port()
             || !database(old).equals(database(profile)))) {
       close(tables(profile.id()));
-      for (var console : consoles(profile.id())) {
-        if (console.database.equals(database(old))) {
-          console.database = database(profile);
-        }
-      }
-      persist(consolesKept);
     }
     var list = new ArrayList<>(profiles);
     int at = indexOf(profile.id());
@@ -724,6 +733,9 @@ final class State {
           if (loadError != null) { // the file is readable now
             loadError = null;
             tell("The connections that could not be read were kept in " + ProfileStore.UNREADABLE);
+            if (restoring != null && restoring.isEmpty()) {
+              restore(); // no console of the connections set aside is dropped
+            }
           }
           if (saveAgain) {
             saveAgain = false;
@@ -836,7 +848,7 @@ final class State {
     for (var kept : List.of(consolesKept, historyKept)) {
       if (kept.waits()) {
         if (kept.saving == null) {
-          persist(kept);
+          save(kept);
         }
         return true;
       }

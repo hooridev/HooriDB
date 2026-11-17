@@ -4,6 +4,7 @@ import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.eventually;
 import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.ConsoleTest.COUNT;
@@ -26,6 +27,7 @@ import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.StoredConsole;
+import dev.hoori.db.core.execution.Failure;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -267,8 +269,38 @@ class ConsoleHistoryTest {
     var s = app.state();
     app.post(() -> s.put(s.profile(SHOP.id()).withDatabase("analytics")));
     c.run(app, "await\nframe\n" + SETTLE);
-    assertEquals(1, s.consoles(null).size(), "it stays open");
-    assertEquals(List.of(new StoredConsole(SHOP.id(), "analytics", "SELECT 'kept';")), consoles());
+    assertEquals(
+        List.of(new StoredConsole(SHOP.id(), "shop", "SELECT 'kept';")),
+        s.consoles(null).stream().map(ConsoleTab::stored).toList(),
+        "it stays open, on its database");
+  }
+
+  @Test
+  void aCancelAfterTheStatementEndedKeepsHowItEnded() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN); // the session is open
+    var tab = k.tab(app);
+    c.run(app, type("\n" + PAY) + "key Enter control\nframe\nframe\n");
+    eventually(tab::outcomeWaiting);
+    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE);
+    assertEquals(new Outcome.Changed(3), app.state().history.getLast().outcome());
+  }
+
+  @Test
+  void aReadThatFailsInItsLaterRowsIsKeptAsFailed() throws Exception {
+    var sql = "SELECT * FROM late";
+    servers.statement(
+        sql,
+        List.of(
+            FakeServers.made(300, "id: bigint"),
+            FakeServers.serverError(Failure.Kind.OTHER, "division by zero")));
+    var app = k.console(SHOP);
+    c.run(app, type(sql) + RUN);
+    assertEquals(new Outcome.Rows(), app.state().history.getLast().outcome());
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE);
+    assertEquals(
+        new Outcome.Failed("division by zero"), app.state().history.getLast().outcome());
+    assertEquals(1, app.state().history.size());
   }
 
   @Test

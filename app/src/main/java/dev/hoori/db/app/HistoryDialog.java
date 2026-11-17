@@ -24,6 +24,7 @@ import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
@@ -52,6 +53,7 @@ final class HistoryDialog {
       shown = s.history.reversed().stream()
           .filter(e -> e.connection().equals(console.id)
               && e.statement().toLowerCase(Locale.ROOT).contains(part))
+          .sorted(Comparator.comparing(HistoryEntry::started).reversed()) // by when each began
           .toList();
       of = s.history;
       found = search;
