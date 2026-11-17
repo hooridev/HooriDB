@@ -237,11 +237,11 @@ final class State {
 
   /**
    * Opens the consoles loaded in the main window, in their order, once the profiles have loaded as
-   * well; those of a connection that is gone are dropped. Not after the profiles failed to load: a
-   * save would drop them all.
+   * well; those of a connection that is gone are dropped. Not after the profiles failed to load,
+   * nor where they were set aside as unreadable while consoles were kept: a save would drop those.
    */
   private void restore() {
-    if (restoring == null || !loaded || loadError != null) {
+    if (restoring == null || !loaded || loadError != null || unreadable && !restoring.isEmpty()) {
       return;
     }
     var main = tabs.main();
@@ -267,7 +267,7 @@ final class State {
     consolesKept.unsaved = true;
     int at = ++edits;
     app.after(EDIT_SECONDS, () -> {
-      if (edits == at) {
+      if (edits == at && !consolesKept.quitAnyway) { // the last Exit went without it
         save(consolesKept);
       }
     });
@@ -733,9 +733,7 @@ final class State {
           if (loadError != null) { // the file is readable now
             loadError = null;
             tell("The connections that could not be read were kept in " + ProfileStore.UNREADABLE);
-            if (restoring != null && restoring.isEmpty()) {
-              restore(); // no console of the connections set aside is dropped
-            }
+            restore(); // where no console of the connections set aside is dropped
           }
           if (saveAgain) {
             saveAgain = false;

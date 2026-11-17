@@ -1774,7 +1774,7 @@ final class ConsoleTab implements Tab {
           var failure = failure(portion);
           if (failure != null) {
             heard(Level.ERROR, sql, portion.elapsed(), outcome(portion));
-            if (recorded != null && recorded.statement().equals(sql)) { // the read's own entry
+            if (recorded != null) { // the read's own entry, as nothing was sent after it
               var was = recorded;
               recorded = new HistoryEntry(
                   was.connection(), sql, was.started(), was.took(), outcomeOf(portion));
@@ -1910,11 +1910,13 @@ final class ConsoleTab implements Tab {
    */
   private void stop() {
     if (recording != null && teller != null) { // none comes from here on
-      var done = work.delivery().waiting() ? work.delivery().outcome : null;
-      if (done instanceof Ran r) { // it ran to its end before the cancel
-        record(teller.state(), outcomeOf(r.portion()), r.portion().elapsed());
-      } else {
-        record(teller.state(), new Outcome.Cancelled(), null);
+      switch (work.delivery().waiting() ? work.delivery().outcome : null) {
+        case Ran r -> // it ran to its end before the cancel
+          record(teller.state(), outcomeOf(r.portion()), r.portion().elapsed());
+        case TooMany e -> recording = null; // not sent, as in run's own outcome
+        case NotRun e -> recording = null;
+        case GaveUp e -> recording = null;
+        case null, default -> record(teller.state(), new Outcome.Cancelled(), null);
       }
     }
     work.cancel(); // its outcome, if the lane has it already, becomes a notice

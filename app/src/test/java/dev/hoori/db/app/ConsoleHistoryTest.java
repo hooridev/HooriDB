@@ -23,11 +23,15 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.HistoryStore;
+import dev.hoori.db.core.connection.ProfileStore;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.execution.Failure;
+import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -260,6 +264,31 @@ class ConsoleHistoryTest {
         c.tree("stayed"));
     c.run(app, EXIT + "await\nframe\n".repeat(4));
     assertTrue(app.windows().all().isEmpty(), "the second Exit quits without them");
+  }
+
+  @Test
+  void consolesOfConnectionsSetAsideStayInTheirFile() throws Exception {
+    Files.createDirectories(config());
+    Files.writeString(config().resolve(ProfileStore.FILE), "{"); // read, and not understood
+    var kept = List.of(new StoredConsole(SHOP.id(), "shop", "SELECT 'set aside';"));
+    new ConsoleStore(config()).save(kept);
+    var app = HooriDb.app(
+        config(),
+        () -> new Keyring.Available(c.secrets),
+        c.repository.drivers(dir.resolve("drivers")),
+        Tester.SERVER,
+        servers);
+    c.apps.add(app);
+    var s = app.state();
+    c.run(app, START + SETTLE);
+    var made = ConnectionProfile.of(Provider.POSTGRESQL).withName("new").withHost(PG);
+    app.post(() -> s.put(made));
+    c.run(app, "await\nframe\n" + SETTLE);
+    assertEquals(null, s.loadError, "the connections are saved anew");
+    app.post(() -> s.openConsole(made.id())); // a change of the consoles, which is not saved
+    c.run(app, "await\nframe\n" + SETTLE);
+    assertEquals(1, s.consoles(null).size());
+    assertEquals(kept, consoles());
   }
 
   @Test
