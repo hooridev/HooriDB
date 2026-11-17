@@ -12,8 +12,12 @@ import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.ConsoleStore;
+import dev.hoori.db.core.connection.HistoryEntry;
+import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.query.Query;
@@ -23,10 +27,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -45,7 +52,7 @@ final class State {
   // The tabs of every window: the first window's, and those torn off into windows of their own.
   final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow)
       .onCloseTab(this::closeTab)
-      .onClosed(Tab::close);
+      .onClosed(this::tabClosed);
   // The command palette of each window, by its tabs, and what Go to table began reading there.
   final Map<TabGroups.Group<Tab>, Palette> palettes = new HashMap<>();
 
@@ -103,6 +110,47 @@ final class State {
   private boolean saveAgain; // the profiles changed while it ran
   private boolean quitAnyway; // the last save at the end failed and the user was told
 
+  // How long after the last edit of a console its text is saved.
+  static final double EDIT_SECONDS = 1;
+
+  /**
+   * A file kept beside the connections, saved as they are ({@link #persist()}): one save at a time,
+   * a change meanwhile saves again with what is there then. None before its load has ended, nor
+   * after a load that failed with the file still there, which nothing may replace.
+   */
+  static final class Kept {
+    final String what; // "consoles", in messages
+    final Callable<Callable<?>> next; // on the app's thread: the save of what is there now
+    boolean canSave; // its load ended, and for the consoles they were restored
+    boolean unsaved; // differs from what was last written
+    String saveError; // why the last save failed, or null
+    private Work saving;
+    private boolean again;
+    private boolean quitAnyway;
+
+    Kept(String what, Callable<Callable<?>> next) {
+      this.what = what;
+      this.next = next;
+    }
+
+    /** Whether Exit waits for it: a save runs, or one is due. */
+    boolean waits() {
+      return saving != null || unsaved && canSave && !quitAnyway;
+    }
+  }
+
+  private final ConsoleStore consoleStore;
+  private final HistoryStore historyStore;
+  final Kept consolesKept;
+  final Kept historyKept;
+  // The statements run from consoles, of every connection, the oldest first.
+  List<HistoryEntry> history = List.of();
+  // Connections whose history went before it was loaded: what is loaded of them goes too.
+  private final Set<UUID> forgotten = new HashSet<>();
+  // The consoles loaded and not yet restored, which waits for the profiles; null before and after.
+  private List<StoredConsole> restoring;
+  private int edits; // counted, so that a late patience is dropped
+
   /**
    * @param folder where the profiles are kept
    * @param keyring finds the system keyring, off the app's thread
@@ -112,15 +160,200 @@ final class State {
    */
   State(Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester, Servers servers) {
     this.store = new ProfileStore(folder);
+    this.consoleStore = new ConsoleStore(folder);
+    this.historyStore = new HistoryStore(folder);
+    consolesKept = new Kept("consoles", () -> {
+      var list = consoles(null).stream().map(ConsoleTab::stored).toList();
+      var store = consoleStore;
+      return () -> {
+        store.save(list);
+        return list;
+      };
+    });
+    historyKept = new Kept("history", () -> {
+      var list = this.history;
+      var store = historyStore;
+      return () -> {
+        store.save(list);
+        return list;
+      };
+    });
     this.findKeyring = keyring;
     this.drivers = drivers;
     this.tester = tester;
     this.catalog = new CatalogTree(servers);
   }
 
-  /** Loads the profiles, then looks up the keyring. */
+  /** Loads the profiles, then looks up the keyring; and the consoles and the history beside. */
   void start() {
     load();
+    var consoles = consoleStore;
+    app.background(
+        "load consoles",
+        consoles::load,
+        list -> {
+          restoring = list;
+          restore();
+        },
+        error -> {
+          loadFailed(consolesKept, error);
+          // Not restored; what the user opens is saved where the old file is set aside.
+          consolesKept.canSave = error instanceof ProfileStore.UnreadableException;
+        });
+    var history = historyStore;
+    app.background(
+        "load history",
+        history::load,
+        list -> {
+          var all =
+              list.stream().filter(e -> !forgotten.contains(e.connection())).toList();
+          for (var entry : this.history) { // run before the load
+            all = HistoryStore.add(all, entry);
+          }
+          this.history = all;
+          historyLoaded(true);
+        },
+        error -> {
+          loadFailed(historyKept, error);
+          historyLoaded(error instanceof ProfileStore.UnreadableException);
+        });
+  }
+
+  private void loadFailed(Kept kept, Exception error) {
+    notice(
+        kept.what.substring(0, 1).toUpperCase(Locale.ROOT) + kept.what.substring(1),
+        "not read",
+        message(error),
+        true,
+        null);
+  }
+
+  private void historyLoaded(boolean canSave) {
+    historyKept.canSave = canSave;
+    if (historyKept.unsaved) {
+      persist(historyKept);
+    }
+  }
+
+  /**
+   * Opens the consoles loaded in the main window, in their order, once the profiles have loaded as
+   * well; those of a connection that is gone are dropped. Not after the profiles failed to load: a
+   * save would drop them all.
+   */
+  private void restore() {
+    if (restoring == null || !loaded || loadError != null) {
+      return;
+    }
+    var main = tabs.main();
+    for (var stored : restoring) {
+      if (profile(stored.connection()) != null) {
+        var console = new ConsoleTab(stored.connection(), stored.database());
+        console.text = stored.text();
+        tabs.add(main, main.tabs().size(), console);
+      }
+    }
+    restoring = null;
+    consolesKept.canSave = true;
+    if (consolesKept.unsaved) {
+      persist(consolesKept);
+    }
+  }
+
+  /** A console's text or database changed: it is saved once it has not changed for a while. */
+  void edited() {
+    if (!quitting()) {
+      consolesKept.quitAnyway = false; // a change since: the next Exit tries to save it
+    }
+    consolesKept.unsaved = true;
+    int at = ++edits;
+    app.after(EDIT_SECONDS, () -> {
+      if (edits == at) {
+        persist(consolesKept);
+      }
+    });
+  }
+
+  /** A statement of a console's ran: it goes into the history of its connection. */
+  void ran(HistoryEntry entry) {
+    var before = history;
+    history = HistoryStore.add(history, entry);
+    if (history != before) {
+      persist(historyKept);
+    }
+  }
+
+  /** Deletes the history of the connection. */
+  void forget(UUID id) {
+    forgotten.add(id);
+    history = history.stream().filter(e -> !e.connection().equals(id)).toList();
+    persist(historyKept);
+  }
+
+  /** A tab closed, by the user or with its connection: a console's text is no longer kept. */
+  private void tabClosed(Tab tab) {
+    tab.close();
+    if (tab instanceof ConsoleTab) {
+      persist(consolesKept);
+    }
+  }
+
+  /**
+   * Writes the file as the state is now, off the app's thread, as {@link #persist()} writes the
+   * profiles; a failure goes to the notices once, until a save succeeds.
+   */
+  void persist(Kept kept) {
+    if (!quitting()) {
+      kept.quitAnyway = false;
+    }
+    kept.unsaved = true;
+    if (!kept.canSave) {
+      return; // its load saves it, if it may
+    }
+    if (kept.saving != null) {
+      kept.again = true;
+      return;
+    }
+    Callable<?> save;
+    try {
+      save = kept.next.call();
+    } catch (Exception e) {
+      throw new IllegalStateException(e); // it only reads the state
+    }
+    kept.saving = app.background(
+        "save " + kept.what,
+        save,
+        done -> {
+          kept.saving = null;
+          kept.saveError = null;
+          if (kept.again) {
+            kept.again = false;
+            persist(kept);
+            return;
+          }
+          kept.unsaved = false;
+          settled();
+        },
+        error -> {
+          kept.saving = null;
+          boolean first = kept.saveError == null;
+          kept.saveError = message(error);
+          if (kept.again) {
+            kept.again = false;
+            persist(kept);
+          } else if (quitting()) {
+            kept.quitAnyway = true;
+            stay("HooriDB stayed open, as the " + kept.what + " could not be saved. Close it again"
+                + " to quit without "
+                + (kept == historyKept ? "it." : "them."));
+          } else if (first) {
+            notice(
+                kept == historyKept ? "History" : "Consoles",
+                "not saved",
+                kept.saveError,
+                true,
+                null);
+          }
+        });
   }
 
   /** Loads the profiles again after a failure that left the file as it was. */
@@ -139,6 +372,7 @@ final class State {
           loaded = true;
           unreadable = false;
           lookForKeyring();
+          restore();
         },
         error -> {
           loaded = true;
@@ -384,7 +618,8 @@ final class State {
     deleting = null;
     forgetPassword(profile.id());
     catalog.drop(this, profile.id());
-    closeTabs(profile.id());
+    closeTabs(profile.id()); // its consoles, and with them their texts
+    forget(profile.id());
     profiles = profiles.stream().filter(p -> !p.id().equals(profile.id())).toList();
     if (selected != null && selected.id().equals(profile.id())) {
       selected = null;
@@ -552,7 +787,8 @@ final class State {
     }
     // The one way out: the file saved, unless the user chose to go without it ("anyway" waives
     // that alone); then every console's session ends, and HooriDB waits for each to say how, as
-    // long as their closing is bounded, waiving only those it said it could not confirm.
+    // long as their closing is bounded, waiving only those it said it could not confirm. The
+    // consoles and the history are saved last, as ending a session may add to them.
     if (unsaved && !quitAnyway) {
       persist();
       return;
@@ -579,7 +815,22 @@ final class State {
       stay("HooriDB stayed open: a session reported a problem as it closed. See the connections.");
       return;
     }
-    closeAll();
+    if (!keptWaits()) { // what the sessions' ends added
+      closeAll();
+    }
+  }
+
+  /** Whether Exit waits for the consoles or the history to be saved; a save due begins. */
+  private boolean keptWaits() {
+    for (var kept : List.of(consolesKept, historyKept)) {
+      if (kept.waits()) {
+        if (kept.saving == null) {
+          persist(kept);
+        }
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Exit stops, and says why; the next one asks again. */
@@ -669,6 +920,7 @@ final class State {
     var console = new ConsoleTab(id, at == null ? database(profile) : at);
     console.take(this);
     tabs.add(group, group.tabs().size(), console);
+    persist(consolesKept);
   }
 
   /**

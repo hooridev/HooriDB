@@ -97,6 +97,7 @@ final class Frame {
     root.overlay(asked);
     root.overlay(question);
     root.overlay(confirmation);
+    root.overlay(confirmation == null ? null : historyQuestion(s, main));
     if (s.driverList != null && s.dialog == null && s.deleting == null && asked == null) {
       root.overlay(s.driverList.view(s)).overlay(s.driverList.question(s));
     }
@@ -220,6 +221,7 @@ final class Frame {
         .overlay(asked)
         .overlay(question)
         .overlay(confirmation)
+        .overlay(confirmation == null ? null : historyQuestion(s, group))
         .overlay(modal ? null : palette(s, group, menus));
   }
 
@@ -236,7 +238,20 @@ final class Frame {
    * console behind another tab waits until its tab is shown.
    */
   private static El confirmation(State s, TabGroups.Group<Tab> group) {
-    return group.activeTab() instanceof ConsoleTab console ? console.confirmation(s) : null;
+    if (!(group.activeTab() instanceof ConsoleTab console)) {
+      return null;
+    }
+    El asked = console.confirmation(s);
+    return asked != null || console.history == null
+        ? asked
+        : console.history.view(s, console, app(s, group));
+  }
+
+  /** The question of the History dialog of the window's console in front, or null. */
+  private static El historyQuestion(State s, TabGroups.Group<Tab> group) {
+    return group.activeTab() instanceof ConsoleTab console && console.history != null
+        ? console.history.question(s, console)
+        : null;
   }
 
   /** The app of the window of these tabs. */
@@ -419,6 +434,10 @@ final class Frame {
                     .icon(Symbol.CODE)
                     .shortcut(Key.CONTROL, "N"),
                 Menu.item(
+                        "History…",
+                        !modal && group.activeTab() instanceof ConsoleTab c ? c::openHistory : null)
+                    .icon(Symbol.HISTORY),
+                Menu.item(
                     "Drivers…",
                     s.drivers == null || !free ? null : () -> s.driverList = DriversDialog.open(s)),
                 Menu.separator(),
@@ -494,7 +513,7 @@ final class Frame {
   }
 
   /** The element at or below this one with the key, in tree order; or null. */
-  private static El find(El el, String key) {
+  static El find(El el, String key) {
     if (el == null || key.equals(el.key())) {
       return el;
     }

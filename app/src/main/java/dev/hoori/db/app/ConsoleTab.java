@@ -34,7 +34,10 @@ import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
+import dev.hoori.db.core.connection.HistoryEntry;
+import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.driver.LoadedDriver;
@@ -50,6 +53,8 @@ import dev.hoori.db.core.sql.EveryRow;
 import dev.hoori.db.core.sql.Statement;
 import dev.hoori.db.core.sql.Statements;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -308,10 +313,59 @@ final class ConsoleTab implements Tab {
   private final List<Delivery> outstanding = new ArrayList<>();
   Check probing; // which one it is
   private int learned; // what was learned of it, counted: an answer that comes late is dropped
+  // The user's statement sent and not yet ended, for the history; null for none.
+  private Sent recording;
+  HistoryDialog history; // the History dialog, null while closed
+
+  /** A statement of the user's on its way to the server, and since when. */
+  private record Sent(String sql, Instant started) {}
 
   ConsoleTab(UUID id, String database) {
     this.id = id;
     this.database = database;
+  }
+
+  /** The console as it is kept until the next start. */
+  StoredConsole stored() {
+    return new StoredConsole(id, database, text);
+  }
+
+  /**
+   * The statement sent ended so: it goes into the history, with the time on the server where the
+   * server said it, else the time until now.
+   */
+  private void record(State s, Outcome outcome, Duration took) {
+    var sent = recording;
+    if (sent == null) {
+      return;
+    }
+    recording = null;
+    s.ran(new HistoryEntry(
+        id,
+        sent.sql(),
+        sent.started(),
+        (took != null ? took : Duration.between(sent.started(), Instant.now()))
+            .truncatedTo(ChronoUnit.MILLIS), // as it is kept
+        outcome));
+  }
+
+  /** How the first part of a statement's outcome ended, its failure first. */
+  private Outcome outcomeOf(Portion portion) {
+    var failure = failure(portion);
+    if (failure != null) {
+      return failure.kind() == Failure.Kind.CANCELLED
+          ? new Outcome.Cancelled()
+          : new Outcome.Failed(words(failure.message()));
+    }
+    for (var result : portion.results()) {
+      if (result instanceof Result.Rows) {
+        return new Outcome.Rows();
+      }
+      if (result instanceof Result.Count c) {
+        return new Outcome.Changed(c.count());
+      }
+    }
+    return new Outcome.Changed(0);
   }
 
   // Handlers
@@ -512,6 +566,7 @@ final class ConsoleTab implements Tab {
     var held = new AtomicReference<Servers.Run>();
     sent = held;
     var mode = this.mode;
+    recording = new Sent(sql, Instant.now());
     work = ask(
         s,
         "run a statement",
@@ -523,6 +578,7 @@ final class ConsoleTab implements Tab {
         error -> {
           work = null;
           if (error instanceof TooMany e) {
+            recording = null; // not sent: it is asked about first
             knew(e.status);
             empty |= wasEmpty; // nothing was sent
             confirming = new Confirm(
@@ -537,9 +593,20 @@ final class ConsoleTab implements Tab {
           }
           failedRun = true;
           if (error instanceof NotRun e) {
+            recording = null;
             notRun(s, sql, e);
           } else {
             failed(s, sql, error);
+            if (error instanceof InterruptedException || closed) {
+              record(s, new Outcome.Cancelled(), null);
+            } else if (error instanceof GaveUp) {
+              recording = null; // not sent
+            } else {
+              record(
+                  s,
+                  new Outcome.Failed(problem.text().isEmpty() ? problem.title() : problem.text()),
+                  null);
+            }
           }
         });
     open = held; // after ask, which gives up the one open before
@@ -1201,6 +1268,7 @@ final class ConsoleTab implements Tab {
   private void ran(State s, String sql, Ran ran) {
     var portion = ran.portion();
     var failure = failure(portion);
+    record(s, outcomeOf(portion), portion.elapsed());
     applied = true; // it was sent, after the session's mode was made sure of
     statements++;
     took = took.plus(portion.elapsed());
@@ -1780,6 +1848,7 @@ final class ConsoleTab implements Tab {
     var version = s.catalog.version(id);
     if (lane == null || profile == null) {
       database = name; // the next session opens on it
+      s.edited();
       return;
     }
     if (s.asks(
@@ -1793,6 +1862,7 @@ final class ConsoleTab implements Tab {
         || profile.provider().supports(Capability.CONNECTION_PER_DATABASE, version)) {
       closeSession();
       database = name;
+      s.edited();
       return;
     }
     leave();
@@ -1812,6 +1882,7 @@ final class ConsoleTab implements Tab {
           work = null;
           switching = null;
           database = done;
+          s.edited();
           log.add(new Logged(Level.RAN, "Database " + done, null, "Switched"));
         },
         error -> {
@@ -1827,6 +1898,9 @@ final class ConsoleTab implements Tab {
    * leave it to run.
    */
   private void stop() {
+    if (recording != null && teller != null) {
+      record(teller.state(), new Outcome.Cancelled(), null); // none comes from here on
+    }
     work.cancel(); // its outcome, if the lane has it already, becomes a notice
     outstanding.remove(work.delivery());
     work = null;
@@ -2304,6 +2378,11 @@ final class ConsoleTab implements Tab {
     actions.add(button(SECONDARY, "Cancel", busy && !firm ? () -> cancel(s) : null)
         .key("cancel")
         .keepFocus());
+    actions.add(Tooltip.tooltip(
+        Button.icon(Button.Variant.GHOST, Symbol.HISTORY, "History", this::openHistory)
+            .key("history-open")
+            .keepFocus(),
+        "History"));
     El top =
         // Without the provider's name, which the tree says: Commit and Rollback need its room.
         Card.toolbar(State.name(profile), null, actions.toArray(El[]::new));
@@ -2364,7 +2443,10 @@ final class ConsoleTab implements Tab {
     var dialect = provider == Provider.POSTGRESQL ? Sql.Dialect.POSTGRES : Sql.Dialect.MYSQL;
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
-    El editor = CodeEditor.codeEditor(app, text, this.editor, Sql.of(dialect), v -> text = v)
+    El editor = CodeEditor.codeEditor(app, text, this.editor, Sql.of(dialect), v -> {
+          text = v;
+          s.edited();
+        })
         .key("sql")
         .label("SQL")
         .autofocus(this)
@@ -2796,6 +2878,24 @@ final class ConsoleTab implements Tab {
     queue.clear();
     cancelled = true;
     log.add(new Logged(Level.WARNING, brief(asked.sql()), null, "Not run"));
+  }
+
+  /** History: the statements run on the connection, to put one into the editor. */
+  void openHistory() {
+    history = new HistoryDialog();
+  }
+
+  /**
+   * Puts the statement in place of the selection, or at the caret, as one step that Undo takes
+   * back, through the editor of the console's window; the caret after it.
+   */
+  void insert(App<State> app, String sql) {
+    int from = Math.min(editor.caret(), editor.anchor());
+    int to = Math.min(Math.max(editor.caret(), editor.anchor()), text.length());
+    var field = Frame.find(app.tree(), "sql");
+    if (field != null) {
+      app.edit(field, from, to, sql, from + sql.length());
+    }
   }
 
   /** What is asked before a statement is sent, while it is; in the console's window. */

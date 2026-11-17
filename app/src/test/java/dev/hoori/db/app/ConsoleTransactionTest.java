@@ -2102,6 +2102,10 @@ class ConsoleTransactionTest {
   @Test
   void exitWaitsForASilentSessionOnlySoLong() throws Exception {
     var app = k.console(SHOP);
+    // shortcut: nothing is kept, as Exit would wait for its save, whose end a script hears only at
+    // an await, which waits for the silent session too; keep them once a script can hear one.
+    app.state().consolesKept.canSave = false;
+    app.state().historyKept.canSave = false;
     c.run(app, type(ORDERS) + RUN);
     servers.dead = true; // the held call ends only once its gate opens, interrupted or not
     var gate = servers.hold("run " + PG + " " + COUNT);

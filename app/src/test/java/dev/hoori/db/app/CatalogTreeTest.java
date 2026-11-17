@@ -12,6 +12,8 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.ConsoleStore;
+import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.driver.Driver;
@@ -153,6 +155,30 @@ class CatalogTreeTest {
 
   /** The app with these connections, servers and way of finding the keyring. */
   App<State> app(
+      Servers servers,
+      java.util.concurrent.Callable<Keyring> keyring,
+      ConnectionProfile... profiles)
+      throws IOException {
+    // A start of its own: what an app before it kept of its consoles is not restored.
+    try {
+      for (var earlier : apps) {
+        earlier.await(Duration.ofSeconds(10));
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new java.io.InterruptedIOException();
+    }
+    Files.deleteIfExists(dir.resolve("config").resolve(ConsoleStore.FILE));
+    Files.deleteIfExists(dir.resolve("config").resolve(HistoryStore.FILE));
+    return again(servers, keyring, profiles);
+  }
+
+  /** The app started again with these connections, and the consoles and history kept before. */
+  App<State> again(ConnectionProfile... profiles) throws IOException {
+    return again(servers, () -> new Keyring.Available(secrets), profiles);
+  }
+
+  private App<State> again(
       Servers servers,
       java.util.concurrent.Callable<Keyring> keyring,
       ConnectionProfile... profiles)
