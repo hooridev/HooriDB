@@ -244,6 +244,34 @@ class ConsoleHistoryTest {
   }
 
   @Test
+  void exitStaysOpenOnceWhereTheConsolesWereNotReadAndCannotBeSaved() throws Exception {
+    Files.createDirectories(config().resolve(ConsoleStore.FILE)); // fails to read, not unreadable
+    var app = c.again(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START + menu(SHOP.name(), "New console") + SETTLE + type("SELECT 'unkept';") + EXIT
+            + "await\nframe\n".repeat(4) + "snap stayed\n");
+    assertFalse(app.windows().all().isEmpty(), "it stays open");
+    assertTrue(
+        c.tree("stayed").contains("the consoles were not read, so they cannot be saved"),
+        c.tree("stayed"));
+    c.run(app, EXIT + "await\nframe\n".repeat(4));
+    assertTrue(app.windows().all().isEmpty(), "the second Exit quits without them");
+  }
+
+  @Test
+  void aConsoleStaysWithItsTextWhereItsConnectionMovesToAnotherDatabase() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type("SELECT 'kept';") + SAVED);
+    var s = app.state();
+    app.post(() -> s.put(s.profile(SHOP.id()).withDatabase("analytics")));
+    c.run(app, "await\nframe\n" + SETTLE);
+    assertEquals(1, s.consoles(null).size(), "it stays open");
+    assertEquals(List.of(new StoredConsole(SHOP.id(), "analytics", "SELECT 'kept';")), consoles());
+  }
+
+  @Test
   void aStatementLongerThanTheHistoryKeepsIsNotKept() throws Exception {
     var app = k.console(SHOP);
     var tab = k.tab(app);

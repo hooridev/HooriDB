@@ -671,7 +671,7 @@ class TableTabTest {
     var s = app.state();
     c.run(app, table("orders") + SETTLE + menu("shop-prod", "Edit…") + "snap asked\n");
     assertTrue(
-        c.tree("asked").contains("If its server or database changes, its open tabs close."),
+        c.tree("asked").contains("If its server or database changes, the tabs of its tables"),
         c.tree("asked"));
     c.run(app, "key Escape\nframe\nadvance 1\nframe\n");
     app.post(() -> s.put(s.profile(SHOP.id()).withName("shop-renamed")));

@@ -2111,6 +2111,8 @@ class ConsoleTransactionTest {
     var gate = servers.hold("run " + PG + " " + COUNT);
     c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains("run " + PG + " " + COUNT));
+    app.state().consolesKept.quitAnyway = true; // and Exit does not stop for what is not kept
+    app.state().historyKept.quitAnyway = true;
     c.run(app, EXIT + "advance " + State.EXIT_SECONDS + "\nframe\nsnap silent\n");
     assertFalse(app.windows().all().isEmpty());
     assertTrue(c.tree("silent").contains("did not say in time"), c.tree("silent"));

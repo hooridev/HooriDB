@@ -126,7 +126,7 @@ final class State {
     String saveError; // why the last save failed, or null
     private Work saving;
     private boolean again;
-    private boolean quitAnyway;
+    boolean quitAnyway; // the last Exit stopped for it, and the next goes without it
 
     Kept(String what, Callable<Callable<?>> next) {
       this.what = what;
@@ -319,6 +319,7 @@ final class State {
     } catch (Exception e) {
       throw new IllegalStateException(e); // it only reads the state
     }
+    int at = edits; // an edit after this is not in what it writes, and saves after its pause
     kept.saving = app.background(
         "save " + kept.what,
         save,
@@ -330,7 +331,7 @@ final class State {
             persist(kept);
             return;
           }
-          kept.unsaved = false;
+          kept.unsaved = kept == consolesKept && edits != at;
           settled();
         },
         error -> {
@@ -457,7 +458,8 @@ final class State {
   /**
    * Puts the profile in place of the one with its id, or at the end, and selects it. Where it
    * reaches another server or database now, the tabs of its tables close: their records name
-   * tables of the old one.
+   * tables of the old one. Its consoles stay with their texts, and one on the database it opened on
+   * moves to the new one.
    */
   void put(ConnectionProfile profile) {
     var old = profile(profile.id());
@@ -466,7 +468,13 @@ final class State {
             || !old.host().equals(profile.host())
             || old.port() != profile.port()
             || !database(old).equals(database(profile)))) {
-      closeTabs(profile.id());
+      close(tables(profile.id()));
+      for (var console : consoles(profile.id())) {
+        if (console.database.equals(database(old))) {
+          console.database = database(profile);
+        }
+      }
+      persist(consolesKept);
     }
     var list = new ArrayList<>(profiles);
     int at = indexOf(profile.id());
@@ -820,13 +828,24 @@ final class State {
     }
   }
 
-  /** Whether Exit waits for the consoles or the history to be saved; a save due begins. */
+  /**
+   * Whether Exit waits for the consoles or the history to be saved; a save due begins. Changes that
+   * cannot be saved, as the file was not read, stop it once.
+   */
   private boolean keptWaits() {
     for (var kept : List.of(consolesKept, historyKept)) {
       if (kept.waits()) {
         if (kept.saving == null) {
           persist(kept);
         }
+        return true;
+      }
+      if (kept.unsaved && !kept.canSave && !kept.quitAnyway) {
+        kept.quitAnyway = true;
+        boolean one = kept == historyKept;
+        stay("HooriDB stayed open: the " + kept.what + (one ? " was" : " were") + " not read, so "
+            + (one ? "it" : "they") + " cannot be saved. Close it again to quit without "
+            + (one ? "it." : "them."));
         return true;
       }
     }
@@ -1094,6 +1113,11 @@ final class State {
   private void closeTabs(UUID id) {
     var all = new ArrayList<Tab>(tables(id));
     all.addAll(consoles(id));
+    close(all);
+  }
+
+  /** Closes these tabs, in whichever window each is. */
+  private void close(List<? extends Tab> all) {
     for (var tab : all) {
       var group = tabs.groupOf(tab);
       tabs.close(group, group.tabs().indexOf(tab));

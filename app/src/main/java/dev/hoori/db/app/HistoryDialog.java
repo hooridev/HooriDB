@@ -118,6 +118,8 @@ final class HistoryDialog {
                   "Took",
                   3 * unit,
                   DataGrid.DataType.INTEGER,
+                  // shortcut: milliseconds as text, as Messages has; use the kit's Format once it
+                  // has one for a Duration.
                   row -> entries.get(row).took().toMillis() + " ms")
               .sortable(false),
           new DataGrid.Column(

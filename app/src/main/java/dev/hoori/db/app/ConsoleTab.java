@@ -2892,6 +2892,8 @@ final class ConsoleTab implements Tab {
   void insert(App<State> app, String sql) {
     int from = Math.min(editor.caret(), editor.anchor());
     int to = Math.min(Math.max(editor.caret(), editor.anchor()), text.length());
+    // shortcut: the editor's field is looked up in the tree, as CodeEditor.State cannot insert by
+    // itself; let the state insert once the kit offers it.
     var field = Frame.find(app.tree(), "sql");
     if (field != null) {
       app.edit(field, from, to, sql, from + sql.length());

@@ -1560,8 +1560,8 @@ final class CatalogTree {
     String name = State.name(d.profile());
     String what = switch (d.then()) {
       case EDIT ->
-        "To edit it, HooriDB disconnects it first. If its server or database changes, its"
-            + " open tabs close.";
+        "To edit it, HooriDB disconnects it first. If its server or database changes, the"
+            + " tabs of its tables close.";
       case DELETE -> "To delete it, HooriDB disconnects it first.";
     };
     El disconnect = button(PRIMARY, "Disconnect", () -> disconnectAndGo(s));
