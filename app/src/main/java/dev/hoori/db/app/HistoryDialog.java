@@ -57,8 +57,16 @@ final class HistoryDialog {
           .toList();
       of = s.history;
       found = search;
-      // The entry chosen stays chosen where it is still shown, else the newest is.
-      int at = Math.max(0, shown.indexOf(chosen));
+      // The entry chosen stays chosen where it is still shown, also with an outcome learned since,
+      // else the newest is.
+      int at = 0;
+      for (int i = 0; chosen != null && i < shown.size(); i++) {
+        var e = shown.get(i);
+        if (e.started().equals(chosen.started()) && e.statement().equals(chosen.statement())) {
+          at = i;
+          break;
+        }
+      }
       if (shown.isEmpty()) {
         selection.clear();
       } else {

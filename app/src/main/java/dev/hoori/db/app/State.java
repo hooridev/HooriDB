@@ -149,6 +149,8 @@ final class State {
   private final Set<UUID> forgotten = new HashSet<>();
   // The consoles loaded and not yet restored, which waits for the profiles; null before and after.
   private List<StoredConsole> restoring;
+  // The consoles kept of connections not known, saved along with the others and not shown.
+  private List<StoredConsole> unseen = List.of();
   private int edits; // counted, so that a late patience is dropped
 
   /**
@@ -163,7 +165,9 @@ final class State {
     this.consoleStore = new ConsoleStore(folder);
     this.historyStore = new HistoryStore(folder);
     consolesKept = new Kept("consoles", () -> {
-      var list = consoles(null).stream().map(ConsoleTab::stored).toList();
+      var list = new ArrayList<StoredConsole>();
+      consoles(null).forEach(x -> list.add(x.stored()));
+      list.addAll(unseen);
       var store = consoleStore;
       return () -> {
         store.save(list);
@@ -237,21 +241,26 @@ final class State {
 
   /**
    * Opens the consoles loaded in the main window, in their order, once the profiles have loaded as
-   * well; those of a connection that is gone are dropped. Not after the profiles failed to load,
-   * nor where they were set aside as unreadable while consoles were kept: a save would drop those.
+   * well; those of a connection not known stay in the file unseen, as its connection may come
+   * back, as from a file of connections set aside and mended. Not after the profiles failed to load:
+   * a save would drop them all.
    */
   private void restore() {
-    if (restoring == null || !loaded || loadError != null || unreadable && !restoring.isEmpty()) {
+    if (restoring == null || !loaded || loadError != null) {
       return;
     }
     var main = tabs.main();
+    var hidden = new ArrayList<StoredConsole>();
     for (var stored : restoring) {
       if (profile(stored.connection()) != null) {
         var console = new ConsoleTab(stored.connection(), stored.database());
         console.text = stored.text();
         tabs.add(main, main.tabs().size(), console);
+      } else {
+        hidden.add(stored);
       }
     }
+    unseen = List.copyOf(hidden);
     restoring = null;
     consolesKept.canSave = true;
     if (consolesKept.unsaved) {
@@ -733,7 +742,7 @@ final class State {
           if (loadError != null) { // the file is readable now
             loadError = null;
             tell("The connections that could not be read were kept in " + ProfileStore.UNREADABLE);
-            restore(); // where no console of the connections set aside is dropped
+            restore();
           }
           if (saveAgain) {
             saveAgain = false;

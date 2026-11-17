@@ -97,7 +97,7 @@ class ConsoleHistoryTest {
   }
 
   @Test
-  void consolesOfAConnectionThatIsGoneAreDroppedAndTheOthersKeepTheirOrder() throws Exception {
+  void consolesOfAConnectionNotKnownStayUnseenAndTheOthersKeepTheirOrder() throws Exception {
     var gone = java.util.UUID.randomUUID();
     new ConsoleStore(config())
         .save(List.of(
@@ -112,10 +112,11 @@ class ConsoleHistoryTest {
             new StoredConsole(SHOP.id(), "inventory", "SELECT 2;"),
             new StoredConsole(SHOP.id(), "shop", "SELECT 3;")),
         restored);
-    // Nothing was saved yet: the file keeps the one that is gone until the next change.
-    assertEquals(3, consoles().size());
     c.run(app, "key W control\nframe\n" + SETTLE);
-    assertEquals(List.of(restored.getFirst()), consoles(), "a console closed is no longer kept");
+    assertEquals(
+        List.of(restored.getFirst(), new StoredConsole(gone, "", "-- gone")),
+        consoles(),
+        "a console closed is no longer kept, and the unseen one is");
   }
 
   @Test
@@ -285,10 +286,11 @@ class ConsoleHistoryTest {
     app.post(() -> s.put(made));
     c.run(app, "await\nframe\n" + SETTLE);
     assertEquals(null, s.loadError, "the connections are saved anew");
-    app.post(() -> s.openConsole(made.id())); // a change of the consoles, which is not saved
+    app.post(() -> s.openConsole(made.id()));
     c.run(app, "await\nframe\n" + SETTLE);
     assertEquals(1, s.consoles(null).size());
-    assertEquals(kept, consoles());
+    var opened = s.consoles(null).getFirst().stored();
+    assertEquals(List.of(opened, kept.getFirst()), consoles(), "the new one is kept beside");
   }
 
   @Test

@@ -1777,7 +1777,7 @@ final class ConsoleTab implements Tab {
             if (recorded != null) { // the read's own entry, as nothing was sent after it
               var was = recorded;
               recorded = new HistoryEntry(
-                  was.connection(), sql, was.started(), was.took(), outcomeOf(portion));
+                  was.connection(), was.statement(), was.started(), was.took(), outcomeOf(portion));
               s.ranAgain(was, recorded);
             }
             fail(s, failure);
