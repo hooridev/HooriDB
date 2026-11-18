@@ -63,7 +63,27 @@ With `-Dargs="--script <file> --out <folder>"` the app runs a script instead of 
 - A data grid tells the rows it built in the frame after the one that built them, so a script runs `frame` twice after `scroll`, and only then do the reads of those rows start. `FakeServers` makes up a table's rows from their position (`rows`, `values`); its reads are keyed `read <host>/<path> <from>-<to>` and, as core's do, fail as columns changed when the columns they are given are not the table's now; `FakeServers.queryFailure` makes core's typed failure. A test that closes a tab or ends a connection does it before the grid's next frame and the reads in flight have settled, as a user can.
 - A console's statements run against `FakeServers.statement(sql, results, messages…)`, rows made with `FakeServers.made` and failures with `serverError`; a statement it does not know fails as invalid. Their calls are keyed `run <host> <sql>` for the first portion and `next <host> <sql> <from>` for each further one, and a held one that is interrupted ends with a cancelled failure, as core's does. A console opens its own connection behind the tree's, so a server's `open` key is called twice, and once more where the first estimate of a read runs, on the connection that only estimates use. Each fake connection keeps a transaction and auto-commit as the servers do: `BEGIN`, `COMMIT` and `ROLLBACK` are known statements, and on MariaDB and MySQL `SET autocommit=0` or `=1` and `SET completion_type=1`; auto-commit off opens a transaction with any other statement, as `begins` does with one; an error fails PostgreSQL's, a failed COMMIT ends it there and leaves MariaDB's and MySQL's unless it is of class 40 (`rolledBack`, `deadlock()`), which rolls it back, DDL commits theirs, and `rollBackBehind` ends it as a server does by itself; a `ROLLBACK TO` a savepoint leaves it open. The server's auto-commit and the driver's idea of it are kept apart, as they drift in MySQL Connector/J: `turnsAutoCommitOn` turns the server's on behind the driver, also where the statement fails, setting it changes nothing where the driver thinks it is so already, and asking for the status sets the driver's from the server's, as core does. `cannotReport` makes a host's driver one that cannot read the status, as old MariaDB Connector/J. A read left with rows on PostgreSQL in Auto holds a transaction of its own with auto-commit off, as core's does, until it is given up, by the link's `giveUp` or `close`; `failsAtGiveUp` makes giving up a statement's rows fail, which fails a user's transaction on PostgreSQL. `hold(key, n)` lets n calls of the key pass before it holds, as a statement's own status before the question after it. A session's closing is background work that `await` waits for, so a script that exits runs `SETTLE` before it looks; the keyring fake's `late` holds its next call alone, which ignores its interrupt and then does what it was asked, as a native call can. `warnsAtGiveUp` gives a give-up a warning. A console's `outcomeWaiting` says that the lane has a call's outcome the console has not taken yet, the window in which a test cancels or closes. Core's test `Relay` stands between a connection and a real server and `freeze`s it, as a server that stops answering. Turning auto-commit on from off under one notes `commit by auto-commit <host>`, a change of it `autocommit <host> on` or `off`, and asking for the status is keyed `transaction <host>`. The planner's estimate of a console's read runs on that connection, keyed `explain <host> <sql>`, with what `plans` gives, on the database `estimatedOn` names; `linked` notes every call after the number of the link it ran on, so a test tells the console's session from the tree's.
 - The app's `ServersServerTest` runs its seam to servers, `Servers.SERVER` on a `Lane`, against core's `TestServer`, which comes with core's test-jar; the JDBC drivers for such tests are copied by the `jdbc-drivers` execution of the root POM, which a module takes by naming `maven-dependency-plugin`. Without Docker these tests are skipped.
-- Tests open no real windows and need no display. Tests of `core` need neither the UI framework nor a database that is not started by the test itself.
+- Tests open no real windows and need no display, except the opt-in measurement of the performance budget below. Tests of `core` need neither the UI framework nor a database that is not started by the test itself.
+
+## Performance budget
+
+Speed is what sets HooriDB apart:
+
+1. Start to first frame: under 1 second.
+2. Opening a table of 1,000,000 rows on a local server: first rows under 300 ms.
+3. Scrolling the grid: no frame over 16 ms.
+4. Memory while idle: under 150 MB.
+
+```sh
+mvn -pl app -am verify -Dbudget -Dtest=BudgetTest -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+`BudgetTest` prints each number beside its budget and asserts no timing; without `-Dbudget` it is skipped. The start opens real windows and is skipped without a display, the first rows without Docker.
+
+- Start: HooriDB's `main` as a process of its own in a real window, with no connections or drivers, a warm-up and then six runs; the first frame as the framework logs it, in milliseconds after the process started.
+- First rows: from Enter on the table in the tree to the frame that shows its first rows, without a window, on each of core's `TestServer`s, five times.
+- Scrolling: each `App.frame()` while the wheel scrolls a grid of 1,000,000 made-up rows one step a frame at 60 frames a second. This is the app's share of a frame (input, build and layout), without drawing, which the framework measures.
+- Memory: the resident memory (on Windows the working set) of the started process 10 seconds after its first frame.
 
 ## Changes
 
