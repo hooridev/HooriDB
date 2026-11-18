@@ -145,7 +145,7 @@ final class State {
   final Kept historyKept;
   // The statements run from consoles, of every connection, the oldest first.
   List<HistoryEntry> history = List.of();
-  // Connections whose history went before it was loaded: what is loaded of them goes too.
+  // Connections deleted: what is loaded of their history and consoles after that goes too.
   private final Set<UUID> forgotten = new HashSet<>();
   // The consoles loaded and not yet restored, which waits for the profiles; null before and after.
   private List<StoredConsole> restoring;
@@ -256,6 +256,8 @@ final class State {
         var console = new ConsoleTab(stored.connection(), stored.database());
         console.text = stored.text();
         tabs.add(main, main.tabs().size(), console);
+      } else if (forgotten.contains(stored.connection())) {
+        consolesKept.unsaved = true; // its connection was deleted before they were read
       } else {
         hidden.add(stored);
       }
