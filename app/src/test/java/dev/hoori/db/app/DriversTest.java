@@ -488,7 +488,10 @@ class DriversTest {
     assertEquals(List.of(), DriverStoreTest.openBelow(dir));
   }
 
-  /** A refused login holds no version; asked for the password again, it finds the driver anew. */
+  /**
+   * A refused login holds no version; asked for the password again, it finds the driver anew and
+   * then asks for the password.
+   */
   @Test
   void thePasswordAskedAfterADeleteFindsTheDriverAnew() throws Exception {
     downloaded(FakeDrivers.VERSION, OLD);
@@ -496,11 +499,11 @@ class DriversTest {
     var app = app(shop);
     run(app, START);
     var s = app.state();
-    s.rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
+    secrets.stored.put(shop.id(), ConnectionsTest.PASSWORD);
     servers.fail(
         "open " + CatalogTreeTest.PG + "/shop",
         FakeServers.notConnected(ConnectionException.Failure.LOGIN_REFUSED));
-    run(app, CatalogTreeTest.open("shop-prod") + SETTLE + SETTLE);
+    run(app, CatalogTreeTest.open("shop-prod") + SETTLE + SETTLE + SETTLE);
     var refused = s.catalog.lives.get(shop.id()).driver;
     assertSame(s.drivers.loaded(FakeDrivers.DRIVER, OLD), refused);
     run(app, OPEN_DRIVERS + DELETE_OLD + """
@@ -521,6 +524,14 @@ class DriversTest {
     String asked = tree("asked");
     assertTrue(
         line(asked, "role=note").contains("\"Download PostgreSQL JDBC " + OLD + "?\""), asked);
+    run(
+        app,
+        "press role=button label=\"Download\"\nframe\n" + SETTLE + SETTLE + SETTLE
+            + "snap typing\n");
+    // The password the server refused is not tried again: the user types one.
+    assertEquals(List.of(ConnectionsTest.PASSWORD), servers.passwords);
+    String typing = tree("typing");
+    assertTrue(typing.contains("role=textbox label=\"Password\""), typing);
   }
 
   @Test
