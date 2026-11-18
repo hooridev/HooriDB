@@ -226,6 +226,14 @@ class ConsoleHistoryTest {
     assertEquals(tab.text.length(), tab.editor.caret(), "where Run runs it");
     c.run(app, CLEAR + type("SELECT 1;\nSELECT 2;") + "key ArrowUp\nkey ArrowLeft\n" + choose);
     assertEquals("SELECT 1;\n" + COUNT + ";\nSELECT 2;", tab.text);
+    // Between a statement and its terminator: after the terminator.
+    c.run(app, CLEAR + type("SELECT 1 ;") + "key ArrowLeft\n" + choose);
+    assertEquals("SELECT 1 ;\n" + COUNT + ";", tab.text);
+    // In a comment: after it, which stays whole.
+    c.run(app, CLEAR + type("SELECT 1;\n-- a note") + "key ArrowLeft\nkey ArrowLeft\n" + choose);
+    assertEquals("SELECT 1;\n-- a note\n" + COUNT + ";", tab.text);
+    c.run(app, CLEAR + type("SELECT 1;\n/* a note */\nSELECT 2;") + "key ArrowUp\n" + choose);
+    assertEquals("SELECT 1;\n/* a note */\n" + COUNT + ";\nSELECT 2;", tab.text);
   }
 
   @Test

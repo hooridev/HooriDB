@@ -2917,8 +2917,16 @@ final class ConsoleTab implements Tab {
     if (from == to && provider != null) {
       int here = from;
       var all = statements(provider);
-      boolean inside = all.statements().stream().anyMatch(x -> x.start() < here && here <= x.end());
-      int at = inside ? all.around(from).end() : from; // after the statement's terminator
+      var part = all.around(from); // the statement the caret writes in, up to its terminator
+      boolean inside =
+          all.statements().stream().anyMatch(x -> part.start() <= x.start() && x.start() < here);
+      int at = inside
+          ? part.end()
+          : Statements.pieces(text, provider).stream()
+              .filter(x -> x.kind() == Statements.Piece.Kind.COMMENT && x.holds(here))
+              .mapToInt(Statements.Piece::end)
+              .findFirst()
+              .orElse(from); // after a comment the caret is in
       put = (at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "") + sql + ";"
           + (at < text.length() && text.charAt(at) != '\n' ? "\n" : "");
       from = at;
