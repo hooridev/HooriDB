@@ -36,7 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-class DriverStoreTest {
+public class DriverStoreTest {
 
   private static final Driver DRIVER = FakeDriver.DRIVER;
   private static final Instant NOW = Instant.parse("2026-11-14T12:00:00Z");
@@ -578,7 +578,7 @@ class DriverStoreTest {
   }
 
   /** The files below the folder that this process holds open, as Linux tells; none elsewhere. */
-  static List<String> openBelow(Path folder) throws IOException {
+  public static List<String> openBelow(Path folder) throws IOException {
     var fds = Path.of("/proc/self/fd");
     if (!Files.isDirectory(fds)) {
       return List.of();

@@ -7,6 +7,9 @@ import static dev.hoori.db.app.TestConnectionTest.START;
 import static dev.hoori.db.app.TestConnectionTest.TEST;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -19,6 +22,8 @@ import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.driver.DriverException;
 import dev.hoori.db.core.driver.DriverStore;
+import dev.hoori.db.core.driver.DriverStoreTest;
+import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -29,6 +34,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -426,6 +432,30 @@ class DriversTest {
     assertEquals(List.of(FakeDrivers.VERSION), store().downloaded(FakeDrivers.DRIVER));
   }
 
+  /** A version used since HooriDB started is closed as it is deleted, as Windows needs it. */
+  @Test
+  void aVersionUsedBeforeIsDeletedWithNothingOpen() throws Exception {
+    downloaded(FakeDrivers.VERSION, OLD);
+    var shop = CatalogTreeTest.SHOP.withDriverVersion(OLD);
+    var app = app(shop);
+    run(app, START);
+    var s = app.state();
+    s.rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
+    run(app, CatalogTreeTest.open("shop-prod") + SETTLE + SETTLE);
+    var used = s.drivers.loaded(FakeDrivers.DRIVER, OLD);
+    assertSame(used, s.catalog.lives.get(shop.id()).driver);
+    run(app, CatalogTreeTest.menu("shop-prod", "Disconnect") + SETTLE);
+    assertEquals(List.of(), s.users(FakeDrivers.DRIVER, OLD));
+    run(app, OPEN_DRIVERS + DELETE_OLD + """
+        press role=button label="Delete"
+        frame
+        """ + SETTLE + SETTLE + "snap deleted\n");
+    assertTrue(tree("deleted").contains("\"PostgreSQL JDBC 42.7.10 deleted\""), tree("deleted"));
+    assertEquals(List.of(FakeDrivers.VERSION), store().downloaded(FakeDrivers.DRIVER));
+    assertEquals(List.of(), DriverStoreTest.openBelow(dir));
+    assertNull(s.drivers.loaded(FakeDrivers.DRIVER, OLD));
+  }
+
   @Test
   void aVersionAConnectionUsesCannotBeDeleted() throws Exception {
     downloaded(FakeDrivers.VERSION, OLD);
@@ -480,7 +510,7 @@ class DriversTest {
     assertTrue(s.users(FakeDrivers.DRIVER, OLD).isEmpty());
   }
 
-  /** As on Windows, where a driver used since HooriDB started keeps its file open. */
+  /** A version used since HooriDB started stays too, closed, and is loaded anew when needed. */
   @Test
   void aDeleteThatFailsKeepsTheVersion() throws Exception {
     // Before the load: on Windows, a driver loaded by a test that stops later keeps its file open,
@@ -493,12 +523,15 @@ class DriversTest {
     run(app, START);
     var s = app.state();
     s.drivers.load(app, FakeDrivers.DRIVER, FakeDrivers.VERSION, d -> {}, e -> {});
+    run(app, SETTLE);
+    var used = s.drivers.loaded(FakeDrivers.DRIVER, FakeDrivers.VERSION);
+    assertNotNull(used);
     assumeTrue(FakeDrivers.lock(drivers(), FakeDrivers.VERSION), "a folder can be read-only");
     FakeDrivers.lock(drivers(), OLD);
     try {
       run(
           app,
-          SETTLE + OPEN_DRIVERS + """
+          OPEN_DRIVERS + """
           press role=button label="Delete PostgreSQL JDBC 42.7.14"
           frame
           advance 1
@@ -516,7 +549,7 @@ class DriversTest {
     String loaded = tree("loaded");
     assertTrue(
         block(loaded, "role=note label=\"PostgreSQL JDBC 42.7.14 could not be deleted\"")
-            .contains("delete it after HooriDB was restarted."),
+            .contains("Check that HooriDB may write to it, then try again."),
         loaded);
     String failed = tree("failed");
     assertTrue(
@@ -528,6 +561,12 @@ class DriversTest {
     assertTrue(
         block(failed, "\"42.7.14\"").contains("\"" + FakeDrivers.SIZE + ", recommended\""), failed);
     store().load(FakeDrivers.DRIVER, FakeDrivers.VERSION).close(); // still whole
+    assertNull(s.drivers.loaded(FakeDrivers.DRIVER, FakeDrivers.VERSION));
+    var again = new AtomicReference<LoadedDriver>();
+    s.drivers.load(app, FakeDrivers.DRIVER, FakeDrivers.VERSION, again::set, e -> {});
+    run(app, SETTLE);
+    assertNotNull(again.get());
+    assertNotSame(used, again.get());
   }
 
   /** A connection that decided on a version holds it while its driver still loads. */

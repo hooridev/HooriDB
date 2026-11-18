@@ -22,6 +22,7 @@ import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.DriverException;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -174,11 +175,19 @@ final class DriversDialog {
     var driver = kind.driver();
     var version = d.version();
     var store = s.drivers.store;
+    var loaded = s.drivers.unload(driver, version);
     removing = true;
     kind.problem = null;
     kind.work = s.app.background(
         "delete a driver",
         () -> {
+          if (loaded != null) {
+            try {
+              loaded.close(); // Windows deletes no file that is open
+            } catch (IOException e) {
+              // The delete says whether the file can go.
+            }
+          }
           store.delete(driver, version);
           return version;
         },
@@ -197,21 +206,13 @@ final class DriversDialog {
           kind.work = null;
           s.drivers.deleting(driver, version, false);
           kind.problem = new Problem(
-              kind.name() + " " + version + " could not be deleted",
-              notDeleted(s, driver, version, error),
-              null);
+              kind.name() + " " + version + " could not be deleted", notDeleted(s, error), null);
           kind.versions.read(s);
         });
   }
 
   /** Why a delete failed, and what to do. */
-  private static String notDeleted(State s, Driver driver, String version, Exception error) {
-    if (s.drivers.loaded(driver, version) != null) {
-      // Windows keeps a JAR open while its class loader lives, which is until HooriDB closes.
-      return "HooriDB has used this version since it started, and the system keeps its file open"
-          + " until HooriDB closes. It stays downloaded and usable; delete it after HooriDB was"
-          + " restarted.";
-    }
+  private static String notDeleted(State s, Exception error) {
     if (error instanceof DriverException e && e.failure() == DriverException.Failure.STORAGE) {
       return "The drivers folder could not be changed" + Fetch.why(e)
           + ". Check that HooriDB may write to it, then try again.";
