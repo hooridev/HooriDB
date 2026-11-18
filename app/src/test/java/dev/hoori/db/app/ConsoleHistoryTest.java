@@ -1,5 +1,6 @@
 package dev.hoori.db.app;
 
+import static dev.hoori.db.app.CatalogTreeTest.LEGACY;
 import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
@@ -239,6 +240,21 @@ class ConsoleHistoryTest {
     // Below a statement not ended yet: on the line at the caret, the statement closed.
     c.run(app, CLEAR + type("SELECT 1\n\n-- keep below") + "key ArrowUp\n" + choose);
     assertEquals("SELECT 1;\n" + COUNT + ";\n-- keep below", tab.text);
+  }
+
+  @Test
+  void anEntryGoesBeforeAnExecutableCommentNotClosed() throws Exception {
+    var app = k.console(LEGACY);
+    var tab = k.tab(app);
+    var cases = List.of(
+        List.of("SELECT 1;\n/*! SELECT 2", "SELECT 1;\nSELECT 9;\n/*! SELECT 2"),
+        List.of("SELECT 1 /*! , 2", "SELECT 1; \nSELECT 9;\n/*! , 2"));
+    for (var each : cases) {
+      c.run(app, CLEAR + type(each.get(0)) + "key ArrowLeft\nkey ArrowLeft\nframe\n");
+      app.post(() -> tab.insert(app, "SELECT 9"));
+      c.run(app, "await\nframe\nframe\n");
+      assertEquals(each.get(1), tab.text);
+    }
   }
 
   @Test

@@ -2919,25 +2919,31 @@ final class ConsoleTab implements Tab {
       var all = statements(provider);
       var part = all.around(from); // the statement the caret writes in, up to its terminator
       var open = all.open() ? all.statements().getLast() : null; // none to end it
-      boolean inside = all.statements().stream()
-          .anyMatch(x -> part.start() <= x.start()
-              && x.start() < here
-              && (here <= x.end() || !x.equals(open)));
-      int at = inside
-          ? part.end()
-          : Statements.pieces(text, provider).stream()
-              .filter(x -> x.kind() == Statements.Piece.Kind.COMMENT && x.holds(here))
-              // after the comment, or before one not closed, which would hold the entry too
-              .mapToInt(x -> x.open() && text.startsWith("/*", x.start()) ? x.start() : x.end())
-              .findFirst()
-              .orElse(from);
+      var comment = Statements.pieces(text, provider).stream()
+          .filter(x -> x.kind() == Statements.Piece.Kind.COMMENT && x.holds(here))
+          .findFirst();
+      // A block comment not closed, executable ones too, holds all after it: before its opener.
+      var unclosed = comment.filter(x -> x.open() && text.startsWith("/*", x.start()));
+      boolean inside = unclosed.isEmpty()
+          && all.statements().stream()
+              .anyMatch(x -> part.start() <= x.start()
+                  && x.start() < here
+                  && (here <= x.end() || !x.equals(open)));
+      int at = unclosed.isPresent()
+          ? unclosed.get().start()
+          : inside ? part.end() : comment.map(Statements.Piece::end).orElse(from);
       put = (at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "") + sql + ";"
           + (at < text.length() && text.charAt(at) != '\n' ? "\n" : "");
       from = at;
       to = at;
-      if (all.open() && all.statements().getLast().end() <= at) {
-        from = all.statements().getLast().end(); // closed where it ends, not after its comments
-        put = ";" + text.substring(from, at) + put;
+      if (open != null && open.start() < at) {
+        // Closed right after its last word before the entry, not after its comments.
+        int end = Math.min(open.end(), at);
+        while (end > open.start() && Character.isWhitespace(text.charAt(end - 1))) {
+          end--;
+        }
+        put = ";" + text.substring(end, at) + put;
+        from = end;
       }
     }
     int caret = from + put.stripTrailing().length();
