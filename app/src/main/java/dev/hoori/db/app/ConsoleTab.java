@@ -2918,15 +2918,19 @@ final class ConsoleTab implements Tab {
       int here = from;
       var all = statements(provider);
       var part = all.around(from); // the statement the caret writes in, up to its terminator
-      boolean inside =
-          all.statements().stream().anyMatch(x -> part.start() <= x.start() && x.start() < here);
+      var open = all.open() ? all.statements().getLast() : null; // none to end it
+      boolean inside = all.statements().stream()
+          .anyMatch(x -> part.start() <= x.start()
+              && x.start() < here
+              && (here <= x.end() || !x.equals(open)));
       int at = inside
           ? part.end()
           : Statements.pieces(text, provider).stream()
               .filter(x -> x.kind() == Statements.Piece.Kind.COMMENT && x.holds(here))
-              .mapToInt(Statements.Piece::end)
+              // after the comment, or before one not closed, which would hold the entry too
+              .mapToInt(x -> x.open() && text.startsWith("/*", x.start()) ? x.start() : x.end())
               .findFirst()
-              .orElse(from); // after a comment the caret is in
+              .orElse(from);
       put = (at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "") + sql + ";"
           + (at < text.length() && text.charAt(at) != '\n' ? "\n" : "");
       from = at;

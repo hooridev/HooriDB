@@ -234,6 +234,11 @@ class ConsoleHistoryTest {
     assertEquals("SELECT 1;\n-- a note\n" + COUNT + ";", tab.text);
     c.run(app, CLEAR + type("SELECT 1;\n/* a note */\nSELECT 2;") + "key ArrowUp\n" + choose);
     assertEquals("SELECT 1;\n/* a note */\n" + COUNT + ";\nSELECT 2;", tab.text);
+    c.run(app, CLEAR + type("SELECT 1;\n/* a note") + "key ArrowLeft\nkey ArrowLeft\n" + choose);
+    assertEquals("SELECT 1;\n" + COUNT + ";\n/* a note", tab.text, "a comment not closed");
+    // Below a statement not ended yet: on the line at the caret, the statement closed.
+    c.run(app, CLEAR + type("SELECT 1\n\n-- keep below") + "key ArrowUp\n" + choose);
+    assertEquals("SELECT 1;\n" + COUNT + ";\n-- keep below", tab.text);
   }
 
   @Test
