@@ -19,8 +19,6 @@ import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.driver.Driver;
-import dev.hoori.db.core.execution.Execution;
-import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.nio.file.Path;
@@ -567,8 +565,7 @@ final class State {
   }
 
   // How long Exit waits for the sessions to say how they closed: longer than their closing takes.
-  static final double EXIT_SECONDS =
-      Lane.ENDS.plus(Execution.ENDING).plus(Query.GRACE.multipliedBy(5)).toSeconds();
+  static final double EXIT_SECONDS = Lane.CLOSES.toSeconds();
 
   /** Whether a dialog is open, which an act that opens one must not replace. */
   boolean dialogOpen() {

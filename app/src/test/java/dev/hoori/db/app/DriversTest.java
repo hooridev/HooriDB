@@ -456,6 +456,37 @@ class DriversTest {
     assertNull(s.drivers.loaded(FakeDrivers.DRIVER, OLD));
   }
 
+  /** A connection that closes may still run its driver's code: its version's delete waits. */
+  @Test
+  void aDeleteWaitsForAConnectionThatCloses() throws Exception {
+    downloaded(FakeDrivers.VERSION, OLD);
+    var shop = CatalogTreeTest.SHOP.withDriverVersion(OLD);
+    var app = app(shop);
+    run(app, START);
+    var s = app.state();
+    s.rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
+    s.drivers.load(app, FakeDrivers.DRIVER, OLD, d -> {}, e -> {});
+    run(app, SETTLE);
+    servers.dead = true; // the read ignores the interrupt, so the closing waits for it
+    var gate = servers.hold("databases " + CatalogTreeTest.PG);
+    run(app, CatalogTreeTest.open("shop-prod"));
+    CatalogTreeTest.eventually(() -> servers.calls.contains("databases " + CatalogTreeTest.PG));
+    run(app, CatalogTreeTest.menu("shop-prod", "Disconnect"));
+    assertEquals(List.of(), s.users(FakeDrivers.DRIVER, OLD));
+    run(app, OPEN_DRIVERS + DELETE_OLD + """
+        press role=button label="Delete"
+        frame
+        """);
+    Thread.sleep(500);
+    assertEquals(List.of(FakeDrivers.VERSION, OLD), store().downloaded(FakeDrivers.DRIVER));
+    gate.countDown();
+    run(app, SETTLE + SETTLE + "snap deleted\n");
+    assertTrue(servers.closed.contains(CatalogTreeTest.PG + "/shop"), servers.closed.toString());
+    assertTrue(tree("deleted").contains("\"PostgreSQL JDBC 42.7.10 deleted\""), tree("deleted"));
+    assertEquals(List.of(FakeDrivers.VERSION), store().downloaded(FakeDrivers.DRIVER));
+    assertEquals(List.of(), DriverStoreTest.openBelow(dir));
+  }
+
   @Test
   void aVersionAConnectionUsesCannotBeDeleted() throws Exception {
     downloaded(FakeDrivers.VERSION, OLD);

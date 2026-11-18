@@ -65,6 +65,7 @@ final class Lane {
   private volatile boolean broken; // whether it cannot be used, for the app's thread
   private Future<?> opening; // the first call, and the copy of the password it is given
   private char[] copy;
+  private Runnable release = () -> {}; // the hold on the driver, which the closing ends
   private final Consumer<Exception> lost; // told on the lane's thread when the connection is gone
 
   /**
@@ -77,9 +78,13 @@ final class Lane {
 
   /**
    * Opens the connection as the lane's first call, with a copy of the password, which is wiped
-   * once the call ends, or by {@link #close} if it never starts.
+   * once the call ends, or by {@link #close} if it never starts. The driver is held from here
+   * until the closing has ended, so that a delete of its version waits for it.
    */
   void open(Servers servers, ConnectionProfile profile, char[] password, LoadedDriver driver) {
+    if (driver != null) {
+      release = driver.hold();
+    }
     char[] given = password.clone();
     copy = given;
     opening = run(Priority.VIEW, () -> {
@@ -270,11 +275,15 @@ final class Lane {
    */
   static final Duration ENDS = Execution.ENDING.plus(Query.GRACE.multipliedBy(3));
 
+  /** How long a closing takes at most: {@link #ENDS}, then the close's own, with room to spare. */
+  static final Duration CLOSES = ENDS.plus(Execution.ENDING).plus(Query.GRACE.multipliedBy(5));
+
   /**
    * Closes it as {@link #close()} does, and hands how it ended to {@code ended}, on the thread
    * that closes it: what giving up a statement still open on the connection said. Where the call
    * that runs has not ended within {@link #ENDS}, the connection is aborted, and that is what it
-   * says. The thread is returned, which ends within a bound: {@link #ENDS}, and the close's own.
+   * says. The thread is returned, which ends within {@link #CLOSES}, and lets go of the driver as
+   * it ends.
    */
   Thread close(Consumer<Abandoned> ended) {
     for (var dropped : thread.shutdownNow()) {
@@ -283,22 +292,27 @@ final class Lane {
       }
       ((Future<?>) dropped).cancel(false);
     }
+    var release = this.release;
     // Not a daemon: the process does not end while a connection closes and says how.
     return Thread.ofPlatform().daemon(false).name("close a connection").start(() -> {
-      boolean done;
       try {
-        done = thread.awaitTermination(ENDS.toNanos(), TimeUnit.NANOSECONDS);
-      } catch (InterruptedException e) {
-        done = false;
-      }
-      var link = this.link;
-      if (link == null) {
-        ended.accept(Abandoned.NOTHING);
-      } else if (done) {
-        ended.accept(link.close());
-      } else {
-        link.abort();
-        ended.accept(new Abandoned(Optional.of(unanswered()), List.of()));
+        boolean done;
+        try {
+          done = thread.awaitTermination(ENDS.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+          done = false;
+        }
+        var link = this.link;
+        if (link == null) {
+          ended.accept(Abandoned.NOTHING);
+        } else if (done) {
+          ended.accept(link.close());
+        } else {
+          link.abort();
+          ended.accept(new Abandoned(Optional.of(unanswered()), List.of()));
+        }
+      } finally {
+        release.run();
       }
     });
   }

@@ -163,7 +163,8 @@ final class DriversDialog {
 
   /**
    * Deletes the version asked about, unless a connection began to use it meanwhile; from here until
-   * the delete ends, no connection begins to.
+   * the delete ends, no connection begins to. A loaded one is closed first, once the connections
+   * that still close with it have ended.
    */
   void delete(State s) {
     var d = asking;
@@ -182,6 +183,7 @@ final class DriversDialog {
         "delete a driver",
         () -> {
           if (loaded != null) {
+            loaded.released(Lane.CLOSES); // past it, what still closes is given up
             try {
               loaded.close(); // Windows deletes no file that is open
             } catch (IOException e) {
