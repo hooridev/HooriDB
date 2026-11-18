@@ -414,8 +414,15 @@ final class CatalogTree {
     connect(s, live, password);
   }
 
-  /** Back to the password, after the server refused it. */
-  void askPassword(Live live) {
+  /**
+   * Back to the password, after the server refused it; where its driver was deleted meanwhile, it
+   * connects anew, which finds the driver again.
+   */
+  void askPassword(State s, Live live) {
+    if (s.drivers.version(live.driver) == null) {
+      connect(s, live.id());
+      return;
+    }
     live.typed = "";
     live.revealed = false;
     live.keep = false;
@@ -1344,7 +1351,7 @@ final class CatalogTree {
     var live = lives.get(node.id());
     var actions = new ArrayList<El>();
     if (trouble.password()) {
-      actions.add(button(SECONDARY, "Enter password…", () -> askPassword(live)));
+      actions.add(button(SECONDARY, "Enter password…", () -> askPassword(s, live)));
     }
     // The tree's row of a node's failed read has Try again itself.
     if (failedWhole(live, node)) {

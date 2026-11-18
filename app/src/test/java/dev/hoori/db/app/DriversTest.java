@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
@@ -485,6 +486,41 @@ class DriversTest {
     assertTrue(tree("deleted").contains("\"PostgreSQL JDBC 42.7.10 deleted\""), tree("deleted"));
     assertEquals(List.of(FakeDrivers.VERSION), store().downloaded(FakeDrivers.DRIVER));
     assertEquals(List.of(), DriverStoreTest.openBelow(dir));
+  }
+
+  /** A refused login holds no version; asked for the password again, it finds the driver anew. */
+  @Test
+  void thePasswordAskedAfterADeleteFindsTheDriverAnew() throws Exception {
+    downloaded(FakeDrivers.VERSION, OLD);
+    var shop = CatalogTreeTest.SHOP.withDriverVersion(OLD);
+    var app = app(shop);
+    run(app, START);
+    var s = app.state();
+    s.rememberPassword(shop.id(), ConnectionsTest.PASSWORD.toCharArray());
+    servers.fail(
+        "open " + CatalogTreeTest.PG + "/shop",
+        FakeServers.notConnected(ConnectionException.Failure.LOGIN_REFUSED));
+    run(app, CatalogTreeTest.open("shop-prod") + SETTLE + SETTLE);
+    var refused = s.catalog.lives.get(shop.id()).driver;
+    assertSame(s.drivers.loaded(FakeDrivers.DRIVER, OLD), refused);
+    run(app, OPEN_DRIVERS + DELETE_OLD + """
+        press role=button label="Delete"
+        frame
+        """ + SETTLE + SETTLE + """
+        press role=button label="Close"
+        frame
+        advance 1
+        frame
+        press role=button label="Enter password…"
+        frame
+        advance 1
+        frame
+        """ + SETTLE + "snap asked\n");
+    assertEquals(List.of(FakeDrivers.VERSION), store().downloaded(FakeDrivers.DRIVER));
+    assertNotSame(refused, s.catalog.lives.get(shop.id()).driver);
+    String asked = tree("asked");
+    assertTrue(
+        line(asked, "role=note").contains("\"Download PostgreSQL JDBC " + OLD + "?\""), asked);
   }
 
   @Test
