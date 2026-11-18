@@ -2904,17 +2904,36 @@ final class ConsoleTab implements Tab {
   }
 
   /**
-   * Puts the statement in place of the selection, or at the caret, as one step that Undo takes
-   * back, through the editor of the console's window; the caret after it.
+   * Puts the statement in place of the selection; without one, as a statement of its own on a line
+   * of its own: at the caret, or after the statement the caret is in, closing the statement before
+   * it where that has no terminator yet. As one step that Undo takes back, through the editor of
+   * the console's window; the caret after it, where Run runs it.
    */
   void insert(App<State> app, String sql) {
     int from = Math.min(editor.caret(), editor.anchor());
     int to = Math.min(Math.max(editor.caret(), editor.anchor()), text.length());
+    var put = sql;
+    var provider = provider(app.state());
+    if (from == to && provider != null) {
+      int here = from;
+      var all = statements(provider);
+      boolean inside = all.statements().stream().anyMatch(x -> x.start() < here && here <= x.end());
+      int at = inside ? all.around(from).end() : from; // after the statement's terminator
+      put = (at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "") + sql + ";"
+          + (at < text.length() && text.charAt(at) != '\n' ? "\n" : "");
+      from = at;
+      to = at;
+      if (all.open() && all.statements().getLast().end() <= at) {
+        from = all.statements().getLast().end(); // closed where it ends, not after its comments
+        put = ";" + text.substring(from, at) + put;
+      }
+    }
+    int caret = from + put.stripTrailing().length();
     // shortcut: the editor's field is looked up in the tree, as CodeEditor.State cannot insert by
     // itself; let the state insert once the kit offers it.
     var field = Frame.find(app.tree(), "sql");
     if (field != null) {
-      app.edit(field, from, to, sql, from + sql.length());
+      app.edit(field, from, to, put, caret);
     }
   }
 

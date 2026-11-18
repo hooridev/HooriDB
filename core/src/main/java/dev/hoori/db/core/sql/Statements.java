@@ -231,14 +231,19 @@ public final class Statements {
         low = middle + 1;
       }
     }
-    boolean unterminated =
-        size > 0 && afters.get(size - 1) == statements.get(size - 1).end();
+    boolean unterminated = open();
     if (low == size && unterminated) {
       low = size - 1; // the last statement goes on to the end of the text
     }
     int start = low == 0 ? 0 : afters.get(low - 1);
     int end = low >= size || low == size - 1 && unterminated ? text.length() : afters.get(low);
     return new Statement(start, end);
+  }
+
+  /** Whether the text's last statement has no terminator, as one still being written. */
+  public boolean open() {
+    int size = statements.size();
+    return size > 0 && afters.get(size - 1) == statements.get(size - 1).end();
   }
 
   private static Statements scan(String text, Provider provider) {

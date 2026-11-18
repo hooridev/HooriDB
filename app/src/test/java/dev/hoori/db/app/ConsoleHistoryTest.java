@@ -192,11 +192,11 @@ class ConsoleHistoryTest {
     assertTrue(cell(found, 0, 0).contains("\"" + ORDERS + "\""), found);
     assertTrue(cell(found, 1, 0).contains("\"" + COUNT + "\""), found);
     assertFalse(found.contains("#cell-2-0"), found);
-    // The second, by the keyboard: Enter puts it in at the caret, on the empty line.
+    // The second, by the keyboard: Enter puts it in at the caret, on the empty line, closed.
     c.run(app, "press #cell-1-0\nframe\nkey Enter\nframe\nadvance 1\nframe\nsnap inserted\n");
     String inserted = c.tree("inserted");
     assertFalse(inserted.contains("role=dialog"), inserted);
-    assertEquals("-- before\n" + COUNT + "\n-- after", k.tab(app).text);
+    assertEquals("-- before\n" + COUNT + ";\n-- after", k.tab(app).text);
     assertTrue(line(inserted, "#sql").contains("focused"), inserted);
     // As one step, which Undo takes back.
     c.run(app, "key Z control\nframe\n");
@@ -212,7 +212,20 @@ class ConsoleHistoryTest {
         HISTORY + "type \"count\"\nframe\nframe\n" + how + "\nframe\nadvance 1\nframe\n"
             + "snap inserted\n");
     assertFalse(c.tree("inserted").contains("role=dialog"), c.tree("inserted"));
-    assertEquals(COUNT, k.tab(app).text);
+    assertEquals(COUNT + ";", k.tab(app).text);
+  }
+
+  @Test
+  void anEntryGoesAfterTheStatementAtTheCaretOnALineOfItsOwnAndClosesIt() throws Exception {
+    var app = ran();
+    var choose = HISTORY + "type \"count\"\nframe\nframe\nkey Enter\nframe\nadvance 1\nframe\n";
+    c.run(
+        app, type("SELECT * FROM orders WHERE id = 1") + "key ArrowLeft\nkey ArrowLeft\n" + choose);
+    var tab = k.tab(app);
+    assertEquals("SELECT * FROM orders WHERE id = 1;\n" + COUNT + ";", tab.text);
+    assertEquals(tab.text.length(), tab.editor.caret(), "where Run runs it");
+    c.run(app, CLEAR + type("SELECT 1;\nSELECT 2;") + "key ArrowUp\nkey ArrowLeft\n" + choose);
+    assertEquals("SELECT 1;\n" + COUNT + ";\nSELECT 2;", tab.text);
   }
 
   @Test

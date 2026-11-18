@@ -4,6 +4,7 @@ import static dev.hoori.db.core.connection.Provider.MARIADB;
 import static dev.hoori.db.core.connection.Provider.MYSQL;
 import static dev.hoori.db.core.connection.Provider.POSTGRESQL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.Provider;
@@ -459,5 +460,12 @@ class StatementsTest {
         new Statement(9, open.length()),
         Statements.of(open, Provider.POSTGRESQL).around(open.length()));
     assertEquals(new Statement(0, 0), Statements.of("", Provider.MYSQL).around(0));
+  }
+
+  @Test
+  void aTextIsOpenWhereItsLastStatementHasNoTerminator() {
+    assertTrue(Statements.of("SELECT 1; SELECT 2 -- next", Provider.POSTGRESQL).open());
+    assertFalse(Statements.of("SELECT 1;\n-- after", Provider.MYSQL).open());
+    assertFalse(Statements.of("-- nothing", Provider.MARIADB).open());
   }
 }
