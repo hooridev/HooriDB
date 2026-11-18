@@ -20,8 +20,8 @@ import java.util.function.Consumer;
 
 /**
  * Where drivers are kept and where they come from, and the drivers loaded in this session, which
- * stay loaded until HooriDB closes: loading checks the file again and is not free. Only the app's
- * thread uses it.
+ * stay loaded until HooriDB closes or they are deleted: loading checks the file again and is not
+ * free. Only the app's thread uses it.
  */
 final class Drivers {
 
@@ -37,8 +37,6 @@ final class Drivers {
   private final Map<Version, LoadedDriver> loaded = new HashMap<>();
   // The version last looked up as the recommended one of each driver.
   private final Map<Driver, String> recommended = new HashMap<>();
-  // Loaded versions that were deleted since: closed with the others, as a connection may use one.
-  private final List<LoadedDriver> deleted = new ArrayList<>();
   // The loads under way, with whoever waits for each; one load per driver and version at a time.
   private final Map<Version, List<Waiter>> loading = new HashMap<>();
   // The versions being deleted, which nothing loads meanwhile.
@@ -135,12 +133,17 @@ final class Drivers {
     }
   }
 
-  /** The version was deleted: it is loaded again, from a new download, when it is needed. */
+  /**
+   * Takes the version out as its delete begins, to be closed before its file goes; null where it
+   * is not loaded. Whoever needs it next loads it again, from the file that is left or a new
+   * download.
+   */
+  LoadedDriver unload(Driver driver, String version) {
+    return loaded.remove(new Version(driver, version));
+  }
+
+  /** The version was deleted. */
   void forget(Driver driver, String version) {
-    var gone = loaded.remove(new Version(driver, version));
-    if (gone != null) {
-      deleted.add(gone);
-    }
     recommended.remove(driver, version);
   }
 
@@ -152,11 +155,7 @@ final class Drivers {
     for (var driver : loaded.values()) {
       driver.close();
     }
-    for (var driver : deleted) {
-      driver.close();
-    }
     loaded.clear();
-    deleted.clear();
   }
 
   /** Where the version's file is downloaded from. */

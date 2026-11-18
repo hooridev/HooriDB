@@ -498,7 +498,7 @@ final class ConsoleTab implements Tab {
     stranded = false;
     var live = s.catalog.live(id);
     if (password && live != null) {
-      s.catalog.askPassword(live);
+      s.catalog.askPassword(s, live);
     } else {
       s.catalog.connect(s, id);
     }

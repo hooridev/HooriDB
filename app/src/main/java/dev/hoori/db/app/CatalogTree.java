@@ -123,6 +123,7 @@ final class CatalogTree {
     Lane.Asked connecting; // the wait for the first connection, or null
     Handover handover; // the password on its way from the keyring, or null
     LoadedDriver driver;
+    boolean typing; // the user asked to type the password, which nothing kept is tried before
     // The tabs whose window asks for the password: a console's there; null for the main window.
     TabGroups.Group<Tab> window;
     // While connected, for the connections to further databases; wiped when it ends.
@@ -218,6 +219,11 @@ final class CatalogTree {
 
   /** Connects anew, as far as is needed: the driver, the password, the server. */
   void connect(State s, UUID id) {
+    connect(s, id, false);
+  }
+
+  /** As {@link #connect(State, UUID)}; with {@code typing}, the password is the user's to type. */
+  private void connect(State s, UUID id, boolean typing) {
     s.acted();
     var profile = s.profile(id);
     if (profile == null) {
@@ -228,6 +234,7 @@ final class CatalogTree {
     forgetBelow(s, new Node.Connection(id));
     open.add(new Node.Connection(id));
     var live = new Live(profile);
+    live.typing = typing;
     lives.put(id, live);
     if (s.drivers == null) {
       live.phase = new WithoutDrivers();
@@ -295,9 +302,16 @@ final class CatalogTree {
     throw new IllegalArgumentException("Not a fetch of the catalog");
   }
 
-  /** The password kept for this session, else the one in the keyring, else the user's. */
+  /**
+   * The password kept for this session, else the one in the keyring, else the user's; only the
+   * user's where the user asked to type it.
+   */
   private void password(State s, Live live, LoadedDriver driver) {
     live.driver = driver;
+    if (live.typing) {
+      live.phase = new ForPassword(false);
+      return;
+    }
     var id = live.id();
     char[] kept = s.rememberedCopy(id);
     if (kept != null) {
@@ -414,8 +428,15 @@ final class CatalogTree {
     connect(s, live, password);
   }
 
-  /** Back to the password, after the server refused it. */
-  void askPassword(Live live) {
+  /**
+   * Back to the password, after the server refused it; where its driver was deleted meanwhile, it
+   * connects anew, which finds the driver again and then asks for the password.
+   */
+  void askPassword(State s, Live live) {
+    if (s.drivers.version(live.driver) == null) {
+      connect(s, live.id(), true);
+      return;
+    }
     live.typed = "";
     live.revealed = false;
     live.keep = false;
@@ -1344,7 +1365,7 @@ final class CatalogTree {
     var live = lives.get(node.id());
     var actions = new ArrayList<El>();
     if (trouble.password()) {
-      actions.add(button(SECONDARY, "Enter password…", () -> askPassword(live)));
+      actions.add(button(SECONDARY, "Enter password…", () -> askPassword(s, live)));
     }
     // The tree's row of a node's failed read has Try again itself.
     if (failedWhole(live, node)) {

@@ -2,20 +2,26 @@ package dev.hoori.db.core.driver;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.driver.DriverException.Failure;
 import dev.hoori.db.core.driver.DriverStore.Recommended;
 import dev.hoori.db.core.driver.FolderRepository.Sum;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -30,7 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-class DriverStoreTest {
+public class DriverStoreTest {
 
   private static final Driver DRIVER = FakeDriver.DRIVER;
   private static final Instant NOW = Instant.parse("2026-11-14T12:00:00Z");
@@ -542,6 +548,57 @@ class DriverStoreTest {
         Failure.TOO_LARGE, () -> new DriverStore(storage, repository, 10).size(DRIVER, "1.0"));
     repository.offline = true;
     assertFailure(Failure.NO_NETWORK, () -> store.size(DRIVER, "1.0"));
+  }
+
+  /**
+   * MySQL Connector/J reads its messages through a {@code jar:} URL as an attempt fails, which
+   * Java's cache of such files keeps open past the class loader's close; Windows then deletes no
+   * such file.
+   */
+  @Test
+  void aClosedDriverHoldsItsFileOpenNowhere() throws Exception {
+    var driver = Driver.of(Provider.MYSQL);
+    var version = System.getProperty("hooridb.test.mysql.version");
+    assertNotNull(version, "No hooridb.test.mysql.version; run the tests through Maven");
+    var copied = Path.of(System.getProperty("hooridb.test.drivers", "target/jdbc-drivers"));
+    var jar = Files.readAllBytes(copied.resolve(driver.artifact() + "-" + version + ".jar"));
+    repository.publish(driver, version, jar, Sum.SHA256, NOW);
+    store.download(driver, version, DriverStore.Progress.NONE);
+    int port;
+    try (var free = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+      port = free.getLocalPort();
+    }
+    try (var loaded = store.load(driver, version)) {
+      var url = "jdbc:mysql://127.0.0.1:" + port + "/x";
+      assertThrows(SQLException.class, () -> loaded.connect(url, new Properties()));
+    }
+    assertEquals(List.of(), openBelow(temp));
+    store.delete(driver, version);
+    assertEquals(List.of(), store.downloaded(driver));
+  }
+
+  /** The files below the folder that this process holds open, as Linux tells; none elsewhere. */
+  public static List<String> openBelow(Path folder) throws IOException {
+    var fds = Path.of("/proc/self/fd");
+    if (!Files.isDirectory(fds)) {
+      return List.of();
+    }
+    var below = folder.toRealPath().toString();
+    var open = new ArrayList<String>();
+    try (var list = Files.list(fds)) {
+      for (var fd : (Iterable<Path>) list::iterator) {
+        try {
+          // A deleted file's link ends in " (deleted)".
+          var target = Files.readSymbolicLink(fd).toString();
+          if (target.startsWith(below)) {
+            open.add(target);
+          }
+        } catch (IOException closedMeanwhile) {
+          // Not open any longer.
+        }
+      }
+    }
+    return open;
   }
 
   @Test

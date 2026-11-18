@@ -22,8 +22,11 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.MalformedURLException;
 import java.net.ProtocolException;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.net.URLConnection;
+import java.net.URLStreamHandler;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
@@ -36,7 +39,9 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -411,8 +416,25 @@ public final class DriverStore {
     } catch (MalformedURLException e) {
       throw new IllegalStateException(e);
     }
-    var loader = new URLClassLoader(
-        driver.artifact() + "-" + version, new URL[] {url}, ClassLoader.getPlatformClassLoader());
+    // Its resources are read past Java's cache of jar: files, which keeps a file open beyond the
+    // loader's close, as long as the process runs; Windows deletes no file that is open.
+    var loader =
+        new URLClassLoader(
+            driver.artifact() + "-" + version,
+            new URL[] {url},
+            ClassLoader.getPlatformClassLoader()) {
+          @Override
+          public URL findResource(String name) {
+            return uncached(super.findResource(name));
+          }
+
+          @Override
+          public Enumeration<URL> findResources(String name) throws IOException {
+            return Collections.enumeration(Collections.list(super.findResources(name)).stream()
+                .map(DriverStore::uncached)
+                .toList());
+          }
+        };
     try {
       var type =
           Class.forName(driver.driverClass(), true, loader).asSubclass(java.sql.Driver.class);
@@ -424,6 +446,32 @@ public final class DriverStore {
         e.addSuppressed(suppressed);
       }
       throw new DriverException(NOT_A_DRIVER, driver.driverClass(), e);
+    }
+  }
+
+  // Opens a URL as Java does, but without its cache of jar: files.
+  private static final URLStreamHandler UNCACHED = new URLStreamHandler() {
+    @Override
+    protected URLConnection openConnection(URL url) throws IOException {
+      URLConnection connection;
+      try {
+        connection = url.toURI().toURL().openConnection();
+      } catch (URISyntaxException e) {
+        throw new IOException(e);
+      }
+      connection.setUseCaches(false);
+      return connection;
+    }
+  };
+
+  private static URL uncached(URL url) {
+    if (url == null) {
+      return null;
+    }
+    try {
+      return URL.of(url.toURI(), UNCACHED);
+    } catch (URISyntaxException | MalformedURLException e) {
+      return url; // read through the cache, as Java reads it
     }
   }
 
