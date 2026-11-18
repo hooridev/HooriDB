@@ -82,7 +82,7 @@ mvn -pl app -am verify -Dbudget -Dtest=BudgetTest -Dsurefire.failIfNoSpecifiedTe
 
 - Start: HooriDB's `main` as a process of its own in a real window, with no connections or drivers, a warm-up and then six runs; the first frame as the framework logs it, in milliseconds after the process started.
 - First rows: from Enter on the table in the tree to the frame that shows its first rows, without a window, on each of core's `TestServer`s, five times.
-- Scrolling: each `App.frame()` while the wheel scrolls a grid of 1,000,000 made-up rows one step a frame at 60 frames a second. This is the app's share of a frame (input, build and layout), without drawing, which the framework measures.
+- Scrolling: each `App.frame()` while the wheel scrolls a grid of 1,000,000 made-up rows one step a frame at 60 frames a second, with the pointer over the grid. This is the app's share of a frame (input, build and layout) without drawing: the framework has no public way yet to drive a real window and time its frames.
 - Memory: the resident memory (on Windows the working set) of the started process 10 seconds after its first frame.
 
 ## Changes

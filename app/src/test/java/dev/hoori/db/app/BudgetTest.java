@@ -249,7 +249,7 @@ class BudgetTest {
   /**
    * The app's share of each frame while the wheel scrolls a grid of a million made-up rows, one
    * step a frame at 60 frames a second: dispatching the input, building and laying out the view.
-   * Drawing is not in it; the framework measures that.
+   * Drawing is not in it: the framework has no public way yet to drive a real window and time it.
    */
   @Test
   void scrollingTheGrid() throws Exception {
@@ -290,7 +290,7 @@ class BudgetTest {
       System.out.printf(
           Locale.ROOT,
           "BUDGET Scrolling: %d frames to row %d, %d reads; the app's share of a frame (input,"
-              + " build, layout), without drawing, which the framework measures%n",
+              + " build, layout), without drawing%n",
           times.size(),
           middle,
           reads);
