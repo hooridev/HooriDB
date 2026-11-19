@@ -8,16 +8,20 @@ import static dev.hoori.db.core.dialect.Since.always;
 import static dev.hoori.db.core.dialect.Since.since;
 
 import dev.hoori.db.core.connection.Capability;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.data.MySqlRows;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.driver.Driver;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** MySQL, with MySQL Connector/J. */
@@ -32,6 +36,7 @@ public final class MySql extends MySqlFamily {
   private final Driver driver =
       new Driver("com.mysql", "mysql-connector-j", "com.mysql.cj.jdbc.Driver");
   private final ConnectDialect connecting = new Connect();
+  private final PlanDialect plan = new Plan();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MySqlRows();
 
@@ -68,6 +73,11 @@ public final class MySql extends MySqlFamily {
   }
 
   @Override
+  public PlanDialect plan() {
+    return plan;
+  }
+
+  @Override
   public SessionDialect session() {
     return session;
   }
@@ -75,6 +85,20 @@ public final class MySql extends MySqlFamily {
   @Override
   public RowsDialect rows() {
     return rows;
+  }
+
+  static final class Plan extends MySqlFamily.Plan {
+
+    // The tree, from MySQL 8.0.18, estimates what each node gives; the table only the rows read.
+    @Override
+    public String explain(String sql) {
+      return "EXPLAIN FORMAT=TREE " + sql;
+    }
+
+    @Override
+    public OptionalLong rows(ResultSet plan, String sql, Provider provider) throws SQLException {
+      return plan.next() ? Rows.planned(plan.getString(1)) : OptionalLong.empty();
+    }
   }
 
   static final class Connect extends MySqlFamily.Connect {

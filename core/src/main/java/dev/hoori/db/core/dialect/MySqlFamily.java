@@ -35,6 +35,30 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     return syntax;
   }
 
+  // How their planners are asked alike.
+  abstract static sealed class Plan implements PlanDialect permits MariaDb.Plan, MySql.Plan {
+
+    @Override
+    public String beginReadOnly() {
+      return "START TRANSACTION READ ONLY";
+    }
+
+    // MariaDB's and MySQL's ROLLBACK would chain or disconnect as completion_type says.
+    @Override
+    public String rollback() {
+      return "ROLLBACK AND NO CHAIN NO RELEASE";
+    }
+
+    // Any stored function outside the system's schemas, which may call a loadable function.
+    @Override
+    public String callsOut() {
+      return "SELECT 1 FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'"
+          // As bytes: MariaDB compares names without case and accents, which takes SYS for sys.
+          + " AND CAST(ROUTINE_SCHEMA AS BINARY) NOT IN ('sys', 'mysql', 'information_schema',"
+          + " 'performance_schema') LIMIT 1";
+    }
+  }
+
   // How their drivers connect alike.
   abstract static sealed class Connect implements ConnectDialect
       permits MariaDb.Connect, MySql.Connect {

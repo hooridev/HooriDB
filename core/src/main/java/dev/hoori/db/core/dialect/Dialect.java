@@ -32,6 +32,9 @@ public interface Dialect {
   /** The queries of its catalog. */
   CatalogDialect catalog();
 
+  /** How its planner estimates a statement's rows. */
+  PlanDialect plan();
+
   /** The lexical rules of its SQL. */
   SyntaxDialect syntax();
 

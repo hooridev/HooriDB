@@ -14,8 +14,10 @@ import static dev.hoori.db.core.dialect.Since.since;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.data.PostgreSqlRows;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.execution.Transaction;
@@ -26,6 +28,7 @@ import java.sql.Statement;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 
 /** PostgreSQL, with pgjdbc. */
@@ -44,6 +47,7 @@ public final class PostgreSql implements Dialect {
   private final Driver driver = new Driver("org.postgresql", "postgresql", "org.postgresql.Driver");
   private final ConnectDialect connecting = new Connect();
   private final CatalogDialect catalog = new Catalog();
+  private final PlanDialect plan = new Plan();
   private final SyntaxDialect syntax = new Syntax();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new PostgreSqlRows();
@@ -88,6 +92,11 @@ public final class PostgreSql implements Dialect {
   @Override
   public CatalogDialect catalog() {
     return catalog;
+  }
+
+  @Override
+  public PlanDialect plan() {
+    return plan;
   }
 
   @Override
@@ -280,6 +289,48 @@ public final class PostgreSql implements Dialect {
       return "SELECT 1 FROM pg_catalog.pg_class c"
           + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
           + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS;
+    }
+  }
+
+  static final class Plan implements PlanDialect {
+
+    @Override
+    public String beginReadOnly() {
+      return "BEGIN READ ONLY";
+    }
+
+    @Override
+    public String rollback() {
+      return "ROLLBACK";
+    }
+
+    // A function outside the system's schemas that the planner evaluates, immutable or stable, in
+    // a language that can call other code, as one that calls dblink_exec, unless an extension
+    // owns it.
+    @Override
+    public String callsOut() {
+      return "SELECT 1 FROM pg_catalog.pg_proc p"
+          + " JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace"
+          + " JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) p.prolang"
+          + " WHERE p.provolatile OPERATOR(pg_catalog.<>) 'v'"
+          + " AND n.nspname OPERATOR(pg_catalog.<>) 'pg_catalog'"
+          + " AND n.nspname OPERATOR(pg_catalog.<>) 'information_schema'"
+          + " AND l.lanname OPERATOR(pg_catalog.<>) 'c'"
+          + " AND l.lanname OPERATOR(pg_catalog.<>) 'internal'"
+          + " AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d"
+          + " WHERE d.classid OPERATOR(pg_catalog.=) 'pg_catalog.pg_proc'::pg_catalog.regclass"
+          + " AND d.objid OPERATOR(pg_catalog.=) p.oid"
+          + " AND d.deptype OPERATOR(pg_catalog.=) 'e') LIMIT 1";
+    }
+
+    @Override
+    public String explain(String sql) {
+      return "EXPLAIN " + sql;
+    }
+
+    @Override
+    public OptionalLong rows(ResultSet plan, String sql, Provider provider) throws SQLException {
+      return plan.next() ? Rows.planned(plan.getString(1)) : OptionalLong.empty();
     }
   }
 
