@@ -299,7 +299,8 @@
             </executions>
           </plugin>
           <plugin>
-            <!-- The licenses of rethinkj UI and rethinkj Updater, whose JARs hold none. -->
+            <!-- HooriDB's own license, and those of rethinkj UI and rethinkj Updater, whose JARs
+                 hold none. -->
             <artifactId>maven-resources-plugin</artifactId>
             <executions>
               <execution>
@@ -312,6 +313,12 @@
                   <resources>
                     <resource>
                       <directory>src/bundle/legal</directory>
+                    </resource>
+                    <resource>
+                      <directory>${project.basedir}/..</directory>
+                      <includes>
+                        <include>LICENSE</include>
+                      </includes>
                     </resource>
                   </resources>
                   <outputDirectory>${bundle}/input/legal</outputDirectory>

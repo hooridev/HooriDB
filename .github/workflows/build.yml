@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/build.yml
+      - LICENSE
       - app/src/bundle/**
       - app/src/main/java/dev/hoori/db/app/BundleIcon.java
       - app/pom.xml
