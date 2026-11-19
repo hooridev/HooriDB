@@ -88,6 +88,7 @@ final class State {
   ConnectionDialog dialog; // null while closed
   DriversDialog driverList; // the Drivers dialog, null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
+  boolean about; // whether the About dialog is open
   Pending pending; // the one act that waits, or null
   // Its deletion runs: it waits for the keyring to be found, then for its password to go.
   boolean removing;
@@ -569,7 +570,7 @@ final class State {
 
   /** Whether a dialog is open, which an act that opens one must not replace. */
   boolean dialogOpen() {
-    return dialog != null || deleting != null || driverList != null;
+    return dialog != null || deleting != null || about || driverList != null;
   }
 
   /** The act of deleting the connection, which its disconnect and its delete share. */

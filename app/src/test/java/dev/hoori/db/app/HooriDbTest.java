@@ -1,5 +1,6 @@
 package dev.hoori.db.app;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -70,6 +71,81 @@ class HooriDbTest {
     assertTrue(light.contains("#message") && light.contains("\"Light theme on\""), light);
     String later = Files.readString(out.resolve("later.tree.txt"));
     assertFalse(later.contains("#message"), "the message went after its time: " + later);
+  }
+
+  /**
+   * Help, About HooriDB shows the version, here a development build, its author, license and
+   * website, in either theme; Close and Enter close it. It waits while another dialog is open.
+   */
+  @Test
+  void aboutShowsTheVersionAuthorLicenseAndWebsite(@TempDir Path out) throws IOException {
+    String open = """
+        press role=menuitem label="Help"
+        frame
+        advance 1
+        frame
+        press role=menuitem label="About HooriDB"
+        frame
+        advance 1
+        frame
+        """;
+    String close = """
+        press role=button label="Close"
+        frame
+        advance 1
+        frame
+        """;
+    String light = """
+        press role=menuitem label="View"
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Light theme"
+        frame
+        advance 1
+        frame
+        """;
+    String newConnection = """
+        press role=menuitem label="File"
+        frame
+        advance 1
+        frame
+        press role=menuitem label="New connection…"
+        frame
+        advance 1
+        frame
+        snap busy
+        """;
+    App<State> app = app(out);
+    Script.run(
+        "size 1200 760\nframe\nawait\nframe\n" + open + "snap dark\n" + close + "snap closed\n"
+            + light + open + "snap light\nkey Enter\nframe\nadvance 1\nframe\nsnap entered\n"
+            + newConnection,
+        app,
+        out);
+    for (String name : new String[] {"dark", "light"}) {
+      String tree = Files.readString(out.resolve(name + ".tree.txt"));
+      assertTrue(tree.contains("role=dialog label=\"About HooriDB\""), tree);
+      assertTrue(
+          tree.contains("label=\"Version\" ") && tree.contains("value=\"Development build\""),
+          tree);
+      assertTrue(
+          tree.contains("label=\"Author\" ") && tree.contains("value=\"Patrick Trautmann\""), tree);
+      assertTrue(tree.contains("label=\"License\" ") && tree.contains("value=\"MIT\""), tree);
+      assertTrue(
+          tree.contains("label=\"Website\" ") && tree.contains("value=\"https://db.hoori.dev\""),
+          tree);
+    }
+    for (String name : new String[] {"closed", "entered"}) {
+      String tree = Files.readString(out.resolve(name + ".tree.txt"));
+      assertFalse(tree.contains("role=dialog"), tree);
+    }
+    // The menus behind a dialog take no presses, so the item is looked at where they are made.
+    String busy = Files.readString(out.resolve("busy.tree.txt"));
+    assertTrue(busy.contains("role=dialog label=\"New connection\""), busy);
+    var help = Frame.menus(app.state(), app.state().tabs.main(), true).getLast();
+    assertEquals("&Help", help.label());
+    assertFalse(help.submenu().getFirst().isEnabled());
   }
 
   @Test

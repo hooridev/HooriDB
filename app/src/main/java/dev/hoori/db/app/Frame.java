@@ -19,6 +19,7 @@ import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Progress;
+import com.rethinkj.ui.kit.Properties;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.StatusBar;
 import com.rethinkj.ui.kit.Symbol;
@@ -41,10 +42,12 @@ final class Frame {
     Theme t = Theme.CURRENT.get();
     var main = s.tabs.main();
     // One dialog at a time: what the catalog asks waits for the others to close.
-    El asked = s.dialog == null && s.deleting == null ? s.catalog.dialog(s, main) : null;
+    El asked =
+        s.dialog == null && s.deleting == null && !s.about ? s.catalog.dialog(s, main) : null;
     El question = question(s, main);
     El confirmation = s.dialog == null
             && s.deleting == null
+            && !s.about
             && asked == null
             && s.driverList == null
             && question == null
@@ -52,6 +55,7 @@ final class Frame {
         : null;
     boolean modal = s.dialog != null
         || s.deleting != null
+        || s.about
         || asked != null
         || s.driverList != null
         || question != null
@@ -91,11 +95,16 @@ final class Frame {
       root.overlay(s.dialog.view(s)).overlay(s.dialog.question(s));
     }
     root.overlay(s.deleting == null ? null : deleteDialog(s));
+    root.overlay(s.about ? aboutDialog(s) : null);
     root.overlay(asked);
     root.overlay(question);
     root.overlay(confirmation);
     root.overlay(confirmation == null ? null : historyQuestion(s, main));
-    if (s.driverList != null && s.dialog == null && s.deleting == null && asked == null) {
+    if (s.driverList != null
+        && s.dialog == null
+        && s.deleting == null
+        && !s.about
+        && asked == null) {
       root.overlay(s.driverList.view(s)).overlay(s.driverList.question(s));
     }
     return root.overlay(modal ? null : palette(s, main, menus));
@@ -410,10 +419,34 @@ final class Frame {
         s::cancelDelete);
   }
 
+  /** The version that runs, its author, license and website. */
+  private static El aboutDialog(State s) {
+    float side = Theme.CURRENT.get().size().icon();
+    El mark = AppIcon.appIcon(Math.round(side), HooriDb.COLOR, Symbol.DATABASE).size(side, side);
+    String version = HooriDb.class.getPackage().getImplementationVersion();
+    Runnable close = () -> s.about = false;
+    El ok = button(Button.Variant.PRIMARY, "Close", close);
+    El content = Properties.properties(
+            List.of(
+                Properties.property("Version", version == null ? "Development build" : version),
+                Properties.property("Author", "Patrick Trautmann"),
+                Properties.property("License", "MIT"),
+                Properties.property("Website", "https://db.hoori.dev")),
+            null)
+        .w(ConnectionDialog.width());
+    return Dialog.dialog(
+        "About " + HooriDb.NAME,
+        content,
+        List.of(ok),
+        close,
+        Dialog.options().leading(mark).defaultButton(ok));
+  }
+
   /**
    * Only what does something today: a new connection, a console, the drivers, the tabs of the
-   * window, quitting, the palette, the themes, and where the focus goes. They are the commands of
-   * the palette too, and their keys act in the window of these tabs, with or without its bar.
+   * window, quitting, the palette, the themes, where the focus goes, and About. They are the
+   * commands of the palette too, and their keys act in the window of these tabs, with or without
+   * its bar.
    *
    * @param modal whether a dialog is open, which the palette waits for
    */
@@ -473,13 +506,16 @@ final class Frame {
                 Menu.item("Connections", tree ? () -> focusTree(s) : null)
                     .shortcut(Key.CONTROL, "0"),
                 Menu.item("Tab content", close == null ? null : () -> focusContent(s, group))
-                    .shortcut(Key.CONTROL, "1"))));
+                    .shortcut(Key.CONTROL, "1"))),
+        Menu.submenu(
+            "&Help", List.of(Menu.item("About HooriDB", free ? () -> s.about = true : null))));
   }
 
   /** Whether a dialog of the main window is open: its own, or one the catalog asks there. */
   private static boolean mainDialog(State s) {
     return s.dialog != null
         || s.deleting != null
+        || s.about
         || s.driverList != null
         || s.catalog.dialog(s, s.tabs.main()) != null;
   }

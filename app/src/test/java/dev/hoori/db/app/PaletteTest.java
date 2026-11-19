@@ -122,7 +122,8 @@ class PaletteTest {
             "Go: Go to table…",
             "Go: Next tab",
             "Go: Connections",
-            "Go: Tab content")),
+            "Go: Tab content",
+            "Help: About HooriDB")),
         all.toString());
     assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
