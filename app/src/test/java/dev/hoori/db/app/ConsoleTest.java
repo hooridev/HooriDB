@@ -459,6 +459,14 @@ class ConsoleTest {
     assertFalse(line(window, "#run ").contains("busy"), window);
     assertTrue(line(window, "#cancel").contains("disabled"), window);
     assertFalse(status(window).contains("Ran"), window);
+    // Its window says it: the tree's callout does not say it again.
+    c.run(
+        app,
+        "window main\npress role=treeitem label=\"shop-prod\"\nframe\nadvance 1\nframe\n"
+            + "snap main\n");
+    String main = c.tree("main");
+    assertTrue(line(main, "role=treeitem").contains("selected"), main);
+    assertFalse(main.contains("role=note label=\"Login refused\""), main);
     servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.PG_OUTLINE, PASSWORD);
     c.run(
         app,
@@ -578,6 +586,34 @@ class ConsoleTest {
     servers.heal("open " + PG + "/shop");
     c.run(app, "press #try-again\nframe\n" + SETTLE + "snap ran\n");
     assertTrue(status(c.tree("ran")).contains("\"Ran in 4 ms · 1 row\""), c.tree("ran"));
+  }
+
+  @Test
+  void aConsolesFailureToConnectIsSaidInTheConsoleAloneWhileItIsShown() throws Exception {
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    servers.fail(
+        "open " + PG + "/shop", FakeServers.notConnected(ConnectionException.Failure.UNREACHABLE));
+    c.run(
+        app,
+        START + menu("shop-prod", "New console") + SETTLE + type(COUNT) + RUN
+            + "press role=treeitem label=\"shop-prod\"\nframe\nadvance 1\nframe\nsnap failed\n");
+    String failed = c.tree("failed");
+    assertTrue(line(failed, "#unconnected").contains("\"The server cannot be reached\""), failed);
+    assertTrue(line(failed, "role=treeitem").contains("selected"), failed);
+    assertEquals(1, notes(failed), failed);
+    // Another tab in front: the tree's callout says it again.
+    c.run(app, menu("shop-prod", "New console") + SETTLE + "snap behind\n");
+    String behind = c.tree("behind");
+    assertFalse(behind.contains("#unconnected"), behind);
+    assertEquals(1, notes(behind), behind);
+  }
+
+  /** The callouts that say the server cannot be reached. */
+  private static long notes(String tree) {
+    return tree.lines()
+        .filter(l -> l.contains("role=note label=\"The server cannot be reached\""))
+        .count();
   }
 
   /**
