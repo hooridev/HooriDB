@@ -16,6 +16,13 @@ AppId=dev.hoori.db
 AppName=HooriDB
 AppVersion={#Version}
 VersionInfoVersion={#NumericVersion}
+AppPublisher=Patrick Trautmann
+AppCopyright=Copyright (C) Patrick Trautmann
+AppPublisherURL=https://db.hoori.dev
+AppSupportURL=https://db.hoori.dev
+AppUpdatesURL=https://db.hoori.dev
+; Installed apps shows the version beside the name already.
+UninstallDisplayName=HooriDB
 DefaultDirName={localappdata}\Programs\HooriDB
 DisableDirPage=yes
 DisableProgramGroupPage=yes
@@ -49,4 +56,50 @@ begin
   Folder := ExpandConstant('{localappdata}\Programs\HooriDB');
   if CompareText(RemoveBackslashUnlessRoot(ExpandConstant('{app}')), Folder) <> 0 then
     Result := 'HooriDB installs only into ' + Folder + '.';
+end;
+
+// Whether HooriDB runs from the installed folder. Setup notices that itself (CloseApplications)
+// and stops before it changes anything; the uninstaller would delete what it can and leave the
+// rest behind a running app.
+function Running(): Boolean;
+var
+  Locator, Service, Processes, Process: Variant;
+  I: Integer;
+begin
+  Result := False;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\CIMV2');
+    Processes := Service.ExecQuery(
+      'SELECT ExecutablePath FROM Win32_Process WHERE Name = ''HooriDB.exe''');
+    for I := 0 to Processes.Count - 1 do
+    begin
+      Process := Processes.ItemIndex(I);
+      if not VarIsNull(Process.ExecutablePath) then
+        if CompareText(Process.ExecutablePath, ExpandConstant('{app}\HooriDB.exe')) = 0 then
+        begin
+          Result := True;
+          Exit;
+        end;
+    end;
+  except
+    Log('Could not tell whether HooriDB runs: ' + GetExceptionMessage);
+  end;
+end;
+
+// After the user confirmed, right before files go: HooriDB may have been started meanwhile.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usAppMutexCheck then
+    while Running() do
+    begin
+      if UninstallSilent() then
+      begin
+        Log('HooriDB is running; the silent uninstall stops.');
+        Abort;
+      end;
+      if MsgBox('HooriDB is running. Close it, then click OK to continue, or Cancel to keep it'
+        + ' installed.', mbError, MB_OKCANCEL) <> IDOK then
+        Abort;
+    end;
 end;
