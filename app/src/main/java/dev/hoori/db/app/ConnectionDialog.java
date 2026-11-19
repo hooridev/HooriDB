@@ -13,7 +13,9 @@ import static com.rethinkj.ui.kit.TextField.revealable;
 import static com.rethinkj.ui.kit.TextField.textField;
 import static com.rethinkj.ui.kit.ValueField.valueField;
 
+import com.rethinkj.ui.Colors;
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.Image;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Button;
@@ -539,11 +541,12 @@ final class ConnectionDialog {
                     ComboBox.items(
                             PROVIDERS,
                             p.provider(),
-                            v -> ComboBox.item(v.displayName()).image(Logos.of(v)),
+                            ConnectionDialog::type,
                             providerBox,
                             open ? v -> provider(s, v) : null)
                         .key("type")
-                        .label("Type")),
+                        .label("Type")
+                        .wFull()),
                 field("Driver", driverVersion(s, open))
                     .help(driverHelp(s))
                     .warning(youngWarning(s)),
@@ -671,6 +674,26 @@ final class ConnectionDialog {
         List.of(cancel, save),
         () -> cancel(s),
         options);
+  }
+
+  /**
+   * A kind of server with its logo, which a dark theme sets on a tile of the light theme, as the
+   * logos' colors are made for a light ground.
+   */
+  private static ComboBox.Item type(Provider provider) {
+    Image logo = Logos.of(provider);
+    return ComboBox.item(provider.displayName()).leading(() -> {
+      // Read where it is built: the kit keeps the items of an earlier build, theme and all.
+      Theme t = Theme.CURRENT.get();
+      float side = t.size().icon();
+      El image = El.image(logo).size(side, side).fit(Image.Fit.CONTAIN);
+      return Colors.luminance(t.surface().window()) >= 0.5
+          ? image
+          : image
+              .padding(t.space().xs())
+              .fill(Theme.LIGHT.surface().raised())
+              .radius(t.radius().small());
+    });
   }
 
   /** The version of the driver: Recommended or one of the list, which is read in the background. */
