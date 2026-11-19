@@ -6,8 +6,9 @@
 #ifndef Version
   #error Pass the version: ISCC /DVersion=X.Y.Z HooriDB.iss
 #endif
-; Windows takes numbers only, as 1.2.3 of 1.2.3-beta.1.
-#define NumericVersion Copy(Version, 1, Pos("-", Version + "-") - 1)
+; Windows takes numbers only, as 1.2.3 of 1.2.3-beta.1 or 1.2.3+build.7.
+#define Core Copy(Version, 1, Pos("-", Version + "-") - 1)
+#define NumericVersion Copy(Core, 1, Pos("+", Core + "+") - 1)
 #define Bundle "..\..\target\bundle"
 
 [Setup]
