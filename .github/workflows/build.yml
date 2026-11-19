@@ -1,10 +1,17 @@
 # Builds the release bundle on each platform and keeps it as workflow artifacts. The release
-# calls it, and it runs by hand on any branch, without a release.
+# calls it, and it runs by hand on any branch, without a release, and on a pull request that
+# changes how the bundle is built.
 name: Build
 
 on:
   workflow_call:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build.yml
+      - app/src/bundle/**
+      - app/pom.xml
+      - pom.xml
 
 permissions:
   contents: read
