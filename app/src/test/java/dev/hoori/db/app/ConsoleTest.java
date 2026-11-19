@@ -419,8 +419,20 @@ class ConsoleTest {
   void theServersWordsKeepThePasswordOut() throws Exception {
     servers.statement(
         "SELECT secret",
+        // Positioned, so that the editor marks it too.
         List.of(new Failure(
-            Failure.Kind.OTHER, "no such user", "", 0, 0, "", 0, 0, "", "", "try " + PASSWORD, "")),
+            Failure.Kind.OTHER,
+            "no such user " + PASSWORD,
+            "",
+            0,
+            "SELECT ".length() + 1,
+            "",
+            0,
+            0,
+            "",
+            "",
+            "try " + PASSWORD,
+            "")),
         new Message("a note on " + PASSWORD, "01000", 0),
         new Message("a note", PASSWORD, 0)); // a state of the server's choosing
     var app = console(SHOP);

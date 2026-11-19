@@ -5,11 +5,11 @@ import static com.rethinkj.ui.El.row;
 import static com.rethinkj.ui.kit.Button.button;
 import static com.rethinkj.ui.kit.EmptyState.emptyState;
 import static com.rethinkj.ui.kit.Label.label;
-import static com.rethinkj.ui.kit.TitleBar.withMenus;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
+import com.rethinkj.ui.kit.AppIcon;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
@@ -66,11 +66,8 @@ final class Frame {
         .fill(t.surface().window())
         .onKey(keys(MenuBar.keys(s.bar, menus), s.bar, s.palette(main), modal, tabs))
         .onKeyUp(MenuBar.keysUp(s.bar, menus))
-        .child(withMenus(
-            HooriDb.NAME,
-            HooriDb.COLOR,
-            MenuBar.menuBar(s.bar, menus),
-            s.app != null && s.app.windowMaximized()))
+        .child(TitleBar.titleBar(
+            icon(), HooriDb.NAME, List.of(MenuBar.menuBar(s.bar, menus)), null, List.of()))
         .child(Split.cards(
                 Split.Direction.ROW,
                 s.sidebar,
@@ -211,8 +208,7 @@ final class Frame {
         .hFull()
         .fill(t.surface().window())
         .onKey(keys(Menu.shortcuts(menus), null, s.palette(group), modal, tabs))
-        .child(TitleBar.titleBar(
-            title(s, group.activeTab()), HooriDb.COLOR, app != null && app.windowMaximized()))
+        .child(TitleBar.titleBar(icon(), title(s, group.activeTab())))
         .child(col()
             .grow(1)
             .minSize(0, 0)
@@ -223,6 +219,11 @@ final class Frame {
         .overlay(confirmation)
         .overlay(confirmation == null ? null : historyQuestion(s, group))
         .overlay(modal ? null : palette(s, group, menus));
+  }
+
+  /** The app's icon before a title bar's title, as the window's. */
+  private static El icon() {
+    return AppIcon.appIcon(16, HooriDb.COLOR, Symbol.DATABASE);
   }
 
   /** What a console of the window asks about what may be open in it, or null. */
@@ -290,11 +291,10 @@ final class Frame {
       var c = s.catalog;
       El tree = Tree.tree(
               new CatalogTree.Model(t, s),
-              c.open::contains,
-              s.selected,
-              node -> s.selected = node,
-              (node, open) -> c.toggle(s, node, open),
-              node -> c.activate(s, node))
+              new Tree.Options<Node>()
+                  .open(c.open::contains, (node, open) -> c.toggle(s, node, open))
+                  .select(s.selected, node -> s.selected = node)
+                  .onActivate(node -> c.activate(s, node)))
           .key("connections")
           .label("Connections");
       body = Card.inset(Menu.contextMenu(tree, c.menu, c.items(s, s.selected)));
@@ -373,7 +373,9 @@ final class Frame {
         Button.Variant.PRIMARY,
         "Delete",
         s::delete,
-        Button.options().tone(Button.Tone.DANGER).busy(s.removing));
+        Button.options()
+            .tone(Button.Tone.DANGER)
+            .state(s.removing ? Button.State.BUSY : Button.State.READY));
     El content = col()
         .gap(t.space().m())
         .child(label("Delete the connection " + State.name(s.deleting) + "?"))

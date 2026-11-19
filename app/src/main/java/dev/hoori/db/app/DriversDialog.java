@@ -366,7 +366,9 @@ final class DriversDialog {
         PRIMARY,
         "Delete",
         () -> delete(s),
-        Button.options().tone(Button.Tone.DANGER).busy(removing));
+        Button.options()
+            .tone(Button.Tone.DANGER)
+            .state(removing ? Button.State.BUSY : Button.State.READY));
     return Dialog.dialog(
             "Delete " + name + "?",
             content,

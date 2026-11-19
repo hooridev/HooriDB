@@ -27,7 +27,7 @@ public final class HooriDb {
 
   static final String NAME = "HooriDB";
 
-  /** The app's own color, for its icon and its mark in the title bar. */
+  /** The app's own color, for its icon on the window and in the title bar. */
   static final int COLOR = Colors.rgb(0x0F766E);
 
   /** The icon of the app's windows. */

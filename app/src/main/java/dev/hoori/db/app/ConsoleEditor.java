@@ -3,6 +3,7 @@ package dev.hoori.db.app;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
+import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.Completion;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
@@ -51,10 +52,11 @@ final class ConsoleEditor {
   }
 
   /**
-   * The statement failed: where the server says, the place is underlined and the caret goes
-   * there, unless the text has changed since it was sent.
+   * The statement failed: where the server says, the place is underlined, with the server's
+   * {@code words} (withheld where they hold the password) at its mark, and the caret goes there,
+   * unless the text has changed since it was sent.
    */
-  void failed(String sql, Failure failure) {
+  void failed(String sql, Failure failure, String words) {
     Integer at = sent.get(sql);
     var place =
         at == null || !sentFrom.equals(tab.text) ? null : failure.place(sql).orElse(null);
@@ -62,7 +64,8 @@ final class ConsoleEditor {
       return;
     }
     int from = at + place.start();
-    tab.editor.error(from, at + place.end()).select(from, from);
+    var error = new CodeEditor.Diagnostic(from, at + place.end(), CodeEditor.Severity.ERROR, words);
+    tab.editor.diagnostics(tab.text, List.of(error)).select(from, from);
     marked = tab.text;
   }
 
@@ -92,7 +95,7 @@ final class ConsoleEditor {
   }
 
   private void clear() {
-    tab.editor.noError();
+    tab.editor.noDiagnostics();
     marked = null;
   }
 }

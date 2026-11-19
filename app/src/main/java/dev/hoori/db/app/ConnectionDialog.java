@@ -499,7 +499,11 @@ final class ConnectionDialog {
         PRIMARY,
         "Save",
         () -> save(s),
-        Button.options().enabled(changing || ready()).busy(changing));
+        Button.options()
+            .state(
+                changing
+                    ? Button.State.BUSY
+                    : ready() ? Button.State.READY : Button.State.DISABLED));
     El cancel = button(SECONDARY, "Cancel", open ? () -> cancel(s) : slow ? () -> giveUp(s) : null);
     // Also where it is not known whether the keyring holds one: the choice is the user's.
     boolean canSave = s.secrets() != null && (stored != null || asking == null);
@@ -647,7 +651,11 @@ final class ConnectionDialog {
         SECONDARY,
         "Test connection",
         () -> probe.test(s),
-        Button.options().enabled(probe.running() || probe.canTest(s)).busy(probe.running()));
+        Button.options()
+            .state(
+                probe.running()
+                    ? Button.State.BUSY
+                    : probe.canTest(s) ? Button.State.READY : Button.State.DISABLED));
     var options = Dialog.options().start(test).defaultButton(save);
     if (p.color() != null) {
       options = options.leading(ConnectionColors.mark(p.color()));
