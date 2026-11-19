@@ -326,11 +326,7 @@ final class Fetch {
 
   /** The driver's name as its makers call it. */
   static String name(Provider provider) {
-    return switch (provider) {
-      case POSTGRESQL -> "PostgreSQL JDBC";
-      case MARIADB -> "MariaDB Connector/J";
-      case MYSQL -> "MySQL Connector/J";
-    };
+    return provider.dialect().driverName();
   }
 
   /** What is known of the driver, in a line: which one, and whether it is there. */

@@ -1,6 +1,7 @@
 package dev.hoori.db.core.execution;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.sql.Statements;
 import java.io.IOException;
@@ -8,8 +9,6 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
-import java.util.regex.Pattern;
 
 /**
  * Why a statement failed, as the server said it. Where the server does not give a part, a number
@@ -71,21 +70,6 @@ public record Failure(
     OTHER
   }
 
-  // MySQL's no right to run a routine, beyond what Query knows.
-  private static final int MYSQL_ROUTINE_DENIED = 1370;
-  // MySQL's check constraint, whose state is the general HY000.
-  private static final int MYSQL_CHECK = 3819;
-  // MariaDB's max_statement_time, MySQL's max_execution_time and their lock wait timeout.
-  private static final Set<Integer> MYSQL_TIMEOUT = Set.of(1969, 3024, 1205);
-  // PostgreSQL's lock_not_available, of lock_timeout and NOWAIT.
-  private static final String PG_LOCK_NOT_AVAILABLE = "55P03";
-  // MariaDB's and MySQL's syntax error, whose English message says where; a line beyond an int is
-  // none they write.
-  private static final int MYSQL_SYNTAX = 1064;
-  private static final Pattern MYSQL_NEAR =
-      Pattern.compile(".*? to use near '(.*)' at line (\\d{1,9})", Pattern.DOTALL);
-  private static final Pattern MARIADB_CONNECTION = Pattern.compile("^\\(conn=\\d+\\) ");
-
   static Failure cancelled() {
     return new Failure(Kind.CANCELLED, "", "", 0, 0, "", 0, 0, "", "", "", "");
   }
@@ -95,7 +79,7 @@ public record Failure(
   }
 
   /** The failure that the driver's exception means, from a statement that was not cancelled. */
-  static Failure of(Connection connection, Throwable thrown) {
+  static Failure of(Connection connection, Provider provider, Throwable thrown) {
     var message = thrown.getMessage() == null ? thrown.getClass().getName() : thrown.getMessage();
     if (!(thrown instanceof SQLException e)) {
       return new Failure(Kind.OTHER, message, "", 0, 0, "", 0, 0, "", "", "", "");
@@ -104,7 +88,7 @@ public record Failure(
     var code = e.getErrorCode();
     var kind = transport(e)
         ? Kind.CONNECTION_LOST
-        : switch (Query.failure(connection, e).failure()) {
+        : switch (Query.failure(connection, provider, e).failure()) {
           case CONNECTION_LOST, ABORTED -> Kind.CONNECTION_LOST;
           case ACCESS_DENIED -> Kind.ACCESS_DENIED;
           // Query.failure never says that columns changed, which only a read of a table finds.
@@ -113,52 +97,21 @@ public record Failure(
           // of
           // an interrupted statement.
           case CANCELLED ->
-            state.equals("57014") || MYSQL_TIMEOUT.contains(code) ? Kind.TIMEOUT : Kind.CANCELLED;
+            Condition.TIMEOUT.in(provider, state, code) ? Kind.TIMEOUT : Kind.CANCELLED;
           case OTHER -> {
-            if (state.startsWith("23") || code == MYSQL_CHECK) {
+            if (state.startsWith("23") || Condition.CONSTRAINT.in(provider, state, code)) {
               yield Kind.CONSTRAINT;
-            } else if (code == MYSQL_ROUTINE_DENIED) {
+            } else if (Condition.ROUTINE_DENIED.in(provider, state, code)) {
               yield Kind.ACCESS_DENIED;
             } else if (state.startsWith("42") || state.startsWith("3D") || state.startsWith("3F")) {
               yield Kind.INVALID;
-            } else if (state.equals(PG_LOCK_NOT_AVAILABLE) || MYSQL_TIMEOUT.contains(code)) {
+            } else if (Condition.TIMEOUT.in(provider, state, code)) {
               yield Kind.TIMEOUT;
             }
             yield Kind.OTHER;
           }
         };
-    var server = Drivers.serverError(e);
-    if (server != null) {
-      return new Failure(
-          kind,
-          server.message(),
-          state,
-          code,
-          server.position(),
-          server.internalQuery(),
-          server.internalPosition(),
-          0,
-          "",
-          server.detail(),
-          server.hint(),
-          server.context());
-    }
-    message = MARIADB_CONNECTION.matcher(message).replaceFirst("");
-    var near = MYSQL_NEAR.matcher(message);
-    var syntax = code == MYSQL_SYNTAX && near.matches();
-    return new Failure(
-        kind,
-        message,
-        state,
-        code,
-        0,
-        "",
-        0,
-        syntax ? Integer.parseInt(near.group(2)) : 0,
-        syntax ? near.group(1) : "",
-        "",
-        "",
-        "");
+    return provider.dialect().errors().failure(kind, e, message, state, code);
   }
 
   /** A range of a statement's text, in {@code char}s from {@code start} up to {@code end}. */
@@ -172,13 +125,16 @@ public record Failure(
    * comments, or the whole line where there is none; text that begins with a space follows the
    * token that failed. Empty where the server names no place, or a place the statement does not
    * have. A range never splits a character beyond the BMP.
+   *
+   * @param provider the provider of the server that said so, whose lexical rules the statement is
+   *     read by
    */
-  public Optional<Place> place(String sql) {
+  public Optional<Place> place(String sql, Provider provider) {
     if (position > 0) {
       int at = position - 1 < sql.codePointCount(0, sql.length())
           ? sql.offsetByCodePoints(0, position - 1)
           : sql.length();
-      return Optional.of(token(sql, at, Statements.pieces(sql, Provider.POSTGRESQL)));
+      return Optional.of(token(sql, at, Statements.pieces(sql, provider)));
     }
     if (line <= 0) {
       return Optional.empty();
@@ -191,8 +147,7 @@ public record Failure(
       }
       from = end + 1;
     }
-    // MariaDB's rules, which hold MySQL's but for its own kind of executable comment.
-    var pieces = Statements.pieces(sql, Provider.MARIADB);
+    var pieces = Statements.pieces(sql, provider);
     if (near.isEmpty()) {
       return Optional.of(token(sql, sql.length(), pieces));
     }

@@ -1,6 +1,7 @@
 package dev.hoori.db.core.query;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.query.QueryException.Failure;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -10,7 +11,6 @@ import java.sql.SQLNonTransientConnectionException;
 import java.sql.SQLRecoverableException;
 import java.sql.Statement;
 import java.time.Duration;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -46,19 +46,6 @@ public final class Query {
 
   /** How long a cancelled statement has to end, and a connection given up has to close. */
   public static final Duration GRACE = Duration.ofSeconds(2);
-
-  // MySQL error codes: no access to a database, a table, a column, or without a privilege.
-  private static final Set<Integer> MYSQL_ACCESS_DENIED = Set.of(1044, 1142, 1143, 1227);
-
-  // PostgreSQL's undefined table, column and schema, and MariaDB's and MySQL's unknown table and
-  // column.
-  private static final Set<String> NOT_FOUND = Set.of("42P01", "42703", "3F000", "42S02", "42S22");
-
-  // MariaDB's and MySQL's unknown database, whose state is the general 42000.
-  private static final int MYSQL_UNKNOWN_DATABASE = 1049;
-
-  // MariaDB's max_statement_time, which shares the state of a cancelled statement.
-  private static final int MARIADB_STATEMENT_TIME = 1969;
 
   private Query() {}
 
@@ -195,7 +182,7 @@ public final class Query {
       if (Thread.currentThread().isInterrupted()) {
         throw cancelled();
       }
-      throw failure(connection, e.getCause());
+      throw failure(connection, provider, e.getCause());
     }
     if (Thread.currentThread().isInterrupted()) {
       throw cancelled();
@@ -211,17 +198,18 @@ public final class Query {
    * @throws QueryException {@link Failure#ABORTED} where the limit passed, the step's own failure
    *     otherwise
    */
-  public static <T> T within(Connection connection, Duration limit, Step<T> step)
+  public static <T> T within(Connection connection, Provider provider, Duration limit, Step<T> step)
       throws QueryException {
-    return within(connection, limit, step, () -> {});
+    return within(connection, provider, limit, step, () -> {});
   }
 
   /**
-   * As {@link #within(Connection, Duration, Step)}, and {@code passed} runs as the limit passes,
+   * As {@link #within(Connection, Provider, Duration, Step)}, and {@code passed} runs as the limit passes,
    * before the connection is given up, so that the step, should it wake up after all, can see that
    * it was.
    */
-  public static <T> T within(Connection connection, Duration limit, Step<T> step, Runnable passed)
+  public static <T> T within(
+      Connection connection, Provider provider, Duration limit, Step<T> step, Runnable passed)
       throws QueryException {
     var result = new CompletableFuture<T>();
     var worker = Thread.ofVirtual().name("query within").start(() -> {
@@ -240,7 +228,7 @@ public final class Query {
         } catch (InterruptedException e) {
           interrupted = true; // the step ends all the same, within the limit
         } catch (ExecutionException e) {
-          throw failure(connection, e.getCause());
+          throw failure(connection, provider, e.getCause());
         } catch (TimeoutException e) {
           passed.run();
           var canceller = Thread.ofVirtual().unstarted(() -> {});
@@ -260,33 +248,29 @@ public final class Query {
   }
 
   /** The failure that the driver's exception means, on the connection that threw it. */
-  public static QueryException failure(Connection connection, Throwable thrown) {
+  public static QueryException failure(Connection connection, Provider provider, Throwable thrown) {
     var message = thrown.getMessage() == null ? thrown.getClass().getName() : thrown.getMessage();
     if (!(thrown instanceof SQLException e)) {
       return new QueryException(Failure.OTHER, message, thrown);
     }
     var state = e.getSQLState() == null ? "" : e.getSQLState();
+    var code = e.getErrorCode();
     Failure failure;
     if (state.startsWith("08")
         || e instanceof SQLNonTransientConnectionException
         || e instanceof SQLRecoverableException
         || closed(connection)) {
       failure = Failure.CONNECTION_LOST;
-    } else if (cancellation(e)) {
+    } else if (Condition.CANCELLED.in(provider, state, code)) {
       failure = Failure.CANCELLED;
-    } else if (state.equals("42501") || MYSQL_ACCESS_DENIED.contains(e.getErrorCode())) {
+    } else if (Condition.ACCESS_DENIED.in(provider, state, code)) {
       failure = Failure.ACCESS_DENIED;
-    } else if (NOT_FOUND.contains(state) || e.getErrorCode() == MYSQL_UNKNOWN_DATABASE) {
+    } else if (Condition.NOT_FOUND.in(provider, state, code)) {
       failure = Failure.NOT_FOUND;
     } else {
       failure = Failure.OTHER;
     }
     return new QueryException(failure, message, thrown);
-  }
-
-  // PostgreSQL's query_canceled, and MariaDB's and MySQL's "Query execution was interrupted".
-  private static boolean cancellation(SQLException e) {
-    return "57014".equals(e.getSQLState()) || "70100".equals(e.getSQLState());
   }
 
   private static QueryException cancelled() {
@@ -320,18 +304,27 @@ public final class Query {
         case SUCCESS -> stopped.test(result.resultNow());
         case FAILED ->
           result.exceptionNow() instanceof SQLException e
-              && cancellation(e)
-              && e.getErrorCode() != MARIADB_STATEMENT_TIME;
+              && byServer(
+                  provider, e.getSQLState() == null ? "" : e.getSQLState(), e.getErrorCode());
         default -> false;
       };
       if ((answered && !sent.resultNow())
           || byServer
-          || (answered && provider != Provider.POSTGRESQL)) {
+          || (answered && provider.dialect().session().cancelAnswered())) {
         return cancelled();
       }
     }
     abandon(connection, worker, canceller);
     return new QueryException(Failure.ABORTED, "", null);
+  }
+
+  /**
+   * Whether a failure with the SQLSTATE and error code says that the server stopped the statement
+   * for a cancel, and not for a time limit of its own that ends it as a cancel would.
+   */
+  public static boolean byServer(Provider provider, String state, int code) {
+    return Condition.CANCELLED.in(provider, state, code)
+        && !Condition.TIME_LIMIT.in(provider, state, code);
   }
 
   // Whether the future is done by the deadline; a second interrupt gives up the wait.

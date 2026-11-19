@@ -1,133 +1,41 @@
 package dev.hoori.db.core.connection;
 
-import static dev.hoori.db.core.connection.Capability.CONNECTION_PER_DATABASE;
-import static dev.hoori.db.core.connection.Capability.ERROR_POSITION;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN_ANALYZE;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN_JSON;
-import static dev.hoori.db.core.connection.Capability.SCHEMAS;
-import static dev.hoori.db.core.connection.Capability.TRANSACTIONAL_DDL;
 
+import dev.hoori.db.core.dialect.Dialect;
+import dev.hoori.db.core.dialect.MariaDb;
+import dev.hoori.db.core.dialect.MySql;
+import dev.hoori.db.core.dialect.PostgreSql;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
-import java.util.Map;
 import java.util.Optional;
 
-/** A kind of database server that HooriDB connects to. */
+/**
+ * A kind of database server that HooriDB connects to. What each does its own way is its {@link
+ * #dialect}.
+ */
 public enum Provider {
-  POSTGRESQL(
-      "PostgreSQL",
-      5432,
-      "postgresql",
-      '"',
-      // DefaultJavaSSLFactory checks the chain against the JVM's trust store, where the driver's
-      // own factory reads a root.crt from the user's PostgreSQL folder; verify-full still has the
-      // driver check the host name.
-      Map.of(
-          Tls.OFF, Map.of("sslmode", "disable"),
-          Tls.ENCRYPTED, Map.of("sslmode", "require"),
-          Tls.VERIFIED,
-              Map.of(
-                  "sslmode", "verify-full",
-                  "sslfactory", "org.postgresql.ssl.DefaultJavaSSLFactory")),
-      null,
-      Map.of(
-          SCHEMAS, always(),
-          CONNECTION_PER_DATABASE, always(),
-          TRANSACTIONAL_DDL, always(),
-          ERROR_POSITION, always(),
-          EXPLAIN, always("EXPLAIN "),
-          EXPLAIN_JSON, since(9, 0, 0, "EXPLAIN (FORMAT JSON) "),
-          EXPLAIN_ANALYZE, since(7, 2, 0, "EXPLAIN ANALYZE "))),
-  MARIADB(
-      "MariaDB",
-      3306,
-      "mariadb",
-      '`',
-      // Without deferCertificateValidation=false, verify-full accepts a certificate the trust
-      // store does not, against a fingerprint bound to the password and without the host name.
-      Map.of(
-          Tls.OFF, Map.of("sslMode", "disable"),
-          Tls.ENCRYPTED, Map.of("sslMode", "trust"),
-          Tls.VERIFIED, Map.of("sslMode", "verify-full", "deferCertificateValidation", "false")),
-      "database",
-      Map.of(
-          EXPLAIN, always(MySqlFamily.PLAN),
-          EXPLAIN_JSON, since(10, 1, 2, MySqlFamily.PLAN_JSON),
-          EXPLAIN_ANALYZE, since(10, 1, 0, "ANALYZE "))),
-  MYSQL(
-      "MySQL",
-      3306,
-      "mysql",
-      '`',
-      Map.of(
-          // Without TLS, a first login with caching_sha2_password fails unless the client may ask
-          // for the server's public key. Whoever can alter the traffic can hand it a key of their
-          // own and read the password; OFF already accepts an unprotected link, and does not work
-          // at all against a current MySQL without it.
-          Tls.OFF, Map.of("sslMode", "DISABLED", "allowPublicKeyRetrieval", "true"),
-          Tls.ENCRYPTED, Map.of("sslMode", "REQUIRED"),
-          Tls.VERIFIED, Map.of("sslMode", "VERIFY_IDENTITY")),
-      "dbname",
-      Map.of(
-          EXPLAIN, always(MySqlFamily.PLAN),
-          EXPLAIN_JSON, since(5, 6, 5, MySqlFamily.PLAN_JSON),
-          EXPLAIN_ANALYZE, since(8, 0, 18, "EXPLAIN ANALYZE ")));
-
-  // What MariaDB and MySQL write alike. A class of its own, as the constants above cannot refer
-  // to static fields of this enum.
-  private static final class MySqlFamily {
-    static final String PLAN = "EXPLAIN ";
-    static final String PLAN_JSON = "EXPLAIN FORMAT=JSON ";
-  }
-
-  // From which version a capability exists, and for a form of EXPLAIN what goes before the
-  // statement; null for the others.
-  private record Since(ServerVersion version, String prefix) {}
-
-  private final String displayName;
-  private final int defaultPort;
-  private final String scheme;
-  private final char quote;
-  private final Map<Tls, Map<String, String>> tls;
-  private final String databaseProperty;
-  private final Map<Capability, Since> capabilities;
-
-  Provider(
-      String displayName,
-      int defaultPort,
-      String scheme,
-      char quote,
-      Map<Tls, Map<String, String>> tls,
-      String databaseProperty,
-      Map<Capability, Since> capabilities) {
-    this.displayName = displayName;
-    this.defaultPort = defaultPort;
-    this.scheme = scheme;
-    this.quote = quote;
-    this.tls = tls;
-    this.databaseProperty = databaseProperty;
-    this.capabilities = capabilities;
-  }
-
-  private static Since always() {
-    return always(null);
-  }
-
-  private static Since always(String prefix) {
-    return new Since(ServerVersion.UNKNOWN, prefix);
-  }
-
-  private static Since since(int major, int minor, int patch, String prefix) {
-    return new Since(new ServerVersion(major, minor, patch), prefix);
-  }
+  POSTGRESQL,
+  MARIADB,
+  MYSQL;
 
   public String displayName() {
-    return displayName;
+    return dialect().displayName();
   }
 
   public int defaultPort() {
-    return defaultPort;
+    return dialect().defaultPort();
+  }
+
+  /** What this provider does its own way, which the code that uses it does not name. */
+  public Dialect dialect() {
+    return switch (this) {
+      case POSTGRESQL -> PostgreSql.INSTANCE;
+      case MARIADB -> MariaDb.INSTANCE;
+      case MYSQL -> MySql.INSTANCE;
+    };
   }
 
   /**
@@ -142,27 +50,23 @@ public enum Provider {
     if (!problems.isEmpty()) {
       throw new ConnectionProfile.UnfitException(problems);
     }
+    var connecting = dialect().connecting();
     var host = profile.host();
     if (host.indexOf(':') >= 0) {
       // As typed: with VERIFIED, pgjdbc and MySQL Connector/J compare an IPv6 address with the
       // certificate's as text, so a shortened form or brackets can fail a right certificate.
       host = host.startsWith("[") ? host.substring(1, host.length() - 1) : host;
-      // MySQL Connector/J decodes the host, and fails on the "%" of a zone that is not "%25".
-      host = "[" + (this == MYSQL ? host.replace("%", "%25") : host) + "]";
+      host = "[" + connecting.ipv6(host) + "]";
     }
-    var url = "jdbc:" + scheme + "://" + host + ":" + profile.port() + "/";
-    var properties = new HashMap<>(tls.get(profile.tls()));
-    if (this == MYSQL) {
-      // Else Connector/J applies JDBC escapes to a prepared statement, also inside a quoted name.
-      properties.put("processEscapeCodesForPrepStmts", "false");
-    }
+    var url = "jdbc:" + connecting.scheme() + "://" + host + ":" + profile.port() + "/";
+    var properties = new HashMap<>(connecting.tls(profile.tls()));
+    properties.putAll(connecting.properties());
     var database = profile.database();
-    if (databaseProperty == null) {
+    var property = connecting.databaseProperty();
+    if (property.isEmpty()) {
       url += encode(database);
     } else if (!database.isEmpty()) {
-      // MariaDB Connector/J does not decode the path of the URL and MySQL Connector/J trims it, so
-      // the name goes as a property, which both pass on as it is.
-      properties.put(databaseProperty, database);
+      properties.put(property.get(), database);
     }
     return new ConnectionParameters(url, properties);
   }
@@ -172,13 +76,13 @@ public enum Provider {
     if (identifier.indexOf('\0') >= 0) {
       throw new IllegalArgumentException("An identifier cannot contain a NUL character");
     }
-    var q = String.valueOf(quote);
+    var q = String.valueOf(dialect().syntax().identifierQuote());
     return q + identifier.replace(q, q + q) + q;
   }
 
   /** Whether a server of this provider and version has the capability. */
   public boolean supports(Capability capability, ServerVersion version) {
-    var since = capabilities.get(capability);
+    var since = dialect().capabilities().get(capability);
     return since != null && version.atLeast(since.version());
   }
 
@@ -202,7 +106,7 @@ public enum Provider {
 
   private Optional<String> prefixed(Capability form, String statement, ServerVersion version) {
     return supports(form, version)
-        ? Optional.of(capabilities.get(form).prefix() + statement)
+        ? Optional.of(dialect().capabilities().get(form).prefix() + statement)
         : Optional.empty();
   }
 

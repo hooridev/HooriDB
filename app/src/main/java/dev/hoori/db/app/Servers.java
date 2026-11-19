@@ -295,7 +295,7 @@ interface Servers {
     public Abandoned close() {
       var ended = giveUp();
       try {
-        Query.within(connection, Query.GRACE, () -> {
+        Query.within(connection, provider, Query.GRACE, () -> {
           Connector.close(connection);
           return null;
         });

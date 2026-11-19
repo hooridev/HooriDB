@@ -1,6 +1,7 @@
 package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.SyntaxDialect;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -28,8 +29,7 @@ public final class Statements {
   private static final int MAX_DELIMITER = 15;
 
   private final String text;
-  private final Provider provider;
-  private final boolean postgres;
+  private final SyntaxDialect syntax;
   private final List<Statement> statements = new ArrayList<>();
   // For each statement, the offset after its terminator, or its end if it has none.
   private final List<Integer> afters = new ArrayList<>();
@@ -68,9 +68,8 @@ public final class Statements {
 
   private Statements(String text, Provider provider) {
     this.text = text;
-    this.provider = provider;
-    this.postgres = provider == Provider.POSTGRESQL;
-    this.escapes = !postgres;
+    this.syntax = provider.dialect().syntax();
+    this.escapes = syntax.backslashEscapes();
   }
 
   /** The statements of the text, in order. */
@@ -162,8 +161,8 @@ public final class Statements {
    */
   public static OptionalLong limit(String sql, Provider provider) {
     // Not one in an executable comment, which an older server skips.
-    var tokens =
-        Tokens.of(sql, provider, new Tokens.Reading(provider != Provider.POSTGRESQL, false));
+    var tokens = Tokens.of(
+        sql, provider, new Tokens.Reading(provider.dialect().syntax().backslashEscapes(), false));
     var limit = OptionalLong.empty();
     for (int k = 0; k + 1 < tokens.size(); k++) {
       if (tokens.get(k).depth() == 0 && tokens.get(k).is("LIMIT")) {
@@ -185,7 +184,7 @@ public final class Statements {
    * {@code DELIMITER} line is not told apart, so this is for the text of one statement.
    */
   public static List<Piece> pieces(String text, Provider provider) {
-    return pieces(text, provider, provider != Provider.POSTGRESQL);
+    return pieces(text, provider, provider.dialect().syntax().backslashEscapes());
   }
 
   /**
@@ -270,7 +269,7 @@ public final class Statements {
     int start = -1;
     int end = -1;
     while (i < n) {
-      if (start < 0 && !postgres && delimiterCommand()) {
+      if (start < 0 && syntax.clientDelimiter() && delimiterCommand()) {
         continue;
       }
       if (text.startsWith(delimiter, i)) {
@@ -307,49 +306,49 @@ public final class Statements {
   private boolean token() {
     char c = text.charAt(i);
     char next = charAt(i + 1);
-    if (c == '-' && next == '-' && (postgres || controlOrSpace(charAt(i + 2)))) {
+    if (c == '-'
+        && next == '-'
+        && (!syntax.dashCommentNeedsSpace() || controlOrSpace(charAt(i + 2)))) {
       skipLine();
       return false;
     }
     if (c == '/' && next == '*') {
       kind = Piece.Kind.COMMENT;
-      if (postgres) {
+      if (syntax.nestedComments()) {
         skipNestedComment();
         return false;
       }
       // Executable comments are code for the server, but a terminator in them does not count.
-      char third = charAt(i + 2);
-      boolean code =
-          third == '!' || (third == 'M' && charAt(i + 3) == '!' && provider == Provider.MARIADB);
+      boolean code = false;
+      for (var opening : syntax.executableComments()) {
+        code |= text.startsWith(opening, i);
+      }
       int close = text.indexOf("*/", i + 2);
       open = close < 0;
       i = close < 0 ? text.length() : close + 2;
       return code;
     }
-    if (postgres) {
-      if (c == '\'') {
-        kind = Piece.Kind.STRING;
-        skipQuoted('\'', escapes);
-      } else if ((c == 'E' || c == 'e') && next == '\'' && !identifierBefore()) {
-        kind = Piece.Kind.STRING;
-        i++;
-        skipQuoted('\'', true);
-      } else if (c == '"') {
-        kind = Piece.Kind.QUOTED;
-        skipQuoted('"', false);
-      } else if (c != '$' || identifierBefore() || !skipDollarQuoted()) {
-        i++;
-      }
-    } else if (c == '#') {
+    if (c == '#' && syntax.hashComments()) {
       skipLine();
       return false;
-    } else if (c == '\'' || c == '"') {
+    }
+    if (c == '\'' || c == '"' && syntax.doubleQuotedStrings()) {
       kind = Piece.Kind.STRING;
       skipQuoted(c, escapes);
-    } else if (c == '`') {
+    } else if (syntax.escapeStrings()
+        && (c == 'E' || c == 'e')
+        && next == '\''
+        && !identifierBefore()) {
+      kind = Piece.Kind.STRING;
+      i++;
+      skipQuoted('\'', true);
+    } else if (c == syntax.identifierQuote()) {
       kind = Piece.Kind.QUOTED;
-      skipQuoted('`', false);
-    } else {
+      skipQuoted(c, false);
+    } else if (!syntax.dollarQuotedStrings()
+        || c != '$'
+        || identifierBefore()
+        || !skipDollarQuoted()) {
       i++;
     }
     return true;

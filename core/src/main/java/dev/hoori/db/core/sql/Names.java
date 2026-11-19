@@ -14,20 +14,21 @@ public final class Names {
    * with a digit, and on PostgreSQL one with a capital letter, which it would fold.
    */
   public static String quoted(String name, Provider provider) {
-    boolean postgres = provider == Provider.POSTGRESQL;
+    var syntax = provider.dialect().syntax();
+    boolean folds = syntax.foldsNamesToLowerCase();
     boolean plain = !name.isEmpty() && !Character.isDigit(name.charAt(0));
     for (int i = 0; plain && i < name.length(); i++) {
       char c = name.charAt(i);
       plain = c >= 'a' && c <= 'z'
           || c >= '0' && c <= '9'
           || c == '_'
-          || !postgres && c >= 'A' && c <= 'Z';
+          || !folds && c >= 'A' && c <= 'Z';
     }
     plain &= !Keywords.isReserved(name, provider);
     if (plain) {
       return name;
     }
-    var quote = postgres ? "\"" : "`";
+    var quote = String.valueOf(syntax.identifierQuote());
     return quote + name.replace(quote, quote + quote) + quote;
   }
 }

@@ -4,7 +4,6 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
-import java.sql.SQLException;
 
 /**
  * The connection's transaction and its auto-commit, as the one that keeps them has them: on
@@ -16,9 +15,6 @@ import java.sql.SQLException;
  */
 public record Status(Transaction transaction, Boolean autoCommit) {
 
-  // MariaDB's and MySQL's statement that does nothing, whose answer carries the server's status.
-  private static final String NOTHING = "DO 0";
-
   /**
    * Both as they are now: on PostgreSQL pgjdbc's, without a round trip; on MariaDB and MySQL from
    * the status that comes with the answer to {@code DO 0}, which starts no transaction, after which
@@ -29,23 +25,17 @@ public record Status(Transaction transaction, Boolean autoCommit) {
    * @throws QueryException as {@link Query} reports it, such as for a lost connection
    */
   public static Status of(Connection connection, Provider provider) throws QueryException {
-    if (provider == Provider.POSTGRESQL) {
-      return new Status(Drivers.transaction(connection), autoCommit(connection));
+    var session = provider.dialect().session();
+    var nothing = session.statusQuery();
+    if (nothing.isEmpty()) {
+      return new Status(session.transaction(connection, -1), session.autoCommit(connection, -1));
     }
-    return Query.run(connection, provider, NOTHING, statement -> {
+    return Query.run(connection, provider, nothing.get(), statement -> {
       statement.execute();
-      int status = Drivers.status(provider, connection);
-      Drivers.followAutoCommit(provider, connection, status);
-      return new Status(Drivers.transaction(status), Drivers.autoCommit(status));
+      int status = session.status(connection);
+      session.followAutoCommit(connection, status);
+      return new Status(
+          session.transaction(connection, status), session.autoCommit(connection, status));
     });
-  }
-
-  // pgjdbc's, which it keeps itself; not known on a closed connection.
-  static Boolean autoCommit(Connection connection) {
-    try {
-      return connection.isClosed() ? null : connection.getAutoCommit();
-    } catch (SQLException | RuntimeException e) {
-      return null;
-    }
   }
 }

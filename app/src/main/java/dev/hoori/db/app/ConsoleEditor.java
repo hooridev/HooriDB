@@ -56,10 +56,11 @@ final class ConsoleEditor {
    * {@code words} (withheld where they hold the password) at its mark, and the caret goes there,
    * unless the text has changed since it was sent.
    */
-  void failed(String sql, Failure failure, String words) {
+  void failed(String sql, Failure failure, Provider provider, String words) {
     Integer at = sent.get(sql);
-    var place =
-        at == null || !sentFrom.equals(tab.text) ? null : failure.place(sql).orElse(null);
+    var place = at == null || provider == null || !sentFrom.equals(tab.text)
+        ? null
+        : failure.place(sql, provider).orElse(null);
     if (place == null) {
       return;
     }

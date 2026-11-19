@@ -1,0 +1,67 @@
+package dev.hoori.db.core.data;
+
+import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.query.QueryException;
+import java.sql.Connection;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.util.List;
+import java.util.OptionalLong;
+
+/**
+ * How {@link Rows} reads a provider's tables and results: the estimate and the count, the order
+ * and the checks of a page, and how each type's values are read. A provider's dialect hands one
+ * out; what it does is this package's own, as it builds on the ways {@link Rows} reads a value.
+ */
+public abstract class RowsDialect {
+
+  RowsDialect() {}
+
+  /** The planner's estimate of the rows that {@code select}, all rows of the table, gives. */
+  abstract OptionalLong estimate(
+      Connection connection, Provider provider, Table table, String select) throws QueryException;
+
+  /** The expression that counts the rows. */
+  abstract String count();
+
+  /**
+   * How the table's columns are read. Where the server is asked for them before the page, a read
+   * fails as {@link QueryException.Failure#COLUMNS_CHANGED} where they are not the given ones.
+   */
+  abstract Rows.Described describe(
+      Connection connection, Provider provider, Table table, List<Column> columns)
+      throws QueryException;
+
+  /**
+   * Whether a page brings the table's columns as they are now with its rows, from a join to none of
+   * them, which {@link #same} then checks.
+   */
+  abstract boolean witness();
+
+  /**
+   * Whether the witness's columns, after the {@code selected} expressions of the reads, are the
+   * given columns, by name and in order, each read the way its catalog type is read.
+   */
+  abstract boolean same(
+      List<Column> columns, List<Rows.Read> reads, ResultSetMetaData metadata, int selected)
+      throws SQLException;
+
+  /**
+   * The expressions of where each of the table's rows is stored, which order a page where nothing
+   * else does; empty where it has none to rely on.
+   */
+  abstract List<String> places(Table table);
+
+  /**
+   * Whether the table, as {@link Rows.Described#table} names it, has or had children that inherit
+   * from it, which may repeat its keys. Asked only of a table with places and a primary key.
+   */
+  abstract boolean children(Connection connection, Provider provider, long table)
+      throws QueryException;
+
+  /** How the column of a result, or of the table as {@link #describe} reads it, is read. */
+  abstract Rows.Read read(Rows.Source source, ResultSetMetaData metadata, int column)
+      throws SQLException;
+}

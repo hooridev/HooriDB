@@ -174,7 +174,8 @@ class ExecutionServerTest {
       assertTrue(took.toMillis() < 1000, provider + " took " + took);
       if (provider == Provider.POSTGRESQL) {
         // In a transaction of its own, which is none of the caller's.
-        assertEquals(Transaction.OPEN, Drivers.transaction(connection));
+        assertEquals(
+            Transaction.OPEN, Provider.POSTGRESQL.dialect().session().transaction(connection, -1));
         assertEquals(Transaction.NONE, first.transaction());
         assertFalse(connection.getAutoCommit());
       }
@@ -187,7 +188,8 @@ class ExecutionServerTest {
       assertTrue(connection.getAutoCommit());
       if (provider == Provider.POSTGRESQL) {
         assertEquals(0, selectLong(connection, "SELECT count(*) FROM pg_cursors WHERE name <> ''"));
-        assertEquals(Transaction.NONE, Drivers.transaction(connection));
+        assertEquals(
+            Transaction.NONE, Provider.POSTGRESQL.dialect().session().transaction(connection, -1));
       }
       assertEquals(List.of(List.of(42L)), rows(run(connection, provider, "SELECT 42")));
       execution.close();
@@ -291,25 +293,27 @@ class ExecutionServerTest {
       var middle = "SELECT id FROM reading WHERE WHERE id = 1";
       assertEquals(
           place(middle, "WHERE id", "WHERE"),
-          failure(run(connection, provider, middle)).place(middle));
+          failure(run(connection, provider, middle)).place(middle, provider));
       // On a later line of a statement of several.
       var later = "SELECT id,\n  label\nFROM reading\nWHERE id IN (1,, 2)";
       assertEquals(
-          place(later, ", 2)", ","), failure(run(connection, provider, later)).place(later));
+          place(later, ", 2)", ","),
+          failure(run(connection, provider, later)).place(later, provider));
       // At the end: the last word.
       var end = "SELECT id FROM reading WHERE";
       assertEquals(
-          place(end, "WHERE", "WHERE"), failure(run(connection, provider, end)).place(end));
+          place(end, "WHERE", "WHERE"),
+          failure(run(connection, provider, end)).place(end, provider));
       // An unknown column and an unknown table: PostgreSQL says where, MariaDB and MySQL do not.
       var column = "SELECT id,\n  nothere\nFROM reading";
       assertEquals(
           pg ? place(column, "nothere", "nothere") : Optional.empty(),
-          failure(run(connection, provider, column)).place(column));
+          failure(run(connection, provider, column)).place(column, provider));
       // A name in double quotes is a string on MariaDB and MySQL.
       var table = pg ? "SELECT *\nFROM \"nowhere\"" : "SELECT *\nFROM nowhere";
       assertEquals(
           pg ? place(table, "\"nowhere\"", "\"nowhere\"") : Optional.empty(),
-          failure(run(connection, provider, table)).place(table));
+          failure(run(connection, provider, table)).place(table, provider));
     }
   }
 

@@ -217,7 +217,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
   // are left out, or kept as OTHER where they stand between tokens.
   private static List<Token> tokens(String text, List<Piece> pieces, Provider provider) {
     var tokens = new ArrayList<Token>();
-    boolean postgres = provider == Provider.POSTGRESQL;
+    boolean folds = provider.dialect().syntax().foldsNamesToLowerCase();
     for (int k = 0; k < pieces.size(); k++) {
       var piece = pieces.get(k);
       switch (piece.kind()) {
@@ -244,7 +244,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
               end = pieces.get(++k).end();
             }
             var word = text.substring(piece.start(), end);
-            var name = postgres ? word.toLowerCase(Locale.ROOT) : word;
+            var name = folds ? word.toLowerCase(Locale.ROOT) : word;
             tokens.add(new Token(Kind.WORD, word, name, end));
           } else {
             var kind = switch (c) {

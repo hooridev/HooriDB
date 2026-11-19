@@ -51,6 +51,7 @@ With `-Dargs="--script <file> --out <folder>"` the app runs a script instead of 
 - Data are records: a connection's profile, a table, a column, a row of a result. The app's state is an ordinary mutable class that holds them, and a handler replaces a record with a new one. Records come back safely from other threads, compare with `equals` (which is how a form knows that it has changes), and work with `switch` over sealed interfaces.
 - Nothing that talks to a database, the file system or the network runs on the app's thread. Such work goes through `App.background`, gets only values in its closure (never the state or elements), and its result arrives as a posted task. A view shows that it is waiting, and closing what asked cancels the work.
 - Typed values, not strings: enums and records in choices, the kit's `Format` for numbers and dates in fields and grid columns, and `Editing` with a `Part` constant per field for a form over a record.
+- What a provider does its own way (SQL, driver behavior, error codes, lexical rules) lives in its dialect, `provider.dialect()`: `dev.hoori.db.core.dialect`, and beside a package that the code needs private members of, as `data/*Rows`. Logic code does not name providers; it asks the dialect for a trait named for the behavior.
 - Credentials never go into logs, exceptions' messages, element trees or stored images.
 - Code, comments, messages and docs are in American English, as the UI framework's are: color, gray, catalog, behavior, initialize. "Cancelled" stays as Java writes it.
 

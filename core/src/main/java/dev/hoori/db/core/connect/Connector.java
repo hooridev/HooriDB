@@ -186,20 +186,9 @@ public final class Connector {
     worker.interrupt();
   }
 
-  // Each driver's own time limits for reaching the server and for logging in. PostgreSQL's
-  // loginTimeout is not one of them: it leaves its own thread behind, waiting on a server that
-  // never answers. The socket timeouts would apply for good, so open lifts them once logged in.
+  // Each driver's own time limits for reaching the server and for logging in. The socket timeouts
+  // would apply for good, so open lifts them once logged in.
   private static Map<String, String> timeouts(Provider provider, Duration timeout) {
-    var millis = String.valueOf(Math.max(1, timeout.toMillis()));
-    return switch (provider) {
-      case POSTGRESQL -> {
-        // In whole seconds, and 0 would mean none.
-        var seconds = String.valueOf(Math.max(1, (timeout.toMillis() + 999) / 1000));
-        yield Map.of("connectTimeout", seconds, "socketTimeout", seconds);
-      }
-      // Also the time limit for each read while logging in.
-      case MARIADB -> Map.of("connectTimeout", millis);
-      case MYSQL -> Map.of("connectTimeout", millis, "socketTimeout", millis);
-    };
+    return provider.dialect().connecting().timeouts(timeout);
   }
 }

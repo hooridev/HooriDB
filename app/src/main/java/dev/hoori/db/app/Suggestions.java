@@ -194,7 +194,7 @@ final class Suggestions {
 
     /** Whether two names are the same as the server compares them. */
     boolean same(String a, String b) {
-      return provider == Provider.POSTGRESQL ? a.equals(b) : a.equalsIgnoreCase(b);
+      return provider.dialect().syntax().caseSensitiveNames() ? a.equals(b) : a.equalsIgnoreCase(b);
     }
 
     private List<Node> read(Node node) {
