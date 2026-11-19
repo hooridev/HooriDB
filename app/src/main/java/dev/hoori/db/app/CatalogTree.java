@@ -1363,6 +1363,15 @@ final class CatalogTree {
       return null;
     }
     var live = lives.get(node.id());
+    // A console in front that could not run says it already, where the run was asked for.
+    for (var group : s.tabs.groups()) {
+      if (failedWhole(live, node)
+          && group.activeTab() instanceof ConsoleTab x
+          && x.stranded
+          && x.id.equals(node.id())) {
+        return null;
+      }
+    }
     var actions = new ArrayList<El>();
     if (trouble.password()) {
       actions.add(button(SECONDARY, "Enter password…", () -> askPassword(s, live)));
