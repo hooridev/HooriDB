@@ -368,6 +368,10 @@
                     <argument>${bundle}/input</argument>
                     <argument>--main-jar</argument>
                     <argument>${project.build.finalName}.jar</argument>
+                    <argument>--vendor</argument>
+                    <argument>Patrick Trautmann</argument>
+                    <argument>--copyright</argument>
+                    <argument>Copyright (C) Patrick Trautmann</argument>
                     <argument>--main-class</argument>
                     <argument>dev.hoori.db.app.HooriDb</argument>
                     <argument>--dest</argument>
