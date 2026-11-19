@@ -8,6 +8,10 @@ import static dev.hoori.db.core.connection.Capability.EXPLAIN_JSON;
 import static dev.hoori.db.core.connection.Capability.SCHEMAS;
 import static dev.hoori.db.core.connection.Capability.TRANSACTIONAL_DDL;
 
+import dev.hoori.db.core.dialect.Dialect;
+import dev.hoori.db.core.dialect.MariaDb;
+import dev.hoori.db.core.dialect.MySql;
+import dev.hoori.db.core.dialect.PostgreSql;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
@@ -128,6 +132,15 @@ public enum Provider {
 
   public int defaultPort() {
     return defaultPort;
+  }
+
+  /** What this provider does its own way, which the code that uses it does not name. */
+  public Dialect dialect() {
+    return switch (this) {
+      case POSTGRESQL -> PostgreSql.INSTANCE;
+      case MARIADB -> MariaDb.INSTANCE;
+      case MYSQL -> MySql.INSTANCE;
+    };
   }
 
   /**

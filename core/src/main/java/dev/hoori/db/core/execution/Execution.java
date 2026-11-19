@@ -2,6 +2,7 @@ package dev.hoori.db.core.execution;
 
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.RowReader;
+import dev.hoori.db.core.dialect.Session;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Statements;
@@ -15,7 +16,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
 
@@ -76,11 +76,9 @@ import java.util.function.Supplier;
  */
 public final class Execution implements AutoCloseable {
 
-  // The first words of a PostgreSQL statement that may read its rows in a transaction of its own.
-  private static final Set<String> QUERIES = Set.of("SELECT", "WITH", "VALUES", "TABLE");
-
   private final Connection connection;
   private final Provider provider;
+  private final Session session;
   private final String sql;
   private Statement statement;
   // Whether auto-commit was turned off for this statement, to be turned on again when it is over.
@@ -102,6 +100,7 @@ public final class Execution implements AutoCloseable {
   public Execution(Connection connection, Provider provider, String sql) {
     this.connection = connection;
     this.provider = provider;
+    this.session = provider.dialect();
     this.sql = sql;
   }
 
@@ -124,7 +123,7 @@ public final class Execution implements AutoCloseable {
       return Query.run(
           connection,
           provider,
-          () -> Drivers.cancel(provider, connection, statement),
+          () -> session.cancel(connection, statement),
           () -> read(count),
           // The server's word that a cancel stopped the statement, not MariaDB's time limit.
           portion -> !portion.results().isEmpty()
@@ -219,7 +218,7 @@ public final class Execution implements AutoCloseable {
               break;
             }
             results.add(new Result.Count(changed));
-            status = Drivers.status(provider, connection);
+            status = session.status(connection);
             resultSet = moreResults();
             continue;
           }
@@ -241,22 +240,22 @@ public final class Execution implements AutoCloseable {
           more = true;
           break;
         }
-        if (provider == Provider.POSTGRESQL) {
+        if (session.warningsKeptByDriver()) {
           collect(rows.getWarnings(), messages);
         }
-        status = Drivers.status(provider, connection);
+        status = session.status(connection);
         resultSet = moreResults();
       }
-      // MariaDB and MySQL send their warnings only when asked, which they cannot be while rows
-      // are on their way.
-      // shortcut: the SHOW WARNINGS that their drivers send for that resets what a following
-      // SELECT ROW_COUNT() gives; read the count first if the console ever offers it.
-      if (!more || provider == Provider.POSTGRESQL) {
+      // Warnings the driver does not keep must be asked for, which they cannot be while rows are
+      // on their way.
+      // shortcut: the SHOW WARNINGS that MariaDB's and MySQL's drivers send for that resets what a
+      // following SELECT ROW_COUNT() gives; read the count first if the console ever offers it.
+      if (!more || session.warningsKeptByDriver()) {
         collect(statement.getWarnings(), messages);
         statement.clearWarnings();
       }
-      // pgjdbc gives what comes while rows are fetched to the result set.
-      if (more && provider == Provider.POSTGRESQL) {
+      // What comes while rows are fetched is the result set's.
+      if (more && session.warningsKeptByDriver()) {
         collect(rows.getWarnings(), messages);
         rows.clearWarnings();
       }
@@ -271,7 +270,7 @@ public final class Execution implements AutoCloseable {
       if (read != null) {
         results.add(new Result.Rows(reader.fields(), from, List.copyOf(read)));
       }
-      if (provider == Provider.POSTGRESQL && statement != null) {
+      if (session.warningsKeptByDriver() && statement != null) {
         try {
           collect(statement.getWarnings(), messages);
           if (rows != null) {
@@ -303,58 +302,47 @@ public final class Execution implements AutoCloseable {
         autoCommit(more ? -1 : status));
   }
 
-  // PostgreSQL's state, which pgjdbc keeps current; MariaDB's and MySQL's from the status when the
-  // statement's last result ended well, and otherwise not known. The transaction of its own is
-  // none of the caller's, which it began without.
-  // As the transaction is known: pgjdbc's own, the caller's while one of its own is open; MariaDB's
-  // and MySQL's from the same status.
+  // As the driver keeps it current, or from the status when the statement's last result ended
+  // well, and otherwise not known. The transaction of its own is none of the caller's, which it
+  // began without.
+  // As the transaction is known, the caller's while one of its own is open.
   private Boolean autoCommit(int status) {
     if (ownTransaction) {
       return Boolean.TRUE;
     }
-    return provider == Provider.POSTGRESQL
-        ? Status.autoCommit(connection)
-        : Drivers.autoCommit(status);
+    return session.autoCommit(connection, status);
   }
 
   private Transaction transaction(int status) {
     if (ownTransaction) {
       return Transaction.NONE;
     }
-    return provider == Provider.POSTGRESQL
-        ? Drivers.transaction(connection)
-        : Drivers.transaction(status);
+    return session.transaction(connection, status);
   }
 
   private boolean execute(int count) throws SQLException {
     // Never around a text with statements of its own after the first, which may begin and end
     // transactions; nor where one is open, which is the caller's.
-    // shortcut: pgjdbc before 42.7.4 or so still reads all rows at once after a BEGIN the user
-    // ran, as its auto-commit is on; the app recommends current drivers.
-    if (provider == Provider.POSTGRESQL
+    var queries = session.queriesInOwnTransaction();
+    if (!queries.isEmpty()
         && connection.getAutoCommit()
-        && Drivers.transaction(connection) == Transaction.NONE
+        && session.transaction(connection, -1) == Transaction.NONE
         && Statements.split(sql, provider).size() == 1
-        && QUERIES.contains(Statements.firstWord(sql, provider).toUpperCase(Locale.ROOT))) {
+        && queries.contains(Statements.firstWord(sql, provider).toUpperCase(Locale.ROOT))) {
       connection.setAutoCommit(false);
       ownTransaction = true;
     }
-    Drivers.keepWriteTimeout(provider, connection);
+    session.keepWriteTimeout(connection);
     statement = connection.createStatement();
     statement.setEscapeProcessing(false);
-    // One row more than asked for, so that the look at the next row needs no second round trip.
-    // MySQL Connector/J streams only with this value, a row at a time.
-    statement.setFetchSize(
-        provider == Provider.MYSQL
-            ? Integer.MIN_VALUE
-            : count == Integer.MAX_VALUE ? 0 : count + 1);
+    statement.setFetchSize(session.fetchSize(count));
     return statement.execute(sql);
   }
 
-  // Goes on to the next result. MySQL Connector/J may close streamed rows with a statement of its
-  // own, which it refuses while a procedure has more results; they are closed after the last.
+  // Goes on to the next result, keeping streamed rows open until the last where the driver would
+  // close them with a statement of its own.
   private boolean moreResults() throws SQLException {
-    if (provider == Provider.MYSQL && rows != null) {
+    if (session.streamedRowsClosedLast() && rows != null) {
       ended.add(rows);
       rows = null;
       return statement.getMoreResults(Statement.KEEP_CURRENT_RESULT);
@@ -381,17 +369,17 @@ public final class Execution implements AutoCloseable {
     return end(ending, status, null);
   }
 
-  // Ends the statement: where it did not run to its end, has MariaDB and MySQL stop sending and
-  // reads what they still send, so that the connection takes statements again; closes its rows
-  // and the statement; and ends its own transaction, committing it unless it failed. The failure
-  // of the commit, if any; where the connection is left in a state that cannot be known, it is
-  // aborted, and the failure says it is lost.
+  // Ends the statement: where it did not run to its end, has a server whose unread rows hold the
+  // connection stop sending and reads what it still sends, so that the connection takes statements
+  // again; closes its rows and the statement; and ends its own transaction, committing it unless
+  // it failed. The failure of the commit, if any; where the connection is left in a state that
+  // cannot be known, it is aborted, and the failure says it is lost.
   // With said, it also keeps what the server says as it ends: the statement's warnings, and those
   // of the commit of its own transaction.
   private Failure end(Ending ending, int status, List<Message> said) {
     over = true;
     var lost = false;
-    if (ending != Ending.RAN && provider != Provider.POSTGRESQL && statement != null) {
+    if (ending != Ending.RAN && session.pendingRowsHoldConnection() && statement != null) {
       lost = !drain();
     }
     if (said != null && statement != null && !lost) {
@@ -459,7 +447,7 @@ public final class Execution implements AutoCloseable {
     }
     if (!lost && ending == Ending.RAN && failure == null) {
       try {
-        Drivers.followAutoCommit(provider, connection, status);
+        session.followAutoCommit(connection, status);
       } catch (SQLException e) {
         lost = true;
       }
@@ -475,12 +463,12 @@ public final class Execution implements AutoCloseable {
     return failure;
   }
 
-  // Cancels what MariaDB or MySQL still send for the statement and reads it to its end; false
-  // where the connection was lost meanwhile.
+  // Cancels what the server still sends for the statement and reads it to its end; false where the
+  // connection was lost meanwhile.
   private boolean drain() {
     if (rows != null && ahead) {
       try {
-        Drivers.cancel(provider, connection, statement);
+        session.cancel(connection, statement);
       } catch (SQLException e) {
         // Then the rows are read to their end.
       }
