@@ -427,13 +427,12 @@ final class Frame {
     Runnable close = () -> s.about = false;
     El ok = button(Button.Variant.PRIMARY, "Close", close);
     El content = Properties.properties(
-            List.of(
-                Properties.property("Version", version == null ? "Development build" : version),
-                Properties.property("Author", "Patrick Trautmann"),
-                Properties.property("License", "MIT"),
-                Properties.property("Website", "https://db.hoori.dev")),
-            null)
-        .w(ConnectionDialog.width());
+        List.of(
+            Properties.property("Version", version == null ? "Development build" : version),
+            Properties.property("Author", "Patrick Trautmann"),
+            Properties.property("License", "MIT"),
+            Properties.property("Website", "https://db.hoori.dev")),
+        null);
     return Dialog.dialog(
         "About " + HooriDb.NAME,
         content,
