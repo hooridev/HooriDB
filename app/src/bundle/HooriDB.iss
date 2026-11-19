@@ -30,6 +30,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupIconFile={#Bundle}\HooriDB.ico
+LicenseFile=..\..\..\LICENSE
 UninstallDisplayIcon={app}\HooriDB.exe
 OutputDir={#Bundle}
 OutputBaseFilename=HooriDB-{#Version}-windows-x64-setup

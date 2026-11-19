@@ -13,6 +13,13 @@
   <description>A database manager for the desktop.</description>
   <url>https://db.hoori.dev</url>
 
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/license/mit</url>
+    </license>
+  </licenses>
+
   <modules>
     <module>core</module>
     <module>app</module>
