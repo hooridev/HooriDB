@@ -21,9 +21,17 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>25</maven.compiler.release>
-    <!-- The UI framework, https://ui.rethinkj.com. There is no release of it yet, so this is a
-         SNAPSHOT that changes with each push to its main branch; mvn -U fetches the newest. -->
-    <rethinkj.ui.version>0.1.0-SNAPSHOT</rethinkj.ui.version>
+    <!-- The UI framework, https://ui.rethinkj.com, and the helper of rethinkj Updater have no
+         release yet. Each artifact is a SNAPSHOT that changes with each push to its main branch;
+         mvn -U fetches the newest. A release pins each to its timestamped SNAPSHOT, as they are
+         published at different times (see "Releasing" in AGENTS.md). -->
+    <rethinkj-ui-core.version>0.1.0-SNAPSHOT</rethinkj-ui-core.version>
+    <rethinkj-ui-kit.version>0.1.0-SNAPSHOT</rethinkj-ui-kit.version>
+    <rethinkj-ui-fonts.version>0.1.0-SNAPSHOT</rethinkj-ui-fonts.version>
+    <rethinkj-ui-icons.version>0.1.0-SNAPSHOT</rethinkj-ui-icons.version>
+    <rethinkj-ui-natives-linux-x64.version>0.1.0-SNAPSHOT</rethinkj-ui-natives-linux-x64.version>
+    <rethinkj-ui-natives-windows-x64.version>0.1.0-SNAPSHOT</rethinkj-ui-natives-windows-x64.version>
+    <rethinkj-updater-helper.version>0.1.0-SNAPSHOT</rethinkj-updater-helper.version>
     <!-- The JDBC drivers that the tests of core load the way the app does, from a folder and not
          from the class path. The app itself downloads whichever version it recommends. -->
     <test.postgresql.version>42.7.14</test.postgresql.version>
@@ -57,30 +65,41 @@
         <version>${project.version}</version>
         <type>test-jar</type>
       </dependency>
+      <!-- The kit's own POM asks for its version of core, which a release must pin as well. -->
+      <dependency>
+        <groupId>com.rethinkj.ui</groupId>
+        <artifactId>rethinkj-ui-core</artifactId>
+        <version>${rethinkj-ui-core.version}</version>
+      </dependency>
       <dependency>
         <groupId>com.rethinkj.ui</groupId>
         <artifactId>rethinkj-ui-kit</artifactId>
-        <version>${rethinkj.ui.version}</version>
+        <version>${rethinkj-ui-kit.version}</version>
       </dependency>
       <dependency>
         <groupId>com.rethinkj.ui</groupId>
         <artifactId>rethinkj-ui-fonts</artifactId>
-        <version>${rethinkj.ui.version}</version>
+        <version>${rethinkj-ui-fonts.version}</version>
       </dependency>
       <dependency>
         <groupId>com.rethinkj.ui</groupId>
         <artifactId>rethinkj-ui-icons</artifactId>
-        <version>${rethinkj.ui.version}</version>
+        <version>${rethinkj-ui-icons.version}</version>
       </dependency>
       <dependency>
         <groupId>com.rethinkj.ui</groupId>
         <artifactId>rethinkj-ui-natives-linux-x64</artifactId>
-        <version>${rethinkj.ui.version}</version>
+        <version>${rethinkj-ui-natives-linux-x64.version}</version>
       </dependency>
       <dependency>
         <groupId>com.rethinkj.ui</groupId>
         <artifactId>rethinkj-ui-natives-windows-x64</artifactId>
-        <version>${rethinkj.ui.version}</version>
+        <version>${rethinkj-ui-natives-windows-x64.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.rethinkj.updater</groupId>
+        <artifactId>rethinkj-updater-helper</artifactId>
+        <version>${rethinkj-updater-helper.version}</version>
       </dependency>
       <dependency>
         <groupId>tools.jackson.core</groupId>
@@ -178,6 +197,16 @@
         <plugin>
           <artifactId>maven-deploy-plugin</artifactId>
           <version>3.2.0</version>
+        </plugin>
+        <plugin>
+          <!-- help:evaluate, which the workflows read the version with. -->
+          <artifactId>maven-help-plugin</artifactId>
+          <version>3.5.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>build-helper-maven-plugin</artifactId>
+          <version>3.6.1</version>
         </plugin>
         <plugin>
           <!-- Runs the app: mvn -q -pl app -am compile exec:exec. Elsewhere it skips, and wants
