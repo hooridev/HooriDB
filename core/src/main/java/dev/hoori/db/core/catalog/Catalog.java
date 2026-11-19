@@ -13,7 +13,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Set;
 import java.util.function.Predicate;
 
 /**
@@ -40,27 +39,6 @@ public final class Catalog {
   /** How long a cancelled query has to end before its connection is aborted. */
   public static final Duration GRACE = Query.GRACE;
 
-  private static final Set<String> MYSQL_SYSTEM =
-      Set.of("information_schema", "mysql", "performance_schema", "sys");
-
-  // PostgreSQL's operators, functions and types are named with their schema, so that what a user
-  // has created under the same names, with a better match or earlier in the search path, is
-  // never what runs.
-  private static final String EQ = " OPERATOR(pg_catalog.=) ";
-
-  // Tables, partitioned and foreign tables, views and materialized views; not indexes, sequences,
-  // composite types or TOAST tables.
-  private static final String PG_KINDS = EQ + "ANY ('{r,p,f,v,m}'::pg_catalog.\"char\"[])";
-
-  // Whether a domain in the chain of the column's type, a domain over a domain included, says NOT
-  // NULL; only of a table, as a view's outer join can give a domain's column NULL all the same.
-  private static final String DOMAIN_NOT_NULL = "WITH RECURSIVE d (base, required) AS ("
-      + "SELECT t.typbasetype, t.typnotnull FROM pg_catalog.pg_type t"
-      + " WHERE t.oid" + EQ + "a.atttypid"
-      + " UNION ALL SELECT t.typbasetype, t.typnotnull FROM pg_catalog.pg_type t"
-      + " JOIN d ON t.oid" + EQ + "d.base)"
-      + " SELECT FROM d WHERE d.required";
-
   private Catalog() {}
 
   interface Row<T> {
@@ -70,23 +48,8 @@ public final class Catalog {
   /** The databases of the server. */
   public static List<Database> databases(Connection connection, Provider provider)
       throws CatalogException {
-    var databases = switch (provider) {
-      case POSTGRESQL ->
-        query(
-            connection,
-            provider,
-            "SELECT datname, datistemplate FROM pg_catalog.pg_database ORDER BY datname",
-            rows -> new Database(rows.getString(1), rows.getBoolean(2)));
-      case MARIADB, MYSQL ->
-        query(
-            connection,
-            provider,
-            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
-            rows -> {
-              var name = rows.getString(1);
-              return new Database(name, MYSQL_SYSTEM.contains(name));
-            });
-    };
+    var catalog = provider.dialect().catalog();
+    var databases = query(connection, provider, catalog.databases(), catalog::database);
     return systemLast(databases, Database::system);
   }
 
@@ -101,16 +64,11 @@ public final class Catalog {
       throw new IllegalArgumentException(provider.displayName() + " has no schemas");
     }
     requireConnectedTo(connection, provider, database);
-    var schemas = query(
-        connection,
-        provider,
-        "SELECT nspname FROM pg_catalog.pg_namespace ORDER BY nspname",
-        rows -> {
-          var name = rows.getString(1);
-          // Names that start with pg_ are kept for the server: pg_toast, pg_temp_3 and the like.
-          return new Schema(
-              database, name, name.startsWith("pg_") || name.equals("information_schema"));
-        });
+    var catalog = provider.dialect().catalog();
+    var schemas = query(connection, provider, catalog.schemas(), rows -> {
+      var name = rows.getString(1);
+      return new Schema(database, name, catalog.systemSchema(name));
+    });
     return systemLast(schemas, Schema::system);
   }
 
@@ -135,33 +93,10 @@ public final class Catalog {
           case "f" -> Table.Kind.FOREIGN;
           default -> Table.Kind.TABLE;
         });
-    var tables = switch (provider) {
-      case POSTGRESQL ->
-        query(
-            connection,
-            provider,
-            "SELECT c.relname, c.relkind FROM pg_catalog.pg_class c"
-                + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
-                + " WHERE n.nspname" + EQ + "? AND c.relkind" + PG_KINDS + " ORDER BY c.relname",
-            table,
-            container.name());
-      // MariaDB's sequences are tables to the server; they come later, with PostgreSQL's.
-      case MARIADB, MYSQL ->
-        query(
-            connection,
-            provider,
-            "SELECT TABLE_NAME, CASE WHEN TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') THEN 'v' ELSE 'r' END"
-                + " FROM information_schema.TABLES"
-                + " WHERE TABLE_SCHEMA = ? AND TABLE_TYPE <> 'SEQUENCE' ORDER BY TABLE_NAME",
-            table,
-            container.name());
-    };
+    var catalog = provider.dialect().catalog();
+    var tables = query(connection, provider, catalog.tables(), table, container.name());
     if (tables.isEmpty()) {
-      var exists = switch (provider) {
-        case POSTGRESQL -> "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname" + EQ + "?";
-        case MARIADB, MYSQL -> "SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?";
-      };
-      requireExists(connection, provider, exists, container.name());
+      requireExists(connection, provider, catalog.containerExists(), container.name());
     }
     return tables;
   }
@@ -182,13 +117,7 @@ public final class Catalog {
     return query(
         connection,
         provider,
-        "SELECT n.nspname, c.relname, c.relkind FROM pg_catalog.pg_class c"
-            + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
-            + " WHERE c.relkind" + PG_KINDS
-            // The system's schemas, as schemas() tells them: pg_ before the name, or this one.
-            + " AND pg_catalog.left(n.nspname, 3) OPERATOR(pg_catalog.<>) 'pg_'"
-            + " AND n.nspname OPERATOR(pg_catalog.<>) 'information_schema'"
-            + " ORDER BY n.nspname, c.relname",
+        provider.dialect().catalog().allTables(),
         rows -> new Table(
             new Schema(database, rows.getString(1), false),
             rows.getString(2),
@@ -206,57 +135,11 @@ public final class Catalog {
     Row<Column> column = rows ->
         new Column(table, rows.getString(1), rows.getString(2), rows.getBoolean(3), rows.getInt(4));
     var schema = table.container().name();
-    var columns = switch (provider) {
-      case POSTGRESQL ->
-        query(
-            connection,
-            provider,
-            "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod),"
-                + " NOT a.attnotnull AND NOT (c.relkind" + EQ
-                + "ANY ('{r,p}'::pg_catalog.\"char\"[])"
-                + " AND EXISTS (" + DOMAIN_NOT_NULL + ")),"
-                // Of the index's attributes only its key, not those it merely includes.
-                + " (SELECT k.n FROM pg_catalog.pg_index i,"
-                + " pg_catalog.unnest(i.indkey) WITH ORDINALITY k (attnum, n)"
-                + " WHERE i.indrelid" + EQ + "c.oid AND i.indisprimary AND k.attnum" + EQ
-                + "a.attnum AND k.n OPERATOR(pg_catalog.<=) i.indnkeyatts)"
-                + " FROM pg_catalog.pg_class c"
-                + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
-                + " JOIN pg_catalog.pg_attribute a ON a.attrelid" + EQ + "c.oid"
-                + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS
-                + " AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
-                + " ORDER BY a.attnum",
-            column,
-            schema,
-            table.name());
-      // shortcut: a temporary table of the session hides a persistent one of the same name from
-      // information_schema, so the columns are the temporary one's; tell them apart if the browsing
-      // connection ever creates temporary tables.
-      case MARIADB, MYSQL ->
-        query(
-            connection,
-            provider,
-            "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE = 'YES', k.ORDINAL_POSITION"
-                + " FROM information_schema.COLUMNS c"
-                + " LEFT JOIN information_schema.KEY_COLUMN_USAGE k"
-                + " ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME"
-                + " AND k.CONSTRAINT_NAME = 'PRIMARY' AND k.COLUMN_NAME = c.COLUMN_NAME"
-                + " WHERE c.TABLE_SCHEMA = ? AND c.TABLE_NAME = ? ORDER BY c.ORDINAL_POSITION",
-            column,
-            schema,
-            table.name());
-    };
+    var catalog = provider.dialect().catalog();
+    var columns = query(connection, provider, catalog.columns(), column, schema, table.name());
     // A PostgreSQL table may have no columns at all.
     if (columns.isEmpty()) {
-      var exists = switch (provider) {
-        case POSTGRESQL ->
-          "SELECT 1 FROM pg_catalog.pg_class c"
-              + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
-              + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS;
-        case MARIADB, MYSQL ->
-          "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
-      };
-      requireExists(connection, provider, exists, schema, table.name());
+      requireExists(connection, provider, catalog.tableExists(), schema, table.name());
     }
     return columns;
   }
@@ -272,10 +155,11 @@ public final class Catalog {
     return List.copyOf(sorted);
   }
 
-  // A PostgreSQL connection would read its own database's content in place of the one asked about.
+  // A connection to one database would read its own database's content in place of the one
+  // asked about.
   private static void requireConnectedTo(
       Connection connection, Provider provider, Database database) throws CatalogException {
-    if (provider != Provider.POSTGRESQL) {
+    if (!provider.supports(Capability.CONNECTION_PER_DATABASE, ServerVersion.UNKNOWN)) {
       return;
     }
     String current;

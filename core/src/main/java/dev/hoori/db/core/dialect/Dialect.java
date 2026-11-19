@@ -29,6 +29,9 @@ public interface Dialect {
   /** How its driver connects. */
   ConnectDialect connecting();
 
+  /** The queries of its catalog. */
+  CatalogDialect catalog();
+
   /** The lexical rules of its SQL. */
   SyntaxDialect syntax();
 

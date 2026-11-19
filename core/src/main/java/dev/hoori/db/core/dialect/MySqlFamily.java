@@ -1,8 +1,10 @@
 package dev.hoori.db.core.dialect;
 
+import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.execution.Transaction;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.Optional;
@@ -15,11 +17,17 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   static final String PLAN = "EXPLAIN ";
   static final String PLAN_JSON = "EXPLAIN FORMAT=JSON ";
 
+  private final CatalogDialect catalog = new Catalog();
   private final SyntaxDialect syntax = new Syntax();
 
   @Override
   public int defaultPort() {
     return 3306;
+  }
+
+  @Override
+  public CatalogDialect catalog() {
+    return catalog;
   }
 
   @Override
@@ -62,6 +70,69 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     @Override
     public boolean defaultDatabaseIsUser() {
       return false;
+    }
+  }
+
+  static final class Catalog implements CatalogDialect {
+
+    private static final Set<String> MYSQL_SYSTEM =
+        Set.of("information_schema", "mysql", "performance_schema", "sys");
+
+    @Override
+    public String databases() {
+      return "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME";
+    }
+
+    @Override
+    public Database database(ResultSet rows) throws SQLException {
+      var name = rows.getString(1);
+      return new Database(name, MYSQL_SYSTEM.contains(name));
+    }
+
+    @Override
+    public String schemas() {
+      throw new UnsupportedOperationException("No schemas");
+    }
+
+    @Override
+    public boolean systemSchema(String name) {
+      throw new UnsupportedOperationException("No schemas");
+    }
+
+    // MariaDB's sequences are tables to the server; they come later, with PostgreSQL's.
+    @Override
+    public String tables() {
+      return "SELECT TABLE_NAME, CASE WHEN TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') THEN 'v' ELSE 'r' END"
+          + " FROM information_schema.TABLES"
+          + " WHERE TABLE_SCHEMA = ? AND TABLE_TYPE <> 'SEQUENCE' ORDER BY TABLE_NAME";
+    }
+
+    @Override
+    public String containerExists() {
+      return "SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?";
+    }
+
+    @Override
+    public String allTables() {
+      throw new UnsupportedOperationException("No schemas");
+    }
+
+    // shortcut: a temporary table of the session hides a persistent one of the same name from
+    // information_schema, so the columns are the temporary one's; tell them apart if the browsing
+    // connection ever creates temporary tables.
+    @Override
+    public String columns() {
+      return "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE = 'YES', k.ORDINAL_POSITION"
+          + " FROM information_schema.COLUMNS c"
+          + " LEFT JOIN information_schema.KEY_COLUMN_USAGE k"
+          + " ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME"
+          + " AND k.CONSTRAINT_NAME = 'PRIMARY' AND k.COLUMN_NAME = c.COLUMN_NAME"
+          + " WHERE c.TABLE_SCHEMA = ? AND c.TABLE_NAME = ? ORDER BY c.ORDINAL_POSITION";
+    }
+
+    @Override
+    public String tableExists() {
+      return "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
     }
   }
 

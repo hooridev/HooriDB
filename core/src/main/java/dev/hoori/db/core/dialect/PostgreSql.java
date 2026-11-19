@@ -11,6 +11,7 @@ import static dev.hoori.db.core.dialect.Reflection.call;
 import static dev.hoori.db.core.dialect.Since.always;
 import static dev.hoori.db.core.dialect.Since.since;
 
+import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Tls;
@@ -19,6 +20,7 @@ import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.execution.Transaction;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
@@ -41,6 +43,7 @@ public final class PostgreSql implements Dialect {
       EXPLAIN_ANALYZE, since(7, 2, 0, "EXPLAIN ANALYZE "));
   private final Driver driver = new Driver("org.postgresql", "postgresql", "org.postgresql.Driver");
   private final ConnectDialect connecting = new Connect();
+  private final CatalogDialect catalog = new Catalog();
   private final SyntaxDialect syntax = new Syntax();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new PostgreSqlRows();
@@ -80,6 +83,11 @@ public final class PostgreSql implements Dialect {
   @Override
   public ConnectDialect connecting() {
     return connecting;
+  }
+
+  @Override
+  public CatalogDialect catalog() {
+    return catalog;
   }
 
   @Override
@@ -180,6 +188,98 @@ public final class PostgreSql implements Dialect {
     @Override
     public boolean defaultDatabaseIsUser() {
       return true;
+    }
+  }
+
+  static final class Catalog implements CatalogDialect {
+
+    // PostgreSQL's operators, functions and types are named with their schema, so that what a user
+    // has created under the same names, with a better match or earlier in the search path, is
+    // never what runs.
+    private static final String EQ = " OPERATOR(pg_catalog.=) ";
+
+    // Tables, partitioned and foreign tables, views and materialized views; not indexes,
+    // sequences, composite types or TOAST tables.
+    private static final String PG_KINDS = EQ + "ANY ('{r,p,f,v,m}'::pg_catalog.\"char\"[])";
+
+    // Whether a domain in the chain of the column's type, a domain over a domain included, says
+    // NOT NULL; only of a table, as a view's outer join can give a domain's column NULL all the
+    // same.
+    private static final String DOMAIN_NOT_NULL = "WITH RECURSIVE d (base, required) AS ("
+        + "SELECT t.typbasetype, t.typnotnull FROM pg_catalog.pg_type t"
+        + " WHERE t.oid" + EQ + "a.atttypid"
+        + " UNION ALL SELECT t.typbasetype, t.typnotnull FROM pg_catalog.pg_type t"
+        + " JOIN d ON t.oid" + EQ + "d.base)"
+        + " SELECT FROM d WHERE d.required";
+
+    @Override
+    public String databases() {
+      return "SELECT datname, datistemplate FROM pg_catalog.pg_database ORDER BY datname";
+    }
+
+    @Override
+    public Database database(ResultSet rows) throws SQLException {
+      return new Database(rows.getString(1), rows.getBoolean(2));
+    }
+
+    @Override
+    public String schemas() {
+      return "SELECT nspname FROM pg_catalog.pg_namespace ORDER BY nspname";
+    }
+
+    // Names that start with pg_ are kept for the server: pg_toast, pg_temp_3 and the like.
+    @Override
+    public boolean systemSchema(String name) {
+      return name.startsWith("pg_") || name.equals("information_schema");
+    }
+
+    @Override
+    public String tables() {
+      return "SELECT c.relname, c.relkind FROM pg_catalog.pg_class c"
+          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+          + " WHERE n.nspname" + EQ + "? AND c.relkind" + PG_KINDS + " ORDER BY c.relname";
+    }
+
+    @Override
+    public String containerExists() {
+      return "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname" + EQ + "?";
+    }
+
+    @Override
+    public String allTables() {
+      return "SELECT n.nspname, c.relname, c.relkind FROM pg_catalog.pg_class c"
+          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+          + " WHERE c.relkind" + PG_KINDS
+          // The system's schemas, as schemas() tells them: pg_ before the name, or this one.
+          + " AND pg_catalog.left(n.nspname, 3) OPERATOR(pg_catalog.<>) 'pg_'"
+          + " AND n.nspname OPERATOR(pg_catalog.<>) 'information_schema'"
+          + " ORDER BY n.nspname, c.relname";
+    }
+
+    @Override
+    public String columns() {
+      return "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod),"
+          + " NOT a.attnotnull AND NOT (c.relkind" + EQ
+          + "ANY ('{r,p}'::pg_catalog.\"char\"[])"
+          + " AND EXISTS (" + DOMAIN_NOT_NULL + ")),"
+          // Of the index's attributes only its key, not those it merely includes.
+          + " (SELECT k.n FROM pg_catalog.pg_index i,"
+          + " pg_catalog.unnest(i.indkey) WITH ORDINALITY k (attnum, n)"
+          + " WHERE i.indrelid" + EQ + "c.oid AND i.indisprimary AND k.attnum" + EQ
+          + "a.attnum AND k.n OPERATOR(pg_catalog.<=) i.indnkeyatts)"
+          + " FROM pg_catalog.pg_class c"
+          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+          + " JOIN pg_catalog.pg_attribute a ON a.attrelid" + EQ + "c.oid"
+          + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS
+          + " AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
+          + " ORDER BY a.attnum";
+    }
+
+    @Override
+    public String tableExists() {
+      return "SELECT 1 FROM pg_catalog.pg_class c"
+          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+          + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS;
     }
   }
 
