@@ -28,7 +28,6 @@ import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Part;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
-import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
@@ -70,6 +69,8 @@ final class ConnectionDialog {
   static final Part<ConnectionProfile, String> DRIVER_VERSION =
       Part.of(ConnectionProfile::driverVersion, ConnectionProfile::withDriverVersion);
 
+  private static final List<Provider> PROVIDERS = List.of(Provider.values());
+
   final boolean isNew;
   final Editing<ConnectionProfile> editing;
   private boolean portByHand; // the port no longer follows the provider
@@ -96,6 +97,7 @@ final class ConnectionDialog {
   private final State.Act act = new State.Act("save", this);
   boolean discarding; // the question whether to throw the changes away is open
   final Menu.State tlsMenu = new Menu.State();
+  final ComboBox.State providerBox = new ComboBox.State();
   final ComboBox.State versionBox = new ComboBox.State();
   Versions versions; // of the driver of the kind of database chosen
   final Probe probe = new Probe(this);
@@ -534,11 +536,14 @@ final class ConnectionDialog {
                 "Server",
                 field(
                     "Type",
-                    Segmented.segmented(
-                        List.of(Provider.values()),
-                        p.provider(),
-                        Provider::displayName,
-                        open ? v -> provider(s, v) : null)),
+                    ComboBox.items(
+                            PROVIDERS,
+                            p.provider(),
+                            v -> ComboBox.item(v.displayName()).image(Logos.of(v)),
+                            providerBox,
+                            open ? v -> provider(s, v) : null)
+                        .key("type")
+                        .label("Type")),
                 field("Driver", driverVersion(s, open))
                     .help(driverHelp(s))
                     .warning(youngWarning(s)),

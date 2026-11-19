@@ -2,11 +2,14 @@ package dev.hoori.db.app;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
@@ -25,6 +28,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class ConnectionsTest {
 
@@ -166,6 +171,98 @@ class ConnectionsTest {
       frame
       """;
 
+  /** Chooses the kind of server from the connection dialog's Type. */
+  static String provider(String name) {
+    return """
+        press role=combobox label="Type"
+        frame
+        advance 1
+        frame
+        press role=option label="%s"
+        frame
+        advance 1
+        frame
+        """.formatted(name);
+  }
+
+  @Test
+  void everyProviderHasALogo() {
+    for (var provider : Provider.values()) {
+      assertNotNull(Logos.of(provider), provider.name());
+    }
+  }
+
+  /** Escape and Enter go to the open list of types, not to the dialog around it. */
+  @Test
+  void theListOfTypesTakesEscapeAndEnter() throws IOException {
+    App<State> app = app();
+    run(app, NEW_SHOP + """
+        press role=combobox label="Type"
+        frame
+        advance 1
+        frame
+        snap open
+        key Escape
+        frame
+        advance 1
+        frame
+        snap escaped
+        press role=combobox label="Type"
+        frame
+        advance 1
+        frame
+        key ArrowDown
+        key Enter
+        frame
+        advance 1
+        frame
+        """ + SETTLE + """
+        snap end
+        """);
+    String open = tree("open");
+    assertTrue(line(open, "role=combobox label=\"Type\"").endsWith(" expanded"), open);
+    assertTrue(open.contains("role=option label=\"MariaDB\""), open);
+    for (var tree : List.of(tree("escaped"), tree("end"))) {
+      assertTrue(line(tree, "role=combobox label=\"Type\"").contains("expanded=false"), tree);
+      assertTrue(line(tree, "role=dialog").contains("label=\"New connection\""), tree);
+      assertFalse(tree.contains("Discard changes?"), tree);
+    }
+    assertTrue(line(tree("escaped"), "#port").contains("\"5432\""), tree("escaped"));
+    assertTrue(line(tree("end"), "#port").contains("\"3306\""), tree("end"));
+    assertEquals(Provider.MARIADB, app.state().dialog.editing.value().provider());
+    assertEquals(List.of(), stored());
+    assertTrue(secrets.stored.isEmpty(), "nothing saved");
+  }
+
+  /**
+   * The pictures of the types for a review, light and dark, into the folder that {@code
+   * -Dreview=<folder>} names; skipped without it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void pictures(String look) throws IOException {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    var out = Files.createDirectories(Path.of(review));
+    App<State> app = app();
+    app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    Script.run(
+        "size 1200 760\nframe\nawait\nframe\nadvance 1\nframe\n" + NEW_SHOP + provider("MySQL")
+            + "snap types-closed-" + look + "\n" + """
+            press role=combobox label="Type"
+            frame
+            advance 1
+            frame
+            key ArrowDown
+            frame
+            """ + "snap types-open-" + look + "\n",
+        app,
+        out);
+    for (var name : List.of("types-closed", "types-open")) {
+      assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
+    }
+  }
+
   @Test
   void aNewConnectionIsListedAndSaved() throws IOException {
     App<State> app = app();
@@ -305,14 +402,12 @@ class ConnectionsTest {
         frame
         advance 1
         frame
-        press role=radio label="MySQL"
-        frame
+        """ + provider("MySQL") + """
         snap mysql
         press role=textbox label="Port"
         key A control
         type "3400"
-        press role=radio label="MariaDB"
-        frame
+        """ + provider("MariaDB") + """
         snap mariadb
         press role=textbox label="Host"
         type "localhost"
@@ -854,8 +949,7 @@ class ConnectionsTest {
         press role=textbox label="Port"
         key A control
         key Backspace
-        press role=radio label="MySQL"
-        frame
+        """ + provider("MySQL") + """
         snap emptied
         key Escape
         frame
