@@ -76,17 +76,29 @@ begin
       Process := Processes.ItemIndex(I);
       if not VarIsNull(Process.ExecutablePath) then
         if CompareText(Process.ExecutablePath, ExpandConstant('{app}\HooriDB.exe')) = 0 then
+        begin
           Result := True;
+          Exit;
+        end;
     end;
   except
     Log('Could not tell whether HooriDB runs: ' + GetExceptionMessage);
   end;
 end;
 
-function InitializeUninstall(): Boolean;
+// After the user confirmed, right before files go: HooriDB may have been started meanwhile.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  Result := True;
-  while Result and Running() do
-    Result := SuppressibleMsgBox('HooriDB is running. Close it, then click OK to continue, or'
-      + ' Cancel to keep it installed.', mbError, MB_OKCANCEL, IDCANCEL) = IDOK;
+  if CurUninstallStep = usAppMutexCheck then
+    while Running() do
+    begin
+      if UninstallSilent() then
+      begin
+        Log('HooriDB is running; the silent uninstall stops.');
+        Abort;
+      end;
+      if MsgBox('HooriDB is running. Close it, then click OK to continue, or Cancel to keep it'
+        + ' installed.', mbError, MB_OKCANCEL) <> IDOK then
+        Abort;
+    end;
 end;
