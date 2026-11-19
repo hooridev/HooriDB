@@ -2470,7 +2470,10 @@ final class ConsoleTab implements Tab {
   }
 
   private El editor(State s, App<State> app, Provider provider) {
-    var dialect = provider == Provider.POSTGRESQL ? Sql.Dialect.POSTGRES : Sql.Dialect.MYSQL;
+    var dialect = switch (provider) {
+      case POSTGRESQL -> Sql.Dialect.POSTGRES;
+      case MARIADB, MYSQL -> Sql.Dialect.MYSQL;
+    };
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
     El editor = CodeEditor.codeEditor(app, text, this.editor, Sql.of(dialect), v -> {

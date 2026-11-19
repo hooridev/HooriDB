@@ -8,6 +8,7 @@ import dev.hoori.db.core.execution.Transaction;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -22,7 +23,6 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
 
   private final CatalogDialect catalog = new Catalog();
   private final ErrorDialect errors = new Errors();
-  private final SyntaxDialect syntax = new Syntax();
 
   @Override
   public int defaultPort() {
@@ -37,11 +37,6 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   @Override
   public ErrorDialect errors() {
     return errors;
-  }
-
-  @Override
-  public SyntaxDialect syntax() {
-    return syntax;
   }
 
   static final class Errors implements ErrorDialect {
@@ -232,11 +227,105 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     }
   }
 
+  // Their lexical rules alike, with each one's key words and kinds of executable comments.
   static final class Syntax implements SyntaxDialect {
+
+    // Typed often on MariaDB and MySQL, each in MySQL's list; MariaDB has sequences as well.
+    static final Set<String> TYPED = Words.words("""
+        AUTO_INCREMENT CHARSET DATABASES DATE DESCRIBE DUPLICATE ENGINE IGNORE PROCESSLIST STATUS
+        UNSIGNED USE VARIABLES VIRTUAL WAIT
+        """);
+
+    private final Set<String> reserved;
+    private final Set<String> offered;
+    private final List<String> executableComments;
+
+    Syntax(Set<String> reserved, Set<String> offered, List<String> executableComments) {
+      this.reserved = reserved;
+      this.offered = offered;
+      this.executableComments = executableComments;
+    }
 
     @Override
     public char identifierQuote() {
       return '`';
+    }
+
+    // As MariaDB and MySQL read a plain string by default, without NO_BACKSLASH_ESCAPES.
+    @Override
+    public boolean backslashEscapes() {
+      return true;
+    }
+
+    @Override
+    public boolean doubleQuotedStrings() {
+      return true;
+    }
+
+    @Override
+    public boolean escapeStrings() {
+      return false;
+    }
+
+    @Override
+    public boolean dollarQuotedStrings() {
+      return false;
+    }
+
+    @Override
+    public boolean dashCommentNeedsSpace() {
+      return true;
+    }
+
+    @Override
+    public boolean hashComments() {
+      return true;
+    }
+
+    @Override
+    public boolean nestedComments() {
+      return false;
+    }
+
+    @Override
+    public List<String> executableComments() {
+      return executableComments;
+    }
+
+    // As their command-line clients do.
+    @Override
+    public boolean clientDelimiter() {
+      return true;
+    }
+
+    @Override
+    public boolean userVariables() {
+      return true;
+    }
+
+    @Override
+    public boolean limitBoundsChanges() {
+      return true;
+    }
+
+    @Override
+    public boolean foldsNamesToLowerCase() {
+      return false;
+    }
+
+    @Override
+    public boolean caseSensitiveNames() {
+      return false;
+    }
+
+    @Override
+    public Set<String> reservedWords() {
+      return reserved;
+    }
+
+    @Override
+    public Set<String> offeredWords() {
+      return offered;
     }
   }
 

@@ -10,6 +10,8 @@ import static dev.hoori.db.core.connection.Capability.TRANSACTIONAL_DDL;
 import static dev.hoori.db.core.dialect.Reflection.call;
 import static dev.hoori.db.core.dialect.Since.always;
 import static dev.hoori.db.core.dialect.Since.since;
+import static dev.hoori.db.core.dialect.Words.union;
+import static dev.hoori.db.core.dialect.Words.words;
 
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -28,6 +30,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -429,9 +432,107 @@ public final class PostgreSql implements Dialect {
 
   static final class Syntax implements SyntaxDialect {
 
+    // The reserved words, also those that can be a function or a type, from the table of key words
+    // in PostgreSQL's documentation; versions 17 and 18 reserve the same.
+    private static final Set<String> RESERVED = words("""
+        ALL ANALYSE ANALYZE AND ANY ARRAY AS ASC ASYMMETRIC AUTHORIZATION BINARY BOTH CASE CAST
+        CHECK COLLATE COLLATION COLUMN CONCURRENTLY CONSTRAINT CREATE CROSS CURRENT_CATALOG
+        CURRENT_DATE CURRENT_ROLE CURRENT_SCHEMA CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER
+        DEFAULT DEFERRABLE DESC DISTINCT DO ELSE END EXCEPT FALSE FETCH FOR FOREIGN FREEZE FROM
+        FULL GRANT GROUP HAVING ILIKE IN INITIALLY INNER INTERSECT INTO IS ISNULL JOIN LATERAL
+        LEADING LEFT LIKE LIMIT LOCALTIME LOCALTIMESTAMP NATURAL NOT NOTNULL NULL OFFSET ON ONLY
+        OR ORDER OUTER OVERLAPS PLACING PRIMARY REFERENCES RETURNING RIGHT SELECT SESSION_USER
+        SIMILAR SOME SYMMETRIC SYSTEM_USER TABLE TABLESAMPLE THEN TO TRAILING TRUE UNION UNIQUE
+        USER USING VARIADIC VERBOSE WHEN WHERE WINDOW WITH
+        """);
+
+    // Typed often on PostgreSQL only, each in its table of key words.
+    private static final Set<String> TYPED = words("""
+        CONFLICT COPY EXTENSION EXTRACT GREATEST IDENTITY INHERIT LEAST MATERIALIZED NOTHING
+        NULLIF REFRESH REINDEX SEQUENCE SUBSTRING TEMP TRIM UNLOGGED VACUUM
+        """);
+
+    private static final Set<String> OFFERED = union(RESERVED, Words.TYPED, TYPED);
+
     @Override
     public char identifierQuote() {
       return '"';
+    }
+
+    // Only with standard_conforming_strings off.
+    @Override
+    public boolean backslashEscapes() {
+      return false;
+    }
+
+    @Override
+    public boolean doubleQuotedStrings() {
+      return false;
+    }
+
+    @Override
+    public boolean escapeStrings() {
+      return true;
+    }
+
+    @Override
+    public boolean dollarQuotedStrings() {
+      return true;
+    }
+
+    @Override
+    public boolean dashCommentNeedsSpace() {
+      return false;
+    }
+
+    @Override
+    public boolean hashComments() {
+      return false;
+    }
+
+    @Override
+    public boolean nestedComments() {
+      return true;
+    }
+
+    @Override
+    public List<String> executableComments() {
+      return List.of();
+    }
+
+    @Override
+    public boolean clientDelimiter() {
+      return false;
+    }
+
+    @Override
+    public boolean userVariables() {
+      return false;
+    }
+
+    @Override
+    public boolean limitBoundsChanges() {
+      return false;
+    }
+
+    @Override
+    public boolean foldsNamesToLowerCase() {
+      return true;
+    }
+
+    @Override
+    public boolean caseSensitiveNames() {
+      return true;
+    }
+
+    @Override
+    public Set<String> reservedWords() {
+      return RESERVED;
+    }
+
+    @Override
+    public Set<String> offeredWords() {
+      return OFFERED;
     }
   }
 

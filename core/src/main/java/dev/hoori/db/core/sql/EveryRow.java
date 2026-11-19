@@ -84,7 +84,8 @@ public record EveryRow(String verb, String table, boolean certain) {
       if (token.is("RETURNING")) {
         return false;
       }
-      if (token.is("WHERE") || provider != Provider.POSTGRESQL && token.is("LIMIT")) {
+      if (token.is("WHERE")
+          || provider.dialect().syntax().limitBoundsChanges() && token.is("LIMIT")) {
         return true;
       }
     }

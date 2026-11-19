@@ -37,10 +37,12 @@ final class Tokens {
 
   /** Every way it may be read, the provider's default first. */
   static List<Reading> readings(Provider provider) {
-    boolean mysql = provider != Provider.POSTGRESQL;
+    var syntax = provider.dialect().syntax();
+    boolean executable = !syntax.executableComments().isEmpty();
+    boolean backslash = syntax.backslashEscapes();
     var all = new ArrayList<Reading>();
-    for (boolean code : mysql ? new boolean[] {true, false} : new boolean[] {false}) {
-      for (boolean escapes : new boolean[] {mysql, !mysql}) {
+    for (boolean code : executable ? new boolean[] {true, false} : new boolean[] {false}) {
+      for (boolean escapes : new boolean[] {backslash, !backslash}) {
         all.add(new Reading(escapes, code));
       }
     }
@@ -112,13 +114,12 @@ final class Tokens {
 
   // Where the code of an executable comment at the offset begins, or 0 where it is none.
   private static int executable(String sql, int at, Provider provider) {
-    if (provider == Provider.POSTGRESQL) {
-      return 0;
+    for (var opening : provider.dialect().syntax().executableComments()) {
+      if (sql.startsWith(opening, at)) {
+        return at + opening.length();
+      }
     }
-    if (sql.startsWith("/*!", at)) {
-      return at + 3;
-    }
-    return provider == Provider.MARIADB && sql.startsWith("/*M!", at) ? at + 4 : 0;
+    return 0;
   }
 
   // Of an unquoted identifier: ASCII letters, digits, _ and $, and every character beyond ASCII,
@@ -128,7 +129,7 @@ final class Tokens {
         || c == '_'
         || c == '$'
         || c >= 0x80
-        || c == '@' && provider != Provider.POSTGRESQL;
+        || c == '@' && provider.dialect().syntax().userVariables();
   }
 
   private static boolean ascii(char c) {
