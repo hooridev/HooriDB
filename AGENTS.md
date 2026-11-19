@@ -18,6 +18,7 @@ Status: early. The app opens a frameless window with its menus, the saved connec
 mvn verify                                # build and test everything
 mvn -q -pl app -am compile exec:exec      # start the app in a window
 mvn spotless:apply                        # format the Java code
+mvn -Pbundle verify                       # the release bundle of this platform (see "Releasing")
 ```
 
 The first build downloads the UI framework from Maven Central's snapshot repository and needs network access. It builds nothing native: the framework's native libraries come packaged in a JAR per platform, which a profile of `app/pom.xml` picks by operating system.
@@ -38,7 +39,7 @@ With `-Dargs="--script <file> --out <folder>"` the app runs a script instead of 
 ## The UI framework
 
 - Documentation: https://ui.rethinkj.com. For agents, https://ui.rethinkj.com/llms.txt lists every page as Markdown and https://ui.rethinkj.com/llms-full.txt holds them all. Read the page of a component before using it. Source: https://github.com/rethinkj/ui.
-- The framework has no release yet. `rethinkj.ui.version` in the root `pom.xml` names its SNAPSHOT, which changes with each push to its main branch; Maven looks for a newer one once a day, and `mvn -U verify` looks now. Its API still changes, so a build that worked yesterday may need a small change today.
+- The framework has no release yet. A property per artifact in the root `pom.xml`, such as `rethinkj-ui-kit.version`, names its SNAPSHOT, which changes with each push to its main branch; Maven looks for a newer one once a day, and `mvn -U verify` looks now. Its API still changes, so a build that worked yesterday may need a small change today.
 - How an app is made with it: a state object and a function from that state to a tree of elements. Handlers change the state, and the view is built again after each input. There are no observable properties and no listeners.
 - Components of its kit read the theme from `Theme.CURRENT`, which the app provides from the state's theme, and use only its tokens. Views here do the same: each reads `Theme.CURRENT.get()` once at its top into a local that its lambdas capture, and takes no theme as a parameter; handlers, background work and posted tasks run outside a build and read the state's `theme` instead. No color, size or font of their own where the theme has a token. The app's own color, for its icon, is `HooriDb.COLOR`.
 - HooriDB is the framework's first real app. Where the framework lacks something or does something wrong, say so, with the smallest case that shows it, instead of building around it here; such things are fixed in the framework.
@@ -84,6 +85,14 @@ mvn -pl app -am verify -Dbudget -Dtest=BudgetTest -Dsurefire.failIfNoSpecifiedTe
 - First rows: from Enter on the table in the tree to the frame that shows its first rows, without a window, on each of core's `TestServer`s, five times.
 - Scrolling: each `App.frame()` while the wheel scrolls a grid of 1,000,000 made-up rows one step a frame at 60 frames a second, with the pointer over the grid. This is the app's share of a frame (input, build and layout) without drawing: the framework has no public way yet to drive a real window and time its frames.
 - Memory: the resident memory (on Windows the working set) of the started process 10 seconds after its first frame.
+
+## Releasing
+
+A release is a GitHub release of the tag `vX.Y.Z`, whose commit has the version `X.Y.Z` (SemVer). Its assets are `HooriDB-X.Y.Z-linux-x64.tar.gz`, `HooriDB-X.Y.Z-windows-x64.zip`, `HooriDB-X.Y.Z-windows-x64-setup.exe` and `SHA256SUMS`. The archives hold the whole app folder `HooriDB/`, a jpackage app image with its own runtime, which the helper of [rethinkj Updater](https://github.com/rethinkj/updater) swaps whole; the Windows installer installs it for the user alone into `%LOCALAPPDATA%\Programs\HooriDB`, on Linux it is unpacked into a folder the user may write, such as `~/.local/opt/HooriDB`.
+
+- `mvn -Pbundle verify` builds the bundle of the platform it runs on into `app/target/bundle`; on Windows, `ISCC /DVersion=X.Y.Z app/src/bundle/HooriDB.iss` makes the installer from it. The workflow `build.yml` does both on Linux and Windows and keeps the results as artifacts; it runs by hand on any branch.
+- The framework and the updater's helper are SNAPSHOTs, which Central deletes after 90 days. So a release pins each `rethinkj-*.version` property of the root `pom.xml` to its timestamped SNAPSHOT, as the artifact's `maven-metadata.xml` in Central's snapshot repository names it, such as `0.1.0-20261118.121633-120`; the artifacts of one push can differ in it. main keeps plain `-SNAPSHOT`.
+- To release: on a branch of its own, set the version of the three POMs to `X.Y.Z` and pin the properties, check that `mvn -U -Pbundle verify` passes, commit, and push the tag `vX.Y.Z` of that commit. The workflow `release.yml` refuses a tag that is not the version and any `-SNAPSHOT` left in a POM, builds, and publishes the release. main then gets the next `-SNAPSHOT` version.
 
 ## Changes
 

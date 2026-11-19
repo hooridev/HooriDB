@@ -1,0 +1,52 @@
+# Builds the release bundle on each platform and keeps it as workflow artifacts. The release
+# calls it, and it runs by hand on any branch, without a release.
+name: Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - run: mvn -B -Pbundle verify
+      - name: Smoke test
+        # Without a window: the launcher, the runtime and the native libraries, which load from
+        # the app's folder and are not unpacked into the user's cache.
+        run: |
+          image=app/target/bundle/image/HooriDB
+          launcher=$image/bin/HooriDB
+          if [ "$RUNNER_OS" = Windows ]; then launcher=$image/HooriDB.exe; fi
+          printf 'size 1000 700\nscale 2\nframe\nsnap start\n' > "$RUNNER_TEMP/smoke.txt"
+          mkdir "$RUNNER_TEMP/cache"
+          XDG_CACHE_HOME="$RUNNER_TEMP/cache" "$launcher" --script "$RUNNER_TEMP/smoke.txt" --out "$RUNNER_TEMP/smoke"
+          test -s "$RUNNER_TEMP/smoke/start.png"
+          test -z "$(ls -A "$RUNNER_TEMP/cache")"
+          test ! -e "${LOCALAPPDATA:-/nonexistent}/rethinkj-ui"
+      - name: Installer
+        if: runner.os == 'Windows'
+        env:
+          MSYS_NO_PATHCONV: 1
+        run: |
+          version=$(mvn -B -q help:evaluate -Dexpression=project.version -DforceStdout)
+          "C:/Program Files (x86)/Inno Setup 6/ISCC.exe" /DVersion="$version" app/src/bundle/HooriDB.iss
+      - uses: actions/upload-artifact@v5
+        with:
+          name: bundle-${{ runner.os }}
+          path: app/target/bundle/HooriDB-*
+          if-no-files-found: error
