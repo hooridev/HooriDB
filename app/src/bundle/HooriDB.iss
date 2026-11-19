@@ -58,8 +58,9 @@ begin
     Result := 'HooriDB installs only into ' + Folder + '.';
 end;
 
-// Whether HooriDB runs from the installed folder. Setup closes it itself (CloseApplications), the
-// uninstaller does not: it would delete what it can and leave the rest behind a running app.
+// Whether HooriDB runs from the installed folder. Setup notices that itself (CloseApplications)
+// and stops before it changes anything; the uninstaller would delete what it can and leave the
+// rest behind a running app.
 function Running(): Boolean;
 var
   Locator, Service, Processes, Process: Variant;
