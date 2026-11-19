@@ -25,7 +25,7 @@ public record Status(Transaction transaction, Boolean autoCommit) {
    * @throws QueryException as {@link Query} reports it, such as for a lost connection
    */
   public static Status of(Connection connection, Provider provider) throws QueryException {
-    var session = provider.dialect();
+    var session = provider.dialect().session();
     var nothing = session.statusQuery();
     if (nothing.isEmpty()) {
       return new Status(session.transaction(connection, -1), session.autoCommit(connection, -1));

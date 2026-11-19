@@ -13,39 +13,49 @@ public final class MariaDb extends MySqlFamily {
 
   public static final MariaDb INSTANCE = new MariaDb();
 
-  private static final RowsDialect ROWS = new MariaDbRows();
+  private final SessionDialect session = new Session();
+  private final RowsDialect rows = new MariaDbRows();
 
   private MariaDb() {}
 
   @Override
+  public SessionDialect session() {
+    return session;
+  }
+
+  @Override
   public RowsDialect rows() {
-    return ROWS;
+    return rows;
   }
 
-  @Override
-  public int status(Connection connection) {
-    try {
-      return (int) call(call(connection, "getContext"), "getServerStatus");
-    } catch (ReflectiveOperationException | RuntimeException e) {
-      return -1;
+  // MariaDB Connector/J.
+  static final class Session extends MySqlFamily.Session {
+
+    @Override
+    public int status(Connection connection) {
+      try {
+        return (int) call(call(connection, "getContext"), "getServerStatus");
+      } catch (ReflectiveOperationException | RuntimeException e) {
+        return -1;
+      }
     }
-  }
 
-  // MariaDB Connector/J reads auto-commit from the status itself.
-  @Override
-  public void followAutoCommit(Connection connection, int status) {}
+    // MariaDB Connector/J reads auto-commit from the status itself.
+    @Override
+    public void followAutoCommit(Connection connection, int status) {}
 
-  @Override
-  public void keepWriteTimeout(Connection connection) {}
+    @Override
+    public void keepWriteTimeout(Connection connection) {}
 
-  // MariaDB Connector/J cancels as long as it reads.
-  @Override
-  public void cancel(Connection connection, Statement statement) throws SQLException {
-    statement.cancel();
-  }
+    // MariaDB Connector/J cancels as long as it reads.
+    @Override
+    public void cancel(Connection connection, Statement statement) throws SQLException {
+      statement.cancel();
+    }
 
-  @Override
-  public boolean streamedRowsClosedLast() {
-    return false;
+    @Override
+    public boolean streamedRowsClosedLast() {
+      return false;
+    }
   }
 }

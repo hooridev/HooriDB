@@ -2,7 +2,7 @@ package dev.hoori.db.core.execution;
 
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.RowReader;
-import dev.hoori.db.core.dialect.Session;
+import dev.hoori.db.core.dialect.SessionDialect;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Statements;
@@ -78,7 +78,7 @@ public final class Execution implements AutoCloseable {
 
   private final Connection connection;
   private final Provider provider;
-  private final Session session;
+  private final SessionDialect session;
   private final String sql;
   private Statement statement;
   // Whether auto-commit was turned off for this statement, to be turned on again when it is over.
@@ -100,7 +100,7 @@ public final class Execution implements AutoCloseable {
   public Execution(Connection connection, Provider provider, String sql) {
     this.connection = connection;
     this.provider = provider;
-    this.session = provider.dialect();
+    this.session = provider.dialect().session();
     this.sql = sql;
   }
 

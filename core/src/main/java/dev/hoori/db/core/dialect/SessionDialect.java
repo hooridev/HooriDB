@@ -13,7 +13,7 @@ import java.util.Set;
  * reached by reflection, as the drivers are loaded in a class loader of their own; where a method
  * is missing, as in a version that lacks it, the answer is the one JDBC alone gives.
  */
-public interface Session {
+public interface SessionDialect {
 
   /**
    * The server status that the driver last read, or -1 where it reads none. It is current only

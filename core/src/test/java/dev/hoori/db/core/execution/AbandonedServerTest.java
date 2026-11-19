@@ -112,7 +112,8 @@ class AbandonedServerTest {
       assertTrue(execution.next(10).more());
       assertEquals(Optional.empty(), execution.abandon().failure());
       assertTrue(connection.getAutoCommit());
-      assertEquals(Transaction.NONE, Provider.POSTGRESQL.dialect().transaction(connection, -1));
+      assertEquals(
+          Transaction.NONE, Provider.POSTGRESQL.dialect().session().transaction(connection, -1));
       assertEquals(List.of(List.of(1L)), rows(run(connection, provider, "SELECT 1")));
     }
   }
@@ -190,7 +191,8 @@ class AbandonedServerTest {
       try {
         var results = run(connection, provider, "SELECT 1; BEGIN; INSERT INTO begun VALUES (999)");
         assertEquals(new Result.Count(1), results.getLast());
-        assertEquals(Transaction.OPEN, Provider.POSTGRESQL.dialect().transaction(connection, -1));
+        assertEquals(
+            Transaction.OPEN, Provider.POSTGRESQL.dialect().session().transaction(connection, -1));
         assertEquals(0, selectLong(other, "SELECT count(*) FROM begun"));
         run(connection, provider, "ROLLBACK");
         assertEquals(0, selectLong(connection, "SELECT count(*) FROM begun"));

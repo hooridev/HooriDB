@@ -174,7 +174,8 @@ class ExecutionServerTest {
       assertTrue(took.toMillis() < 1000, provider + " took " + took);
       if (provider == Provider.POSTGRESQL) {
         // In a transaction of its own, which is none of the caller's.
-        assertEquals(Transaction.OPEN, Provider.POSTGRESQL.dialect().transaction(connection, -1));
+        assertEquals(
+            Transaction.OPEN, Provider.POSTGRESQL.dialect().session().transaction(connection, -1));
         assertEquals(Transaction.NONE, first.transaction());
         assertFalse(connection.getAutoCommit());
       }
@@ -187,7 +188,8 @@ class ExecutionServerTest {
       assertTrue(connection.getAutoCommit());
       if (provider == Provider.POSTGRESQL) {
         assertEquals(0, selectLong(connection, "SELECT count(*) FROM pg_cursors WHERE name <> ''"));
-        assertEquals(Transaction.NONE, Provider.POSTGRESQL.dialect().transaction(connection, -1));
+        assertEquals(
+            Transaction.NONE, Provider.POSTGRESQL.dialect().session().transaction(connection, -1));
       }
       assertEquals(List.of(List.of(42L)), rows(run(connection, provider, "SELECT 42")));
       execution.close();
