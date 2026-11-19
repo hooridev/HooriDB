@@ -538,7 +538,7 @@ final class TableTab implements Tab {
                 connected ? () -> open(s, true) : null,
                 Button.options()
                     .icon(Symbol.ARROW_CLOCKWISE)
-                    .state(opening != null ? Button.State.BUSY : Button.State.READY))
+                    .state(opening != null && connected ? Button.State.BUSY : Button.State.READY))
             .key("refresh"));
     El line = ConnectionColors.line(s.color(id));
     El content =

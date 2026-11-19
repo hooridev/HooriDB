@@ -1300,8 +1300,8 @@ final class ConsoleTab implements Tab {
       if (changes() && failure.kind() == Failure.Kind.CONNECTION_LOST) {
         doubt(sql, "the connection was lost while it ran");
       }
+      help.failed(sql, failure, words(failure.message()));
       fail(s, failure);
-      help.failed(sql, failure);
       if (before == outputs.size()) {
         shown = null; // nothing but the error: Messages says what ran
       }
@@ -1780,8 +1780,9 @@ final class ConsoleTab implements Tab {
                   was.connection(), was.statement(), was.started(), was.took(), outcomeOf(portion));
               s.ranAgain(was, recorded);
             }
+            // Where the server says, also in its later rows.
+            help.failed(sql, failure, words(failure.message()));
             fail(s, failure);
-            help.failed(sql, failure); // where the server says, also in its later rows
           } else if (before < outputs.size()) {
             // Results after the rows: what the statement gave next.
             heard(Level.RAN, sql, portion.elapsed(), outcome(portion));
@@ -2396,7 +2397,9 @@ final class ConsoleTab implements Tab {
             firm || locked != null ? null : () -> run(s),
             Button.options()
                 .icon(Symbol.PLAY)
-                .state(working() && !firm ? Button.State.BUSY : Button.State.READY))
+                // Off, not busy, while a change of its connection is saved or deleted.
+                .state(
+                    working() && !firm && locked == null ? Button.State.BUSY : Button.State.READY))
         .key("run")
         .keepFocus());
     actions.add(button(SECONDARY, "Run all", busy || locked != null ? null : () -> runAll(s))
