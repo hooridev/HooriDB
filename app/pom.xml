@@ -299,8 +299,8 @@
             </executions>
           </plugin>
           <plugin>
-            <!-- HooriDB's own license, and those of rethinkj UI and rethinkj Updater, whose JARs
-                 hold none. -->
+            <!-- HooriDB's own license, those of rethinkj UI and rethinkj Updater, whose JARs
+                 hold none, and Devicon's, whose logos the connection dialog shows. -->
             <artifactId>maven-resources-plugin</artifactId>
             <executions>
               <execution>

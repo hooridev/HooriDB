@@ -13,7 +13,9 @@ import static com.rethinkj.ui.kit.TextField.revealable;
 import static com.rethinkj.ui.kit.TextField.textField;
 import static com.rethinkj.ui.kit.ValueField.valueField;
 
+import com.rethinkj.ui.Colors;
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.Image;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Button;
@@ -28,7 +30,6 @@ import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Part;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
-import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
@@ -70,6 +71,8 @@ final class ConnectionDialog {
   static final Part<ConnectionProfile, String> DRIVER_VERSION =
       Part.of(ConnectionProfile::driverVersion, ConnectionProfile::withDriverVersion);
 
+  private static final List<Provider> PROVIDERS = List.of(Provider.values());
+
   final boolean isNew;
   final Editing<ConnectionProfile> editing;
   private boolean portByHand; // the port no longer follows the provider
@@ -96,6 +99,7 @@ final class ConnectionDialog {
   private final State.Act act = new State.Act("save", this);
   boolean discarding; // the question whether to throw the changes away is open
   final Menu.State tlsMenu = new Menu.State();
+  final ComboBox.State providerBox = new ComboBox.State();
   final ComboBox.State versionBox = new ComboBox.State();
   Versions versions; // of the driver of the kind of database chosen
   final Probe probe = new Probe(this);
@@ -534,11 +538,15 @@ final class ConnectionDialog {
                 "Server",
                 field(
                     "Type",
-                    Segmented.segmented(
-                        List.of(Provider.values()),
-                        p.provider(),
-                        Provider::displayName,
-                        open ? v -> provider(s, v) : null)),
+                    ComboBox.items(
+                            PROVIDERS,
+                            p.provider(),
+                            ConnectionDialog::type,
+                            providerBox,
+                            open ? v -> provider(s, v) : null)
+                        .key("type")
+                        .label("Type")
+                        .wFull()),
                 field("Driver", driverVersion(s, open))
                     .help(driverHelp(s))
                     .warning(youngWarning(s)),
@@ -666,6 +674,28 @@ final class ConnectionDialog {
         List.of(cancel, save),
         () -> cancel(s),
         options);
+  }
+
+  /**
+   * A kind of server with its logo, which a dark theme sets on a tile of the light theme, as the
+   * logos' colors are made for a light ground.
+   */
+  private static ComboBox.Item type(Provider provider) {
+    Image logo = Logos.of(provider);
+    return ComboBox.item(provider.displayName()).leading(() -> {
+      // Read where it is built: the kit keeps the items of an earlier build, theme and all.
+      Theme t = Theme.CURRENT.get();
+      float side = t.size().icon();
+      El image = El.image(logo).size(side, side).fit(Image.Fit.CONTAIN);
+      // The tile stands around the whole logo, beyond the icon's square: a smaller one is lost.
+      return Colors.luminance(t.surface().window()) >= 0.5
+          ? image
+          : image
+              .size(side + 2 * t.space().xs(), side + 2 * t.space().xs())
+              .padding(t.space().xs())
+              .fill(Theme.LIGHT.surface().raised())
+              .radius(t.radius().small());
+    });
   }
 
   /** The version of the driver: Recommended or one of the list, which is read in the background. */

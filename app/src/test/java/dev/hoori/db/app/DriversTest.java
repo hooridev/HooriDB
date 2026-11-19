@@ -197,10 +197,7 @@ class DriversTest {
     assertTrue(block(listed, "role=option label=\"42.7.14\"").contains("\"recommended\""));
     assertTrue(listed.contains("role=option label=\"" + OLD + "\""), listed);
     repository.offline = true;
-    run(app, """
-        press role=radio label="MySQL"
-        frame
-        """ + SETTLE + "snap failed\n");
+    run(app, ConnectionsTest.provider("MySQL") + SETTLE + "snap failed\n");
     String failed = tree("failed");
     assertTrue(
         failed.contains(

@@ -190,9 +190,7 @@ class TestConnectionTest {
                 + ", from Maven" + " Central)\""),
         tree("missing"));
     repository.offline = true;
-    run(app, """
-        press role=radio label="MySQL"
-        frame
+    run(app, ConnectionsTest.provider("MySQL") + """
         await
         frame
         snap offline
@@ -205,9 +203,7 @@ class TestConnectionTest {
     repository.offline = false;
     downloaded();
     repository.offline = true;
-    run(app, """
-        press role=radio label="PostgreSQL"
-        frame
+    run(app, ConnectionsTest.provider("PostgreSQL") + """
         await
         frame
         snap downloaded-offline
@@ -216,11 +212,7 @@ class TestConnectionTest {
         .contains("\"PostgreSQL JDBC 42.7.14, downloaded (Maven Central cannot be reached to look"
             + " for a newer one)\\nIts versions could not be read."));
     repository.offline = false;
-    run(app, """
-        press role=radio label="MySQL"
-        frame
-        press role=radio label="PostgreSQL"
-        frame
+    run(app, ConnectionsTest.provider("MySQL") + ConnectionsTest.provider("PostgreSQL") + """
         await
         frame
         snap downloaded
@@ -722,11 +714,8 @@ class TestConnectionTest {
         START + ConnectionsTest.EDIT_SHOP + SETTLE + """
         press role=textbox label="Password"
         type "hunter2"
-        press role=radio label="MariaDB"
-        frame
-        press role=radio label="PostgreSQL"
-        frame
-        """ + SETTLE + TEST + SETTLE + SETTLE
+        """ + ConnectionsTest.provider("MariaDB")
+            + ConnectionsTest.provider("PostgreSQL") + SETTLE + TEST + SETTLE + SETTLE
             + "snap end\n");
     assertTrue(tree("end").contains("Connected to PostgreSQL 16.4"), tree("end"));
     assertEquals(List.of(PASSWORD), server.passwords);
@@ -754,7 +743,10 @@ class TestConnectionTest {
     Script.run(
         START + "press role=button label=\"New connection\"\nframe\nadvance 1\nframe\n" + SETTLE
             + SETTLE + "snap connection-new-" + look + "\nkey Escape\nframe\nadvance 1\nframe\n"
-            + NEW_SHOP + TEST + SETTLE + SETTLE + "snap connection-port-" + look + "\n",
+            + NEW_SHOP + TEST + SETTLE + SETTLE + "snap connection-port-" + look + "\n"
+            + ConnectionsTest.provider("MySQL") + "snap types-closed-" + look + "\n"
+            + "press role=combobox label=\"Type\"\nframe\nadvance 1\nframe\n"
+            + "snap types-open-" + look + "\n",
         app,
         out);
   }
