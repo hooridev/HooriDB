@@ -130,12 +130,11 @@ public record Failure(
    *     read by
    */
   public Optional<Place> place(String sql, Provider provider) {
-    var pieces = Statements.pieces(sql, provider);
     if (position > 0) {
       int at = position - 1 < sql.codePointCount(0, sql.length())
           ? sql.offsetByCodePoints(0, position - 1)
           : sql.length();
-      return Optional.of(token(sql, at, pieces));
+      return Optional.of(token(sql, at, Statements.pieces(sql, provider)));
     }
     if (line <= 0) {
       return Optional.empty();
@@ -148,6 +147,7 @@ public record Failure(
       }
       from = end + 1;
     }
+    var pieces = Statements.pieces(sql, provider);
     if (near.isEmpty()) {
       return Optional.of(token(sql, sql.length(), pieces));
     }
