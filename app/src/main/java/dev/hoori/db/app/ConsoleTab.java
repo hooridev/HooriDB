@@ -2367,9 +2367,11 @@ final class ConsoleTab implements Tab {
           button(
                   SECONDARY,
                   "Commit",
-                  // A busy button needs its handler, which does nothing while it runs.
-                  canCommit() || firm && COMMIT.equals(running) ? () -> commit(s) : null,
-                  Button.options().icon(Symbol.CHECKMARK).busy(firm && COMMIT.equals(running)))
+                  canCommit() ? () -> commit(s) : null,
+                  Button.options()
+                      .icon(Symbol.CHECKMARK)
+                      .state(
+                          firm && COMMIT.equals(running) ? Button.State.BUSY : Button.State.READY))
               .key("commit")
               .keepFocus(),
           "Commit (Control+Shift+C)"));
@@ -2377,8 +2379,13 @@ final class ConsoleTab implements Tab {
           button(
                   SECONDARY,
                   "Rollback",
-                  canRollback() || firm && ROLLBACK.equals(running) ? () -> rollback(s) : null,
-                  Button.options().icon(Symbol.ARROW_UNDO).busy(firm && ROLLBACK.equals(running)))
+                  canRollback() ? () -> rollback(s) : null,
+                  Button.options()
+                      .icon(Symbol.ARROW_UNDO)
+                      .state(
+                          firm && ROLLBACK.equals(running)
+                              ? Button.State.BUSY
+                              : Button.State.READY))
               .key("rollback")
               .keepFocus(),
           "Roll back (Control+Shift+R)"));
@@ -2387,7 +2394,9 @@ final class ConsoleTab implements Tab {
             PRIMARY,
             "Run",
             firm || locked != null ? null : () -> run(s),
-            Button.options().icon(Symbol.PLAY).busy(working() && !firm))
+            Button.options()
+                .icon(Symbol.PLAY)
+                .state(working() && !firm ? Button.State.BUSY : Button.State.READY))
         .key("run")
         .keepFocus());
     actions.add(button(SECONDARY, "Run all", busy || locked != null ? null : () -> runAll(s))

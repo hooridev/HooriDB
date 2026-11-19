@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -92,12 +93,15 @@ class ConsoleEditorTest {
     console.tearDown();
   }
 
-  /** What the console's editor underlines, or null for nothing. */
-  Failure.Place underlined(App<State> app) {
-    var editor = console.tab(app).editor;
-    return editor.errorFrom() == editor.errorTo()
-        ? null
-        : new Failure.Place(editor.errorFrom(), editor.errorTo());
+  /** What the console's editor underlines in the last frame, or null for nothing. */
+  Failure.Place underlined(App<State> app) throws Exception {
+    console.c.run(app, "snap underlined\n");
+    var underline = Pattern.compile(" underline (\\d+)-(\\d+)")
+        .matcher(line(console.c.tree("underlined"), "#sql"));
+    return underline.find()
+        ? new Failure.Place(
+            Integer.parseInt(underline.group(1)), Integer.parseInt(underline.group(2)))
+        : null;
   }
 
   static String caret(String tree) {
@@ -514,7 +518,9 @@ class ConsoleEditorTest {
             + "type \"d\"\nframe\nadvance 1\nframe\nsnap there\nkey Escape\nkey A control\n"
             + type(text).replaceFirst("press #sql\n", "") + RUN_ALL + "snap failed\n");
     assertEquals(List.of("order_totals", "orders"), options(window("there")));
-    assertEquals(new Failure.Place(at, at + 5), underlined(app));
+    assertTrue(
+        line(window("failed"), "#sql").contains("underline " + at + "-" + (at + 5)),
+        window("failed"));
     assertEquals(String.valueOf(at), caret(window("failed")), line(window("failed"), "#sql"));
   }
 

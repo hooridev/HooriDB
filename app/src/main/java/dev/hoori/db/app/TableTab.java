@@ -8,6 +8,7 @@ import static com.rethinkj.ui.kit.Button.button;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
+import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.DataGrid;
@@ -533,10 +534,11 @@ final class TableTab implements Tab {
             .key("count"),
         button(
                 SECONDARY,
-                Symbol.ARROW_CLOCKWISE,
                 "Refresh",
-                opening != null,
-                connected ? () -> open(s, true) : null)
+                connected ? () -> open(s, true) : null,
+                Button.options()
+                    .icon(Symbol.ARROW_CLOCKWISE)
+                    .state(opening != null ? Button.State.BUSY : Button.State.READY))
             .key("refresh"));
     El line = ConnectionColors.line(s.color(id));
     El content =

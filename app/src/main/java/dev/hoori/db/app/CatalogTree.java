@@ -1384,29 +1384,25 @@ final class CatalogTree {
     }
 
     @Override
-    public List<Node> children(Node node) {
-      var live = s.catalog.lives.get(node.id());
-      if (live == null) {
-        return List.of();
-      }
-      if (failedWhole(live, node)) {
-        return ended(live.phase) ? List.of(new Node.Problem(node)) : null;
-      }
-      return live.levels.get(node) instanceof Read r ? r.children() : null;
-    }
-
-    @Override
-    public Tree.Failure failure(Node node) {
+    public Tree.Children<Node> children(Node node) {
       var c = s.catalog;
       var live = c.lives.get(node.id());
-      if (live == null || failedWhole(live, node)) {
-        return null;
+      if (live == null) {
+        return Tree.ready(List.of());
+      }
+      if (failedWhole(live, node)) {
+        return ended(live.phase)
+            ? Tree.ready(List.of(new Node.Problem(node)))
+            : Tree.loading(loading(node));
       }
       var level = live.levels.get(node);
-      if (!(level instanceof NotRead || level instanceof NotOpened)) {
-        return null;
+      if (level instanceof Read r) {
+        return Tree.ready(r.children());
       }
-      return Tree.failure(c.problem(s, node).title()).action("Try again", () -> c.retry(s, node));
+      if (level instanceof NotRead || level instanceof NotOpened) {
+        return Tree.failed(c.problem(s, node).title(), "Try again", () -> c.retry(s, node));
+      }
+      return Tree.loading(loading(node));
     }
 
     @Override
@@ -1434,8 +1430,8 @@ final class CatalogTree {
       return s.catalog.detail(s, node);
     }
 
-    @Override
-    public String loading(Node node) {
+    /** The text of the row below an open node whose children are on their way. */
+    private String loading(Node node) {
       var live = s.catalog.lives.get(node.id());
       if (!(node instanceof Node.Connection) || live == null) {
         return "Loading…";

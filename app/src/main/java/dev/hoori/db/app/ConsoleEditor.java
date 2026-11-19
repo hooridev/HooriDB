@@ -3,6 +3,7 @@ package dev.hoori.db.app;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
+import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.Completion;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
@@ -62,7 +63,9 @@ final class ConsoleEditor {
       return;
     }
     int from = at + place.start();
-    tab.editor.error(from, at + place.end()).select(from, from);
+    var error = new CodeEditor.Diagnostic(
+        from, at + place.end(), CodeEditor.Severity.ERROR, failure.message());
+    tab.editor.diagnostics(tab.text, List.of(error)).select(from, from);
     marked = tab.text;
   }
 
@@ -92,7 +95,7 @@ final class ConsoleEditor {
   }
 
   private void clear() {
-    tab.editor.noError();
+    tab.editor.noDiagnostics();
     marked = null;
   }
 }
