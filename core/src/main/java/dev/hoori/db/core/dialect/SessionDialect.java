@@ -51,6 +51,12 @@ public interface SessionDialect {
    */
   void cancel(Connection connection, Statement statement) throws SQLException;
 
+  /**
+   * Whether the driver's cancel returns only once the server has answered it, so that a cancel
+   * that returned has arrived.
+   */
+  boolean cancelAnswered();
+
   /** The fetch size that has the driver read {@code count} rows at a time, or stream them. */
   int fetchSize(int count);
 

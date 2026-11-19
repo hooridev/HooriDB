@@ -206,6 +206,12 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return NOTHING;
     }
 
+    // Their drivers' cancel waits for the server's answer to its KILL QUERY.
+    @Override
+    public boolean cancelAnswered() {
+      return true;
+    }
+
     @Override
     public int fetchSize(int count) {
       return count == Integer.MAX_VALUE ? 0 : count + 1;

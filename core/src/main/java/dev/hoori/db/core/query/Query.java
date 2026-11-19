@@ -326,7 +326,7 @@ public final class Query {
       };
       if ((answered && !sent.resultNow())
           || byServer
-          || (answered && provider != Provider.POSTGRESQL)) {
+          || (answered && provider.dialect().session().cancelAnswered())) {
         return cancelled();
       }
     }

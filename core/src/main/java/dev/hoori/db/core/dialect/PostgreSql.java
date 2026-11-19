@@ -409,6 +409,12 @@ public final class PostgreSql implements Dialect {
       statement.cancel();
     }
 
+    // pgjdbc does not say whether its cancel arrived.
+    @Override
+    public boolean cancelAnswered() {
+      return false;
+    }
+
     // One row more than asked for, so that the look at the next row needs no second round trip.
     @Override
     public int fetchSize(int count) {
