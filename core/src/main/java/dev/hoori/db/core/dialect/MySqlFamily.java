@@ -1,12 +1,77 @@
 package dev.hoori.db.core.dialect;
 
+import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.execution.Transaction;
 import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 /** What MariaDB and MySQL do alike; their drivers differ. */
 abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
+
+  // What MariaDB and MySQL write alike.
+  static final String PLAN = "EXPLAIN ";
+  static final String PLAN_JSON = "EXPLAIN FORMAT=JSON ";
+
+  private final SyntaxDialect syntax = new Syntax();
+
+  @Override
+  public int defaultPort() {
+    return 3306;
+  }
+
+  @Override
+  public SyntaxDialect syntax() {
+    return syntax;
+  }
+
+  // How their drivers connect alike.
+  abstract static sealed class Connect implements ConnectDialect
+      permits MariaDb.Connect, MySql.Connect {
+
+    /** The English message of the driver that says that the server has no TLS. */
+    abstract String noTls();
+
+    @Override
+    public String ipv6(String address) {
+      return address;
+    }
+
+    @Override
+    public Map<String, String> properties() {
+      return Map.of();
+    }
+
+    @Override
+    public ConnectionException.Failure refusal(
+        SQLException e, String state, String message, boolean tls) {
+      return switch (e.getErrorCode()) {
+        // Unknown database, and no access to it, which is what a user without global
+        // privileges gets for a database that does not exist.
+        case 1044, 1049 -> ConnectionException.Failure.NO_SUCH_DATABASE;
+        default ->
+          // Both drivers give a missing TLS no code of its own; their messages are English only.
+          tls && state.startsWith("08") && message.contains(noTls())
+              ? ConnectionException.Failure.TLS_UNAVAILABLE
+              : ConnectionException.Failure.OTHER;
+      };
+    }
+
+    @Override
+    public boolean defaultDatabaseIsUser() {
+      return false;
+    }
+  }
+
+  static final class Syntax implements SyntaxDialect {
+
+    @Override
+    public char identifierQuote() {
+      return '`';
+    }
+  }
 
   // What their drivers do alike.
   abstract static sealed class Session implements SessionDialect

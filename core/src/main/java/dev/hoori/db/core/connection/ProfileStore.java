@@ -175,11 +175,7 @@ public final class ProfileStore {
 
   // The names in the file, spelled out so that renaming a constant cannot change it.
   private static String stored(Provider provider) {
-    return switch (provider) {
-      case POSTGRESQL -> "postgresql";
-      case MARIADB -> "mariadb";
-      case MYSQL -> "mysql";
-    };
+    return provider.dialect().storedName();
   }
 
   private static String stored(Tls tls) {

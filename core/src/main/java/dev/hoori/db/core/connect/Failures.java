@@ -27,8 +27,6 @@ final class Failures {
 
   // Beyond this, a chain of causes is taken to loop.
   private static final int MAX_DEPTH = 32;
-  private static final String PGJDBC_FACTORY = "org.postgresql.core.v3.ConnectionFactoryImpl";
-  private static final String PGJDBC_PLUGINS = "org.postgresql.core.v3.AuthenticationPluginManager";
 
   private Failures() {}
 
@@ -75,50 +73,7 @@ final class Failures {
     }
     var tls = profile.tls() != Tls.OFF;
     var message = e.getMessage() == null ? "" : e.getMessage();
-    return switch (profile.provider()) {
-      case POSTGRESQL ->
-        switch (state) {
-          case "3D000" -> Failure.NO_SUCH_DATABASE;
-          // pgjdbc's own refusal of many kinds, with translated messages; where it was raised
-          // tells them apart: the answer to its request for TLS, or the lack of a password when the
-          // server asks for one. An authentication method it does not know is neither.
-          case "08004" ->
-            raisedIn(e, PGJDBC_FACTORY, "enableSSL")
-                ? Failure.TLS_UNAVAILABLE
-                : raisedIn(e, PGJDBC_FACTORY, "lambda$doAuthentication$")
-                        || raisedIn(e, PGJDBC_PLUGINS, "lambda$withEncodedPassword$")
-                    ? Failure.LOGIN_REFUSED
-                    : Failure.OTHER;
-          default -> Failure.OTHER;
-        };
-      case MARIADB, MYSQL ->
-        switch (e.getErrorCode()) {
-          // Unknown database, and no access to it, which is what a user without global
-          // privileges gets for a database that does not exist.
-          case 1044, 1049 -> Failure.NO_SUCH_DATABASE;
-          default ->
-            // Both drivers give a missing TLS no code of its own; their messages are English only.
-            tls && state.startsWith("08") && message.contains(noTls(profile))
-                ? Failure.TLS_UNAVAILABLE
-                : Failure.OTHER;
-        };
-    };
-  }
-
-  private static String noTls(ConnectionProfile profile) {
-    return switch (profile.provider()) {
-      case MARIADB -> "ssl not enabled in the server";
-      case MYSQL -> "SSL Connection required, but not provided by server";
-      case POSTGRESQL -> throw new IllegalArgumentException("PostgreSQL has a state for it");
-    };
-  }
-
-  // Whether the exception was made in the class, by the method or one whose name starts so.
-  private static boolean raisedIn(Throwable t, String type, String method) {
-    var trace = t.getStackTrace();
-    return trace.length > 0
-        && trace[0].getClassName().equals(type)
-        && trace[0].getMethodName().startsWith(method);
+    return profile.provider().dialect().connecting().refusal(e, state, message, tls);
   }
 
   // Each text a caller could see of the exception: its causes, suppressed and next exceptions.

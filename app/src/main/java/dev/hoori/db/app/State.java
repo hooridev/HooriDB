@@ -16,7 +16,6 @@ import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.ProfileStore;
-import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.secret.Keyring;
@@ -1123,9 +1122,11 @@ final class State {
     return all;
   }
 
-  // PostgreSQL opens the database named after the user where none is given.
+  // The database the server opens where none is given.
   static String database(ConnectionProfile p) {
-    return p.database().isBlank() && p.provider() == Provider.POSTGRESQL ? p.user() : p.database();
+    return p.database().isBlank() && p.provider().dialect().connecting().defaultDatabaseIsUser()
+        ? p.user()
+        : p.database();
   }
 
   /** Closes the tabs of the connection, in every window. */
