@@ -10,6 +10,7 @@ on:
     paths:
       - .github/workflows/build.yml
       - app/src/bundle/**
+      - app/src/main/java/dev/hoori/db/app/BundleIcon.java
       - app/pom.xml
       - pom.xml
 

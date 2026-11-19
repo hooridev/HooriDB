@@ -26,7 +26,7 @@ jobs:
             exit 1
           fi
           # Central deletes a SNAPSHOT after 90 days, and a plain one changes with each push.
-          if grep -rn --include=pom.xml -e '-SNAPSHOT<' .; then
+          if grep -rn --include=pom.xml -e '-SNAPSHOT' .; then
             echo "::error::A release pins each SNAPSHOT to its timestamped version."
             exit 1
           fi
