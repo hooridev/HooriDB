@@ -2,6 +2,8 @@ package dev.hoori.db.core.dialect;
 
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.dialect.ErrorDialect.Condition;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -9,6 +11,7 @@ import java.sql.SQLException;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /** What MariaDB and MySQL do alike; their drivers differ. */
 abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
@@ -18,6 +21,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   static final String PLAN_JSON = "EXPLAIN FORMAT=JSON ";
 
   private final CatalogDialect catalog = new Catalog();
+  private final ErrorDialect errors = new Errors();
   private final SyntaxDialect syntax = new Syntax();
 
   @Override
@@ -31,8 +35,76 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   }
 
   @Override
+  public ErrorDialect errors() {
+    return errors;
+  }
+
+  @Override
   public SyntaxDialect syntax() {
     return syntax;
+  }
+
+  static final class Errors implements ErrorDialect {
+
+    // MariaDB's and MySQL's syntax error, whose English message says where; a line beyond an int
+    // is none they write.
+    private static final int MYSQL_SYNTAX = 1064;
+    private static final Pattern MYSQL_NEAR =
+        Pattern.compile(".*? to use near '(.*)' at line (\\d{1,9})", Pattern.DOTALL);
+    private static final Pattern MARIADB_CONNECTION = Pattern.compile("^\\(conn=\\d+\\) ");
+
+    @Override
+    public Set<String> states(Condition condition) {
+      return switch (condition) {
+        // MariaDB's and MySQL's unknown table and column.
+        case NOT_FOUND -> Set.of("42S02", "42S22");
+        // MariaDB's and MySQL's unknown column.
+        case COLUMN_GONE -> Set.of("42S22");
+        // MariaDB's and MySQL's "Query execution was interrupted".
+        case CANCELLED -> Set.of("70100");
+        case ACCESS_DENIED, ROUTINE_DENIED, TIME_LIMIT, TIMEOUT, CONSTRAINT -> Set.of();
+      };
+    }
+
+    @Override
+    public Set<Integer> codes(Condition condition) {
+      return switch (condition) {
+        // MySQL error codes: no access to a database, a table, a column, or without a privilege.
+        case ACCESS_DENIED -> Set.of(1044, 1142, 1143, 1227);
+        // MySQL's no right to run a routine, beyond what Query knows.
+        case ROUTINE_DENIED -> Set.of(1370);
+        // MariaDB's and MySQL's unknown database, whose state is the general 42000.
+        case NOT_FOUND -> Set.of(1049);
+        // MariaDB's max_statement_time, which shares the state of a cancelled statement.
+        case TIME_LIMIT -> Set.of(1969);
+        // MariaDB's max_statement_time, MySQL's max_execution_time and their lock wait timeout.
+        case TIMEOUT -> Set.of(1969, 3024, 1205);
+        // MySQL's check constraint, whose state is the general HY000.
+        case CONSTRAINT -> Set.of(3819);
+        case COLUMN_GONE, CANCELLED -> Set.of();
+      };
+    }
+
+    @Override
+    public Failure failure(
+        Failure.Kind kind, SQLException e, String message, String state, int code) {
+      message = MARIADB_CONNECTION.matcher(message).replaceFirst("");
+      var near = MYSQL_NEAR.matcher(message);
+      var syntax = code == MYSQL_SYNTAX && near.matches();
+      return new Failure(
+          kind,
+          message,
+          state,
+          code,
+          0,
+          "",
+          0,
+          syntax ? Integer.parseInt(near.group(2)) : 0,
+          syntax ? near.group(1) : "",
+          "",
+          "",
+          "");
+    }
   }
 
   // How their planners are asked alike.

@@ -32,6 +32,9 @@ public interface Dialect {
   /** The queries of its catalog. */
   CatalogDialect catalog();
 
+  /** How its servers say why a statement failed. */
+  ErrorDialect errors();
+
   /** How its planner estimates a statement's rows. */
   PlanDialect plan();
 

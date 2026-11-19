@@ -125,16 +125,17 @@ public final class Execution implements AutoCloseable {
           provider,
           () -> session.cancel(connection, statement),
           () -> read(count),
-          // The server's word that a cancel stopped the statement, not MariaDB's time limit.
+          // The server's word that a cancel stopped the statement, not a time limit of its own.
           portion -> !portion.results().isEmpty()
               && portion.results().getLast() instanceof Failure f
-              && (f.state().equals("57014") || f.state().equals("70100"))
-              && f.code() != 1969);
+              && Query.byServer(provider, f.state(), f.code()));
     } catch (QueryException e) {
       // Interrupted, or a failure the read did not catch.
       var failure = e.failure() == QueryException.Failure.ABORTED
           ? Failure.connectionLost()
-          : e.getCause() == null ? Failure.cancelled() : Failure.of(connection, e.getCause());
+          : e.getCause() == null
+              ? Failure.cancelled()
+              : Failure.of(connection, provider, e.getCause());
       var results = new ArrayList<Result>(List.of(failure));
       var lost = over ? null : withoutInterrupt(() -> end(Ending.FAILED));
       if (lost != null && failure.kind() != Failure.Kind.CONNECTION_LOST) {
@@ -170,7 +171,7 @@ public final class Execution implements AutoCloseable {
     Failure failure;
     try {
       failure = Query.within(
-          connection, ENDING, () -> end(Ending.GAVE_UP, -1, said), () -> aborted = true);
+          connection, provider, ENDING, () -> end(Ending.GAVE_UP, -1, said), () -> aborted = true);
     } catch (QueryException e) {
       over = true;
       failure = new Failure(
@@ -284,7 +285,7 @@ public final class Execution implements AutoCloseable {
       if (e instanceof SQLException) {
         ahead = false;
       }
-      var failure = Failure.of(connection, e);
+      var failure = Failure.of(connection, provider, e);
       results.add(failure);
       var lost = end(Ending.FAILED);
       if (lost != null && failure.kind() != Failure.Kind.CONNECTION_LOST) {
@@ -422,7 +423,7 @@ public final class Execution implements AutoCloseable {
             connection.clearWarnings();
           }
         } catch (SQLException e) {
-          failure = Failure.of(connection, e);
+          failure = Failure.of(connection, provider, e);
           commit = false;
         }
       }
@@ -488,7 +489,7 @@ public final class Execution implements AutoCloseable {
       }
     } catch (SQLException e) {
       // The server ended the statement with an error, its cancel among them: nothing more comes.
-      return Failure.of(connection, e).kind() != Failure.Kind.CONNECTION_LOST;
+      return Failure.of(connection, provider, e).kind() != Failure.Kind.CONNECTION_LOST;
     }
   }
 

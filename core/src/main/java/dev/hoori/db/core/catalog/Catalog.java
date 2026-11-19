@@ -166,7 +166,7 @@ public final class Catalog {
     try {
       current = connection.getCatalog();
     } catch (SQLException e) {
-      throw failure(connection, e);
+      throw failure(connection, provider, e);
     }
     if (!database.name().equals(current)) {
       throw new CatalogException(
@@ -205,8 +205,9 @@ public final class Catalog {
     }
   }
 
-  private static CatalogException failure(Connection connection, SQLException thrown) {
-    return failure(Query.failure(connection, thrown));
+  private static CatalogException failure(
+      Connection connection, Provider provider, SQLException thrown) {
+    return failure(Query.failure(connection, provider, thrown));
   }
 
   private static CatalogException failure(QueryException e) {

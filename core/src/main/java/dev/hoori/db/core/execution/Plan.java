@@ -64,14 +64,14 @@ public final class Plan {
     }
     var begin = plan.beginReadOnly();
     // Not cut short by an interrupt, so that the transaction it begins always reaches its end.
-    Query.within(connection, Query.GRACE, () -> execute(connection, begin));
+    Query.within(connection, provider, Query.GRACE, () -> execute(connection, begin));
     try {
       return callsOut(connection, provider)
           ? OptionalLong.empty()
           : explain(connection, provider, sql);
     } finally {
       var rollback = plan.rollback();
-      Query.within(connection, Query.GRACE, () -> execute(connection, rollback));
+      Query.within(connection, provider, Query.GRACE, () -> execute(connection, rollback));
     }
   }
 
@@ -117,7 +117,7 @@ public final class Plan {
           },
           value -> false);
     } catch (SQLException e) {
-      throw Query.failure(connection, e);
+      throw Query.failure(connection, provider, e);
     }
   }
 

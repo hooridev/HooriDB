@@ -5,6 +5,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -215,7 +216,7 @@ public final class Rows {
         return rows(result, reads);
       });
     } catch (QueryException e) {
-      throw columnGone(e) ? changed(table) : e;
+      throw columnGone(provider, e) ? changed(table) : e;
     }
     if (rows == null) {
       throw changed(table);
@@ -242,12 +243,12 @@ public final class Rows {
         QueryException.Failure.COLUMNS_CHANGED, "The columns of " + table.name() + " changed");
   }
 
-  // A column named in the statement is gone: PostgreSQL's undefined column, MariaDB's and MySQL's
-  // unknown column.
-  private static boolean columnGone(QueryException e) {
+  // A column named in the statement is gone.
+  private static boolean columnGone(Provider provider, QueryException e) {
     return e.failure() == QueryException.Failure.NOT_FOUND
         && e.getCause() instanceof SQLException sql
-        && ("42703".equals(sql.getSQLState()) || "42S22".equals(sql.getSQLState()));
+        && Condition.COLUMN_GONE.in(
+            provider, sql.getSQLState() == null ? "" : sql.getSQLState(), sql.getErrorCode());
   }
 
   private static String order(
@@ -467,7 +468,7 @@ public final class Rows {
     try {
       current = connection.getCatalog();
     } catch (SQLException e) {
-      throw Query.failure(connection, e);
+      throw Query.failure(connection, provider, e);
     }
     var database = table.container().database().name();
     if (!database.equals(current)) {

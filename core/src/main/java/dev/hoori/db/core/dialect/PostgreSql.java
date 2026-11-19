@@ -19,7 +19,9 @@ import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.data.PostgreSqlRows;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.data.RowsDialect;
+import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -47,6 +49,7 @@ public final class PostgreSql implements Dialect {
   private final Driver driver = new Driver("org.postgresql", "postgresql", "org.postgresql.Driver");
   private final ConnectDialect connecting = new Connect();
   private final CatalogDialect catalog = new Catalog();
+  private final ErrorDialect errors = new Errors();
   private final PlanDialect plan = new Plan();
   private final SyntaxDialect syntax = new Syntax();
   private final SessionDialect session = new Session();
@@ -92,6 +95,11 @@ public final class PostgreSql implements Dialect {
   @Override
   public CatalogDialect catalog() {
     return catalog;
+  }
+
+  @Override
+  public ErrorDialect errors() {
+    return errors;
   }
 
   @Override
@@ -289,6 +297,91 @@ public final class PostgreSql implements Dialect {
       return "SELECT 1 FROM pg_catalog.pg_class c"
           + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
           + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS;
+    }
+  }
+
+  static final class Errors implements ErrorDialect {
+
+    @Override
+    public Set<String> states(Condition condition) {
+      return switch (condition) {
+        case ACCESS_DENIED -> Set.of("42501");
+        // PostgreSQL's undefined table, column and schema.
+        case NOT_FOUND -> Set.of("42P01", "42703", "3F000");
+        // PostgreSQL's undefined column.
+        case COLUMN_GONE -> Set.of("42703");
+        // PostgreSQL's query_canceled.
+        case CANCELLED -> Set.of("57014");
+        // PostgreSQL's statement timeout, which a cancel from another session shares, and
+        // lock_not_available, of lock_timeout and NOWAIT.
+        case TIMEOUT -> Set.of("57014", "55P03");
+        case ROUTINE_DENIED, TIME_LIMIT, CONSTRAINT -> Set.of();
+      };
+    }
+
+    // PostgreSQL's code is the SQLSTATE.
+    @Override
+    public Set<Integer> codes(Condition condition) {
+      return Set.of();
+    }
+
+    @Override
+    public Failure failure(
+        Failure.Kind kind, SQLException e, String message, String state, int code) {
+      var server = serverError(e);
+      if (server == null) {
+        return new Failure(kind, message, state, code, 0, "", 0, 0, "", "", "", "");
+      }
+      return new Failure(
+          kind,
+          server.message(),
+          state,
+          code,
+          server.position(),
+          server.internalQuery(),
+          server.internalPosition(),
+          0,
+          "",
+          server.detail(),
+          server.hint(),
+          server.context());
+    }
+
+    /** The parts of a PostgreSQL error, as pgjdbc's ServerErrorMessage has them. */
+    private record ServerError(
+        String message,
+        int position,
+        String internalQuery,
+        int internalPosition,
+        String detail,
+        String hint,
+        String context) {}
+
+    /**
+     * pgjdbc's parts of the error, of which its message holds only some, worded in the JVM's
+     * locale.
+     */
+    private static ServerError serverError(SQLException e) {
+      try {
+        var server = call(e, "getServerErrorMessage");
+        if (server == null) {
+          return null;
+        }
+        return new ServerError(
+            text(call(server, "getMessage")),
+            (int) call(server, "getPosition"),
+            text(call(server, "getInternalQuery")),
+            (int) call(server, "getInternalPosition"),
+            text(call(server, "getDetail")),
+            text(call(server, "getHint")),
+            text(call(server, "getWhere")));
+      } catch (ReflectiveOperationException | RuntimeException x) {
+        return null;
+      }
+    }
+
+    private static String text(Object value) {
+      return value == null ? "" : value.toString();
     }
   }
 

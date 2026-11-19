@@ -1300,7 +1300,7 @@ final class ConsoleTab implements Tab {
       if (changes() && failure.kind() == Failure.Kind.CONNECTION_LOST) {
         doubt(sql, "the connection was lost while it ran");
       }
-      help.failed(sql, failure, words(failure.message()));
+      help.failed(sql, failure, provider(s), words(failure.message()));
       fail(s, failure);
       if (before == outputs.size()) {
         shown = null; // nothing but the error: Messages says what ran
@@ -1781,7 +1781,7 @@ final class ConsoleTab implements Tab {
               s.ranAgain(was, recorded);
             }
             // Where the server says, also in its later rows.
-            help.failed(sql, failure, words(failure.message()));
+            help.failed(sql, failure, provider(s), words(failure.message()));
             fail(s, failure);
           } else if (before < outputs.size()) {
             // Results after the rows: what the statement gave next.
