@@ -687,9 +687,11 @@ final class ConnectionDialog {
       Theme t = Theme.CURRENT.get();
       float side = t.size().icon();
       El image = El.image(logo).size(side, side).fit(Image.Fit.CONTAIN);
+      // The tile stands around the whole logo, beyond the icon's square: a smaller one is lost.
       return Colors.luminance(t.surface().window()) >= 0.5
           ? image
           : image
+              .size(side + 2 * t.space().xs(), side + 2 * t.space().xs())
               .padding(t.space().xs())
               .fill(Theme.LIGHT.surface().raised())
               .radius(t.radius().small());

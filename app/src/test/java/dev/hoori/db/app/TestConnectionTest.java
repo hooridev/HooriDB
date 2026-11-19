@@ -743,7 +743,10 @@ class TestConnectionTest {
     Script.run(
         START + "press role=button label=\"New connection\"\nframe\nadvance 1\nframe\n" + SETTLE
             + SETTLE + "snap connection-new-" + look + "\nkey Escape\nframe\nadvance 1\nframe\n"
-            + NEW_SHOP + TEST + SETTLE + SETTLE + "snap connection-port-" + look + "\n",
+            + NEW_SHOP + TEST + SETTLE + SETTLE + "snap connection-port-" + look + "\n"
+            + ConnectionsTest.provider("MySQL") + "snap types-closed-" + look + "\n"
+            + "press role=combobox label=\"Type\"\nframe\nadvance 1\nframe\n"
+            + "snap types-open-" + look + "\n",
         app,
         out);
   }

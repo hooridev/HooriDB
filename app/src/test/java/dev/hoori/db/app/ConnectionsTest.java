@@ -5,11 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
-import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
@@ -28,8 +26,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
 class ConnectionsTest {
 
@@ -232,35 +228,6 @@ class ConnectionsTest {
     assertEquals(Provider.MARIADB, app.state().dialog.editing.value().provider());
     assertEquals(List.of(), stored());
     assertTrue(secrets.stored.isEmpty(), "nothing saved");
-  }
-
-  /**
-   * The pictures of the types for a review, light and dark, into the folder that {@code
-   * -Dreview=<folder>} names; skipped without it.
-   */
-  @ParameterizedTest
-  @ValueSource(strings = {"dark", "light"})
-  void pictures(String look) throws IOException {
-    var review = System.getProperty("review");
-    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
-    var out = Files.createDirectories(Path.of(review));
-    App<State> app = app();
-    app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
-    Script.run(
-        "size 1200 760\nframe\nawait\nframe\nadvance 1\nframe\n" + NEW_SHOP + provider("MySQL")
-            + "snap types-closed-" + look + "\n" + """
-            press role=combobox label="Type"
-            frame
-            advance 1
-            frame
-            key ArrowDown
-            frame
-            """ + "snap types-open-" + look + "\n",
-        app,
-        out);
-    for (var name : List.of("types-closed", "types-open")) {
-      assertTrue(Files.exists(out.resolve(name + "-" + look + ".png")), name);
-    }
   }
 
   @Test
