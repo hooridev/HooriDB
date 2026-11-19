@@ -139,9 +139,12 @@ class ConsoleTransactionTest {
     assertTrue(line(manual, "#rollback").contains("disabled"), manual);
     assertTrue(badge(manual).contains("No transaction"), manual);
     assertFalse(line(manual, TAB).contains("modified"), manual);
+    assertFalse(manual.contains("#uncommitted"), manual);
     // A change opens it; the connection turned auto-commit off first.
     c.run(app, type(PAY) + RUN + "snap changed\n");
     String changed = c.tree("changed");
+    assertTrue(
+        line(changed, "#uncommitted").contains("\"1 console may hold uncommitted work\""), changed);
     assertTrue(servers.calls.contains("autocommit " + PG + " off"), servers.calls.toString());
     assertTrue(badge(changed).contains("Transaction open · 1 statement"), changed);
     assertTrue(line(changed, TAB).contains("modified"), "the tab's dot: " + changed);
@@ -157,6 +160,7 @@ class ConsoleTransactionTest {
     assertTrue(tabs(committed).endsWith("Result 1,Messages"), tabs(committed));
     assertTrue(line(committed, "#said").contains("Committed"), committed);
     assertTrue(status(committed).contains("3 rows changed"), committed);
+    assertFalse(committed.contains("#uncommitted"), committed);
     // Control+Shift+R rolls back, from the editor.
     c.run(app, "press #sql\n" + RUN + "key R control shift\nframe\n" + SETTLE + "snap undone\n");
     assertTrue(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
@@ -166,6 +170,16 @@ class ConsoleTransactionTest {
     assertEquals(
         2, servers.calls.stream().filter(x -> x.equals("run " + PG + " COMMIT")).count());
     assertFalse(servers.overlapped, "two calls ran at once on one connection");
+  }
+
+  @Test
+  void theStatusBarBringsAConsoleThatMayHoldUncommittedWorkForward() throws Exception {
+    var app = open(SHOP);
+    c.run(app, menu(SHOP.name(), "New console") + "snap other\n");
+    String first = "role=tab label=\"shop-prod: shop (1)\"";
+    assertFalse(line(c.tree("other"), first).contains("selected"), c.tree("other"));
+    c.run(app, "press #uncommitted\nframe\nadvance 1\nframe\nsnap shown\n");
+    assertTrue(line(c.tree("shown"), first).contains("selected"), c.tree("shown"));
   }
 
   @Test

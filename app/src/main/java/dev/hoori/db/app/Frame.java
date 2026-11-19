@@ -10,6 +10,7 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.kit.AppIcon;
+import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
@@ -30,6 +31,7 @@ import com.rethinkj.ui.kit.TitleBar;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -82,10 +84,11 @@ final class Frame {
                 tabs,
                 320)
             .grow(1)
-            .padding(0, t.space().m(), 0, t.space().m()))
+            .padding(0, t.space().m(), t.space().m(), t.space().m()))
         .child(StatusBar.statusBar(
-            s.message == null ? List.of() : List.of(StatusBar.text(s.message).key("message")),
-            List.of()));
+            Arrays.asList(connections(s), uncommitted(s)),
+            s.message == null ? null : StatusBar.text(s.message).key("message"),
+            List.of(StatusBar.item(null, HooriDb.version(), about(s)).key("version"))));
     // The window closes once what was begun has ended and the connections are written.
     Windows.Handle window = s.app == null ? null : s.app.windows().of(s.app);
     if (window != null) {
@@ -335,10 +338,6 @@ final class Frame {
 
   /**
    * The notices of what finishing something on a console's session did, the newest first, each
-   * until dismissed: a failure as a danger, a warning as such.
-   */
-  /**
-   * The notices of what finishing something on a console's session did, the newest first, each
    * until dismissed: a failure as a danger, a warning as such. They scroll in a region of bounded
    * height above the tree, with Dismiss all where there are several.
    */
@@ -419,16 +418,58 @@ final class Frame {
         s::cancelDelete);
   }
 
+  /** Opens About, null while a dialog of the main window is open. */
+  private static Runnable about(State s) {
+    return mainDialog(s) ? null : () -> s.about = true;
+  }
+
+  /** The connections the tree opened, each once; busy while one is on its way. */
+  private static El connections(State s) {
+    int connected = 0;
+    boolean connecting = false;
+    for (var id : s.catalog.lives.keySet()) {
+      if (s.catalog.connected(id)) {
+        connected++;
+      } else {
+        connecting |= s.catalog.active(id);
+      }
+    }
+    String text = connected > 0 ? connected + " connected" : "No connections";
+    if (connecting) {
+      return StatusBar.status(StatusBar.State.BUSY, connected > 0 ? text : "Connecting…", null)
+          .key("connected");
+    }
+    return StatusBar.status(connected > 0 ? StatusBar.State.OK : StatusBar.State.IDLE, text, null)
+        .key("connected");
+  }
+
+  /**
+   * The consoles where something may be at stake, as Exit asks about; pressing it shows the first.
+   * Null while there are none.
+   */
+  private static El uncommitted(State s) {
+    var consoles = s.consoles(null).stream().filter(ConsoleTab::atStake).toList();
+    if (consoles.isEmpty()) {
+      return null;
+    }
+    int n = consoles.size();
+    return StatusBar.item(
+            Badge.Kind.WARNING,
+            Symbol.LOCK_OPEN,
+            n + (n == 1 ? " console may" : " consoles may") + " hold uncommitted work",
+            () -> consoles.getFirst().show(s))
+        .key("uncommitted");
+  }
+
   /** The version that runs, its author, license and website. */
   private static El aboutDialog(State s) {
     float side = Theme.CURRENT.get().size().icon();
     El mark = AppIcon.appIcon(Math.round(side), HooriDb.COLOR, Symbol.DATABASE).size(side, side);
-    String version = HooriDb.class.getPackage().getImplementationVersion();
     Runnable close = () -> s.about = false;
     El ok = button(Button.Variant.PRIMARY, "Close", close);
     El content = Properties.properties(
         List.of(
-            Properties.property("Version", version == null ? "Development build" : version),
+            Properties.property("Version", HooriDb.version()),
             Properties.property("Author", "Patrick Trautmann"),
             Properties.property("License", "MIT"),
             Properties.property("Website", "https://db.hoori.dev")),
@@ -506,8 +547,7 @@ final class Frame {
                     .shortcut(Key.CONTROL, "0"),
                 Menu.item("Tab content", close == null ? null : () -> focusContent(s, group))
                     .shortcut(Key.CONTROL, "1"))),
-        Menu.submenu(
-            "&Help", List.of(Menu.item("About HooriDB", free ? () -> s.about = true : null))));
+        Menu.submenu("&Help", List.of(Menu.item("About HooriDB", about(s)))));
   }
 
   /** Whether a dialog of the main window is open: its own, or one the catalog asks there. */

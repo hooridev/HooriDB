@@ -3013,7 +3013,7 @@ final class ConsoleTab implements Tab {
 
   private String ran() {
     if (took == null || statements == 0 && !cancelled && !failedRun) {
-      return connected() ? "Connected" : "";
+      return connected() ? "Connected" : "Not connected";
     }
     if (statements == 0 && !cancelled) {
       return "Not run"; // the session could not be opened

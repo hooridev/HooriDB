@@ -46,6 +46,29 @@ class HooriDbTest {
     assertTrue(Files.size(out.resolve("start.png")) > 0);
   }
 
+  /** The status bar says that nothing is connected, and its version opens About. */
+  @Test
+  void theVersionInTheStatusBarOpensAbout(@TempDir Path out) throws IOException {
+    Script.run("""
+        size 1200 760
+        frame
+        await
+        frame
+        snap start
+        press role=button label="Development build"
+        frame
+        advance 1
+        frame
+        snap about
+        """, app(out), out);
+    String start = Files.readString(out.resolve("start.tree.txt"));
+    String none = ConnectionsTest.line(start, "#connected");
+    assertTrue(none.contains("label=\"No connections\"") && none.contains("value=\"idle\""), start);
+    assertTrue(ConnectionsTest.line(start, "#version").contains("role=button"), start);
+    String about = Files.readString(out.resolve("about.tree.txt"));
+    assertTrue(about.contains("role=dialog label=\"About HooriDB\""), about);
+  }
+
   /** The View menu switches the theme, and the status line says so for a while. */
   @Test
   void theViewMenuSwitchesTheTheme(@TempDir Path out) throws IOException {
