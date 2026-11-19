@@ -47,11 +47,10 @@ jobs:
           test ! -e "${LOCALAPPDATA:-/nonexistent}/rethinkj-ui"
       - name: Installer
         if: runner.os == 'Windows'
-        env:
-          MSYS_NO_PATHCONV: 1
         run: |
           version=$(mvn -B -q help:evaluate -Dexpression=project.version -DforceStdout)
-          "C:/Program Files (x86)/Inno Setup 6/ISCC.exe" /DVersion="$version" app/src/bundle/HooriDB.iss
+          # Git Bash would take /DVersion=... for a path; Maven's own script needs the conversion.
+          MSYS_NO_PATHCONV=1 "C:/Program Files (x86)/Inno Setup 6/ISCC.exe" /DVersion="$version" app/src/bundle/HooriDB.iss
       - uses: actions/upload-artifact@v5
         with:
           name: bundle-${{ runner.os }}
