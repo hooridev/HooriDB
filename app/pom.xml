@@ -139,6 +139,7 @@
       <properties>
         <bundle.platform>windows-x64</bundle.platform>
         <bundle.icon>ico</bundle.icon>
+        <bundle.java>runtime/bin/java.exe</bundle.java>
         <!-- A real zip, which the updater's helper reads; jar's flags are create, no manifest. -->
         <bundle.pack>${java.home}/bin/jar.exe</bundle.pack>
         <bundle.pack.flags>-cMf</bundle.pack.flags>
@@ -163,6 +164,7 @@
       <properties>
         <bundle.platform>linux-x64</bundle.platform>
         <bundle.icon>png</bundle.icon>
+        <bundle.java>lib/runtime/bin/java</bundle.java>
         <!-- tar keeps which files are executable. -->
         <bundle.pack>tar</bundle.pack>
         <bundle.pack.flags>czf</bundle.pack.flags>
@@ -190,6 +192,9 @@
         </dependency>
       </dependencies>
       <build>
+        <!-- Without the version, as the other JARs, so that the installer's next version
+             replaces it by name instead of leaving it beside its own. -->
+        <finalName>${project.artifactId}</finalName>
         <plugins>
           <plugin>
             <!-- What an earlier bundle left would end up in this one. -->
@@ -382,14 +387,15 @@
                 </configuration>
               </execution>
               <execution>
-                <!-- The list of the app's own files, which the updater's helper replaces. -->
+                <!-- The list of the app's own files, which the updater's helper replaces; run by the
+                     image's runtime, which must be able to run the helper. -->
                 <id>bundle-files</id>
                 <phase>package</phase>
                 <goals>
                   <goal>exec</goal>
                 </goals>
                 <configuration>
-                  <executable>${java.launcher}</executable>
+                  <executable>${bundle}/image/HooriDB/${bundle.java}</executable>
                   <arguments>
                     <argument>-jar</argument>
                     <argument>${bundle}/input/rethinkj-updater-helper.jar</argument>
