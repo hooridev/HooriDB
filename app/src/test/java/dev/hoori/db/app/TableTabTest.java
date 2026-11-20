@@ -872,6 +872,36 @@ class TableTabTest {
     assertFalse(servers.overlapped);
   }
 
+  /** One row on by the wheel shows at once, also within the rows the grid built around. */
+  @ParameterizedTest
+  @ValueSource(ints = {10_000, 25})
+  void theRowsInViewFollowEachStepOfTheWheel(int count) throws Exception {
+    servers.rows(BIG, count, OptionalLong.of(count));
+    var app = shop();
+    // The grid tells the rows in view in the frame after it moved them.
+    c.run(app, table("big") + SETTLE + "wheel #rows 0 24\nframe\nframe\nsnap one\n");
+    String one = c.tree("one");
+    assertTrue(inView(one).contains("\"Rows 2–24\""), one);
+    assertFalse(off(one, "First page") || off(one, "Previous page"), one);
+    assertFalse(off(one, "Next page") || off(one, "Last page"), one);
+    c.run(app, "wheel #rows 0 -24\nframe\nframe\nsnap back\n");
+    String back = c.tree("back");
+    assertTrue(inView(back).contains("\"Rows 1–23\""), back);
+    assertTrue(off(back, "First page") && off(back, "Previous page"), back);
+  }
+
+  /** A table of about a page shows its last rows, and their buttons off, as the wheel gets there. */
+  @Test
+  void theLastRowsOfATableOfAPageShowAsTheWheelGetsThere() throws Exception {
+    servers.rows(BIG, 25, OptionalLong.of(25));
+    var app = shop();
+    c.run(app, table("big") + SETTLE + "wheel #rows 0 48\nframe\nframe\nsnap end\n");
+    String end = c.tree("end");
+    assertTrue(inView(end).contains("\"Rows 3–25\""), end);
+    assertTrue(off(end, "Next page") && off(end, "Last page"), end);
+    assertFalse(off(end, "First page") || off(end, "Previous page"), end);
+  }
+
   /** Last page, as Control+End, finds the end where the estimate was far too high. */
   @ParameterizedTest
   @ValueSource(strings = {"press role=button label=\"Last page\"\n", "key End control\n"})
