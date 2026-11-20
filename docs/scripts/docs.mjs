@@ -43,8 +43,8 @@ function prepare() {
       const name = m[1] ?? m[2];
       shots.add(name);
       for (const theme of ['light', 'dark']) {
-        if (!fs.existsSync(path.join(PUBLIC, 'shots', `${name}-${theme}.png`))) {
-          problems.push(`${rel}: the shot "${name}" has no public/shots/${name}-${theme}.png`);
+        if (!fs.existsSync(path.join(PUBLIC, 'shots', `${name}-${theme}.webp`))) {
+          problems.push(`${rel}: the shot "${name}" has no public/shots/${name}-${theme}.webp`);
         }
       }
     }

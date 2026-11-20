@@ -13,3 +13,6 @@ next-env.d.ts
 # misc
 .DS_Store
 npm-debug.log*
+
+# DocsShotsTest writes PNGs, which `npm run shots` turns into WebP
+/public/shots/*.png

@@ -5,7 +5,7 @@ import { Shot } from '@/components/shot';
 import { download, repository } from '@/lib/shared';
 
 // Every text of the home page. Replace the words here; the layout below only places them.
-// A shot names a pair of images in public/shots/ (<shot>-light.png and <shot>-dark.png).
+// A shot names a pair of images in public/shots/ (<shot>-light.webp and <shot>-dark.webp).
 const content = {
   hero: {
     title: 'HooriDB',

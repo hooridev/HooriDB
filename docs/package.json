@@ -6,6 +6,7 @@
     "docs:prepare": "node scripts/docs.mjs prepare",
     "dev": "node scripts/docs.mjs prepare && next dev",
     "build": "node scripts/docs.mjs prepare && next build && node scripts/docs.mjs check",
+    "shots": "node scripts/shots.mjs",
     "types:check": "next typegen && tsc --noEmit"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "postcss": "^8.5.32",
+    "sharp": "0.35.5",
     "tailwindcss": "^4.3.5",
     "typescript": "^7.0.2"
   },
