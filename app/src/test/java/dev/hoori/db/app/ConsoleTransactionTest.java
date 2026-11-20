@@ -39,6 +39,7 @@ import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -1711,7 +1712,7 @@ class ConsoleTransactionTest {
     assertTrue(k.tab(app).waiting);
     // As a Save of the connection does, once nothing of its consoles was at stake.
     var save = new Object();
-    assertTrue(app.state().lock(save, "shop-prod is being saved", SHOP.id()));
+    assertTrue(app.state().lock(save, "shop-prod is being saved", Set.of(SHOP.id())));
     opening.countDown();
     c.run(app, SETTLE + "snap refused\n");
     String refused = c.tree("refused");
@@ -1735,7 +1736,7 @@ class ConsoleTransactionTest {
             + "key Enter control shift\nframe\nawait\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
     var save = new Object();
-    assertTrue(app.state().lock(save, "shop-prod is being saved", SHOP.id()));
+    assertTrue(app.state().lock(save, "shop-prod is being saved", Set.of(SHOP.id())));
     held.countDown();
     c.run(app, SETTLE + "snap stopped\n");
     assertFalse(servers.calls.contains("run " + PG + " " + PAY), servers.calls.toString());
@@ -1749,7 +1750,7 @@ class ConsoleTransactionTest {
     var app = k.console(SHOP);
     c.run(app, type(ORDERS) + RUN);
     var save = new Object();
-    assertTrue(app.state().lock(save, "shop-prod is being saved", SHOP.id()));
+    assertTrue(app.state().lock(save, "shop-prod is being saved", Set.of(SHOP.id())));
     c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE);
     assertFalse(
         servers.calls.contains("next " + PG + " " + ORDERS + " 200"), servers.calls.toString());
