@@ -223,8 +223,8 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     record Committed() implements Outcome {}
 
     /**
-     * Nothing was written: the change's row was there not once but the given number of times as
-     * the rows were locked, or its statement met that many rows, as when the row was deleted or its
+     * Nothing was written: the change's row was there not once but the given number of times
+     * before the changes began, or its statement met that many rows, as when the row was deleted or its
      * key changed since it was read, and all was rolled back.
      */
     record Missed(Change change, long rows) implements Outcome {}
@@ -240,8 +240,8 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   }
 
   /**
-   * Writes the changes in a transaction of their own, all or nothing: where there are updates,
-   * first each row that an update or deletion names is locked and must be there, once, so that no
+   * Writes the changes in a transaction of their own, all or nothing: first each row that an update
+   * or deletion names must be there, once, and where there are updates it is locked, so that no
    * statement meets a row that an earlier one moved to its key, as an update of a key or of what a
    * generated key or a trigger takes it from can; then the {@link #statements} run one after
    * another. Where a row is not
@@ -280,14 +280,14 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     if (!dialect.changeable(connection, provider, table, values)) {
       return new Outcome.Refused();
     }
-    // Only an update can move a row to a key that a later statement names: deletions alone are
-    // known by their counts, without a lock, which PostgreSQL grants only with UPDATE privilege.
-    var updates = statements.stream().anyMatch(s -> s.change() instanceof Change.Update);
-    var locks = new ArrayList<Statement>();
-    for (var statement : updates ? statements : List.<Statement>of()) {
+    // Locked only where an update could move a row to a key that a later statement names, as
+    // PostgreSQL grants a lock only with UPDATE privilege.
+    var lock = statements.stream().anyMatch(s -> s.change() instanceof Change.Update);
+    var checks = new ArrayList<Statement>();
+    for (var statement : statements) {
       switch (statement.change()) {
-        case Change.Update update -> locks.add(lock(provider, update, update.row()));
-        case Change.Delete delete -> locks.add(lock(provider, delete, delete.row()));
+        case Change.Update update -> checks.add(check(provider, update, update.row(), lock));
+        case Change.Delete delete -> checks.add(check(provider, delete, delete.row(), lock));
         case Change.Insert insert -> {}
       }
     }
@@ -297,16 +297,16 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
         connection.setAutoCommit(false);
         return null;
       });
-      var all = new ArrayList<>(locks);
+      var all = new ArrayList<>(checks);
       all.addAll(statements);
       for (var i = 0; i < all.size(); i++) {
         var statement = all.get(i);
-        var lock = i < locks.size();
+        var check = i < checks.size();
         var rows = Query.run(connection, provider, statement.sql(), prepared -> {
           for (var v = 0; v < statement.values().size(); v++) {
             dialect.bind(prepared, v + 1, statement.values().get(v));
           }
-          if (!lock) {
+          if (!check) {
             return prepared.executeLargeUpdate();
           }
           var read = 0L;
@@ -432,12 +432,13 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     };
   }
 
-  // The statement that locks the change's row, named by its key, and reads it.
-  private Statement lock(Provider provider, Change change, List<Object> row) {
+  // The statement that reads the change's row, named by its key, and may lock it.
+  private Statement check(Provider provider, Change change, List<Object> row, boolean lock) {
     var dialect = provider.dialect().rows();
     var values = new ArrayList<Object>();
     var sql = "SELECT 1 FROM " + Rows.qualified(provider, table)
-        + where(provider, row, dialect.equal(), parameters(dialect, values)) + " FOR UPDATE";
+        + where(provider, row, dialect.equal(), parameters(dialect, values))
+        + (lock ? " FOR UPDATE" : "");
     return new Statement(change, sql, values, sql);
   }
 

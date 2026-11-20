@@ -321,7 +321,43 @@ class ChangesServerTest {
     }
   }
 
-  // Deletions alone take no lock, which PostgreSQL grants only with the UPDATE privilege.
+  // Deleting the first row sets the key of the third, which refers to it, to its default, the key
+  // of the second row, which is gone: without the rows checked first, the second deletion would
+  // meet the third. A NULL in the reference leaves a row unchecked.
+  @Test
+  void aRowADeletionMovesToTheKeyOfARowGoneIsNotDeletedForIt() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var name = unique("changes_set_default");
+    var table = table(provider, name, Table.Kind.TABLE);
+    var qualified = qualified(provider, name);
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified + " (k integer PRIMARY KEY DEFAULT 2, g integer,"
+              + " parent integer, pg integer, UNIQUE (parent, pg), FOREIGN KEY (k, g)"
+              + " REFERENCES " + qualified + " (parent, pg) ON DELETE SET DEFAULT)",
+          "INSERT INTO " + qualified
+              + " VALUES (1, NULL, 10, 0), (2, NULL, NULL, NULL), (10, 0, NULL, NULL)");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        try (var other = open(provider)) {
+          execute(other, "DELETE FROM " + qualified + " WHERE k = 2");
+        }
+        var changes =
+            Changes.of(table, columns).orElseThrow().delete(read.get(0)).delete(read.get(1));
+        assertEquals(
+            new Changes.Outcome.Missed(changes.changes().get(1), 0),
+            changes.write(connection, provider));
+        assertEquals(
+            List.of(row(1L, null, 10L, 0L), row(10L, 0L, null, null)), rows(provider, table));
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified);
+      }
+    }
+  }
+
+  // Deletions alone lock no rows, which PostgreSQL grants only with the UPDATE privilege.
   @Test
   void rowsAreDeletedWithoutThePrivilegeToUpdateThem() throws Exception {
     var provider = Provider.POSTGRESQL;
