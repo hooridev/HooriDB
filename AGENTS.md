@@ -95,6 +95,7 @@ A release is a GitHub release of the tag `vX.Y.Z`, whose commit has the version 
 - `mvn -Pbundle verify` builds the bundle of the platform it runs on into `app/target/bundle`; on Windows, `ISCC /DVersion=X.Y.Z app/src/bundle/HooriDB.iss` makes the installer from it. The workflow `build.yml` does both on Linux and Windows and keeps the results as artifacts; it runs by hand on any branch.
 - The framework and the updater's helper are SNAPSHOTs, which Central deletes after 90 days. So a release pins each `rethinkj-*.version` property of the root `pom.xml` to its timestamped SNAPSHOT, as the artifact's `maven-metadata.xml` in Central's snapshot repository names it, such as `0.1.0-20261118.121633-120`; the artifacts of one push can differ in it. main keeps plain `-SNAPSHOT`.
 - To release: on a branch of its own, set the version of the three POMs to `X.Y.Z` and pin the properties, check that `mvn -U -Pbundle verify` passes, commit, and push the tag `vX.Y.Z` of that commit. The workflow `release.yml` refuses a tag that is not the version and any `-SNAPSHOT` left in a POM, builds, and publishes the release. main then gets the next `-SNAPSHOT` version.
+- A version with a SemVer pre-release part, such as `X.Y.Z-rc.1`, is a pre-release: `release.yml` marks its GitHub release as one, and nightlies and update channels treat it as one too, never offering it as stable.
 
 ## Changes
 
