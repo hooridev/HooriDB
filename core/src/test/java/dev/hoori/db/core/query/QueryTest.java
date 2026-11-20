@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * The worker against a made-up driver that behaves as the real ones do where it matters: a call
@@ -248,7 +249,7 @@ class QueryTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aStatementThatReportsTheCancelKeepsTheConnection(Provider provider) throws Exception {
     var driver = new Driver() {
       @Override

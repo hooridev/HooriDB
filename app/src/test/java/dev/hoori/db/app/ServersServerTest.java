@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * The console's seam to real servers: {@link Servers#SERVER}'s links on lanes, as a console uses
@@ -94,7 +95,7 @@ class ServersServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void manyRowsAreReadOnInPortions(Provider provider) throws Exception {
     var link = open(TestServer.of(provider));
     try {
@@ -117,7 +118,7 @@ class ServersServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void statementsRunOneAfterAnotherWithTheirCountsWarningsAndError(Provider provider)
       throws Exception {
     var pg = provider == Provider.POSTGRESQL;
@@ -159,7 +160,7 @@ class ServersServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aCancelledStatementLeavesTheConnectionToTheNext(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var lane = lane(server, TestServer.DATABASE);
@@ -177,7 +178,7 @@ class ServersServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theDatabaseSwitchesByWhatTheServerCanDo(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var lane = lane(server, TestServer.DATABASE);
@@ -221,7 +222,7 @@ class ServersServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void closingWhileAStatementRunsEndsTheSessionOnTheServer(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var pg = provider == Provider.POSTGRESQL;
@@ -247,7 +248,7 @@ class ServersServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void manualCommitsAndRollsBackAsCommitAndRollbackRunThem(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var lane = lane(server, TestServer.DATABASE);
@@ -314,7 +315,7 @@ class ServersServerTest {
    * for is sent and fails as itself.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aLargeReadInManualIsEstimatedFirst(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var lane = lane(server, TestServer.DATABASE);
@@ -381,7 +382,7 @@ class ServersServerTest {
    * estimate gives up in time, and the read runs on the session without a question.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aLockOfTheSessionDoesNotHoldItsRead(Provider provider) throws Exception {
     boolean pg = provider == Provider.POSTGRESQL;
     var server = TestServer.of(provider);
@@ -530,7 +531,7 @@ class ServersServerTest {
 
   /** The review's second finding: a COMMIT is not sent into what a cancel left failed. */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void commitAfterACancelGoesOnlyIntoATransactionTheServerSaysIsOpen(Provider provider)
       throws Exception {
     var pg = provider == Provider.POSTGRESQL;
@@ -604,7 +605,7 @@ class ServersServerTest {
    * cancelled while the connection opened, still runs the next statement in Manual.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aStatementRunsInTheModeChosenWhateverRanBefore(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var lane = lane(server, TestServer.DATABASE);
@@ -704,7 +705,7 @@ class ServersServerTest {
    * ROLLBACK after it succeeds all the same; so the console must not say Rolled back.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aChangeWhoseAnswerWasDroppedTookEffectAndARollbackSucceedsAnyway(Provider provider)
       throws Exception {
     var server = TestServer.of(provider);
@@ -1145,7 +1146,7 @@ class ServersServerTest {
    * so. The process waits for that thread, so the bound is the process's.
    */
   @org.junit.jupiter.params.ParameterizedTest
-  @org.junit.jupiter.params.provider.EnumSource(Provider.class)
+  @org.junit.jupiter.params.provider.MethodSource("dev.hoori.db.core.TestServer#sql")
   void closingASessionWhoseServerStoppedAnsweringEnds(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var relay = new dev.hoori.db.core.query.Relay(server.host(), server.port())) {

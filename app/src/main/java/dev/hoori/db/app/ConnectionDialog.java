@@ -72,7 +72,7 @@ final class ConnectionDialog {
   static final Part<ConnectionProfile, String> DRIVER_VERSION =
       Part.of(ConnectionProfile::driverVersion, ConnectionProfile::withDriverVersion);
 
-  private static final List<Provider> PROVIDERS = List.of(Provider.values());
+  private static final List<Provider> PROVIDERS = Provider.SQL;
 
   final boolean isNew;
   final Editing<ConnectionProfile> editing;

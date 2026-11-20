@@ -105,7 +105,7 @@ class ProviderTest {
 
   @Test
   void onlyMysqlWithoutTlsMayFetchTheServersKey() throws Exception {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       for (var tls : Tls.values()) {
         var properties = parameters(provider, "h", "d", tls).properties();
         assertEquals(
@@ -209,7 +209,7 @@ class ProviderTest {
 
   @Test
   void parametersHaveNoUser() throws Exception {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       for (var tls : Tls.values()) {
         var parameters = parameters(provider, "h", "d", tls);
         assertFalse(parameters.url().contains("someone"), parameters.toString());
@@ -220,7 +220,7 @@ class ProviderTest {
 
   @Test
   void anUnfitProfileFailsWithItsProblems() {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       var profile = ConnectionProfile.of(provider)
           .withHost("db.example/shop?sslmode=disable&ignored=")
           .withPort(65536)
@@ -258,7 +258,7 @@ class ProviderTest {
 
   @Test
   void quoteRejectsNul() {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       assertThrows(IllegalArgumentException.class, () -> provider.quote("a\0b"));
     }
   }
@@ -298,7 +298,7 @@ class ProviderTest {
     for (var cell : TABLE) {
       assertTrue(seen.add(List.of(cell.provider(), cell.capability())), cell.toString());
     }
-    assertEquals(Provider.values().length * Capability.values().length, seen.size());
+    assertEquals(Provider.SQL.size() * Capability.values().length, seen.size());
   }
 
   @Test

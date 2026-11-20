@@ -2480,6 +2480,7 @@ final class ConsoleTab implements Tab {
     var dialect = switch (provider) {
       case POSTGRESQL -> Sql.Dialect.POSTGRES;
       case MARIADB, MYSQL -> Sql.Dialect.MYSQL;
+      case MONGODB -> throw new IllegalStateException("A console of SQL on MongoDB");
     };
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());

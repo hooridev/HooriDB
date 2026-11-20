@@ -34,7 +34,7 @@ class StatementsTest {
   }
 
   private static void assertSplitAll(String text, String... statements) {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       assertSplit(provider, text, statements);
     }
   }
@@ -411,7 +411,7 @@ class StatementsTest {
         text.append(pieces[random.nextInt(pieces.length)]);
       }
       var sql = text.toString();
-      for (var provider : Provider.values()) {
+      for (var provider : Provider.SQL) {
         var statements = Statements.split(sql, provider);
         int previous = 0;
         for (var statement : statements) {
@@ -434,7 +434,7 @@ class StatementsTest {
   @Test
   void aTextScannedOnceAnswersForEveryCaretAsAScanOfItsOwn() {
     var text = "SELECT 1;  \n-- a note\n\nSELECT 'a;b'\nFROM t;\n/* end */ UPDATE t SET x = 1";
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       var scanned = Statements.of(text, provider);
       assertEquals(Statements.split(text, provider), scanned.statements());
       for (int caret = -1; caret <= text.length() + 1; caret++) {

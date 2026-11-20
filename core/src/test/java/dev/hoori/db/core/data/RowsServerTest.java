@@ -43,6 +43,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /** Reading rows of real servers, from the sample schema of {@link TestServer} and own tables. */
 class RowsServerTest {
@@ -51,7 +52,7 @@ class RowsServerTest {
   private static final Database HOORI = new Database(TestServer.DATABASE, false);
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void pagesOfReadingComeInTheOrderOfTheKey(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       var reading = table(provider, "reading", Table.Kind.TABLE);
@@ -89,7 +90,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aCompositeKeyOrdersByItsOwnOrderAndAnEmptyTableHasNoRows(Provider provider)
       throws Exception {
     try (var connection = open(provider)) {
@@ -117,7 +118,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aTableAndAViewWithoutKeyGiveTheSameRowsForTheSamePositions(Provider provider)
       throws Exception {
     try (var connection = open(provider)) {
@@ -227,6 +228,7 @@ class RowsServerTest {
             typed("integer[]", "'{1,2,NULL}'", Kind.OTHER, "{1,2,NULL}"),
             typed("bit(4)", "B'1010'", Kind.OTHER, "1010"),
             typed("money", "12.5", Kind.OTHER, "$12.50"));
+      case MONGODB -> throw new IllegalArgumentException("No SQL");
       case MARIADB, MYSQL -> {
         var types = new ArrayList<>(List.of(
             typed("tinyint", "-128", Kind.INTEGER, -128L),
@@ -301,7 +303,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void eachTypeHasItsKindAndItsExactValue(Provider provider) throws Exception {
     var types = types(provider);
     var pg = provider == Provider.POSTGRESQL;
@@ -354,7 +356,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void longTextAndBinaryDataAreCutAndSaySo(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     var limit = Rows.LIMIT;
@@ -400,7 +402,7 @@ class RowsServerTest {
       + "]}";
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aValueCutShortIsReadWholeByItsRowsKey(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
@@ -441,7 +443,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aRowWithAHugeValueCostsLittleMemory(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
@@ -480,7 +482,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void namesThatNeedQuotingAreRead(Provider provider) throws Exception {
     var name = "Odd \"Name\" `x` it's";
     var key = "Key \"One\"";
@@ -507,7 +509,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theEstimateFollowsTheStatisticsAndTheCountIsExact(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
@@ -537,7 +539,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anInterruptCancelsAReadAndACountAndKeepsTheConnection(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var pg = provider == Provider.POSTGRESQL;
@@ -580,7 +582,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aTableDroppedSinceTheLastReadIsNotFound(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       execute(connection, "CREATE TABLE dropped (id integer PRIMARY KEY)");
@@ -601,7 +603,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aConnectionThatTheServerEndedIsLost(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     var reading = table(provider, "reading", Table.Kind.TABLE);
@@ -820,7 +822,7 @@ class RowsServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void textsThatACollationTakesForEqualKeepTheirPlaces(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
@@ -866,7 +868,7 @@ class RowsServerTest {
    * columns read anew the table reads again.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aReadWithColumnsThatChangedFailsAsChanged(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     var table = table(provider, "changing", Table.Kind.TABLE);

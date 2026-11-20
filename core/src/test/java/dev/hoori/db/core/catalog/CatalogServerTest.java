@@ -22,7 +22,7 @@ import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /** Reading the catalog of real servers, with the sample schema of {@link TestServer}. */
 class CatalogServerTest {
@@ -38,6 +38,7 @@ class CatalogServerTest {
         case POSTGRESQL -> postgresql;
         case MARIADB -> mariadb;
         case MYSQL -> mysql;
+        case MONGODB -> throw new IllegalArgumentException("No SQL");
       };
     }
   }
@@ -102,7 +103,7 @@ class CatalogServerTest {
       List.of("active_customer", "customer", "purchase", "purchase_line", "reading");
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theDatabasesIncludeTheSampleOnesAndSystemOnesComeLast(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var connection = open(server, TestServer.DATABASE)) {
@@ -141,7 +142,7 @@ class CatalogServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theSampleSchemaHoldsItsTablesAndView(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var container = sample(provider);
@@ -155,7 +156,7 @@ class CatalogServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void eachSampleTableHasItsColumnsTypesAndPrimaryKey(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var connection = open(server, TestServer.DATABASE)) {
@@ -175,7 +176,7 @@ class CatalogServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void namesThatNeedQuotingAreReadBackExactly(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     // PostgreSQL in a schema of its own, MariaDB and MySQL in a database beyond ASCII.
@@ -227,7 +228,7 @@ class CatalogServerTest {
 
   /** All tables of a database in one call: those of each schema, as its own call reads them. */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void allTablesOfADatabaseAreThoseOfEachSchemaInOneCall(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var connection = open(server, TestServer.DATABASE)) {
@@ -272,7 +273,7 @@ class CatalogServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void onlyPostgresqlNeedsAConnectionToTheDatabaseItReads(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var container = sample(provider);
@@ -299,7 +300,7 @@ class CatalogServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aThousandTablesAndAWideOneAreReadInUnderASecond(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     // MariaDB and MySQL let the test user create no database, but use the empty one with a space.
@@ -357,7 +358,7 @@ class CatalogServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void whatWasDroppedSinceTheLastReadIsNotFound(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var container = sample(provider);
@@ -399,7 +400,7 @@ class CatalogServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aConnectionThatTheServerEndedIsLost(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var connection = open(server, TestServer.DATABASE);
@@ -419,7 +420,7 @@ class CatalogServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anInterruptCancelsTheQueryAndKeepsTheConnection(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var sleep = provider == Provider.POSTGRESQL ? "SELECT pg_sleep(30)" : "SELECT SLEEP(30)";

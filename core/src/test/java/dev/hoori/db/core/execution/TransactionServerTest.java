@@ -15,6 +15,7 @@ import java.sql.Connection;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Transactions as a console runs them, statements and their COMMIT and ROLLBACK as text, on real
@@ -34,7 +35,7 @@ class TransactionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aRollbackUndoesTheChange(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       table(connection, "undone");
@@ -58,7 +59,7 @@ class TransactionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aCommitShowsTheChangeToAnotherConnection(Provider provider) throws Exception {
     try (var connection = open(provider);
         var other = open(provider)) {
@@ -77,7 +78,7 @@ class TransactionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anErrorFailsPostgresqlsTransactionAndLeavesTheOthersOpen(Provider provider)
       throws Exception {
     var pg = provider == Provider.POSTGRESQL;
@@ -112,7 +113,7 @@ class TransactionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void ddlCommitsOnMariaDbAndMySqlOnly(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider);
@@ -135,7 +136,7 @@ class TransactionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aBeginTypedWithAutoCommitOpensATransactionUntilItsEnd(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider);
@@ -231,7 +232,7 @@ class TransactionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aFailedDdlHasCommittedOnMariaDbAndMySqlAndFailsPostgresqls(Provider provider)
       throws Exception {
     var pg = provider == Provider.POSTGRESQL;
@@ -289,7 +290,7 @@ class TransactionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aPortionSaysTheAutoCommitAsItSaysTheTransaction(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {

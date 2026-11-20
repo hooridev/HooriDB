@@ -203,6 +203,18 @@ final class FakeDrivers implements Repository {
     var sum = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     Files.writeString(
         dir.resolve(file.getFileName() + ".sha256"), rightChecksum ? sum : "0".repeat(64));
+    // Its parts, each the same made-up JAR: core's bridge, of a driver of documents, comes from
+    // core, and none of them is read.
+    for (var part : driver.parts()) {
+      var at = root.resolve(driver.group().replace('.', '/'))
+          .resolve(part.artifact())
+          .resolve(version);
+      Files.createDirectories(at);
+      var partFile = at.resolve(part.artifact() + "-" + version + ".jar");
+      Files.write(partFile, bytes);
+      Files.setLastModifiedTime(partFile, FileTime.from(published));
+      Files.writeString(at.resolve(partFile.getFileName() + ".sha256"), sum);
+    }
     var versions = new StringBuilder();
     try (var entries = Files.list(dir.getParent())) {
       entries

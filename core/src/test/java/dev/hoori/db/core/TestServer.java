@@ -13,7 +13,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import org.testcontainers.DockerClientFactory;
@@ -63,6 +65,11 @@ public final class TestServer {
     this.container = container(provider, tls);
   }
 
+  /** The providers of SQL, for tests that run on each of their servers. */
+  public static List<Provider> sql() {
+    return Provider.SQL;
+  }
+
   /** The shared server of the provider; skips the calling test without Docker. */
   public static TestServer of(Provider provider) {
     return started(MAIN, provider, false);
@@ -78,8 +85,8 @@ public final class TestServer {
     assumeTrue(DockerClientFactory.instance().isDockerAvailable(), "Docker is not available");
     if (servers.isEmpty()) {
       var starting = new EnumMap<Provider, TestServer>(Provider.class);
-      for (var p : Provider.values()) {
-        var tls = p != Provider.POSTGRESQL;
+      for (var p : other ? Provider.SQL : List.of(Provider.values())) {
+        var tls = p != Provider.POSTGRESQL && p != Provider.MONGODB;
         starting.put(p, new TestServer(p, other ? !tls : tls));
       }
       Startables.deepStart(starting.values().stream().map(s -> s.container)).join();
@@ -147,14 +154,23 @@ public final class TestServer {
     if (version == null) {
       throw new IllegalStateException("No " + key + "; run the tests through Maven");
     }
-    var jar = copied.resolve(driver.artifact() + "-" + version + ".jar");
-    if (!Files.isRegularFile(jar)) {
-      throw new IllegalStateException("No " + jar + "; run the tests through Maven");
-    }
     var work = copied.resolveSibling("test-driver-store");
     var repository = new FolderRepository(work.resolve("repository"));
-    repository.publish(
-        driver, version, Files.readAllBytes(jar), FolderRepository.Sum.SHA256, Instant.EPOCH);
+    var artifacts = new ArrayList<String>();
+    artifacts.add(driver.artifact());
+    driver.parts().forEach(part -> artifacts.add(part.artifact()));
+    for (var artifact : artifacts) {
+      var jar = copied.resolve(artifact + "-" + version + ".jar");
+      if (!Files.isRegularFile(jar)) {
+        throw new IllegalStateException("No " + jar + "; run the tests through Maven");
+      }
+      repository.publish(
+          new Driver(driver.group(), artifact, driver.driverClass()),
+          version,
+          Files.readAllBytes(jar),
+          FolderRepository.Sum.SHA256,
+          Instant.EPOCH);
+    }
     var store = new DriverStore(work.resolve("drivers"), repository);
     store.download(driver, version, DriverStore.Progress.NONE);
     return store.load(driver, version);
@@ -210,6 +226,16 @@ public final class TestServer {
         }
         yield withScript(container, provider);
       }
+      case MONGODB -> {
+        var container = new GenericContainer<>("mongo:8")
+            .withEnv("MONGO_INITDB_ROOT_USERNAME", USER)
+            .withEnv("MONGO_INITDB_ROOT_PASSWORD", PASSWORD)
+            .withTmpFs(Map.of("/data/db", "rw"))
+            // Once by the server that runs the scripts, and once by the one that stays.
+            .waitingFor(Wait.forLogMessage(".*Waiting for connections.*", 2)
+                .withStartupTimeout(Duration.ofMinutes(2)));
+        yield withScript(container, provider);
+      }
     };
   }
 
@@ -220,6 +246,13 @@ public final class TestServer {
   }
 
   private static GenericContainer<?> withScript(GenericContainer<?> container, Provider provider) {
+    if (provider.keepsDocuments()) {
+      var script = "sample-schema/" + provider.name().toLowerCase(Locale.ROOT) + ".js";
+      return container
+          .withExposedPorts(provider.defaultPort())
+          .withCopyFileToContainer(
+              MountableFile.forClasspathResource(script), "/docker-entrypoint-initdb.d/sample.js");
+    }
     var script = "sample-schema/" + provider.name().toLowerCase(Locale.ROOT) + ".sql";
     return container
         .withExposedPorts(provider.defaultPort())

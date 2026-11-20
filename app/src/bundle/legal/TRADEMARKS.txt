@@ -1,2 +1,2 @@
-PostgreSQL, MariaDB and MySQL and their logos are trademarks of their respective owners;
+PostgreSQL, MariaDB, MySQL and MongoDB and their logos are trademarks of their respective owners;
 HooriDB is not affiliated with or endorsed by them.

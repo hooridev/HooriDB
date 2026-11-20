@@ -393,9 +393,10 @@
                     <argument>dev.hoori.db.app.HooriDb</argument>
                     <argument>--dest</argument>
                     <argument>${bundle}/image</argument>
-                    <!-- Without java.desktop, which Jackson needs only where it is there. -->
+                    <!-- Without java.desktop, which Jackson needs only where it is there. The
+                         MongoDB driver logs through java.logging without SLF4J. -->
                     <argument>--add-modules</argument>
-                    <argument>java.base,java.sql,java.net.http,java.naming,java.management,java.security.jgss,java.security.sasl,jdk.security.auth,jdk.security.jgss,jdk.net,jdk.naming.dns,jdk.charsets</argument>
+                    <argument>java.base,java.sql,java.net.http,java.naming,java.management,java.security.jgss,java.security.sasl,jdk.security.auth,jdk.security.jgss,jdk.net,jdk.naming.dns,jdk.charsets,java.logging</argument>
                     <!-- jpackage's own options, but keeping bin/java, which runs the updater's
                          helper, and without links among the legal notices, which it refuses. -->
                     <argument>--jlink-options</argument>

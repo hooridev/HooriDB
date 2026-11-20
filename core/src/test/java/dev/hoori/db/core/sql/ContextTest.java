@@ -150,7 +150,7 @@ class ContextTest {
         "UPDATE 𝒜bc SET \"𝒜\" = '😀' WHERE id IN (1, 2) RETURNING *",
         "INSERT INTO t (a) VALUES ($1, $2::text, U&'\\0041', B'01', X'1F')");
     var random = new Random(7);
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       for (var sql : statements) {
         var texts = new ArrayList<String>();
         for (int end = 0; end <= sql.length(); end++) {

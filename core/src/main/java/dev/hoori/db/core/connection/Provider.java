@@ -5,7 +5,9 @@ import static dev.hoori.db.core.connection.Capability.EXPLAIN_ANALYZE;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN_JSON;
 
 import dev.hoori.db.core.dialect.Dialect;
+import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.dialect.MariaDb;
+import dev.hoori.db.core.dialect.MongoDb;
 import dev.hoori.db.core.dialect.MySql;
 import dev.hoori.db.core.dialect.PostgreSql;
 import dev.hoori.db.core.dialect.Traits;
@@ -22,7 +24,8 @@ import java.util.stream.Stream;
 public enum Provider {
   POSTGRESQL,
   MARIADB,
-  MYSQL;
+  MYSQL,
+  MONGODB;
 
   /** The providers whose servers speak SQL, each with its {@link #dialect}. */
   public static final List<Provider> SQL =
@@ -42,14 +45,39 @@ public enum Provider {
       case POSTGRESQL -> PostgreSql.INSTANCE;
       case MARIADB -> MariaDb.INSTANCE;
       case MYSQL -> MySql.INSTANCE;
+      case MONGODB -> MongoDb.INSTANCE;
     };
   }
 
-  /** What this provider of SQL does its own way, which the code that uses it does not name. */
+  /**
+   * What this provider of SQL does its own way, which the code that uses it does not name.
+   *
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
   public Dialect dialect() {
     return switch (traits()) {
       case Dialect dialect -> dialect;
+      case DocumentDialect other ->
+        throw new IllegalStateException(other.displayName() + " does not speak SQL");
     };
+  }
+
+  /**
+   * What this provider of documents does its own way.
+   *
+   * @throws IllegalStateException for a provider whose servers keep tables
+   */
+  public DocumentDialect documents() {
+    return switch (traits()) {
+      case DocumentDialect dialect -> dialect;
+      case Dialect other ->
+        throw new IllegalStateException(other.displayName() + " keeps no documents");
+    };
+  }
+
+  /** Whether its servers keep collections of documents, which its {@link #documents} reads. */
+  public boolean keepsDocuments() {
+    return traits() instanceof DocumentDialect;
   }
 
   /**

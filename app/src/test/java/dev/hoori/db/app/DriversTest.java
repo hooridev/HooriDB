@@ -365,14 +365,15 @@ class DriversTest {
     run(app, START + OPEN_DRIVERS + "snap empty\nkey Escape\nframe\nadvance 1\nframe\n");
     String empty = tree("empty");
     assertTrue(line(empty, "role=dialog").contains("label=\"Drivers\""), empty);
-    assertEquals(3, empty.split("\"None downloaded\"").length - 1, empty);
+    int kinds = Provider.values().length;
+    assertEquals(kinds, empty.split("\"None downloaded\"").length - 1, empty);
     downloaded(FakeDrivers.VERSION, OLD);
     run(app, OPEN_DRIVERS + "snap listed\n");
     String listed = tree("listed");
     assertTrue(
         block(listed, "\"42.7.14\"").contains("\"" + FakeDrivers.SIZE + ", recommended\""), listed);
     assertTrue(block(listed, "\"" + OLD + "\"").contains("\"" + FakeDrivers.SIZE + "\""), listed);
-    assertEquals(2, listed.split("\"None downloaded\"").length - 1, listed);
+    assertEquals(kinds - 1, listed.split("\"None downloaded\"").length - 1, listed);
     assertTrue(line(listed, "label=\"Download PostgreSQL JDBC\"").endsWith("disabled"), listed);
     assertTrue(listed.contains("\"42.7.14 is downloaded.\""), listed);
   }

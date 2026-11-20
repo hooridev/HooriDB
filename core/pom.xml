@@ -25,6 +25,13 @@
       <artifactId>rethinkj-updater-core</artifactId>
     </dependency>
     <dependency>
+      <!-- For the bridge to it alone, which is defined beside the driver the app downloads, and
+           never on the class path: the app and its bundle have no MongoDB driver. -->
+      <groupId>org.mongodb</groupId>
+      <artifactId>mongodb-driver-sync</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>

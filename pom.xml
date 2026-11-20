@@ -47,6 +47,9 @@
     <test.postgresql.version>42.7.14</test.postgresql.version>
     <test.mariadb.version>4.0.0</test.mariadb.version>
     <test.mysql.version>26.10.0</test.mysql.version>
+    <!-- The MongoDB driver that core's bridge to it compiles against, and that the tests load
+         the way the app does. The app downloads whichever version it recommends. -->
+    <mongodb.version>5.15.0</mongodb.version>
   </properties>
 
   <repositories>
@@ -127,6 +130,11 @@
         <version>${rethinkj-updater-helper.version}</version>
       </dependency>
       <dependency>
+        <groupId>org.mongodb</groupId>
+        <artifactId>mongodb-driver-sync</artifactId>
+        <version>${mongodb.version}</version>
+      </dependency>
+      <dependency>
         <groupId>tools.jackson.core</groupId>
         <artifactId>jackson-databind</artifactId>
         <version>3.3.0</version>
@@ -172,6 +180,7 @@
               <hooridb.test.postgresql.version>${test.postgresql.version}</hooridb.test.postgresql.version>
               <hooridb.test.mariadb.version>${test.mariadb.version}</hooridb.test.mariadb.version>
               <hooridb.test.mysql.version>${test.mysql.version}</hooridb.test.mysql.version>
+              <hooridb.test.mongodb.version>${mongodb.version}</hooridb.test.mongodb.version>
             </systemPropertyVariables>
           </configuration>
         </plugin>
@@ -205,6 +214,26 @@
                     <groupId>com.mysql</groupId>
                     <artifactId>mysql-connector-j</artifactId>
                     <version>${test.mysql.version}</version>
+                  </artifactItem>
+                  <artifactItem>
+                    <groupId>org.mongodb</groupId>
+                    <artifactId>mongodb-driver-sync</artifactId>
+                    <version>${mongodb.version}</version>
+                  </artifactItem>
+                  <artifactItem>
+                    <groupId>org.mongodb</groupId>
+                    <artifactId>mongodb-driver-core</artifactId>
+                    <version>${mongodb.version}</version>
+                  </artifactItem>
+                  <artifactItem>
+                    <groupId>org.mongodb</groupId>
+                    <artifactId>bson</artifactId>
+                    <version>${mongodb.version}</version>
+                  </artifactItem>
+                  <artifactItem>
+                    <groupId>org.mongodb</groupId>
+                    <artifactId>bson-record-codec</artifactId>
+                    <version>${mongodb.version}</version>
                   </artifactItem>
                 </artifactItems>
               </configuration>
