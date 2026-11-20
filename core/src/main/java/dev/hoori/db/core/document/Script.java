@@ -854,8 +854,8 @@ public final class Script {
 
   // The arguments of a call, with where each starts and where the call closes.
   private static final class Args extends ArrayList<Object> {
-    final List<Integer> starts = new ArrayList<>();
-    int end;
+    private final transient List<Integer> starts = new ArrayList<>();
+    private transient int end;
 
     int at(int index) {
       return index < starts.size() ? starts.get(index) : end;
