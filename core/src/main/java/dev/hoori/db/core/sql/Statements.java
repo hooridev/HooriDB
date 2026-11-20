@@ -196,15 +196,27 @@ public final class Statements {
     return pieces(text, provider, provider.dialect().syntax().backslashEscapes());
   }
 
-  // The comments and strings of the shell's syntax, and the code between them a character each.
+  // The comments and strings of the shell's syntax, its regular expressions as strings, and the
+  // code between them a character each.
   private static List<Piece> shellPieces(String text) {
     var pieces = new ArrayList<Piece>();
     int n = text.length();
     int i = 0;
+    char last = 0; // the last character of code, as Script.split tells a regular expression
     while (i < n) {
       char c = text.charAt(i);
       if (whitespace(c)) {
         i++;
+      } else if (c == '/'
+          && !text.startsWith("//", i)
+          && !text.startsWith("/*", i)
+          && Script.regexMayStart(last)) {
+        int end = Script.skipRegex(text, i);
+        boolean closed = end > i + 1 && text.charAt(end - 1) == '/';
+        // Its flags are code after it.
+        pieces.add(new Piece(Piece.Kind.STRING, i, end, !closed));
+        i = end;
+        last = '/';
       } else if (text.startsWith("//", i)) {
         int end = text.indexOf('\n', i);
         pieces.add(new Piece(Piece.Kind.COMMENT, i, end < 0 ? n : end, true));
@@ -223,9 +235,11 @@ public final class Statements {
         int end = Math.min(n, closed ? j + 1 : j);
         pieces.add(new Piece(Piece.Kind.STRING, i, end, !closed));
         i = end;
+        last = c;
       } else {
         pieces.add(new Piece(Piece.Kind.CODE, i, i + 1, false));
         i++;
+        last = c;
       }
     }
     return pieces;

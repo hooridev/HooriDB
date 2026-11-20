@@ -161,9 +161,7 @@ public final class Script {
       }
       break;
     }
-    while (e > s && Character.isWhitespace(text.charAt(e - 1))) {
-      e--;
-    }
+    e = codeEnd(text, s, e); // without the comments after it, whose semicolons are no ends
     if (e > s && !(e - s == 1 && text.charAt(s) == ';')) {
       pieces.add(new Piece(s, e, text.substring(s, e)));
     }
@@ -186,12 +184,49 @@ public final class Script {
     return text.length();
   }
 
-  // A slash after a value divides; after punctuation it starts a regular expression.
-  private static boolean regexMayStart(char last) {
+  // Where the last code of the part ends: past its strings and regular expressions, before the
+  // space and comments after it.
+  private static int codeEnd(String text, int start, int end) {
+    int code = start;
+    char last = 0;
+    int i = start;
+    while (i < end) {
+      char c = text.charAt(i);
+      if (c == '\'' || c == '"' || c == '`') {
+        i = Math.min(end, skipString(text, i));
+        code = i;
+        last = c;
+      } else if (text.startsWith("//", i)) {
+        int line = text.indexOf('\n', i);
+        i = line < 0 || line > end ? end : line;
+      } else if (text.startsWith("/*", i)) {
+        int close = text.indexOf("*/", i + 2);
+        i = close < 0 || close + 2 > end ? end : close + 2;
+      } else if (c == '/' && regexMayStart(last)) {
+        i = Math.min(end, skipRegex(text, i));
+        code = i;
+        last = '/';
+      } else {
+        if (!Character.isWhitespace(c)) {
+          code = i + 1;
+          last = c;
+        }
+        i++;
+      }
+    }
+    return code;
+  }
+
+  /**
+   * Whether a slash after this character of code, the last before it past space and comments,
+   * starts a regular expression: after punctuation it does, after a value it divides; 0 for none.
+   */
+  public static boolean regexMayStart(char last) {
     return last == 0 || "(,:[{!&|?;=".indexOf(last) >= 0;
   }
 
-  private static int skipRegex(String text, int at) {
+  /** Where the regular expression that starts at the slash ends, or the line or text does. */
+  public static int skipRegex(String text, int at) {
     int i = at + 1;
     boolean inClass = false;
     while (i < text.length()) {
