@@ -51,14 +51,16 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
             out.color(from, to, colors.keyword());
           }
         }
-        case PUNCTUATION -> {
-          if ("()[]{}".indexOf(line.charAt(from)) >= 0) {
-            out.bracket(from);
-          }
-        }
+        case PUNCTUATION -> bracket(line, from, out);
       }
     }
     return next;
+  }
+
+  private static void bracket(String line, int at, Spans out) {
+    if ("()[]{}".indexOf(line.charAt(at)) >= 0) {
+      out.bracket(at);
+    }
   }
 
   @Override

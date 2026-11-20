@@ -146,10 +146,7 @@ public final class Script {
       }
       end = token.end();
       broken = -1;
-      if (token.kind() != Lexer.Kind.PUNCTUATION) {
-        continue;
-      }
-      char c = text.charAt(token.start());
+      char c = token.kind() == Lexer.Kind.PUNCTUATION ? text.charAt(token.start()) : 0;
       if (c == '(' || c == '[' || c == '{') {
         depth++;
       } else if (c == ')' || c == ']' || c == '}') {
