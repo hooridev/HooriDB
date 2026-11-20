@@ -474,6 +474,13 @@ public final class DocumentSession implements AutoCloseable {
     } catch (InterruptedException e) {
       worker.interrupt();
       interrupted = true;
+      try {
+        if (!worker.join(Duration.ofMillis(100))) {
+          retired = true;
+        }
+      } catch (InterruptedException again) {
+        retired = true;
+      }
       throw DocumentException.of(DocumentException.Kind.CANCELLED, "");
     } finally {
       if (interrupted) {

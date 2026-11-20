@@ -497,7 +497,7 @@ final class ConnectionDialog {
       case PORT_OUT_OF_RANGE -> "Enter a port from 1 to 65535.";
       case DATABASE_HAS_NUL, USER_HAS_NUL -> "Remove the NUL character.";
       case DATABASE_NAME_INVALID ->
-        "Use a name of fewer than 64 bytes, without spaces or any of / \\ . \" $ * < > : | ?";
+        "Use a name of fewer than 64 bytes, without spaces or any of / \\ . \" $";
     };
   }
 

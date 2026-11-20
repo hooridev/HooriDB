@@ -20,6 +20,8 @@ class ConnectionProfileTest {
     var profile = ConnectionProfile.of(Provider.MONGODB).withHost("localhost");
     assertEquals(Set.of(), profile.withDatabase("shop").problems());
     assertEquals(Set.of(), profile.withDatabase("").problems());
+    // A server on Windows refuses more, as sales:2026, which it says itself.
+    assertEquals(Set.of(), profile.withDatabase("sales:2026").problems());
     for (var name : List.of("sales.test", "a b", "a/b", "a$b", "x".repeat(64))) {
       assertEquals(
           Set.of(Problem.DATABASE_NAME_INVALID), profile.withDatabase(name).problems(), name);

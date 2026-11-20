@@ -35,6 +35,7 @@ import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
@@ -78,7 +79,10 @@ final class Mongo {
     var settings = MongoClientSettings.builder()
         .applicationName("HooriDB")
         .applyToClusterSettings(cluster -> cluster
-            .hosts(List.of(new ServerAddress(target.host(), target.port())))
+            // The driver lowercases a name in the JVM's locale, which in Turkish turns I into a
+            // dotless ı: in the root locale here first.
+            .hosts(
+                List.of(new ServerAddress(target.host().toLowerCase(Locale.ROOT), target.port())))
             // As the shell connects to one host: to that server alone, also to a member of a
             // replica set whose other members are known by names that do not resolve here.
             .mode(ClusterConnectionMode.SINGLE)

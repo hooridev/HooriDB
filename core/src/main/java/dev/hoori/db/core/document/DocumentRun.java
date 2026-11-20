@@ -158,6 +158,16 @@ public final class DocumentRun {
             .filter(e -> !SESSION_FIELDS.contains(e.name()))
             .toList();
         results.add(rows(List.of(new Document(entries)), 0));
+        // A write sent as a command, which may have written some of its documents.
+        var errors = documents(reply.get("writeErrors"));
+        if (!errors.isEmpty()) {
+          var error = errors.getFirst();
+          var more = errors.size() > 1 ? " (and " + (errors.size() - 1) + " more)" : "";
+          results.add(failure(DocumentException.server(
+              (int) number(error.get("code")),
+              error.get("codeName") instanceof String s ? s : "",
+              (error.get("errmsg") instanceof String s ? s : "The write failed") + more)));
+        }
         if (reply.get("writeConcernError") instanceof Document concern) {
           results.add(failure(DocumentException.server(
               (int) number(concern.get("code")),

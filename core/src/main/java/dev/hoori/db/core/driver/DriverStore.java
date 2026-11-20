@@ -220,7 +220,7 @@ public final class DriverStore {
       // A version on disk was either recommended when it was downloaded or chosen on purpose,
       // which is good enough offline, so its age is not checked again and no dates are kept.
       for (var version : downloaded(driver)) {
-        if (Maven.isStable(version) && complete(driver, version)) {
+        if (Maven.isStable(version) && driver.takes(version) && complete(driver, version)) {
           return new Recommended(version, true, null);
         }
       }

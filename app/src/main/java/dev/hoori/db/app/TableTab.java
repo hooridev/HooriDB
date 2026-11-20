@@ -467,6 +467,8 @@ final class TableTab implements Tab {
       if (s.catalog.connected(id)) {
         if (columns == null || fields == null) {
           open(s, false);
+        } else if (ending) {
+          counted(s); // the end was being found: no page past it is read until the count says
         } else if (showing == Shown.GRID) {
           want(s, first, last);
         } else {

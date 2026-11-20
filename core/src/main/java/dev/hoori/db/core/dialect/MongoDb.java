@@ -75,12 +75,12 @@ public final class MongoDb implements DocumentDialect {
     return "test";
   }
 
-  // Fewer than 64 bytes, and none of the characters that a server on Windows refuses, the
-  // strictest of its rules.
+  // Fewer than 64 bytes, and none of the characters that a server refuses on every system; what
+  // only a server on Windows refuses it says itself, at the first command on the database.
   @Override
   public boolean isDatabaseName(String name) {
     return name.isEmpty()
         || name.getBytes(StandardCharsets.UTF_8).length < 64
-            && name.chars().noneMatch(c -> "/\\. \"$*<>:|?\0".indexOf(c) >= 0);
+            && name.chars().noneMatch(c -> "/\\. \"$\0".indexOf(c) >= 0);
   }
 }
