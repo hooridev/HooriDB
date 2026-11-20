@@ -285,6 +285,17 @@ interface Servers {
       }
     }
 
+    @Override
+    public String whole(Table table, List<Column> columns, List<Object> row, int column)
+        throws QueryException {
+      usable();
+      try {
+        return session.whole(table, columns, row, column);
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
     /** A statement of the MongoDB shell, on the database the link is on now. */
     @Override
     public Run run(String sql) throws QueryException {

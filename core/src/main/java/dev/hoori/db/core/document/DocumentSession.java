@@ -4,9 +4,15 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.data.Binary;
+import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.query.QueryException;
+import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -15,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A client of a server of documents, as the app uses it: its catalog of databases, collections and
@@ -92,8 +99,10 @@ public final class DocumentSession implements AutoCloseable {
           Document.of(
               "listCollections",
               1,
+              // Names and types, all that is read here; with authorizedCollections, a user who
+              // may read some collections of a database but not list it sees those.
               "nameOnly",
-              false,
+              true,
               "authorizedCollections",
               true,
               "cursor",
@@ -232,6 +241,9 @@ public final class DocumentSession implements AutoCloseable {
    */
   public Page read(Table collection, List<Column> fields, long from, long to)
       throws QueryException {
+    if (to <= from) {
+      return Values.page(fields, List.of()); // a limit of 0 would be no limit
+    }
     var command = Document.of("find", collection.name(), "sort", Document.of("_id", 1));
     if (from > 0) {
       command = command.with("skip", from);
@@ -243,6 +255,78 @@ public final class DocumentSession implements AutoCloseable {
       return Values.page(fields, documents);
     } catch (DocumentException e) {
       throw query(e);
+    }
+  }
+
+  /**
+   * The whole value of a field of the document whose {@code _id} the row of a page holds, as the
+   * grid shows a value not cut short: a text itself, a document or an array as its Relaxed Extended
+   * JSON, another value as the shell writes it; null for a field that is null or missing.
+   *
+   * @param fields the collection's fields, as {@link #read} takes them
+   * @param row a row of a page of the collection, with those fields
+   * @param column the field's index among them
+   * @throws QueryException as {@link #read} reports it; {@link QueryException.Failure#NOT_FOUND}
+   *     also where no document has the {@code _id} now
+   * @throws IllegalArgumentException if the fields have no {@code _id}, or the row's cannot name
+   *     its document, as one read in part
+   */
+  public String whole(Table collection, List<Column> fields, List<Object> row, int column)
+      throws QueryException {
+    int key = -1;
+    for (int i = 0; i < fields.size(); i++) {
+      if (fields.get(i).name().equals("_id")) {
+        key = i;
+      }
+    }
+    if (key < 0 || row.size() != fields.size()) {
+      throw new IllegalArgumentException("The row has no _id to read its document by");
+    }
+    var name = fields.get(column).name();
+    var command = Document.of(
+        "find", collection.name(), "filter", Document.of("_id", id(row.get(key), fields.get(key))));
+    // A projection takes a dot for a field of a field, a $ for an operator: those read it all.
+    if (name.indexOf('.') < 0 && !name.startsWith("$")) {
+      command = command.with("projection", Document.of(name, 1));
+    }
+    command = command.with("limit", 2).with("singleBatch", true);
+    try {
+      var documents = all(database(collection), command);
+      if (documents.size() != 1) {
+        throw QueryException.of(
+            QueryException.Failure.NOT_FOUND,
+            (documents.isEmpty() ? "No document" : "More than one document") + " of "
+                + collection.name() + " has the _id");
+      }
+      return switch (documents.getFirst().get(name)) {
+        case null -> null;
+        case String s -> s;
+        case Document d -> ExtendedJson.of(d);
+        case List<?> list -> ExtendedJson.of(list);
+        case Object value -> Shell.compact(value);
+      };
+    } catch (DocumentException e) {
+      throw query(e);
+    }
+  }
+
+  // The _id as the server has it, from its cell: as Values made it of the value.
+  private static Object id(Object cell, Column field) {
+    var kind = Values.kind(field.type());
+    try {
+      return switch (cell) {
+        case null -> throw new IllegalArgumentException("The row's _id is null");
+        case Cut c -> throw new IllegalArgumentException("The row's _id was read in part");
+        case String s when kind == Kind.TEXT -> s;
+        case String s -> Shell.parse(s); // the shell's text of it, or its Extended JSON
+        case OffsetDateTime t -> t.toInstant();
+        case BigDecimal d -> new Bson.Decimal128(d.toString());
+        case Binary b when b.length() == b.bytes().length -> new Bson.Binary(0, b.bytes());
+        case Binary b -> throw new IllegalArgumentException("The row's _id was read in part");
+        default -> cell;
+      };
+    } catch (SyntaxException e) {
+      throw new IllegalArgumentException("The row's _id cannot name its document", e);
     }
   }
 
@@ -289,7 +373,9 @@ public final class DocumentSession implements AutoCloseable {
           var cursor = reply.get("cursor") instanceof Document c ? c : Document.EMPTY;
           id = cursor.get("id") instanceof Number n ? n.longValue() : 0;
           batch = documents(cursor.get("nextBatch"));
-          if (batch.isEmpty() && id == 0) {
+          if (batch.isEmpty()) {
+            // At its end, or at the end for now of a cursor that waits for more, as a tailable
+            // one: what it gave so far, and more() says whether to ask again.
             break;
           }
           continue;
@@ -301,13 +387,19 @@ public final class DocumentSession implements AutoCloseable {
       return got;
     }
 
-    /** Frees the server's cursor, where it has one left. */
+    /**
+     * Frees the server's cursor, where it has one left, within {@link #GRACE}: also after the
+     * thread was interrupted, as by a cancel, which leaves the server's cursor open.
+     */
     public void close() throws DocumentException {
       batch = List.of();
       if (id != 0) {
         var open = id;
         id = 0;
-        command(database, Document.of("killCursors", collection, "cursors", Document.array(open)));
+        bounded(
+            "end a cursor",
+            () -> command(
+                database, Document.of("killCursors", collection, "cursors", Document.array(open))));
       }
     }
   }
@@ -317,18 +409,71 @@ public final class DocumentSession implements AutoCloseable {
     return new Cursor(database, reply);
   }
 
-  // All the documents of a command that opens a cursor.
+  // All the documents of a command that opens a cursor, which is freed where reading it fails.
   private List<Document> all(String database, Document command) throws DocumentException {
     var cursor = new Cursor(database, command(database, command));
     var documents = new ArrayList<Document>();
-    while (cursor.more()) {
-      var next = cursor.next(Integer.MAX_VALUE);
-      if (next.isEmpty()) {
-        break;
+    try {
+      while (cursor.more()) {
+        var next = cursor.next(Integer.MAX_VALUE);
+        if (next.isEmpty()) {
+          break;
+        }
+        documents.addAll(next);
       }
-      documents.addAll(next);
+    } catch (DocumentException e) {
+      try {
+        cursor.close();
+      } catch (DocumentException left) {
+        e.addSuppressed(left);
+      }
+      throw e;
     }
     return documents;
+  }
+
+  /** How long freeing a cursor or closing the connection may take before it is given up. */
+  public static final Duration GRACE = Duration.ofSeconds(2);
+
+  private interface Call {
+    void run() throws DocumentException;
+  }
+
+  // Runs the call on a thread of its own, also when this one was interrupted, and waits for it
+  // within GRACE. Past that it interrupts it, which ends the driver's I/O on a virtual thread, and
+  // fails as timed out.
+  private static void bounded(String what, Call call) throws DocumentException {
+    var failure = new AtomicReference<Throwable>();
+    var worker = Thread.ofVirtual().name(what).start(() -> {
+      try {
+        call.run();
+      } catch (DocumentException | RuntimeException e) {
+        failure.set(e);
+      }
+    });
+    boolean interrupted = Thread.interrupted();
+    try {
+      if (!worker.join(GRACE)) {
+        worker.interrupt();
+        throw DocumentException.of(
+            DocumentException.Kind.TIMED_OUT,
+            "The server did not answer within " + GRACE.toSeconds() + " seconds");
+      }
+    } catch (InterruptedException e) {
+      worker.interrupt();
+      interrupted = true;
+      throw DocumentException.of(DocumentException.Kind.CANCELLED, "");
+    } finally {
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    switch (failure.get()) {
+      case null -> {}
+      case DocumentException e -> throw e;
+      case RuntimeException e -> throw e;
+      default -> throw new IllegalStateException(failure.get());
+    }
   }
 
   private static List<Document> documents(Object value) {
@@ -352,7 +497,11 @@ public final class DocumentSession implements AutoCloseable {
   /** Ends the client and its connections, from any thread. */
   @Override
   public void close() {
-    client.close();
+    try {
+      bounded("close a connection", client::close);
+    } catch (DocumentException | RuntimeException e) {
+      // Given up: the driver's threads end the connection as they can.
+    }
   }
 
   // Failures as the catalog and queries report them.
