@@ -49,7 +49,7 @@ public interface ErrorDialect {
         var any = new EnumMap<Condition, Set<String>>(Condition.class);
         for (var condition : values()) {
           var states = new HashSet<String>();
-          for (var provider : Provider.values()) {
+          for (var provider : Provider.SQL) {
             states.addAll(provider.dialect().errors().states(condition));
           }
           any.put(condition, Set.copyOf(states));

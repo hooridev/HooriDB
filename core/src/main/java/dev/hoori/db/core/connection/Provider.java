@@ -8,9 +8,12 @@ import dev.hoori.db.core.dialect.Dialect;
 import dev.hoori.db.core.dialect.MariaDb;
 import dev.hoori.db.core.dialect.MySql;
 import dev.hoori.db.core.dialect.PostgreSql;
+import dev.hoori.db.core.dialect.Traits;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 /**
  * A kind of database server that HooriDB connects to. What each does its own way is its {@link
@@ -21,20 +24,31 @@ public enum Provider {
   MARIADB,
   MYSQL;
 
+  /** The providers whose servers speak SQL, each with its {@link #dialect}. */
+  public static final List<Provider> SQL =
+      Stream.of(values()).filter(p -> p.traits() instanceof Dialect).toList();
+
   public String displayName() {
-    return dialect().displayName();
+    return traits().displayName();
   }
 
   public int defaultPort() {
-    return dialect().defaultPort();
+    return traits().defaultPort();
   }
 
-  /** What this provider does its own way, which the code that uses it does not name. */
-  public Dialect dialect() {
+  /** What every provider has, whatever its servers speak. */
+  public Traits traits() {
     return switch (this) {
       case POSTGRESQL -> PostgreSql.INSTANCE;
       case MARIADB -> MariaDb.INSTANCE;
       case MYSQL -> MySql.INSTANCE;
+    };
+  }
+
+  /** What this provider of SQL does its own way, which the code that uses it does not name. */
+  public Dialect dialect() {
+    return switch (traits()) {
+      case Dialect dialect -> dialect;
     };
   }
 
@@ -82,7 +96,7 @@ public enum Provider {
 
   /** Whether a server of this provider and version has the capability. */
   public boolean supports(Capability capability, ServerVersion version) {
-    var since = dialect().capabilities().get(capability);
+    var since = traits().capabilities().get(capability);
     return since != null && version.atLeast(since.version());
   }
 
@@ -106,7 +120,7 @@ public enum Provider {
 
   private Optional<String> prefixed(Capability form, String statement, ServerVersion version) {
     return supports(form, version)
-        ? Optional.of(dialect().capabilities().get(form).prefix() + statement)
+        ? Optional.of(traits().capabilities().get(form).prefix() + statement)
         : Optional.empty();
   }
 
