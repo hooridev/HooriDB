@@ -498,6 +498,46 @@ class PaletteTest {
     assertSame(dialog, app.state().dialog);
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"New connection", "Drivers", "About HooriDB"})
+  void aDialogOfTheMainWindowChosenInAnotherBringsTheMainWindowForward(String title)
+      throws Exception {
+    var app = torn();
+    var main = app.windows().of(app);
+    c.run(app, "window \"customers\"\nframe\n");
+    assertTrue(app.windows().place(app, 100, 100).window() != main, "the other lies on top");
+    c.run(
+        app,
+        PALETTE + "type \"" + title.toLowerCase(java.util.Locale.ROOT) + "\"\nframe\nkey Enter\n"
+            + SHOWN + SETTLE + "window main\nframe\nsnap main\n");
+    assertSame(main, app.windows().place(app, 100, 100).window(), "the main window is on top");
+    var tree = c.tree("main");
+    assertTrue(line(tree, "role=dialog").contains("label=\"" + title + "\""), tree);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"History", "Confirmation"})
+  void whatTheMainWindowsConsoleAsksHoldsBackTheMainWindowsDialogsInAnother(String asking)
+      throws Exception {
+    var app = torn();
+    c.run(
+        app,
+        CatalogTreeTest.menu("shop-prod", "New console") + SETTLE
+            + (asking.equals("History")
+                ? ConsoleHistoryTest.HISTORY
+                : ConsoleTest.type(ConsoleConfirmationTest.WIPE) + ConsoleTest.RUN + SHOWN)
+            + "window \"customers\"\n" + PALETTE + "snap palette\nwindow main\nframe\nsnap main\n");
+    var palette = c.tree("customers-palette");
+    for (var command : List.of("File: New connection…", "File: Drivers…", "Help: About HooriDB")) {
+      assertTrue(line(palette, "label=\"" + command + "\"").contains("disabled"), palette);
+    }
+    var main = c.tree("main");
+    assertTrue(
+        line(main, "role=dialog")
+            .contains(asking.equals("History") ? "History of shop-prod" : "Update every row?"),
+        main);
+  }
+
   @Test
   void twoConnectionsOfOneNameAreToldApartAndEnterOpensTheChosenOnesTable() throws Exception {
     var first = SHOP.withName("local");
