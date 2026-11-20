@@ -22,13 +22,13 @@ import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.ComboBox;
 import com.rethinkj.ui.kit.Dialog;
-import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Editing;
 import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.HuePicker;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Part;
+import com.rethinkj.ui.kit.Popover;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Select;
@@ -100,6 +100,7 @@ final class ConnectionDialog {
   private final State.Act act = new State.Act("save", this);
   boolean discarding; // the question whether to throw the changes away is open
   final Menu.State tlsMenu = new Menu.State();
+  final Popover.State colorPopover = new Popover.State();
   final ComboBox.State providerBox = new ComboBox.State();
   final ComboBox.State versionBox = new ComboBox.State();
   Versions versions; // of the driver of the kind of database chosen
@@ -408,6 +409,7 @@ final class ConnectionDialog {
 
   void close(State s) {
     s.drop(act); // the way out a Save asked for goes with the dialog
+    colorPopover.close();
     if (asking != null) {
       asking.cancel();
     }
@@ -548,18 +550,21 @@ final class ConnectionDialog {
     var keyring =
         Prop.of(() -> canSave && savePassword, canSave && open ? v -> savePassword = v : null);
     String fallback = String.valueOf(p.provider().defaultPort());
-    var name = field(
-        "Name",
-        textField(locked(open, e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
-            .key("name")
-            .wFull());
-    var color = field(
-        "Color",
-        HuePicker.huePicker(
-                ConnectionColors.hue(p.color()),
-                ConnectionColors.label(null),
-                open ? v -> e.at(COLOR).set(ConnectionColors.color(v)) : null)
-            .key("color"));
+    var name = Form.row(
+        field(
+                "Name",
+                textField(locked(open, e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
+                    .key("name")
+                    .wFull())
+            .grow(),
+        field(
+            "Color",
+            HuePicker.button(
+                    ConnectionColors.hue(p.color()),
+                    ConnectionColors.label(null),
+                    colorPopover,
+                    open ? v -> e.at(COLOR).set(ConnectionColors.color(v)) : null)
+                .key("hue")));
     var chosen = p.driverVersion();
     var type = field(
             "Type",
@@ -649,18 +654,14 @@ final class ConnectionDialog {
                 .child(checkbox(keyring, "Save in system keyring")))
         .help(keyringNote(s))
         .error(probe.error(Probe.At.PASSWORD));
-    // shortcut: three forms in one label column, as Form.group always draws a heading; groups
-    // once one can go without.
-    float labels = Form.labelWidth(name, color, type, address, database, tls, user, pass);
-    El form = col()
-        .wFull()
-        .gap(t.space().xl())
-        .child(Form.form(Form.Labels.BESIDE, labels, name, color))
-        .child(Form.form(Form.Labels.BESIDE, labels, type, address, database, tls))
-        .child(Divider.divider())
-        .child(Form.form(Form.Labels.BESIDE, labels, user, pass));
+    // What it is, where it connects, and who logs in: groups without headings.
+    El form = Form.form(
+        Form.Labels.BESIDE,
+        Form.group(null, name),
+        Form.group(null, type, address, database, tls),
+        Form.group(null, user, pass).divided());
     El content = col()
-        .w(width())
+        .w(formWidth())
         .gap(t.space().l())
         .child(form)
         // Enter while Save cannot go shows what keeps it, the empty host too.
@@ -806,13 +807,19 @@ final class ConnectionDialog {
     return problem == null ? line : line + "\n" + problem;
   }
 
-  /**
-   * The width of the dialog's content: the colors' swatches in one line, and help and errors
-   * wrapping below their field.
-   */
+  /** The width of a dialog's content that the app's dialogs share, wide enough for long help. */
   static float width() {
     Theme t = Theme.CURRENT.get();
     return 2 * t.size().field() + 3 * t.size().control();
+  }
+
+  /**
+   * The width of this dialog's content and its driver's: as narrow as keeps the Type row with a
+   * version on Driver…, the host with its port, TLS's longest choice and the buttons on one line.
+   */
+  private static float formWidth() {
+    Theme t = Theme.CURRENT.get();
+    return t.size().field() + 7 * t.size().control();
   }
 
   /** The prop, or one that cannot be written while the form is not open to changes. */
@@ -830,7 +837,7 @@ final class ConnectionDialog {
         field("Version", driverVersion(s, !changing)).help(driverHelp(s)).warning(youngWarning(s)));
     return Dialog.dialog(
             editing.value().provider().displayName() + " driver",
-            col().w(width()).child(form),
+            col().w(formWidth()).child(form),
             List.of(button(PRIMARY, "Close", this::closeDriver)),
             this::closeDriver)
         .key("driver");

@@ -934,8 +934,10 @@ class ConnectionsTest {
     // Under the row, one below the other, each on a line of the row's width.
     assertTrue(TestConnectionTest.top(both, "#port") < hostText && hostText < portText, both);
     assertTrue(portText < TestConnectionTest.top(both, "#database"), both);
+    // At the start of the host's field.
+    var start = " " + host.replaceAll(".* (\\d+),\\d+ \\d+x\\d+.*", "$1") + ",";
     for (var error : List.of(hostError, portError)) {
-      assertTrue(line(both, "text \"" + error).contains(" 432,"), both);
+      assertTrue(line(both, "text \"" + error).contains(start), start + " " + both);
     }
   }
 
