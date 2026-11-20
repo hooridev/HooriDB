@@ -75,6 +75,8 @@ final class ConnectionDialog {
       Part.of(ConnectionProfile::readOnly, ConnectionProfile::withReadOnly);
   static final Part<ConnectionProfile, Boolean> SRV =
       Part.of(ConnectionProfile::srv, ConnectionProfile::withSrv);
+  static final Part<ConnectionProfile, String> AUTH_DATABASE =
+      Part.of(ConnectionProfile::authDatabase, ConnectionProfile::withAuthDatabase);
 
   private static final List<Provider> PROVIDERS = List.of(Provider.values());
 
@@ -435,6 +437,7 @@ final class ConnectionDialog {
     if (!provider.keepsDocuments()) {
       editing.at(READ_ONLY).set(false); // a server of SQL does not take it
       srv(false);
+      editing.at(AUTH_DATABASE).set("");
     }
     if (!portByHand && !portTyped()) {
       editing.at(PORT).set(provider.defaultPort());
@@ -512,7 +515,7 @@ final class ConnectionDialog {
       case HOST_INVALID -> "Enter one host name or IP address, without port or protocol.";
       case PORT_OUT_OF_RANGE -> "Enter a port from 1 to 65535.";
       case DATABASE_HAS_NUL, USER_HAS_NUL -> "Remove the NUL character.";
-      case DATABASE_NAME_INVALID ->
+      case DATABASE_NAME_INVALID, AUTH_DATABASE_NAME_INVALID ->
         "Use a name of fewer than 64 bytes, without spaces or any of / \\ . \" $";
     };
   }
@@ -679,6 +682,15 @@ final class ConnectionDialog {
             marked(
                 Probe.At.USER, textField(locked(open, e.at(USER))).key("user").wFull()))
         .error(error(problems, ConnectionProfile.Field.USER));
+    var authDatabase = field(
+            "Auth database",
+            textField(
+                    locked(open, e.at(AUTH_DATABASE)),
+                    p.provider().keepsDocuments() ? p.provider().documents().authDatabase() : null)
+                .key("auth-database")
+                .wFull())
+        .help("The database the user is defined in, MongoDB's authSource.")
+        .error(error(problems, ConnectionProfile.Field.AUTH_DATABASE));
     var pass = field(
             "Password",
             col()
@@ -705,7 +717,9 @@ final class ConnectionDialog {
         p.provider().keepsDocuments()
             ? Form.group(null, type, address, srv, database, tls, readOnly)
             : Form.group(null, type, address, database, tls),
-        Form.group(null, user, pass).divided());
+        p.provider().keepsDocuments()
+            ? Form.group(null, user, authDatabase, pass).divided()
+            : Form.group(null, user, pass).divided());
     El content = col()
         .w(formWidth())
         .gap(t.space().l())

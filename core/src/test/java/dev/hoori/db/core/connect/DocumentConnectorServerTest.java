@@ -72,6 +72,25 @@ class DocumentConnectorServerTest {
     assertFalse(e.getMessage().contains("Wrong-Pw-9zZ"));
   }
 
+  /** A user is looked for in the database the profile names, and in admin where it names none. */
+  @Test
+  void aUserDefinedInAnotherDatabaseLogsInThere() throws Exception {
+    var server = TestServer.of(Provider.MONGODB);
+    var reader = server.profile().withUser("reader");
+    var found = DocumentConnector.test(
+        reader.withAuthDatabase(TestServer.DATABASE),
+        TestServer.password(),
+        server.driver(),
+        TIMEOUT);
+    assertEquals("MongoDB", found.product());
+    for (var wrong : List.of(reader, reader.withAuthDatabase("shop"))) {
+      var e = assertThrows(
+          ConnectionException.class,
+          () -> DocumentConnector.test(wrong, TestServer.password(), server.driver(), TIMEOUT));
+      assertEquals(Failure.LOGIN_REFUSED, e.failure(), e.getMessage());
+    }
+  }
+
   @Test
   void aPortWhereNothingListensIsUnreachable() throws Exception {
     var server = TestServer.of(Provider.MONGODB);

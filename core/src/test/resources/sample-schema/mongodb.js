@@ -19,3 +19,9 @@ hoori.orders.createIndex({ customer: 1 });
 
 hoori.createView('paid_orders', 'orders', [{ $match: { paid: true } }]);
 hoori.createCollection('empty');
+
+// A user defined in hoori, not in admin, who logs in with hoori as the authentication database.
+hoori.createUser({
+  user: 'reader', pwd: process.env.MONGO_INITDB_ROOT_PASSWORD,
+  roles: [{ role: 'read', db: 'hoori' }],
+});

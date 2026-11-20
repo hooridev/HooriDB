@@ -175,7 +175,8 @@ public final class WorkspaceStore {
         color(in, node, where),
         driverVersion(in, node, where),
         node.get("readOnly") != null && in.bool(node, where, "readOnly"),
-        node.get("srv") != null && in.bool(node, where, "srv"));
+        node.get("srv") != null && in.bool(node, where, "srv"),
+        node.get("authDatabase") != null ? in.text(node, where, "authDatabase") : "");
   }
 
   /**
@@ -228,6 +229,9 @@ public final class WorkspaceStore {
           }
           if (profile.srv()) {
             object.put("srv", true);
+          }
+          if (!profile.authDatabase().isEmpty()) {
+            object.put("authDatabase", profile.authDatabase());
           }
         }
       }

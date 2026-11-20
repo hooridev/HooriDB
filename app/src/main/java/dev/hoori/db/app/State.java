@@ -728,7 +728,8 @@ final class State {
         profile.color(),
         profile.driverVersion(),
         profile.readOnly(),
-        profile.srv());
+        profile.srv(),
+        profile.authDatabase());
     change(workspace.after(profile.id(), copy));
     selected = new Node.Connection(copy.id());
     persist();
