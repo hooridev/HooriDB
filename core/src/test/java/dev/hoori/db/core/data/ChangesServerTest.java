@@ -30,6 +30,7 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -82,7 +83,6 @@ class ChangesServerTest {
             .orElseThrow()
             .edit(read.get(0), 3, "new")
             .edit(read.get(0), 4, null)
-            .edit(read.get(1), 0, 4L) // a new key
             .delete(read.get(2))
             .insert(values(0, 3L, 1, "z", 2, T3, 3, null));
         assertEquals(new Changes.Outcome.Committed(), changes.write(connection, provider));
@@ -90,7 +90,7 @@ class ChangesServerTest {
         assertEquals(
             List.of(
                 row(1L, "x", T1, "new", null),
-                row(4L, "x", T2, "kept", 9L),
+                row(2L, "x", T2, "kept", 9L),
                 row(3L, "z", T3, null, null)),
             Rows.read(connection, provider, table, columns, 0, 10).rows());
         assertLeftAsItWas(connection, provider);
@@ -209,8 +209,69 @@ class ChangesServerTest {
         var columns = columns(connection, provider, table);
         var row = Rows.read(connection, provider, table, columns, 0, 10).rows().getFirst();
         var changes = Changes.of(table, columns).orElseThrow().edit(row, 1, "changed");
-        assertEquals(new Changes.Outcome.CannotRollBack(), changes.write(connection, provider));
+        assertEquals(new Changes.Outcome.Refused(), changes.write(connection, provider));
         assertEquals(List.of(row(1L, "one")), rows(provider, table));
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
+      }
+    }
+  }
+
+  @Test
+  void aTableOthersInheritFromIsNotChanged() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var parent = unique("changes_parent");
+    var child = unique("changes_child");
+    var table = table(provider, parent, Table.Kind.TABLE);
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, parent) + " (id integer PRIMARY KEY, v text)",
+          "CREATE TABLE " + qualified(provider, child) + " () INHERITS ("
+              + qualified(provider, parent) + ")",
+          "INSERT INTO " + qualified(provider, parent) + " VALUES (1, 'parent')",
+          "INSERT INTO " + qualified(provider, child) + " VALUES (1, 'child')");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        assertEquals(List.of(row(1L, "parent"), row(1L, "child")), read);
+        var changes = Changes.of(table, columns).orElseThrow().edit(read.get(0), 1, "changed");
+        assertEquals(new Changes.Outcome.Refused(), changes.write(connection, provider));
+        assertEquals(read, rows(provider, table));
+      } finally {
+        dropAfter(
+            provider,
+            "DROP TABLE " + qualified(provider, child),
+            "DROP TABLE " + qualified(provider, parent));
+      }
+    }
+  }
+
+  // A moment goes in as such, and the session's zone stays the one a DATETIME's default is in.
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aDefaultTimeIsWrittenInTheZoneOfTheSession(Provider provider) throws Exception {
+    var name = unique("changes_default");
+    var table = table(provider, name, Table.Kind.TABLE);
+    try (var connection = open(provider)) {
+      execute(connection, "SET SESSION time_zone = '+05:00'");
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name) + " (id integer PRIMARY KEY,"
+              + " t timestamp(3) NULL, d datetime DEFAULT CURRENT_TIMESTAMP)");
+      try {
+        var columns = columns(connection, provider, table);
+        var changes = Changes.of(table, columns).orElseThrow().insert(values(0, 1L, 1, T1));
+        assertEquals(new Changes.Outcome.Committed(), changes.write(connection, provider));
+        assertEquals(T1, rows(provider, table).getFirst().get(1));
+        try (var statement = connection.createStatement();
+            var rows = statement.executeQuery(
+                "SELECT TIMESTAMPDIFF(MINUTE, d, NOW()) FROM " + qualified(provider, name))) {
+          rows.next();
+          assertTrue(Math.abs(rows.getLong(1)) < 5, rows.getString(1));
+        }
       } finally {
         dropAfter(provider, "DROP TABLE " + qualified(provider, name));
       }

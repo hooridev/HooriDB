@@ -242,18 +242,24 @@ public final class PostgreSqlRows extends RowsDialect {
   }
 
   @Override
-  boolean rollsBack(Connection connection, Provider provider, Table table) {
-    return true;
+  String parameter(Object value) {
+    return "?";
   }
 
-  // PostgreSQL reads the offset that the text of a moment has.
+  // An UPDATE or DELETE of a table that others inherit from meets their rows too, whose keys may
+  // be its own; a partitioned table's keys are unique across its partitions.
   @Override
-  String utc(Connection connection) {
-    return null;
+  boolean changeable(Connection connection, Provider provider, Table table) throws QueryException {
+    var sql = "SELECT c.relhassubclass AND c.relkind OPERATOR(pg_catalog.=) 'r'"
+        + " FROM pg_catalog.pg_class c"
+        + " WHERE c.oid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(?)";
+    return Query.run(connection, provider, sql, statement -> {
+      statement.setString(1, Rows.qualified(provider, table));
+      try (var rows = statement.executeQuery()) {
+        return !rows.next() || !rows.getBoolean(1);
+      }
+    });
   }
-
-  @Override
-  void restore(Connection connection, String zone) {}
 
   // The output function's text of a PostgreSQL value of any type, which counts as NULL where
   // num_nulls() says so.

@@ -244,11 +244,11 @@ abstract class MySqlFamilyRows extends RowsDialect {
       case Double number -> statement.setDouble(index, number);
       case Boolean truth -> statement.setBoolean(index, truth);
       case Binary binary -> statement.setBytes(index, binary.bytes());
-      // In UTC, which the session takes it in while it writes.
       case OffsetDateTime moment ->
-        statement.setString(
+        statement.setBigDecimal(
             index,
-            Rows.text(moment.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime(), false));
+            BigDecimal.valueOf(moment.toEpochSecond())
+                .add(BigDecimal.valueOf(moment.getNano(), 9)));
       default -> statement.setString(index, Rows.text(value, false));
     }
   }
@@ -270,10 +270,21 @@ abstract class MySqlFamilyRows extends RowsDialect {
     };
   }
 
+  // A moment as the seconds since 1970, as UNIX_TIMESTAMP() reads it: the server takes a text of a
+  // timestamp in the session's zone, and the session must keep it, which a DATETIME's DEFAULT
+  // CURRENT_TIMESTAMP is written in.
+  // shortcut: in the hour that a session's zone with daylight saving repeats, FROM_UNIXTIME()'s
+  // time
+  // may be taken for the other moment; compare UNIX_TIMESTAMP() of the column if users meet it.
+  @Override
+  String parameter(Object value) {
+    return value instanceof OffsetDateTime ? "FROM_UNIXTIME(?)" : "?";
+  }
+
   // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails
   // the statement that names it.
   @Override
-  boolean rollsBack(Connection connection, Provider provider, Table table) throws QueryException {
+  boolean changeable(Connection connection, Provider provider, Table table) throws QueryException {
     var sql = "SELECT e.TRANSACTIONS FROM information_schema.TABLES t"
         + " JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE"
         + " WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?";
@@ -284,28 +295,6 @@ abstract class MySqlFamilyRows extends RowsDialect {
         return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
       }
     });
-  }
-
-  // The session reads the text of a timestamp in its zone, which may repeat an hour.
-  @Override
-  String utc(Connection connection) throws SQLException {
-    try (var statement = connection.createStatement()) {
-      String zone;
-      try (var rows = statement.executeQuery("SELECT @@session.time_zone")) {
-        rows.next();
-        zone = rows.getString(1);
-      }
-      statement.execute("SET time_zone = '+00:00'");
-      return zone;
-    }
-  }
-
-  @Override
-  void restore(Connection connection, String zone) throws SQLException {
-    try (var statement = connection.prepareStatement("SET time_zone = ?")) {
-      statement.setString(1, zone);
-      statement.execute();
-    }
   }
 
   private static String bit(ResultSet rows, int index) throws SQLException {

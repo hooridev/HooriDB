@@ -85,16 +85,14 @@ public abstract class RowsDialect {
    */
   abstract String literal(Object value);
 
-  /** Whether a rollback undoes changes of the table's rows, which a storage engine may not. */
-  abstract boolean rollsBack(Connection connection, Provider provider, Table table)
-      throws QueryException;
+  /** The parameter that takes the value in a statement: {@code ?}, or an expression of it. */
+  abstract String parameter(Object value);
 
   /**
-   * Has the session take the text of a moment, as {@link #bind} gives it, in UTC; what restores the
-   * session as it was, or null where nothing changed.
+   * Whether changes of the table's rows can be all or nothing, each meeting the row its key names:
+   * not where a rollback would not undo them, or where the table's statements also meet rows of
+   * other tables, which may repeat its keys.
    */
-  abstract String utc(Connection connection) throws SQLException;
-
-  /** Restores the session as {@link #utc} found it. */
-  abstract void restore(Connection connection, String zone) throws SQLException;
+  abstract boolean changeable(Connection connection, Provider provider, Table table)
+      throws QueryException;
 }

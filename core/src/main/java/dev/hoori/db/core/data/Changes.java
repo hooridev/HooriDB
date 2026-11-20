@@ -19,6 +19,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.StringJoiner;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
@@ -41,9 +42,9 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   /**
    * @throws IllegalArgumentException if no column is in a primary key, a column is not the
    *     table's, or a change does not fit the columns: a row with a value for another number of
-   *     columns, a column that is none of them, an update without values, a key without a value,
-   *     or a value read only in part, a {@link Cut} or a {@link Binary#cut} one, which can neither
-   *     be written nor name a row
+   *     columns, a column that is none of them, an update without values or of a column of the
+   *     primary key, a key without a value, or a value read only in part, a {@link Cut} or a
+   *     {@link Binary#cut} one, which can neither be written nor name a row
    */
   public Changes {
     columns = List.copyOf(columns);
@@ -63,6 +64,10 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
           requireValues(columns, update.values());
           if (update.values().isEmpty()) {
             throw new IllegalArgumentException("An update without values");
+          }
+          // A later change could name its row by a key that one moved there.
+          if (update.values().keySet().stream().anyMatch(keys(columns)::contains)) {
+            throw new IllegalArgumentException("A column of the primary key cannot be changed");
           }
         }
         case Change.Insert insert -> requireValues(columns, insert.values());
@@ -88,6 +93,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
    * it has none. The value that was read takes the cell's change back, and the update's where it
    * was its last.
    *
+   * @throws IllegalArgumentException if the column is one of the primary key
    * @throws IllegalStateException if the row is to be deleted
    */
   public Changes edit(List<Object> row, int column, Object value) {
@@ -192,8 +198,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
    * each in the order they were made, so that a new row can take the key of a row deleted. An
    * {@code UPDATE} sets the columns given new values and a new row's {@code INSERT} the columns
    * given values, and one without any the first column to its default. An {@code UPDATE} and a
-   * {@code DELETE} name their row by the values its primary key had when it was read, so that an
-   * update can give the key new values.
+   * {@code DELETE} name their row by the values of its primary key.
    *
    * @throws IllegalArgumentException if a value is of no kind's type
    */
@@ -206,7 +211,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
           var values = new ArrayList<Object>();
           var sql = sql(provider, change, dialect.equal(), value -> {
             values.add(value);
-            return "?";
+            return dialect.parameter(value);
           });
           var preview = sql(provider, change, "=", dialect::literal);
           statements.add(new Statement(change, sql, values, preview));
@@ -230,19 +235,18 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     record Missed(Change change, long rows) implements Outcome {}
 
     /**
-     * Nothing was written: a rollback would not undo changes of the table, as its storage engine,
-     * such as MyISAM, keeps no transactions, so that they could not be all or nothing.
+     * Nothing was written: the changes of the table could not be all or nothing, each meeting the
+     * row its key names, as its storage engine, such as MyISAM, keeps no transactions, or on
+     * PostgreSQL other tables inherit from it, whose rows may repeat its keys.
      */
-    record CannotRollBack() implements Outcome {}
+    record Refused() implements Outcome {}
   }
 
   /**
    * Writes the changes in a transaction of their own, all or nothing: the {@link #statements} run
    * one after another, and where one meets not exactly one row, or fails, all are rolled back. The
    * connection must have auto-commit on and no transaction open, as one that only reads the table
-   * has, and is left so; nothing else may run on it meanwhile. On MariaDB and MySQL its session
-   * takes moments in UTC while the transaction is open, and has its own zone back before the
-   * commit.
+   * has, and is left so; nothing else may run on it meanwhile.
    *
    * <p>The call blocks. An interrupt of the calling thread cancels the statement that runs and
    * ends with {@link QueryException.Failure#CANCELLED} or {@link QueryException.Failure#ABORTED},
@@ -251,8 +255,8 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
    *
    * @throws QueryException as {@link Query} reports it, where a statement or the commit failed,
    *     and all was rolled back; where the connection is given up, the server rolls back what it
-   *     did not commit as it closes, but where it is lost as the commit runs, whether the changes
-   *     were committed is not known
+   *     did not commit as it closes, but where it is lost or given up as the commit runs, whether
+   *     the changes were committed is not known
    * @throws IllegalStateException if the connection has a transaction open, or auto-commit off
    * @throws IllegalArgumentException if a value is of no kind's type, or a PostgreSQL connection is
    *     to another database than the table's
@@ -271,16 +275,14 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       throw new IllegalStateException("A transaction is open on the connection");
     }
     var dialect = provider.dialect().rows();
-    if (!dialect.rollsBack(connection, provider, table)) {
-      return new Outcome.CannotRollBack();
+    if (!dialect.changeable(connection, provider, table)) {
+      return new Outcome.Refused();
     }
-    String zone = null;
     Outcome outcome = new Outcome.Committed();
     try {
-      // Within a bound, an interrupt or not, so that the zone to restore is known.
-      zone = Query.within(connection, provider, Execution.ENDING, () -> {
+      Query.within(connection, provider, Execution.ENDING, () -> {
         connection.setAutoCommit(false);
-        return dialect.utc(connection);
+        return null;
       });
       for (var statement : statements) {
         var rows = Query.run(connection, provider, statement.sql(), prepared -> {
@@ -296,66 +298,74 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       }
     } catch (QueryException | RuntimeException e) {
       try {
-        end(connection, provider, dialect, zone, false);
+        end(connection, provider, false);
       } catch (QueryException ended) {
         e.addSuppressed(ended);
       }
       throw e;
     }
-    end(connection, provider, dialect, zone, outcome instanceof Outcome.Committed);
+    end(connection, provider, outcome instanceof Outcome.Committed);
     return outcome;
   }
 
-  // Ends the transaction within a bound, an interrupt or not: gives the session its zone back,
-  // commits or rolls back, and turns auto-commit on again. A connection that cannot be left as it
-  // was found is aborted, which has the server roll back what it did not commit; a failure to turn
-  // auto-commit on after a commit does not fail what was committed.
-  private static void end(
-      Connection connection, Provider provider, RowsDialect dialect, String zone, boolean commit)
+  // Ends the transaction within a bound, an interrupt or not: commits or rolls back, and turns
+  // auto-commit on again. A connection that cannot be left as it was found is aborted, which has
+  // the server roll back what it did not commit; nothing after a commit fails what was committed,
+  // and nothing begins once the connection is given up for the bound.
+  private static void end(Connection connection, Provider provider, boolean commit)
       throws QueryException {
-    Query.within(connection, provider, Execution.ENDING, () -> {
-      if (connection.getAutoCommit()) {
-        return null; // never begun
-      }
-      try {
-        if (zone != null) {
-          dialect.restore(connection, zone);
-        }
-      } catch (SQLException e) {
-        abort(connection);
+    var committed = new AtomicBoolean();
+    var givenUp = new AtomicBoolean();
+    try {
+      Query.within(
+          connection,
+          provider,
+          Execution.ENDING,
+          () -> {
+            if (connection.getAutoCommit()) {
+              return null; // never begun
+            }
+            SQLException failed = null;
+            if (commit) {
+              try {
+                if (givenUp.get()) {
+                  throw new SQLException("Given up before the commit", "08006");
+                }
+                connection.commit();
+                committed.set(true);
+              } catch (SQLException e) {
+                failed = e;
+              }
+            }
+            if (!committed.get()) {
+              try {
+                connection.rollback();
+              } catch (SQLException e) {
+                // pgjdbc would commit as auto-commit is turned on.
+                abort(connection);
+                if (failed != null) {
+                  failed.addSuppressed(e);
+                  throw failed;
+                }
+                throw e;
+              }
+            }
+            try {
+              connection.setAutoCommit(true);
+            } catch (SQLException e) {
+              abort(connection);
+            }
+            if (failed != null) {
+              throw failed;
+            }
+            return null;
+          },
+          () -> givenUp.set(true));
+    } catch (QueryException e) {
+      if (!committed.get()) {
         throw e;
       }
-      SQLException failed = null;
-      if (commit) {
-        try {
-          connection.commit();
-        } catch (SQLException e) {
-          failed = e;
-        }
-      }
-      if (!commit || failed != null) {
-        try {
-          connection.rollback();
-        } catch (SQLException e) {
-          // pgjdbc would commit as auto-commit is turned on.
-          abort(connection);
-          if (failed != null) {
-            failed.addSuppressed(e);
-            throw failed;
-          }
-          throw e;
-        }
-      }
-      try {
-        connection.setAutoCommit(true);
-      } catch (SQLException e) {
-        abort(connection);
-      }
-      if (failed != null) {
-        throw failed;
-      }
-      return null;
-    });
+    }
   }
 
   private static void abort(Connection connection) {
