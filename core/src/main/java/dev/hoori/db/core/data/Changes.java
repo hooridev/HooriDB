@@ -189,8 +189,10 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   }
 
   /**
-   * The statements of the changes: the deletions first, then the updates and then the new rows,
-   * each in the order they were made, so that a new row can take the key of a row deleted. An
+   * The statements of the changes: the updates first, then the deletions and then the new rows,
+   * each in the order they were made, so that an update meets its row while all rows named are
+   * still there, as a deletion may take others with it by a foreign key, and a new row can take
+   * the key of a row deleted. An
    * {@code UPDATE} sets the columns given new values and a new row's {@code INSERT} the columns
    * given values, and one without any the first column to its default. An {@code UPDATE} and a
    * {@code DELETE} name their row by the values its primary key had when it was read, so that an
@@ -201,7 +203,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   public List<Statement> statements(Provider provider) {
     var dialect = provider.dialect().rows();
     var statements = new ArrayList<Statement>();
-    for (var kind : List.of(Change.Delete.class, Change.Update.class, Change.Insert.class)) {
+    for (var kind : List.of(Change.Update.class, Change.Delete.class, Change.Insert.class)) {
       for (var change : changes) {
         if (kind.isInstance(change)) {
           var values = new ArrayList<Object>();
@@ -221,9 +223,9 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     record Committed() implements Outcome {}
 
     /**
-     * Nothing was written: the statement of the change met the given number of rows rather than
-     * one, as when its row was deleted or its key changed since it was read, and all was rolled
-     * back.
+     * Nothing was written: the change's row was there not once but the given number of times as
+     * the rows were locked, or its statement met that many rows, as when the row was deleted or its
+     * key changed since it was read, and all was rolled back.
      */
     record Missed(Change change, long rows) implements Outcome {}
 

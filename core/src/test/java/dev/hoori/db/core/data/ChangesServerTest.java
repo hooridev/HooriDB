@@ -171,7 +171,7 @@ class ChangesServerTest {
           execute(other, "DELETE FROM " + qualified(provider, name) + " WHERE id = 2");
         }
         var none = Changes.of(table, columns).orElseThrow();
-        // The deletion and the first update run before the update of the row that is gone.
+        // The row that is gone is missed before anything is changed.
         var changes = none.edit(read.get(0), 1, "changed")
             .edit(read.get(1), 1, "lost")
             .delete(read.get(2))

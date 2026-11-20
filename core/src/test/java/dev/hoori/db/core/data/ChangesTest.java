@@ -97,7 +97,7 @@ class ChangesTest {
   }
 
   @Test
-  void statementsNameTheirRowsByTheKeyAndDeletionsComeFirst() {
+  void statementsNameTheirRowsByTheKeyAndUpdatesComeFirst() {
     var changes = changes()
         .insert(Map.of(0, 3L, 1, "it's"))
         .edit(ROW, 2, "new")
@@ -107,26 +107,26 @@ class ChangesTest {
     var statements = changes.statements(Provider.POSTGRESQL);
     assertEquals(
         List.of(
-            "DELETE FROM \"public\".\"item\" WHERE \"b\" OPERATOR(pg_catalog.=) ?"
-                + " AND \"a\" OPERATOR(pg_catalog.=) ?",
             "UPDATE \"public\".\"item\" SET \"v\" = ?, \"n\" = ?"
                 + " WHERE \"b\" OPERATOR(pg_catalog.=) ? AND \"a\" OPERATOR(pg_catalog.=) ?",
+            "DELETE FROM \"public\".\"item\" WHERE \"b\" OPERATOR(pg_catalog.=) ?"
+                + " AND \"a\" OPERATOR(pg_catalog.=) ?",
             "INSERT INTO \"public\".\"item\" (\"a\", \"b\") VALUES (?, ?)",
             "INSERT INTO \"public\".\"item\" (\"a\") VALUES (DEFAULT)"),
         statements.stream().map(Changes.Statement::sql).toList());
     assertEquals(
         List.of(
-            List.of("y", 2L), Arrays.asList("new", null, "x", 1L), List.of(3L, "it's"), List.of()),
+            Arrays.asList("new", null, "x", 1L), List.of("y", 2L), List.of(3L, "it's"), List.of()),
         statements.stream().map(Changes.Statement::values).toList());
     assertEquals(
         List.of(
-            "DELETE FROM \"public\".\"item\" WHERE \"b\" = 'y' AND \"a\" = 2",
             "UPDATE \"public\".\"item\" SET \"v\" = 'new', \"n\" = NULL"
                 + " WHERE \"b\" = 'x' AND \"a\" = 1",
+            "DELETE FROM \"public\".\"item\" WHERE \"b\" = 'y' AND \"a\" = 2",
             "INSERT INTO \"public\".\"item\" (\"a\", \"b\") VALUES (3, 'it''s')",
             "INSERT INTO \"public\".\"item\" (\"a\") VALUES (DEFAULT)"),
         statements.stream().map(Changes.Statement::preview).toList());
-    assertEquals(changes.changes().get(2), statements.getFirst().change());
+    assertEquals(changes.changes().get(1), statements.getFirst().change());
 
     var mysql = new Changes(
         new Table(new Database("hoori", false), "it`em", Table.Kind.TABLE),
