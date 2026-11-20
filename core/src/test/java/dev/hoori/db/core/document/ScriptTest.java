@@ -75,6 +75,11 @@ class ScriptTest {
     assertEquals("shop", Script.parse("use shop/* note */").use());
     // A no-break space ends it, as JavaScript reads one as space.
     assertEquals("shop", Script.parse("use shop\u00a0").use());
+    // A quote in an unquoted name stays in it, and the line still ends the statement.
+    assertEquals(
+        List.of("use shop'24", "show dbs"),
+        Script.split("use shop'24\nshow dbs").stream().map(Script.Piece::text).toList());
+    assertEquals("shop'24", Script.parse("use shop'24").use());
   }
 
   @Test
