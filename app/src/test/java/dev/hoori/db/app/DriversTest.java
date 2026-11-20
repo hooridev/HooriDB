@@ -988,13 +988,12 @@ class DriversTest {
     assertTrue(block(edit, "role=button label=\"Driver\"").contains("\"Driver " + YOUNG + "…\""));
     var warning = "warning=\"Only 1 day old: recommended after 3 days.\"";
     assertTrue(line(edit, "#type").contains(warning), edit);
-    // The list fails, as without a network: the age is known from the date all the same.
-    app.state().dialog.versions.read = new Versions.Read(
-        java.util.Map.of(),
-        null,
-        new DriverException(DriverException.Failure.NO_NETWORK, "offline"));
-    app.invalidate();
+    assertEquals(0, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
+    // The list, read as the driver's dialog opens, fails without a network: the age is known from
+    // the date all the same.
+    repository.offline = true;
     run(app, DRIVER + "snap failed\n" + CLOSE_DRIVER + "snap closed\n");
+    assertEquals(1, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
     assertTrue(tree("failed").contains("Its versions could not be read."), tree("failed"));
     assertTrue(line(tree("closed"), "#type").contains(warning), tree("closed"));
   }

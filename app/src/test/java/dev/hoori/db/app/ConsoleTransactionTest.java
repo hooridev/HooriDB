@@ -1157,7 +1157,17 @@ class ConsoleTransactionTest {
     assertTrue(line(waiting, "role=textbox label=\"User\"").contains("disabled"), waiting);
     assertFalse(line(waiting, "role=button label=\"Cancel\"").contains("disabled"), waiting);
     assertFalse(app.state().dialog.choosingDriver, "Driver… opens nothing");
-    c.run(app, in(window) + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
+    // Cancel gives the Save up, and the form is open to changes again.
+    c.run(app, in(window) + "press #answer-cancel\nframe\n" + OPENED + SETTLE);
+    c.run(app, in("main") + "frame\nsnap open\n");
+    assertEquals(null, app.state().pending);
+    String open = c.tree("open");
+    assertFalse(line(open, "role=button label=\"Driver\"").contains("disabled"), open);
+    assertFalse(line(open, "role=textbox label=\"User\"").contains("disabled"), open);
+    c.run(
+        app,
+        in("main") + "press role=button label=\"Save\"\nframe\n" + OPENED + in(window)
+            + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
     assertEquals(null, app.state().dialog);
     assertEquals(SHOP.user() + "2", app.state().profile(SHOP.id()).user());
     assertEquals(null, app.state().profile(SHOP.id()).driverVersion());
