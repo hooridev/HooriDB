@@ -113,7 +113,12 @@ class ReadOnlyServerTest {
     try (var connection = readOnly(provider, TestServer.DATABASE)) {
       connection.setCatalog(TestServer.SPACED_DATABASE);
       refused(connection, provider, "CREATE TABLE made_there (id integer)");
-      run(connection, provider, "USE `" + TestServer.DATABASE + "`");
+      var used = run(connection, provider, "USE `" + TestServer.DATABASE + "`");
+      assertFalse(used.results().getLast() instanceof Failure, used.toString());
+      // Asked of the server: MySQL Connector/J does not follow a USE in getCatalog.
+      var on =
+          (Result.Rows) run(connection, provider, "SELECT DATABASE()").results().getFirst();
+      assertEquals(List.of(TestServer.DATABASE), on.rows().getFirst());
       refused(connection, provider, "CREATE TABLE made_there (id integer)");
     }
   }

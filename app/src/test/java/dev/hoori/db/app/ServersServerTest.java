@@ -111,7 +111,7 @@ class ServersServerTest {
       assertTrue(unsent.message().startsWith("The connection is read-only"), unsent.message());
       var write = (Failure)
           link.run("CREATE TABLE never_made (id integer)").next(10).results().getLast();
-      assertFalse(write.message().startsWith("The connection is read-only"), write.message());
+      assertEquals("25006", write.state(), write.toString()); // the server's own refusal
       assertTrue(link.estimate(TestServer.DATABASE, "SELECT * FROM customer").isPresent());
     } finally {
       link.close();
