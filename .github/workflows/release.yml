@@ -41,6 +41,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    # One at a time with nightly.yml's publish, whose guard must see this release.
+    concurrency:
+      group: publish
+      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@v5
         with:

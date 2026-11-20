@@ -55,6 +55,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    # One at a time with release.yml's, so that the guard sees a release published meanwhile.
+    concurrency:
+      group: publish
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
