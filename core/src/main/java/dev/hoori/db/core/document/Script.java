@@ -229,7 +229,7 @@ public final class Script {
           name = r.string();
         } else {
           while (r.at < r.text.length()
-              && !Character.isWhitespace(r.text.charAt(r.at))
+              && !Lexer.whitespace(r.text.charAt(r.at))
               && r.text.charAt(r.at) != ';'
               && !r.text.startsWith("//", r.at)
               && !r.text.startsWith("/*", r.at)) {

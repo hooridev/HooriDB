@@ -59,6 +59,8 @@ class ScriptTest {
         List.of("use 'shop", "show dbs"),
         Script.split("use 'shop\nshow dbs").stream().map(Script.Piece::text).toList());
     assertWhere(4, "use 'shop");
+    // A regular expression ends with its line, as in JavaScript, also after a backslash.
+    assertWhere(15, "db.a.find({ x: /a\\\nb/ })");
     // A block comment over lines between the calls of a chain leaves it one statement.
     assertEquals(
         List.of("db.a.find({})\n/* a\n b */ .limit(1)"),
@@ -71,6 +73,8 @@ class ScriptTest {
   void aUseNameEndsAtAComment() throws Exception {
     assertEquals("shop", Script.parse("use shop// note").use());
     assertEquals("shop", Script.parse("use shop/* note */").use());
+    // A no-break space ends it, as JavaScript reads one as space.
+    assertEquals("shop", Script.parse("use shop\u00a0").use());
   }
 
   @Test
