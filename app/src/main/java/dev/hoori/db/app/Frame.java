@@ -543,18 +543,22 @@ final class Frame {
 
   /** The version that runs, its author, license and website. */
   private static El aboutDialog(State s) {
-    float side = Theme.CURRENT.get().size().icon();
+    Theme t = Theme.CURRENT.get();
+    float side = t.size().icon();
     El mark = AppIcon.appIcon(Math.round(side), HooriDb.COLOR, Symbol.DATABASE).size(side, side);
     Runnable close = () -> s.about = false;
     El ok = button(Button.Variant.PRIMARY, "Close", close);
     El content = Properties.properties(
-        List.of(
-            Properties.property("Version", s.version),
-            Properties.property("Updates", s.channel() == Channel.NIGHTLY ? "Nightly" : "Stable"),
-            Properties.property("Author", "Patrick Trautmann"),
-            Properties.property("License", "MIT"),
-            Properties.property("Website", "https://db.hoori.dev")),
-        null);
+            List.of(
+                Properties.property("Version", s.version),
+                Properties.property(
+                    "Updates", s.channel() == Channel.NIGHTLY ? "Nightly" : "Stable"),
+                Properties.property("Author", "Patrick Trautmann"),
+                Properties.property("License", "MIT"),
+                Properties.property("Website", "https://db.hoori.dev")),
+            null)
+        // Room beside the longest line, which would otherwise touch the dialog's edge.
+        .minSize(10 * t.size().control(), 0);
     return Dialog.dialog(
         "About " + HooriDb.NAME,
         content,
