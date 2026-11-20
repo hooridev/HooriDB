@@ -94,6 +94,30 @@ class ServersServerTest {
     return provider == Provider.POSTGRESQL ? "SELECT current_database()" : "SELECT DATABASE()";
   }
 
+  /**
+   * A read-only profile's link, as the tree's, a console's and the planner's are: the server
+   * refuses a write, and the link does not send what would turn read-only off.
+   */
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aReadOnlyLinkWritesNothing(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var link = Servers.SERVER.open(
+        server.profile().withReadOnly(true), TestServer.password(), server.driver());
+    try {
+      var back =
+          provider == Provider.POSTGRESQL ? "RESET ALL" : "SET SESSION TRANSACTION READ WRITE";
+      var unsent = (Failure) link.run(back).next(10).results().getLast();
+      assertTrue(unsent.message().startsWith("The connection is read-only"), unsent.message());
+      var write = (Failure)
+          link.run("CREATE TABLE never_made (id integer)").next(10).results().getLast();
+      assertFalse(write.message().startsWith("The connection is read-only"), write.message());
+      assertTrue(link.estimate(TestServer.DATABASE, "SELECT * FROM customer").isPresent());
+    } finally {
+      link.close();
+    }
+  }
+
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void manyRowsAreReadOnInPortions(Provider provider) throws Exception {

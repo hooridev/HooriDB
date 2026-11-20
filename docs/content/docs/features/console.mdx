@@ -47,6 +47,17 @@ Each statement that returns rows or changes rows creates a result tab (**Result 
 
 When a statement fails and the server reports where the error occurred, HooriDB underlines that location in the editor, moves the caret there, and displays the server's message above the results tabs. The underline clears as soon as you edit the text.
 
+## Read-only connections
+
+Check **Read-only** next to **Access** in the connection dialog to keep a PostgreSQL, MySQL, or MariaDB connection from changing data. As it connects, HooriDB makes every session of the connection read-only at the server: the Workspace tree's, each console's, and the one it uses for row estimates. Switching databases keeps it.
+
+- The server refuses statements that write to tables or change the schema, such as `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `CREATE`, `ALTER`, `DROP`, and `GRANT`, in **Auto** and **Manual** mode alike. Its error appears above the results and in **Messages**, as any other error does. On MySQL, the driver (MySQL Connector/J) refuses most of them before the server does, with `Connection is read-only. Queries leading to data modification are not allowed.`
+- Temporary tables are refused too, and on PostgreSQL so is `nextval()`.
+- HooriDB does not send a statement that would turn read-only off for the session: one that names the read-only setting (`default_transaction_read_only` or `transaction_read_only` on PostgreSQL, `transaction_read_only` or `tx_read_only` on MySQL and MariaDB), also in a string, one with `READ WRITE`, and on PostgreSQL `RESET ALL` and `DISCARD ALL`. To read the setting, use `SHOW transaction_read_only`, or `SHOW VARIABLES LIKE 'transaction_read_only'` on MySQL and MariaDB.
+- **Commit** and **Rollback** still end a transaction, which holds its snapshot and locks until then. HooriDB still asks before an `UPDATE` or `DELETE` without `WHERE`, which the server then refuses.
+
+What the server does not refuse this way is listed under [Limitations](/docs/reference/limitations#connections-and-appearance). A MongoDB connection is read-only in its own way; see [MongoDB](/docs/features/mongodb#read-only-connections).
+
 ## Complete SQL keywords and names
 
 <Shot name="completion" alt="A console editor showing column name completions and data types after typing an alias and a dot" />

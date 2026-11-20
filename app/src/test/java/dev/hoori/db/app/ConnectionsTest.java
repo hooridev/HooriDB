@@ -250,24 +250,17 @@ class ConnectionsTest {
     assertTrue(secrets.stored.isEmpty(), "nothing saved");
   }
 
-  /** A connection to MongoDB may be read-only; a server of SQL does not offer it. */
+  /** Every connection may be read-only, and switching its type keeps that. */
   @Test
-  void aMongoDbConnectionCanBeReadOnly() throws IOException {
+  void aConnectionCanBeReadOnly() throws IOException {
     App<State> app = app();
-    run(
-        app,
-        NEW_SHOP + provider("MongoDB") + """
+    run(app, NEW_SHOP + provider("MongoDB") + """
         snap mongo
         press role=checkbox label="Read-only"
         frame
         snap checked
         """ + provider("PostgreSQL") + """
         snap sql
-        """ + provider("MongoDB")
-            + """
-        snap again
-        press role=checkbox label="Read-only"
-        frame
         press role=button label="Save"
         frame
         """ + SETTLE + """
@@ -281,12 +274,12 @@ class ConnectionsTest {
     String checked = tree("checked");
     assertFalse(
         line(checked, "role=checkbox label=\"Read-only\"").contains("checked=false"), checked);
-    assertFalse(tree("sql").contains("label=\"Read-only\""), tree("sql"));
-    String again = tree("again");
-    assertTrue(line(again, "role=checkbox label=\"Read-only\"").contains("checked=false"), again);
+    String sql = tree("sql");
+    assertFalse(line(sql, "role=checkbox label=\"Read-only\"").contains("checked=false"), sql);
+    assertTrue(sql.contains("The server keeps the session read-only"), sql);
     assertFalse(tree("saved").contains("role=dialog"), tree("saved"));
     var saved = stored().getFirst();
-    assertEquals(Provider.MONGODB, saved.provider());
+    assertEquals(Provider.POSTGRESQL, saved.provider());
     assertTrue(saved.readOnly());
   }
 
@@ -1036,7 +1029,10 @@ class ConnectionsTest {
     String waiting = tree("waiting");
     assertTrue(line(waiting, "#host").contains("\"db.example.com\""), waiting);
     assertTrue(line(waiting, "#host").contains("disabled"), waiting);
-    assertTrue(line(waiting, "role=checkbox").endsWith("disabled checked"), "keeps its tick");
+    assertTrue(
+        line(waiting, "role=checkbox label=\"Save in system keyring\"")
+            .endsWith("disabled checked"),
+        "keeps its tick");
     secrets.gate.countDown();
     more(app, SETTLE);
     assertEquals("db.example.com", stored().getFirst().host());

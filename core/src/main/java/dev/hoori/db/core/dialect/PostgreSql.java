@@ -168,6 +168,23 @@ public final class PostgreSql implements Dialect {
       return Optional.empty();
     }
 
+    @Override
+    public String readOnly() {
+      return "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY";
+    }
+
+    // RESET ALL and DISCARD ALL put the session's default back as the server's configuration has
+    // it; a later transaction takes that default.
+    @Override
+    public Set<String> readWrite() {
+      return Set.of(
+          "default_transaction_read_only",
+          "transaction_read_only",
+          "read write",
+          "reset all",
+          "discard all");
+    }
+
     // PostgreSQL's loginTimeout is not one of them: it leaves its own thread behind, waiting on a
     // server that never answers.
     @Override
