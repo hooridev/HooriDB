@@ -3,6 +3,7 @@ package dev.hoori.db.core.document;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -14,6 +15,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.DocumentConnector;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -92,6 +94,9 @@ class DocumentSessionServerTest {
       // A document or an array as Relaxed Extended JSON, of Kind.JSON.
       assertEquals("[\"math\", \"poetry\"]", ada.get(4));
       assertEquals("{\"city\": \"London\", \"zip\": \"W1\"}", ada.get(5));
+      // Grace's email is null; Edsger has none.
+      assertNull(customers.rows().get(1).get(2));
+      assertEquals(Missing.FIELD, customers.rows().get(2).get(2));
 
       // A limit of 0 would read them all.
       assertEquals(List.of(), session.read(ORDERS, fields, 5, 5).rows());

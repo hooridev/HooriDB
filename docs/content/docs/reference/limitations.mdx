@@ -37,7 +37,6 @@ Some of these limits are tracked in [issue #57](https://github.com/hooridev/Hoor
 
 - Connections support a single host and port, or a `mongodb+srv://` host. Host lists are not supported, and the options a `mongodb+srv://` host lists in its DNS TXT record, such as `replicaSet` or `loadBalanced`, are not read.
 - Only user name and password authentication (SCRAM) is supported: no X.509 certificates, LDAP, Kerberos, or AWS IAM, which authenticate against `$external`.
-- A missing field appears in the grid the same as a `null` field. **JSON** and **Tree** show the difference.
 - Pages are read by offset, ordered by `_id`. On a view that projects out or duplicates `_id`, documents can repeat or be skipped between pages.
 - A collection's fields in the tree and grid come from a sample of 100 documents, so fields absent from that sample do not appear there; **JSON** and **Tree** still show them.
 - The console parses [shell statements](/docs/features/mongodb#run-shell-statements-in-a-console) without JavaScript: variables, functions, and loops are not supported.

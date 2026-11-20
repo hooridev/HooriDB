@@ -70,8 +70,9 @@ port; its user may be defined in a database other than `admin`, which it names (
 may be read-only, which sends only commands that read, as find, aggregate without `$out` or `$merge`
 and counts, and refuses the others unsent. Its databases and collections show in the tree, with the
 fields that a sample of their documents has; a collection opens in a tab as a grid of its fields,
-read in pages, with a document or an array in a cell as Relaxed Extended JSON, or a page of
-documents at a time as Relaxed Extended JSON or as a tree of their fields. Its console runs
+read in pages, with a document or an array in a cell as Relaxed Extended JSON and a field a
+document does not have as an empty cell, where a `null` shows NULL, or a page of documents at a
+time as Relaxed Extended JSON or as a tree of their fields. Its console runs
 statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls, `aggregate`,
 counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their documents in
 the same three ways, underlines where a statement goes wrong, lays its statements out with
