@@ -187,6 +187,10 @@ class ShellTest {
     assertOffset(14, "{ a: ObjectId('12') }");
     assertOffset(0, "[1, 2");
     assertOffset(9, "{ a: 1 } x");
+    // null where a constructor needs a number or a date, not a NullPointerException
+    for (var name : List.of("NumberLong", "NumberInt", "NumberDecimal", "ISODate", "new Date")) {
+      assertOffset(name.length() + 1, name + "(null)");
+    }
   }
 
   private static void assertOffset(int offset, String text) {
