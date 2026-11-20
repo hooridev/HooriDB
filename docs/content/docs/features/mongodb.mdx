@@ -13,7 +13,7 @@ HooriDB connects to MongoDB through the official MongoDB Java driver. A MongoDB 
 3. Optionally enter a **Database**. Consoles start in this database, or in `test` if you leave it blank.
 4. Choose the **TLS** setting, as for the other types.
 5. Check **Read-only** next to **Access** if you want HooriDB to send only read commands on this connection (see below).
-6. Enter the **User** and **Password**, or leave **User** empty for a server without access control (if HooriDB still asks for a password, press **Connect** with the field empty). Users are authenticated against the `admin` database, which covers MongoDB Atlas and users created in `admin`; users created in another database cannot log in yet.
+6. Enter the **User** and **Password**, or leave **User** empty for a server without access control (if HooriDB still asks for a password, press **Connect** with the field empty). Users are looked up in the `admin` database, which covers MongoDB Atlas and users created in `admin`. For a user created in another database, enter that database as the **Auth database** (MongoDB's `authSource`). A wrong one is refused as a wrong password is.
 
 The first time you connect or test, HooriDB asks before downloading the MongoDB Java driver. See [Drivers](/docs/features/drivers).
 

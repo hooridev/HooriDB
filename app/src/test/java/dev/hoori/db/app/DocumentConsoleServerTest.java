@@ -6,6 +6,7 @@ import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.ConsoleTest.RUN;
+import static dev.hoori.db.app.ConsoleTest.RUN_ALL;
 import static dev.hoori.db.app.ConsoleTest.near;
 import static dev.hoori.db.app.ConsoleTest.type;
 import static dev.hoori.db.app.TableTabTest.cell;
@@ -145,6 +146,31 @@ class DocumentConsoleServerTest {
     assertTrue(cell(aggregate, 1, 1).contains("\"84\""), aggregate);
     c.run(app, "key A control\nkey Delete\n" + type("use admin") + RUN + "snap use\n");
     assertTrue(near(c.tree("use"), "#database").contains("\"admin\""), c.tree("use"));
+  }
+
+  /** A use takes effect for the statements after it in the same run. */
+  @Test
+  void aUseSwitchesTheStatementsAfterItInTheSameRun() throws Exception {
+    var app = console(docs());
+    c.run(
+        app,
+        type("use admin;\ndb.getName();\ndb.orders.countDocuments({})") + RUN_ALL
+            + "press role=tab label=\"Result 1\"\nframe\nsnap name\n"
+            + "press role=tab label=\"Result 2\"\nframe\nsnap count\n");
+    assertTrue(cell(c.tree("name"), 0, 0).contains("\"admin\""), c.tree("name"));
+    // admin has no orders: the count ran there, not on hoori.
+    assertTrue(cell(c.tree("count"), 0, 0).contains("\"0\""), c.tree("count"));
+    assertTrue(near(c.tree("count"), "#database").contains("\"admin\""), c.tree("count"));
+  }
+
+  /** The statement at the caret runs alone: a use on another line has not run. */
+  @Test
+  void theStatementAtTheCaretRunsOnTheDatabaseOfTheConsole() throws Exception {
+    var app = console(docs());
+    c.run(app, type("use admin\ndb.getName()") + RUN + "snap alone\n");
+    assertTrue(cell(c.tree("alone"), 0, 0).contains("\"hoori\""), c.tree("alone"));
+    c.run(app, "key Home control\n" + RUN + "key End control\n" + RUN + "snap after\n");
+    assertTrue(cell(c.tree("after"), 0, 0).contains("\"admin\""), c.tree("after"));
   }
 
   @Test
