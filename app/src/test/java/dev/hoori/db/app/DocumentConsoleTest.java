@@ -116,6 +116,13 @@ class DocumentConsoleTest {
     var operators = offered(app, "db.orders.find({ total: { $g");
     assertTrue(operators.containsAll(List.of("$gt", "$gte")), operators.toString());
     assertTrue(operators.stream().allMatch(o -> o.startsWith("$")), operators.toString());
+    // A dollar typed opens them at once.
+    c.run(
+        app,
+        "press #sql\nkey A control\nkey Delete\n" + type("db.orders.find({ total: { ")
+            + "type \"$\"\nframe\nadvance 1\nframe\nsnap dollar\n");
+    assertEquals("$addFields", options(c.tree("dollar")).getFirst(), c.tree("dollar"));
+    c.run(app, "key Escape\nframe\nadvance 1\nframe\n");
     // The kit's word has no dollar: the operator goes in after the one typed.
     c.run(
         app,
