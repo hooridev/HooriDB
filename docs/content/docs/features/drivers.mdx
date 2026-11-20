@@ -12,7 +12,7 @@ HooriDB does not bundle database drivers. Instead, it downloads the official dri
 - PostgreSQL: PostgreSQL JDBC (`org.postgresql:postgresql`)
 - MySQL: MySQL Connector/J (`com.mysql:mysql-connector-j`)
 - MariaDB: MariaDB Connector/J (`org.mariadb.jdbc:mariadb-java-client`)
-- MongoDB: MongoDB Java Driver (`org.mongodb:mongodb-driver-sync`), downloaded with the parts it needs beside it (`mongodb-driver-core`, `bson`, and `bson-record-codec`). Versions older than 5.15.0 are not offered, downloaded, or loaded, also where a connection chose one.
+- MongoDB: MongoDB Java Driver (`org.mongodb:mongodb-driver-sync`), downloaded along with its dependencies (`mongodb-driver-core`, `bson`, and `bson-record-codec`). Versions older than 5.15.0 are not offered, downloaded, or loaded, even if a saved connection specifies one.
 
 When a connection needs a driver version that is not on your computer yet, HooriDB shows the driver name, version, file size, and Maven Central URL and asks you to choose **Download** or **Not now**.
 

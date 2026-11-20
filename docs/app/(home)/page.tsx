@@ -51,7 +51,7 @@ const content = {
         'Run the statement at the caret with Ctrl+Enter or all statements with Ctrl+Shift+Enter',
         'Pin result tabs to keep them across runs, and cancel running statements',
         'Completions for SQL keywords, schemas, tables, views, and columns',
-        'MongoDB shell statements in a console of their own, with results as a grid, JSON, or a tree',
+        'MongoDB shell statements in a MongoDB console, with results as a grid, JSON, or a tree',
       ],
       link: 'Read about the console',
       href: '/docs/features/console',
