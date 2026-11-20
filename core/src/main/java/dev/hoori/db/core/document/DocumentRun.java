@@ -79,9 +79,11 @@ public final class DocumentRun {
             0,
             statement.codePointCount(0, Math.min(e.offset(), statement.length())) + 1));
       } catch (DocumentException e) {
-        // The cursor stays for close(), which frees it: a cancel ends the call, not the cursor.
+        // A cancel ends the call, not the server's cursor, which is freed here within a bound.
         over = true;
         results.add(failure(e));
+        var left = close();
+        left.failure().ifPresent(results::add);
       }
     }
     return new Portion(
@@ -156,6 +158,12 @@ public final class DocumentRun {
             .filter(e -> !SESSION_FIELDS.contains(e.name()))
             .toList();
         results.add(rows(List.of(new Document(entries)), 0));
+        if (reply.get("writeConcernError") instanceof Document concern) {
+          results.add(failure(DocumentException.server(
+              (int) number(concern.get("code")),
+              concern.get("codeName") instanceof String s ? s : "",
+              concern.get("errmsg") instanceof String s ? s : "The write concern failed")));
+        }
       }
       case USE, NAME -> throw new IllegalStateException("It sends nothing");
     }
@@ -198,7 +206,8 @@ public final class DocumentRun {
           (int) number(error.get("code")),
           error.get("codeName") instanceof String s ? s : "",
           (error.get("errmsg") instanceof String s ? s : command + " failed") + more)));
-    } else if (concern != null) {
+    }
+    if (concern != null) {
       results.add(failure(DocumentException.server(
           (int) number(concern.get("code")),
           concern.get("codeName") instanceof String s ? s : "",

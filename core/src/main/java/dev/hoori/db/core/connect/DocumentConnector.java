@@ -131,19 +131,24 @@ public final class DocumentConnector {
     }
     if (Thread.currentThread().isInterrupted()) {
       if (!close) {
-        opened.client().close();
+        closeAside(opened.client());
       }
       throw cancelled();
     }
     return opened;
   }
 
-  // What arrives from now on is closed by the worker, and what arrived just before here.
+  // What arrives from now on is closed by the worker, and what arrived just before here, on a
+  // thread of its own: closing may wait for a server that no longer answers.
   private static void abandon(CompletableFuture<Opened> result, Thread worker) {
     if (!result.cancel(false) && result.state() == Future.State.SUCCESS) {
-      result.resultNow().client().close();
+      closeAside(result.resultNow().client());
     }
     worker.interrupt();
+  }
+
+  private static void closeAside(DocumentClient client) {
+    Thread.ofVirtual().name("close an abandoned connection").start(client::close);
   }
 
   private static ConnectionException cancelled() {

@@ -54,6 +54,11 @@ public final class DocumentSession implements AutoCloseable {
    * something: then nothing is sent, and it fails with {@link DocumentException.Kind#READ_ONLY}.
    */
   public Document command(String database, Document command) throws DocumentException {
+    if (retired) {
+      throw DocumentException.of(
+          DocumentException.Kind.CONNECTION_LOST,
+          "The connection was given up: the server did not answer in time");
+    }
     if (readOnly && !Commands.reads(command)) {
       throw DocumentException.of(
           DocumentException.Kind.READ_ONLY,
@@ -439,10 +444,14 @@ public final class DocumentSession implements AutoCloseable {
     void run() throws DocumentException;
   }
 
+  // Set once a call given up may still use the client's session, which no other call may use with
+  // it: the session takes no command from then on.
+  private volatile boolean retired;
+
   // Runs the call on a thread of its own, also when this one was interrupted, and waits for it
   // within GRACE. Past that it interrupts it, which ends the driver's I/O on a virtual thread, and
-  // fails as timed out.
-  private static void bounded(String what, Call call) throws DocumentException {
+  // fails as timed out; where it has not ended even so, the session is retired.
+  private void bounded(String what, Call call) throws DocumentException {
     var failure = new AtomicReference<Throwable>();
     var worker = Thread.ofVirtual().name(what).start(() -> {
       try {
@@ -455,6 +464,9 @@ public final class DocumentSession implements AutoCloseable {
     try {
       if (!worker.join(GRACE)) {
         worker.interrupt();
+        if (!worker.join(Duration.ofMillis(100))) {
+          retired = true;
+        }
         throw DocumentException.of(
             DocumentException.Kind.TIMED_OUT,
             "The server did not answer within " + GRACE.toSeconds() + " seconds");
