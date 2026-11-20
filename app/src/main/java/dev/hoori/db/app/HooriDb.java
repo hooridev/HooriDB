@@ -12,6 +12,7 @@ import com.rethinkj.ui.window.SystemDialogs;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.WindowIcon;
 import com.rethinkj.ui.window.WindowLoop;
+import com.rethinkj.updater.Installation;
 import dev.hoori.db.core.AppFolders;
 import dev.hoori.db.core.DesktopEntry;
 import dev.hoori.db.core.driver.MavenRepository;
@@ -67,8 +68,30 @@ public final class HooriDb {
    */
   static App<State> app(
       Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester, Servers servers) {
-    App<State> app = new App<>(new State(folder, keyring, drivers, tester, servers), Frame::view)
-        .provide(Theme.CURRENT, s -> s.theme);
+    return app(folder, keyring, drivers, tester, servers, null, version());
+  }
+
+  /** The app without drivers, which updates itself with this updater as this version. */
+  static App<State> app(Path folder, Callable<Keyring> keyring, Updater updater, String version) {
+    return app(folder, keyring, null, Tester.SERVER, Servers.SERVER, updater, version);
+  }
+
+  /**
+   * The app as {@link #app(Path, Callable, Drivers, Tester, Servers)}, which updates itself.
+   *
+   * @param updater updates HooriDB, or null for no updates
+   * @param version the version that runs, as {@link #version()} names it
+   */
+  static App<State> app(
+      Path folder,
+      Callable<Keyring> keyring,
+      Drivers drivers,
+      Tester tester,
+      Servers servers,
+      Updater updater,
+      String version) {
+    var state = new State(folder, keyring, drivers, tester, servers, updater, version);
+    App<State> app = new App<>(state, Frame::view).provide(Theme.CURRENT, s -> s.theme);
     app.state().app = app;
     // A script's images must not depend on the platform they were made on.
     app.textRendering(TextRendering.LINUX);
@@ -80,7 +103,8 @@ public final class HooriDb {
    * Opens the window, or with {@code --script <file> --out <folder>} runs the script without one
    * and writes its images and element trees. A script never reaches the user's connections or
    * keyring: it has a new temporary folder, or the one {@code --config <folder>} names, no
-   * keyring, and no drivers, so that it never downloads one.
+   * keyring, no drivers, so that it never downloads one, and no updates, so that it never asks
+   * the network for releases.
    */
   public static void main(String[] args) throws IOException {
     var rest = new ArrayList<>(List.of(args));
@@ -104,7 +128,19 @@ public final class HooriDb {
     var central = MavenRepository.central();
     var drivers = new Drivers(
         folders.data().resolve("drivers"), central, "Maven Central", MavenRepository.CENTRAL);
-    App<State> app = app(folders.config(), Keyring::find, drivers, Tester.SERVER);
+    // Only from the app image, whose launcher the helper starts again: never from Maven or a
+    // script.
+    var updater = Installation.launcher(folders.data().resolve("updates"))
+        .map(installation -> Updater.of(installation, System.getProperty("hooridb.releases")))
+        .orElse(null);
+    App<State> app = app(
+        folders.config(),
+        Keyring::find,
+        drivers,
+        Tester.SERVER,
+        Servers.SERVER,
+        updater,
+        version());
     app.textRendering(TextRendering.platform());
     // The menu's entry and the dock's icon of an unpacked app image; without them it still runs.
     var os = System.getProperty("os.name");
@@ -120,7 +156,10 @@ public final class HooriDb {
       Window.Options options = Window.options().icon(ICON).frameless().minimumSize(640, 400);
       try (Window window = Window.open(NAME, 1200, 760, options);
           GpuPresenter presenter = new GpuPresenter(window)) {
-        WindowLoop.run(window, app, presenter);
+        var loop = new WindowLoop(window, app, presenter);
+        // Not at the start: a version whose window cannot show is put back by the helper.
+        loop.windows().of(app).onShown(app.state()::shown);
+        loop.run();
       }
     });
   }

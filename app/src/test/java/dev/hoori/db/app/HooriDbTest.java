@@ -174,7 +174,8 @@ class HooriDbTest {
     assertTrue(busy.contains("role=dialog label=\"New connection\""), busy);
     var help = Frame.menus(app.state(), app.state().tabs.main(), true).getLast();
     assertEquals("&Help", help.label());
-    assertFalse(help.submenu().getFirst().isEnabled());
+    assertEquals("About HooriDB", help.submenu().getLast().label());
+    assertFalse(help.submenu().getLast().isEnabled());
   }
 
   @Test

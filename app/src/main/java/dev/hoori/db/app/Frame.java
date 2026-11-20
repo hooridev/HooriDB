@@ -31,6 +31,7 @@ import com.rethinkj.ui.kit.TitleBar;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.update.Channel;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Predicate;
@@ -64,7 +65,7 @@ final class Frame {
         || confirmation != null;
     closePalette(s, main, modal);
     List<Menu.Item> menus = menus(s, main, modal);
-    El catalog = catalog(s).key("catalog").label("Catalog");
+    El catalog = catalog(s, modal).key("catalog").label("Catalog");
     El tabs = tabs(s, main, s.app).key("tabs");
     El root = col()
         .wFull()
@@ -86,9 +87,9 @@ final class Frame {
             .grow(1)
             .padding(0, t.space().m(), t.space().m(), t.space().m()))
         .child(StatusBar.statusBar(
-            Arrays.asList(connections(s), uncommitted(s, modal)),
+            Arrays.asList(connections(s), uncommitted(s, modal), downloading(s)),
             s.message == null ? null : StatusBar.text(s.message).key("message"),
-            List.of(StatusBar.item(null, HooriDb.version(), modal ? null : () -> s.about = true)
+            List.of(StatusBar.item(null, s.version, modal ? null : () -> s.about = true)
                 .key("version"))));
     // The window closes once what was begun has ended and the connections are written.
     Windows.Handle window = s.app == null ? null : s.app.windows().of(s.app);
@@ -289,8 +290,12 @@ final class Frame {
     return group.window() == null ? s.app : (App<State>) group.window().app();
   }
 
-  /** The connections: waiting while they load, then a tree of them or the empty state. */
-  private static El catalog(State s) {
+  /**
+   * The connections: waiting while they load, then a tree of them or the empty state.
+   *
+   * @param modal whether a dialog is open in the main window, which the notices' buttons wait for
+   */
+  private static El catalog(State s, boolean modal) {
     Theme t = Theme.CURRENT.get();
     Runnable create = s.canChange() ? s::newConnection : null;
     El problem = null;
@@ -348,6 +353,7 @@ final class Frame {
             null,
             Button.icon(Button.Variant.GHOST, Symbol.ADD, "Add connection", create)),
         problem == null ? null : col().padding(t.space().s()).child(problem),
+        s.update == null ? null : update(s, modal),
         s.notices.isEmpty() ? null : notices(s),
         body);
   }
@@ -385,6 +391,41 @@ final class Frame {
                 : null)
         // shortcut: bounded by the field size, the theme having no size for a panel's part.
         .child(list.scroll().maxSize(Float.MAX_VALUE, t.size().field()));
+  }
+
+  /**
+   * The notice of updates, apart from those of the consoles' sessions: what is ready or available,
+   * or what became of the last update. Its buttons wait while a dialog is open.
+   */
+  private static El update(State s, boolean modal) {
+    Theme t = Theme.CURRENT.get();
+    var notice = s.update;
+    El act = notice.act() == null
+        ? null
+        : button(
+                notice.primary() ? Button.Variant.PRIMARY : Button.Variant.SECONDARY,
+                notice.act(),
+                modal ? null : notice.action())
+            .key("update-act");
+    El dismiss = button(Button.Variant.SECONDARY, notice.dismiss(), modal ? null : s::dismissUpdate)
+        .key("update-dismiss");
+    return col()
+        .padding(t.space().s())
+        .child(Callout.callout(
+                notice.kind(),
+                notice.title(),
+                notice.text(),
+                act == null ? new El[] {dismiss} : new El[] {act, dismiss})
+            .key("update"));
+  }
+
+  /** The download of an update, busy while it runs; null while none does. */
+  private static El downloading(State s) {
+    return s.downloading == null
+        ? null
+        : StatusBar.status(
+                StatusBar.State.BUSY, "Downloading HooriDB " + s.downloading.version() + "…", null)
+            .key("downloading");
   }
 
   private static El tryAgain(Runnable action) {
@@ -485,7 +526,8 @@ final class Frame {
     El ok = button(Button.Variant.PRIMARY, "Close", close);
     El content = Properties.properties(
         List.of(
-            Properties.property("Version", HooriDb.version()),
+            Properties.property("Version", s.version),
+            Properties.property("Updates", s.channel() == Channel.NIGHTLY ? "Nightly" : "Stable"),
             Properties.property("Author", "Patrick Trautmann"),
             Properties.property("License", "MIT"),
             Properties.property("Website", "https://db.hoori.dev")),
@@ -569,7 +611,14 @@ final class Frame {
                     .shortcut(Key.CONTROL, "1"))),
         Menu.submenu(
             "&Help",
-            List.of(Menu.item("About HooriDB", free ? inMain(s, () -> s.about = true) : null))));
+            List.of(
+                channelItem(s, Channel.STABLE, "Stable updates"),
+                channelItem(s, Channel.NIGHTLY, "Nightly updates"),
+                Menu.item(
+                    "Restart to update",
+                    free && s.ready != null && !s.exiting() ? s::restartToUpdate : null),
+                Menu.separator(),
+                Menu.item("About HooriDB", free ? inMain(s, () -> s.about = true) : null))));
   }
 
   /** Opens a dialog of the main window and brings that window forward, as it may lie behind. */
@@ -637,6 +686,12 @@ final class Frame {
       }
     }
     return null;
+  }
+
+  /** Where updates come from; not while HooriDB closes. */
+  private static Menu.Item channelItem(State s, Channel channel, String name) {
+    return Menu.item(name, s.exiting() ? null : () -> s.channel(channel))
+        .checked(s.channel() == channel);
   }
 
   private static Menu.Item themeItem(State s, Theme theme, String name) {

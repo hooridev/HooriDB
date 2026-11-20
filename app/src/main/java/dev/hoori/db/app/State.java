@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Work;
+import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.CommandPalette;
 import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Split;
@@ -9,6 +10,11 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
+import com.rethinkj.updater.Asset;
+import com.rethinkj.updater.Download;
+import com.rethinkj.updater.Installation;
+import com.rethinkj.updater.Release;
+import com.rethinkj.updater.Version;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -17,9 +23,14 @@ import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.StoredConsole;
+import dev.hoori.db.core.connection.StoredUpdates;
+import dev.hoori.db.core.connection.UpdateStore;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
+import dev.hoori.db.core.update.Channel;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -31,6 +42,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -153,14 +165,62 @@ final class State {
   private List<StoredConsole> unseen = List.of();
   private int edits; // counted, so that a late patience is dropped
 
+  // Updates, of which there are none without an updater, as in a script run or a build of its own,
+  // and none checked for where the version that runs is not a SemVer version.
+  final Updater updater;
+  final String version; // the version that runs, as About shows it
+  private final Version installed; // the version parsed, or null
+  private final UpdateStore updateStore;
+  final Kept updatesKept;
+  StoredUpdates updates = StoredUpdates.NONE; // as loaded, and changed since
+  private Channel chosen; // a channel chosen before the settings were loaded, or null
+  UpdateNotice update; // the one notice of updates, or null
+  Ready ready; // the update downloaded, to restart with, or null
+  Release downloading; // the release whose download runs, or null
+  private Work updating; // the check or the download, or null
+  private Ready restartWith; // what the exit that Restart now began restarts with, or null
+  private Work restarting; // the save of the attempt and the start of the helper, or null
+  private boolean confirmed; // whether shown() ran
+  private Work beginning; // the start of updates, which may hold the helper's report, or null
+
+  /** An update downloaded and verified: its version and its file. */
+  record Ready(Version version, Download download) {}
+
+  /**
+   * The notice of updates, above the tree, apart from those of the consoles' sessions: of a kind,
+   * with a title and a text, an act where it has one, and the label of what dismisses it.
+   *
+   * @param act the label of its act, or null for none
+   * @param primary whether the act is the notice's main one
+   * @param offer whether it offers an update, which a switch of the channel drops
+   */
+  record UpdateNotice(
+      Callout.Kind kind,
+      String title,
+      String text,
+      String act,
+      Runnable action,
+      boolean primary,
+      String dismiss,
+      boolean offer) {}
+
   /**
    * @param folder where the profiles are kept
    * @param keyring finds the system keyring, off the app's thread
    * @param drivers where drivers are kept and come from, or null for none
    * @param tester tests a connection, off the app's thread
    * @param servers opens connections and reads their catalog, off the app's thread
+   * @param updater updates HooriDB, off the app's thread; null for none
+   * @param version the version that runs
    */
-  State(Path folder, Callable<Keyring> keyring, Drivers drivers, Tester tester, Servers servers) {
+  State(
+      Path folder,
+      Callable<Keyring> keyring,
+      Drivers drivers,
+      Tester tester,
+      Servers servers,
+      Updater updater,
+      String version) {
     this.store = new ProfileStore(folder);
     this.consoleStore = new ConsoleStore(folder);
     this.historyStore = new HistoryStore(folder);
@@ -182,15 +242,37 @@ final class State {
         return list;
       };
     });
+    this.updateStore = new UpdateStore(folder);
+    updatesKept = new Kept("update settings", () -> {
+      var now = updates;
+      var store = updateStore;
+      return () -> {
+        store.save(now);
+        return now;
+      };
+    });
+    this.updater = updater;
+    this.version = version;
+    Version parsed;
+    try {
+      parsed = Version.parse(version);
+    } catch (IllegalArgumentException notSemVer) {
+      parsed = null;
+    }
+    this.installed = parsed;
     this.findKeyring = keyring;
     this.drivers = drivers;
     this.tester = tester;
     this.catalog = new CatalogTree(servers);
   }
 
-  /** Loads the profiles, then looks up the keyring; and the consoles and the history beside. */
+  /**
+   * Loads the profiles, then looks up the keyring; and the consoles, the history and what updates
+   * keep beside.
+   */
   void start() {
     load();
+    startUpdates();
     var consoles = consoleStore;
     app.background(
         "load consoles",
@@ -373,6 +455,8 @@ final class State {
             stay("HooriDB stayed open, as the " + kept.what + " could not be saved. Close it again"
                 + " to quit without "
                 + (kept == historyKept ? "it." : "them."));
+          } else if (kept == updatesKept) {
+            tell("The update settings could not be saved: " + kept.saveError);
           } else if (first) {
             notice(
                 kept == historyKept ? "History" : "Consoles",
@@ -778,8 +862,25 @@ final class State {
    * written, so that no password is in the keyring for a connection that is not saved.
    */
   void requestClose() {
+    if (restarting != null) {
+      return; // the helper is being started: HooriDB closes once it is
+    }
+    restartWith = null; // a restart that was cancelled or stayed open is over
+    close();
+  }
+
+  /** Closes HooriDB as {@link #requestClose()} does, and restarts it with the update downloaded. */
+  void restartToUpdate() {
+    if (ready == null || restarting != null) {
+      return;
+    }
+    restartWith = ready;
+    close();
+  }
+
+  private void close() {
     // The consoles first: their answers come back here, and Cancel gives up closing.
-    if (asks(EXIT, "HooriDB closes", consoles(null), this::requestClose)) {
+    if (asks(EXIT, "HooriDB closes", consoles(null), this::close)) {
       return;
     }
     if (dialog != null) {
@@ -810,7 +911,7 @@ final class State {
 
   /** What was on its way has ended: the window closes now if it was asked to. */
   void settled() {
-    if (!quitting() || keyringBusy() || saving != null) {
+    if (!quitting() || keyringBusy() || saving != null || restarting != null || beginning != null) {
       return;
     }
     // The one way out: the file saved, unless the user chose to go without it ("anyway" waives
@@ -844,7 +945,11 @@ final class State {
       return;
     }
     if (!keptWaits()) { // what the sessions' ends added
-      closeAll();
+      if (restartWith != null) {
+        restartNow();
+      } else {
+        closeAll();
+      }
     }
   }
 
@@ -853,7 +958,7 @@ final class State {
    * cannot be saved, as the file was not read, stop it once.
    */
   private boolean keptWaits() {
-    for (var kept : List.of(consolesKept, historyKept)) {
+    for (var kept : List.of(consolesKept, historyKept, updatesKept)) {
       if (kept.waits()) {
         if (kept.saving == null) {
           save(kept);
@@ -1277,6 +1382,334 @@ final class State {
   /** What a connection is called in the list: its name, or its host while it has none. */
   static String name(ConnectionProfile profile) {
     return profile.name().isBlank() ? profile.host() : profile.name();
+  }
+
+  /**
+   * What the start found of updates: what they keep, what the helper reported of the last one, or
+   * null, and whether the attempt's file is still there after it was locked.
+   */
+  private record Begun(StoredUpdates stored, Installation.Result result, boolean kept) {}
+
+  /** An update found: its release, its archive, and whether HooriDB can replace itself. */
+  private record Offer(Release release, Asset asset, boolean writable) {}
+
+  /**
+   * Loads what updates keep and reads what the helper reported, which says whether the downloads
+   * are done with. A file that cannot be read counts as none, as updates can do without it.
+   */
+  private void startUpdates() {
+    var store = updateStore;
+    var updater = this.updater;
+    var work = app.background(
+        "load update settings",
+        () -> {
+          StoredUpdates stored;
+          try {
+            stored = store.load();
+          } catch (IOException unread) {
+            stored = StoredUpdates.NONE;
+          }
+          if (updater == null) {
+            return new Begun(stored, null, false);
+          }
+          Installation.Result result;
+          try {
+            result = updater.result().orElse(null);
+          } catch (IOException unread) {
+            result = null;
+          }
+          var attempt = stored.attempt();
+          if (result != null
+              && result.status() == Installation.Result.Status.ROLLED_BACK
+              && attempt != null) {
+            // Now, as the report is gone: an Exit before it is shown must not lose the skip.
+            stored = stored.withSkipped(attempt.version());
+            try {
+              store.save(stored);
+            } catch (IOException unsaved) {
+              // Saved again once the start has taken it.
+            }
+          }
+          boolean locked = result != null && locked(result) && attempt != null;
+          if (result != null) {
+            updater.clear(locked ? attempt.file() : null); // the helper is done with them
+          }
+          return new Begun(stored, result, locked && Files.isRegularFile(attempt.file()));
+        },
+        this::begun,
+        error -> begun(new Begun(StoredUpdates.NONE, null, false)));
+    beginning = updater == null ? null : work; // only a helper's report, read once, is worth it
+  }
+
+  private static boolean locked(Installation.Result result) {
+    return result.status() == Installation.Result.Status.REJECTED
+        && result.reason().equals("locked");
+  }
+
+  private void begun(Begun begun) {
+    beginning = null;
+    var stored = begun.stored();
+    updates = chosen == null ? stored : stored.withChannel(chosen);
+    if (installed != null && updater != null) {
+      // Only the app image chooses by itself: a JAR run elsewhere would choose for it.
+      updates = updates.withChannelFor(installed);
+    }
+    var result = begun.result();
+    var attempt = updates.attempt();
+    String to = attempt == null ? "" : " to HooriDB " + attempt.version();
+    if (result != null) {
+      switch (result.status()) {
+        case APPLIED -> {
+          updates = updates.withAttempt(null);
+          tell("HooriDB was updated to " + version + ".");
+        }
+        case ROLLED_BACK -> {
+          if (attempt != null) {
+            updates = updates.withSkipped(attempt.version()); // until a higher one comes out
+          }
+          updates = updates.withAttempt(null);
+          update = notice(
+              Callout.Kind.WARNING,
+              "The update" + to + " was undone",
+              result.reason().equals("not-confirmed")
+                  ? "It did not start in time, so HooriDB " + version + " runs again."
+                  : result.message());
+        }
+        case REJECTED -> {
+          if (locked(result)
+              && attempt != null
+              && (Channel.of(attempt.version()) == Channel.STABLE
+                  || channel() == Channel.NIGHTLY)) {
+            boolean kept = begun.kept();
+            update = new UpdateNotice(
+                Callout.Kind.WARNING,
+                "The update was not applied",
+                "Files of HooriDB were in use, as by a virus scanner.",
+                "Try again",
+                () -> tryAgain(attempt, kept),
+                false,
+                "Dismiss",
+                true);
+          } else {
+            updates = updates.withAttempt(null);
+            update = notice(Callout.Kind.WARNING, "The update was not applied", result.message());
+          }
+        }
+      }
+    }
+    updatesKept.canSave = true;
+    if (!updates.equals(stored) || updatesKept.unsaved) {
+      persist(updatesKept);
+    }
+    // Not again at once after an update that failed: the same update would fail the same way.
+    if (result == null || result.status() == Installation.Result.Status.APPLIED) {
+      check();
+    }
+    settled(); // an Exit waited for the report to be taken
+  }
+
+  private static UpdateNotice notice(Callout.Kind kind, String title, String text) {
+    return new UpdateNotice(kind, title, text, null, null, false, "Dismiss", false);
+  }
+
+  /** Restarts with the download the helper could not apply, or checks anew where it is gone. */
+  private void tryAgain(StoredUpdates.Attempt attempt, boolean kept) {
+    update = null;
+    if (kept) {
+      ready = new Ready(attempt.version(), new Download(attempt.file(), attempt.sha256()));
+      update = readyNotice(ready);
+      restartToUpdate();
+    } else {
+      check();
+    }
+  }
+
+  private UpdateNotice readyNotice(Ready ready) {
+    return new UpdateNotice(
+        Callout.Kind.INFO,
+        "HooriDB " + ready.version() + " is ready",
+        "Restart HooriDB to update from " + version + ".",
+        "Restart now",
+        this::restartToUpdate,
+        true,
+        "Later",
+        true);
+  }
+
+  /**
+   * Looks for an update in the channel, and downloads it where HooriDB can replace itself; a
+   * check that fails, as without a network, shows nothing.
+   */
+  private void check() {
+    if (updater == null || installed == null || !updatesKept.canSave || updating != null) {
+      return;
+    }
+    var updater = this.updater;
+    var installed = this.installed;
+    var channel = channel();
+    var skipped = updates.skipped();
+    updating = app.background(
+        "check for updates",
+        () -> {
+          var found = channel.offer(installed, updater.releases(), skipped);
+          if (found.isEmpty()) {
+            return Optional.<Offer>empty();
+          }
+          var release = found.get().latest();
+          var asset = release.asset(Updater.ASSET);
+          return asset.map(a -> new Offer(release, a, updater.writable()));
+        },
+        offer -> {
+          updating = null;
+          offer.ifPresent(this::offered);
+        },
+        error -> updating = null);
+  }
+
+  private void offered(Offer offer) {
+    var release = offer.release();
+    if (!offer.writable()) {
+      update = new UpdateNotice(
+          Callout.Kind.INFO,
+          "HooriDB " + release.version() + " is available",
+          "HooriDB cannot replace itself in " + updater.app()
+              + ". Download it from its release page.",
+          "Open release page",
+          () -> app.openUri(release.page(), this::tell),
+          false,
+          "Dismiss",
+          true);
+      return;
+    }
+    var updater = this.updater;
+    var asset = offer.asset();
+    downloading = release;
+    updating = app.background(
+        "download HooriDB " + release.version(),
+        () -> updater.download(release, asset),
+        download -> {
+          updating = null;
+          downloading = null;
+          ready = new Ready(release.version(), download);
+          update = readyNotice(ready);
+        },
+        error -> {
+          updating = null;
+          downloading = null;
+          update = notice(
+              Callout.Kind.WARNING,
+              "HooriDB " + release.version() + " could not be downloaded",
+              message(error));
+        });
+  }
+
+  /** The channel updates come from: the one stored, else the one of the version that runs. */
+  Channel channel() {
+    if (updates.channel() != null) {
+      return updates.channel();
+    }
+    return installed == null ? Channel.STABLE : Channel.of(installed);
+  }
+
+  /**
+   * Help, Stable or Nightly updates: saved, and an offer not acted on goes, for one of the new
+   * channel. Not while HooriDB closes.
+   */
+  void channel(Channel channel) {
+    if (exiting()) {
+      return;
+    }
+    var was = channel();
+    chosen = channel;
+    updates = updates.withChannel(channel);
+    persist(updatesKept);
+    if (was == Channel.NIGHTLY
+        && channel == Channel.STABLE
+        && installed != null
+        && Channel.of(installed) == Channel.NIGHTLY) {
+      tell("HooriDB stays on " + version + " until a higher release comes out.");
+    } else {
+      tell((channel == Channel.NIGHTLY ? "Nightly" : "Stable") + " updates on");
+    }
+    if (channel == was) {
+      return;
+    }
+    if (updating != null) {
+      updating.cancel();
+      updating = null;
+      downloading = null;
+    }
+    ready = null;
+    if (update != null && update.offer()) {
+      update = null;
+    }
+    check();
+  }
+
+  /** Whether Exit, or Restart now, asks or is under way: nothing comes between. */
+  boolean exiting() {
+    return pending != null && pending.owner() == EXIT;
+  }
+
+  /**
+   * Where Exit would close the windows after Restart now: saves the attempt, then starts the
+   * helper, which takes over once HooriDB has closed; if it cannot, HooriDB stays open.
+   */
+  private void restartNow() {
+    var with = restartWith;
+    var download = with.download();
+    var before = updates.attempt(); // one a helper may still be at work on
+    updates = updates.withAttempt(
+        new StoredUpdates.Attempt(with.version(), download.file(), download.sha256()));
+    var now = updates;
+    var store = updateStore;
+    var updater = this.updater;
+    restarting = app.background(
+        "restart to update",
+        () -> {
+          updater.restart(download); // refused while a helper is at work: nothing written then
+          try {
+            store.save(now);
+          } catch (IOException unsaved) {
+            // The helper waits for HooriDB to close: it closes, and a rollback is not skipped.
+          }
+          return download;
+        },
+        started -> {
+          restarting = null;
+          closeAll();
+        },
+        error -> {
+          restarting = null;
+          restartWith = null;
+          stay("HooriDB stayed open, as it could not restart to update.");
+          updates = updates.withAttempt(before); // a refused restart wrote nothing
+          update = notice(Callout.Kind.WARNING, "HooriDB could not restart", message(error));
+        });
+  }
+
+  /**
+   * HooriDB has shown its first frame: a version the helper started tells it that it runs, once.
+   * A failure says so in the status line.
+   */
+  void shown() {
+    if (updater == null || confirmed) {
+      return;
+    }
+    confirmed = true;
+    var updater = this.updater;
+    app.background(
+        "confirm the update",
+        () -> {
+          updater.confirm();
+          return true;
+        },
+        done -> {},
+        error -> tell("HooriDB could not confirm the update: " + message(error)));
+  }
+
+  void dismissUpdate() {
+    update = null;
   }
 
   static String message(Exception e) {

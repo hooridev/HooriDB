@@ -113,6 +113,8 @@ class CatalogTreeTest {
       .serve(MYSQL, Provider.MYSQL, "8.4.3", MYSQL_OUTLINE);
   FakeDrivers repository;
   final List<App<State>> apps = new ArrayList<>();
+  Updater updater; // what the next app updates itself with, or null for none
+  String version = HooriDb.version(); // the version the next app runs as
 
   static final ConnectionProfile SHOP = ConnectionProfile.of(Provider.POSTGRESQL)
       .withName("shop-prod")
@@ -190,7 +192,9 @@ class CatalogTreeTest {
         keyring,
         repository.drivers(dir.resolve("drivers")),
         Tester.SERVER,
-        servers);
+        servers,
+        updater,
+        version);
     app.state().zone = ZONE;
     apps.add(app);
     return app;
