@@ -667,6 +667,23 @@ public class DriverStoreTest {
   }
 
   @Test
+  void anOptionalPartLostAfterItsDownloadIsDownloadedAgain() throws Exception {
+    repository.publish(PARTED, "1.0", BYTES, Sum.SHA256, NOW);
+    repository.publish(part("fake-core"), "1.0", FakeDriver.jar("1", temp), Sum.SHA256, NOW);
+    repository.publish(part("fake-extra"), "1.0", BYTES, Sum.SHA256, NOW);
+    store.download(PARTED, "1.0", DriverStore.Progress.NONE);
+    // Its record stays: it was downloaded, and is missing now.
+    var extra = storage.resolve("dev.hoori.fake/fake-jdbc/1.0/fake-extra-1.0.jar");
+    Files.delete(extra);
+    assertFailure(Failure.NOT_DOWNLOADED, () -> store.load(PARTED, "1.0"));
+    store.download(PARTED, "1.0", DriverStore.Progress.NONE);
+    assertTrue(Files.isRegularFile(extra));
+    try (var loaded = store.load(PARTED, "1.0")) {
+      assertEquals("1", loaded.connect("jdbc:fake:x", new Properties()).getCatalog());
+    }
+  }
+
+  @Test
   void aMissingPartLeavesNothingBehind() throws Exception {
     repository.publish(PARTED, "1.0", BYTES, Sum.SHA256, NOW);
     assertFailure(Failure.NOT_FOUND, () -> store.size(PARTED, "1.0"));
@@ -711,6 +728,10 @@ public class DriverStoreTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> new Driver("org.x", "a", "a.Driver", List.of(new Driver.Part("a", false))));
+    // One file where the file system ignores case.
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new Driver("org.x", "a", "a.Driver", List.of(new Driver.Part("A", false))));
     assertThrows(IllegalArgumentException.class, () -> new Driver.Part("../b", false));
   }
 

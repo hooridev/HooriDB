@@ -48,6 +48,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.jar.Attributes;
 import java.util.jar.JarFile;
 import javax.xml.XMLConstants;
@@ -78,6 +79,9 @@ public final class DriverStore {
   static final int MAX_CANDIDATES = 5;
   private static final int MAX_METADATA_SIZE = 4 << 20;
   private static final int MAX_CHECKSUM_SIZE = 1024;
+
+  // What a version's folder is published under, by its path.
+  private static final ConcurrentHashMap<Path, Object> PUBLISHING = new ConcurrentHashMap<>();
 
   /**
    * The version to use, and whether it was chosen from what is downloaded, without a network.
@@ -271,40 +275,28 @@ public final class DriverStore {
     var dir = jar.getParent();
     Path temporary = null;
     long needed = 1 << 20; // a megabyte, and the files' length once it is known
-    var responses = new ArrayList<Repository.Response>();
     try {
       Files.createDirectories(dir.getParent());
       // Its name starts with a dot, which no version does, so nothing lists or loads it.
       temporary = Files.createTempDirectory(dir.getParent(), "." + version + ".");
-      long total = 0;
-      for (var file : wanted) {
-        var response = remote(file.path(), () -> repository.open(file.path()));
-        responses.add(response);
-        total = total < 0 || response.length() < 0 ? -1 : total + response.length();
-      }
+      // One file is read at a time, to its end, so that no response waits unread behind another.
+      // Of several, each is opened once before to learn their length.
+      long total = wanted.size() == 1 ? 0 : lengths(wanted);
       if (total > 0) {
         needed = total;
       }
       long before = 0;
-      for (int i = 0; i < wanted.size(); i++) {
-        var file = wanted.get(i);
-        var part = temporary.resolve(file.name());
-        var sha256 = digest("SHA-256");
-        var sha1 = digest("SHA-1");
-        long start = before;
-        long all = total;
-        Progress each = (done, length) -> progress.update(start + done, all);
-        try (var out = Files.newOutputStream(part)) {
-          copy(file.path(), responses.get(i), out, maxSize, each, sha256, sha1);
+      for (var file : wanted) {
+        var response = remote(file.path(), () -> repository.open(file.path()));
+        try {
+          long all = wanted.size() == 1 ? response.length() : total;
+          if (all > 0) {
+            needed = all;
+          }
+          before += transfer(file, response, temporary, progress, before, all);
+        } finally {
+          closeQuietly(response);
         }
-        var recorded = HexFormat.of().formatHex(sha256.digest());
-        var actual = file.bySha256() ? recorded : HexFormat.of().formatHex(sha1.digest());
-        if (!actual.equals(file.expected())) {
-          throw new DriverException(CHECKSUM_MISMATCH, file.path());
-        }
-        checkManifest(part, file.path());
-        Files.writeString(record(part), recorded, StandardCharsets.US_ASCII);
-        before += Files.size(part);
       }
       checkCancelled(path);
       publish(temporary, dir, driver, version);
@@ -315,14 +307,56 @@ public final class DriverStore {
           ? new DriverException(NO_SPACE, path, e)
           : e;
     } finally {
-      for (var response : responses) {
-        try {
-          response.close();
-        } catch (IOException ignored) {
-          // Read to its end or given up; nothing more comes of it.
-        }
-      }
       deleteTree(temporary);
+    }
+  }
+
+  // The files' length in all as the repository gives it, or -1 where it does not say one's.
+  private long lengths(List<Wanted> wanted) throws DriverException {
+    long total = 0;
+    for (var file : wanted) {
+      checkCancelled(file.path());
+      try (var response = remote(file.path(), () -> repository.open(file.path()))) {
+        total = total < 0 || response.length() < 0 ? -1 : total + response.length();
+      } catch (IOException e) {
+        throw network(file.path(), e);
+      }
+    }
+    return total;
+  }
+
+  // Copies the file into the folder, checks it against its checksum and manifest and writes its
+  // record beside it; its size in bytes.
+  private long transfer(
+      Wanted file,
+      Repository.Response response,
+      Path folder,
+      Progress progress,
+      long start,
+      long all)
+      throws IOException, DriverException {
+    var part = folder.resolve(file.name());
+    var sha256 = digest("SHA-256");
+    var sha1 = digest("SHA-1");
+    Progress each = (done, length) -> progress.update(start + done, all);
+    try (var out = Files.newOutputStream(part)) {
+      copy(file.path(), response, out, maxSize, each, sha256, sha1);
+    }
+    var recorded = HexFormat.of().formatHex(sha256.digest());
+    var actual = file.bySha256() ? recorded : HexFormat.of().formatHex(sha1.digest());
+    if (!actual.equals(file.expected())) {
+      throw new DriverException(CHECKSUM_MISMATCH, file.path());
+    }
+    checkManifest(part, file.path());
+    Files.writeString(record(part), recorded, StandardCharsets.US_ASCII);
+    return Files.size(part);
+  }
+
+  private static void closeQuietly(Repository.Response response) {
+    try {
+      response.close();
+    } catch (IOException ignored) {
+      // Read to its end or given up; nothing more comes of it.
     }
   }
 
@@ -369,19 +403,23 @@ public final class DriverStore {
   // and matches its record has been published by a concurrent download, and that one stands.
   private void publish(Path temporary, Path dir, Driver driver, String version)
       throws IOException, DriverException {
-    for (int attempt = 0; ; attempt++) {
-      try {
-        Files.move(temporary, dir, StandardCopyOption.ATOMIC_MOVE);
-        return;
-      } catch (IOException e) {
-        if (complete(driver, version)) {
+    // Within HooriDB one download at a time checks, discards and replaces a version, so that none
+    // discards what another has just put there.
+    synchronized (PUBLISHING.computeIfAbsent(dir.toAbsolutePath().normalize(), d -> new Object())) {
+      for (int attempt = 0; ; attempt++) {
+        try {
+          Files.move(temporary, dir, StandardCopyOption.ATOMIC_MOVE);
           return;
+        } catch (IOException e) {
+          if (complete(driver, version)) {
+            return;
+          }
+          if (attempt > 0 || !Files.exists(dir)) {
+            throw e;
+          }
+          // An earlier download that no longer matches its record, which this one replaces.
+          discard(dir);
         }
-        if (attempt > 0 || !Files.exists(dir)) {
-          throw e;
-        }
-        // An earlier download that no longer matches its record, which this one replaces.
-        discard(dir);
       }
     }
   }
@@ -467,7 +505,7 @@ public final class DriverStore {
     for (var artifact : artifacts(driver)) {
       var file = jar(driver, artifact.artifact(), version);
       var at = file(driver, artifact.artifact(), version);
-      if (artifact.optional() && !Files.exists(file)) {
+      if (absent(artifact, file)) {
         continue;
       }
       if (!matchesRecord(file)) {
@@ -573,7 +611,7 @@ public final class DriverStore {
   private boolean complete(Driver driver, String version) throws DriverException {
     for (var artifact : artifacts(driver)) {
       var file = jar(driver, artifact.artifact(), version);
-      if (artifact.optional() && !Files.exists(file)) {
+      if (absent(artifact, file)) {
         continue;
       }
       if (!matchesRecord(file)) {
@@ -581,6 +619,12 @@ public final class DriverStore {
       }
     }
     return true;
+  }
+
+  // An optional part that the version never had: neither its file nor its record is there. One of
+  // them alone is a download damaged since.
+  private static boolean absent(Driver.Part artifact, Path file) {
+    return artifact.optional() && !Files.exists(file) && !Files.exists(record(file));
   }
 
   private static Path record(Path jar) {

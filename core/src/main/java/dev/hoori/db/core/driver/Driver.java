@@ -1,7 +1,9 @@
 package dev.hoori.db.core.driver;
 
 import dev.hoori.db.core.connection.Provider;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
@@ -36,9 +38,13 @@ public record Driver(String group, String artifact, String driverClass, List<Par
       throw new IllegalArgumentException("Not a class name: " + driverClass);
     }
     parts = List.copyOf(parts);
-    if (parts.stream().map(Part::artifact).distinct().count() != parts.size()
-        || parts.stream().anyMatch(part -> part.artifact().equals(artifact))) {
-      throw new IllegalArgumentException("An artifact of " + artifact + " is named twice");
+    // Each is a file of its own, also where the file system ignores case.
+    var names = new HashSet<String>();
+    names.add(artifact.toLowerCase(Locale.ROOT));
+    for (var part : parts) {
+      if (!names.add(part.artifact().toLowerCase(Locale.ROOT))) {
+        throw new IllegalArgumentException("An artifact of " + artifact + " is named twice");
+      }
     }
   }
 
