@@ -297,10 +297,10 @@ public final class Shell {
           at++;
           continue;
         }
-        var token = Lexer.token(text, at, false);
-        if (token.kind() != Lexer.Kind.COMMENT) {
+        if (!text.startsWith("//", at) && !text.startsWith("/*", at)) {
           return;
         }
+        var token = Lexer.token(text, at, false);
         if (token.open() && text.startsWith("/*", at)) {
           throw error("The comment is not closed: */ is missing");
         }

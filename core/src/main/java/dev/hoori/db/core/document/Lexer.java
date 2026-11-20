@@ -45,13 +45,14 @@ public final class Lexer {
 
   /**
    * Where a line starts, as the lines before it leave it: inside a block comment ({@link
-   * Kind#COMMENT}) or a string in backticks ({@link Kind#STRING}), or else in code ({@code null});
-   * and whether a value came last, after which a slash divides.
+   * Kind#COMMENT}) or a string ({@link Kind#STRING}) in backticks or whose line break was escaped,
+   * with its quote, or else in code ({@code null}); and whether a value came last, after which a
+   * slash divides.
    */
-  public record State(Kind within, boolean value) {
+  public record State(Kind within, char quote, boolean value) {
 
     /** Where a text starts. */
-    public static final State START = new State(null, false);
+    public static final State START = new State(null, '\0', false);
   }
 
   private Lexer() {}
@@ -68,13 +69,14 @@ public final class Lexer {
     int n = text.length();
     int i = 0;
     boolean value = from.value();
-    Kind within = null;
+    var within = State.START;
     if (from.within() != null) {
-      var rest = from.within() == Kind.COMMENT ? block(text, 0, 0) : string(text, 0, 0, '`');
+      var rest =
+          from.within() == Kind.COMMENT ? block(text, 0, 0) : string(text, 0, 0, from.quote());
       into.add(rest);
       i = rest.end();
       value |= rest.kind() == Kind.STRING;
-      within = rest.open() ? rest.kind() : null;
+      within = goesOn(text, rest, from.quote());
     }
     while (i < n) {
       if (whitespace(text.charAt(i))) {
@@ -89,18 +91,38 @@ public final class Lexer {
         case PUNCTUATION -> ")]}".indexOf(text.charAt(token.start())) >= 0;
         default -> true;
       };
-      within = token.open()
-              && (token.kind() == Kind.COMMENT && text.startsWith("/*", token.start())
-                  || token.kind() == Kind.STRING && text.charAt(token.start()) == '`')
-          ? token.kind()
-          : null;
+      within = goesOn(text, token, text.charAt(token.start()));
     }
-    return new State(within, value);
+    return new State(within.within(), within.quote(), value);
+  }
+
+  // Whether the token goes on on the next line, as a block comment or a string in backticks not
+  // closed, and a string whose line break a backslash escapes: as which.
+  private static State goesOn(String text, Token token, char quote) {
+    int n = text.length();
+    if (!token.open() || token.end() != n) {
+      return State.START;
+    }
+    if (token.kind() == Kind.COMMENT) {
+      return text.startsWith("//", token.start())
+          ? State.START
+          : new State(Kind.COMMENT, '\0', false);
+    }
+    if (token.kind() != Kind.STRING) {
+      return State.START;
+    }
+    int backslashes = 0;
+    while (n - backslashes - 1 > token.start() && text.charAt(n - backslashes - 1) == '\\') {
+      backslashes++;
+    }
+    return quote == '`' || backslashes % 2 == 1
+        ? new State(Kind.STRING, quote, false)
+        : State.START;
   }
 
   /** Whether the character is space between tokens, a line break too. */
   public static boolean whitespace(char c) {
-    return Character.isWhitespace(c) || c == ' ' || c == '﻿';
+    return Character.isWhitespace(c) || c == '\u00a0' || c == '\ufeff';
   }
 
   /**

@@ -59,6 +59,12 @@ class ScriptTest {
         List.of("use 'shop", "show dbs"),
         Script.split("use 'shop\nshow dbs").stream().map(Script.Piece::text).toList());
     assertWhere(4, "use 'shop");
+    // A block comment over lines between the calls of a chain leaves it one statement.
+    assertEquals(
+        List.of("db.a.find({})\n/* a\n b */ .limit(1)"),
+        Script.split("db.a.find({})\n/* a\n b */ .limit(1)").stream()
+            .map(Script.Piece::text)
+            .toList());
   }
 
   @Test

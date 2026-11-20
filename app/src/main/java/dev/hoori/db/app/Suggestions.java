@@ -80,7 +80,7 @@ final class Suggestions {
     var around = tab.statements(provider).around(caret);
     if (provider.keepsDocuments()) {
       var before = text.substring(around.start(), Math.max(around.start(), caret - word.length()));
-      return Ranking.rank(shell(s, provider, before), Candidate::name, Candidate::own, word)
+      return Ranking.rank(shell(s, provider, before, word), Candidate::name, Candidate::own, word)
           .stream()
           .map(c -> new Completion.Entry(c.shown(), c.symbol(), c.kind(), c.text()))
           .toList();
@@ -202,12 +202,16 @@ final class Suggestions {
    * cursor, after a dollar the operators, and else the fields of the statement's collection and
    * the values the shell makes. Nothing in a string, a regular expression or a comment.
    */
-  private List<Candidate> shell(State s, Provider provider, String before) {
+  private List<Candidate> shell(State s, Provider provider, String before, String word) {
     var into = new ArrayList<Candidate>();
-    var tokens = Lexer.tokens(before);
-    if (!tokens.isEmpty() && tokens.getLast().open() && tokens.getLast().end() == before.length()) {
+    // The caret with its word, also in the flags after a regular expression.
+    var at = Lexer.tokens(before + word);
+    if (!at.isEmpty()
+        && at.getLast().end() == before.length() + word.length()
+        && (at.getLast().open() || at.getLast().kind() == Lexer.Kind.REGEX)) {
       return into;
     }
+    var tokens = Lexer.tokens(before);
     var code = tokens.stream().filter(t -> t.kind() != Lexer.Kind.COMMENT).toList();
     int n = code.size();
     if (n > 0 && code.getLast().end() == before.length() && is(before, code, n - 1, "$")) {
@@ -298,10 +302,12 @@ final class Suggestions {
         && is(text, code, k + 3, "(")
         && k + 5 < code.size()
         && code.get(k + 4).kind() == Lexer.Kind.STRING
-        && !code.get(k + 4).open()
-        && is(text, code, k + 5, ")")) {
+        && !code.get(k + 4).open()) {
       var quoted = code.get(k + 4);
-      return new Named(text.substring(quoted.start() + 1, quoted.end() - 1), k + 6);
+      int close = is(text, code, k + 5, ",") ? k + 6 : k + 5; // a comma may end its arguments
+      if (is(text, code, close, ")")) {
+        return new Named(text.substring(quoted.start() + 1, quoted.end() - 1), close + 1);
+      }
     }
     // shortcut: a name with dots is the collection's up to a name called after it.
     var dotted = new StringBuilder(text.substring(name.start(), name.end()));

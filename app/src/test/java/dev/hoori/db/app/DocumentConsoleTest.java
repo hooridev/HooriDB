@@ -98,6 +98,8 @@ class DocumentConsoleTest {
     var methods = offered(app, "db.orders.");
     assertTrue(methods.containsAll(List.of("aggregate", "deleteMany")), methods.toString());
     assertEquals("updateMany", offered(app, "db.orders.updateM").getFirst());
+    var named = offered(app, "db.getCollection('orders',).");
+    assertTrue(named.containsAll(List.of("aggregate", "deleteMany")), named.toString());
     var cursor = offered(app, "db.orders.find().");
     assertTrue(cursor.containsAll(List.of("sort", "limit", "toArray")), cursor.toString());
     assertTrue(!cursor.contains("deleteMany"), cursor.toString());
@@ -129,6 +131,7 @@ class DocumentConsoleTest {
     assertEquals(List.of(), offered(app, "db.orders.find({ note: 'db."));
     assertEquals(List.of(), offered(app, "db.orders.find() // db."));
     assertEquals(List.of(), offered(app, "db.orders.find({ note: /db."));
+    assertEquals(List.of(), offered(app, "db.orders.find({ name: /Ada/i"));
     // After the string, the fields again.
     assertEquals("customer", offered(app, "db.orders.find({ note: 'db.', cu").getFirst());
   }

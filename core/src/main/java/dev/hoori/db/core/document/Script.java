@@ -127,9 +127,13 @@ public final class Script {
         broken = lineBreak(text, before, token.start());
       }
       before = token.end();
-      if (start >= 0 && depth == 0 && broken >= 0 && !continues(text, tokens, k, broken)) {
-        add(pieces, text, start, end);
-        start = -1;
+      if (start >= 0 && depth == 0 && broken >= 0) {
+        if (continues(text, tokens, k, broken)) {
+          broken = -1; // past this break: only one after the comments before the dot ends it
+        } else {
+          add(pieces, text, start, end);
+          start = -1;
+        }
       }
       if (token.kind() == Lexer.Kind.COMMENT) {
         if (start >= 0 && token.open() && text.startsWith("/*", token.start())) {

@@ -95,6 +95,13 @@ class ShellSyntaxTest {
   }
 
   @Test
+  void aStringWhoseLineBreakIsEscapedGoesOn() {
+    assertEquals(
+        List.of("string 'one\\", "string two'", "number 1"),
+        colored("{ a: 'one\\", "two', b: 1 }"));
+  }
+
+  @Test
   void aRegularExpressionWithItsFlagsAndASlashInItsClass() {
     assertEquals(
         List.of("string /a\\/b[/]c/i", "string 'd'"), colored("{ x: /a\\/b[/]c/i, y: 'd' }"));
