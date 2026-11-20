@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   metadataBase: new URL('https://db.hoori.dev'),
   title: { default: 'HooriDB', template: '%s · HooriDB' },
   description:
-    'A fast desktop database manager for PostgreSQL, MySQL and MariaDB on Windows and Linux.',
+    'A fast desktop database manager for PostgreSQL, MySQL, MariaDB and MongoDB on Windows and Linux.',
   icons: { icon: '/logo.png' },
 };
 
