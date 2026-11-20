@@ -139,6 +139,13 @@ class DocumentConsoleTest {
     assertEquals(List.of(), offered(app, "db.orders.find() // db."));
     assertEquals(List.of(), offered(app, "db.orders.find({ note: /db."));
     assertEquals(List.of(), offered(app, "db.orders.find({ name: /Ada/i"));
+    // Nor between the two characters of a comment's opener.
+    c.run(
+        app,
+        "press #sql\nkey A control\nkey Delete\n" + type("db.orders.find() // x") + "key End\n"
+            + "key ArrowLeft\n".repeat(3) + COMPLETE + "snap opener\n");
+    assertEquals(List.of(), options(c.tree("opener")), c.tree("opener"));
+    c.run(app, "key Escape\nframe\nadvance 1\nframe\n");
     // Nor where the word goes on a name or a number, as after a dollar or a point typed there.
     assertEquals(List.of(), offered(app, "db.orders.find({ total$"));
     assertEquals(List.of(), offered(app, "db.orders.find({ total: 1."));

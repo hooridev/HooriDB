@@ -79,8 +79,13 @@ final class Suggestions {
     // The statement the caret writes in, with the comments around it, from the console's split.
     var around = tab.statements(provider).around(caret);
     if (provider.keepsDocuments()) {
+      var statement = text.substring(around.start(), around.end());
       var before = text.substring(around.start(), Math.max(around.start(), caret - word.length()));
-      return Ranking.rank(shell(s, provider, before, word), Candidate::name, Candidate::own, word)
+      return Ranking.rank(
+              shell(s, provider, before, statement, caret - around.start()),
+              Candidate::name,
+              Candidate::own,
+              word)
           .stream()
           .map(c -> new Completion.Entry(c.shown(), c.symbol(), c.kind(), c.text()))
           .toList();
@@ -202,14 +207,20 @@ final class Suggestions {
    * cursor, after a dollar the operators, and else the fields of the statement's collection and
    * the values the shell makes. Nothing in a string, a regular expression or a comment.
    */
-  private List<Candidate> shell(State s, Provider provider, String before, String word) {
+  private List<Candidate> shell(
+      State s, Provider provider, String before, String statement, int caret) {
     var into = new ArrayList<Candidate>();
-    // The caret with its word, also in the flags after a regular expression.
-    var at = Lexer.tokens(before + word);
-    if (!at.isEmpty()
-        && at.getLast().end() == before.length() + word.length()
-        && (at.getLast().open() || at.getLast().kind() == Lexer.Kind.REGEX)) {
-      return into;
+    // The caret in the statement's tokens: in a string, a comment or its opener, or a regular
+    // expression up to the end of its flags.
+    for (var token : Lexer.tokens(statement)) {
+      if (token.kind() != Lexer.Kind.NAME
+          && token.kind() != Lexer.Kind.NUMBER
+          && token.kind() != Lexer.Kind.PUNCTUATION
+          && token.start() < caret
+          && (caret < token.end()
+              || caret == token.end() && (token.open() || token.kind() == Lexer.Kind.REGEX))) {
+        return into;
+      }
     }
     var tokens = Lexer.tokens(before);
     var code = tokens.stream().filter(t -> t.kind() != Lexer.Kind.COMMENT).toList();
