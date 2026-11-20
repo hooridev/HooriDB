@@ -4,15 +4,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.AppFolders;
+import dev.hoori.db.core.DesktopEntry;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 class HooriDbTest {
@@ -186,5 +191,37 @@ class HooriDbTest {
         frame
         """, app, out);
     assertTrue(app.windows().all().isEmpty());
+  }
+
+  /** A script run from an app image writes no desktop entry, as it touches none of the user's files. */
+  @Test
+  @EnabledOnOs(OS.LINUX)
+  void aScriptRunWritesNoDesktopEntry(@TempDir Path dir) throws Exception {
+    var data = System.getenv("XDG_DATA_HOME");
+    assumeTrue(data == null || data.isEmpty(), "the home folder names where the entry goes");
+    var home = System.getProperty("user.home");
+    var launcher = dir + "/HooriDB/bin/HooriDB";
+    var entry = dir.resolve(".local/share/applications/dev.hoori.db.desktop");
+    var script =
+        Files.writeString(dir.resolve("script.txt"), "size 1200 760\nframe\nawait\nframe\n");
+    try {
+      System.setProperty("user.home", dir.toString());
+      System.setProperty("jpackage.app-path", launcher);
+      // Where a start of the image writes it, here.
+      assertTrue(DesktopEntry.write(System.getProperty("os.name"), launcher, AppFolders.find()));
+      Files.delete(entry);
+      HooriDb.main(new String[] {
+        "--script",
+        script.toString(),
+        "--out",
+        dir.resolve("out").toString(),
+        "--config",
+        dir.resolve("config").toString()
+      });
+    } finally {
+      System.setProperty("user.home", home);
+      System.clearProperty("jpackage.app-path");
+    }
+    assertFalse(Files.exists(entry));
   }
 }
