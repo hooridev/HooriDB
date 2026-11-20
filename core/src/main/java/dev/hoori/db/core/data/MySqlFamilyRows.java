@@ -6,6 +6,9 @@ import static dev.hoori.db.core.data.Rows.LIMIT;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
@@ -49,13 +52,19 @@ abstract class MySqlFamilyRows extends RowsDialect {
     if (table.kind() == Table.Kind.VIEW) {
       return OptionalLong.empty();
     }
-    return Query.query(connection, provider, tabularExplain() + select, rows -> {
-      if (!rows.next()) {
-        return OptionalLong.empty();
-      }
-      var estimate = rows.getLong("rows");
-      return rows.wasNull() ? OptionalLong.empty() : OptionalLong.of(estimate);
-    });
+    var sql = tabularExplain() + select;
+    return Journal.sql(
+        provider,
+        Purpose.ROWS,
+        sql,
+        estimate -> Outcome.rows(1),
+        () -> Query.query(connection, provider, sql, rows -> {
+          if (!rows.next()) {
+            return OptionalLong.empty();
+          }
+          var estimate = rows.getLong("rows");
+          return rows.wasNull() ? OptionalLong.empty() : OptionalLong.of(estimate);
+        }));
   }
 
   @Override

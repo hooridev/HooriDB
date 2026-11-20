@@ -327,6 +327,12 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     public Set<String> offeredWords() {
       return offered;
     }
+
+    /** As in {@code CREATE USER u IDENTIFIED BY …, SET PASSWORD = …}. */
+    @Override
+    public Set<String> passwordWords() {
+      return Set.of("PASSWORD", "IDENTIFIED");
+    }
   }
 
   // What their drivers do alike.

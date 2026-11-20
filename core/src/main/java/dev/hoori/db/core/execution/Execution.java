@@ -3,6 +3,9 @@ package dev.hoori.db.core.execution;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.RowReader;
 import dev.hoori.db.core.dialect.SessionDialect;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Statements;
@@ -118,12 +121,53 @@ public final class Execution implements AutoCloseable {
     if (over) {
       throw new IllegalStateException("The statement is over");
     }
+    // Sent with its first portion, which is what the server was asked for.
+    return statement != null
+        ? portion(count)
+        : Journal.sql(provider, Purpose.STATEMENT, sql, Execution::outcome, () -> portion(count));
+  }
+
+  /**
+   * How a statement's first portion went: its failure, else the rows it read and whether more
+   * follow, else what it changed.
+   */
+  static Outcome outcome(Portion portion) {
+    long rows = 0;
+    long changed = 0;
+    boolean counted = false;
+    boolean read = false;
+    for (var result : portion.results()) {
+      switch (result) {
+        case Failure f -> {
+          return f.kind() == Failure.Kind.CANCELLED
+              ? new Outcome.Cancelled()
+              : new Outcome.Failed(f.message());
+        }
+        case Result.Rows r -> {
+          rows += r.rows().size();
+          read = true;
+        }
+        case Result.Count c -> {
+          changed += c.count();
+          counted = true;
+        }
+      }
+    }
+    return read
+        ? new Outcome.Rows(rows, portion.more())
+        : counted ? new Outcome.Changed(changed) : Outcome.DONE;
+  }
+
+  private Portion portion(int count) {
     var started = System.nanoTime();
     try {
       return Query.run(
           connection,
           provider,
-          () -> session.cancel(connection, statement),
+          () -> Journal.call(Purpose.STATEMENT, Journal.CANCEL, () -> {
+            session.cancel(connection, statement);
+            return null;
+          }),
           () -> read(count),
           // The server's word that a cancel stopped the statement, not a time limit of its own.
           portion -> !portion.results().isEmpty()
@@ -330,7 +374,10 @@ public final class Execution implements AutoCloseable {
         && session.transaction(connection, -1) == Transaction.NONE
         && Statements.split(sql, provider).size() == 1
         && queries.contains(Statements.firstWord(sql, provider).toUpperCase(Locale.ROOT))) {
-      connection.setAutoCommit(false);
+      Journal.call(Purpose.TRANSACTION, Journal.autoCommit(false), () -> {
+        connection.setAutoCommit(false);
+        return null;
+      });
       ownTransaction = true;
     }
     session.keepWriteTimeout(connection);
@@ -417,7 +464,10 @@ public final class Execution implements AutoCloseable {
       if (commit && !aborted) {
         try {
           connection.clearWarnings();
-          connection.commit();
+          Journal.call(Purpose.TRANSACTION, Journal.COMMIT, () -> {
+            connection.commit();
+            return null;
+          });
           if (said != null) {
             collect(connection.getWarnings(), said); // pgjdbc's notices of the commit
             connection.clearWarnings();
@@ -432,7 +482,10 @@ public final class Execution implements AutoCloseable {
       }
       if (!commit) {
         try {
-          connection.rollback();
+          Journal.call(Purpose.TRANSACTION, Journal.ROLLBACK, () -> {
+            connection.rollback();
+            return null;
+          });
         } catch (SQLException e) {
           lost = true;
         }
@@ -440,7 +493,10 @@ public final class Execution implements AutoCloseable {
       // pgjdbc commits as it turns auto-commit on, which after a failed rollback it must not.
       if (!lost && !aborted) {
         try {
-          connection.setAutoCommit(true);
+          Journal.call(Purpose.TRANSACTION, Journal.autoCommit(true), () -> {
+            connection.setAutoCommit(true);
+            return null;
+          });
         } catch (SQLException e) {
           lost = true;
         }

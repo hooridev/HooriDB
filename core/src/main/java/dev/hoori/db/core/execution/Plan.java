@@ -4,6 +4,9 @@ import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -57,21 +60,35 @@ public final class Plan {
     if (!provider.supports(Capability.CONNECTION_PER_DATABASE, ServerVersion.UNKNOWN)
         && database != null
         && !database.isEmpty()) {
-      Query.run(connection, provider, () -> {
-        connection.setCatalog(database);
-        return null;
-      });
+      Journal.call(
+          Purpose.ESTIMATE,
+          Journal.catalog(database),
+          () -> Query.run(connection, provider, () -> {
+            connection.setCatalog(database);
+            return null;
+          }));
     }
     var begin = plan.beginReadOnly();
     // Not cut short by an interrupt, so that the transaction it begins always reaches its end.
-    Query.within(connection, provider, Query.GRACE, () -> execute(connection, begin));
+    Journal.sql(
+        provider,
+        Purpose.ESTIMATE,
+        begin,
+        done -> Outcome.DONE,
+        () -> Query.within(connection, provider, Query.GRACE, () -> execute(connection, begin)));
     try {
       return callsOut(connection, provider)
           ? OptionalLong.empty()
           : explain(connection, provider, sql);
     } finally {
       var rollback = plan.rollback();
-      Query.within(connection, provider, Query.GRACE, () -> execute(connection, rollback));
+      Journal.sql(
+          provider,
+          Purpose.ESTIMATE,
+          rollback,
+          done -> Outcome.DONE,
+          () ->
+              Query.within(connection, provider, Query.GRACE, () -> execute(connection, rollback)));
     }
   }
 
@@ -89,7 +106,12 @@ public final class Plan {
   // behind its label is its extension's bug. Check for them where one turns up.
   private static boolean callsOut(Connection connection, Provider provider) throws QueryException {
     var sql = provider.dialect().plan().callsOut();
-    return query(connection, provider, sql, ResultSet::next);
+    return Journal.sql(
+        provider,
+        Purpose.ESTIMATE,
+        sql,
+        calls -> Outcome.rows(calls ? 1 : 0),
+        () -> query(connection, provider, sql, ResultSet::next));
   }
 
   private static Void execute(Connection connection, String sql) throws SQLException {
@@ -124,6 +146,12 @@ public final class Plan {
   private static OptionalLong explain(Connection connection, Provider provider, String sql)
       throws QueryException {
     var plan = provider.dialect().plan();
-    return query(connection, provider, plan.explain(sql), rows -> plan.rows(rows, sql, provider));
+    var explain = plan.explain(sql);
+    return Journal.sql(
+        provider,
+        Purpose.ESTIMATE,
+        explain,
+        rows -> Outcome.rows(rows.isPresent() ? 1 : 0),
+        () -> query(connection, provider, explain, rows -> plan.rows(rows, sql, provider)));
   }
 }

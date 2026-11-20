@@ -26,6 +26,8 @@ import dev.hoori.db.core.execution.Plan;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -519,10 +521,13 @@ interface Servers {
     public void use(String database) throws QueryException {
       usable();
       // Through core's worker, so that an interrupt never lands in the driver's socket I/O.
-      Query.run(connection, provider, () -> {
-        connection.setCatalog(database);
-        return null;
-      });
+      Journal.call(
+          Purpose.SESSION,
+          Journal.catalog(database),
+          () -> Query.run(connection, provider, () -> {
+            connection.setCatalog(database);
+            return null;
+          }));
     }
 
     @Override
@@ -530,7 +535,10 @@ interface Servers {
       usable();
       Query.run(connection, provider, () -> {
         if (connection.getAutoCommit() == manual) {
-          connection.setAutoCommit(!manual);
+          Journal.call(Purpose.TRANSACTION, Journal.autoCommit(!manual), () -> {
+            connection.setAutoCommit(!manual);
+            return null;
+          });
         }
         return null;
       });

@@ -14,6 +14,8 @@ import dev.hoori.db.core.data.MySqlRows;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Purpose;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -218,7 +220,10 @@ public final class MySql extends MySqlFamily {
       }
       var server = (status & SERVER_STATUS_AUTOCOMMIT) != 0;
       if (connection.getAutoCommit() != server) {
-        connection.setAutoCommit(server);
+        Journal.call(Purpose.TRANSACTION, Journal.autoCommit(server), () -> {
+          connection.setAutoCommit(server);
+          return null;
+        });
       }
     }
 

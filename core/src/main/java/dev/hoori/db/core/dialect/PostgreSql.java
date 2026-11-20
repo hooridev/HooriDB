@@ -534,6 +534,12 @@ public final class PostgreSql implements Dialect {
     public Set<String> offeredWords() {
       return OFFERED;
     }
+
+    /** As in {@code CREATE ROLE r PASSWORD …}. */
+    @Override
+    public Set<String> passwordWords() {
+      return Set.of("PASSWORD");
+    }
   }
 
   // pgjdbc.
