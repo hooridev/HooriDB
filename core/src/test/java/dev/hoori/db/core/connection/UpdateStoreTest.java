@@ -32,7 +32,8 @@ class UpdateStoreTest {
     assertEquals(StoredUpdates.NONE.withChannel(Channel.STABLE), store.load());
     assertEquals(
         "{\n  \"version\" : 1,\n  \"channel\" : \"stable\"\n}",
-        Files.readString(folder.resolve(UpdateStore.FILE)));
+        // Written with the platform's line ends.
+        Files.readString(folder.resolve(UpdateStore.FILE)).replace(System.lineSeparator(), "\n"));
 
     var broken = "{\"version\": 1, \"channel\": \"weekly\"}";
     Files.writeString(folder.resolve(UpdateStore.FILE), broken);
