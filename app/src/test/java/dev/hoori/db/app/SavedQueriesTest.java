@@ -19,6 +19,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.io.TempDir;
 
 /** Queries saved on purpose under a name, and put into a console again. */
@@ -42,9 +43,18 @@ class SavedQueriesTest {
       "SELECT 1",
       Instant.parse("2026-01-01T00:00:00Z"));
 
+  // Of the connection the tests open, which the cleanup keeps.
+  static final SavedQuery KEPT = new SavedQuery(
+      UUID.fromString("00000000-0000-0000-0000-00000000f00d"),
+      SHOP.id(),
+      "Kept",
+      "SELECT 2",
+      Instant.parse("2026-01-01T00:00:00Z"));
+
   @BeforeEach
-  void setUp() throws Exception {
-    new QueryStore(dir.resolve("config")).save(List.of(ORPHAN));
+  void setUp(TestInfo test) throws Exception {
+    boolean cleanup = test.getTestMethod().orElseThrow().getName().startsWith("theQueriesOf");
+    new QueryStore(dir.resolve("config")).save(cleanup ? List.of(ORPHAN, KEPT) : List.of(ORPHAN));
     k.dir = dir;
     k.setUp();
     c = k.c;
@@ -106,10 +116,10 @@ class SavedQueriesTest {
   void theQueriesOfAConnectionTheWorkspaceLacksAreDeletedFromTheFile() throws Exception {
     var app = k.console(SHOP);
     c.run(app, SETTLE);
-    assertTrue(app.state().queries.isEmpty(), app.state().queries.toString());
+    assertEquals(List.of(KEPT), app.state().queries);
     CatalogTreeTest.eventually(() -> {
       try {
-        return new QueryStore(dir.resolve("config")).load().isEmpty();
+        return new QueryStore(dir.resolve("config")).load().equals(List.of(KEPT));
       } catch (Exception e) {
         return false;
       }
