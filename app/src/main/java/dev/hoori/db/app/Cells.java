@@ -91,7 +91,7 @@ final class Cells {
   static String text(Object value, ZoneId zone) {
     return switch (value) {
       case null -> null;
-      case Missing m -> "";
+      case Missing.FIELD -> "";
       case String s -> s;
       case Cut c -> c.start();
       case Long n -> n.toString();

@@ -322,7 +322,7 @@ public final class DocumentSession implements AutoCloseable {
     try {
       return switch (cell) {
         case null -> throw new IllegalArgumentException("The row's _id is null");
-        case Missing m -> throw new IllegalArgumentException("The row has no _id");
+        case Missing.FIELD -> throw new IllegalArgumentException("The row has no _id");
         case Cut c -> throw new IllegalArgumentException("The row's _id was read in part");
         case String s when kind == Kind.TEXT -> s;
         case String s -> Shell.parse(s); // the shell's text of it, or its Extended JSON
