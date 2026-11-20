@@ -79,7 +79,8 @@ class DocumentConsoleServerTest {
     assertTrue(near(grid, "#result-status").contains("3 documents"), grid);
     c.run(app, "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap json\n");
     var json = line(c.tree("json"), "#result-json");
-    assertTrue(json.contains("{ _id: 250, total: Decimal128('375') }"), json);
+    assertTrue(json.contains("\\\"_id\\\": 250,"), json);
+    assertTrue(json.contains("\\\"$numberDecimal\\\": \\\"375\\\""), json);
     c.run(app, "press role=radio label=\"Tree\"\nframe\nadvance 1\nframe\nsnap tree\n");
     var tree = c.tree("tree");
     assertTrue(tree.contains("role=treeitem label=\"250\""), tree);

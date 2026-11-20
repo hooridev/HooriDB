@@ -481,4 +481,26 @@ class StatementsTest {
     assertEquals(statements.get(1), scanned.at(text.length()).orElseThrow());
     assertEquals("find", Statements.firstWord("db.a.find()", Provider.MONGODB));
   }
+
+  @Test
+  void aCommentAfterAShellStatementIsBetweenStatements() {
+    var text = "db.a.find() // note;\ndb.b.find()";
+    var statements = Statements.split(text, Provider.MONGODB);
+    assertEquals(
+        List.of("db.a.find()", "db.b.find()"),
+        statements.stream().map(x -> text.substring(x.start(), x.end())).toList());
+    // In the comment, the next statement, as in one of SQL between statements.
+    var scanned = Statements.of(text, Provider.MONGODB);
+    assertEquals(statements.get(1), scanned.at(text.indexOf("note")).orElseThrow());
+  }
+
+  @Test
+  void aQuoteInARegularExpressionOfTheShellStartsNoString() {
+    var text = "db.a.find({ x: /'/ }); db.b.find({ y: 'z' })";
+    var strings = Statements.pieces(text, Provider.MONGODB).stream()
+        .filter(p -> p.kind() == Statements.Piece.Kind.STRING)
+        .map(p -> text.substring(p.start(), p.end()))
+        .toList();
+    assertEquals(List.of("/'/", "'z'"), strings);
+  }
 }

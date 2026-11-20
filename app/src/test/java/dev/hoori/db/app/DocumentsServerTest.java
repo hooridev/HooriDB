@@ -99,7 +99,8 @@ class DocumentsServerTest {
     assertTrue(TableTabTest.status(tree).contains("\"250 documents\""), tree);
     c.run(app, table("customers") + SETTLE + "snap customers\n");
     var customers = c.tree("customers");
-    assertTrue(cell(customers, 0, 4).contains("[ 'math', 'poetry' ]"), customers);
+    // Relaxed Extended JSON, as the element tree writes a text with quotes.
+    assertTrue(cell(customers, 0, 4).contains("[\\\"math\\\", \\\"poetry\\\"]"), customers);
   }
 
   @Test
@@ -121,9 +122,9 @@ class DocumentsServerTest {
     var json = c.tree("json");
     var editor = line(json, "#json");
     assertTrue(editor.contains("readonly"), editor);
-    assertTrue(editor.contains("_id: 1"), editor);
-    assertTrue(editor.contains("born: ISODate('1815-12-10T00:00:00.000Z')"), editor);
-    assertTrue(editor.contains("score: Long('42')"), editor);
+    // An array of Relaxed Extended JSON, formatted: its start and its end are in the tree.
+    assertTrue(editor.contains("\"[\\n    {\\n        \\\"_id\\\": 1,"), editor);
+    assertTrue(editor.contains("\\\"score\\\": 42\\n    }\\n]\""), editor);
     assertTrue(line(json, "#range").contains("\"Documents 1–3\""), json);
     assertTrue(line(json, "#next").contains("disabled"), json);
     var tree = c.tree("tree");
@@ -162,7 +163,7 @@ class DocumentsServerTest {
     assertTrue(line(c.tree("first"), "#range").contains("\"Documents 1–200\""), c.tree("first"));
     var second = c.tree("second");
     assertTrue(line(second, "#range").contains("\"Documents 201–250\""), second);
-    assertTrue(line(second, "#json").contains("_id: 201"), second);
+    assertTrue(line(second, "#json").contains("\\\"_id\\\": 201"), second);
     assertTrue(line(second, "#next").contains("disabled"), second);
   }
 }

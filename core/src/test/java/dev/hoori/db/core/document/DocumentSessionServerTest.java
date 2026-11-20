@@ -18,6 +18,7 @@ import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -88,8 +89,26 @@ class DocumentSessionServerTest {
       var customers = session.read(CUSTOMERS, session.fields(CUSTOMERS), 0, 10);
       var ada = customers.rows().getFirst();
       assertEquals(OffsetDateTime.parse("1815-12-10T00:00Z"), ada.get(3));
-      assertEquals("[ 'math', 'poetry' ]", ada.get(4));
-      assertEquals("{ city: 'London', zip: 'W1' }", ada.get(5));
+      // A document or an array as Relaxed Extended JSON, of Kind.JSON.
+      assertEquals("[\"math\", \"poetry\"]", ada.get(4));
+      assertEquals("{\"city\": \"London\", \"zip\": \"W1\"}", ada.get(5));
+
+      // A limit of 0 would read them all.
+      assertEquals(List.of(), session.read(ORDERS, fields, 5, 5).rows());
+    }
+  }
+
+  @Test
+  void aValueIsReadWholeByItsDocumentsId() throws Exception {
+    try (var session = session(false)) {
+      var fields = session.fields(CUSTOMERS);
+      var ada = session.read(CUSTOMERS, fields, 0, 1).rows().getFirst();
+      assertEquals("[\"math\", \"poetry\"]", session.whole(CUSTOMERS, fields, ada, 4));
+      assertEquals("Ada", session.whole(CUSTOMERS, fields, ada, 1));
+      var gone = new ArrayList<>(ada);
+      gone.set(0, 999_999L);
+      var e = assertThrows(QueryException.class, () -> session.whole(CUSTOMERS, fields, gone, 1));
+      assertEquals(QueryException.Failure.NOT_FOUND, e.failure());
     }
   }
 

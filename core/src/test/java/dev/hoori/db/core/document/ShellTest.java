@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -122,6 +123,51 @@ class ShellTest {
     var two = assertInstanceOf(Bson.ObjectId.class, Shell.parse("new ObjectId()"));
     assertTrue(one.compareTo(two) < 0);
     assertTrue(Math.abs(one.time().getEpochSecond() - Instant.now().getEpochSecond()) < 5);
+  }
+
+  @Test
+  void anArrayIsCopiedWholeAndHoldsOnlyValuesOfDocuments() {
+    var inner = new java.util.ArrayList<Object>(List.of(1));
+    var outer = new java.util.ArrayList<Object>(List.of(inner));
+    var document = Document.of("a", outer);
+    inner.add(2);
+    outer.add(3);
+    assertEquals(Document.of("a", List.of(List.of(1))), document);
+    assertThrows(UnsupportedOperationException.class, () -> ((List<?>) document.get("a")).clear());
+    assertThrows(
+        IllegalArgumentException.class, () -> Document.array(List.of(List.of(new Object()))));
+    assertEquals(Arrays.asList(1, null), Document.array(Arrays.asList(1, null)));
+  }
+
+  @Test
+  void codeWithAScopeIsATypeOfItsOwn() {
+    assertEquals("javascript", Bson.type(new Bson.Code("x", null)));
+    assertEquals("javascriptWithScope", Bson.type(new Bson.Code("x", Document.EMPTY)));
+  }
+
+  @Test
+  void aNameGivenTwiceKeepsItsPlaceAndItsLastValue() throws Exception {
+    // As in JavaScript: what the server is sent has each name once.
+    assertEquals(Document.of("a", 2, "b", 1), Shell.parse("{ a: 1, b: 1, a: 2 }"));
+  }
+
+  @Test
+  void aPatternTheLiteralCannotHoldIsWrittenAsAConstructor() throws Exception {
+    for (var pattern : List.of("a\\/b", "", "line\nbreak", "end\\")) {
+      var regex = new Bson.Regex(pattern, "i");
+      var written = Shell.compact(regex);
+      assertTrue(written.startsWith("BSONRegExp("), written);
+      assertEquals(regex, Shell.parse(written), written);
+    }
+    assertEquals("/a\\/b[\\/]/", Shell.compact(new Bson.Regex("a/b[/]", "")));
+  }
+
+  @Test
+  void wrongArgumentsOfConstructorsAreErrorsAtTheirPlace() {
+    assertOffset(5, "{ a: 0x10000000000000000 }");
+    assertOffset(5, "{ a: BinData() }");
+    assertOffset(13, "{ a: BinData(0) }");
+    assertOffset(10, "{ a: Code('return 1', 42) }");
   }
 
   @Test

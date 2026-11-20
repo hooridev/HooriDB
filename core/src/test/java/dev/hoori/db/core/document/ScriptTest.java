@@ -38,6 +38,20 @@ class ScriptTest {
   }
 
   @Test
+  void aStatementEndsBeforeTheCommentsAfterIt() {
+    var text = "db.a.find() // note; not an end\ndb.b.find({ x: /* c */ /[(]/ })\nuse shop// x";
+    assertEquals(
+        List.of("db.a.find()", "db.b.find({ x: /* c */ /[(]/ })", "use shop"),
+        Script.split(text).stream().map(Script.Piece::text).toList());
+  }
+
+  @Test
+  void aUseNameEndsAtAComment() throws Exception {
+    assertEquals("shop", Script.parse("use shop// note").use());
+    assertEquals("shop", Script.parse("use shop/* note */").use());
+  }
+
+  @Test
   void aFindWithItsCursorIsOneCommand() throws Exception {
     var request = Script.parse(
         "db.orders.find({ total: { $gt: 5 } }, { total: 1 }).sort({ total: -1 }).skip(10).limit(5)");
@@ -120,6 +134,74 @@ class ScriptTest {
         "db.runCommand({ explain: { delete: 'a', deletes: [] } })")) {
       assertFalse(Script.parse(statement).reads(), statement);
     }
+  }
+
+  @Test
+  void aCommandWithANameTwiceIsNoRead() {
+    // What is checked must be what is sent: the server could take either pipeline.
+    var twice = new Document(List.of(
+        new Document.Entry("aggregate", "a"),
+        new Document.Entry("pipeline", Document.array(Document.of("$match", Document.EMPTY))),
+        new Document.Entry("pipeline", Document.array(Document.of("$out", "b"))),
+        new Document.Entry("cursor", Document.EMPTY)));
+    assertFalse(Commands.reads(twice));
+    var deep = Document.of(
+        "find",
+        "a",
+        "filter",
+        new Document(List.of(new Document.Entry("x", 1), new Document.Entry("x", 2))));
+    assertFalse(Commands.reads(deep));
+    assertTrue(Commands.reads(Document.of("find", "a", "filter", Document.of("x", 1))));
+  }
+
+  @Test
+  void aLiteralIsNoStage() throws Exception {
+    assertTrue(Script.parse("db.a.aggregate([{ $project: { x: { $literal: { $out: 'b' } } } }])")
+        .reads());
+    assertFalse(Script.parse("db.a.aggregate([{ $project: { $out: 'b' } }])").reads());
+  }
+
+  @Test
+  void aWriteKeepsItsOptionsAndRefusesThoseItDoesNotSend() throws Exception {
+    var delete = Script.parse("db.a.deleteMany({ x: 1 }, { hint: 'x_1', comment: 'c' })");
+    assertEquals(
+        Document.of(
+            "delete",
+            "a",
+            "comment",
+            "c",
+            "deletes",
+            Document.array(Document.of("q", Document.of("x", 1), "limit", 0, "hint", "x_1"))),
+        delete.command());
+    var update = Script.parse("db.a.updateOne({}, { $set: { x: 1 } }, { let: { v: 1 } })");
+    assertEquals(Document.of("v", 1), update.command().get("let"));
+    assertWhere(26, "db.a.deleteMany({ x: 1 }, { justOne: true })");
+    assertWhere(39, "db.a.updateOne({}, { $set: { x: 1 } }, { bogus: 1 })");
+  }
+
+  @Test
+  void theShellsMethodsDoWhatTheShellDoes() throws Exception {
+    assertWhere(26, "db.a.findOneAndUpdate({}, { x: 1 })");
+    assertWhere(27, "db.a.findOneAndReplace({}, { $set: { x: 1 } })");
+    assertWhere(5, "db.a.dropIndex()");
+    assertWhere(5, "db.a.dropIndex('*')");
+    assertEquals("*", Script.parse("db.a.dropIndexes()").command().get("index"));
+
+    var batch = Script.parse("db.a.find().limit(-2)").command();
+    assertEquals(2, batch.get("limit"));
+    assertEquals(true, batch.get("singleBatch"));
+
+    var counted = Script.parse("db.a.find({ x: 1 }).skip(1).limit(5).itcount()");
+    assertEquals(Shape.ESTIMATE, counted.shape());
+    assertEquals(
+        Document.of("count", "a", "query", Document.of("x", 1), "skip", 1, "limit", 5),
+        counted.command());
+
+    var name = Script.parse("db.getName()");
+    assertEquals(Shape.NAME, name.shape());
+    assertNull(name.command());
+    assertTrue(name.reads());
+    assertEquals("logs", Script.parse("db.getSiblingDB('logs').getName()").database());
   }
 
   @Test
