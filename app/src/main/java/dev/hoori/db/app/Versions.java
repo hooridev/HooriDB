@@ -43,10 +43,15 @@ final class Versions {
   private final Map<String, Instant> dates = new HashMap<>();
   String dating; // the version whose date is being looked up, or null
   private Work datingWork;
-  // What the connection's lookup of the driver read, and the version it recommends: they win over
-  // what this reads, which then only fills in where the lookup has none. Null for none.
+  // What the connection's lookup of the driver read, which wins over what this reads; null for
+  // none.
   Supplier<DriverStore.Choices> lookedUp = () -> null;
-  Supplier<String> recommendedByLookup = () -> null;
+  // The recommended version, or null while it is not known: what this read names, unless the one
+  // who asks decides it otherwise, as the connection's lookup does.
+  Supplier<String> recommendedBy = () -> {
+    var choices = choices();
+    return choices == null ? null : choices.recommended();
+  };
 
   Versions(Provider provider) {
     this.provider = provider;
@@ -160,14 +165,9 @@ final class Versions {
     return known != null ? known : read == null ? null : read.choices();
   }
 
-  /** The recommended version, the lookup's first, or null while it is not known. */
+  /** The recommended version, or null while it is not known. */
   String recommended() {
-    var looked = recommendedByLookup.get();
-    if (looked != null) {
-      return looked;
-    }
-    var choices = choices();
-    return choices == null ? null : choices.recommended();
+    return recommendedBy.get();
   }
 
   /**

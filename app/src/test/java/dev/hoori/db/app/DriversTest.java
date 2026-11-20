@@ -905,20 +905,86 @@ class DriversTest {
 
   /**
    * A version chosen by hand needs no list until the driver's dialog opens, which reads it once;
-   * Recommended then reads nothing more.
+   * Recommended is then looked up as at the start, by the lookup alone, which reads it again.
    */
   @Test
-  void recommendedAfterAChosenVersionReadsTheListNoMore() throws Exception {
+  void recommendedAfterAChosenVersionIsLookedUpAfresh() throws Exception {
     var app = app(ConnectionProfile.of(Provider.POSTGRESQL)
         .withHost("db.example.com")
         .withDriverVersion(OLD));
     run(app, START + edit("db.example.com") + SETTLE);
     assertEquals(0, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
     run(app, choose("Recommended") + "await\nframe\nsnap recommended\n");
-    assertEquals(1, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
+    assertEquals(2, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
     assertTrue(
         tree("recommended").contains("\"PostgreSQL JDBC 42.7.14, not downloaded yet ("),
         tree("recommended"));
+  }
+
+  /**
+   * Recommended chosen in the driver's dialog without a network is the lookup's, offline too: the
+   * driver downloaded, not the list the dialog read while it could.
+   */
+  @Test
+  void recommendedChosenOfflineUsesTheDownloadedDriver() throws Exception {
+    downloaded(OLD);
+    var profile = ConnectionProfile.of(Provider.POSTGRESQL)
+        .withHost("db.example.com")
+        .withDatabase("shop")
+        .withUser("shop_app")
+        .withDriverVersion(OLD);
+    secrets.stored.put(profile.id(), "hunter2");
+    var app = app(profile);
+    run(app, START + edit("db.example.com") + SETTLE + DRIVER);
+    repository.offline = true;
+    run(
+        app,
+        pick("Recommended") + "await\nframe\n" + CLOSE_DRIVER + TEST + SETTLE + SETTLE + SETTLE
+            + "snap tested\n");
+    String tested = tree("tested");
+    assertTrue(tested.contains("role=status label=\"Connected to PostgreSQL 16.4\""), tested);
+    assertFalse(tested.contains("Download PostgreSQL JDBC"), tested);
+    assertSame(app.state().drivers.loaded(FakeDrivers.DRIVER, OLD), server.drivers.getFirst());
+  }
+
+  /**
+   * While the lookup has not found the version, Recommended in the driver's dialog names none, even
+   * where the dialog's own list would: only the lookup recommends.
+   */
+  @Test
+  void recommendedNamesNoVersionBeforeTheLookupHasOne() throws Exception {
+    repository.offline = true; // the lookup finds nothing: no list, and nothing downloaded
+    var app = app();
+    run(app, START + NEW_SHOP);
+    repository.offline = false;
+    repository.publish("42.7.16", FakeDrivers.NOW.minus(Duration.ofDays(10)));
+    run(app, VERSIONS + "snap missing\n");
+    String missing = tree("missing");
+    assertTrue(missing.contains("role=option label=\"42.7.16\""), "the dialog's list: " + missing);
+    var recommended = block(missing, "role=option label=\"Recommended\"");
+    assertFalse(recommended.contains("42.7.16"), recommended);
+    assertFalse(block(missing, "role=option label=\"42.7.16\"").contains("recommended"), missing);
+    // As while the lookup runs, which a script cannot hold open while the dialog's read comes in.
+    var fetch = app.state().dialog.probe.fetch;
+    var found = fetch.lookup;
+    fetch.lookup = new Fetch.Looking(Provider.POSTGRESQL);
+    app.invalidate();
+    run(app, "frame\nsnap pending\n");
+    fetch.lookup = found;
+    String pending = tree("pending");
+    assertTrue(pending.contains("role=status label=\"Looking up the version to use\""), pending);
+    assertFalse(block(pending, "role=option label=\"Recommended\"").contains("42.7."), pending);
+    // Test connection looks it up again; then Recommended names what the lookup found.
+    run(
+        app,
+        "key Escape\nframe\nadvance 1\nframe\n" + CLOSE_DRIVER + TEST + SETTLE + "snap asked\n"
+            + VERSIONS + "snap found\n");
+    assertTrue(
+        line(tree("asked"), "role=note").contains("\"Download PostgreSQL JDBC 42.7.16?\""),
+        tree("asked"));
+    assertTrue(
+        block(tree("found"), "role=option label=\"Recommended\"").contains("\"42.7.16\""),
+        tree("found"));
   }
 
   static String edit(String connection) {

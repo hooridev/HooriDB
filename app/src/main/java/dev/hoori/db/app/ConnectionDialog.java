@@ -142,7 +142,8 @@ final class ConnectionDialog {
     var fetch = probe.fetch;
     versions = new Versions(p.provider());
     versions.lookedUp = () -> fetch.choices;
-    versions.recommendedByLookup = () ->
+    // Only the lookup recommends: until it has found a version, Recommended names none.
+    versions.recommendedBy = () ->
         editing.value().driverVersion() == null && fetch.lookup instanceof Fetch.Found f
             ? f.version()
             : null;
@@ -174,7 +175,7 @@ final class ConnectionDialog {
     editing.at(DRIVER_VERSION).set(version);
     versions.date(s, version);
     probe.stop(); // a test or a download is for the other version
-    probe.fetch.lookUp(s, editing.value().provider(), version, versions.choices());
+    probe.lookUp(s, editing.value().provider(), version);
   }
 
   /** Asks the keyring whether it holds a password for the profile edited, once there is one. */
@@ -743,10 +744,11 @@ final class ConnectionDialog {
         .label("Driver version")
         .grow(1);
     El line = row().wFull().gap(t.space().s()).align(Style.Align.CENTER).child(box);
-    if (versions.reading() || versions.dating != null) {
+    boolean looking = chosen == null && probe.fetch.lookup instanceof Fetch.Looking;
+    if (versions.reading() || versions.dating != null || looking) {
       var waiting = versions.dating != null
           ? "Looking up when " + versions.dating + " was published"
-          : "Reading the versions";
+          : versions.reading() ? "Reading the versions" : "Looking up the version to use";
       line.child(col().role("status").label(waiting).child(Progress.spinner()));
     } else if (versions.problem(s.drivers) != null) {
       line.child(Button.icon(

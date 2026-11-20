@@ -92,16 +92,6 @@ final class Fetch {
    * @param chosen the version to use, or null for the recommended one
    */
   void lookUp(State s, Provider provider, String chosen) {
-    lookUp(s, provider, chosen, null);
-  }
-
-  /**
-   * As {@link #lookUp(State, Provider, String)}, with the repository's choices where they were read
-   * already: the recommended version is theirs, without reading the repository again.
-   *
-   * @param known what the repository offers, or null to read it
-   */
-  void lookUp(State s, Provider provider, String chosen, DriverStore.Choices known) {
     this.chosen = chosen;
     if (looking != null) {
       looking.cancel();
@@ -121,11 +111,8 @@ final class Fetch {
     looking = s.app.background(
         "look up a driver",
         () -> {
-          var recommended = chosen != null
-              ? null
-              : known != null
-                  ? new DriverStore.Recommended(known.recommended(), false, known)
-                  : store.recommended(driver, clock.instant());
+          // The one place that decides the recommended version, with its fallback offline.
+          var recommended = chosen != null ? null : store.recommended(driver, clock.instant());
           var read = recommended == null ? null : recommended.choices();
           if (recommended != null && recommended.version() == null) {
             // None of the newest releases has waited long enough: the list read stays all the same.
