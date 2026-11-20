@@ -135,6 +135,11 @@
         <plugin>
           <artifactId>maven-clean-plugin</artifactId>
           <version>3.5.0</version>
+          <configuration>
+            <!-- On Windows jpackage makes the launcher read-only, which a clean cannot delete
+                 otherwise. -->
+            <force>true</force>
+          </configuration>
         </plugin>
         <plugin>
           <artifactId>maven-resources-plugin</artifactId>
