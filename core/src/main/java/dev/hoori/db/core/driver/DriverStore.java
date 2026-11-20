@@ -58,13 +58,15 @@ import org.xml.sax.helpers.DefaultHandler;
 
 /**
  * Drivers downloaded from a repository into a folder, with a sub-folder per artifact and version
- * such as {@code org.postgresql/postgresql/42.7.14/}. A version's folder is complete or absent: a
- * download fills a temporary folder and renames it into place, and a delete removes its file first,
- * so that a file that cannot be deleted, as one that is open on Windows, leaves it whole. Its file has matched the repository's checksum, which is recorded beside it and
- * checked again before the file is loaded. What is downloaded works without a network. Every
- * method blocks; interrupting the thread cancels it with {@link DriverException.Failure#CANCELLED}
- * and leaves the thread interrupted, except while a driver's own class initialization runs during
- * {@link #load}, which cannot be interrupted.
+ * such as {@code org.postgresql/postgresql/42.7.14/}, which holds the driver's file and those of its
+ * {@link Driver.Part parts}. A version's folder is complete or absent: a download fills a temporary
+ * folder and renames it into place, and a delete removes the driver's file first, so that a file
+ * that cannot be deleted, as one that is open on Windows, leaves it whole. Each file has matched
+ * the repository's checksum, which is recorded beside it and checked again before the file is
+ * loaded. What is downloaded works without a network. Every method blocks; interrupting the thread
+ * cancels it with {@link DriverException.Failure#CANCELLED} and leaves the thread interrupted,
+ * except while a driver's own class initialization runs during {@link #load}, which cannot be
+ * interrupted.
  */
 public final class DriverStore {
 
@@ -149,21 +151,29 @@ public final class DriverStore {
   }
 
   /**
-   * The size of the version's file in bytes, or -1 when the repository does not say; nothing is
-   * downloaded. The file is opened and closed again before its content is read, which over HTTPS
+   * The size of the version's files in bytes, or -1 when the repository does not say; nothing is
+   * downloaded. Each file is opened and closed again before its content is read, which over HTTPS
    * costs one request whose body is cut off after the headers.
    */
   public long size(Driver driver, String version) throws DriverException {
-    var path = file(driver, version);
-    checkCancelled(path);
-    try (var response = remote(path, () -> repository.open(path))) {
-      if (response.length() > maxSize) {
-        throw new DriverException(TOO_LARGE, path);
+    long total = 0;
+    for (var artifact : artifacts(driver)) {
+      var path = file(driver, artifact.artifact(), version);
+      checkCancelled(path);
+      try (var response = remote(path, () -> repository.open(path))) {
+        if (response.length() > maxSize) {
+          throw new DriverException(TOO_LARGE, path);
+        }
+        total = total < 0 || response.length() < 0 ? -1 : total + response.length();
+      } catch (DriverException e) {
+        if (e.failure() != NOT_FOUND || !artifact.optional()) {
+          throw e;
+        }
+      } catch (IOException e) {
+        throw network(path, e);
       }
-      return response.length();
-    } catch (IOException e) {
-      throw network(path, e);
     }
+    return total;
   }
 
   /**
@@ -201,7 +211,7 @@ public final class DriverStore {
       // A version on disk was either recommended when it was downloaded or chosen on purpose,
       // which is good enough offline, so its age is not checked again and no dates are kept.
       for (var version : downloaded(driver)) {
-        if (Maven.isStable(version) && matchesRecord(jar(driver, version))) {
+        if (Maven.isStable(version) && complete(driver, version)) {
           return new Recommended(version, true, null);
         }
       }
@@ -240,68 +250,64 @@ public final class DriverStore {
   }
 
   /**
-   * Downloads the version into the folder, unless it is there already and matches its record. The
-   * file goes into a temporary folder, which takes the version's name only once the file matched
+   * Downloads the version into the folder, unless it is there already and matches its record. Its
+   * files go into a temporary folder, which takes the version's name only once each file matched
    * its checksum. Two downloads of one version at once both succeed with one of their results.
    */
   public void download(Driver driver, String version, Progress progress) throws DriverException {
     var jar = jar(driver, version);
     var path = file(driver, version);
     checkCancelled(path);
-    if (matchesRecord(jar)) {
+    if (complete(driver, version)) {
       return;
     }
-    // The checksum the repository publishes beside the file, fetched over HTTPS as well. It shows
-    // that a download is not damaged or cut short, but not that the repository serves a good
-    // file: one that serves a bad file can serve a checksum to match. The waiting period before
-    // a release is recommended is the answer to a bad release, not this.
-    var bySha256 = true;
-    String expected;
-    try {
-      expected = checksum(path + ".sha256", 64);
-    } catch (DriverException e) {
-      if (e.failure() != NOT_FOUND) {
-        throw e;
-      }
-      bySha256 = false;
-      try {
-        expected = checksum(path + ".sha1", 40);
-      } catch (DriverException sha1) {
-        if (sha1.failure() != NOT_FOUND) {
-          throw sha1;
-        }
-        // Without either checksum the version itself may be missing, which is NOT_FOUND.
-        published(driver, version);
-        throw new DriverException(NO_CHECKSUM, path);
+    var wanted = new ArrayList<Wanted>();
+    for (var artifact : artifacts(driver)) {
+      var expected = expected(driver, artifact, version);
+      if (expected != null) {
+        wanted.add(expected);
       }
     }
     var dir = jar.getParent();
     Path temporary = null;
-    long needed = 1 << 20; // a megabyte, and the file's length once it is known
+    long needed = 1 << 20; // a megabyte, and the files' length once it is known
+    var responses = new ArrayList<Repository.Response>();
     try {
       Files.createDirectories(dir.getParent());
       // Its name starts with a dot, which no version does, so nothing lists or loads it.
       temporary = Files.createTempDirectory(dir.getParent(), "." + version + ".");
-      var part = temporary.resolve(jar.getFileName());
-      var sha256 = digest("SHA-256");
-      var sha1 = digest("SHA-1");
-      try (var response = remote(path, () -> repository.open(path))) {
-        if (response.length() > 0) {
-          needed = response.length();
-        }
+      long total = 0;
+      for (var file : wanted) {
+        var response = remote(file.path(), () -> repository.open(file.path()));
+        responses.add(response);
+        total = total < 0 || response.length() < 0 ? -1 : total + response.length();
+      }
+      if (total > 0) {
+        needed = total;
+      }
+      long before = 0;
+      for (int i = 0; i < wanted.size(); i++) {
+        var file = wanted.get(i);
+        var part = temporary.resolve(file.name());
+        var sha256 = digest("SHA-256");
+        var sha1 = digest("SHA-1");
+        long start = before;
+        long all = total;
+        Progress each = (done, length) -> progress.update(start + done, all);
         try (var out = Files.newOutputStream(part)) {
-          copy(path, response, out, maxSize, progress, sha256, sha1);
+          copy(file.path(), responses.get(i), out, maxSize, each, sha256, sha1);
         }
+        var recorded = HexFormat.of().formatHex(sha256.digest());
+        var actual = file.bySha256() ? recorded : HexFormat.of().formatHex(sha1.digest());
+        if (!actual.equals(file.expected())) {
+          throw new DriverException(CHECKSUM_MISMATCH, file.path());
+        }
+        checkManifest(part, file.path());
+        Files.writeString(record(part), recorded, StandardCharsets.US_ASCII);
+        before += Files.size(part);
       }
-      var recorded = HexFormat.of().formatHex(sha256.digest());
-      var actual = bySha256 ? recorded : HexFormat.of().formatHex(sha1.digest());
-      if (!actual.equals(expected)) {
-        throw new DriverException(CHECKSUM_MISMATCH, path);
-      }
-      checkManifest(part, path);
-      Files.writeString(record(part), recorded, StandardCharsets.US_ASCII);
       checkCancelled(path);
-      publish(temporary, dir, jar);
+      publish(temporary, dir, driver, version);
     } catch (IOException e) {
       throw full(dir, needed) ? new DriverException(NO_SPACE, path, e) : storage(e);
     } catch (DriverException e) {
@@ -309,20 +315,66 @@ public final class DriverStore {
           ? new DriverException(NO_SPACE, path, e)
           : e;
     } finally {
+      for (var response : responses) {
+        try {
+          response.close();
+        } catch (IOException ignored) {
+          // Read to its end or given up; nothing more comes of it.
+        }
+      }
       deleteTree(temporary);
     }
+  }
+
+  // A file to download: where it is, its name in the version's folder, and its checksum.
+  private record Wanted(String path, String name, String expected, boolean bySha256) {}
+
+  // The checksum the repository publishes beside the file, fetched over HTTPS as well. It shows
+  // that a download is not damaged or cut short, but not that the repository serves a good file:
+  // one that serves a bad file can serve a checksum to match. The waiting period before a release
+  // is recommended is the answer to a bad release, not this. Null for an optional part that the
+  // repository does not have.
+  private Wanted expected(Driver driver, Driver.Part artifact, String version)
+      throws DriverException {
+    var path = file(driver, artifact.artifact(), version);
+    var name = artifact.artifact() + "-" + version + ".jar";
+    try {
+      return new Wanted(path, name, checksum(path + ".sha256", 64), true);
+    } catch (DriverException e) {
+      if (e.failure() != NOT_FOUND) {
+        throw e;
+      }
+    }
+    try {
+      return new Wanted(path, name, checksum(path + ".sha1", 40), false);
+    } catch (DriverException e) {
+      if (e.failure() != NOT_FOUND) {
+        throw e;
+      }
+    }
+    // Without either checksum the file itself may be missing, which is NOT_FOUND.
+    try {
+      remote(path, () -> repository.published(path));
+    } catch (DriverException e) {
+      if (e.failure() == NOT_FOUND && artifact.optional()) {
+        return null;
+      }
+      throw e;
+    }
+    throw new DriverException(NO_CHECKSUM, path);
   }
 
   // Renaming a folder is atomic on Linux and Windows. Linux replaces an empty target and refuses
   // one with files; Windows refuses any target that exists. Either way a version that is there
   // and matches its record has been published by a concurrent download, and that one stands.
-  private void publish(Path temporary, Path dir, Path jar) throws IOException, DriverException {
+  private void publish(Path temporary, Path dir, Driver driver, String version)
+      throws IOException, DriverException {
     for (int attempt = 0; ; attempt++) {
       try {
         Files.move(temporary, dir, StandardCopyOption.ATOMIC_MOVE);
         return;
       } catch (IOException e) {
-        if (matchesRecord(jar)) {
+        if (complete(driver, version)) {
           return;
         }
         if (attempt > 0 || !Files.exists(dir)) {
@@ -355,12 +407,19 @@ public final class DriverStore {
     }
   }
 
-  /** The size in bytes of the version's downloaded file. */
+  /** The size in bytes of the version's downloaded files. */
   public long sizeOnDisk(Driver driver, String version) throws DriverException {
     var jar = jar(driver, version);
     checkCancelled(file(driver, version));
     try {
-      return Files.size(jar);
+      long size = Files.size(jar);
+      for (var part : driver.parts()) {
+        var file = jar(driver, part.artifact(), version);
+        if (Files.isRegularFile(file)) {
+          size += Files.size(file);
+        }
+      }
+      return size;
     } catch (NoSuchFileException e) {
       throw new DriverException(NOT_DOWNLOADED, file(driver, version), e);
     } catch (IOException e) {
@@ -403,27 +462,35 @@ public final class DriverStore {
       throw new DriverException(NOT_DOWNLOADED, path);
     }
     // A check against damage and accidental change since the download: whoever can write the
-    // file can write its record as well.
-    if (!matchesRecord(jar)) {
-      throw new DriverException(CHECKSUM_MISMATCH, path);
+    // files can write their records as well.
+    var urls = new ArrayList<URL>();
+    for (var artifact : artifacts(driver)) {
+      var file = jar(driver, artifact.artifact(), version);
+      var at = file(driver, artifact.artifact(), version);
+      if (artifact.optional() && !Files.exists(file)) {
+        continue;
+      }
+      if (!matchesRecord(file)) {
+        throw new DriverException(
+            Files.isRegularFile(file) ? CHECKSUM_MISMATCH : NOT_DOWNLOADED, at);
+      }
+      checkManifest(file, at);
+      try {
+        urls.add(file.toUri().toURL());
+      } catch (MalformedURLException e) {
+        throw new IllegalStateException(e);
+      }
     }
-    checkManifest(jar, path);
     checkCancelled(path);
-    // shortcut: the file is hashed and then opened again by the class loader, so a file replaced
+    // shortcut: the files are hashed and then opened again by the class loader, so a file replaced
     // in between loads unchecked; load from a snapshot in memory if that ever matters, though it
     // does not against whoever can write the data folder, who can replace the record or the app.
-    URL url;
-    try {
-      url = jar.toUri().toURL();
-    } catch (MalformedURLException e) {
-      throw new IllegalStateException(e);
-    }
     // Its resources are read past Java's cache of jar: files, which keeps a file open beyond the
     // loader's close, as long as the process runs; Windows deletes no file that is open.
     var loader =
         new URLClassLoader(
             driver.artifact() + "-" + version,
-            new URL[] {url},
+            urls.toArray(URL[]::new),
             ClassLoader.getPlatformClassLoader()) {
           @Override
           public URL findResource(String name) {
@@ -477,9 +544,21 @@ public final class DriverStore {
     }
   }
 
+  // The driver's own artifact first, then its parts.
+  private static List<Driver.Part> artifacts(Driver driver) {
+    var all = new ArrayList<Driver.Part>();
+    all.add(new Driver.Part(driver.artifact(), false));
+    all.addAll(driver.parts());
+    return all;
+  }
+
+  private Path jar(Driver driver, String version) {
+    return jar(driver, driver.artifact(), version);
+  }
+
   // shortcut: two versions that differ only in letter case share a folder on a case-insensitive
   // file system; no driver publishes such versions, so they are not told apart.
-  private Path jar(Driver driver, String version) {
+  private Path jar(Driver driver, String artifact, String version) {
     if (!Maven.isVersion(version)) {
       throw new IllegalArgumentException("Not a version: " + version);
     }
@@ -487,7 +566,21 @@ public final class DriverStore {
         .resolve(driver.group())
         .resolve(driver.artifact())
         .resolve(version)
-        .resolve(driver.artifact() + "-" + version + ".jar");
+        .resolve(artifact + "-" + version + ".jar");
+  }
+
+  // Whether the version's files are there and match their records, an optional part where it is.
+  private boolean complete(Driver driver, String version) throws DriverException {
+    for (var artifact : artifacts(driver)) {
+      var file = jar(driver, artifact.artifact(), version);
+      if (artifact.optional() && !Files.exists(file)) {
+        continue;
+      }
+      if (!matchesRecord(file)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private static Path record(Path jar) {
@@ -499,10 +592,15 @@ public final class DriverStore {
   }
 
   private static String file(Driver driver, String version) {
+    return file(driver, driver.artifact(), version);
+  }
+
+  private static String file(Driver driver, String artifact, String version) {
     if (!Maven.isVersion(version)) {
       throw new IllegalArgumentException("Not a version: " + version);
     }
-    return base(driver) + version + "/" + driver.artifact() + "-" + version + ".jar";
+    return driver.group().replace('.', '/') + "/" + artifact + "/" + version + "/" + artifact + "-"
+        + version + ".jar";
   }
 
   private static void checkCancelled(String path) throws DriverException {
