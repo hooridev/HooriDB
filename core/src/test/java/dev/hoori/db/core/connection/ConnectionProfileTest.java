@@ -47,7 +47,8 @@ class ConnectionProfileTest {
             "app",
             Tls.VERIFIED,
             Color.TEAL,
-            null),
+            null,
+            false),
         q);
     assertEquals(null, p.color());
     assertEquals("", p.name());
@@ -58,15 +59,16 @@ class ConnectionProfileTest {
   @Test
   void equalFieldsAreEqual() {
     var id = UUID.randomUUID();
-    var a =
-        new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null);
-    var b =
-        new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null);
+    var a = new ConnectionProfile(
+        id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null, false);
+    var b = new ConnectionProfile(
+        id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null, false);
     assertEquals(a, b);
     assertEquals(a.hashCode(), b.hashCode());
     assertNotEquals(a, b.withUser("v"));
     assertNotEquals(a, b.withColor(Color.RED));
     assertNotEquals(a, b.withDriverVersion("42.7.10"));
+    assertNotEquals(a, b.withReadOnly(true));
   }
 
   @Test

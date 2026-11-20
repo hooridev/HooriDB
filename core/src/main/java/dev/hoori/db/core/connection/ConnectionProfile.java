@@ -15,7 +15,9 @@ import java.util.regex.Pattern;
  * How to reach one database. The strings may be empty, as while a form edits a new profile, and
  * {@link #problems} says what keeps it from connecting. The password is not part of it: it is kept
  * in the system keyring under the id. The color that marks it is null for none, and the version
- * of its driver is null for the recommended one. In the workspace it is an entry of its own.
+ * of its driver is null for the recommended one. A read-only connection to a server of documents
+ * sends only commands that read, as {@link dev.hoori.db.core.document.Commands#reads} says; a
+ * server of SQL does not take it. In the workspace it is an entry of its own.
  */
 public record ConnectionProfile(
     UUID id,
@@ -27,7 +29,8 @@ public record ConnectionProfile(
     String user,
     Tls tls,
     Color color,
-    String driverVersion)
+    String driverVersion,
+    boolean readOnly)
     implements Workspace.Entry {
 
   private static final Pattern LABEL =
@@ -107,7 +110,8 @@ public record ConnectionProfile(
         "",
         tlsByDefault(""),
         null,
-        null);
+        null,
+        false);
   }
 
   /**
@@ -225,46 +229,51 @@ public record ConnectionProfile(
 
   public ConnectionProfile withName(String name) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
   }
 
   public ConnectionProfile withProvider(Provider provider) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
   }
 
   public ConnectionProfile withHost(String host) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
   }
 
   public ConnectionProfile withPort(int port) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
   }
 
   public ConnectionProfile withDatabase(String database) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
   }
 
   public ConnectionProfile withUser(String user) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
   }
 
   public ConnectionProfile withTls(Tls tls) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
   }
 
   public ConnectionProfile withColor(Color color) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
   }
 
   public ConnectionProfile withDriverVersion(String driverVersion) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+  }
+
+  public ConnectionProfile withReadOnly(boolean readOnly) {
+    return new ConnectionProfile(
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
   }
 }

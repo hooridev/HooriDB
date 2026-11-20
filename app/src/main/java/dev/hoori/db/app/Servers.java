@@ -48,7 +48,8 @@ interface Servers {
   Servers SERVER = (profile, password, driver) -> {
     if (driver.documents()) {
       var opened = DocumentConnector.open(profile, password, driver, Tester.TIMEOUT);
-      var session = new DocumentSession(opened.client(), profile.provider().documents(), false);
+      var session =
+          new DocumentSession(opened.client(), profile.provider().documents(), profile.readOnly());
       return Documents.of(session, opened.server().parsed(), opened.database());
     }
     var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
