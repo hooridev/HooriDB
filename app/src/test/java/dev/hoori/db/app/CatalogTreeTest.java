@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BooleanSupplier;
@@ -190,9 +191,13 @@ class CatalogTreeTest {
         repository.drivers(dir.resolve("drivers")),
         Tester.SERVER,
         servers);
+    app.state().zone = ZONE;
     apps.add(app);
     return app;
   }
+
+  /** The zone in which moments show, whatever the machine's: an hour from UTC, two in summer. */
+  static final ZoneId ZONE = ZoneId.of("Europe/Berlin");
 
   static final String START = """
       size 1200 760

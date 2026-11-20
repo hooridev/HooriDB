@@ -16,6 +16,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
@@ -24,7 +25,8 @@ import java.util.HexFormat;
 /**
  * How the values of a table show in its grid: as a database writes them, not as a locale would.
  * Numbers without grouping and with all their digits, dates and times in ISO 8601's form with their
- * seconds, a moment with its offset, NULL as the grid's muted NULL.
+ * seconds, a moment in the computer's time zone with the offset it has there at that moment, NULL
+ * as the grid's muted NULL.
  */
 final class Cells {
 
@@ -80,10 +82,10 @@ final class Cells {
   }
 
   /**
-   * The text of a value as core read it, or null for NULL. A value that its kind's type could not
-   * hold came as the server's own text, which shows as it is.
+   * The text of a value as core read it, or null for NULL; a moment in the zone. A value that its
+   * kind's type could not hold came as the server's own text, which shows as it is.
    */
-  static String text(Object value) {
+  static String text(Object value, ZoneId zone) {
     return switch (value) {
       case null -> null;
       case String s -> s;
@@ -98,7 +100,7 @@ final class Cells {
       case LocalTime t -> TIME.format(t);
       case OffsetTime t -> OFFSET.format(t);
       case LocalDateTime d -> DATE_TIME.format(d);
-      case OffsetDateTime d -> DATE_TIME_OFFSET.format(d);
+      case OffsetDateTime d -> DATE_TIME_OFFSET.format(d.atZoneSameInstant(zone));
       case Binary b -> binary(b);
       default -> value.toString();
     };
