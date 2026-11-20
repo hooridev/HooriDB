@@ -46,7 +46,7 @@ Some of these limits are tracked in [issue #57](https://github.com/hooridev/Hoor
 ## Connections and appearance
 
 - **Read-only** on PostgreSQL, MySQL, and MariaDB uses the server's read-only transactions, which do not cover everything a statement can do (see [SQL console](/docs/features/console#read-only-connections)):
-  - Statements that act outside the tables still run, such as advisory locks (`pg_advisory_lock`, `GET_LOCK`), `NOTIFY`, `VACUUM`, `ANALYZE`, and `CHECKPOINT` on PostgreSQL, `ANALYZE TABLE` on MariaDB, and functions that reach outside the transaction, as through `dblink`.
+  - Statements that act outside the tables still run, such as advisory locks (`pg_advisory_lock`, `GET_LOCK`), `NOTIFY`, `VACUUM`, `ANALYZE`, and `CHECKPOINT` on PostgreSQL, `ANALYZE TABLE` on MariaDB, functions that reach outside the transaction, as through `dblink`, and on PostgreSQL `COMMIT PREPARED` of a transaction that another session prepared.
   - `SET` still changes the session's other settings.
   - HooriDB finds a statement that would turn read-only off by its text. It does not see one put together at run time, such as a setting's name joined from two strings, nor an existing function, procedure, or trigger that turns it off; after such a statement, the session can write.
   - For a hard limit, log in as a user who has only read permissions.

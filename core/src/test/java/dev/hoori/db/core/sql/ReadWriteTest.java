@@ -43,7 +43,9 @@ class ReadWriteTest {
       turnsOff(p, "SET SESSION `transaction_read_only` = DEFAULT");
       turnsOff(p, "/*!50605 SET SESSION TRANSACTION READ WRITE */");
       turnsOff(p, "PREPARE s FROM 'SET SESSION TRANSACTION READ WRITE'");
+      turnsOff(p, "/*!50000 PREPARE s FROM 'SET SESSION TRANSACTION READ WRITE' */");
     }
+    turnsOff(Provider.MARIADB, "SET SESSION AUTHORIZATION 'other'@'%'");
   }
 
   @Test

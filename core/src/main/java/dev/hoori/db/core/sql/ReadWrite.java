@@ -33,7 +33,9 @@ public final class ReadWrite {
       }
       var strings = new StringBuilder();
       for (var piece : Statements.pieces(sql, provider, reading.escapes())) {
-        if (piece.kind() == Statements.Piece.Kind.STRING) {
+        // The strings in an executable comment, which the server may run, go with its text.
+        if (piece.kind() == Statements.Piece.Kind.STRING
+            || piece.kind() == Statements.Piece.Kind.COMMENT && executable(sql, piece, provider)) {
           strings.append(sql, piece.start(), piece.end()).append('\n');
         }
       }
@@ -42,6 +44,15 @@ public final class ReadWrite {
         if (words.indexOf(" " + phrase + " ") >= 0 || text.contains(phrase)) {
           return true;
         }
+      }
+    }
+    return false;
+  }
+
+  private static boolean executable(String sql, Statements.Piece piece, Provider provider) {
+    for (var opening : provider.dialect().syntax().executableComments()) {
+      if (sql.startsWith(opening, piece.start())) {
+        return true;
       }
     }
     return false;

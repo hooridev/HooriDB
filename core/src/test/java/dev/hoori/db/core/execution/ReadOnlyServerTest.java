@@ -54,7 +54,8 @@ class ReadOnlyServerTest {
 
   private static void refused(Connection connection, Provider provider, String sql) {
     var failure = failure(run(connection, provider, sql).results());
-    assertFalse(failure.message().startsWith("The connection is read-only"), failure.toString());
+    // The server's own: a read-only transaction's, not the driver's or HooriDB's.
+    assertEquals("25006", failure.state(), failure.toString());
   }
 
   @ParameterizedTest
