@@ -219,6 +219,23 @@ class ScriptTest {
   }
 
   @Test
+  void roundFourOfTheShellsEdges() throws Exception {
+    assertEquals(
+        Shape.REPLY, Script.parse("db.a.aggregate([], { explain: true })").shape());
+    assertEquals(Shape.CURSOR, Script.parse("db.a.aggregate([])").shape());
+    var batched = Script.parse("db.aggregate([{ $currentOp: {} }], { cursor: { batchSize: 1 } })");
+    assertEquals(Document.of("batchSize", 1), batched.command().get("cursor"));
+    assertEquals(
+        5,
+        Script.parse("db.a.estimatedDocumentCount({ maxTimeMS: 5 })").command().get("maxTimeMS"));
+    var counted = Script.parse(
+            "db.a.find({ n: 'ada' }).collation({ locale: 'en', strength: 2 }).hint('n_1').itcount()")
+        .command();
+    assertEquals(Document.of("locale", "en", "strength", 2), counted.get("collation"));
+    assertEquals("n_1", counted.get("hint"));
+  }
+
+  @Test
   void anUnclosedCommentStaysInItsStatement() throws Exception {
     var text = "db.a.insertOne({ x: 1 }) /* not closed";
     var pieces = Script.split(text);

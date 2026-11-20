@@ -398,7 +398,7 @@ public final class Script {
             && args.get(1) instanceof Document o) {
           command = merged(command, notReplacing(o, command, method, at(args, 1, r)));
         }
-        yield cursor(r, command);
+        yield aggregate(r, command);
       }
       case "getCollectionNames", "getCollectionInfos" ->
         Request.of(
@@ -519,7 +519,7 @@ public final class Script {
         if (args.size() > 1 && args.get(1) instanceof Document options) {
           command = merged(command, notReplacing(options, command, method, at(args, 1, r)));
         }
-        yield cursor(r, command);
+        yield aggregate(r, command);
       }
       case "countDocuments" -> {
         var stages = new ArrayList<Object>();
@@ -556,8 +556,15 @@ public final class Script {
                     counted),
                 Shape.COUNT));
       }
-      case "estimatedDocumentCount" ->
-        ended(r, Request.of(Document.of("count", collection), Shape.ESTIMATE));
+      case "estimatedDocumentCount" -> {
+        var command = Document.of("count", collection);
+        if (!args.isEmpty()) {
+          var options = document(args, 0, method, r);
+          known(options, List.of("maxTimeMS", "comment"), method, at(args, 0, r));
+          command = options(command, options, List.of("maxTimeMS", "comment"));
+        }
+        yield ended(r, Request.of(command, Shape.ESTIMATE));
+      }
       case "count" -> {
         var command = Document.of("count", collection);
         if (!args.isEmpty()) {
@@ -843,6 +850,12 @@ public final class Script {
               }
             }
           }
+          // What the cursor compares and reads by, which the count command takes too.
+          for (var option : List.of("collation", "hint", "maxTimeMS", "comment")) {
+            if (command.has(option)) {
+              count = count.with(option, command.get(option));
+            }
+          }
           return ended(r, Request.of(count, Shape.ESTIMATE));
         }
         case "explain" -> {
@@ -894,13 +907,24 @@ public final class Script {
     return options(command, options, names);
   }
 
-  // Options that would replace what the command is, as its pipeline, are refused.
+  // An aggregate, whose cursor is read, or with explain set the plan, which has none.
+  private static Request aggregate(Shell.Reader r, Document command) throws SyntaxException {
+    return Boolean.TRUE.equals(command.get("explain"))
+        ? ended(r, Request.of(command, Shape.REPLY))
+        : cursor(r, command);
+  }
+
+  // Options that would replace what the command is, as its pipeline, are refused; a cursor of
+  // its own is a document.
   private static Document notReplacing(Document options, Document command, String method, int at)
       throws SyntaxException {
-    for (var name : List.of(command.first(), "pipeline", "cursor")) {
+    for (var name : List.of(command.first(), "pipeline")) {
       if (options.has(name)) {
         throw new SyntaxException(method + " takes no option " + name, at);
       }
+    }
+    if (options.has("cursor") && !(options.get("cursor") instanceof Document)) {
+      throw new SyntaxException(method + " takes a document as its cursor", at);
     }
     return options;
   }
