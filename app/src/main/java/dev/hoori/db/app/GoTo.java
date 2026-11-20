@@ -204,7 +204,7 @@ final class GoTo {
   }
 
   private static String server(ConnectionProfile p) {
-    return (p.user().isBlank() ? "" : p.user() + "@") + p.host() + ":" + p.port();
+    return (p.user().isBlank() ? "" : p.user() + "@") + p.host() + (p.srv() ? "" : ":" + p.port());
   }
 
   /** Where the table is: its connection, database and schema. */

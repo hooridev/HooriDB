@@ -1,9 +1,9 @@
 ---
 title: Drivers
-description: Which JDBC drivers HooriDB downloads, and how to choose, list and delete their versions.
+description: Which drivers HooriDB downloads, and how to choose, list and delete their versions.
 ---
 
-HooriDB does not bundle database drivers. Instead, it downloads the official JDBC driver for each database type from Maven Central after asking you.
+HooriDB does not bundle database drivers. Instead, it downloads the official driver for each database type from Maven Central after asking you: a JDBC driver for PostgreSQL, MySQL, and MariaDB, and the MongoDB Java driver for MongoDB.
 
 <Shot name="drivers" alt="The Drivers dialog listing downloaded versions and sizes for PostgreSQL JDBC, MariaDB Connector/J, and MySQL Connector/J, with Download controls and Delete icons" />
 
@@ -12,6 +12,7 @@ HooriDB does not bundle database drivers. Instead, it downloads the official JDB
 - PostgreSQL: PostgreSQL JDBC (`org.postgresql:postgresql`)
 - MySQL: MySQL Connector/J (`com.mysql:mysql-connector-j`)
 - MariaDB: MariaDB Connector/J (`org.mariadb.jdbc:mariadb-java-client`)
+- MongoDB: MongoDB Java Driver (`org.mongodb:mongodb-driver-sync`), downloaded along with its dependencies (`mongodb-driver-core`, `bson`, and `bson-record-codec`). Versions older than 5.15.0 are not offered, downloaded, or loaded, even if a saved connection specifies one.
 
 When a connection needs a driver version that is not on your computer yet, HooriDB shows the driver name, version, file size, and Maven Central URL and asks you to choose **Download** or **Not now**.
 
@@ -34,7 +35,7 @@ If you pick a release published less than 3 days ago, HooriDB shows a warning wi
 
 ## List, download, and delete drivers
 
-Open **File > Drivers…** to manage downloaded drivers for all three database types.
+Open **File > Drivers…** to manage downloaded drivers for all four database types.
 
 - Each database section lists its downloaded versions with their file sizes and notes whether a version is recommended or currently in use by an open connection.
 - To download a version ahead of time, choose **Recommended** or a specific version in the Download row and press **Download**.

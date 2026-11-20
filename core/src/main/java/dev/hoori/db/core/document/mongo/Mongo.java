@@ -75,29 +75,7 @@ final class Mongo {
   private Mongo() {}
 
   static DocumentClient connect(Target target, char[] password) throws DocumentException {
-    var timeout = target.timeout().toMillis();
-    var settings = MongoClientSettings.builder()
-        .applicationName("HooriDB")
-        .applyToClusterSettings(cluster -> cluster
-            // The driver lowercases a name in the JVM's locale, which in Turkish turns I into a
-            // dotless ı: in the root locale here first.
-            .hosts(
-                List.of(new ServerAddress(target.host().toLowerCase(Locale.ROOT), target.port())))
-            // As the shell connects to one host: to that server alone, also to a member of a
-            // replica set whose other members are known by names that do not resolve here.
-            .mode(ClusterConnectionMode.SINGLE)
-            .serverSelectionTimeout(timeout, TimeUnit.MILLISECONDS))
-        .applyToSocketSettings(
-            socket -> socket.connectTimeout((int) timeout, TimeUnit.MILLISECONDS))
-        .applyToSslSettings(ssl -> {
-          ssl.enabled(target.tls() != Tls.OFF);
-          if (target.tls() == Tls.ENCRYPTED) {
-            // Encrypted, but any certificate for any name, as the JDBC drivers' "encrypted"
-            // (sslmode=require, trustServerCertificate) on the user's choice: Verified checks it.
-            // The driver has no option for it, so it gets a trust manager that takes all.
-            ssl.invalidHostNameAllowed(true).context(trustingAll());
-          }
-        });
+    var settings = settings(target);
     if (!target.user().isEmpty()) {
       settings.credential(
           MongoCredential.createCredential(target.user(), target.authDatabase(), password.clone()));
@@ -116,6 +94,45 @@ final class Mongo {
       client.close();
       throw failure(e);
     }
+  }
+
+  /** How the client reaches the target, without the login. */
+  static MongoClientSettings.Builder settings(Target target) {
+    var timeout = target.timeout().toMillis();
+    return MongoClientSettings.builder()
+        .applicationName("HooriDB")
+        .applyToClusterSettings(cluster -> {
+          // The driver lowercases a name in the JVM's locale, which in Turkish turns I into a
+          // dotless ı: in the root locale here first.
+          var host = target.host().toLowerCase(Locale.ROOT);
+          if (target.srv()) {
+            // The servers the record lists, as mongodb+srv:// finds them. shortcut: the options
+            // of its TXT record (replicaSet, loadBalanced) are not read, as discovery finds the
+            // set; read them once a cluster needs one.
+            // Without the root's dot, which the driver counts as a label: of "example.net." it
+            // takes ".net" for the domain the servers' names must end in, and refuses that.
+            var name = host.endsWith(".") ? host.substring(0, host.length() - 1) : host;
+            cluster.srvHost(name).mode(ClusterConnectionMode.MULTIPLE);
+          } else {
+            // As the shell connects to one host: to that server alone, also to a member of a
+            // replica set whose other members are known by names that do not resolve here.
+            cluster
+                .hosts(List.of(new ServerAddress(host, target.port())))
+                .mode(ClusterConnectionMode.SINGLE);
+          }
+          cluster.serverSelectionTimeout(timeout, TimeUnit.MILLISECONDS);
+        })
+        .applyToSocketSettings(
+            socket -> socket.connectTimeout((int) timeout, TimeUnit.MILLISECONDS))
+        .applyToSslSettings(ssl -> {
+          ssl.enabled(target.tls() != Tls.OFF);
+          if (target.tls() == Tls.ENCRYPTED) {
+            // Encrypted, but any certificate for any name, as the JDBC drivers' "encrypted"
+            // (sslmode=require, trustServerCertificate) on the user's choice: Verified checks it.
+            // The driver has no option for it, so it gets a trust manager that takes all.
+            ssl.invalidHostNameAllowed(true).context(trustingAll());
+          }
+        });
   }
 
   private static SSLContext trustingAll() {

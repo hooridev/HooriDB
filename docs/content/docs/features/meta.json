@@ -9,6 +9,7 @@
     "history",
     "command-palette",
     "tabs-and-windows",
-    "drivers"
+    "drivers",
+    "mongodb"
   ]
 }

@@ -63,6 +63,7 @@ public final class DocumentConnector {
     return new Target(
         host,
         profile.port(),
+        profile.srv(),
         profile.user(),
         profile.provider().documents().authDatabase(),
         profile.tls(),

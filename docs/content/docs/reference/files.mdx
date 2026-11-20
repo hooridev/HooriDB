@@ -14,8 +14,8 @@ Files kept in this folder:
 
 | File | Contents |
 | --- | --- |
-| `workspace.json` | Folders, their open/closed state, and connection profiles (no passwords). On first start, if `workspace.json` is missing and an earlier version's `connections.json` exists, HooriDB imports those connections. |
-| `consoles.json` | Open SQL consoles (their connection, selected database, and text). |
+| `workspace.json` | Folders, their open/closed state, and connection profiles (no passwords), including `readOnly` for read-only MongoDB connections. On first start, if `workspace.json` is missing and an earlier version's `connections.json` exists, HooriDB imports those connections. |
+| `consoles.json` | Open consoles (their connection, selected database, and text). |
 | `history.json` | Statements run from consoles (up to 1,000 per connection). |
 | `updates.json` | Update channel (`stable` or `nightly`) and update state. |
 
@@ -28,7 +28,7 @@ On Linux, HooriDB writes these files with owner-only permissions (`rw-------`), 
 
 Subfolders kept here:
 
-- `drivers/`: downloaded JDBC driver JAR files and their `.sha256` checksum records.
+- `drivers/`: downloaded driver JAR files (JDBC drivers and the MongoDB Java driver with its dependencies) and their `.sha256` checksum records.
 - `updates/`: downloaded release archives used when applying an update.
 
 ## Passwords

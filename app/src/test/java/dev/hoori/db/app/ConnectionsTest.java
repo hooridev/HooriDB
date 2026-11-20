@@ -290,6 +290,66 @@ class ConnectionsTest {
     assertTrue(saved.readOnly());
   }
 
+  /**
+   * A connection to MongoDB may name an SRV record, as mongodb+srv:// does: it has no port then,
+   * and TLS is on as the driver has it; a server of SQL does not offer it.
+   */
+  @Test
+  void aMongoDbConnectionCanUseAnSrvRecord() throws IOException {
+    App<State> app = app();
+    run(
+        app,
+        NEW_SHOP + provider("MongoDB") + """
+        press role=textbox label="Host"
+        key A control
+        type "localhost"
+        frame
+        snap local
+        press role=textbox label="Port"
+        key A control
+        key Backspace
+        frame
+        press role=checkbox label="Servers from DNS"
+        frame
+        advance 1
+        frame
+        snap srv
+        """ + provider("PostgreSQL") + """
+        snap sql
+        """ + provider("MongoDB")
+            + """
+        snap again
+        press role=checkbox label="Servers from DNS"
+        frame
+        advance 1
+        frame
+        press role=button label="Save"
+        frame
+        """ + SETTLE + """
+        advance 1
+        frame
+        snap saved
+        """);
+    String local = tree("local");
+    assertTrue(line(local, "#port").contains("\"27017\""), local);
+    assertTrue(line(local, "#tls").contains("label=\"Off\""), local);
+    String srv = tree("srv");
+    assertFalse(srv.contains("#port"), srv);
+    assertFalse(line(srv, "role=checkbox label=\"Servers from DNS\"").contains("checked=false"));
+    assertTrue(line(srv, "#tls").contains("label=\"Encrypted, any certificate\""), srv);
+    // The port cleared before is hidden now and keeps nothing back.
+    assertFalse(line(srv, "label=\"Save\"").contains("disabled"), srv);
+    assertFalse(tree("sql").contains("Servers from DNS"), tree("sql"));
+    assertTrue(tree("sql").contains("#port"), tree("sql"));
+    String again = tree("again");
+    assertTrue(line(again, "role=checkbox label=\"Servers from DNS\"").contains("checked=false"));
+    assertTrue(line(again, "#tls").contains("label=\"Off\""), again);
+    assertFalse(tree("saved").contains("role=dialog"), tree("saved"));
+    var saved = stored().getFirst();
+    assertTrue(saved.srv());
+    assertEquals(Tls.ENCRYPTED, saved.tls());
+  }
+
   @Test
   void aNewConnectionIsListedAndSaved() throws IOException {
     App<State> app = app();
@@ -686,7 +746,8 @@ class ConnectionsTest {
             copy.tls(),
             copy.color(),
             copy.driverVersion(),
-            copy.readOnly()));
+            copy.readOnly(),
+            copy.srv()));
   }
 
   @Test

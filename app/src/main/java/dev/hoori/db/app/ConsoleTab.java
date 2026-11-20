@@ -11,7 +11,6 @@ import com.rethinkj.ui.El;
 import com.rethinkj.ui.Highlighter;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.Style;
-import com.rethinkj.ui.json.Json;
 import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
@@ -146,6 +145,7 @@ final class ConsoleTab implements Tab {
     // Of a server of documents, the documents of the rows, whole, and how they show.
     final List<Document> documents = new ArrayList<>();
     TableTab.Shown shown = TableTab.Shown.GRID;
+    int page; // of the documents shown whole, as many as a portion
     final DocumentTree whole = new DocumentTree();
 
     Output(int number, String statement, List<Field> fields, long count) {
@@ -2391,11 +2391,13 @@ final class ConsoleTab implements Tab {
   }
 
   static String rows(long n) {
-    return String.format(Locale.ROOT, "%,d", n) + (n == 1 ? " row" : " rows");
+    return rows(n, false);
   }
 
-  static String documents(long n) {
-    return String.format(Locale.ROOT, "%,d", n) + (n == 1 ? " document" : " documents");
+  /** How many rows, or documents, as "1,024 rows". */
+  static String rows(long n, boolean documents) {
+    var noun = documents ? " document" : " row";
+    return String.format(Locale.ROOT, "%,d", n) + noun + (n == 1 ? "" : "s");
   }
 
   // The view
@@ -2564,7 +2566,7 @@ final class ConsoleTab implements Tab {
           s.edited();
         })
         .key("sql")
-        .label("SQL")
+        .label(provider.keepsDocuments() ? "Statements" : "SQL")
         .autofocus(this)
         .wFull()
         .grow(1);
@@ -2712,7 +2714,7 @@ final class ConsoleTab implements Tab {
           .minSize(0, 0)
           .child(EmptyState.emptyState(
                   Symbol.CHECKMARK_CIRCLE,
-                  (keepsDocuments(s) ? documents(o.count) : rows(o.count)) + " changed",
+                  rows(o.count, keepsDocuments(s)) + " changed",
                   null,
                   null)
               .key("changed"))
@@ -2720,17 +2722,14 @@ final class ConsoleTab implements Tab {
               Card.footer(Label.label(Label.Variant.MUTED, brief(o.statement)).ellipsis(), pin));
     }
     boolean whole = !o.documents.isEmpty();
-    String count = whole ? documents(o.rows.size()) : rows(o.rows.size());
+    String count = rows(o.rows.size(), whole);
     String about = brief(o.statement) + " · "
         + (o.more
             ? count + " so far, more as it scrolls"
             : o.cut
                 ? "the first " + count + "; the rest was not read"
                 : o.dropped > 0
-                    ? "the first " + count + " of "
-                        + (whole
-                            ? documents(o.rows.size() + o.dropped)
-                            : rows(o.rows.size() + o.dropped))
+                    ? "the first " + count + " of " + rows(o.rows.size() + o.dropped, whole)
                         + "; the rest was read and not kept"
                     : count);
     if (o.documents.isEmpty()) {
@@ -2743,36 +2742,45 @@ final class ConsoleTab implements Tab {
               value.button(),
               pin));
     }
-    // Documents: as a grid, or whole, those read so far, with what reads more.
+    // Documents: as a grid, or whole, a page of those read so far, with the table's pager.
     var footer = new ArrayList<El>();
     footer.add(Segmented.segmented(
             List.of(TableTab.Shown.values()), o.shown, v -> v.title, v -> o.shown = v)
         .key("result-shown")
         .label("Show documents as"));
-    if (o.more && o.shown != TableTab.Shown.GRID) {
-      int at = o.rows.size();
-      footer.add(
-          button(SECONDARY, "Read more", () -> want(s, o, at, at + PORTION - 1)).key("read-more"));
-    }
-    if (o.shown == TableTab.Shown.GRID) {
-      footer.add(value.button());
-    }
-    footer.add(pin);
     El body;
     if (o.shown == TableTab.Shown.GRID) {
+      footer.add(value.button());
       body = withValue(s, app, o, grid(s, app, o));
     } else {
-      o.whole.show("r" + o.number, o.documents);
-      body = o.shown == TableTab.Shown.JSON
-          ? CodeEditor.embedded(
-              CodeEditor.codeEditor(app, o.whole.text(), o.whole.editor, Json.of(), null)
-                  .key("result-json")
-                  .label("Documents of result " + o.number))
-          : o.whole
-              .tree(s.zone, node -> {})
-              .key("result-tree")
-              .label("Documents of result " + o.number);
+      int last = Math.max(0, (o.documents.size() - 1) / PORTION);
+      if (o.page > last && (o != reading || work == null)) {
+        o.page = last; // the next page did not come: nothing was left, or the read stopped
+      }
+      int from = o.page * PORTION;
+      int to = Math.min(from + PORTION, o.documents.size());
+      footer.add(Label.label(
+              Label.Variant.MUTED,
+              to <= from ? "No documents" : TableTab.range(from + 1L, to, true))
+          .key("rows-in-view"));
+      footer.add(TableTab.paging(
+          o.page > 0,
+          (o.page + 1) * PORTION < o.documents.size() || o.more,
+          () -> turn(s, o, 0),
+          () -> turn(s, o, o.page - 1),
+          () -> turn(s, o, o.page + 1),
+          o.more ? null : () -> turn(s, o, last))); // the last is known once all is read
+      if (to > from) {
+        o.whole.show("p" + o.page, o.documents, from, to);
+        body = o.whole.view(app, o.shown, s.zone, "Documents of result " + o.number);
+      } else {
+        body = col()
+            .center()
+            .child(Label.label(Label.Variant.MUTED, o.more ? "Reading documents…" : "No documents")
+                .key("no-documents"));
+      }
     }
+    footer.add(pin);
     return col()
         .grow(1)
         .minSize(0, 0)
@@ -2780,6 +2788,18 @@ final class ConsoleTab implements Tab {
         .child(Card.footer(
             Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
             footer.toArray(El[]::new)));
+  }
+
+  /**
+   * Shows the page of the result's documents, reading the next portion where it is not full: not
+   * past one that is not, which shows what comes first.
+   */
+  private void turn(State s, Output o, int page) {
+    int at = o.documents.size();
+    o.page = Math.clamp(page, 0, at / PORTION);
+    if ((o.page + 1) * PORTION > at) {
+      want(s, o, at, at + PORTION - 1);
+    }
   }
 
   /**
@@ -3206,10 +3226,10 @@ final class ConsoleTab implements Tab {
     }
     boolean whole = keepsDocuments(s);
     if (rows) {
-      text.append(" · ").append(whole ? documents(read) : rows(read)).append(more ? " so far" : "");
+      text.append(" · ").append(rows(read, whole)).append(more ? " so far" : "");
     }
     if (counts) {
-      text.append(" · ").append(whole ? documents(changed) : rows(changed)).append(" changed");
+      text.append(" · ").append(rows(changed, whole)).append(" changed");
     }
     return text.toString();
   }

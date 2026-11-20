@@ -86,6 +86,7 @@ class WorkspaceStoreTest {
           Tls.OFF,
           Color.RED,
           null,
+          false,
           false),
       new ConnectionProfile(
           UUID.randomUUID(),
@@ -98,6 +99,7 @@ class WorkspaceStoreTest {
           Tls.ENCRYPTED,
           null,
           "8.4.0",
+          false,
           false),
       new ConnectionProfile(
           UUID.randomUUID(),
@@ -110,6 +112,7 @@ class WorkspaceStoreTest {
           Tls.VERIFIED,
           Color.GRAY,
           "3.5.1",
+          false,
           false),
       new ConnectionProfile(
           UUID.randomUUID(),
@@ -122,6 +125,20 @@ class WorkspaceStoreTest {
           Tls.ENCRYPTED,
           null,
           null,
+          true,
+          false),
+      new ConnectionProfile(
+          UUID.randomUUID(),
+          "atlas",
+          Provider.MONGODB,
+          "cluster0.example.net",
+          27017,
+          "",
+          "app",
+          Tls.VERIFIED,
+          null,
+          null,
+          false,
           true));
 
   /** Folders in folders, open and closed, one empty, with connections at each level. */
@@ -209,7 +226,12 @@ class WorkspaceStoreTest {
           profile.get("provider").stringValue() + " " + profile.get("tls").stringValue());
     }
     assertEquals(
-        List.of("postgresql off", "mysql encrypted", "mariadb verified", "mongodb encrypted"),
+        List.of(
+            "postgresql off",
+            "mysql encrypted",
+            "mariadb verified",
+            "mongodb encrypted",
+            "mongodb verified"),
         stored);
     var colors = new ArrayList<String>();
     for (var color : Color.values()) {
@@ -231,7 +253,18 @@ class WorkspaceStoreTest {
     for (var profile : entries()) {
       flags.add(profile.has("readOnly") ? profile.get("readOnly").booleanValue() : null);
     }
-    assertEquals(Arrays.asList(null, null, null, true), flags);
+    assertEquals(Arrays.asList(null, null, null, true, null), flags);
+    assertEquals(flat(PROFILES), new WorkspaceStore(folder).load());
+  }
+
+  @Test
+  void srvIsStoredOnlyWhereItIs() throws IOException {
+    new WorkspaceStore(folder).save(flat(PROFILES));
+    var flags = new ArrayList<Boolean>();
+    for (var profile : entries()) {
+      flags.add(profile.has("srv") ? profile.get("srv").booleanValue() : null);
+    }
+    assertEquals(Arrays.asList(null, null, null, null, true), flags);
     assertEquals(flat(PROFILES), new WorkspaceStore(folder).load());
   }
 
@@ -246,6 +279,7 @@ class WorkspaceStoreTest {
     var profile = new WorkspaceStore(folder).load().connections().getFirst();
     assertEquals(null, profile.color());
     assertEquals(null, profile.driverVersion());
+    assertEquals(false, profile.srv());
   }
 
   @Test
@@ -347,6 +381,7 @@ class WorkspaceStoreTest {
         broken(
             VALID.replace("\"off\"", "\"off\", \"readOnly\": \"yes\""),
             "\"readOnly\" is not true or false"),
+        broken(VALID.replace("\"off\"", "\"off\", \"srv\": 1"), "\"srv\" is not true or false"),
         broken(
             VALID.replace(CONNECTION, CONNECTION + "," + CONNECTION),
             "entry 1.2 has the id 0f8fad5b-d9cb-469f-a165-70867728950e of an earlier one"),
@@ -460,6 +495,7 @@ class WorkspaceStoreTest {
             Tls.VERIFIED,
             Color.GRAY,
             "3.5.1",
+            false,
             false),
         taken.connections().get(1));
     var changed = taken.remove(first.id());
