@@ -76,7 +76,8 @@ public final class Query {
 
   /**
    * Prepares the statement and runs the work with it. A driver may apply JDBC escapes to the text
-   * of a prepared statement: it holds no names, which go in parameters.
+   * of a prepared statement, though not within a quoted name, and takes a {@code ?} there for no
+   * parameter; a value goes in a parameter.
    */
   public static <T> T run(Connection connection, Provider provider, String sql, Work<T> work)
       throws QueryException {

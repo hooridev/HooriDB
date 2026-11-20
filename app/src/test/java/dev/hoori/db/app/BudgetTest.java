@@ -63,6 +63,7 @@ class BudgetTest {
       var builder = new ProcessBuilder(
               ProcessHandle.current().info().command().orElseThrow(),
               "--enable-native-access=ALL-UNNAMED",
+              "-Xms32m", // as the bundle's --java-options in app/pom.xml
               "-Djava.util.logging.config.file=" + logging,
               "-Drethinkj.ui.natives.cache=" + System.getProperty("rethinkj.ui.natives.cache"),
               "-cp",
