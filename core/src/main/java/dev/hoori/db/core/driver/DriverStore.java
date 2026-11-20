@@ -435,7 +435,7 @@ public final class DriverStore {
       return entries
           .map(entry -> entry.getFileName().toString())
           .filter(Maven::isVersion)
-          .filter(version -> Files.isRegularFile(jar(driver, version)))
+          .filter(version -> present(driver, version))
           .sorted(Maven.NEWEST_FIRST)
           .toList();
     } catch (IOException e) {
@@ -615,6 +615,18 @@ public final class DriverStore {
         continue;
       }
       if (!matchesRecord(file)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Whether each file of the version is there, as a listing tells, which reads none of them: an
+  // optional part may be absent, never had.
+  private boolean present(Driver driver, String version) {
+    for (var artifact : artifacts(driver)) {
+      var file = jar(driver, artifact.artifact(), version);
+      if (!Files.isRegularFile(file) && !absent(artifact, file)) {
         return false;
       }
     }

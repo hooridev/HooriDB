@@ -675,6 +675,7 @@ public class DriverStoreTest {
     // Its record stays: it was downloaded, and is missing now.
     var extra = storage.resolve("dev.hoori.fake/fake-jdbc/1.0/fake-extra-1.0.jar");
     Files.delete(extra);
+    assertEquals(List.of(), store.downloaded(PARTED));
     assertFailure(Failure.NOT_DOWNLOADED, () -> store.load(PARTED, "1.0"));
     store.download(PARTED, "1.0", DriverStore.Progress.NONE);
     assertTrue(Files.isRegularFile(extra));
@@ -708,6 +709,7 @@ public class DriverStoreTest {
     Files.write(stored, FakeDriver.jar("2", temp));
     assertFailure(Failure.CHECKSUM_MISMATCH, () -> store.load(PARTED, "1.0"));
     Files.delete(stored);
+    assertEquals(List.of(), store.downloaded(PARTED));
     assertFailure(Failure.NOT_DOWNLOADED, () -> store.load(PARTED, "1.0"));
 
     store.download(PARTED, "1.0", DriverStore.Progress.NONE);
