@@ -819,7 +819,9 @@ class DriversTest {
     var app = local(null);
     app.state().theme = theme;
     Script.run(
-        START + EDIT_LOCAL + "snap a-edit-" + look + "\n" + DRIVER + "snap b-driver-" + look + "\n"
+        START + EDIT_LOCAL + "snap a-edit-" + look + "\n" + ConnectionColorsTest.COLOR
+            + "snap g-color-" + look
+            + "\nkey Escape\nframe\nadvance 1\nframe\n" + DRIVER + "snap b-driver-" + look + "\n"
             + CLOSE_DRIVER + "key Escape\nframe\nadvance 1\nframe\n" + """
             press role=button label="Add connection"
             frame

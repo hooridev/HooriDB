@@ -64,21 +64,36 @@ class ConnectionColorsTest {
         .count();
   }
 
+  /** Color in the dialog: the button that opens the swatches in a popover. */
+  static final String COLOR = """
+      press role=button label="Color"
+      frame
+      advance 1
+      frame
+      """;
+
+  /** Chooses a swatch in the open popover, which closes. */
+  static String swatch(String name) {
+    return "press role=radio label=\"" + name + "\"\nframe\nadvance 1\nframe\n";
+  }
+
   @Test
   void aColorChosenInTheDialogShowsAtTheRowAndSurvivesARestart() throws Exception {
     var app = c.app(SHOP);
     c.run(
         app,
-        START + "snap none\n" + menu("shop-prod", "Edit…") + SETTLE + """
-        press role=radio label="Red"
-        frame
-        snap red
-        focus role=radiogroup label="Color"
+        START + "snap none\n" + menu("shop-prod", "Edit…") + SETTLE + "snap closed\n" + COLOR
+            + "snap open\n" + swatch("Red") + "snap red\n" + COLOR + """
         key ArrowRight
         frame
         snap orange
         key ArrowLeft
         frame
+        key Escape
+        frame
+        advance 1
+        frame
+        snap escaped
         press role=button label="Save"
         frame
         advance 1
@@ -86,12 +101,27 @@ class ConnectionColorsTest {
         """ + SETTLE
             + "snap saved\n");
     assertFalse(row(c.tree("none"), "shop-prod").contains("#color "), "a file without colors");
+    String closed = c.tree("closed");
+    assertTrue(line(closed, "role=button label=\"Color\"").contains("expanded=false"), closed);
+    assertTrue(line(closed, "role=button label=\"Color\"").contains("value=\"None\""), closed);
+    assertFalse(closed.contains("role=radio "), "no swatches in the form: " + closed);
+    String open = c.tree("open");
+    assertTrue(line(open, "#popover role=dialog").contains("label=\"Color\""), open);
+    assertTrue(line(open, "role=radiogroup").endsWith(" focused"), "arrows work at once: " + open);
+    assertTrue(line(open, "role=button label=\"Color\"").contains(" expanded"), open);
+    assertFalse(line(open, "role=button label=\"Color\"").contains("expanded=false"), open);
+    assertTrue(line(open, "role=radio label=\"None\"").endsWith(" checked"), open);
     String red = c.tree("red");
-    assertTrue(line(red, "role=radiogroup").contains("label=\"Color\""), red);
-    assertTrue(line(red, "role=radio label=\"None\"").contains("checked=false"), red);
-    assertTrue(line(red, "role=radio label=\"Red\"").contains("checked"), red);
-    assertFalse(line(red, "role=radio label=\"Red\"").contains("checked=false"), red);
+    assertFalse(red.contains("role=radiogroup"), "a swatch chosen closes it: " + red);
+    var button = line(red, "role=button label=\"Color\"");
+    assertTrue(button.contains("value=\"Red\"") && button.contains("expanded=false"), red);
     assertTrue(line(c.tree("orange"), "role=radio label=\"Orange\"").endsWith(" checked"), "keys");
+    // Escape closes the popover alone: the dialog stays, and asks nothing.
+    String escaped = c.tree("escaped");
+    assertFalse(escaped.contains("role=radiogroup"), escaped);
+    assertTrue(escaped.contains("role=dialog label=\"Edit connection\""), escaped);
+    assertFalse(escaped.contains("Discard changes?"), escaped);
+    assertTrue(line(escaped, "role=button label=\"Color\"").contains("value=\"Red\""), escaped);
     // The mark beside the dialog's title follows the choice.
     assertEquals(1, marks(red, "red"), red);
     assertEquals(1, marks(c.tree("orange"), "orange"), c.tree("orange"));
@@ -103,6 +133,41 @@ class ConnectionColorsTest {
 
     c.run(restart(), START + "snap restarted\n");
     assertTrue(marks(row(c.tree("restarted"), "shop-prod"), "red") == 1);
+  }
+
+  /** A color alone is a change: Cancel asks first; None takes the color away. */
+  @Test
+  void onlyAColorChangedAsksBeforeItIsDiscardedAndNoneTakesItAway() throws Exception {
+    var app = c.app(SHOP.withColor(Color.RED));
+    c.run(
+        app,
+        START + menu("shop-prod", "Edit…") + SETTLE + COLOR + swatch("Blue") + """
+        key Escape
+        frame
+        advance 1
+        frame
+        snap asked
+        press role=button label="Discard"
+        frame
+        advance 1
+        frame
+        """ + SETTLE
+            + "snap discarded\n" + menu("shop-prod", "Edit…") + SETTLE + COLOR
+            + swatch("None") + "snap none\n" + """
+        press role=button label="Save"
+        frame
+        advance 1
+        frame
+        """ + SETTLE
+            + "snap saved\n");
+    assertTrue(c.tree("asked").contains("Discard changes?"), c.tree("asked"));
+    assertTrue(marks(row(c.tree("discarded"), "shop-prod"), "red") == 1, c.tree("discarded"));
+    String none = c.tree("none");
+    assertTrue(line(none, "role=button label=\"Color\"").contains("value=\"None\""), none);
+    var dialog = none.substring(none.indexOf("role=dialog label=\"Edit connection\""));
+    assertEquals(0, marks(dialog, "red"), "no mark beside the title: " + none);
+    assertFalse(row(c.tree("saved"), "shop-prod").contains("#color "), c.tree("saved"));
+    assertEquals(null, new ProfileStore(dir.resolve("config")).load().getFirst().color());
   }
 
   @Test
