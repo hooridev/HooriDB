@@ -19,6 +19,20 @@ nightlies() {
     'map(select((.isDraft | not) and (.tagName | test($re)))) | sort_by(.tagName | split(".") | last) | .[].tagName'
 }
 
+# Fails if a published stable release of the list given has base's X.Y.Z or a higher one:
+# nightlies of base would rank below it and never be offered.
+guard() {
+  local base=$1 stables stable
+  stables=$(jq -r 'map(select((.isDraft or .isPrerelease) | not)) | .[].tagName' <<< "$2" |
+    sed -nE 's/^v([0-9]+\.[0-9]+\.[0-9]+)(\+[0-9A-Za-z.-]+)?$/\1/p')
+  for stable in $stables; do
+    if [ "$(printf '%s\n' "$base" "$stable" | sort -V | tail -n 1)" = "$stable" ]; then
+      echo "::error::$stable is released, so the default branch's version must be raised above $base: updates would never offer its nightlies."
+      exit 1
+    fi
+  done
+}
+
 # Takes PROJECT_VERSION (the default branch's, X.Y.Z-SNAPSHOT) and GITHUB_SHA; writes build,
 # version and previous (the newest nightly's tag, if any) to GITHUB_OUTPUT.
 prepare() {
@@ -27,16 +41,9 @@ prepare() {
     echo "::error::The default branch's version $PROJECT_VERSION is not X.Y.Z-SNAPSHOT."
     exit 1
   fi
-  local list stables stable previous commit
+  local list previous commit
   list=$(releases)
-  stables=$(jq -r 'map(select((.isDraft or .isPrerelease) | not)) | .[].tagName' <<< "$list" |
-    sed -nE 's/^v([0-9]+\.[0-9]+\.[0-9]+)$/\1/p')
-  for stable in $stables; do
-    if [ "$(printf '%s\n' "$base" "$stable" | sort -V | tail -n 1)" = "$stable" ]; then
-      echo "::error::$stable is released, so the default branch's version $PROJECT_VERSION must be raised: updates would never offer nightlies of $base."
-      exit 1
-    fi
-  done
+  guard "$base" "$list"
   previous=$(nightlies <<< "$list" | tail -n 1)
   if [ -n "$previous" ]; then
     commit=$(gh api "repos/$GH_REPO/commits/$previous" --jq .sha)
@@ -58,6 +65,7 @@ publish() {
   sha256sum HooriDB-* > SHA256SUMS
   local list drafts tag old
   list=$(releases)
+  guard "${VERSION%%-nightly.*}" "$list" # a release may have come out during the build
   # A draft has no tag until it is published, so a failed run leaves its draft behind.
   drafts=$(jq -r --arg re "$nightly" 'map(select(.isDraft and (.tagName | test($re)))) | .[].tagName' <<< "$list")
   for tag in $drafts; do
