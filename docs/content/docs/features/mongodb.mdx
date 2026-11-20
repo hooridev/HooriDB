@@ -1,0 +1,80 @@
+---
+title: MongoDB
+description: Connect to MongoDB, browse its databases and collections, look at documents, and run shell statements in a console.
+---
+
+HooriDB connects to MongoDB through the official MongoDB Java driver. A MongoDB connection lives in the [Workspace](/docs/features/workspace) like any other: it has a color, a password in the system keyring, a tree, table tabs, consoles, and [History](/docs/features/history). This page covers what is different.
+
+## Connect to MongoDB
+
+1. Open the connection dialog (see [Your first connection](/docs/get-started/first-connection)) and choose **MongoDB** as the **Type**. The **Port** changes to `27017` unless you already edited it.
+2. Enter the **Host** and **Port** of one server. HooriDB connects to that server alone, as the shell does with one host; `mongodb+srv://` addresses and lists of hosts are not supported yet.
+3. Optionally enter a **Database**. It is where consoles start; without one, they start on `test`.
+4. Choose the **TLS** setting, as for the other types.
+5. Check **Read-only** next to **Access** if HooriDB should only read on this connection (see below).
+6. Enter the **User** and **Password**, or leave **User** empty for a server without access control (if HooriDB still asks for a password, press **Connect** with the field empty). The user is looked up in the `admin` database, which covers a server's own setup and MongoDB Atlas; users created in another database cannot log in yet.
+
+The first time you connect or test, HooriDB asks before downloading the MongoDB Java driver. See [Drivers](/docs/features/drivers).
+
+## Read-only connections
+
+With **Read-only** checked, HooriDB sends only commands that read, and refuses every other one before it reaches the server:
+
+- `find`, the counts, `distinct`, and the commands that list databases, collections, and indexes or report statistics and server information.
+- `aggregate`, as long as no stage of its pipeline, nested ones included, is `$out` or `$merge`.
+- `explain` of any of these.
+
+Inserts, updates, deletes, index changes, drops, and commands HooriDB does not know are refused with a message in the console, for example `The connection is read-only: insertOne may change data and was not sent.` Read-only is a safeguard in HooriDB, not a permission on the server; for a hard limit, log in as a user that may only read.
+
+## Browse databases and collections
+
+Expanding a MongoDB connection in the tree shows its databases, then their collections and views, then the fields of each collection.
+
+- The databases your user may see are listed; `admin`, `config`, and `local` are shown in muted text. Collections whose names start with `system.` are left out.
+- Views show an eye icon, as in SQL databases.
+- A collection's fields come from a sample of 100 of its documents (the first 100 where the server cannot sample, such as for some views). `_id` comes first and is marked as the key; each other field shows the types it held in the sample, such as `string` or `int | null`. A field that some sampled documents lack is shown as nullable.
+
+**Refresh** reads the sample again. A field that none of the sampled documents has does not appear in the tree or the grid.
+
+## Look at a collection's documents
+
+Open a collection or view as you open a table (double-click it, or select it and press `Enter`). The **Show documents as** switch in the toolbar has three views:
+
+- **Grid**: the fields as columns, read in pages as you scroll, with the same paging buttons, row count, copying, and [value panel](/docs/features/table-data#inspect-a-cell-in-the-value-panel) as a table. A document or an array in a cell is shown as Relaxed Extended JSON, which the value panel formats and colors where the field holds only documents and arrays. A value shortened in the grid is read whole by its document's `_id`.
+- **JSON**: 200 documents at a time as a formatted array of Relaxed Extended JSON. Use **Previous documents** and **Next documents** to move between pages.
+- **Tree**: the same 200 documents, each as a tree of its fields.
+
+Documents are read in pages in the order of `_id`. The status bar counts documents as a table's status bar counts [rows](/docs/features/table-data#row-count-and-paging-controls); **Count documents** counts them exactly.
+
+## Run shell statements in a console
+
+**New console** on a MongoDB connection opens a console for statements of the MongoDB shell. HooriDB reads them itself, without JavaScript, and sends each as the server's own command; `use` and `db.getName()` are answered by HooriDB alone. Statements end at a semicolon or at the end of a complete line, and you run them as in an [SQL console](/docs/features/console): the statement at the caret, the selection, or all of them, with **Cancel**, Messages, pinned results, History, and consoles kept across restarts.
+
+The console understands:
+
+- `db.<collection>.find(…)` with `sort`, `limit`, `skip`, `projection`, `hint`, `collation`, `count`, `itcount`, and `explain`, and `findOne`.
+- `aggregate`, `countDocuments`, `estimatedDocumentCount`, and `distinct`.
+- The writes: `insertOne`, `insertMany`, `updateOne`, `updateMany`, `replaceOne`, `deleteOne`, `deleteMany`, and the `findOneAnd…` methods, with their options. An option the console cannot send is refused instead of dropped.
+- Indexes (`createIndex`, `getIndexes`, `dropIndex`, and others) and `drop`.
+- `db.runCommand(…)`, `db.adminCommand(…)`, `db.getName()`, `db.getSiblingDB('<database>').<collection>.find(…)` and other calls on another database, `use <database>`, `show dbs`, and `show collections`.
+
+A collection whose name is not a valid name in the shell is written as `db.getCollection('name')`.
+
+Results that hold documents have the same **Grid**, **JSON**, and **Tree** switch as a collection's tab; in **JSON** and **Tree**, **Read more** reads further documents while the result's cursor is open (running the next statement closes it). An insert, update, replace, or delete shows how many documents it changed; the `findOneAnd…` methods show the server's reply.
+
+`use <database>` switches the console's **Database** for the statements after it. You can also choose the database from the **Database** dropdown in the toolbar.
+
+### Errors and completions
+
+- A statement HooriDB cannot read is underlined where it goes wrong, and the caret moves there, as for a server's error in an SQL console.
+- Completions offer the collections after `db.`, the methods of a collection and a cursor, `$` operators, and the fields of the collection, as its sample has them.
+
+### Updates and deletes of every document
+
+Before an `updateMany` or `deleteMany` with an empty filter (`{}`) runs, HooriDB asks whether to update or delete every document of the collection.
+
+### No transactions
+
+A MongoDB console has no **Auto** / **Manual** switch, no **Commit** or **Rollback**, and no transaction state: each command takes effect by itself when the server runs it.
+
+See [Limitations](/docs/reference/limitations#mongodb) for what MongoDB connections cannot do yet.

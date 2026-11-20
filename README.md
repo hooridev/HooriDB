@@ -4,7 +4,7 @@
 
 # HooriDB
 
-A desktop database manager for PostgreSQL, MySQL, and MariaDB on Windows 11 and Linux (x64), written in Java with the GPU-rendered UI framework [rethinkj UI](https://ui.rethinkj.com).
+A desktop database manager for PostgreSQL, MySQL, MariaDB, and MongoDB on Windows 11 and Linux (x64), written in Java with the GPU-rendered UI framework [rethinkj UI](https://ui.rethinkj.com).
 
 [Website](https://db.hoori.dev) · [Docs](https://db.hoori.dev/docs) · [Download](https://github.com/hooridev/HooriDB/releases)
 
@@ -15,7 +15,7 @@ A desktop database manager for PostgreSQL, MySQL, and MariaDB on Windows 11 and 
 
 ## Status
 
-Early development. Only nightly builds are published so far as pre-releases on [GitHub Releases](https://github.com/hooridev/HooriDB/releases). You can browse schemas, read table rows, and run SQL, but you cannot edit, filter, or sort rows in the table grid yet. See [Limitations](https://db.hoori.dev/docs/reference/limitations) for what is not supported yet.
+Early development. Only nightly builds are published so far as pre-releases on [GitHub Releases](https://github.com/hooridev/HooriDB/releases). You can browse schemas and collections, read table rows and documents, and run SQL or MongoDB shell statements, but you cannot edit, filter, or sort rows in the table grid yet. See [Limitations](https://db.hoori.dev/docs/reference/limitations) for what is not supported yet.
 
 ## Features
 
@@ -23,11 +23,12 @@ Early development. Only nightly builds are published so far as pre-releases on [
 - **Schema browser**: Connect to multiple servers at once and expand databases, schemas (PostgreSQL), tables, views, and columns on demand.
 - **Table data**: Read table and view rows in pages as you scroll or use paging buttons, and inspect cells in a side value panel that formats and colors JSON, marks syntax errors, and loads shortened table values whole by primary key when the table has one.
 - **SQL console**: Run the statement at the caret, a selection, or all statements on a dedicated connection with keyword and object completions, inline error underlines, pinned result tabs, and a Messages log; open consoles are restored unconnected on the next start.
-- **Transactions**: Switch each console between Auto and Manual commit, commit or roll back open transactions, and get prompted before closing tabs, switching databases, disconnecting, exiting, or running an `UPDATE` or `DELETE` without `WHERE` (or `LIMIT` on MySQL and MariaDB).
+- **MongoDB**: Browse databases, collections, and the fields of a sample of their documents, view documents as a grid, Relaxed Extended JSON, or a tree, and run shell statements (`find`, `aggregate`, the writes, indexes, `runCommand`, and more) in a console with completions; a connection can be read-only, which sends only commands that read.
+- **Transactions**: Switch each SQL console between Auto and Manual commit, commit or roll back open transactions, and get prompted before closing tabs, switching databases, disconnecting, exiting, or running an `UPDATE` or `DELETE` without `WHERE` (or `LIMIT` on MySQL and MariaDB).
 - **Statement history**: Keep up to 1,000 recent statements per connection, search them, insert them back into a console, or clear them.
 - **Command palette**: Run menu commands from the keyboard (`Ctrl+Shift+P` or `F1`) and jump to tables and views by name (`Ctrl+P`, or `@` in the palette), loading unread databases on demand.
 - **Tabs and windows**: Reorder tabs, drag them out or move them into separate windows, and switch between dark and light themes.
-- **Driver management**: Download official PostgreSQL, MySQL, and MariaDB JDBC drivers from Maven Central after confirmation, verify checksums, and list or delete downloaded versions in **File > Drivers…**.
+- **Driver management**: Download official PostgreSQL, MySQL, and MariaDB JDBC drivers and the MongoDB Java driver from Maven Central after confirmation, verify checksums, and list or delete downloaded versions in **File > Drivers…**.
 - **Built-in updates**: Check GitHub Releases on startup when running from an installed app image, switch between Stable and Nightly channels in **Help**, and roll back automatically if a new version fails to show its first frame.
 
 | | |

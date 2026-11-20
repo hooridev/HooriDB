@@ -9,11 +9,11 @@ import { download, repository } from '@/lib/shared';
 const content = {
   hero: {
     title: 'HooriDB',
-    tagline: 'A desktop database manager for browsing schemas, reading table rows, and running SQL.',
+    tagline: 'A desktop database manager for browsing schemas, reading table rows and documents, and running SQL or MongoDB shell statements.',
     download: 'Download',
     docs: 'Read the docs',
     platforms: 'Windows 11 and Linux, x64',
-    databases: 'PostgreSQL, MySQL and MariaDB',
+    databases: 'PostgreSQL, MySQL, MariaDB and MongoDB',
     shot: 'overview',
     alt: 'HooriDB with the Workspace tree on the left and the orders table open in a tab',
   },
@@ -51,6 +51,7 @@ const content = {
         'Run the statement at the caret with Ctrl+Enter or all statements with Ctrl+Shift+Enter',
         'Pin result tabs to keep them across runs, and cancel running statements',
         'Completions for SQL keywords, schemas, tables, views, and columns',
+        'MongoDB shell statements in a console of their own, with results as a grid, JSON, or a tree',
       ],
       link: 'Read about the console',
       href: '/docs/features/console',
@@ -88,7 +89,7 @@ const content = {
     items: [
       {
         title: 'Early',
-        text: 'HooriDB is in early development. You can browse schemas, read table rows, and run SQL, but you cannot edit, filter, or sort table data in the grid yet.',
+        text: 'HooriDB is in early development. You can browse schemas and collections, read table rows and documents, and run SQL or MongoDB shell statements, but you cannot edit, filter, or sort table data in the grid yet.',
         href: '/docs/reference/limitations',
         link: 'What it cannot do yet',
       },

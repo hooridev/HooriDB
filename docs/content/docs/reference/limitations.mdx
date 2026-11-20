@@ -10,11 +10,11 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 - You cannot edit, insert, or delete rows in a table grid. Use an [SQL console](/docs/features/console) to change data.
 - You cannot filter or sort rows in the grid.
 - A table grid displays at most 2,147,483,647 rows, and copying from a grid is limited to 100,000 selected cells at once from rows that are already loaded.
-- Values longer than 1,024 characters can be fetched whole in the value panel only for tables that have a primary key. In tables without a primary key, and in SQL console results, the value panel shows only the first 1,024 characters.
+- Values longer than 1,024 characters can be fetched whole in the value panel only for tables that have a primary key, and for collections by the document's `_id`. In tables without a primary key, and in SQL console results, the value panel shows only the first 1,024 characters.
 
 ## Databases and platforms
 
-- Only PostgreSQL, MySQL, and MariaDB are supported.
+- Only PostgreSQL, MySQL, MariaDB, and MongoDB are supported.
 - Only Windows 11 or later (x64, Direct3D 12) and Linux (x64, glibc 2.38 or later, Vulkan) are supported. macOS, ARM builds, web, and mobile are not supported.
 
 ## Browsing and schema management
@@ -31,8 +31,21 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 - You cannot copy rows from the **Messages** tab.
 - There is no SQL formatter, data import/export, or visual query plan viewer.
 
+## MongoDB
+
+Some of these limits are tracked in [issue #57](https://github.com/hooridev/HooriDB/issues/57).
+
+- A connection goes to one host and port. `mongodb+srv://` addresses and lists of hosts are not supported.
+- The user is looked up in the `admin` database only. Users created in another database cannot log in.
+- A field missing from a document shows in the grid like a field that is `null`. **JSON** and **Tree** show the difference.
+- Pages are read by offset in the order of `_id`. On a view that projects `_id` out or repeats it, documents can repeat or go missing between pages.
+- A collection's fields in the tree and the grid come from a sample of 100 documents, so a field that none of them has is missing there; **JSON** and **Tree** show it.
+- The console reads [shell statements](/docs/features/mongodb#run-shell-statements-in-a-console) without JavaScript: variables, functions, and loops are not supported.
+- There are no transactions in a MongoDB console.
+
 ## Connections and appearance
 
+- **Read-only** exists only for MongoDB connections.
 - There is no built-in support for SSH tunnels, client TLS certificates, or custom driver parameters.
 - Connections cannot be imported or exported from the UI.
 - Theme selection (**Dark theme** / **Light theme**) is not saved across restarts; HooriDB starts in dark theme each time.
