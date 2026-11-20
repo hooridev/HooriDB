@@ -225,6 +225,10 @@ class ConsoleHistoryTest {
     var tab = k.tab(app);
     assertEquals("SELECT * FROM orders WHERE id = 1;\n" + COUNT + ";", tab.text);
     assertEquals(tab.text.length(), tab.editor.caret(), "where Run runs it");
+    // Undo takes it back, with the caret where it was.
+    c.run(app, "key Z control\nframe\n");
+    assertEquals("SELECT * FROM orders WHERE id = 1", tab.text);
+    assertEquals(tab.text.length() - 2, tab.editor.caret(), "where it was");
     c.run(app, CLEAR + type("SELECT 1;\nSELECT 2;") + "key ArrowUp\nkey ArrowLeft\n" + choose);
     assertEquals("SELECT 1;\n" + COUNT + ";\nSELECT 2;", tab.text);
     // Before a statement on the caret's line: the caret after the entry, not in the one below.

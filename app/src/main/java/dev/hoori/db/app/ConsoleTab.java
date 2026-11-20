@@ -2965,8 +2965,9 @@ final class ConsoleTab implements Tab {
       }
     }
     int caret = from + put.stripTrailing().length();
-    // shortcut: the editor's field is looked up in the tree, as CodeEditor.State's replaceSelection
-    // puts the caret after the text, here after the line break; use it once it takes a caret.
+    // shortcut: the editor's field is looked up in the tree, as CodeEditor.State replaces only its
+    // selection, and selecting the range first makes Undo restore that selection, not the caret;
+    // use the state once it can replace a range.
     var field = Frame.find(app.tree(), "sql");
     if (field != null) {
       app.edit(field, from, to, put, caret);
