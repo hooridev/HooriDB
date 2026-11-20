@@ -13,13 +13,14 @@ Workspace connects to a database server when you open a connection in the tree a
 2. Expand each level to load its children from the server:
    - PostgreSQL: Connection, then databases, schemas, tables and views, and columns.
    - MySQL and MariaDB: Connection, then databases, tables and views, and columns.
+   - MongoDB: Connection, then databases, collections and views, and fields from a sample of documents. See [MongoDB](/docs/features/mongodb#browse-databases-and-collections).
 
 You can have multiple connections open at the same time. The bottom-left corner of the status bar shows how many connections are currently connected (for example, `2 connected`).
 
 In the tree:
 
 - A connected server has a green icon; a connection that failed or dropped has a red icon.
-- System databases and system schemas (such as `pg_catalog`, `information_schema`, `mysql`, `performance_schema`, and `sys`) are shown in muted text.
+- System databases and system schemas (such as `pg_catalog`, `information_schema`, `mysql`, `performance_schema`, and `sys`, or `admin`, `config`, and `local` on MongoDB) are shown in muted text.
 - Tables show a table icon, and views show an eye icon.
 - Each column shows its server data type. Primary key columns are marked with a key icon.
 
