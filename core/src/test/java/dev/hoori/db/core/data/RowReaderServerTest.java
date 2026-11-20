@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * A statement's result read as {@link Rows#read} reads a table: for every type that {@link
@@ -34,7 +35,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 class RowReaderServerTest {
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aQueryOfATableGivesTheKindsAndValuesOfTheTable(Provider provider) throws Exception {
     var types = RowsServerTest.types(provider);
     var pg = provider == Provider.POSTGRESQL;
@@ -102,7 +103,7 @@ class RowReaderServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aQueryCutsLongTextAndBinaryDataAsATableDoes(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     var limit = Rows.LIMIT;
@@ -208,7 +209,7 @@ class RowReaderServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void expressionsHaveTheKindsOfTheirTypes(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {

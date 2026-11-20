@@ -31,7 +31,7 @@ class KeywordsTest {
     assertFalse(Keywords.offered(MYSQL).contains("CONFLICT"));
     assertTrue(Keywords.offered(MARIADB).contains("ENGINE"));
     assertFalse(Keywords.offered(POSTGRESQL).contains("ENGINE"));
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       assertTrue(
           Keywords.offered(provider).containsAll(Keywords.reserved(provider)), provider.name());
       assertTrue(Keywords.offered(provider).contains("COMMIT"), provider.name());

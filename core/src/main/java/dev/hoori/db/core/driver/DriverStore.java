@@ -12,8 +12,10 @@ import static dev.hoori.db.core.driver.DriverException.Failure.NO_NETWORK;
 import static dev.hoori.db.core.driver.DriverException.Failure.NO_SPACE;
 import static dev.hoori.db.core.driver.DriverException.Failure.STORAGE;
 import static dev.hoori.db.core.driver.DriverException.Failure.TOO_LARGE;
+import static dev.hoori.db.core.driver.DriverException.Failure.TOO_OLD;
 import static dev.hoori.db.core.driver.DriverException.Failure.UNAVAILABLE;
 
+import dev.hoori.db.core.document.DocumentDriver;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -143,6 +145,7 @@ public final class DriverStore {
     checkCancelled(path);
     return parse(path, fetch(path, MAX_METADATA_SIZE)).stream()
         .filter(Maven::isVersion)
+        .filter(driver::takes)
         .distinct()
         .sorted(Maven.NEWEST_FIRST)
         .toList();
@@ -161,6 +164,7 @@ public final class DriverStore {
    * costs one request whose body is cut off after the headers.
    */
   public long size(Driver driver, String version) throws DriverException {
+    taken(driver, version);
     long total = 0;
     for (var artifact : artifacts(driver)) {
       var path = file(driver, artifact.artifact(), version);
@@ -216,7 +220,7 @@ public final class DriverStore {
       // A version on disk was either recommended when it was downloaded or chosen on purpose,
       // which is good enough offline, so its age is not checked again and no dates are kept.
       for (var version : downloaded(driver)) {
-        if (Maven.isStable(version) && complete(driver, version)) {
+        if (Maven.isStable(version) && driver.takes(version) && complete(driver, version)) {
           return new Recommended(version, true, null);
         }
       }
@@ -260,6 +264,7 @@ public final class DriverStore {
    * its checksum. Two downloads of one version at once both succeed with one of their results.
    */
   public void download(Driver driver, String version, Progress progress) throws DriverException {
+    taken(driver, version);
     var jar = jar(driver, version);
     var path = file(driver, version);
     checkCancelled(path);
@@ -519,6 +524,7 @@ public final class DriverStore {
 
   /** Loads the downloaded version in a class loader of its own. */
   public LoadedDriver load(Driver driver, String version) throws DriverException {
+    taken(driver, version);
     var jar = jar(driver, version);
     var path = file(driver, version);
     checkCancelled(path);
@@ -553,27 +559,17 @@ public final class DriverStore {
     // does not against whoever can write the data folder, who can replace the record or the app.
     // Its resources are read past Java's cache of jar: files, which keeps a file open beyond the
     // loader's close, as long as the process runs; Windows deletes no file that is open.
-    var loader =
-        new URLClassLoader(
-            driver.artifact() + "-" + version,
-            urls.toArray(URL[]::new),
-            ClassLoader.getPlatformClassLoader()) {
-          @Override
-          public URL findResource(String name) {
-            return uncached(super.findResource(name));
-          }
-
-          @Override
-          public Enumeration<URL> findResources(String name) throws IOException {
-            return Collections.enumeration(Collections.list(super.findResources(name)).stream()
-                .map(DriverStore::uncached)
-                .toList());
-          }
-        };
+    var bridged = driver.driverClass().startsWith(BRIDGES);
+    var loader = bridged
+        ? new Bridging(driver.artifact() + "-" + version, urls.toArray(URL[]::new))
+        : new Uncached(driver.artifact() + "-" + version, urls.toArray(URL[]::new));
     try {
-      var type =
-          Class.forName(driver.driverClass(), true, loader).asSubclass(java.sql.Driver.class);
-      return new LoadedDriver(type.getDeclaredConstructor().newInstance(), loader);
+      var type = Class.forName(driver.driverClass(), true, loader);
+      var made = type.getDeclaredConstructor().newInstance();
+      if (bridged && made instanceof DocumentDriver documents) {
+        return new LoadedDriver(documents, loader);
+      }
+      return new LoadedDriver((java.sql.Driver) made, loader);
     } catch (ReflectiveOperationException | ClassCastException | LinkageError e) {
       try {
         loader.close();
@@ -581,6 +577,77 @@ public final class DriverStore {
         e.addSuppressed(suppressed);
       }
       throw new DriverException(NOT_A_DRIVER, driver.driverClass(), e);
+    }
+  }
+
+  /**
+   * The package of core's bridges to drivers that are not JDBC drivers. A driver whose class is in
+   * it is loaded with that class defined beside the driver's own, from core's file.
+   */
+  static final String BRIDGES = "dev.hoori.db.core.document.mongo.";
+
+  // The driver's files, read past Java's cache of jar: files.
+  private static class Uncached extends URLClassLoader {
+
+    Uncached(String name, URL[] urls) {
+      super(name, urls, ClassLoader.getPlatformClassLoader());
+    }
+
+    @Override
+    public URL findResource(String name) {
+      return uncached(super.findResource(name));
+    }
+
+    @Override
+    public Enumeration<URL> findResources(String name) throws IOException {
+      return Collections.enumeration(Collections.list(super.findResources(name)).stream()
+          .map(DriverStore::uncached)
+          .toList());
+    }
+  }
+
+  // Also defines core's bridge from core's own file, so that it links against the driver's classes,
+  // and lets it see core's other classes, the values it speaks in, from core's class loader. The
+  // driver's own classes see nothing of core: none of them names it.
+  private static final class Bridging extends Uncached {
+
+    private static final ClassLoader CORE = DriverStore.class.getClassLoader();
+
+    Bridging(String name, URL[] urls) {
+      super(name, urls);
+    }
+
+    @Override
+    protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+      synchronized (getClassLoadingLock(name)) {
+        var loaded = findLoadedClass(name);
+        if (loaded == null) {
+          if (name.startsWith(BRIDGES)) {
+            loaded = bridge(name);
+          } else if (name.startsWith("dev.hoori.db.core.")) {
+            loaded = CORE.loadClass(name);
+          } else {
+            return super.loadClass(name, resolve);
+          }
+        }
+        if (resolve) {
+          resolveClass(loaded);
+        }
+        return loaded;
+      }
+    }
+
+    private Class<?> bridge(String name) throws ClassNotFoundException {
+      var file = name.replace('.', '/') + ".class";
+      try (var in = CORE.getResourceAsStream(file)) {
+        if (in == null) {
+          throw new ClassNotFoundException(name);
+        }
+        var bytes = in.readAllBytes();
+        return defineClass(name, bytes, 0, bytes.length, DriverStore.class.getProtectionDomain());
+      } catch (IOException e) {
+        throw new ClassNotFoundException(name, e);
+      }
     }
   }
 
@@ -685,6 +752,14 @@ public final class DriverStore {
     }
     return driver.group().replace('.', '/') + "/" + artifact + "/" + version + "/" + artifact + "-"
         + version + ".jar";
+  }
+
+  // Also a version a profile chose before HooriDB needed a newer one.
+  private static void taken(Driver driver, String version) throws DriverException {
+    if (!driver.takes(version)) {
+      throw new DriverException(
+          TOO_OLD, file(driver, version) + " is older than " + driver.oldest());
+    }
   }
 
   private static void checkCancelled(String path) throws DriverException {

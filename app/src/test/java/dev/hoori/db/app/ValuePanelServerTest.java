@@ -18,7 +18,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * The value panel on real servers: a JSON value longer than a page holds is read whole by its
@@ -30,7 +30,7 @@ class ValuePanelServerTest {
   Path dir;
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aLongJsonValueShowsWholeAndFormatted(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     boolean pg = provider == Provider.POSTGRESQL;

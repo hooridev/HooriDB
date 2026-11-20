@@ -9,11 +9,14 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connect.Connector;
+import dev.hoori.db.core.connect.DocumentConnector;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.DocumentRun;
+import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
@@ -21,6 +24,7 @@ import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Plan;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
+import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -38,8 +42,21 @@ import java.util.concurrent.atomic.AtomicReference;
 @FunctionalInterface
 interface Servers {
 
-  /** Through the driver to the real server, with {@link Connector} and {@link Catalog}. */
+  /**
+   * Through the driver to the real server: with {@link Connector} and {@link Catalog} to one of
+   * SQL, with {@link DocumentConnector} and a {@link DocumentSession} to one of documents.
+   */
   Servers SERVER = (profile, password, driver) -> {
+    if (driver.documents()) {
+      var opened = DocumentConnector.open(profile, password, driver, Tester.TIMEOUT);
+      var session =
+          new DocumentSession(opened.client(), profile.provider().documents(), profile.readOnly());
+      return Documents.of(
+          session,
+          opened.server().parsed(),
+          opened.database(),
+          profile.provider().documents().defaultDatabase());
+    }
     var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
     return Real.of(
         opened.connection(), profile.provider(), opened.server().parsed(), opened.database());
@@ -135,6 +152,225 @@ interface Servers {
 
     /** Ends it, giving up the rows not read, as {@link Execution#abandon} says. */
     Abandoned close();
+  }
+
+  /**
+   * A client of a server of documents. Its collections are its tables, as the tree and a table's
+   * tab read them, and the fields its documents have its columns; it has no schemas, no plans and
+   * no transactions. Once a call found the connection lost, it is gone for good, as {@link Real}.
+   */
+  record Documents(
+      DocumentSession session,
+      ServerVersion version,
+      String database,
+      AtomicReference<String> current, // the database a run is on
+      AtomicReference<DocumentRun> open, // the statement whose documents are not all read
+      AtomicBoolean gone)
+      implements Link {
+
+    /**
+     * @param database the database the profile names, or null for none
+     * @param otherwise the database a run is on where the profile names none
+     */
+    static Documents of(
+        DocumentSession session, ServerVersion version, String database, String otherwise) {
+      return new Documents(
+          session,
+          version,
+          database,
+          new AtomicReference<>(database != null ? database : otherwise),
+          new AtomicReference<>(),
+          new AtomicBoolean());
+    }
+
+    private void usable() throws QueryException {
+      if (gone.get()) {
+        throw QueryException.of(QueryException.Failure.CONNECTION_LOST, GONE);
+      }
+    }
+
+    private void readable() throws CatalogException {
+      if (gone.get()) {
+        throw CatalogException.of(CatalogException.Failure.CONNECTION_LOST, GONE);
+      }
+    }
+
+    private CatalogException saw(CatalogException e) {
+      if (e.failure() == CatalogException.Failure.CONNECTION_LOST) {
+        gone.set(true);
+      }
+      return e;
+    }
+
+    private QueryException saw(QueryException e) {
+      if (e.failure() == QueryException.Failure.CONNECTION_LOST) {
+        gone.set(true);
+      }
+      return e;
+    }
+
+    @Override
+    public List<Database> databases() throws CatalogException {
+      readable();
+      try {
+        return session.databases();
+      } catch (CatalogException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public List<Schema> schemas(Database database) {
+      return List.of();
+    }
+
+    @Override
+    public List<Table> tables(Container container) throws CatalogException {
+      readable();
+      try {
+        return session.collections(container.database());
+      } catch (CatalogException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public List<Table> allTables(Database database) throws CatalogException {
+      return tables(database);
+    }
+
+    @Override
+    public List<Column> columns(Table table) throws CatalogException {
+      readable();
+      try {
+        return session.fields(table);
+      } catch (CatalogException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public OptionalLong estimate(Table table) throws QueryException {
+      usable();
+      try {
+        return session.estimate(table);
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public long count(Table table) throws QueryException {
+      usable();
+      try {
+        return session.count(table);
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
+    /** A server of documents has no planner to ask. */
+    @Override
+    public OptionalLong estimate(String database, String sql) {
+      return OptionalLong.empty();
+    }
+
+    @Override
+    public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
+      usable();
+      try {
+        return session.read(table, columns, from, to);
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public String whole(Table table, List<Column> columns, List<Object> row, int column)
+        throws QueryException {
+      usable();
+      try {
+        return session.whole(table, columns, row, column);
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
+    /** A statement of the MongoDB shell, on the database the link is on now. */
+    @Override
+    public Run run(String sql) throws QueryException {
+      usable();
+      var running = new DocumentRun(session, current.get(), sql, current::set);
+      open.set(running);
+      return new Run() {
+        @Override
+        public Portion next(int count) {
+          var portion = running.next(count);
+          for (var result : portion.results()) {
+            if (result instanceof Failure f && f.kind() == Failure.Kind.CONNECTION_LOST) {
+              gone.set(true);
+            }
+          }
+          return portion;
+        }
+
+        @Override
+        public Abandoned close() {
+          open.compareAndSet(running, null);
+          return ended(running.close());
+        }
+      };
+    }
+
+    // Freeing a cursor that found the connection lost leaves the link gone, as a call does.
+    private Abandoned ended(Abandoned abandoned) {
+      if (abandoned.failure().isPresent()
+          && abandoned.failure().get().kind() == Failure.Kind.CONNECTION_LOST) {
+        gone.set(true);
+      }
+      return abandoned;
+    }
+
+    @Override
+    public void use(String database) throws QueryException {
+      usable();
+      current.set(database);
+    }
+
+    @Override
+    public void manual(boolean manual) throws QueryException {
+      if (manual) {
+        throw QueryException.of(
+            QueryException.Failure.OTHER, "A server of documents has no transactions to end");
+      }
+    }
+
+    /** Each command commits by itself, and none is ever open. */
+    @Override
+    public Status status() {
+      return new Status(Transaction.NONE, true);
+    }
+
+    @Override
+    public Abandoned giveUp() {
+      var left = open.getAndSet(null);
+      return left == null ? Abandoned.NOTHING : ended(left.close());
+    }
+
+    /** Each within {@link DocumentSession#GRACE}, after which it is given up. */
+    @Override
+    public Abandoned close() {
+      var ended = giveUp();
+      gone.set(true);
+      session.close();
+      return ended;
+    }
+
+    @Override
+    public void abort() {
+      gone.set(true);
+      session.close();
+    }
   }
 
   /**

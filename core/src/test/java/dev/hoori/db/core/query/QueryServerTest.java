@@ -14,7 +14,7 @@ import java.sql.Connection;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /** The worker with the real drivers, through a relay that holds up what goes to the server. */
 class QueryServerTest {
@@ -22,7 +22,7 @@ class QueryServerTest {
   private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aCancelThatArrivesLateNeverStopsTheNextStatement(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var relay = new Relay(server.host(), server.port());
@@ -44,7 +44,7 @@ class QueryServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aServerThatNoLongerAnswersIsGivenUpInTime(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var relay = new Relay(server.host(), server.port());

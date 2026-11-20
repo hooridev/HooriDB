@@ -10,8 +10,11 @@ import java.util.regex.Pattern;
  * The driver of a provider: its artifact in a Maven repository and the class that a {@link
  * LoadedDriver} starts from, with the artifacts of its group that it needs beside it at run time,
  * each of the same version. A JDBC driver usually needs none of them to open a plain connection.
+ * The oldest version that HooriDB works with is null where any is; an older one is neither offered
+ * nor downloaded nor loaded.
  */
-public record Driver(String group, String artifact, String driverClass, List<Part> parts) {
+public record Driver(
+    String group, String artifact, String driverClass, List<Part> parts, String oldest) {
 
   private static final Pattern CLASS_NAME =
       Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
@@ -37,6 +40,9 @@ public record Driver(String group, String artifact, String driverClass, List<Par
     if (!CLASS_NAME.matcher(driverClass).matches()) {
       throw new IllegalArgumentException("Not a class name: " + driverClass);
     }
+    if (oldest != null && !Maven.isVersion(oldest)) {
+      throw new IllegalArgumentException("Not a version: " + oldest);
+    }
     parts = List.copyOf(parts);
     // Each is a file of its own, also where the file system ignores case.
     var names = new HashSet<String>();
@@ -51,6 +57,16 @@ public record Driver(String group, String artifact, String driverClass, List<Par
   /** A driver of one artifact. */
   public Driver(String group, String artifact, String driverClass) {
     this(group, artifact, driverClass, List.of());
+  }
+
+  /** A driver of its artifact and parts, of which any version works. */
+  public Driver(String group, String artifact, String driverClass, List<Part> parts) {
+    this(group, artifact, driverClass, parts, null);
+  }
+
+  /** Whether HooriDB works with the version: it is not older than {@link #oldest}. */
+  public boolean takes(String version) {
+    return oldest == null || Maven.NEWEST_FIRST.compare(version, oldest) <= 0;
   }
 
   /** The driver of the provider. */

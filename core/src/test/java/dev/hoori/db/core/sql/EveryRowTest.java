@@ -27,7 +27,7 @@ class EveryRowTest {
 
   @Test
   void anUpdateOrDeleteWithoutWhereChangesEveryRow() {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       every(provider, "UPDATE orders SET total = 0", "UPDATE", "orders");
       every(provider, "delete from shop.orders", "DELETE", "shop.orders");
       every(provider, "/* first */ UPDATE orders SET total = 0", "UPDATE", "orders");
@@ -101,7 +101,7 @@ class EveryRowTest {
       bounded(provider, "UPDATE orders SET paid = @x WHERE id = @where");
       bounded(provider, "UPDATE orders SET paid = @x LIMIT 1");
     }
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       every(provider, "UPDATE orders o SET paid = o.where", "UPDATE", "orders");
       every(provider, "UPDATE orders o SET paid = o . where", "UPDATE", "orders");
       every(provider, "DELETE FROM orders USING orders, shop.where", "DELETE", "orders");
@@ -171,7 +171,7 @@ class EveryRowTest {
   /** An unquoted name that begins with WHERE or LIMIT is one name, whatever follows in it. */
   @Test
   void aNameThatBeginsWithAKeywordIsOneName() {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       every(provider, "UPDATE accounts SET where\u20ac = 5000", "UPDATE", "accounts");
       every(provider, "UPDATE accounts SET whereß = 1", "UPDATE", "accounts");
       every(provider, "UPDATE accounts SET where\u0300 = 1", "UPDATE", "accounts");
@@ -195,7 +195,7 @@ class EveryRowTest {
    */
   @Test
   void aKeywordIsSpelledInAsciiLetters() {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       every(provider, "UPDATE accounts SET L\u0130M\u0130T = 5000", "UPDATE", "accounts");
       every(provider, "UPDATE accounts SET l\u0131m\u0131t = 5000", "UPDATE", "accounts");
       bounded(provider, "update accounts set x = 1 where id = 1");

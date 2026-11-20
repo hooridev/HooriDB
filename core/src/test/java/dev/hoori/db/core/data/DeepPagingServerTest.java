@@ -16,7 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * How long a page of 100 rows takes at the start, the middle and the end of a million rows, with a
@@ -31,7 +31,7 @@ class DeepPagingServerTest {
   private static final int RUNS = 5;
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void pagesFarIntoAMillionRows(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var pg = provider == Provider.POSTGRESQL;

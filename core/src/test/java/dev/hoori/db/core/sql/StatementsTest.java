@@ -34,7 +34,7 @@ class StatementsTest {
   }
 
   private static void assertSplitAll(String text, String... statements) {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       assertSplit(provider, text, statements);
     }
   }
@@ -411,7 +411,7 @@ class StatementsTest {
         text.append(pieces[random.nextInt(pieces.length)]);
       }
       var sql = text.toString();
-      for (var provider : Provider.values()) {
+      for (var provider : Provider.SQL) {
         var statements = Statements.split(sql, provider);
         int previous = 0;
         for (var statement : statements) {
@@ -434,7 +434,7 @@ class StatementsTest {
   @Test
   void aTextScannedOnceAnswersForEveryCaretAsAScanOfItsOwn() {
     var text = "SELECT 1;  \n-- a note\n\nSELECT 'a;b'\nFROM t;\n/* end */ UPDATE t SET x = 1";
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       var scanned = Statements.of(text, provider);
       assertEquals(Statements.split(text, provider), scanned.statements());
       for (int caret = -1; caret <= text.length() + 1; caret++) {
@@ -467,5 +467,40 @@ class StatementsTest {
     assertTrue(Statements.of("SELECT 1; SELECT 2 -- next", Provider.POSTGRESQL).open());
     assertFalse(Statements.of("SELECT 1;\n-- after", Provider.MYSQL).open());
     assertFalse(Statements.of("-- nothing", Provider.MARIADB).open());
+  }
+
+  @Test
+  void theShellsStatementsEndAtSemicolonsAndCompleteLines() {
+    var text = "db.a.find({\n  x: 1\n});  \ndb.b.find()\n\n// done\n";
+    var statements = Statements.split(text, Provider.MONGODB);
+    assertEquals(
+        List.of("db.a.find({\n  x: 1\n})", "db.b.find()"),
+        statements.stream().map(x -> text.substring(x.start(), x.end())).toList());
+    var scanned = Statements.of(text, Provider.MONGODB);
+    assertEquals(statements.get(0), scanned.at(text.indexOf(";") + 2).orElseThrow());
+    assertEquals(statements.get(1), scanned.at(text.length()).orElseThrow());
+    assertEquals("find", Statements.firstWord("db.a.find()", Provider.MONGODB));
+  }
+
+  @Test
+  void aCommentAfterAShellStatementIsBetweenStatements() {
+    var text = "db.a.find() // note;\ndb.b.find()";
+    var statements = Statements.split(text, Provider.MONGODB);
+    assertEquals(
+        List.of("db.a.find()", "db.b.find()"),
+        statements.stream().map(x -> text.substring(x.start(), x.end())).toList());
+    // In the comment, the next statement, as in one of SQL between statements.
+    var scanned = Statements.of(text, Provider.MONGODB);
+    assertEquals(statements.get(1), scanned.at(text.indexOf("note")).orElseThrow());
+  }
+
+  @Test
+  void aQuoteInARegularExpressionOfTheShellStartsNoString() {
+    var text = "db.a.find({ x: /'/ }); db.b.find({ y: 'z' })";
+    var strings = Statements.pieces(text, Provider.MONGODB).stream()
+        .filter(p -> p.kind() == Statements.Piece.Kind.STRING)
+        .map(p -> text.substring(p.start(), p.end()))
+        .toList();
+    assertEquals(List.of("/'/", "'z'"), strings);
   }
 }

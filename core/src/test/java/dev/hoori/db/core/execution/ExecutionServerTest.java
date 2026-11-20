@@ -22,7 +22,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /** Running statements of every kind on real servers, from the sample schema of {@link TestServer}. */
 class ExecutionServerTest {
@@ -30,7 +30,7 @@ class ExecutionServerTest {
   private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aQueryGivesItsRowsAndOneWithoutRowsItsFields(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       var some = only(run(connection, provider, "SELECT id, label FROM reading WHERE id <= 3"));
@@ -61,7 +61,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void changesGiveTheirCountsAndDdlNone(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       assertEquals(
@@ -86,7 +86,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aProcedureGivesItsResultsInOrder(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
@@ -124,7 +124,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aPlanIsRows(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       var explain = provider
@@ -136,7 +136,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void rowsComeInPortionsInOrder(Provider provider) throws Exception {
     try (var connection = open(provider);
         var execution = new Execution(connection, provider, "SELECT id FROM reading ORDER BY id")) {
@@ -161,7 +161,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theFirstPortionOfAMillionRowsComesAtOnceAndClosingEarlyEndsTheQuery(Provider provider)
       throws Exception {
     try (var connection = open(provider)) {
@@ -197,7 +197,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void readingManyRowsKeepsMemoryFlat(Provider provider) throws Exception {
     try (var connection = open(provider);
         var execution = new Execution(connection, provider, million(provider))) {
@@ -216,7 +216,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void eachFailureHasItsKindAndCode(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
@@ -275,6 +275,7 @@ class ExecutionServerTest {
             case MARIADB ->
               "SET STATEMENT max_statement_time = 0.1 FOR SELECT SLEEP(5) FROM reading";
             case MYSQL -> "SELECT /*+ MAX_EXECUTION_TIME(100) */ SLEEP(5) FROM reading";
+            case MONGODB -> throw new IllegalArgumentException("No SQL");
           }));
       if (pg) {
         execute(connection, "RESET statement_timeout");
@@ -285,7 +286,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aFailureSaysWhereInTheStatementItIs(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
@@ -366,7 +367,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aLostConnectionIsAFailureToo(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider);
@@ -382,7 +383,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theServersMessagesComeAlong(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       if (provider == Provider.POSTGRESQL) {
@@ -413,7 +414,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anInterruptCancelsTheStatementWhileItRunsAndKeepsTheConnection(Provider provider)
       throws Exception {
     try (var connection = open(provider)) {
@@ -432,7 +433,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anInterruptCancelsTheStatementWhileItsRowsAreReadAndKeepsTheConnection(Provider provider)
       throws Exception {
     try (var connection = open(provider)) {
@@ -451,7 +452,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aCancelInATransactionFailsItOnPostgresqlOnly(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
@@ -485,7 +486,7 @@ class ExecutionServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theTransactionStateFollowsAutoCommit(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {

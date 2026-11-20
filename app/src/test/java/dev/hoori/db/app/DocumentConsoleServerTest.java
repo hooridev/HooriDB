@@ -1,0 +1,166 @@
+package dev.hoori.db.app;
+
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
+import static dev.hoori.db.app.CatalogTreeTest.open;
+import static dev.hoori.db.app.ConnectionsTest.line;
+import static dev.hoori.db.app.ConsoleTest.RUN;
+import static dev.hoori.db.app.ConsoleTest.near;
+import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.TableTabTest.cell;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.rethinkj.ui.App;
+import dev.hoori.db.core.TestServer;
+import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.secret.Keyring;
+import java.nio.file.Path;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+/**
+ * A console on a MongoDB connection, against core's real server in Docker: statements of the
+ * shell, their documents as a grid, as JSON and as a tree, their errors, and what a read-only
+ * connection refuses. Without Docker it is skipped.
+ */
+class DocumentConsoleServerTest {
+
+  static final String MESSAGES = "press role=tab label=\"Messages\"\nframe\n";
+
+  @TempDir
+  Path dir;
+
+  final CatalogTreeTest c = new CatalogTreeTest();
+
+  @BeforeEach
+  void setUp() throws Exception {
+    c.dir = dir;
+    c.setUp();
+  }
+
+  @AfterEach
+  void tearDown() throws Exception {
+    c.tearDown();
+  }
+
+  /** The app with a console on the connection, which runs through the real driver. */
+  App<State> console(ConnectionProfile profile) throws Exception {
+    var server = TestServer.of(Provider.MONGODB);
+    // The app's tests load made-up drivers; its connections go through the real one.
+    Servers real = (p, password, driver) -> Servers.SERVER.open(p, password, server.driver());
+    var app = c.app(real, () -> new Keyring.Available(c.secrets), profile);
+    c.ready(app, profile);
+    app.state().rememberPassword(profile.id(), TestServer.password());
+    c.run(
+        app, START + open(profile.name()) + SETTLE + menu(profile.name(), "New console") + SETTLE);
+    return app;
+  }
+
+  static ConnectionProfile docs() {
+    return TestServer.of(Provider.MONGODB).profile().withName("docs");
+  }
+
+  @Test
+  void aFindShowsItsDocumentsAsAGridJsonAndATree() throws Exception {
+    var app = console(docs());
+    c.run(
+        app,
+        type("db.orders.find({ paid: true }, { total: 1 }).sort({ _id: -1 }).limit(3)") + RUN
+            + "snap grid\n");
+    var grid = c.tree("grid");
+    assertTrue(cell(grid, 0, 0).contains("\"250\""), grid);
+    assertTrue(cell(grid, 0, 1).contains("\"375\""), grid);
+    assertTrue(near(grid, "#result-status").contains("3 documents"), grid);
+    c.run(app, "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap json\n");
+    var json = line(c.tree("json"), "#result-json");
+    assertTrue(json.contains("\\\"_id\\\": 250,"), json);
+    assertTrue(json.contains("\\\"$numberDecimal\\\": \\\"375\\\""), json);
+    c.run(app, "press role=radio label=\"Tree\"\nframe\nadvance 1\nframe\nsnap tree\n");
+    var tree = c.tree("tree");
+    assertTrue(tree.contains("role=treeitem label=\"250\""), tree);
+  }
+
+  @Test
+  void aCountAndAnAggregateAndAUse() throws Exception {
+    var app = console(docs());
+    c.run(app, type("db.orders.countDocuments({ paid: false })") + RUN + "snap count\n");
+    assertTrue(cell(c.tree("count"), 0, 0).contains("\"125\""), c.tree("count"));
+    c.run(
+        app,
+        "key A control\nkey Delete\n"
+            + type("db.orders.aggregate([{ $group: { _id: '$customer', n: { $sum: 1 } } },"
+                + " { $sort: { _id: 1 } }])")
+            + RUN + "snap aggregate\n");
+    var aggregate = c.tree("aggregate");
+    assertTrue(cell(aggregate, 0, 1).contains("\"83\""), aggregate);
+    assertTrue(cell(aggregate, 1, 1).contains("\"84\""), aggregate);
+    c.run(app, "key A control\nkey Delete\n" + type("use admin") + RUN + "snap use\n");
+    assertTrue(near(c.tree("use"), "#database").contains("\"admin\""), c.tree("use"));
+  }
+
+  @Test
+  void aStatementTheShellDoesNotAllowIsUnderlinedWhereItGoesWrong() throws Exception {
+    var app = console(docs());
+    c.run(
+        app,
+        type("db.orders.find({ a: 1 b: 2 })") + RUN + "snap error\n" + MESSAGES
+            + "snap messages\n");
+    var error = c.tree("error");
+    assertTrue(line(error, "#sql").contains("underline 22-23"), line(error, "#sql"));
+    assertTrue(c.tree("messages").contains("A comma or } is missing"), c.tree("messages"));
+  }
+
+  @Test
+  void aWriteChangesDocumentsAndAnUpdateOfAllAsksFirst() throws Exception {
+    var app = console(docs());
+    try {
+      c.run(
+          app,
+          type("db.scratch.insertMany([{ _id: 1, n: 1 }, { _id: 2, n: 2 }])") + RUN
+              + "snap inserted\n");
+      assertTrue(c.tree("inserted").contains("2 documents changed"), c.tree("inserted"));
+      c.run(
+          app,
+          "key A control\nkey Delete\n" + type("db.scratch.updateMany({}, { $inc: { n: 1 } })")
+              + "key Enter control\nframe\nadvance 1\nframe\nsnap asked\n");
+      var asked = c.tree("asked");
+      assertTrue(asked.contains("role=dialog label=\"Update every document?\""), asked);
+      c.run(app, "press role=button label=\"Run anyway\"\nframe\n" + SETTLE + "snap updated\n");
+      assertTrue(c.tree("updated").contains("2 documents changed"), c.tree("updated"));
+      c.run(
+          app,
+          "key A control\nkey Delete\n" + type("db.scratch.find({ n: 3 })") + RUN + "snap found\n");
+      assertTrue(near(c.tree("found"), "#result-status").contains("1 document"), c.tree("found"));
+    } finally {
+      c.run(app, "key A control\nkey Delete\n" + type("db.scratch.drop()") + RUN);
+    }
+  }
+
+  @Test
+  void aReadOnlyConnectionRefusesAWriteWithoutSendingIt() throws Exception {
+    var app = console(docs().withReadOnly(true));
+    c.run(app, type("db.orders.deleteMany({ paid: true })") + RUN + MESSAGES + "snap refused\n");
+    var refused = c.tree("refused");
+    assertTrue(refused.contains("The connection is read-only"), refused);
+    assertFalse(refused.contains("role=dialog"), refused);
+    c.run(
+        app,
+        "press #sql\nkey A control\nkey Delete\n" + type("db.orders.countDocuments({})") + RUN
+            + "snap count\n");
+    assertTrue(cell(c.tree("count"), 0, 0).contains("\"250\""), c.tree("count"));
+  }
+
+  @Test
+  void afterDbTheCollectionsAreOffered() throws Exception {
+    var app = console(docs());
+    c.run(app, open("hoori") + SETTLE + "press #sql\ntype \"db.or\"\nframe\nsnap offered\n");
+    var options = ConsoleEditorTest.options(c.tree("offered"));
+    assertEquals("orders", options.getFirst(), options.toString());
+  }
+}

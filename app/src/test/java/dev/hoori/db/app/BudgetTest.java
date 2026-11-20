@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Measures the performance budget of AGENTS.md and prints it; it asserts no timing. Only with
@@ -132,7 +132,7 @@ class BudgetTest {
    * would also wait for the work queued behind the first page.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void firstRowsOfAMillion(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var c = new CatalogTreeTest();
@@ -216,6 +216,7 @@ class BudgetTest {
                 + " FROM generate_series(1, 1000000) AS i",
             "ALTER TABLE budget.million ADD PRIMARY KEY (id)",
             "ANALYZE budget.million");
+      case MONGODB -> throw new IllegalArgumentException("No SQL");
       case MARIADB, MYSQL ->
         List.of(
             "CREATE DATABASE budget",

@@ -6,9 +6,11 @@ import java.util.Map;
 
 /**
  * What every provider has, whatever its servers speak: its name, port, driver and capabilities. A
- * {@link Dialect} adds what a server of SQL does its own way.
+ * {@link Dialect} adds what a server of tables that speaks SQL through JDBC does its own way, a
+ * {@link DocumentDialect} what a server of collections of documents does. Code that needs the one
+ * or the other asks by a {@code switch} over these two, and names no provider.
  */
-public sealed interface Traits permits Dialect {
+public sealed interface Traits permits Dialect, DocumentDialect {
 
   /** Its name as people know it. */
   String displayName();

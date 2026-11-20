@@ -85,9 +85,20 @@ class WorkspaceStoreTest {
           "ünïcode user",
           Tls.OFF,
           Color.RED,
-          null),
+          null,
+          false),
       new ConnectionProfile(
-          UUID.randomUUID(), "", Provider.MYSQL, "", 0, "", "", Tls.ENCRYPTED, null, "8.4.0"),
+          UUID.randomUUID(),
+          "",
+          Provider.MYSQL,
+          "",
+          0,
+          "",
+          "",
+          Tls.ENCRYPTED,
+          null,
+          "8.4.0",
+          false),
       new ConnectionProfile(
           UUID.randomUUID(),
           "{\"x\": 1}",
@@ -98,7 +109,20 @@ class WorkspaceStoreTest {
           "y",
           Tls.VERIFIED,
           Color.GRAY,
-          "3.5.1"));
+          "3.5.1",
+          false),
+      new ConnectionProfile(
+          UUID.randomUUID(),
+          "docs",
+          Provider.MONGODB,
+          "mongo.example",
+          27017,
+          "shop",
+          "reader",
+          Tls.ENCRYPTED,
+          null,
+          null,
+          true));
 
   /** Folders in folders, open and closed, one empty, with connections at each level. */
   private static final Workspace WORKSPACE = new Workspace(List.of(
@@ -184,7 +208,9 @@ class WorkspaceStoreTest {
       stored.add(
           profile.get("provider").stringValue() + " " + profile.get("tls").stringValue());
     }
-    assertEquals(List.of("postgresql off", "mysql encrypted", "mariadb verified"), stored);
+    assertEquals(
+        List.of("postgresql off", "mysql encrypted", "mariadb verified", "mongodb encrypted"),
+        stored);
     var colors = new ArrayList<String>();
     for (var color : Color.values()) {
       new WorkspaceStore(folder).save(flat(List.of(PROFILES.get(1).withColor(color))));
@@ -196,6 +222,17 @@ class WorkspaceStoreTest {
         List.of(
             "blue", "violet", "purple", "pink", "red", "orange", "amber", "green", "teal", "gray"),
         colors);
+  }
+
+  @Test
+  void readOnlyIsStoredOnlyWhereItIs() throws IOException {
+    new WorkspaceStore(folder).save(flat(PROFILES));
+    var flags = new ArrayList<Boolean>();
+    for (var profile : entries()) {
+      flags.add(profile.has("readOnly") ? profile.get("readOnly").booleanValue() : null);
+    }
+    assertEquals(Arrays.asList(null, null, null, true), flags);
+    assertEquals(flat(PROFILES), new WorkspaceStore(folder).load());
   }
 
   private JsonNode entries() throws IOException {
@@ -308,6 +345,9 @@ class WorkspaceStoreTest {
             VALID.replace("\"off\"", "\"off\", \"driverVersion\": 42"),
             "\"driverVersion\" is not text"),
         broken(
+            VALID.replace("\"off\"", "\"off\", \"readOnly\": \"yes\""),
+            "\"readOnly\" is not true or false"),
+        broken(
             VALID.replace(CONNECTION, CONNECTION + "," + CONNECTION),
             "entry 1.2 has the id 0f8fad5b-d9cb-469f-a165-70867728950e of an earlier one"),
         broken(
@@ -419,7 +459,8 @@ class WorkspaceStoreTest {
             "y",
             Tls.VERIFIED,
             Color.GRAY,
-            "3.5.1"),
+            "3.5.1",
+            false),
         taken.connections().get(1));
     var changed = taken.remove(first.id());
     store.save(changed);

@@ -5,6 +5,8 @@ import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.document.Script;
+import dev.hoori.db.core.document.Shell;
 import dev.hoori.db.core.sql.Context;
 import dev.hoori.db.core.sql.Keywords;
 import dev.hoori.db.core.sql.Names;
@@ -15,6 +17,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * What a console's editor suggests at the caret: keywords, and the schemas, tables, views and
@@ -74,6 +77,13 @@ final class Suggestions {
       State s, Provider provider, String word, String text, int caret) {
     // The statement the caret writes in, with the comments around it, from the console's split.
     var around = tab.statements(provider).around(caret);
+    if (provider.keepsDocuments()) {
+      var before = text.substring(around.start(), Math.max(around.start(), caret - word.length()));
+      return Ranking.rank(shell(s, provider, word, before), Candidate::name, Candidate::own, word)
+          .stream()
+          .map(c -> new Completion.Entry(c.shown(), c.symbol(), c.kind(), c.text()))
+          .toList();
+    }
     var context =
         Context.at(text.substring(around.start(), around.end()), provider, caret - around.start());
     if (context.asked() == Context.Asked.NOTHING) {
@@ -109,6 +119,168 @@ final class Suggestions {
     return Ranking.rank(once.values(), Candidate::name, Candidate::own, word).stream()
         .map(c -> new Completion.Entry(c.shown(), c.symbol(), c.kind(), c.text()))
         .toList();
+  }
+
+  // A collection's name after db, as the shell writes it, and in getCollection('…').
+  private static final Pattern COLLECTION = Pattern.compile(
+      "db\\s*\\.\\s*(?:getCollection\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)|([A-Za-z_$][\\w$]*))");
+  // Found at the end of the text: no repetition of a group, which the engine would recurse on.
+  private static final Pattern AFTER_DB = Pattern.compile("\\bdb\\s*\\.\\s*$");
+  private static final Pattern AFTER_COLLECTION = Pattern.compile(
+      "\\bdb\\s*\\.\\s*(?:getCollection\\([^)]*\\)|[A-Za-z_$][\\w$.]*)\\s*\\.\\s*$");
+  private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_$][\\w$]*");
+
+  /** The operators of queries, updates and pipelines, offered after a dollar. */
+  static final List<String> OPERATORS = List.of(
+      "$eq",
+      "$ne",
+      "$gt",
+      "$gte",
+      "$lt",
+      "$lte",
+      "$in",
+      "$nin",
+      "$and",
+      "$or",
+      "$nor",
+      "$not",
+      "$exists",
+      "$type",
+      "$regex",
+      "$options",
+      "$expr",
+      "$elemMatch",
+      "$size",
+      "$all",
+      "$text",
+      "$search",
+      "$set",
+      "$unset",
+      "$inc",
+      "$mul",
+      "$min",
+      "$max",
+      "$rename",
+      "$push",
+      "$pull",
+      "$addToSet",
+      "$pop",
+      "$currentDate",
+      "$setOnInsert",
+      "$match",
+      "$group",
+      "$project",
+      "$sort",
+      "$limit",
+      "$skip",
+      "$unwind",
+      "$lookup",
+      "$count",
+      "$addFields",
+      "$replaceRoot",
+      "$facet",
+      "$bucket",
+      "$sortByCount",
+      "$sample",
+      "$sum",
+      "$avg",
+      "$first",
+      "$last");
+
+  /** The methods of a cursor that find gives. */
+  static final List<String> CURSOR_METHODS = List.of(
+      "sort",
+      "limit",
+      "skip",
+      "projection",
+      "count",
+      "explain",
+      "pretty",
+      "toArray",
+      "hint",
+      "maxTimeMS",
+      "collation",
+      "comment");
+
+  /** The values the shell constructs, offered among the fields. */
+  static final List<String> CONSTRUCTORS = List.of(
+      "ObjectId", "ISODate", "NumberLong", "NumberInt", "NumberDecimal", "UUID", "Timestamp");
+
+  /**
+   * The shell's: after {@code db.} the collections of the console's database and the methods of
+   * db, after a collection its methods, after a call the methods of a cursor, after a dollar the
+   * operators, and else the fields of the statement's collection and the values the shell makes.
+   */
+  private List<Candidate> shell(State s, Provider provider, String word, String before) {
+    var into = new ArrayList<Candidate>();
+    if (word.startsWith("$")) {
+      for (var operator : OPERATORS) {
+        into.add(new Candidate(operator, operator, operator, Symbol.CODE, "operator", false));
+      }
+      return into;
+    }
+    var known = new Known(s, provider);
+    if (AFTER_DB.matcher(before).find()) {
+      for (var table : known.tables()) {
+        var name = table.name();
+        var text = IDENTIFIER.matcher(name).matches() && !Script.DATABASE_METHODS.contains(name)
+            ? name
+            : "getCollection(" + Shell.quote(name) + ")";
+        boolean view = table.kind() == Table.Kind.VIEW;
+        into.add(new Candidate(
+            name,
+            name,
+            text,
+            view ? Symbol.EYE : Symbol.TABLE,
+            view ? "view" : "collection",
+            true));
+      }
+      for (var method : Script.DATABASE_METHODS) {
+        into.add(new Candidate(method, method, method, Symbol.CODE, "method", false));
+      }
+      return into;
+    }
+    if (AFTER_COLLECTION.matcher(before).find()) {
+      for (var method : Script.READING_METHODS) {
+        into.add(new Candidate(method, method, method, Symbol.CODE, "method", false));
+      }
+      for (var method : Script.WRITING_METHODS) {
+        into.add(new Candidate(method, method, method, Symbol.EDIT, "method", false));
+      }
+      return into;
+    }
+    if (before.stripTrailing().endsWith(").")) {
+      for (var method : CURSOR_METHODS) {
+        into.add(new Candidate(method, method, method, Symbol.CODE, "method", false));
+      }
+      return into;
+    }
+    var matcher = COLLECTION.matcher(before);
+    if (matcher.find()) {
+      var name = matcher.group(1) != null ? matcher.group(1) : matcher.group(2);
+      var table = known.table(null, name);
+      if (table != null) {
+        for (var column : columnsOf(s, known, table)) {
+          var field = column.name();
+          var text = IDENTIFIER.matcher(field).matches() ? field : Shell.quote(field);
+          into.add(new Candidate(field, field, text, Symbol.COLUMN_SINGLE, column.type(), true));
+        }
+      }
+    }
+    for (var constructor : CONSTRUCTORS) {
+      into.add(new Candidate(constructor, constructor, constructor, Symbol.CODE, "value", false));
+    }
+    return into;
+  }
+
+  // The fields the tree read of the collection, read now where it has not.
+  private List<dev.hoori.db.core.catalog.Column> columnsOf(State s, Known known, Table table) {
+    var columns = s.catalog.columns(tab.id, table);
+    if (columns == null) {
+      known.readColumns(table);
+      return List.of();
+    }
+    return columns;
   }
 
   /** After {@code name.}: the columns of the table or alias, or else the tables of the schema. */
@@ -194,7 +366,16 @@ final class Suggestions {
 
     /** Whether two names are the same as the server compares them. */
     boolean same(String a, String b) {
-      return provider.dialect().syntax().caseSensitiveNames() ? a.equals(b) : a.equalsIgnoreCase(b);
+      return provider.keepsDocuments() || provider.dialect().syntax().caseSensitiveNames()
+          ? a.equals(b)
+          : a.equalsIgnoreCase(b);
+    }
+
+    /** Reads the table's columns, as the tree would. */
+    void readColumns(Table table) {
+      if (live != null) {
+        Suggestions.this.want(s, live, new Node.OfTable(tab.id, table));
+      }
     }
 
     private List<Node> read(Node node) {

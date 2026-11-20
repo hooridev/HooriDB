@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connect.Connector;
+import dev.hoori.db.core.connect.DocumentConnector;
 import dev.hoori.db.core.connect.Server;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.driver.LoadedDriver;
@@ -14,10 +15,13 @@ interface Tester {
   /** How long reaching the server and logging in may take. */
   Duration TIMEOUT = Duration.ofSeconds(10);
 
-  /** Through the driver to the real server. */
+  /** Through the driver to the real server, of SQL or of documents. */
   Tester SERVER = (profile, password, driver) -> {
     try {
-      return new Reached(Connector.test(profile, password, driver, TIMEOUT));
+      return new Reached(
+          driver.documents()
+              ? DocumentConnector.test(profile, password, driver, TIMEOUT)
+              : Connector.test(profile, password, driver, TIMEOUT));
     } catch (ConnectionException e) {
       return new Refused(e.failure(), e.detail());
     }

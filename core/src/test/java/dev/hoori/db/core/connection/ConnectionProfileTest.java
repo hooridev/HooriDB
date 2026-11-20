@@ -16,6 +16,26 @@ import org.junit.jupiter.params.provider.ValueSource;
 class ConnectionProfileTest {
 
   @Test
+  void aDatabaseNameMongoDbRefusesIsAProblem() {
+    var profile = ConnectionProfile.of(Provider.MONGODB).withHost("localhost");
+    assertEquals(Set.of(), profile.withDatabase("shop").problems());
+    assertEquals(Set.of(), profile.withDatabase("").problems());
+    // A server on Windows refuses more, as sales:2026, which it says itself.
+    assertEquals(Set.of(), profile.withDatabase("sales:2026").problems());
+    for (var name : List.of("sales.test", "a b", "a/b", "a$b", "x".repeat(64))) {
+      assertEquals(
+          Set.of(Problem.DATABASE_NAME_INVALID), profile.withDatabase(name).problems(), name);
+    }
+    // A server of SQL takes these.
+    assertEquals(
+        Set.of(),
+        ConnectionProfile.of(Provider.POSTGRESQL)
+            .withHost("localhost")
+            .withDatabase("sales.test")
+            .problems());
+  }
+
+  @Test
   void newProfileHasDefaultPortAndFreshId() {
     var a = ConnectionProfile.of(Provider.POSTGRESQL);
     var b = ConnectionProfile.of(Provider.POSTGRESQL);
@@ -47,7 +67,8 @@ class ConnectionProfileTest {
             "app",
             Tls.VERIFIED,
             Color.TEAL,
-            null),
+            null,
+            false),
         q);
     assertEquals(null, p.color());
     assertEquals("", p.name());
@@ -58,15 +79,16 @@ class ConnectionProfileTest {
   @Test
   void equalFieldsAreEqual() {
     var id = UUID.randomUUID();
-    var a =
-        new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null);
-    var b =
-        new ConnectionProfile(id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null);
+    var a = new ConnectionProfile(
+        id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null, false);
+    var b = new ConnectionProfile(
+        id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null, false);
     assertEquals(a, b);
     assertEquals(a.hashCode(), b.hashCode());
     assertNotEquals(a, b.withUser("v"));
     assertNotEquals(a, b.withColor(Color.RED));
     assertNotEquals(a, b.withDriverVersion("42.7.10"));
+    assertNotEquals(a, b.withReadOnly(true));
   }
 
   @Test

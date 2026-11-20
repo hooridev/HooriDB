@@ -1091,7 +1091,7 @@ class ConsoleTransactionTest {
   /** What the console takes for a plain read, per provider; anything else may change data. */
   @Test
   void onlyPlainReadsAreTakenForReads() {
-    for (var provider : Provider.values()) {
+    for (var provider : Provider.SQL) {
       for (var sql : List.of(
           "SELECT * FROM orders",
           "select 1",

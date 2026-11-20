@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.hoori.db.core.connection.Provider;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Reads all of a million rows made by the server, a thousand at a time, and the heap stays as it
@@ -17,7 +17,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 class MillionRowsServerTest {
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aMillionRowsKeepMemoryFlat(Provider provider) throws Exception {
     try (var connection = ExecutionServerTest.open(provider);
         var execution =

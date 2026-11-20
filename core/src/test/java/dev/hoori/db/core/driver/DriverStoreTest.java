@@ -719,6 +719,20 @@ public class DriverStoreTest {
   }
 
   @Test
+  void aVersionOlderThanHooriDbWorksWithIsNeitherOfferedNorUsed() throws Exception {
+    var newer =
+        new Driver(DRIVER.group(), DRIVER.artifact(), DRIVER.driverClass(), List.of(), "2.0");
+    repository.publish(DRIVER, "1.0", BYTES, Sum.SHA256, NOW);
+    repository.publish(DRIVER, "2.0", BYTES, Sum.SHA256, NOW);
+    assertEquals(List.of("2.0"), store.versions(newer));
+    assertFailure(Failure.TOO_OLD, () -> store.size(newer, "1.0"));
+    assertFailure(Failure.TOO_OLD, () -> store.download(newer, "1.0", DriverStore.Progress.NONE));
+    // Downloaded before it was too old, as a profile may have chosen it.
+    store.download(DRIVER, "1.0", DriverStore.Progress.NONE);
+    assertFailure(Failure.TOO_OLD, () -> store.load(newer, "1.0"));
+  }
+
+  @Test
   void aPartIsNamedOnce() {
     var twice = List.of(new Driver.Part("b", false), new Driver.Part("b", true));
     assertThrows(IllegalArgumentException.class, () -> new Driver("org.x", "a", "a.Driver", twice));
