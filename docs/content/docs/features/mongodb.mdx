@@ -8,7 +8,8 @@ HooriDB connects to MongoDB through the official MongoDB Java driver. A MongoDB 
 ## Connect to MongoDB
 
 1. Open the connection dialog (see [Your first connection](/docs/get-started/first-connection)) and choose **MongoDB** as the **Type**. The **Port** changes to `27017` unless you already edited it.
-2. Enter the **Host** and **Port** of one server. HooriDB connects only to that server, as the shell does when given a single host; `mongodb+srv://` addresses and host lists are not supported yet.
+2. Enter the **Host** and **Port** of one server. HooriDB connects only to that server, as the shell does when given a single host; host lists are not supported.
+   - For a `mongodb+srv://` address, as MongoDB Atlas gives, check **Servers from DNS** next to **SRV** and enter the host of the address, such as `cluster0.example.net`. The **Port** is hidden, as DNS lists the servers and their ports, and **TLS** changes to **Encrypted, any certificate** unless you already chose it. Options in the address after the host, such as `?appName=…`, are not used.
 3. Optionally enter a **Database**. Consoles start in this database, or in `test` if you leave it blank.
 4. Choose the **TLS** setting, as for the other types.
 5. Check **Read-only** next to **Access** if you want HooriDB to send only read commands on this connection (see below).
