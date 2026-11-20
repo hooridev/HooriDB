@@ -2,19 +2,25 @@ package dev.hoori.db.app;
 
 import static java.util.stream.Collectors.toUnmodifiableSet;
 
+import com.rethinkj.ui.Formatted;
 import com.rethinkj.ui.Highlighter;
 import com.rethinkj.ui.Spans;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.document.Layout;
 import dev.hoori.db.core.document.Lexer;
+import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.document.Shell;
+import dev.hoori.db.core.document.SyntaxException;
 import java.util.ArrayList;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Colors the statements of the MongoDB shell, as a console of documents takes them, by the
  * tokens of core's {@link Lexer}: the shell's words and constructors, the operators that start
  * with a dollar, strings, numbers, regular expressions and comments, and marks the brackets
- * outside them. A block comment and a string in backticks go on over lines.
+ * outside them. A block comment and a string in backticks go on over lines. Control+Alt+L lays
+ * the statements out as core's {@link Layout} does.
  */
 record ShellSyntax(Theme.Code colors) implements Highlighter {
 
@@ -71,5 +77,61 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
   @Override
   public String lineComment() {
     return "//";
+  }
+
+  @Override
+  public Function<String, Formatted> formatter() {
+    return ShellSyntax::format;
+  }
+
+  /** The text laid out, or where its first statement that does not parse goes wrong. */
+  static Formatted format(String text) {
+    try {
+      return new Formatted(Layout.of(text), null);
+    } catch (SyntaxException e) {
+      return new Formatted(null, problem(text, Math.clamp(e.offset(), 0, text.length())));
+    } catch (StackOverflowError _) {
+      // shortcut: the shell's reader recurses, so a statement nested thousands deep ends here;
+      // until it has a limit of its own, as MongoDB's 200 levels (#82).
+      return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
+    }
+  }
+
+  /**
+   * The problem at the offset: a string or block comment not closed that it is in or ends at, else
+   * the token there or after it in the statement, else the statement's end.
+   */
+  private static Formatted.Problem problem(String text, int at) {
+    int end = Script.split(text).stream()
+        .mapToInt(Script.Piece::end)
+        .filter(e -> e >= at)
+        .findFirst()
+        .orElse(text.length());
+    for (var token : Lexer.tokens(text)) {
+      if (token.start() > at && token.start() >= end) {
+        break;
+      }
+      var problem = problem(text, at, token);
+      if (problem != null) {
+        return problem;
+      }
+    }
+    return new Formatted.Problem(at, at, Formatted.Kind.UNEXPECTED_END);
+  }
+
+  // The problem at the token; null for one before the offset and a comment that is closed.
+  private static Formatted.Problem problem(String text, int at, Lexer.Token token) {
+    if (token.end() < at || token.end() == at && !token.open()) {
+      return null;
+    }
+    boolean block = token.kind() == Lexer.Kind.COMMENT && text.startsWith("/*", token.start());
+    if (token.open() && token.start() <= at && (block || token.kind() == Lexer.Kind.STRING)) {
+      var kind = block ? Formatted.Kind.UNEXPECTED_END : Formatted.Kind.UNCLOSED_STRING;
+      return new Formatted.Problem(token.start(), token.end(), kind);
+    }
+    return token.kind() == Lexer.Kind.COMMENT
+        ? null
+        : new Formatted.Problem(
+            Math.max(at, token.start()), token.end(), Formatted.Kind.UNEXPECTED);
   }
 }
