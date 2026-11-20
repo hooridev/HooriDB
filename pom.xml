@@ -258,4 +258,19 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <id>windows</id>
+      <activation>
+        <os>
+          <family>windows</family>
+        </os>
+      </activation>
+      <properties>
+        <!-- jpackage makes the launcher read-only, which a clean cannot delete otherwise. -->
+        <maven.clean.force>true</maven.clean.force>
+      </properties>
+    </profile>
+  </profiles>
 </project>
