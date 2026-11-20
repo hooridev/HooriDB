@@ -28,9 +28,9 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.HistoryStore;
-import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.StoredConsole;
+import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Files;
@@ -323,7 +323,7 @@ class ConsoleHistoryTest {
   @Test
   void consolesOfConnectionsSetAsideStayInTheirFile() throws Exception {
     Files.createDirectories(config());
-    Files.writeString(config().resolve(ProfileStore.FILE), "{"); // read, and not understood
+    Files.writeString(config().resolve(WorkspaceStore.FILE), "{"); // read, and not understood
     var kept = List.of(new StoredConsole(SHOP.id(), "shop", "SELECT 'set aside';"));
     new ConsoleStore(config()).save(kept);
     var app = HooriDb.app(

@@ -20,9 +20,10 @@ import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
-import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
+import dev.hoori.db.core.connection.Workspace;
+import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.DriverException;
 import dev.hoori.db.core.driver.DriverStore;
@@ -101,7 +102,7 @@ class DriversTest {
   }
 
   App<State> app(ConnectionProfile... profiles) throws IOException {
-    new ProfileStore(dir.resolve("config")).save(List.of(profiles));
+    new WorkspaceStore(dir.resolve("config")).save(new Workspace(List.of(profiles)));
     var app = HooriDb.app(
         dir.resolve("config"),
         () -> new Keyring.Available(secrets),
@@ -287,7 +288,7 @@ class DriversTest {
         await
         frame
         """);
-    var saved = new ProfileStore(dir.resolve("config")).load();
+    var saved = new WorkspaceStore(dir.resolve("config")).load().connections();
     assertEquals(OLD, saved.getFirst().driverVersion());
   }
 
@@ -1037,7 +1038,7 @@ class DriversTest {
     var app = app();
     run(app, START + NEW_SHOP + DRIVER + "key Enter\nframe\nawait\nframe\nsnap entered\n");
     assertNotNull(app.state().dialog, tree("entered"));
-    assertTrue(new ProfileStore(dir.resolve("config")).load().isEmpty());
+    assertTrue(new WorkspaceStore(dir.resolve("config")).load().connections().isEmpty());
     var empty = app();
     run(empty, START + """
         press role=button label="New connection"

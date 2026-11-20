@@ -33,18 +33,18 @@ public final class UpdateStore {
    * What was saved, or {@link StoredUpdates#NONE} when there is no file or it cannot be
    * understood; the next save replaces such a file, and keeps it as {@link JsonFile#setAside}.
    *
-   * @throws IOException if it could not be read, with a message as {@link ProfileStore#load} gives
+   * @throws IOException if it could not be read, with a message as {@link WorkspaceStore#load} gives
    */
   public StoredUpdates load() throws IOException {
     try {
       var bytes = file.load();
       return bytes == null ? StoredUpdates.NONE : parse(bytes);
-    } catch (ProfileStore.UnreadableException unreadable) {
+    } catch (WorkspaceStore.UnreadableException unreadable) {
       return StoredUpdates.NONE;
     }
   }
 
-  private StoredUpdates parse(byte[] bytes) throws ProfileStore.UnreadableException {
+  private StoredUpdates parse(byte[] bytes) throws WorkspaceStore.UnreadableException {
     var root = file.root(bytes, VERSION);
     Channel channel = null;
     if (root.has("channel")) {
@@ -75,7 +75,7 @@ public final class UpdateStore {
   }
 
   private Version version(JsonNode node, String where, String field)
-      throws ProfileStore.UnreadableException {
+      throws WorkspaceStore.UnreadableException {
     try {
       return Version.parse(file.text(node, where, field));
     } catch (IllegalArgumentException notAVersion) {
@@ -84,7 +84,7 @@ public final class UpdateStore {
   }
 
   /**
-   * Replaces the file, as {@link ProfileStore#save} replaces its own.
+   * Replaces the file, as {@link WorkspaceStore#save} replaces its own.
    *
    * @throws IOException if it could not be written
    */

@@ -11,7 +11,7 @@ public interface Dialect {
   /** Its name as people know it. */
   String displayName();
 
-  /** Its name in the connections file, spelled out so that renaming a constant cannot change it. */
+  /** Its name in the workspace's file, spelled out so that renaming a constant cannot change it. */
   String storedName();
 
   /** The port its servers listen on unless told otherwise. */

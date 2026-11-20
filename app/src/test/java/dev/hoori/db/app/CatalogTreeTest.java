@@ -14,8 +14,9 @@ import dev.hoori.db.core.connect.ConnectionException.Failure;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryStore;
-import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Workspace;
+import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.secret.Keyring;
@@ -186,7 +187,7 @@ class CatalogTreeTest {
       java.util.concurrent.Callable<Keyring> keyring,
       ConnectionProfile... profiles)
       throws IOException {
-    new ProfileStore(dir.resolve("config")).save(List.of(profiles));
+    new WorkspaceStore(dir.resolve("config")).save(new Workspace(List.of(profiles)));
     var app = HooriDb.app(
         dir.resolve("config"),
         keyring,

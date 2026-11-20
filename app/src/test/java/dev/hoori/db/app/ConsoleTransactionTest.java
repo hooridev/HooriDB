@@ -2305,7 +2305,7 @@ class ConsoleTransactionTest {
     servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
     var app = k.console(SHOP);
     c.run(app, type(ORDERS) + RUN);
-    var file = dir.resolve("config").resolve(dev.hoori.db.core.connection.ProfileStore.FILE);
+    var file = dir.resolve("config").resolve(dev.hoori.db.core.connection.WorkspaceStore.FILE);
     Files.delete(file);
     Files.createDirectories(file); // the store cannot write here
     app.state().put(SHOP.withColor(Color.GREEN)); // a change to save

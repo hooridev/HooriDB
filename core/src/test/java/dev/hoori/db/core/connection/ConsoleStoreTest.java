@@ -65,7 +65,7 @@ class ConsoleStoreTest {
   void aBrokenFileIsRefusedAndKeptOnSave(String content) throws IOException {
     var file = Files.writeString(folder.resolve(ConsoleStore.FILE), content);
     var store = new ConsoleStore(folder);
-    var failure = assertThrows(ProfileStore.UnreadableException.class, store::load);
+    var failure = assertThrows(WorkspaceStore.UnreadableException.class, store::load);
     assertTrue(
         failure.getMessage().startsWith("Cannot read the consoles in " + file),
         failure.getMessage());
@@ -81,7 +81,7 @@ class ConsoleStoreTest {
       file.setLength(ConsoleStore.MAX_SIZE + 1); // sparse: nothing is written
     }
     var failure =
-        assertThrows(ProfileStore.UnreadableException.class, new ConsoleStore(folder)::load);
+        assertThrows(WorkspaceStore.UnreadableException.class, new ConsoleStore(folder)::load);
     assertTrue(failure.getMessage().contains("larger than 64 MB"), failure.getMessage());
   }
 }

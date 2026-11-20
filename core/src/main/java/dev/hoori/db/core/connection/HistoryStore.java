@@ -72,15 +72,15 @@ public final class HistoryStore {
    * The entries, the oldest first, or none when there is no file. A file that cannot be understood
    * is left as it is.
    *
-   * @throws ProfileStore.UnreadableException if the file was read but not understood
-   * @throws IOException if it could not be read, with a message as {@link ProfileStore#load} gives
+   * @throws WorkspaceStore.UnreadableException if the file was read but not understood
+   * @throws IOException if it could not be read, with a message as {@link WorkspaceStore#load} gives
    */
   public List<HistoryEntry> load() throws IOException {
     var bytes = file.load();
     return bytes == null ? List.of() : parse(bytes);
   }
 
-  private List<HistoryEntry> parse(byte[] bytes) throws ProfileStore.UnreadableException {
+  private List<HistoryEntry> parse(byte[] bytes) throws WorkspaceStore.UnreadableException {
     var list = file.objects(file.root(bytes, VERSION), "entries", "entry");
     var entries = new ArrayList<HistoryEntry>();
     for (int i = 0; i < list.size(); i++) {
@@ -96,7 +96,7 @@ public final class HistoryStore {
     return entries;
   }
 
-  private Instant started(JsonNode node, String where) throws ProfileStore.UnreadableException {
+  private Instant started(JsonNode node, String where) throws WorkspaceStore.UnreadableException {
     try {
       return Instant.parse(file.text(node, where, "started"));
     } catch (DateTimeParseException notATime) {
@@ -105,7 +105,7 @@ public final class HistoryStore {
   }
 
   // The names in the file, spelled out so that renaming a record cannot change it.
-  private Outcome outcome(JsonNode node, String where) throws ProfileStore.UnreadableException {
+  private Outcome outcome(JsonNode node, String where) throws WorkspaceStore.UnreadableException {
     return switch (file.text(node, where, "outcome")) {
       case "rows" -> new Outcome.Rows();
       case "changed" -> new Outcome.Changed(file.count(node, where, "count"));
@@ -116,10 +116,10 @@ public final class HistoryStore {
   }
 
   /**
-   * Replaces the file with the entries, the oldest first, as {@link ProfileStore#save} replaces its
+   * Replaces the file with the entries, the oldest first, as {@link WorkspaceStore#save} replaces its
    * own. Where they would be larger than {@link #load} reads, the oldest are left out.
    *
-   * @throws IOException if it could not be written, with a message as {@link ProfileStore#load}
+   * @throws IOException if it could not be written, with a message as {@link WorkspaceStore#load}
    *     gives
    */
   public void save(List<HistoryEntry> entries) throws IOException {

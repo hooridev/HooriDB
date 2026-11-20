@@ -12,8 +12,9 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
-import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Tls;
+import dev.hoori.db.core.connection.Workspace;
+import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
@@ -505,7 +506,7 @@ class TestConnectionTest {
   void closingTheDialogCancelsATest() throws Exception {
     downloaded();
     var shop = ConnectionsTest.shop();
-    new ProfileStore(dir.resolve("config")).save(List.of(shop));
+    new WorkspaceStore(dir.resolve("config")).save(new Workspace(List.of(shop)));
     server.gate = new CountDownLatch(1);
     App<State> app = app();
     run(
@@ -523,7 +524,7 @@ class TestConnectionTest {
   @Test
   void closingTheDialogCancelsADownload() throws Exception {
     var shop = ConnectionsTest.shop();
-    new ProfileStore(dir.resolve("config")).save(List.of(shop));
+    new WorkspaceStore(dir.resolve("config")).save(new Workspace(List.of(shop)));
     repository.reading = new CountDownLatch(1);
     App<State> app = app();
     run(app, START + ConnectionsTest.EDIT_SHOP + SETTLE + TEST + """
@@ -588,7 +589,7 @@ class TestConnectionTest {
   void anEmptyFieldTestsWithTheSavedPassword() throws Exception {
     downloaded();
     var shop = ConnectionsTest.shop();
-    new ProfileStore(dir.resolve("config")).save(List.of(shop));
+    new WorkspaceStore(dir.resolve("config")).save(new Workspace(List.of(shop)));
     secrets.stored.put(shop.id(), PASSWORD);
     App<State> app = app();
     run(app, START + ConnectionsTest.EDIT_SHOP + SETTLE + TEST + SETTLE + SETTLE + "snap end\n");
@@ -614,7 +615,7 @@ class TestConnectionTest {
   void aTestWaitsForTheKeyring() throws Exception {
     downloaded();
     var shop = ConnectionsTest.shop();
-    new ProfileStore(dir.resolve("config")).save(List.of(shop));
+    new WorkspaceStore(dir.resolve("config")).save(new Workspace(List.of(shop)));
     secrets.stored.put(shop.id(), PASSWORD);
     var found = new CountDownLatch(1);
     App<State> app = app(() -> {
@@ -682,7 +683,7 @@ class TestConnectionTest {
   void aFailureOfTheTestGoesWithTheForm() throws Exception {
     downloaded();
     var shop = ConnectionsTest.shop();
-    new ProfileStore(dir.resolve("config")).save(List.of(shop));
+    new WorkspaceStore(dir.resolve("config")).save(new Workspace(List.of(shop)));
     secrets.stored.put(shop.id(), PASSWORD);
     App<State> app = app();
     run(app, START + ConnectionsTest.EDIT_SHOP + SETTLE);
@@ -725,9 +726,9 @@ class TestConnectionTest {
   void testingChangesNothing() throws Exception {
     downloaded();
     var shop = ConnectionsTest.shop().withTls(Tls.OFF);
-    var store = new ProfileStore(dir.resolve("config"));
-    store.save(List.of(shop));
-    var file = dir.resolve("config").resolve(ProfileStore.FILE);
+    var store = new WorkspaceStore(dir.resolve("config"));
+    store.save(new Workspace(List.of(shop)));
+    var file = dir.resolve("config").resolve(WorkspaceStore.FILE);
     String before = Files.readString(file);
     App<State> app = app();
     run(
@@ -744,7 +745,7 @@ class TestConnectionTest {
     assertEquals(before, Files.readString(file));
     assertTrue(secrets.stored.isEmpty());
     assertFalse(app.state().remembers(shop.id()));
-    assertEquals(List.of(shop), store.load());
+    assertEquals(List.of(shop), store.load().connections());
   }
 
   /**
