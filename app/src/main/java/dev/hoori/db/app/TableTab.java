@@ -11,12 +11,14 @@ import com.rethinkj.ui.Style;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
+import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
+import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.CatalogException;
@@ -29,6 +31,7 @@ import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
+import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.query.QueryException;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -47,6 +50,9 @@ import java.util.function.LongPredicate;
  * no more than {@link #KEPT} are held. A read the grid has scrolled away from is cancelled. Each
  * page is read on its own, so rows may repeat or go missing while others change the table;
  * Refresh reads it anew. Only the app's thread uses it.
+ *
+ * <p>A collection of documents shows as a grid of their fields, as a table does, or a page of
+ * them at a time, whole: as the shell writes them, or as a tree of their fields.
  */
 final class TableTab implements Tab {
 
@@ -93,6 +99,22 @@ final class TableTab implements Tab {
   /** @param detail the server's or the driver's words, withheld where they hold the password */
   record Failure(Problem problem, String detail) {}
 
+  /** How a collection's documents show. */
+  enum Shown {
+    /** A row each, a column a field, read as the grid scrolls. */
+    GRID("Grid"),
+    /** A page of them as the shell writes them. */
+    JSON("JSON"),
+    /** A page of them, each a tree of its fields. */
+    TREE("Tree");
+
+    final String title;
+
+    Shown(String title) {
+      this.title = title;
+    }
+  }
+
   /** The most rows a grid shows: it counts them in an int. */
   static final int GRID_ROWS = Integer.MAX_VALUE;
 
@@ -105,6 +127,11 @@ final class TableTab implements Tab {
   private boolean more; // a row more in the grid, whose read says whether there are more
   Counted counted = Counted.ESTIMATED;
   final Map<Long, List<List<Object>>> pages = new HashMap<>(); // the rows read, by page
+  // A collection's documents of the pages read, whole; none for a table.
+  final Map<Long, List<Document>> documents = new HashMap<>();
+  Shown shown = Shown.GRID;
+  long page; // the page of documents that JSON and Tree show
+  final DocumentTree documentView = new DocumentTree();
   final Map<Long, Lane.Asked> reading = new HashMap<>(); // the pages asked for
   Lane.Asked opening; // the columns, the estimate and the first page, or null
   Lane.Asked counting; // the exact count, or null
@@ -153,6 +180,7 @@ final class TableTab implements Tab {
     ending = false;
     countedFirst = false;
     pages.clear();
+    documents.clear();
     if (columns == null) {
       columns = s.catalog.columns(id, table);
       if (columns != null) {
@@ -307,8 +335,10 @@ final class TableTab implements Tab {
     long from = page * PAGE;
     if (n > 0) {
       pages.put(page, read.rows());
+      documents.put(page, read.documents());
     } else {
       pages.remove(page);
+      documents.remove(page);
     }
     if (n < PAGE) {
       var before = pages.get(page - 1);
@@ -324,6 +354,7 @@ final class TableTab implements Tab {
         counted(s);
       }
       pages.keySet().removeIf(p -> p * PAGE >= rows);
+      documents.keySet().retainAll(pages.keySet());
       giveUp(p -> ending || p * PAGE >= rows);
     } else if (from + PAGE > rows || from + PAGE == rows && counted != Counted.EXACT) {
       rows = from + PAGE;
@@ -346,7 +377,11 @@ final class TableTab implements Tab {
     far.remove(Long.valueOf(panelPage()));
     far.sort(Comparator.comparingLong(p -> -Math.abs(p - middle)));
     for (int i = 0; pages.size() > KEPT; i++) {
-      pages.remove(far.get(i));
+      // Not the page of documents shown whole.
+      if (shown == Shown.GRID || far.get(i) != page) {
+        pages.remove(far.get(i));
+        documents.remove(far.get(i));
+      }
     }
   }
 
@@ -395,7 +430,11 @@ final class TableTab implements Tab {
           counted = Counted.EXACT;
           more = false;
           pages.keySet().removeIf(p -> p * PAGE >= n);
+          documents.keySet().retainAll(pages.keySet());
           want(s, first, last);
+          if (shown != Shown.GRID) {
+            turn(s, Math.min(page, Math.max(0, (n - 1) / PAGE)));
+          }
         },
         error -> {
           counting = null;
@@ -515,6 +554,37 @@ final class TableTab implements Tab {
     closed = true;
     stop();
     pages.clear();
+    documents.clear();
+  }
+
+  /** Shows the documents as asked: whole, the page the grid was at. */
+  void show(State s, Shown next) {
+    if (next == shown) {
+      return;
+    }
+    if (shown == Shown.GRID) {
+      page = (long) first / PAGE;
+    }
+    shown = next;
+    if (next == Shown.GRID) {
+      want(s, (int) Math.min(page * PAGE, GRID_ROWS), (int)
+          Math.min(page * PAGE + PAGE - 1, GRID_ROWS));
+    } else {
+      turn(s, page);
+    }
+  }
+
+  /** Shows the page of documents whole, read where it is not. */
+  void turn(State s, long to) {
+    page = Math.max(0, to);
+    if (closed || columns == null || opening != null || failure != null) {
+      return;
+    }
+    var asked = reading.get(page);
+    if (asked != null) {
+      asked.promote(Lane.Priority.VIEW);
+    }
+    read(s, page, Lane.Priority.VIEW);
   }
 
   /** Whether anything of the tab is read now. */
@@ -549,23 +619,28 @@ final class TableTab implements Tab {
     var connected = s.catalog.connected(id);
     var profile = s.profile(id);
     String where = profile == null ? null : State.name(profile);
-    El top = Card.toolbar(
-        path(),
-        where,
-        button(
-                SECONDARY,
-                Symbol.CALCULATOR,
-                counting == null ? "Count rows" : "Stop counting",
-                connected && columns != null && !ending ? () -> count(s) : null)
-            .key("count"),
-        button(
-                SECONDARY,
-                "Refresh",
-                connected ? () -> open(s, true) : null,
-                Button.options()
-                    .icon(Symbol.ARROW_CLOCKWISE)
-                    .state(opening != null && connected ? Button.State.BUSY : Button.State.READY))
-            .key("refresh"));
+    boolean ofDocuments = profile != null && profile.provider().keepsDocuments();
+    var actions = new ArrayList<El>();
+    if (ofDocuments) {
+      actions.add(Segmented.segmented(List.of(Shown.values()), shown, v -> v.title, v -> show(s, v))
+          .key("shown")
+          .label("Show documents as"));
+    }
+    actions.add(button(
+            SECONDARY,
+            Symbol.CALCULATOR,
+            counting == null ? ofDocuments ? "Count documents" : "Count rows" : "Stop counting",
+            connected && columns != null && !ending ? () -> count(s) : null)
+        .key("count"));
+    actions.add(button(
+            SECONDARY,
+            "Refresh",
+            connected ? () -> open(s, true) : null,
+            Button.options()
+                .icon(Symbol.ARROW_CLOCKWISE)
+                .state(opening != null && connected ? Button.State.BUSY : Button.State.READY))
+        .key("refresh"));
+    El top = Card.toolbar(path(), where, actions.toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     El content =
         col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
@@ -574,9 +649,10 @@ final class TableTab implements Tab {
       content.child(col().padding(t.space().m()).shrink(0).child(note));
     }
     // Loading cells only while something is read, or was: not for a table that failed at once.
-    boolean grid = columns != null && (fields != null || failure == null);
-    if (grid) {
-      content.child(withValue(s, app, grid(s, app)));
+    boolean readable = columns != null && (fields != null || failure == null);
+    boolean grid = readable && !(ofDocuments && shown != Shown.GRID);
+    if (readable) {
+      content.child(grid ? withValue(s, app, grid(s, app)) : documents(s, app).grow(1));
     } else if (opening != null) {
       content.child(col()
           .grow(1)
@@ -596,9 +672,9 @@ final class TableTab implements Tab {
             .child(Progress.spinner().label("Reading"))
             .child(Label.label(Label.Variant.MUTED, "Reading rows…"))
             .key("read-status")
-        : Label.label(Label.Variant.MUTED, readText()).key("read-status");
+        : Label.label(Label.Variant.MUTED, readText(ofDocuments)).key("read-status");
     El rowsStatus =
-        Label.label(Label.Variant.MUTED, rowsText()).key("rows-status").ellipsis();
+        Label.label(Label.Variant.MUTED, rowsText(ofDocuments)).key("rows-status").ellipsis();
     var end = new ArrayList<El>();
     if (said != null) {
       end.add(Label.label(Label.Variant.MUTED, said).key("said"));
@@ -606,7 +682,7 @@ final class TableTab implements Tab {
     end.add(read);
     if (grid) {
       // After the grid: the rows in view are those its build in this view scrolled to.
-      end.add(Label.label(Label.Variant.MUTED, inViewText()).key("rows-in-view"));
+      end.add(Label.label(Label.Variant.MUTED, inViewText(ofDocuments)).key("rows-in-view"));
       end.add(paging());
       end.add(value.button());
     }
@@ -722,14 +798,15 @@ final class TableTab implements Tab {
   }
 
   /** The rows wholly in view, as "Rows 201–223"; empty before the grid was laid out. */
-  private String inViewText() {
+  private String inViewText(boolean documents) {
     int top = selection.firstRowInView();
     if (top < 0 || top >= rows) {
       return "";
     }
     // Not the row that asks whether there are more, which is not known to be there.
     long bottom = Math.min(selection.lastRowInView() + 1L, rows);
-    return String.format(Locale.ROOT, "Rows %,d–%,d", top + 1, bottom);
+    return String.format(
+        Locale.ROOT, documents ? "Documents %,d–%,d" : "Rows %,d–%,d", top + 1, bottom);
   }
 
   /**
@@ -770,12 +847,79 @@ final class TableTab implements Tab {
         Button.options().size(Button.Size.SMALL));
   }
 
+  /**
+   * A page of documents whole, with what turns the pages: as the shell writes them, in an editor
+   * that only shows them, or as a tree.
+   */
+  private El documents(State s, App<State> app) {
+    Theme t = Theme.CURRENT.get();
+    var read = documents.get(page);
+    long from = page * PAGE;
+    long to = read == null ? Math.min(from + PAGE, shown()) : from + read.size();
+    var range = to <= from
+        ? "No documents"
+        : "Documents " + String.format(Locale.ROOT, "%,d", from + 1) + "–"
+            + String.format(Locale.ROOT, "%,d", to);
+    boolean last = (page + 1) * PAGE >= shown();
+    El pager = row()
+        .gap(t.space().s())
+        .padding(t.space().s())
+        .align(Style.Align.CENTER)
+        .shrink(0)
+        .child(Button.icon(
+                Button.Variant.GHOST,
+                Symbol.CHEVRON_LEFT,
+                "Previous documents",
+                page > 0 ? () -> turn(s, page - 1) : null)
+            .key("previous"))
+        .child(Label.label(Label.Variant.MUTED, range).key("range"))
+        .child(Button.icon(
+                Button.Variant.GHOST,
+                Symbol.CHEVRON_RIGHT,
+                "Next documents",
+                !last ? () -> turn(s, page + 1) : null)
+            .key("next"));
+    El shownNow;
+    if (read == null) {
+      shownNow = col()
+          .grow(1)
+          .center()
+          .gap(t.space().m())
+          .role("status")
+          .label("Reading documents")
+          .child(Progress.spinner())
+          .child(Label.label(Label.Variant.MUTED, "Reading documents…"));
+    } else {
+      documentView.show("p" + page, read);
+      shownNow = switch (shown) {
+        case JSON ->
+          CodeEditor.embedded(CodeEditor.codeEditor(
+                      app, documentView.text(), documentView.editor, ShellSyntax.of(), null)
+                  .key("json")
+                  .label("Documents of " + table.name()))
+              .grow(1);
+        case TREE, GRID ->
+          documentView
+              .tree(s.zone, node -> {})
+              .key("documents")
+              .label("Documents of " + table.name())
+              .grow(1);
+      };
+    }
+    return col().minSize(0, 0).child(pager).child(Divider.divider()).child(shownNow);
+  }
+
   /** How many rows, and what the number rests on; empty before the first read. */
   String rowsText() {
+    return rowsText(false);
+  }
+
+  /** How many rows or documents, and what the number rests on; empty before the first read. */
+  String rowsText(boolean documents) {
     if (fields == null) {
       return "";
     }
-    var n = String.format(Locale.ROOT, "%,d", rows) + (rows == 1 ? " row" : " rows");
+    var n = String.format(Locale.ROOT, "%,d", rows) + noun(rows, documents);
     var text = switch (counted) {
       case ESTIMATED -> "About " + n + ", as the server estimates";
       case AT_LEAST -> "At least " + n;
@@ -788,13 +932,17 @@ final class TableTab implements Tab {
   }
 
   /** What the last read took. */
-  String readText() {
+  String readText(boolean documents) {
     if (took < 0) {
       return "";
     }
     long ms = Math.round(took / 1e6);
-    return "Read " + String.format(Locale.ROOT, "%,d", got) + (got == 1 ? " row" : " rows") + " in "
-        + ms + " ms";
+    return "Read " + String.format(Locale.ROOT, "%,d", got) + noun(got, documents) + " in " + ms
+        + " ms";
+  }
+
+  private static String noun(long n, boolean documents) {
+    return documents ? n == 1 ? " document" : " documents" : n == 1 ? " row" : " rows";
   }
 
   /** Why the tab cannot read, with what the user can do; null while it can. */

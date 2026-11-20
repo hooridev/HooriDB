@@ -53,6 +53,12 @@ class DocumentsServerTest {
     c.tearDown();
   }
 
+  /** The rows of the tree of documents, after those of the connections' tree. */
+  static List<String> documents(String tree) {
+    var rows = rows(tree);
+    return rows.subList(rows.indexOf("1"), rows.size());
+  }
+
   /** The app with the database hoori open in the tree. */
   void hoori() throws Exception {
     c.run(app, START + open("docs") + SETTLE + open("hoori") + SETTLE);
@@ -90,9 +96,73 @@ class DocumentsServerTest {
     assertTrue(line(tree, "#column-2").contains("label=\"total\""), tree);
     assertTrue(cell(tree, 0, 0).contains("\"1\""), tree);
     assertTrue(cell(tree, 0, 2).contains("\"1.5\""), tree);
-    assertTrue(TableTabTest.status(tree).contains("\"250 rows\""), tree);
+    assertTrue(TableTabTest.status(tree).contains("\"250 documents\""), tree);
     c.run(app, table("customers") + SETTLE + "snap customers\n");
     var customers = c.tree("customers");
     assertTrue(cell(customers, 0, 4).contains("[ 'math', 'poetry' ]"), customers);
+  }
+
+  @Test
+  void theDocumentsShowAsJsonAndAsATreeAPageAtATime() throws Exception {
+    hoori();
+    c.run(app, table("customers") + SETTLE + """
+        press role=radio label="JSON"
+        frame
+        """ + SETTLE + """
+        advance 1
+        frame
+        snap json
+        press role=radio label="Tree"
+        frame
+        advance 1
+        frame
+        snap tree
+        """);
+    var json = c.tree("json");
+    var editor = line(json, "#json");
+    assertTrue(editor.contains("readonly"), editor);
+    assertTrue(editor.contains("_id: 1"), editor);
+    assertTrue(editor.contains("born: ISODate('1815-12-10T00:00:00.000Z')"), editor);
+    assertTrue(editor.contains("score: Long('42')"), editor);
+    assertTrue(line(json, "#range").contains("\"Documents 1–3\""), json);
+    assertTrue(line(json, "#next").contains("disabled"), json);
+    var tree = c.tree("tree");
+    assertEquals(List.of("1", "2", "3"), documents(tree));
+    c.run(app, """
+        press role=treeitem label="1"
+        key ArrowRight
+        frame
+        snap open
+        """);
+    assertEquals(
+        List.of("1", "  _id", "  name", "  email", "  born", "  tags", "  address", "2", "3"),
+        documents(c.tree("open")));
+    assertTrue(
+        line(c.tree("open"), "role=treeitem label=\"name\"").contains("value=\"'Ada'\""),
+        c.tree("open"));
+  }
+
+  @Test
+  void theNextPageOfDocumentsIsReadAsItIsTurnedTo() throws Exception {
+    hoori();
+    c.run(app, table("orders") + SETTLE + """
+        press role=radio label="JSON"
+        frame
+        """ + SETTLE + """
+        advance 1
+        frame
+        snap first
+        press role=button label="Next documents"
+        frame
+        """ + SETTLE + """
+        advance 1
+        frame
+        snap second
+        """);
+    assertTrue(line(c.tree("first"), "#range").contains("\"Documents 1–200\""), c.tree("first"));
+    var second = c.tree("second");
+    assertTrue(line(second, "#range").contains("\"Documents 201–250\""), second);
+    assertTrue(line(second, "#json").contains("_id: 201"), second);
+    assertTrue(line(second, "#next").contains("disabled"), second);
   }
 }
