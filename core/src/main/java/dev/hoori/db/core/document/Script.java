@@ -18,10 +18,10 @@ import java.util.Set;
 public final class Script {
 
   /**
-   * A statement of a text: where it starts and ends, as offsets of characters, and its text, which
-   * may end in a semicolon.
+   * A statement of a text: where it starts and ends, as offsets of characters, its text, and
+   * whether that ends in a semicolon that ends it, not one in a string or comment left open.
    */
-  public record Piece(int start, int end, String text) {}
+  public record Piece(int start, int end, String text, boolean terminated) {}
 
   /**
    * A statement read once, before it runs: the request it makes, or the syntax error that keeps it
@@ -131,7 +131,7 @@ public final class Script {
         if (continues(text, tokens, k, broken)) {
           broken = -1; // past this break: only one after the comments before the dot ends it
         } else {
-          add(pieces, text, start, end);
+          add(pieces, text, start, end, false);
           start = -1;
         }
       }
@@ -155,12 +155,12 @@ public final class Script {
       } else if (c == ')' || c == ']' || c == '}') {
         depth = Math.max(0, depth - 1);
       } else if (c == ';' && depth == 0) {
-        add(pieces, text, start, end);
+        add(pieces, text, start, end, true);
         start = -1;
       }
     }
     if (start >= 0) {
-      add(pieces, text, start, end);
+      add(pieces, text, start, end, false);
     }
     return pieces;
   }
@@ -195,9 +195,9 @@ public final class Script {
     return -1;
   }
 
-  private static void add(List<Piece> pieces, String text, int start, int end) {
+  private static void add(List<Piece> pieces, String text, int start, int end, boolean terminated) {
     if (!text.startsWith(";", start) || end - start > 1) {
-      pieces.add(new Piece(start, end, text.substring(start, end)));
+      pieces.add(new Piece(start, end, text.substring(start, end), terminated));
     }
   }
 

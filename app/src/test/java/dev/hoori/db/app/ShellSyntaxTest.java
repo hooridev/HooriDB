@@ -102,6 +102,20 @@ class ShellSyntaxTest {
   }
 
   @Test
+  void aLineOfABackslashAloneGoesOnInItsString() {
+    assertEquals(
+        List.of("string 'one\\", "string \\", "string two'"),
+        colored("{ a: 'one\\", "\\", "two' }"));
+  }
+
+  @Test
+  void aBlockCommentGoesOnAlsoOverALineThatStartsWithTwoSlashes() {
+    assertEquals(
+        List.of("comment /* a", "comment // b", "comment c */", "keyword db"),
+        colored("/* a", "// b", "c */ db"));
+  }
+
+  @Test
   void aRegularExpressionWithItsFlagsAndASlashInItsClass() {
     assertEquals(
         List.of("string /a\\/b[/]c/i", "string 'd'"), colored("{ x: /a\\/b[/]c/i, y: 'd' }"));

@@ -76,7 +76,7 @@ public final class Lexer {
       into.add(rest);
       i = rest.end();
       value |= rest.kind() == Kind.STRING;
-      within = goesOn(text, rest, from.quote());
+      within = goesOn(text, rest, from.quote(), true);
     }
     while (i < n) {
       if (whitespace(text.charAt(i))) {
@@ -91,28 +91,30 @@ public final class Lexer {
         case PUNCTUATION -> ")]}".indexOf(text.charAt(token.start())) >= 0;
         default -> true;
       };
-      within = goesOn(text, token, text.charAt(token.start()));
+      within = goesOn(text, token, text.charAt(token.start()), false);
     }
     return new State(within.within(), within.quote(), value);
   }
 
   // Whether the token goes on on the next line, as a block comment or a string in backticks not
-  // closed, and a string whose line break a backslash escapes: as which.
-  private static State goesOn(String text, Token token, char quote) {
+  // closed, and a string whose line break a backslash escapes: as which. A token continued from
+  // the line before has no opener of its own.
+  private static State goesOn(String text, Token token, char quote, boolean continued) {
     int n = text.length();
     if (!token.open() || token.end() != n) {
       return State.START;
     }
     if (token.kind() == Kind.COMMENT) {
-      return text.startsWith("//", token.start())
+      return !continued && text.startsWith("//", token.start())
           ? State.START
           : new State(Kind.COMMENT, '\0', false);
     }
     if (token.kind() != Kind.STRING) {
       return State.START;
     }
+    int content = continued ? token.start() : token.start() + 1; // after its quote
     int backslashes = 0;
-    while (n - backslashes - 1 > token.start() && text.charAt(n - backslashes - 1) == '\\') {
+    while (n - backslashes - 1 >= content && text.charAt(n - backslashes - 1) == '\\') {
       backslashes++;
     }
     return quote == '`' || backslashes % 2 == 1

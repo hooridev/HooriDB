@@ -289,7 +289,7 @@ public final class Statements {
   private void shell() {
     for (var piece : Script.split(text)) {
       int end = piece.end();
-      if (text.charAt(end - 1) == ';') {
+      if (piece.terminated()) {
         end--;
         while (end > piece.start() && whitespace(text.charAt(end - 1))) {
           end--;

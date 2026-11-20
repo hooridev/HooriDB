@@ -494,6 +494,17 @@ class StatementsTest {
     assertEquals(statements.get(1), scanned.at(text.indexOf("note")).orElseThrow());
   }
 
+  /** A semicolon in a string or comment left open ends no statement. */
+  @Test
+  void aSemicolonInAnOpenStringOfTheShellIsNoTerminator() {
+    for (var text : List.of("db.a.find({ x: 'a;", "db.a.find({ x: /a;", "db.a.find() /* a;")) {
+      var scanned = Statements.of(text, Provider.MONGODB);
+      assertTrue(scanned.open(), text);
+      assertEquals(text.length(), scanned.around(text.length()).end(), text);
+    }
+    assertFalse(Statements.of("db.a.find({ x: 'a;' });", Provider.MONGODB).open());
+  }
+
   @Test
   void aQuoteInARegularExpressionOfTheShellStartsNoString() {
     var text = "db.a.find({ x: /'/ }); db.b.find({ y: 'z' })";
