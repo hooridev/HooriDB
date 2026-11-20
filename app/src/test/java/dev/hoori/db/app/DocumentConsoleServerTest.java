@@ -150,7 +150,7 @@ class DocumentConsoleServerTest {
     assertFalse(refused.contains("role=dialog"), refused);
     c.run(
         app,
-        "key A control\nkey Delete\n" + type("db.orders.countDocuments({})") + RUN
+        "press #sql\nkey A control\nkey Delete\n" + type("db.orders.countDocuments({})") + RUN
             + "snap count\n");
     assertTrue(cell(c.tree("count"), 0, 0).contains("\"250\""), c.tree("count"));
   }

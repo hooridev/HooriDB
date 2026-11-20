@@ -603,6 +603,11 @@ final class ConsoleTab implements Tab {
     leave();
     running = sql;
     var provider = s.profile(id).provider();
+    if (provider.keepsDocuments()) {
+      // A server of documents has no transactions, and no Manual: also where the console was in
+      // Manual on a connection of SQL before its connection changed.
+      mode = Mode.AUTO;
+    }
     // Only a plain read in Auto with nothing open may stay open between calls; the lane call
     // decides that from the server's word, and all else is read to its end, at stake meanwhile.
     boolean lazy = reads(sql, provider) && mode == Mode.AUTO && transaction == Transaction.NONE;
@@ -1182,6 +1187,7 @@ final class ConsoleTab implements Tab {
   static Ran drained(Servers.Run run, Portion first, int keep) throws InterruptedException {
     var results = new ArrayList<Result>();
     var dropped = new ArrayList<Long>();
+    var documents = new ArrayList<List<Document>>(); // those kept of each result's rows, or null
     var messages = new ArrayList<Message>();
     var took = Duration.ZERO;
     var portion = first;
@@ -1192,17 +1198,22 @@ final class ConsoleTab implements Tab {
         if (!(result instanceof Result.Rows r)) {
           results.add(result);
           dropped.add(0L);
+          documents.add(null);
           continue;
         }
         int at = results.size() - 1;
         if (r.from() == 0 || at < 0 || !(results.get(at) instanceof Result.Rows)) {
           results.add(new Result.Rows(r.fields(), 0, new ArrayList<>()));
           dropped.add(0L);
+          documents.add(new ArrayList<>());
           at++;
         }
         var kept = ((Result.Rows) results.get(at)).rows();
         int room = Math.max(0, Math.min(r.rows().size(), keep - kept.size()));
         kept.addAll(r.rows().subList(0, room));
+        if (!r.documents().isEmpty()) {
+          documents.get(at).addAll(r.documents().subList(0, room));
+        }
         dropped.set(at, dropped.get(at) + r.rows().size() - room);
       }
       if (!portion.more()) {
@@ -1212,6 +1223,14 @@ final class ConsoleTab implements Tab {
         throw new InterruptedException(); // Cancel, also where core did not notice it
       }
       portion = run.next(PORTION);
+    }
+    // A server of documents' rows keep their documents, as many as the rows kept.
+    for (int i = 0; i < results.size(); i++) {
+      if (results.get(i) instanceof Result.Rows r
+          && documents.get(i) != null
+          && !documents.get(i).isEmpty()) {
+        results.set(i, new Result.Rows(r.fields(), 0, r.rows(), documents.get(i)));
+      }
     }
     return new Ran(
         new Portion(results, messages, false, took, portion.transaction(), portion.autoCommit()),
