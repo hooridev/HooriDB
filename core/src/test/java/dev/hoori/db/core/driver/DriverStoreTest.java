@@ -718,20 +718,15 @@ public class DriverStoreTest {
 
   @Test
   void aPartIsNamedOnce() {
+    var twice = List.of(new Driver.Part("b", false), new Driver.Part("b", true));
+    assertThrows(IllegalArgumentException.class, () -> new Driver("org.x", "a", "a.Driver", twice));
+    var itself = List.of(new Driver.Part("a", false));
     assertThrows(
-        IllegalArgumentException.class,
-        () -> new Driver(
-            "org.x",
-            "a",
-            "a.Driver",
-            List.of(new Driver.Part("b", false), new Driver.Part("b", true))));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> new Driver("org.x", "a", "a.Driver", List.of(new Driver.Part("a", false))));
+        IllegalArgumentException.class, () -> new Driver("org.x", "a", "a.Driver", itself));
     // One file where the file system ignores case.
+    var inCase = List.of(new Driver.Part("A", false));
     assertThrows(
-        IllegalArgumentException.class,
-        () -> new Driver("org.x", "a", "a.Driver", List.of(new Driver.Part("A", false))));
+        IllegalArgumentException.class, () -> new Driver("org.x", "a", "a.Driver", inCase));
     assertThrows(IllegalArgumentException.class, () -> new Driver.Part("../b", false));
   }
 
