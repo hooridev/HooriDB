@@ -624,25 +624,25 @@ final class ConnectionDialog {
                     .wFull()))
         .required()
         .error(or(error(problems, ConnectionProfile.Field.HOST), probe.error(Probe.At.HOST)));
-    // With SRV the record gives the servers' ports.
-    var address = p.srv()
-        ? host
-        : Form.row(
-            host.grow(),
-            field(
-                    "Port",
-                    valueField(
-                            Format.INTEGER,
-                            p.port(),
-                            fallback,
-                            e.at(PORT).draft(),
-                            open ? this::port : null)
-                        .key("port")
-                        .maxLength(5)
-                        .w(3 * t.size().control()))
-                .required()
-                .error(
-                    or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))));
+    Form.Entry address = host; // with SRV, DNS gives the servers' ports
+    if (!p.srv()) {
+      address = Form.row(
+          host.grow(),
+          field(
+                  "Port",
+                  valueField(
+                          Format.INTEGER,
+                          p.port(),
+                          fallback,
+                          e.at(PORT).draft(),
+                          open ? this::port : null)
+                      .key("port")
+                      .maxLength(5)
+                      .w(3 * t.size().control()))
+              .required()
+              .error(
+                  or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))));
+    }
     var database = field(
             "Database",
             textField(locked(open, e.at(DATABASE)), "Optional").key("database").wFull())
