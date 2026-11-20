@@ -71,6 +71,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
@@ -277,6 +278,7 @@ final class ConsoleTab implements Tab {
   String switching; // the database it switches to, while it does; the old one shows meanwhile
   private Statements scanned; // the statements of the text it was made from, as the caret moves
   private String scannedText;
+  private Provider scannedProvider; // whose rules split it: the connection may change
   final List<Output> outputs = new ArrayList<>(); // the pinned results first
   Output shown; // the results tab shown; null for Messages
   final List<Logged> log = new ArrayList<>();
@@ -2439,11 +2441,13 @@ final class ConsoleTab implements Tab {
     return statements(provider).at(editor.caret()).orElse(null);
   }
 
-  /** The text's statements, scanned again only when the text changed. */
+  /** The text's statements, scanned again only when the text or its provider changed. */
   Statements statements(Provider provider) {
-    if (scanned == null || scannedText != text) { // each edit hands over a new string
+    // Each edit hands over a new string, which equals takes as the same at once where it is.
+    if (scanned == null || !Objects.equals(scannedText, text) || scannedProvider != provider) {
       scanned = Statements.of(text, provider);
       scannedText = text;
+      scannedProvider = provider;
     }
     return scanned;
   }

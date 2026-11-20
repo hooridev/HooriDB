@@ -1521,7 +1521,8 @@ final class State {
 
   // The database the server opens where none is given.
   static String database(ConnectionProfile p) {
-    if (!p.database().isBlank()) {
+    // A server of documents takes any name it is given, also one of spaces alone.
+    if (p.provider().keepsDocuments() ? !p.database().isEmpty() : !p.database().isBlank()) {
       return p.database();
     }
     return switch (p.provider().traits()) {

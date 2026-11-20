@@ -224,6 +224,9 @@ final class TableTab implements Tab {
           }
           arrived(s, from / PAGE, opened.page(), opened.took());
           want(s, first, last);
+          if (showing != Shown.GRID) {
+            turn(s, documentPage); // as it was turned to while it opened
+          }
           if (counted != Counted.EXACT
               && (recount || estimate.isPresent() && estimate.getAsLong() < COUNT_BELOW)) {
             counted(s);
@@ -464,8 +467,10 @@ final class TableTab implements Tab {
       if (s.catalog.connected(id)) {
         if (columns == null || fields == null) {
           open(s, false);
-        } else {
+        } else if (showing == Shown.GRID) {
           want(s, first, last);
+        } else {
+          turn(s, documentPage);
         }
       }
       return;
