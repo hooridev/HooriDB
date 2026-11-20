@@ -4,6 +4,7 @@ import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.ZONE;
 import static dev.hoori.db.app.CatalogTreeTest.eventually;
 import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.CatalogTreeTest.open;
@@ -179,7 +180,7 @@ class TableTabTest {
     assertTrue(opened.contains("\"timestamp with time zone\""), opened);
     assertTrue(opened.contains("label=\"calendar_clock\""), opened);
     assertTrue(cell(opened, 0, 0).contains("\"1\""), opened);
-    assertTrue(cell(opened, 1, 2).contains("\"2026-01-01 09:01:00+00\""), opened);
+    assertTrue(cell(opened, 1, 2).contains("\"2026-01-01 10:01:00+01\""), opened);
     assertTrue(cell(opened, 2, 3).contains("\"3.49\""), opened);
     // NULL, every seventh row of a column that may hold it.
     assertTrue(cell(opened, 6, 3).contains("\"NULL\""), opened);
@@ -252,7 +253,7 @@ class TableTabTest {
       "\"2026-11-13\"",
       "\"14:30:00\"",
       "\"2026-11-13 14:30:05.25\"",
-      "\"2026-11-13 13:30:00+00\"",
+      "\"2026-11-13 14:30:00+01\"",
       "\"0x89504e470d0a1a0a… (12 kB)\"",
       "\"{\\\"a\\\": 1}\""
     };
@@ -896,13 +897,37 @@ class TableTabTest {
   void anOffsetKeepsItsSecondsAndZeroItsSign() {
     assertEquals(
         "01:02:03+00:00:30",
-        Cells.text(java.time.OffsetTime.of(1, 2, 3, 0, ZoneOffset.ofTotalSeconds(30))));
+        Cells.text(java.time.OffsetTime.of(1, 2, 3, 0, ZoneOffset.ofTotalSeconds(30)), ZONE));
     assertEquals(
         "01:02:03+05:30",
-        Cells.text(java.time.OffsetTime.of(1, 2, 3, 0, ZoneOffset.ofHoursMinutes(5, 30))));
-    assertEquals("-0", Cells.text(-0.0));
-    assertEquals("-0", Cells.text(-0.0f));
-    assertEquals("0", Cells.text(0.0));
+        Cells.text(java.time.OffsetTime.of(1, 2, 3, 0, ZoneOffset.ofHoursMinutes(5, 30)), ZONE));
+    assertEquals("-0", Cells.text(-0.0, ZONE));
+    assertEquals("-0", Cells.text(-0.0f, ZONE));
+    assertEquals("0", Cells.text(0.0, ZONE));
+  }
+
+  @Test
+  void aMomentShowsInTheLocalZoneWithTheOffsetOfItsOwnDate() {
+    assertEquals(
+        "2026-11-14 11:59:32+01",
+        Cells.text(OffsetDateTime.of(2026, 11, 14, 10, 59, 32, 0, ZoneOffset.UTC), ZONE));
+    assertEquals(
+        "2026-07-14 12:59:32.5+02",
+        Cells.text(OffsetDateTime.of(2026, 7, 14, 10, 59, 32, 500_000_000, ZoneOffset.UTC), ZONE));
+    assertEquals(
+        "2026-07-14 12:59:32+02",
+        Cells.text(OffsetDateTime.of(2026, 7, 14, 6, 59, 32, 0, ZoneOffset.ofHours(-4)), ZONE));
+    // Without a zone there is no moment to move.
+    assertEquals(
+        "2026-07-14 10:59:32", Cells.text(LocalDateTime.of(2026, 7, 14, 10, 59, 32), ZONE));
+  }
+
+  @Test
+  void aMomentIsCopiedAsItShows() throws Exception {
+    var app = shop();
+    servers.rows(ORDERS, 10, OptionalLong.of(10));
+    c.run(app, table("orders") + SETTLE + "press #cell-1-2\nframe\nkey C control\nframe\n");
+    assertEquals("2026-01-01 10:01:00+01", app.clipboard().read());
   }
 
   String snapped(App<State> app, String name) throws Exception {

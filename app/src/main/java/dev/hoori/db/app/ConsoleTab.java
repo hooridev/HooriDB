@@ -2654,6 +2654,7 @@ final class ConsoleTab implements Tab {
   /** The result's rows, read-only, with the table tab's cells. */
   private El grid(State s, App<State> app, Output o) {
     Theme t = Theme.CURRENT.get();
+    var zone = s.zone;
     var columns = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < o.fields.size(); c++) {
       var field = o.fields.get(c);
@@ -2666,7 +2667,7 @@ final class ConsoleTab implements Tab {
               field.name(),
               o.widths[c],
               Cells.type(kind),
-              row -> Cells.text(o.rows.get(row).get(at)))
+              row -> Cells.text(o.rows.get(row).get(at), zone))
           .typeName(field.type())
           .sortable(false);
       if (kind == Kind.TEXT || kind == Kind.OTHER) {
