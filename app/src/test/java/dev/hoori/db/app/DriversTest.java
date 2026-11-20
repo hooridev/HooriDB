@@ -891,14 +891,45 @@ class DriversTest {
     assertFalse(app.state().dialog.choosingDriver);
   }
 
-  /** Enter in the driver's dialog does not save the connection under it. */
+  /** Enter in the driver's dialog goes to neither Save nor the form under it. */
   @Test
   void enterInTheDriversDialogSavesNothing() throws Exception {
     var app = app();
     run(app, START + NEW_SHOP + DRIVER + "key Enter\nframe\nawait\nframe\nsnap entered\n");
     assertNotNull(app.state().dialog, tree("entered"));
-    assertFalse(app.state().dialog.triedToSave);
     assertTrue(new ProfileStore(dir.resolve("config")).load().isEmpty());
+    var empty = app();
+    run(empty, START + """
+        press role=button label="New connection"
+        frame
+        advance 1
+        frame
+        await
+        frame
+        """ + DRIVER + "key Enter\nframe\n");
+    assertFalse(empty.state().dialog.triedToSave, "the empty host is not shown as missing");
+  }
+
+  /** A saved young version is warned of under Type, without reading the list of versions. */
+  @Test
+  void aSavedYoungVersionIsWarnedOfWithoutTheList() throws Exception {
+    var app = app(ConnectionProfile.of(Provider.POSTGRESQL)
+        .withHost("db.example.com")
+        .withDriverVersion(YOUNG));
+    run(app, START + """
+        press role=treeitem label="db.example.com" right
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Edit…"
+        frame
+        advance 1
+        frame
+        """ + SETTLE + "snap edit\n");
+    String edit = tree("edit");
+    assertNull(app.state().dialog.versions.read, edit);
+    assertTrue(block(edit, "role=button label=\"Driver\"").contains("\"Driver " + YOUNG + "…\""));
+    assertTrue(line(edit, "#type").contains(". Only 1 day old: recommended after 3 days"), edit);
   }
 
   /** A version chosen by hand is named on Driver…, and a young one is warned of under Type. */
