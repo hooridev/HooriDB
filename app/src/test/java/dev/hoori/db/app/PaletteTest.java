@@ -119,12 +119,12 @@ class PaletteTest {
             "File: New console",
             "File: Close tab",
             "View: Command palette…",
+            "View: Statement log",
             "View: Light theme",
             "Go: Go to table…",
             "Go: Next tab",
-            "Go: Workspace",
-            // The rows that fit: Help's come after.
-            "Go: Tab content")),
+            // The rows that fit: the rest of Go's and Help's come after.
+            "Go: Workspace")),
         all.toString());
     assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
