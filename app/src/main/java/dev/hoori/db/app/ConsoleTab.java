@@ -332,6 +332,7 @@ final class ConsoleTab implements Tab {
   private Sent recording;
   private HistoryEntry recorded; // the last statement that went into the history, or null
   HistoryDialog history; // the History dialog, null while closed
+  QueriesDialog queries; // Save query or Saved queries, null while closed
 
   /** A statement of the user's on its way to the server, and since when. */
   private record Sent(String sql, Instant started) {}
@@ -2495,6 +2496,24 @@ final class ConsoleTab implements Tab {
         .key("cancel")
         .keepFocus());
     actions.add(Tooltip.tooltip(
+        Button.icon(
+                Button.Variant.GHOST,
+                Symbol.SAVE,
+                "Save query",
+                s.queriesUsable() ? this::saveQuery : null)
+            .key("query-save-open")
+            .keepFocus(),
+        "Save query: the selection, or else the whole text, under a name"));
+    actions.add(Tooltip.tooltip(
+        Button.icon(
+                Button.Variant.GHOST,
+                Symbol.STAR,
+                "Saved queries",
+                s.queriesUsable() ? this::openQueries : null)
+            .key("queries-open")
+            .keepFocus(),
+        "Saved queries"));
+    actions.add(Tooltip.tooltip(
         Button.icon(Button.Variant.GHOST, Symbol.HISTORY, "History", this::openHistory)
             .key("history-open")
             .keepFocus(),
@@ -3098,6 +3117,21 @@ final class ConsoleTab implements Tab {
     history = new HistoryDialog();
   }
 
+  /** Save query: the selection, or else the whole text, under a name. */
+  void saveQuery() {
+    int from = Math.min(editor.caret(), editor.anchor());
+    int to = Math.min(Math.max(editor.caret(), editor.anchor()), text.length());
+    var saved = from < to ? text.substring(from, to) : text;
+    if (!saved.isBlank()) {
+      queries = QueriesDialog.save(saved);
+    }
+  }
+
+  /** Saved queries: those of the connection, to put one into the editor. */
+  void openQueries() {
+    queries = QueriesDialog.list();
+  }
+
   /**
    * Puts the statement in place of the selection; without one, as a statement of its own on a line
    * of its own: at the caret, or after the statement the caret is in, closing the statement before
@@ -3108,6 +3142,7 @@ final class ConsoleTab implements Tab {
     int from = Math.min(editor.caret(), editor.anchor());
     int to = Math.min(Math.max(editor.caret(), editor.anchor()), text.length());
     var put = sql;
+    int caret = sql.stripTrailing().length(); // in what is put: after it, or as ending says
     var provider = provider(app.state());
     if (from == to && provider != null) {
       int here = from;
@@ -3127,8 +3162,13 @@ final class ConsoleTab implements Tab {
       int at = unclosed.isPresent()
           ? unclosed.get().start()
           : inside ? part.end() : comment.map(Statements.Piece::end).orElse(from);
-      put = (at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "") + sql + ";"
+      var before = at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "";
+      var ending = ending(sql, provider);
+      put = before
+          + sql
+          + ending.terminator()
           + (at < text.length() && text.charAt(at) != '\n' ? "\n" : "");
+      caret = before.length() + ending.caret();
       from = at;
       to = at;
       if (open != null && open.start() < at) {
@@ -3137,11 +3177,40 @@ final class ConsoleTab implements Tab {
         while (end > open.start() && Character.isWhitespace(text.charAt(end - 1))) {
           end--;
         }
-        put = ";" + text.substring(end, at) + put;
+        var closing = ";" + text.substring(end, at);
+        put = closing + put;
+        caret += closing.length();
         from = end;
       }
     }
-    editor.replace(from, to, put, put.stripTrailing().length());
+    editor.replace(from, to, put, caret);
+  }
+
+  /**
+   * What ends the text as a statement, and where the caret goes in the text so ended: a semicolon
+   * where its last statement has no terminator, on a line of its own after a comment to the end of
+   * the line, which would take it in, the caret after it; none where it has one, as a saved query
+   * may, the caret at its last statement's end, before the comments after it, so that Run runs it.
+   * As the provider's statements are split, so that an executable comment is code.
+   */
+  record Ending(String terminator, int caret) {}
+
+  static Ending ending(String sql, Provider provider) {
+    var scan = Statements.of(sql, provider);
+    var statements = scan.statements();
+    if (statements.isEmpty()) {
+      return new Ending("", sql.length());
+    }
+    if (!scan.open()) {
+      return new Ending("", statements.getLast().end());
+    }
+    var pieces = Statements.pieces(sql, provider);
+    var last = pieces.getLast();
+    boolean lineComment = last.kind() == Statements.Piece.Kind.COMMENT
+        && last.end() == sql.length()
+        && !sql.startsWith("/*", last.start());
+    var terminator = lineComment ? "\n;" : ";";
+    return new Ending(terminator, sql.length() + terminator.length());
   }
 
   /** What is asked before a statement is sent, while it is; in the console's window. */
