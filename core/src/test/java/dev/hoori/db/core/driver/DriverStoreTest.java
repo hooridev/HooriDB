@@ -608,6 +608,130 @@ public class DriverStoreTest {
     return open;
   }
 
+  private static final Driver PARTED = new Driver(
+      DRIVER.group(),
+      DRIVER.artifact(),
+      DRIVER.driverClass(),
+      List.of(new Driver.Part("fake-core", false), new Driver.Part("fake-extra", true)));
+
+  private static Driver part(String artifact) {
+    return new Driver(DRIVER.group(), artifact, DRIVER.driverClass());
+  }
+
+  @Test
+  void aDriverOfSeveralPartsIsDownloadedAndLoadedWhole() throws Exception {
+    // The driver's class is in a part, so that it loads only with the parts beside it.
+    var core = FakeDriver.jar("1", temp);
+    repository.publish(PARTED, "1.0", BYTES, Sum.SHA256, NOW);
+    repository.publish(part("fake-core"), "1.0", core, Sum.SHA1, NOW);
+    repository.publish(part("fake-extra"), "1.0", BYTES, Sum.SHA256, NOW);
+    long all = BYTES.length + core.length + BYTES.length;
+    assertEquals(all, store.size(PARTED, "1.0"));
+
+    var progress = new ArrayList<long[]>();
+    store.download(PARTED, "1.0", (done, total) -> progress.add(new long[] {done, total}));
+    assertEquals(all, progress.getLast()[0]);
+    assertEquals(all, progress.getLast()[1]);
+    assertEquals(
+        List.of(
+            "fake-core-1.0.jar",
+            "fake-core-1.0.jar.sha256",
+            "fake-extra-1.0.jar",
+            "fake-extra-1.0.jar.sha256",
+            "fake-jdbc-1.0.jar",
+            "fake-jdbc-1.0.jar.sha256"),
+        files());
+    assertEquals(List.of("1.0"), store.downloaded(PARTED));
+    assertEquals(all, store.sizeOnDisk(PARTED, "1.0"));
+    try (var loaded = store.load(PARTED, "1.0")) {
+      assertEquals("1", loaded.connect("jdbc:fake:x", new Properties()).getCatalog());
+    }
+
+    var fetched = List.copyOf(repository.opened);
+    repository.offline = true;
+    store.download(PARTED, "1.0", DriverStore.Progress.NONE);
+    assertEquals(fetched, repository.opened);
+  }
+
+  @Test
+  void anOptionalPartThatTheRepositoryLacksIsLeftOut() throws Exception {
+    var core = FakeDriver.jar("1", temp);
+    repository.publish(PARTED, "1.0", BYTES, Sum.SHA256, NOW);
+    repository.publish(part("fake-core"), "1.0", core, Sum.SHA256, NOW);
+    assertEquals(BYTES.length + core.length, store.size(PARTED, "1.0"));
+    store.download(PARTED, "1.0", DriverStore.Progress.NONE);
+    assertEquals(List.of("1.0"), store.downloaded(PARTED));
+    try (var loaded = store.load(PARTED, "1.0")) {
+      assertEquals("1", loaded.connect("jdbc:fake:x", new Properties()).getCatalog());
+    }
+  }
+
+  @Test
+  void anOptionalPartLostAfterItsDownloadIsDownloadedAgain() throws Exception {
+    repository.publish(PARTED, "1.0", BYTES, Sum.SHA256, NOW);
+    repository.publish(part("fake-core"), "1.0", FakeDriver.jar("1", temp), Sum.SHA256, NOW);
+    repository.publish(part("fake-extra"), "1.0", BYTES, Sum.SHA256, NOW);
+    store.download(PARTED, "1.0", DriverStore.Progress.NONE);
+    // Its record stays: it was downloaded, and is missing now.
+    var extra = storage.resolve("dev.hoori.fake/fake-jdbc/1.0/fake-extra-1.0.jar");
+    Files.delete(extra);
+    assertEquals(List.of(), store.downloaded(PARTED));
+    assertFailure(Failure.NOT_DOWNLOADED, () -> store.load(PARTED, "1.0"));
+    store.download(PARTED, "1.0", DriverStore.Progress.NONE);
+    assertTrue(Files.isRegularFile(extra));
+    try (var loaded = store.load(PARTED, "1.0")) {
+      assertEquals("1", loaded.connect("jdbc:fake:x", new Properties()).getCatalog());
+    }
+  }
+
+  @Test
+  void aMissingPartLeavesNothingBehind() throws Exception {
+    repository.publish(PARTED, "1.0", BYTES, Sum.SHA256, NOW);
+    assertFailure(Failure.NOT_FOUND, () -> store.size(PARTED, "1.0"));
+    assertFailure(
+        Failure.NOT_FOUND, () -> store.download(PARTED, "1.0", DriverStore.Progress.NONE));
+    assertEquals(List.of(), files());
+
+    var file = repository.publish(part("fake-core"), "1.0", BYTES, Sum.SHA256, NOW);
+    Files.write(file, "damaged".getBytes(StandardCharsets.UTF_8));
+    assertFailure(
+        Failure.CHECKSUM_MISMATCH, () -> store.download(PARTED, "1.0", DriverStore.Progress.NONE));
+    assertEquals(List.of(), files());
+    assertEquals(List.of(), store.downloaded(PARTED));
+  }
+
+  @Test
+  void aPartChangedAfterItsDownloadIsRefusedAndDownloadedAgain() throws Exception {
+    repository.publish(PARTED, "1.0", BYTES, Sum.SHA256, NOW);
+    repository.publish(part("fake-core"), "1.0", FakeDriver.jar("1", temp), Sum.SHA256, NOW);
+    store.download(PARTED, "1.0", DriverStore.Progress.NONE);
+    var stored = storage.resolve("dev.hoori.fake/fake-jdbc/1.0/fake-core-1.0.jar");
+    Files.write(stored, FakeDriver.jar("2", temp));
+    assertFailure(Failure.CHECKSUM_MISMATCH, () -> store.load(PARTED, "1.0"));
+    Files.delete(stored);
+    assertEquals(List.of(), store.downloaded(PARTED));
+    assertFailure(Failure.NOT_DOWNLOADED, () -> store.load(PARTED, "1.0"));
+
+    store.download(PARTED, "1.0", DriverStore.Progress.NONE);
+    try (var loaded = store.load(PARTED, "1.0")) {
+      assertEquals("1", loaded.connect("jdbc:fake:x", new Properties()).getCatalog());
+    }
+  }
+
+  @Test
+  void aPartIsNamedOnce() {
+    var twice = List.of(new Driver.Part("b", false), new Driver.Part("b", true));
+    assertThrows(IllegalArgumentException.class, () -> new Driver("org.x", "a", "a.Driver", twice));
+    var itself = List.of(new Driver.Part("a", false));
+    assertThrows(
+        IllegalArgumentException.class, () -> new Driver("org.x", "a", "a.Driver", itself));
+    // One file where the file system ignores case.
+    var inCase = List.of(new Driver.Part("A", false));
+    assertThrows(
+        IllegalArgumentException.class, () -> new Driver("org.x", "a", "a.Driver", inCase));
+    assertThrows(IllegalArgumentException.class, () -> new Driver.Part("../b", false));
+  }
+
   @Test
   void theAddressIsTheFilesPathUnderTheRepository() {
     assertEquals("dev/hoori/fake/fake-jdbc/1.0/fake-jdbc-1.0.jar", store.address(DRIVER, "1.0"));
