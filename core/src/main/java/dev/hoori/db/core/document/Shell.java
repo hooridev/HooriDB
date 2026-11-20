@@ -58,6 +58,25 @@ public final class Shell {
   }
 
   /** The text in single quotes, with what needs it escaped. */
+  // A literal where it reads back as the same pattern; else the constructor, as for an escaped
+  // slash, which reads back as a slash, a line break, an empty pattern, which would be a comment,
+  // or a backslash at the end.
+  private static String regex(Bson.Regex r) {
+    var p = r.pattern();
+    int trailing = 0;
+    while (trailing < p.length() && p.charAt(p.length() - 1 - trailing) == '\\') {
+      trailing++;
+    }
+    if (p.isEmpty()
+        || p.contains("\\/")
+        || p.indexOf('\n') >= 0
+        || p.indexOf('\r') >= 0
+        || trailing % 2 == 1) {
+      return "BSONRegExp(" + quote(p) + ", " + quote(r.options()) + ")";
+    }
+    return "/" + p.replace("/", "\\/") + "/" + r.options();
+  }
+
   public static String quote(String text) {
     var out = new StringBuilder(text.length() + 2).append('\'');
     for (int i = 0; i < text.length(); i++) {
@@ -71,7 +90,7 @@ public final class Shell {
         case '\b' -> out.append("\\b");
         case '\f' -> out.append("\\f");
         default -> {
-          if (c < 0x20 || c == 0x7f || c == ' ' || c == ' ') {
+          if (c < 0x20 || c == 0x7f || c == '\u2028' || c == '\u2029') {
             out.append(String.format("\\u%04x", (int) c));
           } else {
             out.append(c);
@@ -169,7 +188,7 @@ public final class Shell {
             : "Binary.createFromBase64('" + Base64.getEncoder().encodeToString(b.bytes()) + "', "
                 + b.subtype() + ")";
       case Bson.Timestamp t -> "Timestamp({ t: " + t.seconds() + ", i: " + t.increment() + " })";
-      case Bson.Regex r -> "/" + r.pattern().replace("/", "\\/") + "/" + r.options();
+      case Bson.Regex r -> regex(r);
       case Bson.Code c ->
         c.scope() == null
             ? "Code(" + quote(c.code()) + ")"
@@ -259,7 +278,7 @@ public final class Shell {
     void space() throws SyntaxException {
       while (at < text.length()) {
         char c = text.charAt(at);
-        if (Character.isWhitespace(c) || c == ' ' || c == '﻿') {
+        if (Character.isWhitespace(c) || c == '\u00a0' || c == '\ufeff') {
           at++;
         } else if (text.startsWith("//", at)) {
           while (at < text.length() && text.charAt(at) != '\n') {
@@ -357,7 +376,7 @@ public final class Shell {
           }
         }
         expect(':', ": is missing after the name " + name);
-        entries.add(new Document.Entry(name, value()));
+        put(entries, new Document.Entry(name, value()));
         if (!take(',')) {
           space();
           if (!take('}')) {
@@ -366,6 +385,17 @@ public final class Shell {
           return new Document(entries);
         }
       }
+    }
+
+    // As in JavaScript, a name given twice keeps its first place and its last value.
+    private static void put(List<Document.Entry> entries, Document.Entry entry) {
+      for (int i = 0; i < entries.size(); i++) {
+        if (entries.get(i).name().equals(entry.name())) {
+          entries.set(i, entry);
+          return;
+        }
+      }
+      entries.add(entry);
     }
 
     List<Object> array() throws SyntaxException {
@@ -513,7 +543,13 @@ public final class Shell {
         if (at == hex) {
           throw error("Hexadecimal digits are missing after 0x");
         }
-        long value = Long.parseUnsignedLong(text.substring(hex, at), 16);
+        long value;
+        try {
+          value = Long.parseUnsignedLong(text.substring(hex, at), 16);
+        } catch (NumberFormatException e) {
+          at = digits;
+          throw error("The number is too large for 64 bits");
+        }
         return whole(negative ? -value : value);
       }
       boolean fraction = false;
@@ -656,7 +692,12 @@ public final class Shell {
         case "Double" -> ((Number) number(args)).doubleValue();
         case "NumberDecimal", "Decimal128" -> new Bson.Decimal128(digits(args));
         case "UUID" -> args.isEmpty() ? Bson.Binary.of(UUID.randomUUID()) : uuid(text(args, 0));
-        case "BinData" -> new Bson.Binary(subtype(args.getFirst()), base64(text(args, 1)));
+        case "BinData" -> {
+          if (args.size() != 2) {
+            throw new IllegalArgumentException("BinData needs a subtype and a base64 string");
+          }
+          yield new Bson.Binary(subtype(args.getFirst()), base64(text(args, 1)));
+        }
         case "Binary.createFromBase64" ->
           new Bson.Binary(args.size() > 1 ? subtype(args.get(1)) : 0, base64(text(args, 0)));
         case "Binary.createFromHexString" ->
@@ -667,8 +708,13 @@ public final class Shell {
         case "MaxKey" -> Bson.Special.MAX_KEY;
         case "RegExp", "BSONRegExp" ->
           new Bson.Regex(text(args, 0), args.size() > 1 ? sorted(text(args, 1)) : "");
-        case "Code" ->
-          new Bson.Code(text(args, 0), args.size() > 1 ? (Document) args.get(1) : null);
+        case "Code" -> {
+          var scope = args.size() > 1 ? args.get(1) : null;
+          if (scope != null && !(scope instanceof Document)) {
+            throw new IllegalArgumentException("The scope of Code is a document");
+          }
+          yield new Bson.Code(text(args, 0), (Document) scope);
+        }
         case "Symbol", "BSONSymbol" -> new Bson.Symbol(text(args, 0));
         default -> throw new Unknown();
       };

@@ -2,7 +2,6 @@ package dev.hoori.db.core.document;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -21,7 +20,7 @@ public record Document(List<Entry> entries) {
   public record Entry(String name, Object value) {
     public Entry {
       Objects.requireNonNull(name, "name");
-      Bson.check(value);
+      value = Bson.value(value);
     }
   }
 
@@ -44,13 +43,9 @@ public record Document(List<Entry> entries) {
   }
 
   /** An array of the values, as a document holds it: a list that cannot be changed. */
+  @SuppressWarnings("unchecked")
   public static List<Object> array(List<?> values) {
-    var copy = new ArrayList<Object>(values.size());
-    for (var value : values) {
-      Bson.check(value);
-      copy.add(value);
-    }
-    return Collections.unmodifiableList(copy);
+    return (List<Object>) Bson.value(values);
   }
 
   /** An array of the values. */

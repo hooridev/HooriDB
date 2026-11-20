@@ -1,5 +1,6 @@
 package dev.hoori.db.core.document;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -92,9 +93,13 @@ public final class Commands {
 
   /**
    * Whether the command only reads: one of {@link #READING}, an aggregate whose pipeline writes
-   * nowhere, or the explain of a command that reads.
+   * nowhere, or the explain of a command that reads. A command with a name twice in a document,
+   * at any depth, is not one: what is checked here must be what the server takes.
    */
   public static boolean reads(Document command) {
+    if (!once(command)) {
+      return false;
+    }
     var name = command.first();
     if (READING.contains(name)) {
       return true;
@@ -103,6 +108,23 @@ public final class Commands {
       case "aggregate" -> command.get("pipeline") instanceof List<?> stages && reads(stages);
       case "explain" -> command.get("explain") instanceof Document explained && reads(explained);
       default -> false;
+    };
+  }
+
+  // Whether each document in the value names each of its fields once.
+  private static boolean once(Object value) {
+    return switch (value) {
+      case Document d -> {
+        var names = new HashSet<String>();
+        for (var entry : d.entries()) {
+          if (!names.add(entry.name()) || !once(entry.value())) {
+            yield false;
+          }
+        }
+        yield true;
+      }
+      case List<?> list -> list.stream().allMatch(Commands::once);
+      case null, default -> true;
     };
   }
 
@@ -117,11 +139,13 @@ public final class Commands {
     return writesNowhere(stages);
   }
 
+  // What $literal holds is a value, never a stage, whatever its names.
   private static boolean writesNowhere(Object value) {
     return switch (value) {
       case Document d ->
         d.entries().stream()
-            .allMatch(e -> !WRITING_STAGES.contains(e.name()) && writesNowhere(e.value()));
+            .allMatch(e -> e.name().equals("$literal")
+                || !WRITING_STAGES.contains(e.name()) && writesNowhere(e.value()));
       case List<?> list -> list.stream().allMatch(item -> item == null || writesNowhere(item));
       case null, default -> true;
     };

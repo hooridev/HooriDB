@@ -4,10 +4,12 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.AbstractList;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.RandomAccess;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
@@ -20,7 +22,7 @@ public final class Bson {
   /** The 12 bytes that identify a document, written as 24 hexadecimal digits in lower case. */
   public record ObjectId(String hex) implements Comparable<ObjectId> {
 
-    private static final Pattern HEX = Pattern.compile("[0-9a-f]{24}");
+    private static final Pattern DIGITS = Pattern.compile("[0-9a-f]{24}");
     private static final byte[] PROCESS = new byte[5];
     private static final AtomicInteger COUNTER;
 
@@ -31,7 +33,7 @@ public final class Bson {
     }
 
     public ObjectId {
-      if (!HEX.matcher(hex).matches()) {
+      if (!DIGITS.matcher(hex).matches()) {
         throw new IllegalArgumentException("Not an ObjectId: 24 hexadecimal digits are needed");
       }
     }
@@ -188,8 +190,11 @@ public final class Bson {
     UNDEFINED
   }
 
-  /** Throws for anything that is not a value of a document. */
-  static void check(Object value) {
+  /**
+   * The value as a document holds it, with an array copied, and the arrays in it, into lists that
+   * cannot be changed; throws for anything that is not a value of a document, also in an array.
+   */
+  static Object value(Object value) {
     switch (value) {
       case null -> {}
       case Boolean b -> {}
@@ -207,10 +212,41 @@ public final class Bson {
       case Symbol s -> {}
       case Special s -> {}
       case Document d -> {}
-      case List<?> list -> {}
+      case Array a -> {} // made by this method, of values it took
+      case List<?> list -> {
+        return Array.of(list);
+      }
       default ->
         throw new IllegalArgumentException(
             "Not a value of a document: " + value.getClass().getName());
+    }
+    return value;
+  }
+
+  // An array as a document holds it: its values, checked, which nothing changes; null among them.
+  static final class Array extends AbstractList<Object> implements RandomAccess {
+    private final Object[] values;
+
+    private Array(Object[] values) {
+      this.values = values;
+    }
+
+    static Array of(List<?> list) {
+      var values = list.toArray();
+      for (int i = 0; i < values.length; i++) {
+        values[i] = value(values[i]);
+      }
+      return new Array(values);
+    }
+
+    @Override
+    public Object get(int index) {
+      return values[index];
+    }
+
+    @Override
+    public int size() {
+      return values.length;
     }
   }
 
@@ -229,7 +265,7 @@ public final class Bson {
       case Binary b -> "binData";
       case Timestamp t -> "timestamp";
       case Regex r -> "regex";
-      case Code c -> "javascript";
+      case Code c -> c.scope() == null ? "javascript" : "javascriptWithScope";
       case Symbol s -> "symbol";
       case Special s ->
         switch (s) {
