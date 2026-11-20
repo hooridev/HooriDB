@@ -654,6 +654,7 @@ final class TableTab implements Tab {
   /** The rows in the grid, late: a row not read yet shows the grid's loading cells. */
   private El grid(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
+    var zone = s.zone;
     var shown = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < columns.size(); c++) {
       var column = columns.get(c);
@@ -665,7 +666,8 @@ final class TableTab implements Tab {
         widths[c] = Cells.width(kind) * t.size().control();
       }
       float width = widths[c] < 0 ? Cells.width(Kind.DECIMAL) * t.size().control() : widths[c];
-      var grid = new DataGrid.Column(column.name(), width, type, row -> Cells.text(value(row, at)))
+      var grid = new DataGrid.Column(
+              column.name(), width, type, row -> Cells.text(value(row, at), zone))
           .typeName(column.type())
           .sortable(false);
       if (column.keyPosition() > 0) {

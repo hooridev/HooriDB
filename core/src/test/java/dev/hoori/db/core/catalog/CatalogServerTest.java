@@ -150,7 +150,7 @@ class CatalogServerTest {
           .map(name ->
               new Table(container, name, name.equals("active_customer") ? Kind.VIEW : Kind.TABLE))
           .toList();
-      assertEquals(expected, Catalog.tables(connection, provider, container));
+      assertEquals(expected, sampleTables(connection, provider));
     }
   }
 
@@ -159,7 +159,7 @@ class CatalogServerTest {
   void eachSampleTableHasItsColumnsTypesAndPrimaryKey(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var connection = open(server, TestServer.DATABASE)) {
-      for (var table : Catalog.tables(connection, provider, sample(provider))) {
+      for (var table : sampleTables(connection, provider)) {
         var expected = SAMPLE.get(table.name()).stream()
             .map(e -> new Column(
                 table,
@@ -293,9 +293,7 @@ class CatalogServerTest {
       } else {
         assertEquals(
             SAMPLE_TABLES,
-            Catalog.tables(connection, provider, container).stream()
-                .map(Table::name)
-                .toList());
+            sampleTables(connection, provider).stream().map(Table::name).toList());
       }
     }
   }
@@ -550,6 +548,14 @@ class CatalogServerTest {
 
   private static String qualified(Provider provider, Container container, String name) {
     return provider.quote(container.name()) + "." + provider.quote(name);
+  }
+
+  // The sample's tables and view as the catalog reads them, without those another test left behind.
+  private static List<Table> sampleTables(Connection connection, Provider provider)
+      throws CatalogException {
+    return Catalog.tables(connection, provider, sample(provider)).stream()
+        .filter(table -> SAMPLE.containsKey(table.name()))
+        .toList();
   }
 
   private static void assertSystemLast(List<Boolean> system, List<String> names) {

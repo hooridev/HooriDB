@@ -11,11 +11,15 @@ import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.OptionalLong;
@@ -220,6 +224,92 @@ abstract class MySqlFamilyRows extends RowsDialect {
         Rows.binary(source, name -> "SUBSTRING(" + name + ", 1, " + LIMIT + ")", "LENGTH");
       default -> Rows.text(source, Kind.OTHER, start, "LENGTH(");
     };
+  }
+
+  @Override
+  String equal() {
+    return "=";
+  }
+
+  // Numbers as numbers, as the servers compare a number with a text as floating point; binary data
+  // as bytes, and anything else as the server's text, which it reads as the column's type.
+  @Override
+  void bind(PreparedStatement statement, int index, Object value) throws SQLException {
+    switch (value) {
+      case null -> statement.setNull(index, Types.NULL);
+      case Long number -> statement.setLong(index, number);
+      case BigInteger number -> statement.setBigDecimal(index, new BigDecimal(number));
+      case BigDecimal number -> statement.setBigDecimal(index, number);
+      case Float number -> statement.setFloat(index, number);
+      case Double number -> statement.setDouble(index, number);
+      case Boolean truth -> statement.setBoolean(index, truth);
+      case Binary binary -> statement.setBytes(index, binary.bytes());
+      case OffsetDateTime moment -> statement.setBigDecimal(index, seconds(moment));
+      default -> statement.setString(index, Rows.text(value, false));
+    }
+  }
+
+  // A text as the servers read it unless their SQL mode says NO_BACKSLASH_ESCAPES, and a moment
+  // with its offset, as MySQL reads it, which tells that it is in UTC.
+  @Override
+  String literal(Object value) {
+    return switch (value) {
+      case null -> "NULL";
+      case Boolean truth -> truth ? "TRUE" : "FALSE";
+      case Long number -> Rows.text(number, false);
+      case BigInteger number -> Rows.text(number, false);
+      case BigDecimal number -> Rows.text(number, false);
+      case Float number -> Rows.text(number, false);
+      case Double number -> Rows.text(number, false);
+      case Binary binary -> "X'" + HexFormat.of().formatHex(binary.bytes()) + "'";
+      default -> "'" + Rows.text(value, false).replace("\\", "\\\\").replace("'", "''") + "'";
+    };
+  }
+
+  // A moment as the seconds since 1970, as UNIX_TIMESTAMP() reads it: the server takes a text of a
+  // timestamp in the session's zone, and the session must keep it, which a DATETIME's DEFAULT
+  // CURRENT_TIMESTAMP is written in. FROM_UNIXTIME() gives the time in that zone, which in an
+  // hour that the zone repeats can be the other moment's, as changeable() asks.
+  @Override
+  String parameter(Object value) {
+    return value instanceof OffsetDateTime ? "FROM_UNIXTIME(?)" : "?";
+  }
+
+  // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails
+  // the statement that names it. A moment must come back as itself from the session's time.
+  @Override
+  boolean changeable(Connection connection, Provider provider, Table table, List<Object> values)
+      throws QueryException {
+    for (var value : values) {
+      if (value instanceof OffsetDateTime moment) {
+        var seconds = seconds(moment);
+        var back = Query.run(
+            connection, provider, "SELECT UNIX_TIMESTAMP(FROM_UNIXTIME(?))", statement -> {
+              statement.setBigDecimal(1, seconds);
+              try (var rows = statement.executeQuery()) {
+                rows.next();
+                return rows.getBigDecimal(1);
+              }
+            });
+        if (back == null || back.compareTo(seconds) != 0) {
+          return false;
+        }
+      }
+    }
+    var sql = "SELECT e.TRANSACTIONS FROM information_schema.TABLES t"
+        + " JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE"
+        + " WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?";
+    return Query.run(connection, provider, sql, statement -> {
+      statement.setString(1, table.container().name());
+      statement.setString(2, table.name());
+      try (var rows = statement.executeQuery()) {
+        return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
+      }
+    });
+  }
+
+  private static BigDecimal seconds(OffsetDateTime moment) {
+    return BigDecimal.valueOf(moment.toEpochSecond()).add(BigDecimal.valueOf(moment.getNano(), 9));
   }
 
   private static String bit(ResultSet rows, int index) throws SQLException {

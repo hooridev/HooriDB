@@ -438,7 +438,8 @@ class ExecutionServerTest {
     try (var connection = open(provider)) {
       var execution = new Execution(connection, provider, slowRows(provider));
       assertTrue(execution.next(5).more());
-      var portion = interrupted(() -> execution.next(10_000), () -> Thread.sleep(300));
+      var portion =
+          interrupted(() -> execution.next(10_000), () -> awaitRunning(provider, "lagging"));
       assertEquals(Failure.Kind.CANCELLED, failure(portion.results()).kind());
       assertTrue(portion.elapsed().toMillis() > 0, portion.elapsed().toString());
       assertTrue(connection.getAutoCommit());
@@ -455,29 +456,30 @@ class ExecutionServerTest {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
       execute(connection, "CREATE TABLE kept (id integer)");
-      try {
-        connection.setAutoCommit(false);
-        var inserted = new Execution(connection, provider, "INSERT INTO kept VALUES (1)").next(1);
-        assertEquals(Transaction.OPEN, inserted.transaction());
-        var execution = new Execution(connection, provider, slowRows(provider));
-        assertTrue(execution.next(5).more());
-        var portion = interrupted(() -> execution.next(10_000), () -> Thread.sleep(300));
-        assertEquals(Failure.Kind.CANCELLED, failure(portion.results()).kind());
-        assertEquals(pg ? Transaction.FAILED : Transaction.UNKNOWN, portion.transaction());
-        if (pg) {
-          var aborted = failure(run(connection, provider, "SELECT 1"));
-          assertEquals("25P02", aborted.state());
-        } else {
-          assertEquals(
-              List.of(List.of(1L)), rows(run(connection, provider, "SELECT count(*) FROM kept")));
-        }
-        connection.rollback();
+      connection.setAutoCommit(false);
+      var inserted = new Execution(connection, provider, "INSERT INTO kept VALUES (1)").next(1);
+      assertEquals(Transaction.OPEN, inserted.transaction());
+      var execution = new Execution(connection, provider, slowRows(provider));
+      assertTrue(execution.next(5).more());
+      var portion =
+          interrupted(() -> execution.next(10_000), () -> awaitRunning(provider, "lagging"));
+      assertEquals(Failure.Kind.CANCELLED, failure(portion.results()).kind());
+      assertEquals(pg ? Transaction.FAILED : Transaction.UNKNOWN, portion.transaction());
+      if (pg) {
+        var aborted = failure(run(connection, provider, "SELECT 1"));
+        assertEquals("25P02", aborted.state());
+      } else {
         assertEquals(
-            List.of(List.of(0L)), rows(run(connection, provider, "SELECT count(*) FROM kept")));
-      } finally {
-        connection.rollback();
-        connection.setAutoCommit(true);
-        execute(connection, "DROP TABLE kept");
+            List.of(List.of(1L)), rows(run(connection, provider, "SELECT count(*) FROM kept")));
+      }
+      connection.rollback();
+      assertEquals(
+          List.of(List.of(0L)), rows(run(connection, provider, "SELECT count(*) FROM kept")));
+    } finally {
+      // On a connection of its own, once the test's has ended its transaction by closing: a
+      // cancel that fails gives that connection up.
+      try (var connection = open(provider)) {
+        execute(connection, "DROP TABLE IF EXISTS kept");
       }
     }
   }
@@ -546,12 +548,15 @@ class ExecutionServerTest {
         + " REPEAT('x', 100) AS t FROM digit g, digit f, digit e, digit c, digit b, digit a";
   }
 
-  // Rows that the server makes one every 10 milliseconds; MariaDB and MySQL send them once they
-  // fill a buffer of 16 KB.
+  // Rows whose statement awaitRunning finds by "lagging" while they are read. PostgreSQL makes the
+  // first five and the row its fetch looks ahead to at once, then sleeps once, over the last, so
+  // that a cancel finds a fetch running: it drops one that comes between fetches. MariaDB and
+  // MySQL make one every 10 milliseconds and send them once they fill a buffer of 16 KB.
   private static String slowRows(Provider provider) {
     return provider == Provider.POSTGRESQL
-        ? "SELECT n, pg_sleep(0.01) FROM generate_series(1, 10000) n"
-        : "SELECT id, SLEEP(0.01), REPEAT('x', 8000) FROM reading";
+        ? "SELECT n, pg_sleep(CASE WHEN n <= 6 THEN 0 ELSE 30 END) AS lagging"
+            + " FROM generate_series(1, 7) n"
+        : "SELECT id, SLEEP(0.01) AS lagging, REPEAT('x', 8000) FROM reading";
   }
 
   interface Call {
@@ -575,6 +580,11 @@ class ExecutionServerTest {
       }
       stillInterrupted[0] = Thread.currentThread().isInterrupted();
     });
+    // Once the call waits for its step: an interrupt before would stop the call before it begins.
+    var deadline = System.nanoTime() + TIMEOUT.toNanos();
+    while (caller.getState() == Thread.State.RUNNABLE && System.nanoTime() < deadline) {
+      Thread.sleep(1);
+    }
     wait.await();
     var started = System.nanoTime();
     caller.interrupt();

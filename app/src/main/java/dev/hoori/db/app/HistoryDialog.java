@@ -126,11 +126,9 @@ final class HistoryDialog {
               .sortable(false),
           new DataGrid.Column(
                   "Took",
-                  3 * unit,
-                  DataGrid.DataType.INTEGER,
-                  // shortcut: milliseconds as text, as Messages has; use the kit's Format once it
-                  // has one for a Duration.
-                  row -> entries.get(row).took().toMillis() + " ms")
+                  4 * unit,
+                  Format.DURATION.type(),
+                  row -> Format.DURATION.text(entries.get(row).took()))
               .sortable(false),
           new DataGrid.Column(
                   "Outcome", 10 * unit, DataGrid.DataType.TEXT, row -> outcome(entries.get(row)))
@@ -140,14 +138,12 @@ final class HistoryDialog {
                 case Outcome.Cancelled c -> CellIcon.before(Symbol.WARNING, Icon.Variant.WARNING);
                 default -> null;
               }));
-      // shortcut: Enter and a double press insert through onEdit, the grid's only handler for
-      // them; use the grid's own once it has one for a row that is chosen.
       list = DataGrid.dataGrid(
               columns,
               entries.size(),
               DataGrid.options()
                   .select(selection)
-                  .onEdit((row, column) -> insert(console, app))
+                  .onActivate(row -> insert(console, app))
                   .copy(app.clipboard()))
           .key("history")
           .label("Statements")
@@ -159,9 +155,9 @@ final class HistoryDialog {
             TextField.textField(search, "Search", v -> search = v)
                 .key("history-search")
                 .label("Search")
-                .w(33 * unit),
+                .w(34 * unit),
             Symbol.SEARCH))
-        .child(Card.flush(list).w(33 * unit).h(10 * unit));
+        .child(Card.flush(list).w(34 * unit).h(10 * unit));
     Runnable close = () -> console.history = null;
     El insert = button(PRIMARY, "Insert", chosen() == null ? null : () -> insert(console, app))
         .key("history-insert");

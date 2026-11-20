@@ -497,7 +497,7 @@ class TestConnectionTest {
     String end = tree("end");
     assertFalse(end.contains("role=status label=\"Connecting"), end);
     assertFalse(line(end, "label=\"Test connection\"").contains("busy"), end);
-    assertTrue(server.interrupted, "the test's thread was interrupted");
+    CatalogTreeTest.eventually(() -> server.interrupted);
     assertTrue(line(end, "role=dialog").contains("\"New connection\""), "the dialog stays");
   }
 
@@ -517,7 +517,7 @@ class TestConnectionTest {
         frame
         """ + SETTLE + "snap end\n");
     assertFalse(tree("end").contains("role=dialog"), tree("end"));
-    assertTrue(server.interrupted);
+    CatalogTreeTest.eventually(() -> server.interrupted);
   }
 
   @Test
@@ -546,7 +546,7 @@ class TestConnectionTest {
     App<State> app = app();
     run(app, START + NEW_SHOP + TEST + SETTLE + "close\nframe\n" + SETTLE);
     assertTrue(app.windows().all().isEmpty());
-    assertTrue(server.interrupted);
+    CatalogTreeTest.eventually(() -> server.interrupted);
   }
 
   @Test

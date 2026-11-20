@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BooleanSupplier;
@@ -190,9 +191,13 @@ class CatalogTreeTest {
         repository.drivers(dir.resolve("drivers")),
         Tester.SERVER,
         servers);
+    app.state().zone = ZONE;
     apps.add(app);
     return app;
   }
+
+  /** The zone in which moments show, whatever the machine's: an hour from UTC, two in summer. */
+  static final ZoneId ZONE = ZoneId.of("Europe/Berlin");
 
   static final String START = """
       size 1200 760
@@ -287,6 +292,8 @@ class CatalogTreeTest {
     String connecting = tree("connecting");
     assertTrue(row(connecting, "shop-prod").contains("role=progressbar label=\"Connecting\""));
     assertTrue(connecting.contains("\"Connecting…\""), connecting);
+    String bar = line(connecting, "#connected"); // the status bar's part
+    assertTrue(bar.contains("label=\"Connecting…\"") && bar.contains("value=\"busy\""), bar);
     held.countDown();
     run(app, SETTLE + "snap connected\n");
     var connected = tree("connected");
@@ -806,6 +813,24 @@ class CatalogTreeTest {
     assertEquals(
         "shop-prod",
         Files.readString(dir.resolve("out").resolve("connection.clipboard.txt")).strip());
+  }
+
+  /** The status bar counts the connections open, and turns while one more connects. */
+  @Test
+  void theStatusBarCountsTheConnectionsAndTurnsWhileOneConnects() throws Exception {
+    var app = app(SHOP, INVENTORY);
+    ready(app, SHOP, INVENTORY);
+    var held = servers.hold("open " + MARIA);
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + open("inventory") + "frame\n".repeat(3)
+            + "snap one\n");
+    String one = line(tree("one"), "#connected");
+    assertTrue(one.contains("label=\"1 connected\"") && one.contains("value=\"busy\""), one);
+    held.countDown();
+    run(app, SETTLE + "snap two\n");
+    String two = line(tree("two"), "#connected");
+    assertTrue(two.contains("label=\"2 connected\"") && two.contains("value=\"ok\""), two);
   }
 
   @Test

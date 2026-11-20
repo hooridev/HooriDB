@@ -4,7 +4,8 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    # Other pre-releases, such as v1.2.3-rc.1, are released here; nightlies by nightly.yml.
+    tags: ['v*', '!v*-nightly.*']
 
 permissions:
   contents: read
@@ -40,6 +41,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    # One at a time with nightly.yml's publish, whose guard must see this release.
+    concurrency:
+      group: publish
+      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@v5
         with:
@@ -52,5 +57,10 @@ jobs:
         run: |
           cd assets
           sha256sum HooriDB-* > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "HooriDB ${GITHUB_REF_NAME#v}" HooriDB-* SHA256SUMS
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          # A SemVer pre-release such as v1.2.3-rc.1 has a "-" before any build metadata after "+".
+          case "${GITHUB_REF_NAME%%+*}" in
+            *-*) prerelease=--prerelease ;;
+            *) prerelease=--prerelease=false ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" --draft "$prerelease" --verify-tag --title "HooriDB ${GITHUB_REF_NAME#v}" HooriDB-* SHA256SUMS
+          gh release edit "$GITHUB_REF_NAME" --draft=false "$prerelease"

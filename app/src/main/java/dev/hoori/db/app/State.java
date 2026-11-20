@@ -21,6 +21,7 @@ import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.nio.file.Path;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -44,6 +45,7 @@ final class State {
 
   App<State> app; // runs the clock and the windows, and says whether the window is maximized
   Theme theme = Theme.DARK;
+  ZoneId zone = ZoneId.systemDefault(); // the computer's, in which moments show
   Split.Position sidebar = SIDEBAR;
   final MenuBar.State bar = new MenuBar.State();
   // The tabs of every window: the first window's, and those torn off into windows of their own.

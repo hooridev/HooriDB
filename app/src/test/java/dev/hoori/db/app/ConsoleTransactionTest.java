@@ -139,9 +139,12 @@ class ConsoleTransactionTest {
     assertTrue(line(manual, "#rollback").contains("disabled"), manual);
     assertTrue(badge(manual).contains("No transaction"), manual);
     assertFalse(line(manual, TAB).contains("modified"), manual);
+    assertFalse(manual.contains("#uncommitted"), manual);
     // A change opens it; the connection turned auto-commit off first.
     c.run(app, type(PAY) + RUN + "snap changed\n");
     String changed = c.tree("changed");
+    assertTrue(
+        line(changed, "#uncommitted").contains("\"1 console may hold uncommitted work\""), changed);
     assertTrue(servers.calls.contains("autocommit " + PG + " off"), servers.calls.toString());
     assertTrue(badge(changed).contains("Transaction open · 1 statement"), changed);
     assertTrue(line(changed, TAB).contains("modified"), "the tab's dot: " + changed);
@@ -157,6 +160,7 @@ class ConsoleTransactionTest {
     assertTrue(tabs(committed).endsWith("Result 1,Messages"), tabs(committed));
     assertTrue(line(committed, "#said").contains("Committed"), committed);
     assertTrue(status(committed).contains("3 rows changed"), committed);
+    assertFalse(committed.contains("#uncommitted"), committed);
     // Control+Shift+R rolls back, from the editor.
     c.run(app, "press #sql\n" + RUN + "key R control shift\nframe\n" + SETTLE + "snap undone\n");
     assertTrue(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
@@ -166,6 +170,66 @@ class ConsoleTransactionTest {
     assertEquals(
         2, servers.calls.stream().filter(x -> x.equals("run " + PG + " COMMIT")).count());
     assertFalse(servers.overlapped, "two calls ran at once on one connection");
+  }
+
+  @Test
+  void theStatusBarBringsAConsoleThatMayHoldUncommittedWorkForward() throws Exception {
+    var app = open(SHOP);
+    c.run(app, menu(SHOP.name(), "New console") + MANUAL + type(PAY) + RUN + "snap other\n");
+    String other = c.tree("other");
+    String first = "role=tab label=\"shop-prod: shop (1)\"";
+    assertFalse(line(other, first).contains("selected"), other);
+    String two = "2 consoles may hold uncommitted work";
+    assertTrue(line(other, "#uncommitted").contains("role=button label=\"" + two + "\""), other);
+    c.run(app, "press role=button label=\"" + two + "\"\nframe\nadvance 1\nframe\nsnap shown\n");
+    assertTrue(line(c.tree("shown"), first).contains("selected"), c.tree("shown"));
+  }
+
+  /**
+   * Nor while a dialog is open: About in the main window, or a password asked in the window of the
+   * console it would show, whose tab it would switch behind the dialog.
+   */
+  @Test
+  void theStatusBarLeavesAWindowAskingForAPasswordAsItIs() throws Exception {
+    servers.serve(MARIA, Provider.MARIADB, "11.4.2-MariaDB", CatalogTreeTest.MARIA_OUTLINE, "x");
+    var app = c.app(SHOP, INVENTORY);
+    c.ready(app, SHOP, INVENTORY);
+    String item = "1 console may hold uncommitted work";
+    c.run(
+        app,
+        CatalogTreeTest.START + menu(SHOP.name(), "New console") + SETTLE + MANUAL + type(PAY)
+            + RUN + "press role=menuitem label=\"Help\"\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"About HooriDB\"\nframe\nadvance 1\nframe\n"
+            + "snap about\npress role=button label=\"Close\"\nframe\nadvance 1\nframe\n"
+            + menu(INVENTORY.name(), "New console") + SETTLE
+            + "press role=tab label=\"inventory\" right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n");
+    String about = c.tree("about");
+    assertFalse(line(about, "#version").contains("role=button"), about);
+    assertFalse(line(about, "#uncommitted").contains("role=button"), about);
+    // The console that may hold work joins the window of the other connection's.
+    var s = app.state();
+    var shop = s.consoles(SHOP.id()).getFirst();
+    var inventory = s.consoles(INVENTORY.id()).getFirst();
+    var window = s.tabs.groupOf(inventory);
+    var main = s.tabs.main();
+    // In a frame, as a drag's release, so that the windows it changes are built again.
+    app.post(
+        () -> s.tabs.dock(main, main.tabs().indexOf(shop), window, window.tabs().size()));
+    String title = "window \"" + s.title(inventory) + "\"\n";
+    c.run(
+        app,
+        "await\nframe\n" + title + "frame\nadvance 1\nframe\n"
+            + "press role=tab label=\"inventory\"\nframe\nadvance 1\nframe\n" + type(COUNT) + RUN
+            + "press role=button label=\"Enter password…\"\nframe\nadvance 1\nframe\n"
+            + "window main\nframe\nsnap main\npress #uncommitted\nframe\n" + title
+            + "frame\nsnap asked\n");
+    String bar = c.tree("main");
+    assertTrue(line(bar, "#uncommitted").contains("label=\"" + item + "\""), bar);
+    assertFalse(line(bar, "#uncommitted").contains("role=button"), "no press: " + bar);
+    assertEquals(inventory, window.activeTab());
+    String asked = c.tree("inventory-asked");
+    assertTrue(asked.contains("role=dialog label=\"Password for inventory\""), asked);
   }
 
   @Test
@@ -2139,20 +2203,20 @@ class ConsoleTransactionTest {
   @Test
   void exitWaitsForASilentSessionOnlySoLong() throws Exception {
     var app = k.console(SHOP);
-    // shortcut: nothing is kept, as Exit would wait for its save, whose end a script hears only at
-    // an await, which waits for the silent session too; keep them once a script can hear one.
-    app.state().consolesKept.canSave = false;
-    app.state().historyKept.canSave = false;
     c.run(app, type(ORDERS) + RUN);
     servers.dead = true; // the held call ends only once its gate opens, interrupted or not
     var gate = servers.hold("run " + PG + " " + COUNT);
     c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains("run " + PG + " " + COUNT));
-    app.state().consolesKept.quitAnyway = true; // and Exit does not stop for what is not kept
-    app.state().historyKept.quitAnyway = true;
     c.run(app, EXIT + "advance " + State.EXIT_SECONDS + "\nframe\nsnap silent\n");
     assertFalse(app.windows().all().isEmpty());
     assertTrue(c.tree("silent").contains("did not say in time"), c.tree("silent"));
+    // The saves end, which an await would not hear, as it waits for the silent session too; the
+    // consoles' change since the save on its way is saved after it.
+    c.run(
+        app,
+        "await \"save history\"\nawait \"save consoles\"\nframe\n"
+            + "await \"save consoles\"\nframe\n");
     c.run(app, EXIT);
     assertTrue(app.windows().all().isEmpty(), "the second Exit goes");
     gate.countDown();
