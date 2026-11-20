@@ -317,9 +317,18 @@ interface Servers {
         @Override
         public Abandoned close() {
           open.compareAndSet(running, null);
-          return running.close();
+          return ended(running.close());
         }
       };
+    }
+
+    // Freeing a cursor that found the connection lost leaves the link gone, as a call does.
+    private Abandoned ended(Abandoned abandoned) {
+      if (abandoned.failure().isPresent()
+          && abandoned.failure().get().kind() == Failure.Kind.CONNECTION_LOST) {
+        gone.set(true);
+      }
+      return abandoned;
     }
 
     @Override
@@ -345,9 +354,10 @@ interface Servers {
     @Override
     public Abandoned giveUp() {
       var left = open.getAndSet(null);
-      return left == null ? Abandoned.NOTHING : left.close();
+      return left == null ? Abandoned.NOTHING : ended(left.close());
     }
 
+    /** Each within {@link DocumentSession#GRACE}, after which it is given up. */
     @Override
     public Abandoned close() {
       var ended = giveUp();
