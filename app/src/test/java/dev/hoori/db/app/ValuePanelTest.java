@@ -19,6 +19,7 @@ import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.execution.Result;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -211,6 +212,33 @@ class ValuePanelTest {
     String next = t.c.tree("next");
     assertTrue(editor(next).contains("\"" + dumped("[\n    1,\n    2\n]") + "\""), editor(next));
     assertFalse(next.contains("Cut short"), next);
+  }
+
+  @Test
+  void aFieldADocumentLacksIsAnEmptyCellAndANullIsNull() throws Exception {
+    var sql = "SELECT a, b FROM kinds";
+    t.servers.statement(
+        sql,
+        List.of(new Result.Rows(
+            List.of(new Field("a", "string", Kind.TEXT), new Field("b", "string", Kind.TEXT)),
+            0,
+            List.of(Arrays.asList(Missing.FIELD, null)))));
+    var app = t.c.app(SHOP);
+    t.c.ready(app, SHOP);
+    t.c.run(
+        app,
+        START + menu(SHOP.name(), "New console") + SETTLE + ConsoleTest.type(sql) + ConsoleTest.RUN
+            + "clipboard \"x\"\npress #cell-0-0\nframe\nkey C control\nframe\n"
+            + "key Enter shift\nadvance 1\nframe\nsnap missing\n"
+            + "key ArrowRight\nframe\nsnap null\n");
+    // The kit's empty field, quoted where it is alone on its line, as an empty text copies.
+    assertEquals("\"\"", app.clipboard().read());
+    String missing = t.c.tree("missing");
+    assertFalse(TableTabTest.cell(missing, 0, 0).contains("NULL"), missing);
+    assertTrue(TableTabTest.cell(missing, 0, 1).contains("\"NULL\""), missing);
+    assertTrue(missing.contains("\"The document has no such field\""), missing);
+    String nulled = t.c.tree("null");
+    assertFalse(nulled.contains("no such field"), nulled);
   }
 
   @Test

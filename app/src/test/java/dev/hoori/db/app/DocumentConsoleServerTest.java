@@ -88,6 +88,16 @@ class DocumentConsoleServerTest {
   }
 
   @Test
+  void aFieldADocumentLacksIsAnEmptyCellAndANullIsNull() throws Exception {
+    var app = console(docs());
+    c.run(app, type("db.customers.find({}, { email: 1 })") + RUN + "snap grid\n");
+    // Grace's email is null; Edsger has none.
+    var grid = c.tree("grid");
+    assertTrue(cell(grid, 1, 1).contains("\"NULL\""), grid);
+    assertFalse(cell(grid, 2, 1).contains("NULL"), grid);
+  }
+
+  @Test
   void theDocumentsShownWholeTurnAPageAtATimeAndTheNextIsRead() throws Exception {
     var app = console(docs());
     c.run(

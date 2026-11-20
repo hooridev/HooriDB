@@ -7,6 +7,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.query.QueryException;
@@ -321,6 +322,7 @@ public final class DocumentSession implements AutoCloseable {
     try {
       return switch (cell) {
         case null -> throw new IllegalArgumentException("The row's _id is null");
+        case Missing m -> throw new IllegalArgumentException("The row has no _id");
         case Cut c -> throw new IllegalArgumentException("The row's _id was read in part");
         case String s when kind == Kind.TEXT -> s;
         case String s -> Shell.parse(s); // the shell's text of it, or its Extended JSON

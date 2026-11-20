@@ -20,6 +20,7 @@ import com.rethinkj.ui.kit.Texts;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Missing;
 import java.time.ZoneId;
 import java.util.List;
 
@@ -112,6 +113,11 @@ final class ValuePanel {
           .child(Progress.spinner());
     } else if (cell.value() == null) {
       body = col().grow(1).center().child(Label.label(Label.Variant.MUTED, "NULL"));
+    } else if (cell.value() == Missing.FIELD) {
+      body = col()
+          .grow(1)
+          .center()
+          .child(Label.label(Label.Variant.MUTED, "The document has no such field"));
     } else {
       make(cell.value(), cell.kind(), zone);
       body = CodeEditor.embedded(CodeEditor.codeEditor(

@@ -8,6 +8,7 @@ import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.TableTabTest.cell;
 import static dev.hoori.db.app.TableTabTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
@@ -102,6 +103,23 @@ class DocumentsServerTest {
     // Relaxed Extended JSON, as the element tree writes a text with quotes.
     assertTrue(cell(customers, 0, 4).contains("[\\\"math\\\", \\\"poetry\\\"]"), customers);
     assertTrue(cell(customers, 0, 3).contains("\"1815-12-10 00:53:28+00:53:28\""), customers);
+  }
+
+  @Test
+  void aFieldADocumentLacksIsAnEmptyCellAndANullIsNull() throws Exception {
+    hoori();
+    c.run(
+        app,
+        table("customers") + SETTLE
+            + "clipboard \"x\"\npress #cell-2-2\nframe\nkey C control\nframe\n"
+            + "key Enter shift\nadvance 1\nframe\nsnap missing\n");
+    // Grace's email is null; Edsger has none.
+    var missing = c.tree("missing");
+    assertTrue(cell(missing, 1, 2).contains("\"NULL\""), missing);
+    assertFalse(cell(missing, 2, 2).contains("NULL"), missing);
+    // The kit's empty field, quoted where it is alone on its line.
+    assertEquals("\"\"", app.clipboard().read());
+    assertTrue(missing.contains("\"The document has no such field\""), missing);
   }
 
   @Test
