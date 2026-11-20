@@ -61,6 +61,10 @@ class ReadWriteTest {
       keeps(p, "SHOW transaction_read_only");
       keeps(p, "SELECT 1 -- SET transaction_read_only = off");
       keeps(p, "SELECT read_write FROM t");
+      keeps(
+          p,
+          "SELECT " + p.dialect().syntax().identifierQuote() + "Start Transaction"
+              + p.dialect().syntax().identifierQuote() + " FROM t");
     }
     keeps(Provider.MYSQL, "SHOW VARIABLES LIKE 'transaction_read_only'");
     keeps(Provider.POSTGRESQL, "RESET search_path");
