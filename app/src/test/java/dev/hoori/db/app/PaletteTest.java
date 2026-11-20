@@ -527,11 +527,15 @@ class PaletteTest {
             + (asking.equals("History")
                 ? ConsoleHistoryTest.HISTORY
                 : ConsoleTest.type(ConsoleConfirmationTest.WIPE) + ConsoleTest.RUN + SHOWN)
-            + "window \"customers\"\n" + PALETTE + "snap palette\nwindow main\nframe\nsnap main\n");
+            + "window \"customers\"\n" + PALETTE + "snap palette\n"
+            // About comes after the rows that fit: found by its name.
+            + "type \"About\"\nframe\nsnap about\nwindow main\nframe\nsnap main\n");
     var palette = c.tree("customers-palette");
-    for (var command : List.of("File: New connection…", "File: Drivers…", "Help: About HooriDB")) {
+    for (var command : List.of("File: New connection…", "File: Drivers…")) {
       assertTrue(line(palette, "label=\"" + command + "\"").contains("disabled"), palette);
     }
+    var about = c.tree("customers-about");
+    assertTrue(line(about, "label=\"Help: About HooriDB\"").contains("disabled"), about);
     var main = c.tree("main");
     assertTrue(
         line(main, "role=dialog")
