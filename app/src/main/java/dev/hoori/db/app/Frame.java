@@ -86,7 +86,7 @@ final class Frame {
             .grow(1)
             .padding(0, t.space().m(), t.space().m(), t.space().m()))
         .child(StatusBar.statusBar(
-            Arrays.asList(connections(s), uncommitted(s)),
+            Arrays.asList(connections(s), uncommitted(s, modal)),
             s.message == null ? null : StatusBar.text(s.message).key("message"),
             List.of(StatusBar.item(null, HooriDb.version(), modal ? null : () -> s.about = true)
                 .key("version"))));
@@ -213,7 +213,7 @@ final class Frame {
     El question = question(s, group);
     El confirmation = asked == null && question == null ? confirmation(s, group) : null;
     // The menus' commands without the bar, acting on this window's tabs.
-    boolean modal = asked != null || question != null || confirmation != null;
+    boolean modal = asks(s, group);
     List<Menu.Item> menus = menus(s, group, modal);
     closePalette(s, group, modal);
     return col()
@@ -241,10 +241,25 @@ final class Frame {
 
   /** What a console of the window asks about what may be open in it, or null. */
   private static El question(State s, TabGroups.Group<Tab> group) {
+    return questioned(s, group) ? s.pending.console().question(s) : null;
+  }
+
+  /** Whether a console of the window asks about what may be open in it. */
+  private static boolean questioned(State s, TabGroups.Group<Tab> group) {
     var pending = s.pending;
-    return pending != null && !pending.armed() && s.tabs.groupOf(pending.console()) == group
-        ? pending.console().question(s)
-        : null;
+    return pending != null && !pending.armed() && s.tabs.groupOf(pending.console()) == group;
+  }
+
+  /**
+   * Whether the window of these tabs shows a dialog of its own, without making it: a console's
+   * question, what its console in front asks before a statement or its History, or what the
+   * catalog asks there.
+   */
+  private static boolean asks(State s, TabGroups.Group<Tab> group) {
+    return questioned(s, group)
+        || group.activeTab() instanceof ConsoleTab console
+            && (console.confirming != null || console.history != null)
+        || s.catalog.asks(s, group);
   }
 
   /**
@@ -441,18 +456,19 @@ final class Frame {
 
   /**
    * The consoles where something may be at stake, as Exit asks about; pressing it shows the first,
-   * but not while a question or confirmation is open in its window, whose tab it would switch.
-   * Null while there are none.
+   * but not while a dialog is open in the main window or its own, whose tab it would switch. Null
+   * while there are none.
+   *
+   * @param modal whether a dialog is open in the main window
    */
-  private static El uncommitted(State s) {
+  private static El uncommitted(State s, boolean modal) {
     var consoles = s.consoles(null).stream().filter(ConsoleTab::atStake).toList();
     if (consoles.isEmpty()) {
       return null;
     }
     int n = consoles.size();
     var first = consoles.getFirst();
-    var group = s.tabs.groupOf(first);
-    boolean asking = question(s, group) != null || confirmation(s, group) != null;
+    boolean asking = modal || asks(s, s.tabs.groupOf(first));
     return StatusBar.item(
             Badge.Kind.WARNING,
             Symbol.LOCK_OPEN,

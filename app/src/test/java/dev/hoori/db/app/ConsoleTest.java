@@ -309,7 +309,10 @@ class ConsoleTest {
             + "snap ready\n");
     String ready = c.tree("ready");
     assertTrue(line(ready, "#run-status").contains("\"Ready\""), ready);
-    c.run(app, type(COUNT) + RUN + menu(SHOP.name(), "Disconnect") + SETTLE + "snap gone\n");
+    c.run(app, type(COUNT) + RUN + "snap ran\n");
+    String ran = c.tree("ran");
+    assertTrue(line(ran, "#run-status").contains("\"Ran in 4 ms · 1 row\""), ran);
+    c.run(app, menu(SHOP.name(), "Disconnect") + SETTLE + "snap gone\n");
     String gone = c.tree("gone");
     assertTrue(line(gone, "#run-status").contains("\"Not connected\""), gone);
   }

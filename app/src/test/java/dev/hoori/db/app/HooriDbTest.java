@@ -67,6 +67,7 @@ class HooriDbTest {
     assertTrue(ConnectionsTest.line(start, "#version").contains("role=button"), start);
     String about = Files.readString(out.resolve("about.tree.txt"));
     assertTrue(about.contains("role=dialog label=\"About HooriDB\""), about);
+    assertFalse(ConnectionsTest.line(about, "#version").contains("role=button"), about);
   }
 
   /** The View menu switches the theme, and the status line says so for a while. */
