@@ -45,10 +45,41 @@ class ScriptTest {
         Script.split(text).stream().map(Script.Piece::text).toList());
   }
 
+  /** Where the scans of the shell's syntax disagreed before they were one lexer. */
+  @Test
+  void aSlashAfterAnOperatorAndAStringNotClosedEndStatementsAsTheEditorShowsThem() {
+    // A slash after an operator starts a regular expression: its quote starts no string.
+    assertEquals(
+        List.of("db.a.find({ x: a + /'/ })", "db.b.find()"),
+        Script.split("db.a.find({ x: a + /'/ })\ndb.b.find()").stream()
+            .map(Script.Piece::text)
+            .toList());
+    // A string not closed on its line ends before the line break, which ends the statement.
+    assertEquals(
+        List.of("use 'shop", "show dbs"),
+        Script.split("use 'shop\nshow dbs").stream().map(Script.Piece::text).toList());
+    assertWhere(4, "use 'shop");
+    // A regular expression ends with its line, as in JavaScript, also after a backslash.
+    assertWhere(15, "db.a.find({ x: /a\\\nb/ })");
+    // A block comment over lines between the calls of a chain leaves it one statement.
+    assertEquals(
+        List.of("db.a.find({})\n/* a\n b */ .limit(1)"),
+        Script.split("db.a.find({})\n/* a\n b */ .limit(1)").stream()
+            .map(Script.Piece::text)
+            .toList());
+  }
+
   @Test
   void aUseNameEndsAtAComment() throws Exception {
     assertEquals("shop", Script.parse("use shop// note").use());
     assertEquals("shop", Script.parse("use shop/* note */").use());
+    // A no-break space ends it, as JavaScript reads one as space.
+    assertEquals("shop", Script.parse("use shop\u00a0").use());
+    // A quote in an unquoted name stays in it, and the line still ends the statement.
+    assertEquals(
+        List.of("use shop'24", "show dbs"),
+        Script.split("use shop'24\nshow dbs").stream().map(Script.Piece::text).toList());
+    assertEquals("shop'24", Script.parse("use shop'24").use());
   }
 
   @Test

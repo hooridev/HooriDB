@@ -37,6 +37,7 @@ public final class DocumentRun {
 
   private final DocumentSession session;
   private final String database;
+  private final Script.Parsed parsed;
   private final String statement;
   private final Consumer<String> use;
   private DocumentSession.Cursor cursor;
@@ -48,13 +49,15 @@ public final class DocumentRun {
 
   /**
    * @param database the console's database, which a statement runs on unless it names another
+   * @param parsed the statement, as it was read before it runs
    * @param use told the database that {@code use} switches to
    */
   public DocumentRun(
-      DocumentSession session, String database, String statement, Consumer<String> use) {
+      DocumentSession session, String database, Script.Parsed parsed, Consumer<String> use) {
     this.session = session;
     this.database = database;
-    this.statement = statement;
+    this.parsed = parsed;
+    this.statement = parsed.statement();
     this.use = use;
   }
 
@@ -97,7 +100,10 @@ public final class DocumentRun {
 
   private void first(int count, List<Result> results, List<Message> messages)
       throws SyntaxException, DocumentException {
-    var request = Script.parse(statement);
+    if (parsed.error() != null) {
+      throw parsed.error();
+    }
+    var request = parsed.request();
     if (request.shape() == Request.Shape.USE) {
       over = true;
       use.accept(request.use());

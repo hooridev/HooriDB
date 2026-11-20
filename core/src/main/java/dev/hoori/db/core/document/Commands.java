@@ -1,5 +1,6 @@
 package dev.hoori.db.core.document;
 
+import dev.hoori.db.core.sql.EveryRow;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -48,22 +49,19 @@ public final class Commands {
 
   private Commands() {}
 
-  /** A change of every document of the collection: an update or a delete of them all. */
-  public record Every(String verb, String collection) {}
-
   /**
    * The change of every document that the command asks for: an update of many, or a delete of
-   * all, with an empty filter; empty for any other.
+   * all, with an empty filter, as of its collection; empty for any other.
    */
-  public static Optional<Every> every(Document command) {
-    var collection = command.get(command.first()) instanceof String c ? c : "its collection";
+  public static Optional<EveryRow> every(Document command) {
+    var collection = command.get(command.first()) instanceof String c ? c : "";
     return switch (command.first()) {
       case "update" -> {
         for (var item : list(command.get("updates"))) {
           if (item instanceof Document u
               && Boolean.TRUE.equals(u.get("multi"))
               && empty(u.get("q"))) {
-            yield Optional.of(new Every("update", collection));
+            yield Optional.of(new EveryRow("UPDATE", collection, true));
           }
         }
         yield Optional.empty();
@@ -74,7 +72,7 @@ public final class Commands {
               && d.get("limit") instanceof Number n
               && n.intValue() == 0
               && empty(d.get("q"))) {
-            yield Optional.of(new Every("delete", collection));
+            yield Optional.of(new EveryRow("DELETE", collection, true));
           }
         }
         yield Optional.empty();

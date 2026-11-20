@@ -305,7 +305,7 @@ class ServersServerTest {
     return lane.submit(link -> unit(
             link,
             l -> ConsoleTab.start(
-                l, sql, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT, null, null)))
+                l, sql, null, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT, null, null)))
         .get(20, TimeUnit.SECONDS);
   }
 
@@ -340,6 +340,7 @@ class ServersServerTest {
                   l -> ConsoleTab.start(
                       l,
                       "SELECT * FROM seam_large a, seam_large b",
+                      null,
                       ConsoleTab.Mode.MANUAL,
                       false,
                       new AtomicReference<>(),
@@ -357,6 +358,7 @@ class ServersServerTest {
               l -> ConsoleTab.start(
                   l,
                   "SELECT * FROM seam_missing",
+                  null,
                   ConsoleTab.Mode.MANUAL,
                   false,
                   new AtomicReference<>(),
@@ -401,6 +403,7 @@ class ServersServerTest {
               l -> ConsoleTab.start(
                   l,
                   "SELECT * FROM seam_locked",
+                  null,
                   ConsoleTab.Mode.MANUAL,
                   false,
                   new AtomicReference<>(),
@@ -452,6 +455,7 @@ class ServersServerTest {
                   l -> ConsoleTab.start(
                       l,
                       "SELECT * FROM seam_switch a, seam_switch b",
+                      null,
                       ConsoleTab.Mode.MANUAL,
                       false,
                       new AtomicReference<>(),
@@ -722,6 +726,7 @@ class ServersServerTest {
           l -> ConsoleTab.start(
               l,
               "INSERT INTO seam_dropped VALUES (1)",
+              null,
               ConsoleTab.Mode.AUTO,
               false,
               held,

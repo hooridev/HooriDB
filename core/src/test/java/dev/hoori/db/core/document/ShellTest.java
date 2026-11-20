@@ -167,6 +167,8 @@ class ShellTest {
       assertEquals(regex, Shell.parse(written), written);
     }
     assertEquals("/a\\/b[\\/]/", Shell.compact(new Bson.Regex("a/b[/]", "")));
+    // An escaped backslash before the closing slash stays one, and ends nothing.
+    assertEquals(new Bson.Regex("a\\\\", "i"), Shell.parse("/a\\\\/i"));
   }
 
   @Test
