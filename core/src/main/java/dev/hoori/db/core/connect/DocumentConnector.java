@@ -170,6 +170,13 @@ public final class DocumentConnector {
   /** Why the driver could not connect; its words are dropped where they hold the password. */
   static ConnectionException failure(Throwable thrown, char[] password) {
     if (!(thrown instanceof DocumentException e)) {
+      // Neither its words nor those of its causes where any of them holds the password.
+      int depth = 0;
+      for (var t = thrown; t != null && depth < 32; t = t.getCause(), depth++) {
+        if (t.getMessage() != null && contains(t.getMessage(), password)) {
+          return new ConnectionException(Failure.OTHER, ConnectionException.WITHHELD, null);
+        }
+      }
       return new ConnectionException(Failure.OTHER, String.valueOf(thrown.getMessage()), thrown);
     }
     var failure = switch (e.kind()) {

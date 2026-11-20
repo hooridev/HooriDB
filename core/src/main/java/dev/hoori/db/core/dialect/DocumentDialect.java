@@ -17,4 +17,7 @@ public non-sealed interface DocumentDialect extends Traits {
 
   /** The database a connection is on where the profile names none. */
   String defaultDatabase();
+
+  /** Whether its servers take the text as the name of a database; an empty one is none. */
+  boolean isDatabaseName(String name);
 }

@@ -71,6 +71,8 @@ public record ConnectionProfile(
     PORT_OUT_OF_RANGE(Field.PORT),
     /** A NUL character, which would end the name early in what the driver sends to the server. */
     DATABASE_HAS_NUL(Field.DATABASE),
+    /** Not a name of a database that the provider's servers take, as MongoDB's with a dot. */
+    DATABASE_NAME_INVALID(Field.DATABASE),
     USER_HAS_NUL(Field.USER);
 
     private final Field field;
@@ -169,6 +171,8 @@ public record ConnectionProfile(
     }
     if (database.indexOf('\0') >= 0) {
       problems.add(Problem.DATABASE_HAS_NUL);
+    } else if (provider.keepsDocuments() && !provider.documents().isDatabaseName(database)) {
+      problems.add(Problem.DATABASE_NAME_INVALID);
     }
     if (user.indexOf('\0') >= 0) {
       problems.add(Problem.USER_HAS_NUL);

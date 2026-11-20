@@ -2,6 +2,7 @@ package dev.hoori.db.core.dialect;
 
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.driver.Driver;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -70,5 +71,14 @@ public final class MongoDb implements DocumentDialect {
   @Override
   public String defaultDatabase() {
     return "test";
+  }
+
+  // Fewer than 64 bytes, and none of the characters that a server on Windows refuses, the
+  // strictest of its rules.
+  @Override
+  public boolean isDatabaseName(String name) {
+    return name.isEmpty()
+        || name.getBytes(StandardCharsets.UTF_8).length < 64
+            && name.chars().noneMatch(c -> "/\\. \"$*<>:|?\0".indexOf(c) >= 0);
   }
 }
