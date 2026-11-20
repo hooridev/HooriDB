@@ -10,6 +10,7 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.kit.AppIcon;
+import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
@@ -30,6 +31,7 @@ import com.rethinkj.ui.kit.TitleBar;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -82,10 +84,12 @@ final class Frame {
                 tabs,
                 320)
             .grow(1)
-            .padding(0, t.space().m(), 0, t.space().m()))
+            .padding(0, t.space().m(), t.space().m(), t.space().m()))
         .child(StatusBar.statusBar(
-            s.message == null ? List.of() : List.of(StatusBar.text(s.message).key("message")),
-            List.of()));
+            Arrays.asList(connections(s), uncommitted(s, modal)),
+            s.message == null ? null : StatusBar.text(s.message).key("message"),
+            List.of(StatusBar.item(null, HooriDb.version(), modal ? null : () -> s.about = true)
+                .key("version"))));
     // The window closes once what was begun has ended and the connections are written.
     Windows.Handle window = s.app == null ? null : s.app.windows().of(s.app);
     if (window != null) {
@@ -209,7 +213,7 @@ final class Frame {
     El question = question(s, group);
     El confirmation = asked == null && question == null ? confirmation(s, group) : null;
     // The menus' commands without the bar, acting on this window's tabs.
-    boolean modal = asked != null || question != null || confirmation != null;
+    boolean modal = asks(s, group);
     List<Menu.Item> menus = menus(s, group, modal);
     closePalette(s, group, modal);
     return col()
@@ -237,10 +241,25 @@ final class Frame {
 
   /** What a console of the window asks about what may be open in it, or null. */
   private static El question(State s, TabGroups.Group<Tab> group) {
+    return questioned(s, group) ? s.pending.console().question(s) : null;
+  }
+
+  /** Whether a console of the window asks about what may be open in it. */
+  private static boolean questioned(State s, TabGroups.Group<Tab> group) {
     var pending = s.pending;
-    return pending != null && !pending.armed() && s.tabs.groupOf(pending.console()) == group
-        ? pending.console().question(s)
-        : null;
+    return pending != null && !pending.armed() && s.tabs.groupOf(pending.console()) == group;
+  }
+
+  /**
+   * Whether the window of these tabs shows a dialog of its own, without making it: a console's
+   * question, what its console in front asks before a statement or its History, or what the
+   * catalog asks there.
+   */
+  private static boolean asks(State s, TabGroups.Group<Tab> group) {
+    return questioned(s, group)
+        || group.activeTab() instanceof ConsoleTab console
+            && (console.confirming != null || console.history != null)
+        || s.catalog.asks(s, group);
   }
 
   /**
@@ -335,10 +354,6 @@ final class Frame {
 
   /**
    * The notices of what finishing something on a console's session did, the newest first, each
-   * until dismissed: a failure as a danger, a warning as such.
-   */
-  /**
-   * The notices of what finishing something on a console's session did, the newest first, each
    * until dismissed: a failure as a danger, a warning as such. They scroll in a region of bounded
    * height above the tree, with Dismiss all where there are several.
    */
@@ -419,16 +434,58 @@ final class Frame {
         s::cancelDelete);
   }
 
+  /** The connections the tree opened, each once; busy while one is on its way. */
+  private static El connections(State s) {
+    int connected = 0;
+    boolean connecting = false;
+    for (var id : s.catalog.lives.keySet()) {
+      if (s.catalog.connected(id)) {
+        connected++;
+      } else {
+        connecting |= s.catalog.active(id);
+      }
+    }
+    String text = connected > 0 ? connected + " connected" : "No connections";
+    if (connecting) {
+      return StatusBar.status(StatusBar.State.BUSY, connected > 0 ? text : "Connecting…", null)
+          .key("connected");
+    }
+    return StatusBar.status(connected > 0 ? StatusBar.State.OK : StatusBar.State.IDLE, text, null)
+        .key("connected");
+  }
+
+  /**
+   * The consoles where something may be at stake, as Exit asks about; pressing it shows the first,
+   * but not while a dialog is open in the main window or its own, whose tab it would switch. Null
+   * while there are none.
+   *
+   * @param modal whether a dialog is open in the main window
+   */
+  private static El uncommitted(State s, boolean modal) {
+    var consoles = s.consoles(null).stream().filter(ConsoleTab::atStake).toList();
+    if (consoles.isEmpty()) {
+      return null;
+    }
+    int n = consoles.size();
+    var first = consoles.getFirst();
+    boolean asking = modal || asks(s, s.tabs.groupOf(first));
+    return StatusBar.item(
+            Badge.Kind.WARNING,
+            Symbol.LOCK_OPEN,
+            n + (n == 1 ? " console may" : " consoles may") + " hold uncommitted work",
+            asking ? null : () -> first.show(s))
+        .key("uncommitted");
+  }
+
   /** The version that runs, its author, license and website. */
   private static El aboutDialog(State s) {
     float side = Theme.CURRENT.get().size().icon();
     El mark = AppIcon.appIcon(Math.round(side), HooriDb.COLOR, Symbol.DATABASE).size(side, side);
-    String version = HooriDb.class.getPackage().getImplementationVersion();
     Runnable close = () -> s.about = false;
     El ok = button(Button.Variant.PRIMARY, "Close", close);
     El content = Properties.properties(
         List.of(
-            Properties.property("Version", version == null ? "Development build" : version),
+            Properties.property("Version", HooriDb.version()),
             Properties.property("Author", "Patrick Trautmann"),
             Properties.property("License", "MIT"),
             Properties.property("Website", "https://db.hoori.dev")),
@@ -516,7 +573,7 @@ final class Frame {
         || s.deleting != null
         || s.about
         || s.driverList != null
-        || s.catalog.dialog(s, s.tabs.main()) != null;
+        || s.catalog.asks(s, s.tabs.main());
   }
 
   /** Gives the focus to the tree of connections. */

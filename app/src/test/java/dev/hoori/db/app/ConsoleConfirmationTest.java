@@ -76,6 +76,37 @@ class ConsoleConfirmationTest {
     t.tearDown();
   }
 
+  /**
+   * The status bar's part does not switch a window's tab behind what is asked there: the console
+   * that may hold uncommitted work shares a torn-off window with one asking before a change.
+   */
+  @Test
+  void theStatusBarLeavesAWindowAskingBeforeAChangeAsItIs() throws Exception {
+    var app = t.open(SHOP);
+    c.run(
+        app,
+        "press role=tab label=\"shop-prod: shop\" right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
+            + "window \"shop-prod: shop\"\nkey N control\nframe\n" + SETTLE
+            + "window \"shop-prod: shop\"\n" + type(WIPE) + RUN + OPENED
+            + "window main\nframe\nsnap main\n");
+    String item = "1 console may hold uncommitted work";
+    String main = c.tree("main");
+    assertTrue(line(main, "#uncommitted").contains("label=\"" + item + "\""), main);
+    assertFalse(line(main, "#uncommitted").contains("role=button"), "no press: " + main);
+    c.run(app, "press #uncommitted\nframe\nwindow \"shop-prod: shop\"\nframe\nsnap asked\n");
+    String asked = c.tree("shop-prod-shop-asked");
+    assertTrue(asked.contains(EVERY), asked);
+    assertTrue(line(asked, "role=tab label=\"shop-prod: shop (2)\"").contains("selected"), asked);
+    // Once it is answered, the part shows the first console.
+    c.run(
+        app,
+        CANCEL + "window main\nframe\npress role=button label=\"" + item + "\"\nframe\n"
+            + "window \"shop-prod: shop\"\nframe\nsnap shown\n");
+    String shown = c.tree("shop-prod-shop-shown");
+    assertTrue(line(shown, "role=tab label=\"shop-prod: shop (1)\"").contains("selected"), shown);
+  }
+
   private boolean ran(String sql) {
     return servers.calls.contains("run " + PG + " " + sql);
   }
