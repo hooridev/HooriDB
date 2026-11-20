@@ -26,6 +26,7 @@ Early development. Only nightly builds are published so far as pre-releases on [
 - **MongoDB**: Browse databases, collections, and sampled document fields, view documents as a grid, Relaxed Extended JSON, or a tree, and run shell statements (`find`, `aggregate`, write methods, indexes, `runCommand`, and more) in a console with completions; connections can be set to read-only so HooriDB sends only read commands.
 - **Transactions**: Switch each SQL console between Auto and Manual commit, commit or roll back open transactions, and get prompted before closing tabs, switching databases, disconnecting, exiting, or running an `UPDATE` or `DELETE` without `WHERE` (or `LIMIT` on MySQL and MariaDB).
 - **Statement history**: Keep up to 1,000 recent statements per connection, search them, insert them back into a console, or clear them.
+- **Saved queries**: Save the selection or a console's whole text under a name for its connection, search the saved queries, insert one into a console, or delete it.
 - **Command palette**: Run menu commands from the keyboard (`Ctrl+Shift+P` or `F1`) and jump to tables and views by name (`Ctrl+P`, or `@` in the palette), loading unread databases on demand.
 - **Tabs and windows**: Reorder tabs, drag them out or move them into separate windows, and switch between dark and light themes.
 - **Driver management**: Download official PostgreSQL, MySQL, and MariaDB JDBC drivers and the MongoDB Java driver from Maven Central after confirmation, verify checksums, and list or delete downloaded versions in **File > Drivers…**.
