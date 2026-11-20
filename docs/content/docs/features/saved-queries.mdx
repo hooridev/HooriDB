@@ -3,7 +3,7 @@ title: Saved queries
 description: Keep queries under a name for a connection and insert them into a console again.
 ---
 
-A saved query is text from a console that you keep on purpose, under a name, for its connection. Unlike [History](/docs/features/history), which records the statements you run, saved queries hold only what you save, and they stay until you delete them. They work the same way in SQL consoles and [MongoDB](/docs/features/mongodb) consoles. Saved queries are stored in `queries.json`, readable and writable only by your user account on Linux, because a query can contain a password. The **Save query** and **Saved queries** buttons stay off until HooriDB has read that file, and while it cannot read it.
+A saved query is text from a console that you keep on purpose, under a name, for its connection. Unlike [History](/docs/features/history), which records the statements you run, saved queries hold only what you save, and they stay until you delete them. They work the same way in SQL consoles and [MongoDB](/docs/features/mongodb) consoles. Saved queries are stored in `queries.json`, readable and writable only by your user account on Linux, because a query can contain a password. The **Save query** and **Saved queries** buttons are off while HooriDB loads the file, and stay off if the file system does not let it read the file.
 
 <Shot name="saved-queries" alt="The Saved queries dialog for shop-prod listing four queries with Search, Name, Query, Saved, Delete, Close, and Insert" />
 
@@ -22,7 +22,7 @@ If the connection already has a saved query of that name (ignoring case and spac
 2. Type in the **Search** box to show only the queries whose name or text contains that text (case-insensitive).
 3. Select a row and press **Insert**, double-click the row, or press `Enter`. You can also copy selected rows with `Ctrl+C`.
 
-HooriDB inserts the query as it inserts a statement from [History](/docs/features/history#search-and-insert-a-statement), with the caret after it so that **Run** runs it. **Run** runs only the statement at the caret: to run a query of several statements, select it first. You can undo the insert in one step.
+HooriDB inserts the query as it inserts a statement from [History](/docs/features/history#search-and-insert-a-statement). **Run** runs the selection, or else the statement at the caret: to run all statements of an inserted query, select them first. You can undo the insert in one step.
 
 ## Delete a saved query
 
