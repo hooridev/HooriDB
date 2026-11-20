@@ -1,10 +1,9 @@
 package dev.hoori.db.core.document;
 
 import java.time.Instant;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.List;
+import tools.jackson.core.io.JsonStringEncoder;
 
 /**
  * The values of documents as Relaxed Extended JSON writes them, in one line: JSON where it has the
@@ -15,9 +14,6 @@ import java.util.List;
  *     Extended JSON (v2)</a>
  */
 public final class ExtendedJson {
-
-  private static final DateTimeFormatter DATE =
-      DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
 
   // The dates that Relaxed Extended JSON writes as text: those of the years 1970 to 9999.
   private static final long FIRST = Instant.parse("1970-01-01T00:00:00Z").toEpochMilli();
@@ -58,7 +54,7 @@ public final class ExtendedJson {
         long millis = i.toEpochMilli();
         out.append("{\"$date\": ");
         if (millis >= FIRST && millis <= LAST) {
-          string(out, DATE.format(i));
+          string(out, Shell.date(i));
         } else {
           wrapped(out, "$numberLong", Long.toString(millis));
         }
@@ -143,25 +139,7 @@ public final class ExtendedJson {
 
   private static void string(StringBuilder out, String text) {
     out.append('"');
-    for (int i = 0; i < text.length(); i++) {
-      char c = text.charAt(i);
-      switch (c) {
-        case '"' -> out.append("\\\"");
-        case '\\' -> out.append("\\\\");
-        case '\n' -> out.append("\\n");
-        case '\r' -> out.append("\\r");
-        case '\t' -> out.append("\\t");
-        case '\b' -> out.append("\\b");
-        case '\f' -> out.append("\\f");
-        default -> {
-          if (c < 0x20 || c == '\u2028' || c == '\u2029') {
-            out.append(String.format("\\u%04x", (int) c));
-          } else {
-            out.append(c);
-          }
-        }
-      }
-    }
+    JsonStringEncoder.getInstance().quoteAsString(text, out);
     out.append('"');
   }
 }

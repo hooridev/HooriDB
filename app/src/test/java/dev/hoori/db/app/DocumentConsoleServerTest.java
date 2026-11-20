@@ -78,12 +78,30 @@ class DocumentConsoleServerTest {
     assertTrue(cell(grid, 0, 1).contains("\"375\""), grid);
     assertTrue(near(grid, "#result-status").contains("3 documents"), grid);
     c.run(app, "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap json\n");
-    var json = line(c.tree("json"), "#result-json");
+    var json = line(c.tree("json"), "#json");
     assertTrue(json.contains("\\\"_id\\\": 250,"), json);
     assertTrue(json.contains("\\\"$numberDecimal\\\": \\\"375\\\""), json);
     c.run(app, "press role=radio label=\"Tree\"\nframe\nadvance 1\nframe\nsnap tree\n");
     var tree = c.tree("tree");
     assertTrue(tree.contains("role=treeitem label=\"250\""), tree);
+  }
+
+  @Test
+  void theDocumentsShownWholeTurnAPageAtATimeAndTheNextIsRead() throws Exception {
+    var app = console(docs());
+    c.run(
+        app,
+        type("db.orders.find()") + RUN
+            + "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap first\n");
+    var first = c.tree("first");
+    assertTrue(line(first, "#rows-in-view").contains("\"Documents 1–200\""), first);
+    assertTrue(line(first, "role=button label=\"Previous page\"").contains("disabled"), first);
+    assertFalse(line(first, "role=button label=\"Next page\"").contains("disabled"), first);
+    c.run(app, "press role=button label=\"Next page\"\nframe\n" + SETTLE + "snap second\n");
+    var second = c.tree("second");
+    assertTrue(line(second, "#rows-in-view").contains("\"Documents 201–250\""), second);
+    assertTrue(line(second, "#json").contains("\\\"_id\\\": 201"), second);
+    assertTrue(line(second, "role=button label=\"Next page\"").contains("disabled"), second);
   }
 
   @Test

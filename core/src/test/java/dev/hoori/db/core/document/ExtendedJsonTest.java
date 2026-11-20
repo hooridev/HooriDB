@@ -61,6 +61,12 @@ class ExtendedJsonTest {
   }
 
   @Test
+  void stringsAreEscapedAsJacksonEscapesThem() {
+    // Other control characters in upper case hex; the line separators of JavaScript as they are.
+    assertEquals("\"\\t\\u001F\u2028\"", ExtendedJson.of("\t\u001f\u2028"));
+  }
+
+  @Test
   void regularExpressionOptionsAreInAlphabeticalOrder() {
     assertEquals(
         "{\"$regularExpression\": {\"pattern\": \"x\", \"options\": \"im\"}}",

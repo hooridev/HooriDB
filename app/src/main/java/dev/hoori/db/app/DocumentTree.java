@@ -1,5 +1,6 @@
 package dev.hoori.db.app;
 
+import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.json.Json;
 import com.rethinkj.ui.kit.CodeEditor;
@@ -12,12 +13,11 @@ import dev.hoori.db.core.document.ExtendedJson;
 import dev.hoori.db.core.document.Shell;
 import java.time.Instant;
 import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.function.Consumer;
 
 /**
  * Documents as a tree and as text: each document a root, whose fields and the items of its arrays
@@ -26,9 +26,6 @@ import java.util.function.Consumer;
  * what is open stays open while the same documents are shown. Only the app's thread uses it.
  */
 final class DocumentTree {
-
-  private static final DateTimeFormatter MOMENT =
-      DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSxxx");
 
   /**
    * A value in a document: the document's place among those shown, and the indexes of the fields
@@ -49,27 +46,28 @@ final class DocumentTree {
   final Set<String> open = new HashSet<>();
   Node selected;
   private String scope = ""; // the documents shown, such as a page; what is open is theirs
+  private List<Document> of = List.of(); // what they are a part of
   private List<Document> documents = List.of();
-  private int size; // of the documents when the text was made, as more come to a result
   private String text; // the documents as text, made once for them
   final CodeEditor.State editor = new CodeEditor.State().readOnly(true);
 
   /**
-   * Shows these documents, of the scope: what was open stays open where the scope is the same,
-   * and the text is made anew where the documents changed.
+   * Shows the documents from to before to of these, which only grow, as the scope: what was open
+   * stays open where the scope is the same, and the text is made anew where the documents changed.
    */
-  void show(String scope, List<Document> documents) {
-    if (!scope.equals(this.scope)) {
+  void show(String scope, List<Document> of, int from, int to) {
+    boolean other = !scope.equals(this.scope);
+    if (other) {
       open.clear();
       selected = null;
       editor.select(0, 0);
     }
-    if (!scope.equals(this.scope) || documents != this.documents || documents.size() != size) {
+    if (other || of != this.of || to - from != documents.size()) {
       text = null;
+      documents = List.copyOf(of.subList(from, to));
     }
-    size = documents.size();
     this.scope = scope;
-    this.documents = documents;
+    this.of = of;
   }
 
   /** The documents as a JSON array of Relaxed Extended JSON, formatted. */
@@ -82,8 +80,20 @@ final class DocumentTree {
     return text;
   }
 
+  /**
+   * The documents shown as JSON, in an editor that only shows them, or as a tree, with dates in
+   * the zone.
+   */
+  El view(App<State> app, TableTab.Shown shown, ZoneId zone, String label) {
+    return shown == TableTab.Shown.JSON
+        ? CodeEditor.embedded(CodeEditor.codeEditor(app, text(), editor, Json.of(), null)
+            .key("json")
+            .label(label))
+        : tree(zone).key("documents").label(label);
+  }
+
   /** The tree of the documents, with dates in the zone. */
-  El tree(ZoneId zone, Consumer<Node> activate) {
+  private El tree(ZoneId zone) {
     var model = new Tree.Model<Node>() {
       @Override
       public List<Node> roots() {
@@ -169,8 +179,7 @@ final class DocumentTree {
                 open.remove(node.key());
               }
             })
-            .select(selected, node -> selected = node)
-            .onActivate(activate::accept));
+            .select(selected, node -> selected = node));
   }
 
   private static Node child(Node parent, int index, String name, Object value) {
@@ -184,7 +193,7 @@ final class DocumentTree {
     return switch (value) {
       case Document d -> d.size() == 1 ? "1 field" : d.size() + " fields";
       case List<?> list -> list.size() == 1 ? "1 item" : list.size() + " items";
-      case Instant i -> MOMENT.format(i.atZone(zone)) + " · date";
+      case Instant i -> Cells.text(i.atOffset(ZoneOffset.UTC), zone) + " · date";
       case String s -> Shell.quote(s.length() > 200 ? s.substring(0, 200) + "…" : s);
       case null -> "null";
       default -> Shell.scalar(value) + " · " + Bson.type(value);

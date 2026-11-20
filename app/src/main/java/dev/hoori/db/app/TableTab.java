@@ -8,11 +8,9 @@ import static com.rethinkj.ui.kit.Button.button;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
-import com.rethinkj.ui.json.Json;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
-import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Icon;
@@ -667,7 +665,10 @@ final class TableTab implements Tab {
     boolean readable = columns != null && (fields != null || failure == null);
     boolean grid = readable && !(ofDocuments && showing != Shown.GRID);
     if (readable) {
-      content.child(grid ? withValue(s, app, grid(s, app)) : documents(s, app).grow(1));
+      content.child(
+          grid
+              ? withValue(s, app, grid(s, app))
+              : col().grow(1).minSize(0, 0).child(documents(s, app)));
     } else if (opening != null) {
       content.child(col()
           .grow(1)
@@ -701,6 +702,9 @@ final class TableTab implements Tab {
       end.add(Label.label(Label.Variant.MUTED, inViewText(ofDocuments)).key("rows-in-view"));
       end.add(paging());
       end.add(value.button());
+    } else if (readable) {
+      end.add(Label.label(Label.Variant.MUTED, documentsText()).key("rows-in-view"));
+      end.add(documentPaging(s));
     }
     return content.child(Card.footer(rowsStatus, end.toArray(El[]::new)));
   }
@@ -821,8 +825,13 @@ final class TableTab implements Tab {
     }
     // Not the row that asks whether there are more, which is not known to be there.
     long bottom = Math.min(selection.lastRowInView() + 1L, rows);
+    return range(top + 1, bottom, documents);
+  }
+
+  /** Rows or documents from first to last, counted from 1, as "Rows 201–223". */
+  static String range(long first, long last, boolean documents) {
     return String.format(
-        Locale.ROOT, documents ? "Documents %,d–%,d" : "Rows %,d–%,d", top + 1, bottom);
+        Locale.ROOT, documents ? "Documents %,d–%,d" : "Rows %,d–%,d", first, last);
   }
 
   /**
@@ -830,28 +839,57 @@ final class TableTab implements Tab {
    * selection stays. Each is off where the grid shows its first or last row already.
    */
   private El paging() {
-    Theme t = Theme.CURRENT.get();
     int top = selection.firstRowInView();
     int bottom = selection.lastRowInView();
-    boolean back = top > 0;
-    boolean on = bottom >= 0 && bottom < gridRows() - 1;
-    return row()
-        .gap(t.space().xs())
-        .align(Style.Align.CENTER)
-        .child(page(Symbol.ARROW_UP, "First page", back, () -> selection.scrollToRow(0)))
-        .child(page(Symbol.CHEVRON_UP, "Previous page", back, () -> {
+    return paging(
+        top > 0,
+        bottom >= 0 && bottom < gridRows() - 1,
+        () -> selection.scrollToRow(0),
+        () -> {
           int first = selection.firstRowInView();
           int last = selection.lastRowInView();
           selection.scrollToRow(Math.max(0, first - (last - first + 1)));
-        }))
-        .child(page(
-            Symbol.CHEVRON_DOWN,
-            "Next page",
-            on,
-            () -> selection.scrollToRow(selection.lastRowInView() + 1)))
+        },
+        () -> selection.scrollToRow(selection.lastRowInView() + 1),
         // As Control+End: an estimate too high shows the end once the reads there correct it.
-        .child(page(Symbol.ARROW_DOWN, "Last page", on, () -> selection.scrollToRow(gridRows())))
+        () -> selection.scrollToRow(gridRows()));
+  }
+
+  /**
+   * Buttons that turn to the first, the previous, the next or the last page: those back are on
+   * where back is, those on where on is.
+   */
+  static El paging(
+      boolean back, boolean on, Runnable first, Runnable previous, Runnable next, Runnable last) {
+    Theme t = Theme.CURRENT.get();
+    return row()
+        .gap(t.space().xs())
+        .align(Style.Align.CENTER)
+        .child(page(Symbol.ARROW_UP, "First page", back, first))
+        .child(page(Symbol.CHEVRON_UP, "Previous page", back, previous))
+        .child(page(Symbol.CHEVRON_DOWN, "Next page", on, next))
+        .child(page(Symbol.ARROW_DOWN, "Last page", on, last))
         .key("paging");
+  }
+
+  /** The documents of the page shown, as "Documents 201–250", or that there are none. */
+  private String documentsText() {
+    var read = documents.get(documentPage);
+    long from = documentPage * PAGE;
+    long to = read == null ? Math.min(from + PAGE, shown()) : from + read.size();
+    return to <= from ? "No documents" : range(from + 1, to, true);
+  }
+
+  /** The pager of the documents shown whole, which turns their pages; the last as it is known. */
+  private El documentPaging(State s) {
+    boolean on = (documentPage + 1) * PAGE < shown();
+    return paging(
+        documentPage > 0,
+        on,
+        () -> turn(s, 0),
+        () -> turn(s, documentPage - 1),
+        () -> turn(s, documentPage + 1),
+        () -> turn(s, (shown() - 1) / PAGE));
   }
 
   private static El page(Symbol icon, String label, boolean enabled, Runnable onPress) {
@@ -863,47 +901,19 @@ final class TableTab implements Tab {
         Button.options().size(Button.Size.SMALL));
   }
 
-  /**
-   * A page of documents whole, with what turns the pages: as Extended JSON, in an editor
-   * that only shows them, or as a tree.
-   */
+  /** A page of documents whole: as Extended JSON, in an editor that only shows them, or as a tree. */
   private El documents(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     var read = documents.get(documentPage);
-    long from = documentPage * PAGE;
-    long to = read == null ? Math.min(from + PAGE, shown()) : from + read.size();
-    var range = to <= from
-        ? "No documents"
-        : "Documents " + String.format(Locale.ROOT, "%,d", from + 1) + "–"
-            + String.format(Locale.ROOT, "%,d", to);
-    boolean last = (documentPage + 1) * PAGE >= shown();
-    El pager = row()
-        .gap(t.space().s())
-        .padding(t.space().s())
-        .align(Style.Align.CENTER)
-        .shrink(0)
-        .child(Button.icon(
-                Button.Variant.GHOST,
-                Symbol.CHEVRON_LEFT,
-                "Previous documents",
-                documentPage > 0 ? () -> turn(s, documentPage - 1) : null)
-            .key("previous"))
-        .child(Label.label(Label.Variant.MUTED, range).key("range"))
-        .child(Button.icon(
-                Button.Variant.GHOST,
-                Symbol.CHEVRON_RIGHT,
-                "Next documents",
-                !last ? () -> turn(s, documentPage + 1) : null)
-            .key("next"));
-    El shownNow;
     if (read == null && !reading.containsKey(documentPage) && opening == null) {
       // Nothing comes: an empty collection, or a page past its end.
-      shownNow = col()
+      return col()
           .grow(1)
           .center()
           .child(Label.label(Label.Variant.MUTED, "No documents").key("no-documents"));
-    } else if (read == null) {
-      shownNow = col()
+    }
+    if (read == null) {
+      return col()
           .grow(1)
           .center()
           .gap(t.space().m())
@@ -911,24 +921,11 @@ final class TableTab implements Tab {
           .label("Reading documents")
           .child(Progress.spinner())
           .child(Label.label(Label.Variant.MUTED, "Reading documents…"));
-    } else {
-      documentView.show("p" + documentPage, read);
-      shownNow = switch (showing) {
-        case JSON ->
-          CodeEditor.embedded(CodeEditor.codeEditor(
-                      app, documentView.text(), documentView.editor, Json.of(), null)
-                  .key("json")
-                  .label("Documents of " + table.name()))
-              .grow(1);
-        case TREE, GRID ->
-          documentView
-              .tree(s.zone, node -> {})
-              .key("documents")
-              .label("Documents of " + table.name())
-              .grow(1);
-      };
     }
-    return col().minSize(0, 0).child(pager).child(Divider.divider()).child(shownNow);
+    documentView.show("p" + documentPage, read, 0, read.size());
+    return documentView
+        .view(app, showing, s.zone, "Documents of " + table.name())
+        .grow(1);
   }
 
   /** How many rows, and what the number rests on; empty before the first read. */
@@ -941,7 +938,7 @@ final class TableTab implements Tab {
     if (fields == null) {
       return "";
     }
-    var n = String.format(Locale.ROOT, "%,d", rows) + noun(rows, documents);
+    var n = ConsoleTab.rows(rows, documents);
     var text = switch (counted) {
       case ESTIMATED -> "About " + n + ", as the server estimates";
       case AT_LEAST -> "At least " + n;
@@ -959,12 +956,7 @@ final class TableTab implements Tab {
       return "";
     }
     long ms = Math.round(took / 1e6);
-    return "Read " + String.format(Locale.ROOT, "%,d", got) + noun(got, documents) + " in " + ms
-        + " ms";
-  }
-
-  private static String noun(long n, boolean documents) {
-    return documents ? n == 1 ? " document" : " documents" : n == 1 ? " row" : " rows";
+    return "Read " + ConsoleTab.rows(got, documents) + " in " + ms + " ms";
   }
 
   /** Why the tab cannot read, with what the user can do; null while it can. */
