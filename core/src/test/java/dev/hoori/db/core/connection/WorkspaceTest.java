@@ -37,6 +37,8 @@ class WorkspaceTest {
   @Test
   void theConnectionsGoFromTheTopDown() {
     assertEquals(List.of(B, C, A), TREE.connections());
+    assertEquals(List.of(B, C), OUTER.connections(), "a folder's, its folders' too");
+    assertEquals(List.of(), EMPTY.connections());
   }
 
   @Test

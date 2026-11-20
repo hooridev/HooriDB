@@ -2186,8 +2186,12 @@ final class ConsoleTab implements Tab {
     var group = s.tabs.groupOf(this);
     if (group != null) {
       s.tabs.select(group, group.tabs().indexOf(this));
-      if (group.window() != null) {
-        group.window().raise();
+      // The main window's tabs have no window of their own: the app's is theirs.
+      var window = group.window() != null
+          ? group.window()
+          : s.app == null ? null : s.app.windows().of(s.app);
+      if (window != null) {
+        window.raise();
       }
     }
   }

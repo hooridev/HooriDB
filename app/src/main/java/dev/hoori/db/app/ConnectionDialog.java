@@ -259,7 +259,7 @@ final class ConnectionDialog {
     // then they start nothing until the save is done.
     if (ends(s, profile)
         && (s.asks(act, SAVED, s.consoles(id), () -> save(s))
-            || !s.lock(act, State.name(profile) + " is being saved", id))) {
+            || !s.lock(act, State.name(profile) + " is being saved", Set.of(id)))) {
       return;
     }
     var secrets = s.secrets();

@@ -6,6 +6,8 @@ import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.kit.Button;
+import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Label;
@@ -48,8 +50,7 @@ final class FolderDialog {
   }
 
   El view(State s) {
-    Runnable close = () -> s.folderDialog = null;
-    return kind == Kind.DELETE ? deleting(s, close) : naming(s, close);
+    return kind == Kind.DELETE ? deleting(s) : naming(s, () -> s.folderDialog = null);
   }
 
   private El naming(State s, Runnable close) {
@@ -71,23 +72,59 @@ final class FolderDialog {
         close);
   }
 
-  // shortcut: no choice yet to delete what it holds, whose button would join these.
-  private El deleting(State s, Runnable close) {
+  /**
+   * The question before a delete: what the folder holds moves up, or goes with it, its connections
+   * as each would alone. While they go, it says so, and once the keyring keeps it waiting, Cancel
+   * gives up the rest; it stays where some could not go, and names them.
+   */
+  private El deleting(State s) {
     Theme t = Theme.CURRENT.get();
-    El up = button(PRIMARY, "Move contents up", () -> s.dissolveFolder(folder));
+    var held = s.folder(folder);
+    int n = held == null ? 0 : held.connections().size();
+    boolean busy = s.removing;
+    El up = button(PRIMARY, "Move contents up", busy ? null : () -> s.dissolveFolder(folder));
+    El contents = button(
+        SECONDARY,
+        "Delete contents",
+        () -> s.deleteFolder(folder),
+        Button.options()
+            .tone(Button.Tone.DANGER)
+            .state(busy ? Button.State.BUSY : Button.State.READY));
+    El cancel = button(SECONDARY, "Cancel", busy && !s.removingSlow ? null : s::cancelFolderDialog);
+    // As wide as the connection dialog, as its questions are, so that the text wraps below.
+    El content = col()
+        .w(ConnectionDialog.width())
+        .gap(t.space().m())
+        .child(Label.label("Delete the folder " + name + "?").wrapText())
+        .child(Label.label(
+                Label.Variant.MUTED,
+                n == 0
+                    ? "It holds folders, and no connections."
+                    : "It holds " + n + (n == 1 ? " connection" : " connections")
+                        + ", its folders included.")
+            .wrapText())
+        .child(Label.label(
+                Label.Variant.MUTED,
+                "Move contents up puts what it holds where the folder is, and connections stay"
+                    + " connected. Delete contents deletes them with their passwords in the system"
+                    + " keyring, their consoles and their history.")
+            .wrapText());
+    if (s.removingSlow) {
+      content.child(Callout.callout(
+          Callout.Kind.WARNING,
+          "The system keyring does not answer",
+          "Cancel gives up waiting: the password being deleted may then still be in the keyring or"
+              + " not, and the connections not deleted yet stay."
+              + (s.keyringWorker.behind() ? ConnectionDialog.BEHIND : "")));
+    }
+    if (!s.kept.isEmpty()) {
+      var names = String.join(", ", s.kept.stream().map(State::name).toList());
+      content.child(Callout.callout(
+          Callout.Kind.DANGER,
+          "Not all connections were deleted",
+          "These stayed, and the folder with them: " + names + ".\n" + s.removeError));
+    }
     return Dialog.dialog(
-        "Delete folder",
-        col()
-            .w(t.size().field())
-            .gap(t.space().m())
-            .child(Label.label("Delete the folder " + name + "?").wrapText())
-            .child(Label.label(
-                    Label.Variant.MUTED,
-                    "What it holds moves up a level, to where the folder is. Connections stay"
-                        + " connected, and their tabs stay open.")
-                .wrapText()),
-        List.of(button(SECONDARY, "Cancel", close), up),
-        up,
-        close);
+        "Delete folder", content, List.of(cancel, contents, up), up, s::cancelFolderDialog);
   }
 }
