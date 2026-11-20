@@ -130,7 +130,7 @@ final class TableTab implements Tab {
   final Map<Long, List<List<Object>>> pages = new HashMap<>(); // the rows read, by page
   // A collection's documents of the pages read, whole; none for a table.
   final Map<Long, List<Document>> documents = new HashMap<>();
-  Shown view = Shown.GRID;
+  Shown showing = Shown.GRID;
   long documentPage; // the page of documents that JSON and Tree show
   final DocumentTree documentView = new DocumentTree();
   final Map<Long, Lane.Asked> reading = new HashMap<>(); // the pages asked for
@@ -194,7 +194,7 @@ final class TableTab implements Tab {
     boolean recount = anew && counted == Counted.EXACT; // a refresh counts again what was counted
     var of = table;
     // The page in view: of the grid, or of the documents JSON and Tree show.
-    long from = view == Shown.GRID ? (long) first / PAGE * PAGE : documentPage * PAGE;
+    long from = showing == Shown.GRID ? (long) first / PAGE * PAGE : documentPage * PAGE;
     record Opened(List<Column> columns, OptionalLong estimate, Page page, long took) {}
     opening = lane.ask(
         s.app,
@@ -358,7 +358,7 @@ final class TableTab implements Tab {
       pages.keySet().removeIf(p -> p * PAGE >= rows);
       documents.keySet().retainAll(pages.keySet());
       giveUp(p -> ending || p * PAGE >= rows);
-      if (view != Shown.GRID && !ending && documentPage > 0 && documentPage * PAGE >= rows) {
+      if (showing != Shown.GRID && !ending && documentPage > 0 && documentPage * PAGE >= rows) {
         turn(s, Math.max(0, (rows - 1) / PAGE));
       }
     } else if (from + PAGE > rows || from + PAGE == rows && counted != Counted.EXACT) {
@@ -383,7 +383,7 @@ final class TableTab implements Tab {
     far.sort(Comparator.comparingLong(p -> -Math.abs(p - middle)));
     for (int i = 0; pages.size() > KEPT; i++) {
       // Not the page of documents shown whole.
-      if (view == Shown.GRID || far.get(i) != documentPage) {
+      if (showing == Shown.GRID || far.get(i) != documentPage) {
         pages.remove(far.get(i));
         documents.remove(far.get(i));
       }
@@ -437,7 +437,7 @@ final class TableTab implements Tab {
           pages.keySet().removeIf(p -> p * PAGE >= n);
           documents.keySet().retainAll(pages.keySet());
           want(s, first, last);
-          if (view != Shown.GRID) {
+          if (showing != Shown.GRID) {
             turn(s, Math.min(documentPage, Math.max(0, (n - 1) / PAGE)));
           }
         },
@@ -564,13 +564,13 @@ final class TableTab implements Tab {
 
   /** Shows the documents as asked: whole, the page the grid was at. */
   void show(State s, Shown next) {
-    if (next == view) {
+    if (next == showing) {
       return;
     }
-    if (view == Shown.GRID) {
+    if (showing == Shown.GRID) {
       documentPage = (long) first / PAGE;
     }
-    view = next;
+    showing = next;
     if (next == Shown.GRID) {
       // The grid at the page shown last, which it scrolls to as it is built.
       int top = (int) Math.min(documentPage * PAGE, GRID_ROWS);
@@ -629,9 +629,10 @@ final class TableTab implements Tab {
     boolean ofDocuments = profile != null && profile.provider().keepsDocuments();
     var actions = new ArrayList<El>();
     if (ofDocuments) {
-      actions.add(Segmented.segmented(List.of(Shown.values()), view, v -> v.title, v -> show(s, v))
-          .key("shown")
-          .label("Show documents as"));
+      actions.add(
+          Segmented.segmented(List.of(Shown.values()), showing, v -> v.title, v -> show(s, v))
+              .key("shown")
+              .label("Show documents as"));
     }
     actions.add(button(
             SECONDARY,
@@ -657,7 +658,7 @@ final class TableTab implements Tab {
     }
     // Loading cells only while something is read, or was: not for a table that failed at once.
     boolean readable = columns != null && (fields != null || failure == null);
-    boolean grid = readable && !(ofDocuments && view != Shown.GRID);
+    boolean grid = readable && !(ofDocuments && showing != Shown.GRID);
     if (readable) {
       content.child(grid ? withValue(s, app, grid(s, app)) : documents(s, app).grow(1));
     } else if (opening != null) {
@@ -905,7 +906,7 @@ final class TableTab implements Tab {
           .child(Label.label(Label.Variant.MUTED, "Reading documents…"));
     } else {
       documentView.show("p" + documentPage, read);
-      shownNow = switch (view) {
+      shownNow = switch (showing) {
         case JSON ->
           CodeEditor.embedded(CodeEditor.codeEditor(
                       app, documentView.text(), documentView.editor, Json.of(), null)

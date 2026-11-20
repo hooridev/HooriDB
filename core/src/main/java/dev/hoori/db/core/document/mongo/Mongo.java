@@ -122,7 +122,7 @@ final class Mongo {
           new TrustManager[] {
             new X509TrustManager() {
               @Override
-              public void checkClientTrusted(X509Certificate[] chain, String type) {
+              public void checkClientTrusted(X509Certificate[] chain, String type) { // NOSONAR
                 // HooriDB is the client; no server asks it to be trusted here.
               }
 
