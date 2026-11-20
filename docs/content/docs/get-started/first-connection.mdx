@@ -1,0 +1,42 @@
+---
+title: Your first connection
+description: Create a connection, test it, and open its databases in the tree.
+---
+
+Before you can browse a database or run SQL, add a connection to the Workspace.
+
+<Shot name="connection-dialog" alt="The connection dialog showing fields for Name, Color, Type, Driver, Host, Port, Database, TLS, User, and Password" />
+
+## Create a connection
+
+1. Open the connection dialog in one of three ways:
+   - Press **New connection** in the empty Workspace sidebar.
+   - Press **+** in the Workspace toolbar and choose **New connection…**.
+   - Choose **File > New connection…**.
+2. Enter a **Name** for the connection. If you leave it blank, HooriDB displays the host name instead. You can also pick a **Color** to mark this connection in the tree and on its tabs.
+3. Choose the **Type**: **PostgreSQL**, **MySQL**, or **MariaDB**. The **Port** changes to the default port for that database (`5432` for PostgreSQL, `3306` for MySQL and MariaDB) unless you already edited it.
+4. Enter the **Host** (a host name or IP address, without protocol or port) and **Port** (`1` to `65535`).
+5. Optionally enter a **Database** name.
+6. Check the **TLS** setting: **Off** (not encrypted), **Encrypted, any certificate** (encrypts the connection without checking the server's identity), or **Encrypted and verified** (encrypts and checks the server's certificate and host name). Unless you pick a setting yourself, HooriDB chooses the default from the host text you type, not from DNS: local names (`localhost`) and private or loopback IP addresses get **Off**, and other hosts get **Encrypted, any certificate**. Selecting **Off** for a non-local host shows a warning.
+7. Enter your **User** and **Password**. Press the eye icon inside the password field to reveal or hide what you typed.
+8. Leave **Save in system keyring** checked to store the password in Windows Credential Manager (Windows) or your desktop Secret Service via `libsecret`, such as GNOME Keyring or KWallet (Linux). If you uncheck it, or if no keyring service is available, HooriDB keeps the password only until you close the app.
+
+## Test the connection and save
+
+Testing is optional. You can press **Save** right away, and HooriDB will ask to download the driver when you first connect. To check your settings before saving:
+
+1. Press **Test connection**. Testing checks whether HooriDB can reach and log in to the server without saving the connection.
+2. The first time you use a database type, HooriDB asks before downloading its driver from Maven Central. The prompt shows the driver name, version, file size, and download URL. Press **Download** to continue, or **Not now** to stop.
+3. HooriDB downloads the driver, verifies its checksum, keeps it on disk for future connections, and tests the server connection.
+4. If the test succeeds, the dialog shows the server product and version. If it fails, HooriDB marks the relevant field and shows the error message.
+5. Press **Save** to add the connection to the Workspace.
+
+By default, HooriDB uses the recommended driver version. To pick a specific version before saving, press **Driver…** next to **Type**. See [Drivers](/docs/features/drivers) for details.
+
+## Connect and browse
+
+1. Expand the connection in the Workspace tree, double-click it, or select it and press `Enter`.
+2. HooriDB uses a password kept for this session first, then the system keyring. Only if it has neither (or if the keyring does not answer in time) does it open a password dialog; enter the password, optionally check **Keep it until HooriDB closes**, and press **Connect**.
+3. Expand databases, schemas, tables, and columns in the tree, or right-click the connection and choose **New console** to run SQL.
+
+Continue with [Browse databases](/docs/features/browse) or [SQL console](/docs/features/console).

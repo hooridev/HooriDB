@@ -1,0 +1,52 @@
+---
+title: Install
+description: Install HooriDB on Windows with the installer or the zip, or on Linux from the tar.gz.
+---
+
+HooriDB requires:
+
+- Windows 11 or later (x64) with a Direct3D 12 graphics adapter
+- Linux (x64) with glibc 2.38 or later and a Vulkan graphics adapter
+
+Each download includes its own runtime, so you do not need to install Java separately.
+
+There is no stable release yet; only nightly builds are published as pre-releases on GitHub. Download a build from the [GitHub Releases](https://github.com/hooridev/HooriDB/releases) list. Every release also includes a `SHA256SUMS` file for verifying downloads.
+
+## Install on Windows
+
+### With the installer
+
+1. Download `HooriDB-<version>-windows-x64-setup.exe`.
+2. Run the installer.
+
+The installer installs HooriDB for your user account only into `%LOCALAPPDATA%\Programs\HooriDB` and adds a Start menu shortcut. It does not require administrator rights. Because your user account can write to that folder and its parent, built-in [updates](/docs/get-started/updates) work automatically.
+
+### With the zip archive
+
+1. Download `HooriDB-<version>-windows-x64.zip`.
+2. Extract the `HooriDB` folder into a folder your user account can write to (built-in [updates](/docs/get-started/updates) need write access to both the `HooriDB` folder and its parent).
+3. Run `HooriDB.exe` inside the extracted folder.
+
+## Install on Linux
+
+1. Download `HooriDB-<version>-linux-x64.tar.gz`.
+2. Unpack the `HooriDB` folder into a directory where your user account can write to both the `HooriDB` folder and its parent, such as `~/.local/opt/HooriDB`:
+
+```sh
+mkdir -p ~/.local/opt
+tar -xzf HooriDB-*-linux-x64.tar.gz -C ~/.local/opt
+```
+
+3. Start HooriDB from the unpacked folder:
+
+```sh
+~/.local/opt/HooriDB/bin/HooriDB
+```
+
+When started from the unpacked bundle, HooriDB writes a desktop entry at `$XDG_DATA_HOME/applications/dev.hoori.db.desktop` (by default `~/.local/share/applications/dev.hoori.db.desktop`). This adds HooriDB to your application menu and gives its windows an icon in the dock. If you move the `HooriDB` folder and start it again, HooriDB updates the desktop entry to point to the new location.
+
+Unpacking where you can write to both the `HooriDB` folder and its parent allows built-in [updates](/docs/get-started/updates) to replace the app in place.
+
+## Next step
+
+Once HooriDB is open, set up [your first connection](/docs/get-started/first-connection).

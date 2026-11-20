@@ -541,7 +541,7 @@ final class Frame {
         .key("uncommitted");
   }
 
-  /** The version that runs, its author, license and website. */
+  /** The version that runs, its authors, license and website. */
   private static El aboutDialog(State s) {
     Theme t = Theme.CURRENT.get();
     float side = t.size().icon();
@@ -553,7 +553,7 @@ final class Frame {
                 Properties.property("Version", s.version),
                 Properties.property(
                     "Updates", s.channel() == Channel.NIGHTLY ? "Nightly" : "Stable"),
-                Properties.property("Author", "Patrick Trautmann"),
+                Properties.property("Authors", "HooriDB contributors"),
                 Properties.property("License", "MIT"),
                 Properties.property("Website", "https://db.hoori.dev")),
             null)

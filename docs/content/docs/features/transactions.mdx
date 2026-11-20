@@ -1,0 +1,66 @@
+---
+title: Transactions
+description: Auto and Manual commit, Commit and Rollback, and the questions HooriDB asks before work could be lost.
+---
+
+Each SQL console has its own transaction mode and tracks whether a transaction is open on the server.
+
+<Shot name="transaction" alt="A console switched to Manual mode with Commit and Rollback buttons, a Transaction open badge, and an uncommitted work indicator in the bottom status bar" />
+
+## Switch between Auto and Manual
+
+Use the **Auto** / **Manual** toggle in the console toolbar:
+
+- **Auto**: commits each statement on its own.
+- **Manual**: turns auto-commit off. Statements stay in an open transaction until you press **Commit** (`Ctrl+Shift+C`) or **Rollback** (`Ctrl+Shift+R`).
+
+Manual mode does not make every change undoable. MySQL and MariaDB commit by themselves on statements that change the schema (DDL), and may roll a transaction back on their own after a deadlock. Changes to tables that do not support transactions (such as MyISAM) stay after a rollback, which HooriDB reports.
+
+You can also start a transaction with SQL (such as `BEGIN`) while in **Auto** mode. Whenever the console is in **Manual** mode or has an open transaction, **Commit** and **Rollback** appear in the toolbar.
+
+If a connection uses an older driver that cannot report the server's auto-commit state, **Manual** is disabled and HooriDB shows a warning advising you to select a newer driver version.
+
+## Read the transaction state
+
+The badge in the bottom-right corner of the console shows what the server reports:
+
+- `No transaction`: shown in **Manual** mode when no transaction is open.
+- `Transaction open · N statements`: a transaction is open (or `Transaction open · empty` if the server opened a fresh transaction with no statements run in it yet).
+- `Transaction failed`: an error failed the transaction (for example on PostgreSQL); the server ignores further statements until you press **Rollback**.
+- `Transaction may be open`: the server has not reported whether a transaction is open.
+- `Outcome not known`: a statement that may change data was cancelled or the connection dropped before the result was known, so the change may already have taken effect. Check the data before running the statement again, then press **Acknowledge** to clear the warning.
+
+While a console may hold uncommitted or in-doubt work, a dot appears on its tab and the main window's bottom status bar shows a warning (for example, `1 console may hold uncommitted work`). Press that status bar item to jump directly to the console.
+
+## Large results
+
+In **Auto** mode with no open transaction, plain read queries are shown as rows scroll in. Other results, and every result in **Manual** mode or while a transaction is open, are read whole before they appear and keep the first 100,000 rows of each result.
+
+Before running a read query that will be read whole when the server's plan estimates more than 100,000 rows, HooriDB opens a confirmation dialog (`Read about … rows?`). Choose **Cancel** to stop, or **Run anyway** to read the result and keep its first 100,000 rows.
+
+## Guard before UPDATE or DELETE without WHERE
+
+In both **Auto** and **Manual** mode, HooriDB checks the SQL of `UPDATE` and `DELETE` statements before sending them. If a statement has no `WHERE` clause (or, on MySQL and MariaDB, no `LIMIT` clause), or if HooriDB cannot tell whether one limits it, a confirmation dialog asks `Update every row?` or `Delete every row?`. Choose **Cancel** or **Run anyway**. HooriDB checks the SQL for a `WHERE` or `LIMIT` clause; it does not check what the `WHERE` matches.
+
+## Prompts before work could be lost
+
+While a console has an open, failed, unknown, or in-doubt transaction, or is running a statement that may change data, HooriDB asks what to do before any action that would end it:
+
+- Closing the console tab
+- Switching between **Auto** and **Manual**
+- Switching the console's database
+- Disconnecting, editing, or deleting the connection (or deleting a folder that holds it)
+- Exiting HooriDB or restarting to apply an update
+
+Depending on the transaction state, the dialog offers **Commit**, **Rollback**, or **Cancel** (or **Continue** when an outcome is in doubt). If a commit or rollback fails or stops answering, or a modifying statement is still running, the dialog also lets you choose **End the connection** or **Go on now** to close the connection; the server rolls back uncommitted work, while a change or commit already in flight may have taken effect, so check the data before running it again.
+
+While an edited connection is being saved or deleted, its consoles refuse to run new statements until that finishes.
+
+## Notices in the main window
+
+If finishing work on a console's session produces a warning or failure (such as a failed commit or rollback, a warning when releasing unread rows, a failure while closing a session, or the outcome of a cancelled call), HooriDB adds a notice above the Workspace tree and logs it in the console's **Messages** tab.
+
+- Press **Dismiss** on a notice to remove it.
+- When more than three notices are shown, press **Dismiss all** to clear the ones currently listed.
+
+When you exit HooriDB, it waits for console sessions to finish closing. If a session reports a problem while closing or does not confirm closing in time, HooriDB stays open so you can read the notice.

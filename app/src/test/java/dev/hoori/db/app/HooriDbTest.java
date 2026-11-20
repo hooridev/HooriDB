@@ -103,11 +103,11 @@ class HooriDbTest {
   }
 
   /**
-   * Help, About HooriDB shows the version, here a development build, its author, license and
+   * Help, About HooriDB shows the version, here a development build, its authors, license and
    * website, in either theme; Close and Enter close it. It waits while another dialog is open.
    */
   @Test
-  void aboutShowsTheVersionAuthorLicenseAndWebsite(@TempDir Path out) throws IOException {
+  void aboutShowsTheVersionAuthorsLicenseAndWebsite(@TempDir Path out) throws IOException {
     String open = """
         press role=menuitem label="Help"
         frame
@@ -159,7 +159,8 @@ class HooriDbTest {
           tree.contains("label=\"Version\" ") && tree.contains("value=\"Development build\""),
           tree);
       assertTrue(
-          tree.contains("label=\"Author\" ") && tree.contains("value=\"Patrick Trautmann\""), tree);
+          tree.contains("label=\"Authors\" ") && tree.contains("value=\"HooriDB contributors\""),
+          tree);
       assertTrue(tree.contains("label=\"License\" ") && tree.contains("value=\"MIT\""), tree);
       assertTrue(
           tree.contains("label=\"Website\" ") && tree.contains("value=\"https://db.hoori.dev\""),

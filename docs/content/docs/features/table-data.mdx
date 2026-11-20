@@ -1,0 +1,59 @@
+---
+title: Table data
+description: Look at a table's rows in the grid, page through them, and read a value whole in the value panel.
+---
+
+Opening a table or view displays its rows in a read-only data grid. If the same table is already open in a tab (even in another window), HooriDB switches to that tab instead of opening a second copy.
+
+<Shot name="table" alt="The customers table open in the data grid showing row numbers, column headers with types, row count, and paging buttons" />
+
+## Read and page through rows
+
+HooriDB reads rows in pages as you scroll. Each page is a separate read, so rows may move if another client changes the table while you browse.
+
+- Press **Refresh** in the toolbar (or right-click the grid and choose **Refresh**) to reload the table and its columns.
+- Drag a column divider in the header to resize a column.
+- Select cells or rows and press `Ctrl+C` (or `Ctrl+Insert`) to copy them, or right-click the grid and choose **Copy** or **Copy with headers**. You can copy up to 100,000 selected cells at once from rows that are already loaded.
+
+The tab toolbar shows the table's path (`database.schema.table` or `database.table`), the connection name, **Count rows**, and **Refresh**.
+
+### Row count and paging controls
+
+The bottom status bar of a table tab shows:
+
+- On the left: the row count. For tables estimated below 100,000 rows, HooriDB counts the exact total automatically. For larger tables, it shows the server's estimate (`About … rows, as the server estimates`), or `At least …` where the server gives no estimate. Press **Count rows** to run an exact count, or press **Stop counting** to cancel it while it runs.
+- On the right: how long the last page read took, which rows are currently visible (for example, `Rows 5,001–5,024`), four paging buttons, and the **Value** panel toggle.
+
+Use the four paging buttons to move the view without changing your selection:
+
+- **First page** (up arrow): jump to the start of the table.
+- **Previous page** (up chevron): scroll up by one screen of rows.
+- **Next page** (down chevron): scroll down by one screen of rows.
+- **Last page** (down arrow): jump to the known end of the table.
+
+## How values are displayed
+
+- Numbers are displayed without thousands separators.
+- Dates and times use ISO 8601 format (`YYYY-MM-DD HH:MM:SS`).
+- `NULL` values appear in muted `NULL` text.
+- Binary values show the first 8 bytes in hex and the total byte length.
+- Timestamps with a time zone are shown and copied in your computer's local time zone, with the offset that applies at that moment (for example, `+02`).
+- Text and JSON values longer than 1,024 characters are shortened in the grid and marked with an icon whose tooltip shows the full size.
+
+## Inspect a cell in the value panel
+
+<Shot name="value-panel" alt="The products table with the value panel open on the right displaying formatted, syntax-colored jsonb data" />
+
+1. Select any cell in the grid.
+2. Press `Shift+Enter`, or press the **Value** button at the bottom-right of the tab.
+3. Move the selection in the grid to inspect other cells; the panel updates automatically.
+4. Drag the divider between the grid and the panel to resize it.
+5. Press `Shift+Enter`, **Value**, or **Close** to close the panel.
+
+What the value panel shows:
+
+- The column name and server data type in its header, and the read-only cell value below.
+- For JSON columns (PostgreSQL `json` and `jsonb`, MySQL and MariaDB `json`), valid JSON is formatted and syntax-colored. Invalid JSON is shown as received with its first syntax error underlined.
+- If a text or JSON value was shortened to 1,024 characters in the grid, HooriDB reads the full value from the server by the row's primary key when you view it in the value panel. If the table has no primary key, or if reading the full value fails, the panel shows the shortened start and says so.
+
+Table tabs are read-only; editing, filtering, and sorting are not supported yet. See [Limitations](/docs/reference/limitations).

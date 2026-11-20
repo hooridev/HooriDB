@@ -1,0 +1,14 @@
+{
+  "title": "Features",
+  "pages": [
+    "workspace",
+    "browse",
+    "table-data",
+    "console",
+    "transactions",
+    "history",
+    "command-palette",
+    "tabs-and-windows",
+    "drivers"
+  ]
+}

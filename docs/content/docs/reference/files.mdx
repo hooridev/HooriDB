@@ -1,0 +1,73 @@
+---
+title: Files and uninstall
+description: Where HooriDB keeps the workspace, history, drivers and passwords, and how to remove it all.
+---
+
+HooriDB keeps configuration, downloaded drivers, passwords, and application files in separate places.
+
+## Configuration files
+
+- Windows: `%APPDATA%\HooriDB` (fallback `%USERPROFILE%\AppData\Roaming\HooriDB`)
+- Linux: `$XDG_CONFIG_HOME/hooridb` (default `~/.config/hooridb`)
+
+Files kept in this folder:
+
+| File | Contents |
+| --- | --- |
+| `workspace.json` | Folders, their open/closed state, and connection profiles (no passwords). On first start, if `workspace.json` is missing and an earlier version's `connections.json` exists, HooriDB imports those connections. |
+| `consoles.json` | Open SQL consoles (their connection, selected database, and text). |
+| `history.json` | Statements run from consoles (up to 1,000 per connection). |
+| `updates.json` | Update channel (`stable` or `nightly`) and update state. |
+
+On Linux, HooriDB writes these files with owner-only permissions (`rw-------`), because console text and history can contain sensitive values. If any of these files cannot be read, HooriDB saves a copy as `<filename>.unreadable` before replacing it.
+
+## Drivers and update downloads
+
+- Windows: `%LOCALAPPDATA%\HooriDB` (fallback `%USERPROFILE%\AppData\Local\HooriDB`)
+- Linux: `$XDG_DATA_HOME/hooridb` (default `~/.local/share/hooridb`)
+
+Subfolders kept here:
+
+- `drivers/`: downloaded JDBC driver JAR files and their `.sha256` checksum records.
+- `updates/`: downloaded release archives used when applying an update.
+
+## Passwords
+
+Passwords are never written to `workspace.json`. When **Save in system keyring** is enabled:
+
+- Windows: stored in Windows Credential Manager as local-machine generic credentials named `HooriDB:<connection-id>`.
+- Linux: stored in the desktop Secret Service (such as GNOME Keyring or KWallet) via `libsecret`, labeled `HooriDB <connection-id>` under schema `dev.hoori.db.Secret`.
+
+## Application files
+
+- Windows (installer): `%LOCALAPPDATA%\Programs\HooriDB` and a Start menu shortcut.
+- Windows (zip): the `HooriDB` folder wherever you extracted it.
+- Linux: the unpacked `HooriDB` folder (for example, `~/.local/opt/HooriDB`) and the desktop entry at `$XDG_DATA_HOME/applications/dev.hoori.db.desktop` (default `~/.local/share/applications/dev.hoori.db.desktop`).
+
+## Uninstall HooriDB
+
+### Windows (installer)
+
+1. Close HooriDB.
+2. Open Windows Settings (**Apps > Installed apps**), find **HooriDB**, and choose **Uninstall**.
+
+This removes `%LOCALAPPDATA%\Programs\HooriDB` and the Start menu shortcut.
+
+### Windows (zip)
+
+1. Close HooriDB.
+2. Delete the extracted `HooriDB` folder.
+
+### Linux
+
+1. Close HooriDB.
+2. Delete the unpacked `HooriDB` folder.
+3. Delete `~/.local/share/applications/dev.hoori.db.desktop` (or `$XDG_DATA_HOME/applications/dev.hoori.db.desktop`).
+
+### Remove saved data and passwords
+
+Uninstalling the application leaves your configuration, drivers, and saved passwords intact. To remove everything:
+
+1. Before uninstalling, delete your connections in HooriDB so it removes their saved passwords from the system keyring. If you already uninstalled HooriDB, remove the `HooriDB:` entries in Windows Credential Manager or the `HooriDB ` entries in your Linux keyring manager.
+2. Delete the configuration folder: `%APPDATA%\HooriDB` on Windows; on Linux `$XDG_CONFIG_HOME/hooridb`, by default `~/.config/hooridb`.
+3. Delete the data folder: `%LOCALAPPDATA%\HooriDB` on Windows; on Linux `$XDG_DATA_HOME/hooridb`, by default `~/.local/share/hooridb`.

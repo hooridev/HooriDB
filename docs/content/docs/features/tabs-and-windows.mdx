@@ -1,0 +1,32 @@
+---
+title: Tabs and windows
+description: Arrange tabs, move them between windows and tear them off into windows of their own.
+---
+
+Tables, views, and SQL consoles open as tabs that you can rearrange, move between windows, or tear off into separate windows.
+
+<Shot name="overview" alt="HooriDB with multiple tabs open (customers, shop-prod: shop console, and orders) marked with their connection color" />
+
+## Work with tabs
+
+- Each table or view opens in one tab. If you open a table that is already open in any window, HooriDB brings that tab to the front instead of opening a duplicate.
+- Table tabs display the table name, adding the database, schema, or connection name when two open tables share the same name. Console tabs display `<connection>: <database>` (numbered if you have more than one console on the same database).
+- Icons tell tab types apart: a table icon for tables, an eye icon for views, and a code icon for consoles. A console tab shows a dot when it may hold uncommitted or in-doubt work.
+- Switch tabs with `Ctrl+PageDown` or `Ctrl+Tab` (**Go > Next tab**) and `Ctrl+PageUp` or `Ctrl+Shift+Tab` (**Go > Previous tab**).
+- Close the active tab with its close button, **File > Close tab**, `Ctrl+W`, or `Ctrl+F4`.
+- Move focus between the Workspace tree and the active tab with `Ctrl+0` (**Go > Workspace**) and `Ctrl+1` (**Go > Tab content**).
+
+## Move tabs and tear off windows
+
+- Drag tabs to reorder them, drag a tab out to open it in a separate window, or drop it onto another window's tab bar.
+- Right-click a tab and choose **Move to new window** to open it in a separate window, or **Move back to main window** in a separate window to return it. Use these menu items where dragging a tab out does not work, such as on Linux Wayland.
+
+A torn-off window displays its active tab's title in its title bar and has no menu bar, while keeping keyboard shortcuts and the command palette (`Ctrl+Shift+P`, `F1`, and `Ctrl+P`). Closing a separate window moves its open tabs back to the main window; closing or moving the last tab out of a separate window closes that window.
+
+## Connection colors on tabs
+
+When a connection has a [color](/docs/features/workspace#mark-connections-with-a-color), every table tab and console tab for that connection carries that color on its tab and as a thin colored bar across the top of the tab's content, both in the main window and in torn-off windows.
+
+## Dark and light themes
+
+Switch appearance from **View > Dark theme** and **View > Light theme** (or from the command palette). Theme selection is not saved between restarts; HooriDB opens in dark theme each time you start it.
