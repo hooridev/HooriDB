@@ -8,6 +8,8 @@ import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -16,13 +18,16 @@ import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.OffsetTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.function.Function;
@@ -76,6 +81,7 @@ public final class Rows {
   private static final Pattern TIME =
       Pattern.compile("(\\d\\d):(\\d\\d):(\\d\\d)(?:\\.(\\d{1,9}))?([+-]\\d\\d(?::\\d\\d){0,2})?");
   // The rows of a plan's node, "rows=900" in PostgreSQL's and "rows=238e+6" in MySQL's tree.
+  private static final DateTimeFormatter OFFSET = DateTimeFormatter.ofPattern("xxxxx");
   private static final Pattern PLAN_ROWS =
       Pattern.compile("[( ]rows=(\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?)[ )]");
 
@@ -454,12 +460,55 @@ public final class Rows {
         fraction == null ? 0 : Integer.parseInt((fraction + "00000000").substring(0, 9)));
   }
 
+  // A value of a kind's Java type as the servers write it, which they read back as that value: a
+  // moment in UTC, with its offset; with eras, a year before the common era as PostgreSQL writes
+  // it, the year 0 as 1 BC.
+  static String text(Object value, boolean eras) {
+    return switch (value) {
+      case String text -> text;
+      case Long number -> number.toString();
+      case BigInteger number -> number.toString();
+      case BigDecimal number -> number.toPlainString();
+      case Float number -> number.toString();
+      case Double number -> number.toString();
+      case Boolean truth -> truth.toString();
+      case LocalDate date -> date(date, eras) + era(date, eras);
+      case LocalTime time -> DateTimeFormatter.ISO_LOCAL_TIME.format(time);
+      case OffsetTime time ->
+        DateTimeFormatter.ISO_LOCAL_TIME.format(time.toLocalTime()) + OFFSET.format(time);
+      case LocalDateTime moment -> dateTime(moment, eras, "");
+      case OffsetDateTime moment ->
+        dateTime(moment.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime(), eras, "+00:00");
+      default ->
+        throw new IllegalArgumentException(
+            "A value of " + value.getClass().getName() + " cannot be written");
+    };
+  }
+
+  private static String dateTime(LocalDateTime moment, boolean eras, String offset) {
+    return date(moment.toLocalDate(), eras)
+        + " "
+        + DateTimeFormatter.ISO_LOCAL_TIME.format(moment.toLocalTime())
+        + offset
+        + era(moment.toLocalDate(), eras);
+  }
+
+  private static String date(LocalDate date, boolean eras) {
+    var year = eras && date.getYear() <= 0 ? 1 - date.getYear() : date.getYear();
+    return String.format(
+        Locale.ROOT, "%04d-%02d-%02d", year, date.getMonthValue(), date.getDayOfMonth());
+  }
+
+  private static String era(LocalDate date, boolean eras) {
+    return eras && date.getYear() <= 0 ? " BC" : "";
+  }
+
   static String qualified(Provider provider, Table table) {
     return provider.quote(table.container().name()) + "." + provider.quote(table.name());
   }
 
   // A connection to one database would read a table of the same name in its own.
-  private static void requireConnectedTo(Connection connection, Provider provider, Table table)
+  static void requireConnectedTo(Connection connection, Provider provider, Table table)
       throws QueryException {
     if (!provider.supports(Capability.CONNECTION_PER_DATABASE, ServerVersion.UNKNOWN)) {
       return;

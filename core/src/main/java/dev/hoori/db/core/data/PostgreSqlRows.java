@@ -10,7 +10,9 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -18,6 +20,7 @@ import java.sql.Types;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.OptionalLong;
@@ -200,6 +203,63 @@ public final class PostgreSqlRows extends RowsDialect {
         anyText(
             source, jdbcType == Types.VARCHAR || jdbcType == Types.CHAR ? Kind.TEXT : Kind.OTHER);
     };
+  }
+
+  @Override
+  String equal() {
+    return "OPERATOR(pg_catalog.=)";
+  }
+
+  // As the server's own text, of no type, which it reads as the type of the column it goes into or
+  // is compared with: what was read goes back as it came.
+  @Override
+  void bind(PreparedStatement statement, int index, Object value) throws SQLException {
+    if (value == null) {
+      statement.setNull(index, Types.OTHER);
+    } else {
+      statement.setObject(index, text(value), Types.OTHER);
+    }
+  }
+
+  @Override
+  String literal(Object value) {
+    return switch (value) {
+      case null -> "NULL";
+      case Boolean truth -> truth ? "TRUE" : "FALSE";
+      case Long number -> text(number);
+      case BigInteger number -> text(number);
+      case BigDecimal number -> text(number);
+      case Float number when Float.isFinite(number) -> text(number);
+      case Double number when Double.isFinite(number) -> text(number);
+      default -> "'" + text(value).replace("'", "''") + "'";
+    };
+  }
+
+  private static String text(Object value) {
+    return value instanceof Binary binary
+        ? "\\x" + HexFormat.of().formatHex(binary.bytes())
+        : Rows.text(value, true);
+  }
+
+  @Override
+  String parameter(Object value) {
+    return "?";
+  }
+
+  // An UPDATE or DELETE of a table that others inherit from meets their rows too, whose keys may
+  // be its own; a partitioned table's keys are unique across its partitions.
+  @Override
+  boolean changeable(Connection connection, Provider provider, Table table, List<Object> values)
+      throws QueryException {
+    var sql = "SELECT c.relhassubclass AND c.relkind OPERATOR(pg_catalog.=) 'r'"
+        + " FROM pg_catalog.pg_class c"
+        + " WHERE c.oid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(?)";
+    return Query.run(connection, provider, sql, statement -> {
+      statement.setString(1, Rows.qualified(provider, table));
+      try (var rows = statement.executeQuery()) {
+        return !rows.next() || !rows.getBoolean(1);
+      }
+    });
   }
 
   // The output function's text of a PostgreSQL value of any type, which counts as NULL where
