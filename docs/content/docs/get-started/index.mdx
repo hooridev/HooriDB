@@ -3,4 +3,45 @@ title: Install
 description: Install HooriDB on Windows with the installer or the zip, or on Linux from the tar.gz.
 ---
 
-{/* text follows */}
+HooriDB runs on Windows 11 (x64) and Linux (x64). Each download includes its own runtime, so you do not need to install Java separately.
+
+Download the latest release from [GitHub Releases](https://github.com/hooridev/HooriDB/releases/latest). Every release also includes a `SHA256SUMS` file for verifying downloads.
+
+## Install on Windows
+
+### With the installer
+
+1. Download `HooriDB-<version>-windows-x64-setup.exe`.
+2. Run the installer.
+
+The installer installs HooriDB for your user account only into `%LOCALAPPDATA%\Programs\HooriDB` and adds a Start menu shortcut. It does not require administrator rights. Because your user account can write to that folder, built-in [updates](/docs/get-started/updates) work automatically.
+
+### With the zip archive
+
+1. Download `HooriDB-<version>-windows-x64.zip`.
+2. Extract the `HooriDB` folder into a folder your user account can write to.
+3. Run `HooriDB.exe` inside the extracted folder.
+
+## Install on Linux
+
+1. Download `HooriDB-<version>-linux-x64.tar.gz`.
+2. Unpack the `HooriDB` folder into a directory your user account can write to, such as `~/.local/opt/HooriDB`:
+
+```sh
+mkdir -p ~/.local/opt
+tar -xzf HooriDB-<version>-linux-x64.tar.gz -C ~/.local/opt
+```
+
+3. Start HooriDB from the unpacked folder:
+
+```sh
+~/.local/opt/HooriDB/bin/HooriDB
+```
+
+When started from the unpacked bundle, HooriDB writes a desktop entry at `$XDG_DATA_HOME/applications/dev.hoori.db.desktop` (by default `~/.local/share/applications/dev.hoori.db.desktop`). This adds HooriDB to your application menu and gives its windows an icon in the dock. If you move the `HooriDB` folder and start it again, HooriDB updates the desktop entry to point to the new location.
+
+Unpacking into a folder you can write to allows built-in [updates](/docs/get-started/updates) to replace the app in place.
+
+## Next step
+
+Once HooriDB is open, set up [your first connection](/docs/get-started/first-connection).

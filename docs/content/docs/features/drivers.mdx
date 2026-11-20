@@ -3,4 +3,41 @@ title: Drivers
 description: Which JDBC drivers HooriDB downloads, and how to choose, list and delete their versions.
 ---
 
-{/* text follows */}
+HooriDB does not bundle database drivers. Instead, it downloads the official JDBC driver for each database type from Maven Central after asking you.
+
+<Shot name="drivers" alt="The Drivers dialog listing downloaded versions and sizes for PostgreSQL JDBC, MariaDB Connector/J, and MySQL Connector/J, with Download controls and Delete icons" />
+
+## Drivers HooriDB downloads
+
+- PostgreSQL: PostgreSQL JDBC (`org.postgresql:postgresql`)
+- MySQL: MySQL Connector/J (`com.mysql:mysql-connector-j`)
+- MariaDB: MariaDB Connector/J (`org.mariadb.jdbc:mariadb-java-client`)
+
+When a connection needs a driver version that is not on your computer yet, HooriDB shows the driver name, version, file size, and Maven Central URL and asks you to choose **Download** or **Not now**.
+
+Every downloaded file is verified against its checksum (SHA-256, or SHA-1 when SHA-256 is not published) and checked again before HooriDB loads it. Once downloaded, the driver works offline.
+
+## Recommended versions
+
+By default, connections use **Recommended**: the newest stable release published at least 3 days ago. Waiting 3 days gives maintainers time to pull a broken release before HooriDB recommends it.
+
+If Maven Central cannot be reached, HooriDB uses the newest stable version already downloaded on your computer.
+
+## Choose a driver version for a connection
+
+1. Open the connection dialog (**New connection…** or right-click a connection and choose **Edit…**).
+2. Press **Driver…** next to **Type**.
+3. In the **Version** dropdown, keep **Recommended** or pick a specific stable version from the list.
+4. Press **Close**, then **Save** the connection.
+
+If you pick a release published less than 3 days ago, HooriDB shows a warning with its age.
+
+## List, download, and delete drivers
+
+Open **File > Drivers…** to manage downloaded drivers for all three database types.
+
+- Each database section lists its downloaded versions with their file sizes and notes whether a version is recommended or currently in use by an open connection.
+- To download a version ahead of time, choose **Recommended** or a specific version in the Download row and press **Download**.
+- To delete a downloaded version, press the trash icon next to it and confirm with **Delete**.
+
+You cannot delete a driver version while an open connection or console session uses it; disconnect those connections first. If a saved connection still specifies a deleted version, HooriDB asks to download it again the next time you connect.

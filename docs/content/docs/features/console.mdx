@@ -3,4 +3,60 @@ title: SQL console
 description: Write and run SQL, read the results and messages, find errors, and complete names as you type.
 ---
 
-{/* text follows */}
+An SQL console gives you an editor, result tabs, a Messages log, and transaction controls on a dedicated server connection.
+
+<Shot name="console" alt="An SQL console with two SQL statements in the editor and Result 1, Result 2, and Messages tabs below" />
+
+## Open a console
+
+Open a new console in any of these ways:
+
+- Right-click a connection in Workspace and choose **New console**.
+- Choose **File > New console** or press `Ctrl+N` (opens a console for the connection selected in Workspace, or for the active tab's connection if no connection is selected in the tree).
+
+The console opens its own server connection when you run your first statement, so a slow query does not block browsing the tree or reading table tabs.
+
+HooriDB saves open console tabs (their text, connection, and selected database) about one second after you edit them, and reopens them unconnected the next time you start HooriDB. Closing a console tab removes its saved text.
+
+## Switch databases
+
+Choose a database from the **Database** dropdown in the console toolbar. The list contains the databases that Workspace has loaded for that connection.
+
+If the console has an open transaction, HooriDB asks what to do with it before switching databases. Running a `USE` statement inside the SQL editor does not update the **Database** dropdown.
+
+## Run and cancel statements
+
+- Press **Run** or `Ctrl+Enter` to run the selected SQL, or the single statement at the caret if nothing is selected. The editor marks the lines of the statement that `Ctrl+Enter` will run.
+- Press **Run all** or `Ctrl+Shift+Enter` to run every statement in the editor from top to bottom, stopping at the first error.
+- Press **Cancel** while a statement runs to cancel it on the server. Rows already read stay visible in the result tab.
+
+## Read results and Messages
+
+Each statement that returns rows or changes rows creates a result tab (**Result 1**, **Result 2**, and so on) below the editor.
+
+- Statements that modify rows show the count of affected rows (for example, `1 row changed`).
+- In **Auto** mode (with no open transaction), plain read queries load 200 rows at a time and read more as you scroll down. In **Manual** mode or inside an open transaction, each result is read whole and keeps the first 100,000 rows (see [Transactions](/docs/features/transactions)).
+- Press **Pin** (the pin icon in a result tab's footer) to keep that result tab across future runs. Press **Unpin** to allow the next run to replace it.
+- Press `Shift+Enter` or the **Value** button in a result tab's footer to open the [value panel](/docs/features/table-data#inspect-a-cell-in-the-value-panel) for the selected cell. Unlike a table tab, a query result keeps only the first 1,024 characters of long values.
+- Select cells and press `Ctrl+C` to copy from a result grid.
+- Open the **Messages** tab to see every statement run in the console, how long it took, and its result, warnings, or errors.
+
+## Find errors in the editor
+
+<Shot name="console-error" alt="A console showing an unknown column error underlined at line 4 with the error message below the editor and logged in Messages" />
+
+When a statement fails and the server reports where the error occurred, HooriDB underlines that location in the editor, moves the caret there, and displays the server's message above the results tabs. The underline clears as soon as you edit the text.
+
+## Complete SQL keywords and names
+
+<Shot name="completion" alt="A console editor showing column name completions and data types after typing an alias and a dot" />
+
+The completion list suggests SQL keywords for your database dialect along with schemas, tables, views, and columns for the console's database.
+
+- The list opens automatically from the second letter of a word, or right after typing `.` following a schema, table, or alias name.
+- Press `Ctrl+Space` anywhere in the editor to open the list manually.
+- Press `Enter` to insert the highlighted item, or `Escape` to close the list.
+
+Names that require quoting are quoted automatically for PostgreSQL (`"..."`) or MySQL and MariaDB (`` `...` ``).
+
+If a database's tables or a table's columns have not been loaded in Workspace yet, HooriDB reads them automatically when completions ask for them. Keep typing or press `Ctrl+Space` again to see the newly loaded names.

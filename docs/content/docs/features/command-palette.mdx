@@ -3,4 +3,30 @@ title: Command palette
 description: Run any command from the keyboard and open tables and views by name.
 ---
 
-{/* text follows */}
+The command palette lets you run any menu command from the keyboard and jump directly to tables and views by name.
+
+<Shot name="palette" alt="The command palette open over a table tab, listing File, View, and Go commands with their keyboard shortcuts" />
+
+## Run menu commands
+
+1. Press `Ctrl+Shift+P` or choose **View > Command palette…**.
+2. Type part of a command name (for example, `drivers`, `light`, or `new console`).
+3. Use the arrow keys to pick a command and press `Enter` to run it, or press `Escape` to close the palette.
+
+The palette lists every item from the **File**, **View**, **Go**, and **Help** menus together with its keyboard shortcut. Commands that cannot run in the current context appear disabled.
+
+The command palette works in torn-off windows too. Tab commands act on that window's tabs, while main-window dialogs (such as **New connection…**, **Drivers…**, and **About HooriDB**) open in the main window and bring it to the front.
+
+## Open a table or view by name
+
+<Shot name="palette-tables" alt="The command palette in @ mode filtering tables matching @ord and listing an unread database below under Not read yet" />
+
+1. Press `Ctrl+P`, choose **Go > Go to table…**, or type `@` at the start of the command palette.
+2. Type part of a table or view name. Matching is case-insensitive and matches exact names, prefixes, word starts, word initials (such as `oi` for `order_items`), or text anywhere in the name.
+3. Press `Enter` to open the selected table or view in the current window (or switch to it if it is already open).
+
+The list searches every table and view that Workspace has loaded across all open connections, showing each connection's color bar, name, database, and schema.
+
+### Load unread databases from the palette
+
+Databases whose tables have not been loaded yet appear under `Not read yet`. Select a database and press `Enter` to load its tables without closing the palette. Its tables appear in the list as soon as they arrive. Closing the palette cancels any unread-database scan it started.

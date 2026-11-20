@@ -3,4 +3,44 @@ title: Updates
 description: How HooriDB finds, downloads and installs new versions, and how to choose Stable or Nightly.
 ---
 
-{/* text follows */}
+When HooriDB runs from an installed app image (the Windows installer, the Windows zip, or the Linux tar.gz), it checks GitHub Releases for a newer version each time you start it.
+
+<Shot name="about" alt="The About HooriDB dialog showing the running version, update channel, author, license, and website" />
+
+## Install an update
+
+1. If a newer version is available in your chosen channel and your user account can write to the HooriDB folder, HooriDB downloads it automatically. While it downloads, the bottom status bar shows `Downloading HooriDB <version>…`.
+2. Once the download finishes, a notice appears above the Workspace tree: `HooriDB <version> is ready`.
+3. Press **Restart now** to apply the update. If you prefer to keep working first, press **Later** and choose **Help > Restart to update** when you are ready.
+
+Restarting goes through HooriDB's normal exit sequence. If any console has an open transaction or uncommitted work, HooriDB asks what to do before closing.
+
+If HooriDB does not have write permission to its own installation folder, it cannot replace itself. Instead, the notice shows **Open release page** so you can download the update yourself.
+
+## Rollback if a new version fails
+
+After HooriDB restarts into the new version, it confirms the update as soon as the main window draws its first frame.
+
+If the new version fails to start in time, the updater puts the previous version back automatically. On the next start, HooriDB shows a notice above the Workspace tree explaining that the update was undone. A version that was rolled back is skipped and will not be offered again until a higher version is released.
+
+If another program (such as a virus scanner) had HooriDB's files locked during replacement, the old version stays in place and the next start offers **Try again**.
+
+## Switch between Stable and Nightly
+
+HooriDB has two update channels:
+
+- **Stable updates**: published releases only (no pre-releases).
+- **Nightly updates**: includes pre-releases and nightly builds published from `main`.
+
+On first start, HooriDB selects the channel that matches the version you installed (Stable for a stable release, Nightly for a pre-release or nightly build).
+
+To switch channels:
+
+1. Open the **Help** menu.
+2. Choose **Stable updates** or **Nightly updates**.
+
+HooriDB saves the choice and checks the new channel right away. If you switch from Nightly back to Stable while running a nightly build, HooriDB stays on your current build until a higher stable release comes out.
+
+## Check your version
+
+Open **Help > About HooriDB**, or press the version number in the bottom-right corner of the status bar, to see the version that is running, the active update channel, the author, the license, and the website.

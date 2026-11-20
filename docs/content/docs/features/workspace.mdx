@@ -3,4 +3,78 @@ title: Workspace
 description: Organize connections in folders, give them colors, move, duplicate and delete them.
 ---
 
-{/* text follows */}
+The Workspace sidebar holds your folders and connections. HooriDB saves the tree structure, folder open/closed states, and connection settings in `workspace.json`. Passwords are stored separately in the system keyring.
+
+<Shot name="workspace" alt="The Workspace sidebar with connections in folders and the Move to submenu open" />
+
+## Create a folder or connection
+
+1. Press **+** in the Workspace toolbar, open the **File** menu, or right-click an existing folder.
+2. Choose **New folder…** or **New connection…**.
+3. For a folder, enter a **Name** and press **Create**.
+
+A new folder or connection is placed inside the folder you selected, inside the folder of the connection you selected, or at the top level if nothing is selected. Folders can be nested up to 240 levels deep.
+
+## Rename a folder
+
+1. Right-click the folder in Workspace.
+2. Choose **Rename…**.
+3. Enter the new **Name** and press **Rename**.
+
+## Move folders and connections
+
+You can move any folder or connection in two ways:
+
+- Drag it in the Workspace tree to place it before, after, or inside another folder.
+- Right-click it, open **Move to**, and choose **Top level** or any folder listed by its path (for example, `Production / Archive`).
+
+Moving a connection keeps it connected and leaves its open table and console tabs open.
+
+## Mark connections with a color
+
+Assign a color to tell environments apart (such as red for production and green for local).
+
+- In the connection dialog, pick a color next to **Color**.
+- Or right-click a connection in Workspace, open **Color**, and choose **None**, **Blue**, **Violet**, **Purple**, **Pink**, **Red**, **Orange**, **Amber**, **Green**, **Teal**, or **Gray**.
+
+The color appears as a vertical bar next to the connection in Workspace, in **Go to table…**, and on every table and console tab belonging to that connection. Changing only a connection's color does not disconnect it.
+
+## Edit or duplicate a connection
+
+### Edit a connection
+
+1. Right-click the connection and choose **Edit…**.
+2. If the connection is currently open, HooriDB asks to disconnect it first (and prompts about any console that may hold uncommitted work). Press **Disconnect** to continue.
+3. Change any settings and press **Save**.
+
+If you change the server type, host, port, or database, HooriDB closes open table tabs for that connection. Its console tabs stay open with their text.
+
+If you uncheck **Save in system keyring** while editing a connection whose keyring state could not be read, HooriDB asks the keyring to delete any saved password for that connection when you save.
+
+### Duplicate a connection
+
+Right-click a connection and choose **Duplicate**. HooriDB inserts a copy named `<name> (copy)` right after the original in the same folder. The copy does not carry over the saved password.
+
+## Delete a connection or folder
+
+### Delete a connection
+
+1. Right-click the connection and choose **Delete…**.
+2. If the connection is open, press **Disconnect** when prompted (and resolve any open console transactions).
+3. Press **Delete** in the confirmation dialog.
+
+Deleting a connection closes its open table and console tabs, removes its statement history, and deletes its password from the system keyring if one was saved there.
+
+### Delete a folder
+
+1. Right-click the folder and choose **Delete…**.
+2. If the folder is empty, HooriDB deletes it right away.
+3. If the folder contains anything, the dialog shows how many connections it holds (including those inside subfolders) and offers two options:
+   - **Move contents up**: removes the folder and moves its contents up one level. Open connections stay connected.
+   - **Delete contents**: deletes the folder and every connection inside it, after prompting about any open console transactions. Passwords, open tabs, and statement history for those connections are removed too.
+
+If the system keyring fails to delete a connection's password, that connection and its folder stay in the workspace, and the dialog lists which connections were kept.
+
+## If the system keyring does not answer
+
+Keyring requests run one at a time. If the keyring does not respond within 5 seconds while saving or deleting a connection, HooriDB shows a warning and enables **Cancel** so you can give up waiting. The connection is left unchanged, and any later keyring request waits behind the unfinished one.

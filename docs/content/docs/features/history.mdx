@@ -3,4 +3,29 @@ title: History
 description: Find, search and reuse the statements you ran on a connection.
 ---
 
-{/* text follows */}
+Every statement you run from a console is saved in that connection's history (up to 1,000 statements per connection; statements larger than 64 KB are not recorded). History is stored in `history.json`, readable only by your user account on Linux.
+
+<Shot name="history" alt="The History dialog showing past statements for shop-prod with Search, Statement, Ran, Took, Outcome, Clear history, Close, and Insert" />
+
+## Open History
+
+While a console tab is active, open its connection's history in either of two ways:
+
+- Press the **History** (clock) icon in the console toolbar.
+- Choose **File > History…**.
+
+Statements appear newest first with four columns: `Statement` (the first non-blank line), `Ran`, `Took`, and `Outcome` (`Rows`, `N rows changed`, `Cancelled`, or the error message).
+
+## Search and insert a statement
+
+1. Type in the **Search** box to filter statements containing that text (case-insensitive).
+2. Select a row and press **Insert**, double-click the row, or press `Enter`. You can also copy selected rows with `Ctrl+C`.
+
+If you have text selected in the console editor, the inserted statement replaces the selection. Otherwise, HooriDB inserts it as a separate statement on its own line (after the statement the caret is inside, adding a semicolon to the previous statement if needed) and places the caret right after it so you can run it right away. You can undo the insert in one step.
+
+## Clear history
+
+1. Press **Clear history** in the History dialog.
+2. Press **Clear** to confirm.
+
+Clearing deletes all saved statements for that connection from disk. Open consoles keep their text. Deleting a connection from Workspace also removes its history.

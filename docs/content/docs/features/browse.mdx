@@ -3,4 +3,39 @@ title: Browse databases
 description: Open databases, schemas, tables, views and columns in the tree.
 ---
 
-{/* text follows */}
+Workspace connects to a database server when you open a connection in the tree and reads each level only as you expand it.
+
+<Shot name="tree" alt="The Workspace tree expanded to show databases, schemas, tables, views, and columns with primary key icons and data types" />
+
+## Connect and expand objects
+
+1. Click the arrow beside a connection, double-click the connection, or select it and press `Enter`.
+2. Expand each level to load its children from the server:
+   - PostgreSQL: Connection, then databases, schemas, tables and views, and columns.
+   - MySQL and MariaDB: Connection, then databases, tables and views, and columns.
+
+You can have multiple connections open at the same time. The bottom-left corner of the status bar shows how many connections are currently connected (for example, `2 connected`).
+
+In the tree:
+
+- A connected server has a green icon; a connection that failed or dropped has a red icon.
+- System databases and system schemas (such as `pg_catalog`, `information_schema`, `mysql`, `performance_schema`, and `sys`) are shown in muted text.
+- Tables show a table icon, and views show an eye icon.
+- Each column shows its server data type. Primary key columns are marked with a key icon.
+
+## Open a table or view
+
+To open a table or view in a tab, double-click it in the tree, select it and press `Enter`, or right-click it and choose **Open**. See [Table data](/docs/features/table-data).
+
+## Refresh, copy names, and disconnect
+
+- Reload a level: right-click a connection, database, schema, or table and choose **Refresh**. HooriDB reloads its children and clears previously loaded items below it.
+- Copy an object name: right-click any item in the tree and choose **Copy name** to copy its name to the clipboard.
+- Disconnect: right-click an open connection and choose **Disconnect**. If a console on that connection may hold uncommitted work, HooriDB asks before disconnecting.
+
+## When a connection or level fails
+
+If connecting or reading a level fails, an error row appears under that item in the tree, and a details box appears at the bottom of the Workspace sidebar.
+
+- Press **Try again** (or right-click the error row and choose **Try again**) to retry.
+- If the server refused your login, press **Enter password…** to type a different password.
