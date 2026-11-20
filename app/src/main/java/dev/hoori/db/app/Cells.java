@@ -66,6 +66,7 @@ final class Cells {
       case TIME -> DataType.TIME;
       case DATE_TIME, DATE_TIME_ZONED -> DataType.DATE_TIME;
       case BINARY -> DataType.BINARY;
+      case JSON -> DataType.JSON;
       case OTHER -> DataType.OTHER;
     };
   }
@@ -77,7 +78,7 @@ final class Cells {
       case INTEGER, DATE, TIME -> 5;
       case DECIMAL -> 6;
       case DATE_TIME, DATE_TIME_ZONED, BINARY -> 9;
-      case TEXT, OTHER -> 10;
+      case TEXT, JSON, OTHER -> 10;
     };
   }
 

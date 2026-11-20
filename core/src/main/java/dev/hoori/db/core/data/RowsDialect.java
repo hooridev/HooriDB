@@ -38,15 +38,17 @@ public abstract class RowsDialect {
 
   /**
    * Whether a page brings the table's columns as they are now with its rows, from a join to none of
-   * them, which {@link #same} then checks.
+   * them, which {@link #witnessed} then checks.
    */
   abstract boolean witness();
 
   /**
-   * Whether the witness's columns, after the {@code selected} expressions of the reads, are the
-   * given columns, by name and in order, each read the way its catalog type is read.
+   * The page's fields, the reads' own or of kind {@link Kind#JSON} where only the witness tells
+   * that, where the witness's columns, after the {@code selected} expressions of the reads, are the
+   * given columns, by name and in order, each read the way its catalog type is read; null where
+   * they are not.
    */
-  abstract boolean same(
+  abstract List<Field> witnessed(
       List<Column> columns, List<Rows.Read> reads, ResultSetMetaData metadata, int selected)
       throws SQLException;
 

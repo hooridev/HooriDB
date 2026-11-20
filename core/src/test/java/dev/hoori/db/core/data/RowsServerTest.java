@@ -222,8 +222,8 @@ class RowsServerTest {
                 "'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'",
                 Kind.OTHER,
                 "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"),
-            typed("json", "'{\"b\": 1,  \"a\": 2}'", Kind.OTHER, "{\"b\": 1,  \"a\": 2}"),
-            typed("jsonb", "'{\"b\": 1,  \"a\": 2}'", Kind.OTHER, "{\"a\": 2, \"b\": 1}"),
+            typed("json", "'{\"b\": 1,  \"a\": 2}'", Kind.JSON, "{\"b\": 1,  \"a\": 2}"),
+            typed("jsonb", "'{\"b\": 1,  \"a\": 2}'", Kind.JSON, "{\"a\": 2, \"b\": 1}"),
             typed("integer[]", "'{1,2,NULL}'", Kind.OTHER, "{1,2,NULL}"),
             typed("bit(4)", "B'1010'", Kind.OTHER, "1010"),
             typed("money", "12.5", Kind.OTHER, "$12.50"));
@@ -285,10 +285,10 @@ class RowsServerTest {
                 Kind.DATE_TIME_ZONED,
                 "0000-00-00 00:00:00")));
         if (provider == Provider.MYSQL) {
-          types.add(typed("json", "'{\"b\": 1,  \"a\": 2}'", Kind.OTHER, "{\"a\": 2, \"b\": 1}"));
+          types.add(typed("json", "'{\"b\": 1,  \"a\": 2}'", Kind.JSON, "{\"a\": 2, \"b\": 1}"));
         } else {
-          // MariaDB's json is longtext with a check.
-          types.add(typed("json", "'{\"b\": 1,  \"a\": 2}'", Kind.TEXT, "{\"b\": 1,  \"a\": 2}"));
+          // MariaDB's json is longtext with a check, which its driver tells apart with the rows.
+          types.add(typed("json", "'{\"b\": 1,  \"a\": 2}'", Kind.JSON, "{\"b\": 1,  \"a\": 2}"));
           types.add(typed(
               "uuid",
               "'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'",
@@ -388,6 +388,54 @@ class RowsServerTest {
         assertEquals(limit + 1, b.length());
       } finally {
         execute(connection, "DROP TABLE long_value");
+      }
+    }
+  }
+
+  /** JSON longer than a page holds, as each server writes it back. */
+  static final String LONG_JSON = "{\"items\": ["
+      + IntStream.range(0, 60)
+          .mapToObj(i -> "{\"n\": " + i + ", \"name\": \"item " + i + "\"}")
+          .collect(Collectors.joining(", "))
+      + "]}";
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aValueCutShortIsReadWholeByItsRowsKey(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE documents (id integer PRIMARY KEY, doc " + (pg ? "jsonb" : "json")
+              + ", hand " + (pg ? "text" : "longtext CHECK (json_valid(hand))") + ")"
+              + (pg ? "" : " DEFAULT CHARSET utf8mb4"),
+          "INSERT INTO documents VALUES (1, '" + LONG_JSON + "', '" + LONG_JSON + "'),"
+              + " (2, NULL, '[]')");
+      try {
+        var table = table(provider, "documents", Table.Kind.TABLE);
+        var columns = columns(connection, provider, table);
+        var page = Rows.read(connection, provider, table, columns, 0, 10);
+        // MariaDB's driver takes a longtext that json_valid() checks for its json, which is one.
+        assertEquals(
+            List.of(Kind.INTEGER, Kind.JSON, provider == Provider.MARIADB ? Kind.JSON : Kind.TEXT),
+            page.fields().stream().map(Field::kind).toList());
+        var first = page.rows().getFirst();
+        assertInstanceOf(Cut.class, first.get(1));
+        assertEquals(LONG_JSON, Rows.whole(connection, provider, table, columns, first, 1));
+        assertEquals(LONG_JSON, Rows.whole(connection, provider, table, columns, first, 2));
+        assertNull(Rows.whole(connection, provider, table, columns, page.rows().get(1), 1));
+        var keyless = columns.stream()
+            .map(c -> new Column(c.table(), c.name(), c.type(), c.nullable(), 0))
+            .toList();
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> Rows.whole(connection, provider, table, keyless, first, 1));
+        execute(connection, "DELETE FROM documents WHERE id = 1");
+        var gone = assertThrows(
+            QueryException.class, () -> Rows.whole(connection, provider, table, columns, first, 1));
+        assertEquals(Failure.NOT_FOUND, gone.failure());
+      } finally {
+        execute(connection, "DROP TABLE documents");
       }
     }
   }

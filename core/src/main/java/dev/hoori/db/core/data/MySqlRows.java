@@ -31,11 +31,6 @@ public final class MySqlRows extends MySqlFamilyRows {
     return true;
   }
 
-  @Override
-  String json() {
-    return "json";
-  }
-
   private static String ascii(ResultSet rows, int index) throws SQLException {
     var bytes = rows.getBytes(index);
     return bytes == null ? null : new String(bytes, StandardCharsets.US_ASCII);

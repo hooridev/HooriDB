@@ -37,6 +37,7 @@
     <rethinkj-ui-fonts.version>0.1.0-SNAPSHOT</rethinkj-ui-fonts.version>
     <rethinkj-ui-icons.version>0.1.0-SNAPSHOT</rethinkj-ui-icons.version>
     <rethinkj-ui-sql.version>0.1.0-SNAPSHOT</rethinkj-ui-sql.version>
+    <rethinkj-ui-json.version>0.1.0-SNAPSHOT</rethinkj-ui-json.version>
     <rethinkj-ui-natives-linux-x64.version>0.1.0-SNAPSHOT</rethinkj-ui-natives-linux-x64.version>
     <rethinkj-ui-natives-windows-x64.version>0.1.0-SNAPSHOT</rethinkj-ui-natives-windows-x64.version>
     <rethinkj-updater-core.version>0.1.0-SNAPSHOT</rethinkj-updater-core.version>
@@ -99,6 +100,11 @@
         <groupId>com.rethinkj.ui</groupId>
         <artifactId>rethinkj-ui-sql</artifactId>
         <version>${rethinkj-ui-sql.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.rethinkj.ui</groupId>
+        <artifactId>rethinkj-ui-json</artifactId>
+        <version>${rethinkj-ui-json.version}</version>
       </dependency>
       <dependency>
         <groupId>com.rethinkj.ui</groupId>

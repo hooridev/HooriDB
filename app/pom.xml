@@ -40,6 +40,11 @@
       <groupId>com.rethinkj.ui</groupId>
       <artifactId>rethinkj-ui-sql</artifactId>
     </dependency>
+    <!-- The value panel's JSON highlighter and formatter. -->
+    <dependency>
+      <groupId>com.rethinkj.ui</groupId>
+      <artifactId>rethinkj-ui-json</artifactId>
+    </dependency>
     <!-- The default fonts and the icon font hold no classes. -->
     <dependency>
       <groupId>com.rethinkj.ui</groupId>
