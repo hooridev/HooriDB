@@ -244,11 +244,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
       case Double number -> statement.setDouble(index, number);
       case Boolean truth -> statement.setBoolean(index, truth);
       case Binary binary -> statement.setBytes(index, binary.bytes());
-      case OffsetDateTime moment ->
-        statement.setBigDecimal(
-            index,
-            BigDecimal.valueOf(moment.toEpochSecond())
-                .add(BigDecimal.valueOf(moment.getNano(), 9)));
+      case OffsetDateTime moment -> statement.setBigDecimal(index, seconds(moment));
       default -> statement.setString(index, Rows.text(value, false));
     }
   }
@@ -272,19 +268,34 @@ abstract class MySqlFamilyRows extends RowsDialect {
 
   // A moment as the seconds since 1970, as UNIX_TIMESTAMP() reads it: the server takes a text of a
   // timestamp in the session's zone, and the session must keep it, which a DATETIME's DEFAULT
-  // CURRENT_TIMESTAMP is written in.
-  // shortcut: in the hour that a session's zone with daylight saving repeats, FROM_UNIXTIME()'s
-  // time
-  // may be taken for the other moment; compare UNIX_TIMESTAMP() of the column if users meet it.
+  // CURRENT_TIMESTAMP is written in. FROM_UNIXTIME() gives the time in that zone, which in an
+  // hour that the zone repeats can be the other moment's, as changeable() asks.
   @Override
   String parameter(Object value) {
     return value instanceof OffsetDateTime ? "FROM_UNIXTIME(?)" : "?";
   }
 
   // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails
-  // the statement that names it.
+  // the statement that names it. A moment must come back as itself from the session's time.
   @Override
-  boolean changeable(Connection connection, Provider provider, Table table) throws QueryException {
+  boolean changeable(Connection connection, Provider provider, Table table, List<Object> values)
+      throws QueryException {
+    for (var value : values) {
+      if (value instanceof OffsetDateTime moment) {
+        var seconds = seconds(moment);
+        var back = Query.run(
+            connection, provider, "SELECT UNIX_TIMESTAMP(FROM_UNIXTIME(?))", statement -> {
+              statement.setBigDecimal(1, seconds);
+              try (var rows = statement.executeQuery()) {
+                rows.next();
+                return rows.getBigDecimal(1);
+              }
+            });
+        if (back == null || back.compareTo(seconds) != 0) {
+          return false;
+        }
+      }
+    }
     var sql = "SELECT e.TRANSACTIONS FROM information_schema.TABLES t"
         + " JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE"
         + " WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?";
@@ -295,6 +306,10 @@ abstract class MySqlFamilyRows extends RowsDialect {
         return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
       }
     });
+  }
+
+  private static BigDecimal seconds(OffsetDateTime moment) {
+    return BigDecimal.valueOf(moment.toEpochSecond()).add(BigDecimal.valueOf(moment.getNano(), 9));
   }
 
   private static String bit(ResultSet rows, int index) throws SQLException {

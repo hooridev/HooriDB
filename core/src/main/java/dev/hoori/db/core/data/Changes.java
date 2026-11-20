@@ -42,9 +42,9 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   /**
    * @throws IllegalArgumentException if no column is in a primary key, a column is not the
    *     table's, or a change does not fit the columns: a row with a value for another number of
-   *     columns, a column that is none of them, an update without values or of a column of the
-   *     primary key, a key without a value, or a value read only in part, a {@link Cut} or a
-   *     {@link Binary#cut} one, which can neither be written nor name a row
+   *     columns, a column that is none of them, an update without values, a key without a value,
+   *     or a value read only in part, a {@link Cut} or a {@link Binary#cut} one, which can neither
+   *     be written nor name a row
    */
   public Changes {
     columns = List.copyOf(columns);
@@ -64,10 +64,6 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
           requireValues(columns, update.values());
           if (update.values().isEmpty()) {
             throw new IllegalArgumentException("An update without values");
-          }
-          // A later change could name its row by a key that one moved there.
-          if (update.values().keySet().stream().anyMatch(keys(columns)::contains)) {
-            throw new IllegalArgumentException("A column of the primary key cannot be changed");
           }
         }
         case Change.Insert insert -> requireValues(columns, insert.values());
@@ -93,7 +89,6 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
    * it has none. The value that was read takes the cell's change back, and the update's where it
    * was its last.
    *
-   * @throws IllegalArgumentException if the column is one of the primary key
    * @throws IllegalStateException if the row is to be deleted
    */
   public Changes edit(List<Object> row, int column, Object value) {
@@ -198,7 +193,8 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
    * each in the order they were made, so that a new row can take the key of a row deleted. An
    * {@code UPDATE} sets the columns given new values and a new row's {@code INSERT} the columns
    * given values, and one without any the first column to its default. An {@code UPDATE} and a
-   * {@code DELETE} name their row by the values of its primary key.
+   * {@code DELETE} name their row by the values its primary key had when it was read, so that an
+   * update can give the key new values.
    *
    * @throws IllegalArgumentException if a value is of no kind's type
    */
@@ -209,10 +205,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       for (var change : changes) {
         if (kind.isInstance(change)) {
           var values = new ArrayList<Object>();
-          var sql = sql(provider, change, dialect.equal(), value -> {
-            values.add(value);
-            return dialect.parameter(value);
-          });
+          var sql = sql(provider, change, dialect.equal(), parameters(dialect, values));
           var preview = sql(provider, change, "=", dialect::literal);
           statements.add(new Statement(change, sql, values, preview));
         }
@@ -237,14 +230,19 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     /**
      * Nothing was written: the changes of the table could not be all or nothing, each meeting the
      * row its key names, as its storage engine, such as MyISAM, keeps no transactions, or on
-     * PostgreSQL other tables inherit from it, whose rows may repeat its keys.
+     * PostgreSQL other tables inherit from it, whose rows may repeat its keys; or on MariaDB and
+     * MySQL a moment falls into an hour that the session's zone repeats, which the server takes
+     * for another moment.
      */
     record Refused() implements Outcome {}
   }
 
   /**
-   * Writes the changes in a transaction of their own, all or nothing: the {@link #statements} run
-   * one after another, and where one meets not exactly one row, or fails, all are rolled back. The
+   * Writes the changes in a transaction of their own, all or nothing: first each row that an update
+   * or deletion names is locked and must be there, once, so that no statement meets a row that an
+   * earlier one moved to its key, as an update of a key or of what a generated key or a trigger
+   * takes it from can; then the {@link #statements} run one after another. Where a row is not
+   * there once, or a statement meets not exactly one row, or fails, all are rolled back. The
    * connection must have auto-commit on and no transaction open, as one that only reads the table
    * has, and is left so; nothing else may run on it meanwhile.
    *
@@ -275,8 +273,17 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       throw new IllegalStateException("A transaction is open on the connection");
     }
     var dialect = provider.dialect().rows();
-    if (!dialect.changeable(connection, provider, table)) {
+    var values = statements.stream().flatMap(s -> s.values().stream()).toList();
+    if (!dialect.changeable(connection, provider, table, values)) {
       return new Outcome.Refused();
+    }
+    var locks = new ArrayList<Statement>();
+    for (var statement : statements) {
+      switch (statement.change()) {
+        case Change.Update update -> locks.add(lock(provider, update, update.row()));
+        case Change.Delete delete -> locks.add(lock(provider, delete, delete.row()));
+        case Change.Insert insert -> {}
+      }
     }
     Outcome outcome = new Outcome.Committed();
     try {
@@ -284,12 +291,25 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
         connection.setAutoCommit(false);
         return null;
       });
-      for (var statement : statements) {
+      var all = new ArrayList<>(locks);
+      all.addAll(statements);
+      for (var i = 0; i < all.size(); i++) {
+        var statement = all.get(i);
+        var lock = i < locks.size();
         var rows = Query.run(connection, provider, statement.sql(), prepared -> {
-          for (var i = 0; i < statement.values().size(); i++) {
-            dialect.bind(prepared, i + 1, statement.values().get(i));
+          for (var v = 0; v < statement.values().size(); v++) {
+            dialect.bind(prepared, v + 1, statement.values().get(v));
           }
-          return prepared.executeLargeUpdate();
+          if (!lock) {
+            return prepared.executeLargeUpdate();
+          }
+          var read = 0L;
+          try (var result = prepared.executeQuery()) {
+            while (result.next()) {
+              read++;
+            }
+          }
+          return read;
         });
         if (rows != 1) {
           outcome = new Outcome.Missed(statement.change(), rows);
@@ -310,11 +330,12 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
 
   // Ends the transaction within a bound, an interrupt or not: commits or rolls back, and turns
   // auto-commit on again. A connection that cannot be left as it was found is aborted, which has
-  // the server roll back what it did not commit; nothing after a commit fails what was committed,
-  // and nothing begins once the connection is given up for the bound.
+  // the server roll back what it did not commit; nothing after the commit or rollback fails what it
+  // did, and nothing begins once the connection is given up for the bound.
   private static void end(Connection connection, Provider provider, boolean commit)
       throws QueryException {
-    var committed = new AtomicBoolean();
+    // Whether the transaction ended as it was to, committed or rolled back.
+    var ended = new AtomicBoolean();
     var givenUp = new AtomicBoolean();
     try {
       Query.within(
@@ -332,14 +353,15 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
                   throw new SQLException("Given up before the commit", "08006");
                 }
                 connection.commit();
-                committed.set(true);
+                ended.set(true);
               } catch (SQLException e) {
                 failed = e;
               }
             }
-            if (!committed.get()) {
+            if (!ended.get()) {
               try {
                 connection.rollback();
+                ended.set(!commit);
               } catch (SQLException e) {
                 // pgjdbc would commit as auto-commit is turned on.
                 abort(connection);
@@ -362,7 +384,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
           },
           () -> givenUp.set(true));
     } catch (QueryException e) {
-      if (!committed.get()) {
+      if (!ended.get()) {
         throw e;
       }
     }
@@ -401,6 +423,23 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
         });
         yield "INSERT INTO " + table + " (" + names + ") VALUES (" + values + ")";
       }
+    };
+  }
+
+  // The statement that locks the change's row, named by its key, and reads it.
+  private Statement lock(Provider provider, Change change, List<Object> row) {
+    var dialect = provider.dialect().rows();
+    var values = new ArrayList<Object>();
+    var sql = "SELECT 1 FROM " + Rows.qualified(provider, table)
+        + where(provider, row, dialect.equal(), parameters(dialect, values)) + " FOR UPDATE";
+    return new Statement(change, sql, values, sql);
+  }
+
+  // A parameter for each value, which goes into the values.
+  private static Function<Object, String> parameters(RowsDialect dialect, List<Object> values) {
+    return value -> {
+      values.add(value);
+      return dialect.parameter(value);
     };
   }
 

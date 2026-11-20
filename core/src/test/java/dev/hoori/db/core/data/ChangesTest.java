@@ -49,7 +49,6 @@ class ChangesTest {
     assertEquals(new Change.Update(ROW, values(2, "new")), back.changes().getFirst());
     assertEquals(List.of(edited.changes().get(1)), back.edit(ROW, 2, "old").changes());
     assertSame(none, none.edit(ROW, 2, "old"));
-    assertThrows(IllegalArgumentException.class, () -> none.edit(ROW, 0, 5L));
   }
 
   @Test

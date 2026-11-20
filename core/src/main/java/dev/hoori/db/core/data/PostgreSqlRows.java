@@ -249,7 +249,8 @@ public final class PostgreSqlRows extends RowsDialect {
   // An UPDATE or DELETE of a table that others inherit from meets their rows too, whose keys may
   // be its own; a partitioned table's keys are unique across its partitions.
   @Override
-  boolean changeable(Connection connection, Provider provider, Table table) throws QueryException {
+  boolean changeable(Connection connection, Provider provider, Table table, List<Object> values)
+      throws QueryException {
     var sql = "SELECT c.relhassubclass AND c.relkind OPERATOR(pg_catalog.=) 'r'"
         + " FROM pg_catalog.pg_class c"
         + " WHERE c.oid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(?)";

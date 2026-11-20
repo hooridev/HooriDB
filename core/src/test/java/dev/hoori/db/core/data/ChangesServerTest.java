@@ -9,6 +9,7 @@ import static dev.hoori.db.core.data.RowsServerTest.types;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.catalog.Database;
@@ -83,6 +84,7 @@ class ChangesServerTest {
             .orElseThrow()
             .edit(read.get(0), 3, "new")
             .edit(read.get(0), 4, null)
+            .edit(read.get(1), 0, 4L) // a new key
             .delete(read.get(2))
             .insert(values(0, 3L, 1, "z", 2, T3, 3, null));
         assertEquals(new Changes.Outcome.Committed(), changes.write(connection, provider));
@@ -90,7 +92,7 @@ class ChangesServerTest {
         assertEquals(
             List.of(
                 row(1L, "x", T1, "new", null),
-                row(2L, "x", T2, "kept", 9L),
+                row(4L, "x", T2, "kept", 9L),
                 row(3L, "z", T3, null, null)),
             Rows.read(connection, provider, table, columns, 0, 10).rows());
         assertLeftAsItWas(connection, provider);
@@ -186,6 +188,78 @@ class ChangesServerTest {
         assertThrows(QueryException.class, () -> taken.write(connection, provider));
         assertEquals(left, rows(provider, table));
         assertLeftAsItWas(connection, provider);
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
+      }
+    }
+  }
+
+  // Without the rows locked first, the second update would meet the first row, moved to its key.
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aRowMovedToTheKeyOfARowGoneIsNotChangedForIt(Provider provider) throws Exception {
+    var name = unique("changes_moved");
+    var table = table(provider, name, Table.Kind.TABLE);
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name) + " (id integer PRIMARY KEY, v varchar(20))",
+          "INSERT INTO " + qualified(provider, name) + " VALUES (1, 'one'), (2, 'two')");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        try (var other = open(provider)) {
+          execute(other, "DELETE FROM " + qualified(provider, name) + " WHERE id = 2");
+        }
+        var changes = Changes.of(table, columns)
+            .orElseThrow()
+            .edit(read.get(0), 0, 2L)
+            .edit(read.get(1), 1, "meant for two");
+        assertEquals(
+            new Changes.Outcome.Missed(changes.changes().get(1), 0),
+            changes.write(connection, provider));
+        assertEquals(List.of(row(1L, "one")), rows(provider, table));
+        assertLeftAsItWas(connection, provider);
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
+      }
+    }
+  }
+
+  // 02:30 in Berlin comes twice as the clocks go back: MySQL takes it for one of the two moments,
+  // while MariaDB keeps a timestamp as the moment it is.
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aMomentTheSessionTakesForAnotherIsNotWritten(Provider provider) throws Exception {
+    var name = unique("changes_twice");
+    var table = table(provider, name, Table.Kind.TABLE);
+    try (var connection = open(provider)) {
+      try {
+        execute(connection, "SET SESSION time_zone = 'Europe/Berlin'");
+      } catch (SQLException e) {
+        assumeTrue(false, "The server has no named time zones");
+      }
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name)
+              + " (id integer PRIMARY KEY, t timestamp NULL)");
+      try {
+        var columns = columns(connection, provider, table);
+        var summer = OffsetDateTime.of(2024, 10, 27, 0, 30, 0, 0, ZoneOffset.UTC);
+        var changes = Changes.of(table, columns)
+            .orElseThrow()
+            .insert(values(0, 1L, 1, summer))
+            .insert(values(0, 2L, 1, summer.plusHours(1)));
+        if (provider == Provider.MYSQL) {
+          assertEquals(new Changes.Outcome.Refused(), changes.write(connection, provider));
+          assertEquals(List.of(), rows(provider, table));
+        } else {
+          assertEquals(new Changes.Outcome.Committed(), changes.write(connection, provider));
+          assertEquals(
+              List.of(row(1L, summer), row(2L, summer.plusHours(1))), rows(provider, table));
+        }
       } finally {
         dropAfter(provider, "DROP TABLE " + qualified(provider, name));
       }
@@ -401,17 +475,9 @@ class ChangesServerTest {
     }
   }
 
-  // The write connection has auto-commit on, no transaction open, and on MariaDB and MySQL the
-  // session's own zone.
+  // The write connection has auto-commit on and no transaction open.
   private static void assertLeftAsItWas(Connection connection, Provider provider) throws Exception {
     assertEquals(new Status(Transaction.NONE, true), Status.of(connection, provider));
-    if (provider != Provider.POSTGRESQL) {
-      try (var statement = connection.createStatement();
-          var rows = statement.executeQuery("SELECT @@session.time_zone")) {
-        rows.next();
-        assertEquals("+05:00", rows.getString(1));
-      }
-    }
   }
 
   // The table's rows as another connection reads them.

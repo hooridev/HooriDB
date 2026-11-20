@@ -89,10 +89,12 @@ public abstract class RowsDialect {
   abstract String parameter(Object value);
 
   /**
-   * Whether changes of the table's rows can be all or nothing, each meeting the row its key names:
-   * not where a rollback would not undo them, or where the table's statements also meet rows of
-   * other tables, which may repeat its keys.
+   * Whether changes of the table's rows, with the values bound, can be all or nothing, each meeting
+   * the row its key names: not where a rollback would not undo them, where the table's statements
+   * also meet rows of other tables, which may repeat its keys, or where the server takes a value
+   * for another one.
    */
-  abstract boolean changeable(Connection connection, Provider provider, Table table)
+  abstract boolean changeable(
+      Connection connection, Provider provider, Table table, List<Object> values)
       throws QueryException;
 }
