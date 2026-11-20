@@ -742,7 +742,6 @@ final class TableTab implements Tab {
     int bottom = selection.lastRowInView();
     boolean back = top > 0;
     boolean on = bottom >= 0 && bottom < gridRows() - 1;
-    // The handlers read the rows in view anew: the label may be behind by the rows built around.
     return row()
         .gap(t.space().xs())
         .align(Style.Align.CENTER)
@@ -880,7 +879,9 @@ final class TableTab implements Tab {
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
         .contextMenu(
             menu, List.of(Menu.item("Refresh", () -> open(s, true)).icon(Symbol.ARROW_CLOCKWISE)))
-        .loading(this::loaded, (first, last) -> want(s, first, last));
+        .loading(this::loaded, (first, last) -> want(s, first, last))
+        // Nothing to do: the build it causes brings the footer's rows in view along.
+        .onRowsInView((first, last) -> {});
     return DataGrid.dataGrid(shown, gridRows(), options)
         .key("grid")
         .label("Rows of " + table.name())

@@ -45,6 +45,11 @@ public record Workspace(List<Workspace.Entry> entries) {
       Objects.requireNonNull(name, "name");
       entries = List.copyOf(entries);
     }
+
+    /** The connections it holds, its folders' too, from the top down. */
+    public List<ConnectionProfile> connections() {
+      return Workspace.connections(entries);
+    }
   }
 
   /**
@@ -60,6 +65,10 @@ public record Workspace(List<Workspace.Entry> entries) {
 
   /** The connections from the top of the tree down: a folder's after the entries before it. */
   public List<ConnectionProfile> connections() {
+    return connections(entries);
+  }
+
+  private static List<ConnectionProfile> connections(List<Entry> entries) {
     return all(entries)
         .filter(ConnectionProfile.class::isInstance)
         .map(ConnectionProfile.class::cast)

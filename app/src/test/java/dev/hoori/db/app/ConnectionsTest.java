@@ -22,6 +22,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -41,6 +42,7 @@ class ConnectionsTest {
   static final class Secrets implements SecretStore {
     final Map<UUID, String> stored = new ConcurrentHashMap<>();
     volatile boolean fails;
+    final Set<UUID> refused = ConcurrentHashMap.newKeySet(); // their deletes fail
     volatile CountDownLatch gate;
     volatile CountDownLatch late; // holds the next call alone, which ignores its interrupt
     final List<char[]> given =
@@ -66,6 +68,9 @@ class ConnectionsTest {
     @Override
     public void delete(UUID key) throws IOException {
       check();
+      if (refused.contains(key)) {
+        throw new IOException("The keyring refused to delete it");
+      }
       stored.remove(key);
     }
 

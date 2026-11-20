@@ -1,13 +1,22 @@
 package dev.hoori.db.app;
 
 import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
+import static dev.hoori.db.app.CatalogTreeTest.LEGACY;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
 import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.CatalogTreeTest.rows;
+import static dev.hoori.db.app.ConnectionsTest.PASSWORD;
 import static dev.hoori.db.app.ConnectionsTest.line;
+import static dev.hoori.db.app.ConsoleHistoryTest.SAVED;
+import static dev.hoori.db.app.ConsoleTest.COUNT;
+import static dev.hoori.db.app.ConsoleTest.PAY;
+import static dev.hoori.db.app.ConsoleTest.RUN;
+import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.ConsoleTransactionTest.MANUAL;
+import static dev.hoori.db.app.ConsoleTransactionTest.OPENED;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -18,12 +27,14 @@ import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
+import dev.hoori.db.core.execution.Transaction;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Pattern;
+import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,17 +48,19 @@ class FoldersTest {
   @TempDir
   Path dir;
 
-  final CatalogTreeTest c = new CatalogTreeTest();
+  final ConsoleTest k = new ConsoleTest();
+  CatalogTreeTest c;
 
   @BeforeEach
   void setUp() throws Exception {
-    c.dir = dir;
-    c.setUp();
+    k.dir = dir;
+    k.setUp();
+    c = k.c;
   }
 
   @AfterEach
   void tearDown() throws Exception {
-    c.tearDown();
+    k.tearDown();
   }
 
   static Workspace.Folder folder(String name, boolean open, Workspace.Entry... entries) {
@@ -82,22 +95,22 @@ class FoldersTest {
         + "key Enter\n" + SHOWN;
   }
 
-  private static final Pattern RECT =
-      Pattern.compile("(-?[\\d.]+),(-?[\\d.]+) ([\\d.]+)x([\\d.]+)");
-
-  /** A point in the row of the label, at the fraction of its height from its top. */
-  static String at(String tree, String label, double down) {
-    var row = line(tree, "role=treeitem label=\"" + label + "\"");
-    var m = RECT.matcher(row.substring(row.indexOf("label=\"" + label + "\"")));
-    if (!m.find()) {
-      throw new AssertionError("No place in " + row);
-    }
-    double x = Double.parseDouble(m.group(1)) + Double.parseDouble(m.group(3)) / 2;
-    double y = Double.parseDouble(m.group(2)) + Double.parseDouble(m.group(4)) * down;
-    return Math.round(x) + "," + Math.round(y);
+  /** The row of the label, where a drag's middle means into it. */
+  static String into(String label) {
+    return "role=treeitem label=\"" + label + "\"";
   }
 
-  /** Drags the row onto the point, a step at a time, with the image of it held there. */
+  /** The top of the row of the label, where a drag means before it. */
+  static String before(String label) {
+    return into(label) + " at top+2";
+  }
+
+  /** The bottom of the row of the label, where a drag means after it. */
+  static String after(String label) {
+    return into(label) + " at bottom-2";
+  }
+
+  /** Drags the row onto the target, a step at a time, with the image of it held there. */
   static String drag(String row, String to, String snap) {
     return "down role=treeitem label=\"" + row + "\"\nframe\nmove " + to + "\nframe\nmove " + to
         + "\nframe\nsnap " + snap + "\nup " + to + "\nframe\nawait\nframe\n";
@@ -203,18 +216,14 @@ class FoldersTest {
     var team = folder("team", true, INVENTORY);
     var empty = folder("empty", true);
     var app = c.app(new Workspace(List.of(SHOP, team, empty)));
-    c.run(app, START + "snap start\n");
-    var start = c.tree("start");
-    c.run(app, drag("shop-prod", at(start, "empty", 0.5), "into") + "snap intoEnd\n");
+    c.run(app, START + drag("shop-prod", into("empty"), "into") + "snap intoEnd\n");
     var into = c.tree("into");
     assertTrue(line(into, "label=\"shop-prod\"").contains("grabbed"), into);
     assertTrue(into.contains("#marker"), into);
     assertEquals(List.of("team", "  inventory", "empty", "  shop-prod"), rows(c.tree("intoEnd")));
-    var placed = c.tree("intoEnd");
-    c.run(app, drag("empty", at(placed, "team", 0.1), "before") + "snap beforeEnd\n");
+    c.run(app, drag("empty", before("team"), "before") + "snap beforeEnd\n");
     assertEquals(List.of("empty", "  shop-prod", "team", "  inventory"), rows(c.tree("beforeEnd")));
-    var before = c.tree("beforeEnd");
-    c.run(app, drag("inventory", at(before, "shop-prod", 0.9), "after") + "snap afterEnd\n");
+    c.run(app, drag("inventory", after("shop-prod"), "after") + "snap afterEnd\n");
     assertEquals(List.of("empty", "  shop-prod", "  inventory", "team"), rows(c.tree("afterEnd")));
     assertTrue(line(c.tree("afterEnd"), "label=\"inventory\"").contains("selected"));
     assertEquals(
@@ -250,8 +259,8 @@ class FoldersTest {
     assertEquals(2, app.state().tabs.main().tabs().size(), moved);
     c.run(
         app,
-        drag("shop", at(moved, "team", 0.1), "database") + "snap stays\n"
-            + drag("shop-prod", at(moved, "team", 0.1), "dragged") + SETTLE + "snap back\n");
+        drag("shop", before("team"), "database") + "snap stays\n"
+            + drag("shop-prod", before("team"), "dragged") + SETTLE + "snap back\n");
     assertFalse(line(c.tree("database"), "label=\"shop\"").contains("grabbed"));
     assertEquals(rows(moved), rows(c.tree("stays")));
     var back = c.tree("back");
@@ -278,6 +287,144 @@ class FoldersTest {
     assertFalse(line(c.tree("top"), "label=\"New folder…\"").endsWith("disabled"));
   }
 
+  static final String DELETE_CONTENTS = "press role=button label=\"Delete contents\"\nframe\n";
+
+  /**
+   * Delete contents takes every connection in the folder and its folders, each with its password,
+   * its consoles and its history, and then the folder; what is outside stays.
+   */
+  @Test
+  void deleteContentsTakesEveryConnectionAndThenTheFolder() throws Exception {
+    var sub = folder("sub", true, INVENTORY);
+    var prod = folder("prod", true, SHOP, sub);
+    var app = c.app(new Workspace(List.of(prod, LEGACY)));
+    for (var p : List.of(SHOP, INVENTORY, LEGACY)) {
+      c.secrets.stored.put(p.id(), PASSWORD);
+    }
+    c.ready(app, SHOP);
+    c.run(app, START + menu("shop-prod", "New console") + SETTLE + type(COUNT) + RUN + SAVED);
+    assertEquals(1, app.state().history.size());
+    c.run(app, menu("prod", "Delete…") + "snap asked\n" + DELETE_CONTENTS + SETTLE + "snap end\n");
+    var asked = c.tree("asked");
+    assertTrue(line(asked, "role=dialog").contains("label=\"Delete folder\""), asked);
+    assertTrue(asked.contains("It holds 2 connections, its folders included."), asked);
+    assertTrue(asked.contains("label=\"Delete contents\""), asked);
+    var end = c.tree("end");
+    assertFalse(end.contains("role=dialog"), end);
+    assertEquals(List.of("legacy"), rows(end));
+    assertEquals(Set.of(LEGACY.id()), c.secrets.stored.keySet());
+    assertEquals(List.of(), app.state().consoles(null));
+    assertEquals(List.of(), app.state().history);
+    assertEquals(new Workspace(List.of(LEGACY)), saved());
+  }
+
+  /**
+   * A connection whose password could not be deleted stays, and its folders with it; the next one
+   * is still deleted.
+   */
+  @Test
+  void aConnectionThatCouldNotBeDeletedStaysWithItsFolder() throws Exception {
+    var sub = folder("sub", true, INVENTORY);
+    var prod = folder("prod", true, SHOP, sub);
+    var app = c.app(new Workspace(List.of(prod)));
+    c.secrets.stored.put(SHOP.id(), PASSWORD);
+    c.secrets.stored.put(INVENTORY.id(), PASSWORD);
+    c.secrets.refused.add(SHOP.id()); // the first one
+    c.run(app, START + menu("prod", "Delete…") + DELETE_CONTENTS + SETTLE + "snap kept\n");
+    var kept = c.tree("kept");
+    assertTrue(line(kept, "role=dialog").contains("label=\"Delete folder\""), kept);
+    assertTrue(kept.contains("Not all connections were deleted"), kept);
+    assertTrue(kept.contains("These stayed, and the folder with them: shop-prod."), kept);
+    assertTrue(kept.contains("It holds 1 connection, its folders included."), kept);
+    assertEquals(List.of("prod", "  shop-prod", "  sub"), rows(kept));
+    assertEquals(Set.of(SHOP.id()), c.secrets.stored.keySet());
+    assertEquals(
+        new Workspace(List.of(new Workspace.Folder(
+            prod.id(),
+            "prod",
+            true,
+            List.of(SHOP, new Workspace.Folder(sub.id(), "sub", true, List.of()))))),
+        saved());
+  }
+
+  /** A keyring that does not answer is given up with Cancel: what was not deleted yet stays. */
+  @Test
+  void aKeyringThatDoesNotAnswerIsGivenUp() throws Exception {
+    var prod = folder("prod", true, SHOP, INVENTORY);
+    var app = c.app(new Workspace(List.of(prod)));
+    c.secrets.stored.put(SHOP.id(), PASSWORD);
+    c.run(app, START);
+    c.secrets.gate = new CountDownLatch(1);
+    c.run(
+        app,
+        menu("prod", "Delete…") + DELETE_CONTENTS + "snap waiting\nadvance 6\nframe\nframe\n"
+            + "snap slow\npress role=button label=\"Cancel\"\nframe\nsnap given\n");
+    var waiting = c.tree("waiting");
+    assertTrue(line(waiting, "label=\"Delete contents\"").contains("busy"), waiting);
+    assertTrue(line(waiting, "label=\"Cancel\"").endsWith("disabled"), waiting);
+    assertTrue(line(waiting, "label=\"Move contents up\"").endsWith("disabled"), waiting);
+    var slow = c.tree("slow");
+    assertTrue(slow.contains("The system keyring does not answer"), slow);
+    assertFalse(line(slow, "label=\"Cancel\"").endsWith("disabled"), slow);
+    var given = c.tree("given");
+    assertTrue(
+        given.contains("These stayed, and the folder with them: shop-prod, inventory."), given);
+    c.secrets.gate.countDown();
+    c.run(app, SETTLE + "snap after\n");
+    assertEquals(List.of("prod", "  shop-prod", "  inventory"), rows(c.tree("after")));
+    assertEquals(new Workspace(List.of(prod)), saved());
+  }
+
+  /**
+   * Consoles that may hold a transaction ask first, one after another, before anything is
+   * deleted; Cancel in one of them keeps everything.
+   */
+  @Test
+  void openTransactionsAskBeforeAnythingIsDeleted() throws Exception {
+    var prod = folder("prod", true, SHOP, INVENTORY);
+    var app = c.app(new Workspace(List.of(prod)));
+    c.secrets.stored.put(SHOP.id(), PASSWORD);
+    c.secrets.stored.put(INVENTORY.id(), PASSWORD);
+    c.ready(app, SHOP, INVENTORY);
+    c.run(
+        app,
+        START
+            + menu("shop-prod", "New console")
+            + SETTLE
+            + MANUAL
+            + type(PAY)
+            + RUN
+            + menu("inventory", "New console")
+            + SETTLE
+            + MANUAL
+            + type(PAY)
+            + RUN);
+    var consoles = app.state().consoles(null);
+    assertEquals(2, consoles.size());
+    consoles.forEach(x -> assertEquals(Transaction.OPEN, x.transaction));
+    c.run(
+        app,
+        menu("prod", "Delete…") + DELETE_CONTENTS + OPENED + "snap first\n"
+            + "press #answer-cancel\nframe\n" + OPENED + SETTLE + "snap cancelled\n");
+    assertTrue(c.tree("first").contains("before prod is deleted."), c.tree("first"));
+    var cancelled = c.tree("cancelled");
+    assertTrue(line(cancelled, "role=dialog").contains("label=\"Delete folder\""), cancelled);
+    assertEquals(2, app.state().profiles.size());
+    c.run(
+        app,
+        DELETE_CONTENTS + OPENED + "press #answer-rollback\nframe\n" + OPENED + SETTLE
+            + "snap second\n");
+    assertTrue(c.tree("second").contains("before prod is deleted."), c.tree("second"));
+    assertEquals(2, app.state().profiles.size(), "nothing before the last answer");
+    assertEquals(2, c.secrets.stored.size());
+    c.run(app, "press #answer-rollback\nframe\n" + OPENED + SETTLE + "snap end\n");
+    assertFalse(c.tree("end").contains("role=dialog"), c.tree("end"));
+    assertEquals(List.of(), app.state().profiles);
+    assertEquals(List.of(), app.state().consoles(null));
+    assertEquals(Set.of(), c.secrets.stored.keySet());
+    assertEquals(Workspace.EMPTY, saved());
+  }
+
   /**
    * The pictures for a review, light and dark, into the folder that {@code -Dreview=<folder>}
    * names; skipped without it.
@@ -295,6 +442,7 @@ class FoldersTest {
         c.app(new Workspace(List.of(prod, folder("Staging", false), folder("Archive", true))));
     app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
     c.ready(app, shop);
+    c.secrets.refused.add(INVENTORY.id()); // what Delete contents cannot take at the end
     var close = "key Escape\n" + SHOWN;
     Script.run(
         START + open("shop-prod") + SETTLE + "press role=button label=\"Add\"\n" + SHOWN
@@ -305,14 +453,13 @@ class FoldersTest {
             + "\n" + close + close,
         app,
         out);
-    var tree = Files.readString(out.resolve("folders-move-" + look + ".tree.txt"));
     Script.run(
-        "down role=treeitem label=\"Staging\"\nframe\nmove " + at(tree, "Archive", 0.5)
-            + "\nframe\nmove " + at(tree, "Archive", 0.5) + "\nframe\nsnap folders-drag-into-"
-            + look + "\nmove " + at(tree, "EU", 0.1) + "\nframe\nmove " + at(tree, "EU", 0.1)
-            + "\nframe\nsnap folders-drag-before-" + look + "\nkey Escape\nup "
-            + at(tree, "EU", 0.1) + "\nframe\n" + menu("Production", "Delete…")
-            + "snap folders-delete-" + look + "\n",
+        "down " + into("Staging") + "\nframe\nmove " + into("Archive") + "\nframe\nmove "
+            + into("Archive") + "\nframe\nsnap folders-drag-into-" + look + "\nmove "
+            + before("EU") + "\nframe\nmove " + before("EU") + "\nframe\nsnap folders-drag-before-"
+            + look + "\nkey Escape\nup " + before("EU") + "\nframe\n"
+            + menu("Production", "Delete…") + "snap folders-delete-" + look + "\n"
+            + DELETE_CONTENTS + SETTLE + "snap folders-kept-" + look + "\n",
         app,
         out);
   }
