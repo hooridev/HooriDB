@@ -222,6 +222,11 @@ final class Suggestions {
       }
       return into;
     }
+    if (n > 0
+        && code.getLast().end() == before.length()
+        && code.getLast().kind() != Lexer.Kind.PUNCTUATION) {
+      return into; // the word goes on a name or a number, as total$ or 1.
+    }
     var known = new Known(s, provider);
     boolean dot = n > 0 && code.getLast().is(before, '.');
     if (dot && n >= 2 && is(before, code, n - 2, "db")) {

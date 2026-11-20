@@ -139,6 +139,9 @@ class DocumentConsoleTest {
     assertEquals(List.of(), offered(app, "db.orders.find() // db."));
     assertEquals(List.of(), offered(app, "db.orders.find({ note: /db."));
     assertEquals(List.of(), offered(app, "db.orders.find({ name: /Ada/i"));
+    // Nor where the word goes on a name or a number, as after a dollar or a point typed there.
+    assertEquals(List.of(), offered(app, "db.orders.find({ total$"));
+    assertEquals(List.of(), offered(app, "db.orders.find({ total: 1."));
     // After the string, the fields again.
     assertEquals("customer", offered(app, "db.orders.find({ note: 'db.', cu").getFirst());
   }
