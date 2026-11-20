@@ -298,6 +298,22 @@ class ConsoleTest {
     assertFalse(tab.text.contains(ORDERS), tab.text);
   }
 
+  /** The footer: Ready while the tree is connected, Not connected once it was disconnected. */
+  @Test
+  void theFooterSaysReadyOnAConnectedTreeAndNotConnectedAfterADisconnect() throws Exception {
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START + open("shop-prod") + SETTLE + menu(SHOP.name(), "New console") + SETTLE
+            + "snap ready\n");
+    String ready = c.tree("ready");
+    assertTrue(line(ready, "#run-status").contains("\"Ready\""), ready);
+    c.run(app, type(COUNT) + RUN + menu(SHOP.name(), "Disconnect") + SETTLE + "snap gone\n");
+    String gone = c.tree("gone");
+    assertTrue(line(gone, "#run-status").contains("\"Not connected\""), gone);
+  }
+
   /** Two consoles, the second with a result. */
   static final String TWO = menu(SHOP.name(), "New console") + SETTLE + type(COUNT) + RUN;
 

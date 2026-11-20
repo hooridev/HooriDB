@@ -88,7 +88,8 @@ final class Frame {
         .child(StatusBar.statusBar(
             Arrays.asList(connections(s), uncommitted(s)),
             s.message == null ? null : StatusBar.text(s.message).key("message"),
-            List.of(StatusBar.item(null, HooriDb.version(), about(s)).key("version"))));
+            List.of(StatusBar.item(null, HooriDb.version(), modal ? null : () -> s.about = true)
+                .key("version"))));
     // The window closes once what was begun has ended and the connections are written.
     Windows.Handle window = s.app == null ? null : s.app.windows().of(s.app);
     if (window != null) {
@@ -418,11 +419,6 @@ final class Frame {
         s::cancelDelete);
   }
 
-  /** Opens About, null while a dialog of the main window is open. */
-  private static Runnable about(State s) {
-    return mainDialog(s) ? null : () -> s.about = true;
-  }
-
   /** The connections the tree opened, each once; busy while one is on its way. */
   private static El connections(State s) {
     int connected = 0;
@@ -444,7 +440,8 @@ final class Frame {
   }
 
   /**
-   * The consoles where something may be at stake, as Exit asks about; pressing it shows the first.
+   * The consoles where something may be at stake, as Exit asks about; pressing it shows the first,
+   * but not while a question or confirmation is open in its window, whose tab it would switch.
    * Null while there are none.
    */
   private static El uncommitted(State s) {
@@ -453,11 +450,14 @@ final class Frame {
       return null;
     }
     int n = consoles.size();
+    var first = consoles.getFirst();
+    var group = s.tabs.groupOf(first);
+    boolean asking = question(s, group) != null || confirmation(s, group) != null;
     return StatusBar.item(
             Badge.Kind.WARNING,
             Symbol.LOCK_OPEN,
             n + (n == 1 ? " console may" : " consoles may") + " hold uncommitted work",
-            () -> consoles.getFirst().show(s))
+            asking ? null : () -> first.show(s))
         .key("uncommitted");
   }
 
@@ -547,7 +547,8 @@ final class Frame {
                     .shortcut(Key.CONTROL, "0"),
                 Menu.item("Tab content", close == null ? null : () -> focusContent(s, group))
                     .shortcut(Key.CONTROL, "1"))),
-        Menu.submenu("&Help", List.of(Menu.item("About HooriDB", about(s)))));
+        Menu.submenu(
+            "&Help", List.of(Menu.item("About HooriDB", free ? () -> s.about = true : null))));
   }
 
   /** Whether a dialog of the main window is open: its own, or one the catalog asks there. */

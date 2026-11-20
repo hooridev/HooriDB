@@ -175,10 +175,13 @@ class ConsoleTransactionTest {
   @Test
   void theStatusBarBringsAConsoleThatMayHoldUncommittedWorkForward() throws Exception {
     var app = open(SHOP);
-    c.run(app, menu(SHOP.name(), "New console") + "snap other\n");
+    c.run(app, menu(SHOP.name(), "New console") + MANUAL + type(PAY) + RUN + "snap other\n");
+    String other = c.tree("other");
     String first = "role=tab label=\"shop-prod: shop (1)\"";
-    assertFalse(line(c.tree("other"), first).contains("selected"), c.tree("other"));
-    c.run(app, "press #uncommitted\nframe\nadvance 1\nframe\nsnap shown\n");
+    assertFalse(line(other, first).contains("selected"), other);
+    String two = "2 consoles may hold uncommitted work";
+    assertTrue(line(other, "#uncommitted").contains("role=button label=\"" + two + "\""), other);
+    c.run(app, "press role=button label=\"" + two + "\"\nframe\nadvance 1\nframe\nsnap shown\n");
     assertTrue(line(c.tree("shown"), first).contains("selected"), c.tree("shown"));
   }
 

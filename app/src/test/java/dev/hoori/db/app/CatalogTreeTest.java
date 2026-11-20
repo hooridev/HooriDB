@@ -287,6 +287,8 @@ class CatalogTreeTest {
     String connecting = tree("connecting");
     assertTrue(row(connecting, "shop-prod").contains("role=progressbar label=\"Connecting\""));
     assertTrue(connecting.contains("\"Connecting…\""), connecting);
+    String bar = line(connecting, "#connected"); // the status bar's part
+    assertTrue(bar.contains("label=\"Connecting…\"") && bar.contains("value=\"busy\""), bar);
     held.countDown();
     run(app, SETTLE + "snap connected\n");
     var connected = tree("connected");
@@ -806,6 +808,24 @@ class CatalogTreeTest {
     assertEquals(
         "shop-prod",
         Files.readString(dir.resolve("out").resolve("connection.clipboard.txt")).strip());
+  }
+
+  /** The status bar counts the connections open, and turns while one more connects. */
+  @Test
+  void theStatusBarCountsTheConnectionsAndTurnsWhileOneConnects() throws Exception {
+    var app = app(SHOP, INVENTORY);
+    ready(app, SHOP, INVENTORY);
+    var held = servers.hold("open " + MARIA);
+    run(
+        app,
+        START + open("shop-prod") + SETTLE + open("inventory") + "frame\n".repeat(3)
+            + "snap one\n");
+    String one = line(tree("one"), "#connected");
+    assertTrue(one.contains("label=\"1 connected\"") && one.contains("value=\"busy\""), one);
+    held.countDown();
+    run(app, SETTLE + "snap two\n");
+    String two = line(tree("two"), "#connected");
+    assertTrue(two.contains("label=\"2 connected\"") && two.contains("value=\"ok\""), two);
   }
 
   @Test
