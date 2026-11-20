@@ -394,6 +394,12 @@
                     <argument>--enable-native-access=ALL-UNNAMED</argument>
                     <argument>--java-options</argument>
                     <argument>-Drethinkj.ui.natives.dir=$APPDIR/natives</argument>
+                    <!-- A small initial heap, which grows as needed. From G1's default of 1/64 of
+                         the RAM, young collections move through ever new regions, whose pages stay
+                         in the idle app's working set: about 30 MB on Windows. BudgetTest passes
+                         the same. -->
+                    <argument>--java-options</argument>
+                    <argument>-Xms32m</argument>
                   </arguments>
                 </configuration>
               </execution>
