@@ -141,8 +141,6 @@ public final class HooriDb {
         Servers.SERVER,
         updater,
         version());
-    // shortcut: confirms nothing yet, until the framework tells the app its first shown frame; then
-    // call State.shown().
     app.textRendering(TextRendering.platform());
     // The menu's entry and the dock's icon of an unpacked app image; without them it still runs.
     var os = System.getProperty("os.name");
@@ -158,7 +156,10 @@ public final class HooriDb {
       Window.Options options = Window.options().icon(ICON).frameless().minimumSize(640, 400);
       try (Window window = Window.open(NAME, 1200, 760, options);
           GpuPresenter presenter = new GpuPresenter(window)) {
-        WindowLoop.run(window, app, presenter);
+        var loop = new WindowLoop(window, app, presenter);
+        // Not at the start: a version whose window cannot show is put back by the helper.
+        loop.windows().of(app).onShown(app.state()::shown);
+        loop.run();
       }
     });
   }
