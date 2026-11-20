@@ -3,26 +3,26 @@ title: Saved queries
 description: Keep queries under a name for a connection and insert them into a console again.
 ---
 
-A saved query is text from a console that you keep on purpose, under a name, for its connection. Unlike [History](/docs/features/history), which records every statement you run, saved queries hold only what you save, and they stay until you delete them. They work the same way in SQL consoles and [MongoDB](/docs/features/mongodb) consoles. Saved queries are stored in `queries.json`, readable and writable only by your user account on Linux, because a query can contain a password.
+A saved query is text from a console that you keep on purpose, under a name, for its connection. Unlike [History](/docs/features/history), which records the statements you run, saved queries hold only what you save, and they stay until you delete them. They work the same way in SQL consoles and [MongoDB](/docs/features/mongodb) consoles. Saved queries are stored in `queries.json`, readable and writable only by your user account on Linux, because a query can contain a password. The **Save query** and **Saved queries** buttons stay off until HooriDB has read that file, and while it cannot read it.
 
 <Shot name="saved-queries" alt="The Saved queries dialog for shop-prod listing four queries with Search, Name, Query, Saved, Delete, Close, and Insert" />
 
 ## Save a query
 
-1. Select the text to save in the console editor. Without a selection, HooriDB saves the whole text of the console.
+1. Select the text to save in the console editor. Without a selection, HooriDB saves the whole text of the console. Text of only blanks is not saved.
 2. Press the **Save query** icon in the console toolbar.
-3. In the **Name** field, keep the suggested name (the first line of the text, up to 60 characters) or type another one.
+3. In the **Name** field, keep the suggested name (the first non-blank line of the text, up to 60 characters) or type another one.
 4. Press **Save**.
 
-If the connection already has a saved query of that name (ignoring case), the dialog warns that it will be replaced and the button reads **Replace**. Pressing it replaces that query.
+If the connection already has a saved query of that name (ignoring case and spaces around it), the dialog warns that it will be replaced and the button reads **Replace**. Pressing it replaces that query.
 
 ## Find and insert a saved query
 
-1. Press the **Saved queries** (star) icon in the console toolbar. The dialog lists the queries of the console's connection by name, with the first line of each and when it was saved.
+1. Press the **Saved queries** (star) icon in the console toolbar. The dialog lists the queries of the console's connection by name, with the first non-blank line of each and when it was saved.
 2. Type in the **Search** box to show only the queries whose name or text contains that text (case-insensitive).
 3. Select a row and press **Insert**, double-click the row, or press `Enter`. You can also copy selected rows with `Ctrl+C`.
 
-HooriDB inserts the query as it does a statement from [History](/docs/features/history#search-and-insert-a-statement): in place of the selection, or else as a statement on its own line after the statement the caret is in, with the caret after it so you can run it right away. You can undo the insert in one step.
+HooriDB inserts the query as it inserts a statement from [History](/docs/features/history#search-and-insert-a-statement), with the caret after it so that **Run** runs it. **Run** runs only the statement at the caret: to run a query of several statements, select it first. You can undo the insert in one step.
 
 ## Delete a saved query
 

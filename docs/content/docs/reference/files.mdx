@@ -20,7 +20,7 @@ Files kept in this folder:
 | `queries.json` | Saved queries (their connection, name, text, and when they were saved). |
 | `updates.json` | Update channel (`stable` or `nightly`) and update state. |
 
-On Linux, HooriDB writes these files with owner-only permissions (`rw-------`), because console text, history, and saved queries can contain sensitive values. If any of these files cannot be read, HooriDB saves a copy as `<filename>.unreadable` before replacing it.
+On Linux, HooriDB writes these files with owner-only permissions (`rw-------`), because console text, history, and saved queries can contain sensitive values. If HooriDB cannot understand one of these files, it saves a copy as `<filename>.unreadable` before replacing it.
 
 ## Drivers and update downloads
 
