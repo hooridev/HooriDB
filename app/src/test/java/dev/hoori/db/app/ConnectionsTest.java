@@ -463,7 +463,9 @@ class ConnectionsTest {
     assertTrue(line(edit, "role=dialog").contains("label=\"Edit connection\""), edit);
     assertTrue(line(edit, "#host").contains("\"db.example.com\""), edit);
     assertTrue(line(edit, "#tls").contains("label=\"Encrypted and verified\""));
-    // The placeholder says that an empty field keeps it, which the tree does not show.
+    // The placeholder says that an empty field keeps it.
+    assertTrue(
+        line(edit, "#password").contains("placeholder=\"Unchanged, saved in the keyring\""), edit);
     assertFalse(edit.contains("Leave it empty"), edit);
     assertTrue(line(edit, "label=\"Save in system keyring\"").endsWith(" checked"));
     assertTrue(line(edit, "label=\"Save\"").endsWith("disabled"), "nothing changed yet");
@@ -804,6 +806,8 @@ class ConnectionsTest {
         frame
         """ + SETTLE);
     assertTrue(tree("kept").contains("\"The password is kept until HooriDB closes.\""));
+    assertTrue(line(tree("kept"), "#password")
+        .contains("placeholder=\"Unchanged, kept until HooriDB closes\""));
     assertEquals(PASSWORD, secrets.stored.get(shop.id()), "back into the keyring");
     assertFalse(app.state().remembers(shop.id()));
   }
