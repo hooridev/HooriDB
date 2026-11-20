@@ -28,24 +28,13 @@ public final class ReadWrite {
     }
     var phrases = provider.dialect().connecting().readWrite();
     for (var reading : Tokens.readings(provider)) {
-      var words = new StringBuilder(" ");
-      for (var token : Tokens.of(sql, provider, reading)) {
-        words.append(bare(token.text())).append(' ');
-      }
-      var strings = new StringBuilder();
-      for (var piece : Statements.pieces(sql, provider, reading.escapes())) {
-        // The strings in an executable comment, which the server may run, go with its text.
-        if (piece.kind() == Statements.Piece.Kind.STRING
-            || piece.kind() == Statements.Piece.Kind.COMMENT && executable(sql, piece, provider)) {
-          strings.append(sql, piece.start(), piece.end()).append('\n');
-        }
-      }
+      var words = words(sql, provider, reading);
       // A START TRANSACTION inside another statement, as MySQL's CREATE TABLE … START TRANSACTION,
       // opens a transaction that is not read-only; elsewhere it is no statement at all.
       if (words.indexOf(" start transaction ", 1) > 0) {
         return true;
       }
-      var text = SPACES.matcher(strings).replaceAll(" ").toLowerCase(Locale.ROOT);
+      var text = strings(sql, provider, reading);
       for (var phrase : phrases) {
         if (words.indexOf(" " + phrase + " ") >= 0 || text.contains(phrase)) {
           return true;
@@ -53,6 +42,28 @@ public final class ReadWrite {
       }
     }
     return false;
+  }
+
+  // The code's words as the reading reads them, bare, each between spaces.
+  private static String words(String sql, Provider provider, Tokens.Reading reading) {
+    var words = new StringBuilder(" ");
+    for (var token : Tokens.of(sql, provider, reading)) {
+      words.append(bare(token.text())).append(' ');
+    }
+    return words.toString();
+  }
+
+  // The strings, with those in an executable comment, which the server may run, in lower case
+  // with one space for any run of whitespace.
+  private static String strings(String sql, Provider provider, Tokens.Reading reading) {
+    var strings = new StringBuilder();
+    for (var piece : Statements.pieces(sql, provider, reading.escapes())) {
+      if (piece.kind() == Statements.Piece.Kind.STRING
+          || piece.kind() == Statements.Piece.Kind.COMMENT && executable(sql, piece, provider)) {
+        strings.append(sql, piece.start(), piece.end()).append('\n');
+      }
+    }
+    return SPACES.matcher(strings).replaceAll(" ").toLowerCase(Locale.ROOT);
   }
 
   private static boolean executable(String sql, Statements.Piece piece, Provider provider) {
