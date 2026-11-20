@@ -2,19 +2,24 @@ package dev.hoori.db.app;
 
 import static java.util.stream.Collectors.toUnmodifiableSet;
 
+import com.rethinkj.ui.Formatted;
 import com.rethinkj.ui.Highlighter;
 import com.rethinkj.ui.Spans;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.document.Layout;
 import dev.hoori.db.core.document.Lexer;
 import dev.hoori.db.core.document.Shell;
+import dev.hoori.db.core.document.SyntaxException;
 import java.util.ArrayList;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Colors the statements of the MongoDB shell, as a console of documents takes them, by the
  * tokens of core's {@link Lexer}: the shell's words and constructors, the operators that start
  * with a dollar, strings, numbers, regular expressions and comments, and marks the brackets
- * outside them. A block comment and a string in backticks go on over lines.
+ * outside them. A block comment and a string in backticks go on over lines. Control+Alt+L lays
+ * the statements out as core's {@link Layout} does.
  */
 record ShellSyntax(Theme.Code colors) implements Highlighter {
 
@@ -71,5 +76,28 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
   @Override
   public String lineComment() {
     return "//";
+  }
+
+  @Override
+  public Function<String, Formatted> formatter() {
+    return ShellSyntax::format;
+  }
+
+  /** The text laid out, or where its first statement that does not parse goes wrong. */
+  static Formatted format(String text) {
+    try {
+      return new Formatted(Layout.of(text), null);
+    } catch (SyntaxException e) {
+      int at = Math.clamp(e.offset(), 0, text.length());
+      for (var token : Lexer.tokens(text)) {
+        if (token.end() > at) {
+          var kind = token.start() <= at && token.open() && token.kind() == Lexer.Kind.STRING
+              ? Formatted.Kind.UNCLOSED_STRING
+              : Formatted.Kind.UNEXPECTED;
+          return new Formatted(null, new Formatted.Problem(at, Math.max(at, token.end()), kind));
+        }
+      }
+      return new Formatted(null, new Formatted.Problem(at, at, Formatted.Kind.UNEXPECTED_END));
+    }
   }
 }

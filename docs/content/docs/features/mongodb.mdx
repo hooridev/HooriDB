@@ -69,6 +69,7 @@ Results that return documents have the same **Grid**, **JSON**, and **Tree** swi
 
 - A statement HooriDB cannot parse is underlined where the error occurs, and the caret moves there, just like a server error in an SQL console.
 - Completions suggest collections after `db.`, collection and cursor methods, `$` operators, and the collection's sampled fields.
+- `Ctrl+Alt+L` formats the editor's statements: each on its own line, and a document or array that does not fit on a line spread over lines, indented by two spaces. Only spaces and line breaks change; comments, strings, regular expressions, and values such as `ObjectId(…)` stay as written. If a statement cannot be parsed, nothing changes, and the error is marked where it occurs.
 
 ### Updates and deletes of every document
 
