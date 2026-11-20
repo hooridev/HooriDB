@@ -553,16 +553,18 @@ final class ConsoleTab implements Tab {
     var every = parsed != null ? parsed.every() : EveryRow.of(sql, provider);
     if (every.isPresent()) {
       var verb = every.get().verb().equals("DELETE") ? "delete" : "update";
-      var row = parsed != null ? "document" : "row";
+      boolean documents = parsed != null;
+      var row = documents ? "document" : "row";
+      var unbounded = documents ? " has an empty filter" : " has no WHERE clause";
+      var its = documents ? "its collection" : "its table";
       var table = every.get().table();
       running = sql;
-      var of = !table.isEmpty() ? table : parsed != null ? "its collection" : "its table";
+      var of = table.isEmpty() ? its : table;
       confirming = new Confirm(
           sql,
           (verb.equals("delete") ? "Delete" : "Update") + " every " + row + "?",
           every.get().certain()
-              ? brief(sql) + (parsed != null ? " has an empty filter" : " has no WHERE clause")
-                  + ": it would " + verb + " every " + row + " of " + of + "."
+              ? brief(sql) + unbounded + ": it would " + verb + " every " + row + " of " + of + "."
               : "Could not tell whether " + brief(sql) + " is limited by a WHERE clause; it may "
                   + verb + " every row of " + of + ".",
           true);

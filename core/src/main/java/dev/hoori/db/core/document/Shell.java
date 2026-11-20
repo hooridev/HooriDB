@@ -31,10 +31,10 @@ import java.util.regex.Pattern;
 public final class Shell {
 
   /**
-   * The names of the constructors of values that the shell takes, in order, such as {@code
-   * ObjectId} and {@code Binary.createFromBase64}.
+   * The names of the constructors of values that the shell takes, such as {@code ObjectId} and
+   * {@code Binary.createFromBase64}.
    */
-  public static final Set<String> CONSTRUCTORS = Reader.MAKERS.keySet();
+  public static final Set<String> CONSTRUCTORS = Set.copyOf(Reader.MAKERS.keySet());
 
   /** Those of them that completions offer: the common ones, without their aliases. */
   public static final List<String> OFFERED = Reader.MAKERS.entrySet().stream()
@@ -499,16 +499,15 @@ public final class Shell {
         options--;
       }
       var pattern = new StringBuilder();
-      for (int i = at + 1; i < options - 1; i++) {
-        char c = text.charAt(i);
+      int i = at + 1;
+      while (i < options - 1) {
+        char c = text.charAt(i++);
         if (c == '\\') {
-          char next = text.charAt(++i);
-          if (next != '/') {
-            pattern.append('\\');
-          }
-          c = next;
+          char next = text.charAt(i++); // \/ is the slash itself; any other escape stays as written
+          pattern.append(next == '/' ? "/" : "\\" + next);
+        } else {
+          pattern.append(c);
         }
-        pattern.append(c);
       }
       at = token.end();
       return new Bson.Regex(pattern.toString(), sorted(text.substring(options, at)));
@@ -730,39 +729,46 @@ public final class Shell {
           "UUID",
           true,
           args -> args.isEmpty() ? Bson.Binary.of(UUID.randomUUID()) : uuid(text(args, 0)));
-      put(makers, "BinData", false, args -> {
-        if (args.size() != 2) {
-          throw new IllegalArgumentException("BinData needs a subtype and a base64 string");
-        }
-        return new Bson.Binary(subtype(args.getFirst()), base64(text(args, 1)));
-      });
+      put(makers, "BinData", false, Reader::binData);
       put(
           makers,
           "Binary.createFromBase64",
           false,
-          args ->
-              new Bson.Binary(args.size() > 1 ? subtype(args.get(1)) : 0, base64(text(args, 0))));
+          args -> new Bson.Binary(subtypeAt(args, 1), base64(text(args, 0))));
       put(
           makers,
           "Binary.createFromHexString",
           false,
-          args -> new Bson.Binary(
-              args.size() > 1 ? subtype(args.get(1)) : 0, HexFormat.of().parseHex(text(args, 0))));
+          args -> new Bson.Binary(subtypeAt(args, 1), HexFormat.of().parseHex(text(args, 0))));
       put(makers, "Timestamp", true, Reader::timestamp);
       put(makers, "MinKey", false, args -> Bson.Special.MIN_KEY);
       put(makers, "MaxKey", false, args -> Bson.Special.MAX_KEY);
       put(makers, "RegExp", false, regex);
       put(makers, "BSONRegExp", false, regex);
-      put(makers, "Code", false, args -> {
-        var scope = args.size() > 1 ? args.get(1) : null;
-        if (scope != null && !(scope instanceof Document)) {
-          throw new IllegalArgumentException("The scope of Code is a document");
-        }
-        return new Bson.Code(text(args, 0), (Document) scope);
-      });
+      put(makers, "Code", false, Reader::code);
       put(makers, "Symbol", false, symbol);
       put(makers, "BSONSymbol", false, symbol);
       return Collections.unmodifiableMap(makers);
+    }
+
+    private static Bson.Binary binData(List<Object> args) {
+      if (args.size() != 2) {
+        throw new IllegalArgumentException("BinData needs a subtype and a base64 string");
+      }
+      return new Bson.Binary(subtype(args.getFirst()), base64(text(args, 1)));
+    }
+
+    // The subtype at the index, or 0, the generic one, where none is given.
+    private static int subtypeAt(List<Object> args, int index) {
+      return args.size() > index ? subtype(args.get(index)) : 0;
+    }
+
+    private static Bson.Code code(List<Object> args) {
+      var scope = args.size() > 1 ? args.get(1) : null;
+      if (scope != null && !(scope instanceof Document)) {
+        throw new IllegalArgumentException("The scope of Code is a document");
+      }
+      return new Bson.Code(text(args, 0), (Document) scope);
     }
 
     private static String text(List<Object> args, int index) {

@@ -2,6 +2,7 @@ package dev.hoori.db.core.document;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.IntPredicate;
 
 /**
  * The tokens of the shell's syntax, as JavaScript reads them: names, numbers, strings, regular
@@ -148,23 +149,22 @@ public final class Lexer {
       return regex(text, at);
     }
     if (digit(c) || c == '.' && at + 1 < n && digit(text.charAt(at + 1))) {
-      int end = at + 1;
-      while (end < n
-          && (Character.isLetterOrDigit(text.charAt(end))
-              || text.charAt(end) == '.'
-              || text.charAt(end) == '_')) {
-        end++;
-      }
+      int end = run(text, at + 1, d -> Character.isLetterOrDigit(d) || d == '.' || d == '_');
       return new Token(Kind.NUMBER, at, end, false);
     }
     if (Character.isJavaIdentifierStart(c)) {
-      int end = at + 1;
-      while (end < n && Character.isJavaIdentifierPart(text.charAt(end))) {
-        end++;
-      }
-      return new Token(Kind.NAME, at, end, false);
+      return new Token(Kind.NAME, at, run(text, at + 1, Character::isJavaIdentifierPart), false);
     }
     return new Token(Kind.PUNCTUATION, at, at + 1, false);
+  }
+
+  // Where the characters from the offset that are of the kind end.
+  private static int run(String text, int from, IntPredicate kind) {
+    int end = from;
+    while (end < text.length() && kind.test(text.charAt(end))) {
+      end++;
+    }
+    return end;
   }
 
   private static boolean digit(char c) {
@@ -202,28 +202,20 @@ public final class Lexer {
     int n = text.length();
     boolean inClass = false;
     int i = at + 1;
-    while (i < n) {
+    while (i < n && text.charAt(i) != '\n') {
       char c = text.charAt(i);
-      if (c == '\n') {
-        break;
+      if (c == '/' && !inClass) {
+        return new Token(Kind.REGEX, at, run(text, i + 1, Character::isLetter), false);
       }
-      if (c == '\\') {
-        i += i + 1 < n && text.charAt(i + 1) != '\n' ? 2 : 1;
-        continue;
-      }
-      if (c == '[') {
+      if (c == '\\' && i + 1 < n && text.charAt(i + 1) != '\n') {
+        i++; // the next one is escaped; a line break never is
+      } else if (c == '[') {
         inClass = true;
       } else if (c == ']') {
         inClass = false;
-      } else if (c == '/' && !inClass) {
-        int end = i + 1;
-        while (end < n && Character.isLetter(text.charAt(end))) {
-          end++;
-        }
-        return new Token(Kind.REGEX, at, end, false);
       }
       i++;
     }
-    return new Token(Kind.REGEX, at, Math.min(i, n), true);
+    return new Token(Kind.REGEX, at, i, true);
   }
 }

@@ -209,82 +209,84 @@ final class Suggestions {
    */
   private List<Candidate> shell(
       State s, Provider provider, String before, String statement, int caret) {
-    var into = new ArrayList<Candidate>();
-    // The caret in the statement's tokens: in a string, a comment or its opener, or a regular
-    // expression up to the end of its flags.
-    for (var token : Lexer.tokens(statement)) {
-      if (token.kind() != Lexer.Kind.NAME
-          && token.kind() != Lexer.Kind.NUMBER
-          && token.kind() != Lexer.Kind.PUNCTUATION
-          && token.start() < caret
-          && (caret < token.end()
-              || caret == token.end() && (token.open() || token.kind() == Lexer.Kind.REGEX))) {
-        return into;
-      }
+    if (quoted(statement, caret)) {
+      return List.of();
     }
-    var tokens = Lexer.tokens(before);
-    var code = tokens.stream().filter(t -> t.kind() != Lexer.Kind.COMMENT).toList();
+    var code = Lexer.tokens(before).stream()
+        .filter(t -> t.kind() != Lexer.Kind.COMMENT)
+        .toList();
     int n = code.size();
-    if (n > 0 && code.getLast().end() == before.length() && is(before, code, n - 1, "$")) {
+    var last = n > 0 && code.getLast().end() == before.length() ? code.getLast() : null;
+    if (last != null && is(before, code, n - 1, "$")) {
       // The kit's word has no dollar: it stays, and the rest of the operator goes after it.
-      for (var operator : OPERATORS) {
-        var rest = operator.substring(1);
-        into.add(new Candidate(rest, operator, rest, Symbol.CODE, "operator", false));
-      }
-      return into;
+      return OPERATORS.stream()
+          .map(
+              o -> new Candidate(o.substring(1), o, o.substring(1), Symbol.CODE, "operator", false))
+          .toList();
     }
-    if (n > 0
-        && code.getLast().end() == before.length()
-        && code.getLast().kind() != Lexer.Kind.PUNCTUATION) {
-      return into; // the word goes on a name or a number, as total$ or 1.
+    if (last != null && last.kind() != Lexer.Kind.PUNCTUATION) {
+      return List.of(); // the word goes on a name or a number, as total$ or 1.
     }
     var known = new Known(s, provider);
     boolean dot = n > 0 && code.getLast().is(before, '.');
-    if (dot && n >= 2 && is(before, code, n - 2, "db")) {
-      for (var table : known.tables()) {
-        var name = table.name();
-        var text = IDENTIFIER.matcher(name).matches() && !Script.DATABASE_METHODS.contains(name)
-            ? name
-            : "getCollection(" + Shell.quote(name) + ")";
-        boolean view = table.kind() == Table.Kind.VIEW;
-        into.add(new Candidate(
-            name,
-            name,
-            text,
-            view ? Symbol.EYE : Symbol.TABLE,
-            view ? "view" : "collection",
-            true));
-      }
-      for (var method : Script.DATABASE_METHODS) {
-        into.add(new Candidate(method, method, method, Symbol.CODE, "method", false));
-      }
+    if (dot && is(before, code, n - 2, "db")) {
+      return collections(known);
+    }
+    if (dot && collectionBefore(before, code)) {
+      var into = methods(Script.READING_METHODS, Symbol.CODE);
+      into.addAll(methods(Script.WRITING_METHODS, Symbol.EDIT));
       return into;
     }
-    String collection = null; // the first that the statement names
-    for (int k = 0; k < n; k++) {
-      var named = collection(before, code, k);
-      if (named == null) {
-        continue;
-      }
-      if (dot && named.next() == n - 1) {
-        for (var method : Script.READING_METHODS) {
-          into.add(new Candidate(method, method, method, Symbol.CODE, "method", false));
-        }
-        for (var method : Script.WRITING_METHODS) {
-          into.add(new Candidate(method, method, method, Symbol.EDIT, "method", false));
-        }
-        return into;
-      }
-      if (collection == null) {
-        collection = named.name();
+    if (dot && is(before, code, n - 2, ")")) {
+      return methods(CURSOR_METHODS, Symbol.CODE);
+    }
+    return fields(s, known, firstCollection(before, code));
+  }
+
+  /**
+   * Whether the caret is in a string, a comment or its opener, or a regular expression up to the
+   * end of its flags, of the statement's tokens.
+   */
+  private static boolean quoted(String statement, int caret) {
+    for (var token : Lexer.tokens(statement)) {
+      boolean code = token.kind() == Lexer.Kind.NAME
+          || token.kind() == Lexer.Kind.NUMBER
+          || token.kind() == Lexer.Kind.PUNCTUATION;
+      boolean end = caret == token.end() && (token.open() || token.kind() == Lexer.Kind.REGEX);
+      if (!code && token.start() < caret && (caret < token.end() || end)) {
+        return true;
       }
     }
-    if (dot && n >= 2 && code.get(n - 2).is(before, ')')) {
-      for (var method : CURSOR_METHODS) {
-        into.add(new Candidate(method, method, method, Symbol.CODE, "method", false));
-      }
-      return into;
+    return false;
+  }
+
+  /** The collections of the console's database, and the methods of db. */
+  private List<Candidate> collections(Known known) {
+    var into = new ArrayList<Candidate>();
+    for (var table : known.tables()) {
+      var name = table.name();
+      var text = IDENTIFIER.matcher(name).matches() && !Script.DATABASE_METHODS.contains(name)
+          ? name
+          : "getCollection(" + Shell.quote(name) + ")";
+      boolean view = table.kind() == Table.Kind.VIEW;
+      into.add(new Candidate(
+          name, name, text, view ? Symbol.EYE : Symbol.TABLE, view ? "view" : "collection", true));
     }
+    into.addAll(methods(Script.DATABASE_METHODS, Symbol.CODE));
+    return into;
+  }
+
+  private static List<Candidate> methods(java.util.Collection<String> methods, Symbol symbol) {
+    var into = new ArrayList<Candidate>();
+    for (var method : methods) {
+      into.add(new Candidate(method, method, method, symbol, "method", false));
+    }
+    return into;
+  }
+
+  /** The fields of the collection, or null for none, and the values the shell makes. */
+  private List<Candidate> fields(State s, Known known, String collection) {
+    var into = new ArrayList<Candidate>();
     var table = collection == null ? null : known.table(null, collection);
     if (table != null) {
       for (var column : columnsOf(s, known, table)) {
@@ -297,6 +299,28 @@ final class Suggestions {
       into.add(new Candidate(constructor, constructor, constructor, Symbol.CODE, "value", false));
     }
     return into;
+  }
+
+  /** Whether the code ends in a collection's name and a dot, as {@code db.orders.}. */
+  private static boolean collectionBefore(String text, List<Lexer.Token> code) {
+    for (int k = 0; k < code.size(); k++) {
+      var named = collection(text, code, k);
+      if (named != null && named.next() == code.size() - 1) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** The first collection that the code names, or null. */
+  private static String firstCollection(String text, List<Lexer.Token> code) {
+    for (int k = 0; k < code.size(); k++) {
+      var named = collection(text, code, k);
+      if (named != null) {
+        return named.name();
+      }
+    }
+    return null;
   }
 
   /** A collection that tokens name, and the index of the token after the name. */
@@ -341,7 +365,7 @@ final class Suggestions {
 
   // Whether the token at k is there and is the text.
   private static boolean is(String text, List<Lexer.Token> code, int k, String what) {
-    if (k >= code.size()) {
+    if (k < 0 || k >= code.size()) {
       return false;
     }
     var token = code.get(k);
