@@ -99,6 +99,13 @@ class DocumentConsoleServerTest {
     assertFalse(line(first, "role=button label=\"Next page\"").contains("disabled"), first);
     // The last page is known only once the result is read to its end.
     assertTrue(line(first, "role=button label=\"Last page\"").contains("disabled"), first);
+    // Not past the page that is read: one page back is the page that was read on.
+    c.run(
+        app,
+        "press role=button label=\"Next page\"\nframe\n".repeat(2)
+            + "press role=button label=\"Previous page\"\nframe\nsnap back\n");
+    var back = c.tree("back");
+    assertTrue(line(back, "#rows-in-view").contains("\"Documents 1–200\""), back);
     c.run(app, "press role=button label=\"Next page\"\nframe\n" + SETTLE + "snap second\n");
     var second = c.tree("second");
     assertTrue(line(second, "#rows-in-view").contains("\"Documents 201–250\""), second);

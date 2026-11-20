@@ -2822,11 +2822,14 @@ final class ConsoleTab implements Tab {
             footer.toArray(El[]::new)));
   }
 
-  /** Shows the page of the result's documents, reading the next portion where it is not read. */
+  /**
+   * Shows the page of the result's documents, reading the next portion where it is not full: not
+   * past one that is not, which shows what comes first.
+   */
   private void turn(State s, Output o, int page) {
-    o.page = Math.max(0, page);
     int at = o.documents.size();
-    if (o.page * PORTION >= at) {
+    o.page = Math.max(0, Math.min(page, at / PORTION));
+    if ((o.page + 1) * PORTION > at) {
       want(s, o, at, at + PORTION - 1);
     }
   }
