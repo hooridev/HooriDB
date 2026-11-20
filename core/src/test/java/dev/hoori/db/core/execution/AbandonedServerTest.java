@@ -25,6 +25,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Statements left early, failing on the way, or changing the session, and what is reported of
@@ -302,7 +303,7 @@ class AbandonedServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aTransactionOpenedByAQueryIsKnownOnlyOnceItEnds(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
@@ -474,7 +475,7 @@ class AbandonedServerTest {
    * bound all the same, the connection given up, and says so.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aGiveUpTheServerNeverAnswersEndsWithinItsBound(Provider provider) throws Exception {
     var server = dev.hoori.db.core.TestServer.of(provider);
     try (var relay = new dev.hoori.db.core.query.Relay(server.host(), server.port());

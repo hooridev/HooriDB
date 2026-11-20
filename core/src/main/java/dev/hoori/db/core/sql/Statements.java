@@ -2,6 +2,7 @@ package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.dialect.SyntaxDialect;
+import dev.hoori.db.core.document.Script;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -68,8 +69,9 @@ public final class Statements {
 
   private Statements(String text, Provider provider) {
     this.text = text;
-    this.syntax = provider.dialect().syntax();
-    this.escapes = syntax.backslashEscapes();
+    // A server of documents has the shell's statements, which Script splits.
+    this.syntax = provider.keepsDocuments() ? null : provider.dialect().syntax();
+    this.escapes = syntax != null && syntax.backslashEscapes();
   }
 
   /** The statements of the text, in order. */
@@ -134,6 +136,10 @@ public final class Statements {
     if (scan.statements.isEmpty()) {
       return "";
     }
+    if (scan.syntax == null) {
+      var first = scan.statements.getFirst();
+      return Script.method(text.substring(first.start(), first.end()));
+    }
     int n = text.length();
     scan.i = scan.statements.getFirst().start();
     while (scan.i < n) {
@@ -184,7 +190,59 @@ public final class Statements {
    * {@code DELIMITER} line is not told apart, so this is for the text of one statement.
    */
   public static List<Piece> pieces(String text, Provider provider) {
+    if (provider.keepsDocuments()) {
+      return shellPieces(text);
+    }
     return pieces(text, provider, provider.dialect().syntax().backslashEscapes());
+  }
+
+  // The comments and strings of the shell's syntax, its regular expressions as strings, and the
+  // code between them a character each.
+  private static List<Piece> shellPieces(String text) {
+    var pieces = new ArrayList<Piece>();
+    int n = text.length();
+    int i = 0;
+    char last = 0; // the last character of code, as Script.split tells a regular expression
+    while (i < n) {
+      char c = text.charAt(i);
+      if (whitespace(c)) {
+        i++;
+      } else if (c == '/'
+          && !text.startsWith("//", i)
+          && !text.startsWith("/*", i)
+          && Script.regexMayStart(last)) {
+        int end = Script.skipRegex(text, i);
+        boolean closed = end > i + 1 && text.charAt(end - 1) == '/';
+        // Its flags are code after it.
+        pieces.add(new Piece(Piece.Kind.STRING, i, end, !closed));
+        i = end;
+        last = '/';
+      } else if (text.startsWith("//", i)) {
+        int end = text.indexOf('\n', i);
+        pieces.add(new Piece(Piece.Kind.COMMENT, i, end < 0 ? n : end, true));
+        i = end < 0 ? n : end;
+      } else if (text.startsWith("/*", i)) {
+        int close = text.indexOf("*/", i + 2);
+        int end = close < 0 ? n : close + 2;
+        pieces.add(new Piece(Piece.Kind.COMMENT, i, end, close < 0));
+        i = end;
+      } else if (c == '\'' || c == '"' || c == '`') {
+        int j = i + 1;
+        while (j < n && text.charAt(j) != c && (c == '`' || text.charAt(j) != '\n')) {
+          j += text.charAt(j) == '\\' ? 2 : 1;
+        }
+        boolean closed = j < n && text.charAt(j) == c;
+        int end = Math.min(n, closed ? j + 1 : j);
+        pieces.add(new Piece(Piece.Kind.STRING, i, end, !closed));
+        i = end;
+        last = c;
+      } else {
+        pieces.add(new Piece(Piece.Kind.CODE, i, i + 1, false));
+        i++;
+        last = c;
+      }
+    }
+    return pieces;
   }
 
   /**
@@ -247,8 +305,29 @@ public final class Statements {
 
   private static Statements scan(String text, Provider provider) {
     var scan = new Statements(text, provider);
-    scan.run();
+    if (scan.syntax == null) {
+      scan.shell();
+    } else {
+      scan.run();
+    }
     return scan;
+  }
+
+  // The statements of the MongoDB shell, as Script splits them, without their semicolons.
+  private void shell() {
+    for (var piece : Script.split(text)) {
+      int end = piece.end();
+      if (text.charAt(end - 1) == ';') {
+        end--;
+        while (end > piece.start() && whitespace(text.charAt(end - 1))) {
+          end--;
+        }
+      }
+      if (end > piece.start()) {
+        statements.add(new Statement(piece.start(), end));
+        afters.add(piece.end());
+      }
+    }
   }
 
   private boolean justEnded(int k, int caret) {

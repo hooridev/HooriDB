@@ -71,6 +71,8 @@ final class ConnectionDialog {
       Part.of(ConnectionProfile::color, ConnectionProfile::withColor);
   static final Part<ConnectionProfile, String> DRIVER_VERSION =
       Part.of(ConnectionProfile::driverVersion, ConnectionProfile::withDriverVersion);
+  static final Part<ConnectionProfile, Boolean> READ_ONLY =
+      Part.of(ConnectionProfile::readOnly, ConnectionProfile::withReadOnly);
 
   private static final List<Provider> PROVIDERS = List.of(Provider.values());
 
@@ -428,6 +430,9 @@ final class ConnectionDialog {
     }
     editing.at(PROVIDER).set(provider);
     editing.at(DRIVER_VERSION).set(null); // a version of the other kind's driver
+    if (!provider.keepsDocuments()) {
+      editing.at(READ_ONLY).set(false); // a server of SQL does not take it
+    }
     if (!portByHand && !portTyped()) {
       editing.at(PORT).set(provider.defaultPort());
     }
@@ -491,6 +496,8 @@ final class ConnectionDialog {
       case HOST_INVALID -> "Enter one host name or IP address, without port or protocol.";
       case PORT_OUT_OF_RANGE -> "Enter a port from 1 to 65535.";
       case DATABASE_HAS_NUL, USER_HAS_NUL -> "Remove the NUL character.";
+      case DATABASE_NAME_INVALID ->
+        "Use a name of fewer than 64 bytes, without spaces or any of / \\ . \" $";
     };
   }
 
@@ -630,6 +637,14 @@ final class ConnectionDialog {
                 .wFull())
         .warning(tlsWarning(p))
         .error(probe.error(Probe.At.TLS));
+    var readOnly = field(
+            "Access",
+            checkbox(
+                    Prop.of(() -> p.readOnly(), open ? v -> e.at(READ_ONLY).set(v) : null),
+                    "Read-only")
+                .key("read-only"))
+        .help("Only reads are sent: find, aggregate without $out or $merge, counts and the"
+            + " like. Inserts, updates, deletes and every other change are refused.");
     var user = field(
             "User",
             marked(
@@ -658,7 +673,9 @@ final class ConnectionDialog {
     El form = Form.form(
         Form.Labels.BESIDE,
         Form.group(null, name),
-        Form.group(null, type, address, database, tls),
+        p.provider().keepsDocuments()
+            ? Form.group(null, type, address, database, tls, readOnly)
+            : Form.group(null, type, address, database, tls),
         Form.group(null, user, pass).divided());
     El content = col()
         .w(formWidth())

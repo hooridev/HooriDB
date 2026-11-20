@@ -36,7 +36,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /** What needs no database server: the drivers are real, and nothing answers them. */
 class ConnectorTest {
@@ -44,7 +44,7 @@ class ConnectorTest {
   static final String WRONG_PASSWORD = "Wrong-pw-9zK!4q";
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anUnfitProfileIsRefusedBeforeTheDriverSeesIt(Provider provider) {
     var profile = ConnectionProfile.of(provider).withPort(0);
     var e = assertFailure(
@@ -55,7 +55,7 @@ class ConnectorTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aClosedPortIsUnreachable(Provider provider) throws Exception {
     int port;
     try (var socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
@@ -69,7 +69,7 @@ class ConnectorTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anUnknownHostIsUnreachable(Provider provider) {
     // .invalid is reserved never to resolve.
     var profile = local(provider).withHost("no-such-host.invalid");
@@ -80,7 +80,7 @@ class ConnectorTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aServerThatNeverAnswersTimesOutInTime(Provider provider) throws Exception {
     // VERIFIED waits in the same place as ENCRYPTED.
     for (var tls : new Tls[] {Tls.OFF, Tls.ENCRYPTED}) {
@@ -103,7 +103,7 @@ class ConnectorTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anInterruptedCallerIsReleasedAtOnceAndTheDriverStops(Provider provider) throws Exception {
     try (var gate = new Gate(null, 0)) {
       var attempt = Attempt.start(local(provider).withPort(gate.port()), Duration.ofSeconds(30));
@@ -118,7 +118,7 @@ class ConnectorTest {
   // Windows refuses a connect beyond a full queue at once, so no connect can be held open this way.
   @EnabledOnOs(OS.LINUX)
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aCancelEndsTheDriverWhileItStillOpensTheSocket(Provider provider) throws Exception {
     var queued = new ArrayList<Socket>();
     try (var listener = new ServerSocket(0, 1, InetAddress.getByName(Gate.HOST))) {
@@ -310,7 +310,7 @@ class ConnectorTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aCallerInterruptedBeforehandDoesNotConnect(Provider provider) throws Exception {
     try (var gate = new Gate(null, 0)) {
       var profile = local(provider).withPort(gate.port());

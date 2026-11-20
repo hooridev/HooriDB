@@ -19,6 +19,7 @@ import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /** The estimate of a statement's rows on real servers, and the transaction it leaves as it was. */
 class PlanServerTest {
@@ -38,7 +39,7 @@ class PlanServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theTopOfThePlanSaysItsRows(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       table(connection, provider);
@@ -69,7 +70,7 @@ class PlanServerTest {
 
   /** Whatever becomes of the EXPLAIN, its connection is left with nothing open, in auto-commit. */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void nothingIsLeftOpen(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       assertTrue(Plan.rows(connection, provider, null, "SELECT 1 FROM " + dual(provider))
@@ -153,7 +154,7 @@ class PlanServerTest {
    * connection usable.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aLockOfTheUsersTransactionEndsItInTime(Provider provider) throws Exception {
     boolean pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider);
@@ -229,7 +230,7 @@ class PlanServerTest {
    * MySQL's are made as root, as MySQL's binary log asks for its privilege.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aFunctionThatWritesAtPlanningWritesNothing(Provider provider) throws Exception {
     boolean pg = provider == Provider.POSTGRESQL;
     var sql = switch (provider) {
@@ -238,6 +239,7 @@ class PlanServerTest {
       case MYSQL ->
         "SELECT * FROM plan_table WHERE 1 = (SELECT count(*) FROM plan_table WHERE id ="
             + " plan_write(1))";
+      case MONGODB -> throw new IllegalArgumentException("No SQL");
     };
     try (var connection = open(provider);
         var owner = pg ? open(provider) : root(provider)) {
@@ -287,7 +289,7 @@ class PlanServerTest {
    * beside dblink's own functions, which are in C.
    */
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aFunctionThatMayCallOutStopsTheEstimate(Provider provider) throws Exception {
     boolean pg = provider == Provider.POSTGRESQL;
     var sql = "SELECT id, plan_remote() FROM plan_rows";

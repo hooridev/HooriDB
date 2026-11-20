@@ -34,6 +34,7 @@ import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Writing changes of rows to real servers, in tables of each test's own, which it drops on a
@@ -50,7 +51,7 @@ class ChangesServerTest {
       OffsetDateTime.of(2024, 10, 27, 1, 30, 0, 0, ZoneOffset.UTC);
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void changesUpdateInsertAndDeleteRowsByAKeyOfSeveralColumns(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     var name = unique("changes_keyed");
@@ -105,7 +106,7 @@ class ChangesServerTest {
   // MariaDB and MySQL count the rows an UPDATE meets, not the ones it changes, as their drivers
   // ask.
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aCellGivenTheValueItHoldsCountsItsRow(Provider provider) throws Exception {
     var name = unique("changes_same");
     var table = table(provider, name, Table.Kind.TABLE);
@@ -126,7 +127,7 @@ class ChangesServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aTableWithoutPrimaryKeyCannotBeChanged(Provider provider) throws Exception {
     var name = unique("changes_keyless");
     var table = table(provider, name, Table.Kind.TABLE);
@@ -150,7 +151,7 @@ class ChangesServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aRowGoneSinceItWasReadOrAFailureRollsAllBack(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     var name = unique("changes_gone");
@@ -196,7 +197,7 @@ class ChangesServerTest {
 
   // Without the rows locked first, the second update would meet the first row, moved to its key.
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aRowMovedToTheKeyOfARowGoneIsNotChangedForIt(Provider provider) throws Exception {
     var name = unique("changes_moved");
     var table = table(provider, name, Table.Kind.TABLE);
@@ -418,7 +419,7 @@ class ChangesServerTest {
 
   // Each value of each type, as Rows reads it, under the conditions of RowsServerTest.
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void whatWasReadIsWrittenBackAsItWas(Provider provider) throws Exception {
     var types = types(provider);
     var pg = provider == Provider.POSTGRESQL;
@@ -496,7 +497,7 @@ class ChangesServerTest {
   // A JDBC escape, a parameter's mark and the quote in a name stay part of it, and on PostgreSQL
   // the key is compared by its own operator, whatever a user has created under the same name.
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void namesAndAUsersOperatorsChangeNothing(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     var name = unique("changes we?rd");

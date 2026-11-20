@@ -26,6 +26,8 @@ import dev.hoori.db.core.connection.StoredUpdates;
 import dev.hoori.db.core.connection.UpdateStore;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
+import dev.hoori.db.core.dialect.Dialect;
+import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
@@ -724,7 +726,8 @@ final class State {
         profile.user(),
         profile.tls(),
         profile.color(),
-        profile.driverVersion());
+        profile.driverVersion(),
+        profile.readOnly());
     change(workspace.after(profile.id(), copy));
     selected = new Node.Connection(copy.id());
     persist();
@@ -1518,9 +1521,14 @@ final class State {
 
   // The database the server opens where none is given.
   static String database(ConnectionProfile p) {
-    return p.database().isBlank() && p.provider().dialect().connecting().defaultDatabaseIsUser()
-        ? p.user()
-        : p.database();
+    // A server of documents takes any name it is given, also one of spaces alone.
+    if (p.provider().keepsDocuments() ? !p.database().isEmpty() : !p.database().isBlank()) {
+      return p.database();
+    }
+    return switch (p.provider().traits()) {
+      case Dialect d -> d.connecting().defaultDatabaseIsUser() ? p.user() : p.database();
+      case DocumentDialect d -> d.defaultDatabase();
+    };
   }
 
   /** Closes the tabs of the connection, in every window. */

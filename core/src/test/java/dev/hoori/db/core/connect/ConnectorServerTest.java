@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /** Connecting to real servers, and how they refuse. */
 class ConnectorServerTest {
@@ -40,7 +40,7 @@ class ConnectorServerTest {
       Map.of(Provider.POSTGRESQL, 18, Provider.MARIADB, 12, Provider.MYSQL, 9);
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aTestReadsWhatTheServerIs(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var found = Connector.test(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
@@ -54,7 +54,7 @@ class ConnectorServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anOpenConnectionWorksWithoutTimeUntilClosed(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var connection = Connector.open(
@@ -75,7 +75,7 @@ class ConnectorServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void namesWithSpacesAndBeyondAsciiReachTheirDatabase(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     for (var name : new String[] {TestServer.SPACED_DATABASE, TestServer.NON_ASCII_DATABASE}) {
@@ -95,7 +95,7 @@ class ConnectorServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aWrongPasswordOrUserIsRefused(Provider provider) {
     var server = TestServer.of(provider);
     assertFailure(
@@ -116,7 +116,7 @@ class ConnectorServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aMissingDatabaseIsNamed(Provider provider) {
     var server = TestServer.of(provider);
     var e = assertFailure(
@@ -130,7 +130,7 @@ class ConnectorServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void tlsThatTheServerDoesNotOfferIsRefused(Provider provider) {
     var plain = plain(provider);
     for (var tls : new Tls[] {Tls.ENCRYPTED, Tls.VERIFIED}) {
@@ -142,7 +142,7 @@ class ConnectorServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aSelfSignedCertificateIsEncryptedButNotVerified(Provider provider) throws Exception {
     var encrypted = encrypted(provider);
     var profile = encrypted.profile().withTls(Tls.ENCRYPTED);
@@ -155,7 +155,7 @@ class ConnectorServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aConnectionThatIsThereForAnInterruptedCallerIsClosedProperly(Provider provider)
       throws Exception {
     var server = TestServer.of(provider);
@@ -193,7 +193,7 @@ class ConnectorServerTest {
   private record Phase(String name, TestServer server, Tls tls, Gate.Relay relay, boolean in) {}
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void anAbandonedAttemptEndsInEveryPhase(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     // A login over TLS fills MySQL's cache of passwords, which a login without TLS needs to end
@@ -236,7 +236,7 @@ class ConnectorServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aServerThatTricklesIsLeftWithinTheTimeLimit(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var gate = new Gate(server.host(), server.port(), Gate.trickle(Duration.ofMillis(250)))) {

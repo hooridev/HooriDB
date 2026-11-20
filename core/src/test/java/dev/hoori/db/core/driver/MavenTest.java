@@ -119,7 +119,8 @@ class MavenTest {
   @Test
   void everyProviderHasADriver() {
     for (var provider : Provider.values()) {
-      assertTrue(Driver.of(provider).driverClass().endsWith("Driver"), provider.name());
+      var driverClass = Driver.of(provider).driverClass();
+      assertTrue(driverClass.endsWith("Driver") || driverClass.endsWith("Bridge"), provider.name());
     }
     assertEquals(
         new Driver("org.postgresql", "postgresql", "org.postgresql.Driver"),

@@ -250,6 +250,46 @@ class ConnectionsTest {
     assertTrue(secrets.stored.isEmpty(), "nothing saved");
   }
 
+  /** A connection to MongoDB may be read-only; a server of SQL does not offer it. */
+  @Test
+  void aMongoDbConnectionCanBeReadOnly() throws IOException {
+    App<State> app = app();
+    run(
+        app,
+        NEW_SHOP + provider("MongoDB") + """
+        snap mongo
+        press role=checkbox label="Read-only"
+        frame
+        snap checked
+        """ + provider("PostgreSQL") + """
+        snap sql
+        """ + provider("MongoDB")
+            + """
+        snap again
+        press role=checkbox label="Read-only"
+        frame
+        press role=button label="Save"
+        frame
+        """ + SETTLE + """
+        advance 1
+        frame
+        snap saved
+        """);
+    String mongo = tree("mongo");
+    assertTrue(line(mongo, "#port").contains("\"27017\""), mongo);
+    assertTrue(line(mongo, "role=checkbox label=\"Read-only\"").contains("checked=false"), mongo);
+    String checked = tree("checked");
+    assertFalse(
+        line(checked, "role=checkbox label=\"Read-only\"").contains("checked=false"), checked);
+    assertFalse(tree("sql").contains("label=\"Read-only\""), tree("sql"));
+    String again = tree("again");
+    assertTrue(line(again, "role=checkbox label=\"Read-only\"").contains("checked=false"), again);
+    assertFalse(tree("saved").contains("role=dialog"), tree("saved"));
+    var saved = stored().getFirst();
+    assertEquals(Provider.MONGODB, saved.provider());
+    assertTrue(saved.readOnly());
+  }
+
   @Test
   void aNewConnectionIsListedAndSaved() throws IOException {
     App<State> app = app();
@@ -645,7 +685,8 @@ class ConnectionsTest {
             copy.user(),
             copy.tls(),
             copy.color(),
-            copy.driverVersion()));
+            copy.driverVersion(),
+            copy.readOnly()));
   }
 
   @Test

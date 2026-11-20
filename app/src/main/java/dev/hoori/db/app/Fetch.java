@@ -334,6 +334,9 @@ final class Fetch {
         "The file does not match its checksum, so it was not used. It may have been damaged on"
             + " the way.";
       case TOO_LARGE -> "The file is larger than a driver should be, so it was not kept.";
+      case TOO_OLD ->
+        "HooriDB does not work with this version of the driver. Choose a newer one, or the"
+            + " recommended version.";
       case CLASS_PATH_IN_MANIFEST ->
         "The file asks for more files to be loaded with it, which nothing has checked, so it is"
             + " not used.";
@@ -357,7 +360,7 @@ final class Fetch {
 
   /** The driver's name as its makers call it. */
   static String name(Provider provider) {
-    return provider.dialect().driverName();
+    return provider.traits().driverName();
   }
 
   /** What is known of the driver, in a line: which one, and whether it is there. */

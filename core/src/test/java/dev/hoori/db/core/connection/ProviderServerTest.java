@@ -11,7 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import tools.jackson.databind.json.JsonMapper;
 
 /** What a provider says about its servers, against real ones. */
@@ -21,7 +21,7 @@ class ProviderServerTest {
   private static final String QUERY = "SELECT name FROM customer WHERE id = 1";
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theFormsOfExplainRunOnTheServer(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var version = Connector.test(server.profile(), TestServer.password(), server.driver(), TIMEOUT)

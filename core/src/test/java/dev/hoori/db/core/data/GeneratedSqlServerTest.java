@@ -19,7 +19,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * What the catalog and the rows send to the server means what it says, whatever the names in it
@@ -126,7 +126,7 @@ class GeneratedSqlServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aNameWithAJdbcEscapeIsItsOwnTable(Provider provider) throws Exception {
     var escaped = "a{fn now()}";
     try (var connection = open(provider)) {
@@ -155,7 +155,7 @@ class GeneratedSqlServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aNameEndingInABackslashIsRead(Provider provider) throws Exception {
     var name = "back\\";
     var column = "c\\";
@@ -188,7 +188,7 @@ class GeneratedSqlServerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(Provider.class)
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aColumnNamedAfterAFunctionOrdersByItsValue(Provider provider) throws Exception {
     try (var connection = open(provider)) {
       // The texts are read through substr() and the like, whose outputs take their names; one is
