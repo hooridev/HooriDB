@@ -45,11 +45,13 @@ final class Frame {
     Theme t = Theme.CURRENT.get();
     var main = s.tabs.main();
     // One dialog at a time: what the catalog asks waits for the others to close.
-    El asked =
-        s.dialog == null && s.deleting == null && !s.about ? s.catalog.dialog(s, main) : null;
+    El asked = s.dialog == null && s.deleting == null && s.folderDialog == null && !s.about
+        ? s.catalog.dialog(s, main)
+        : null;
     El question = question(s, main);
     El confirmation = s.dialog == null
             && s.deleting == null
+            && s.folderDialog == null
             && !s.about
             && asked == null
             && s.driverList == null
@@ -58,6 +60,7 @@ final class Frame {
         : null;
     boolean modal = s.dialog != null
         || s.deleting != null
+        || s.folderDialog != null
         || s.about
         || asked != null
         || s.driverList != null
@@ -102,6 +105,7 @@ final class Frame {
           .overlay(s.dialog.question(s));
     }
     root.overlay(s.deleting == null ? null : deleteDialog(s));
+    root.overlay(s.folderDialog == null ? null : s.folderDialog.view(s));
     root.overlay(s.about ? aboutDialog(s) : null);
     root.overlay(asked);
     root.overlay(question);
@@ -110,6 +114,7 @@ final class Frame {
     if (s.driverList != null
         && s.dialog == null
         && s.deleting == null
+        && s.folderDialog == null
         && !s.about
         && asked == null) {
       root.overlay(s.driverList.view(s)).overlay(s.driverList.question(s));
@@ -293,13 +298,15 @@ final class Frame {
   }
 
   /**
-   * The connections: waiting while they load, then a tree of them or the empty state.
+   * The workspace: waiting while it loads, then a tree of its folders and connections, or the
+   * empty state while it holds none.
    *
    * @param modal whether a dialog is open in the main window, which the notices' buttons wait for
    */
   private static El catalog(State s, boolean modal) {
     Theme t = Theme.CURRENT.get();
     Runnable create = s.canChange() ? s::newConnection : null;
+    var c = s.catalog;
     El problem = null;
     if (s.loadError != null) {
       // A file that could not be read for another reason is still there: nothing may replace it.
@@ -322,17 +329,27 @@ final class Frame {
           .gap(t.space().m())
           .child(Progress.spinner())
           .child(label(Label.Variant.MUTED, "Loading connections…"));
-    } else if (!s.profiles.isEmpty()) {
-      var c = s.catalog;
+    } else if (!s.workspace().entries().isEmpty()) {
       El tree = Tree.tree(
               new CatalogTree.Model(t, s),
               new Tree.Options<Node>()
-                  .open(c.open::contains, (node, open) -> c.toggle(s, node, open))
+                  .open(
+                      node -> node instanceof Node.Folder f
+                          ? s.folderOpen(f.id())
+                          : c.open.contains(node),
+                      (node, open) -> c.toggle(s, node, open))
                   .select(s.selected, node -> s.selected = node)
-                  .onActivate(node -> c.activate(s, node)))
+                  .onActivate(node -> c.activate(s, node))
+                  .drag(
+                      c.dragging,
+                      CatalogTree::canDrag,
+                      move -> CatalogTree.canDrop(s, move),
+                      move -> CatalogTree.dropped(s, move)))
           .key("connections")
-          .label("Connections");
-      body = Card.inset(Menu.contextMenu(tree, c.menu, c.items(s, s.selected)));
+          .label("Workspace");
+      // Its items only while it is open: Move to walks the workspace for each folder.
+      var items = c.menu.isOpen() ? c.items(s, s.selected) : List.<Menu.Item>of();
+      body = Card.inset(Menu.contextMenu(tree, c.menu, items));
       El callout = c.callout(s);
       if (callout != null) {
         body = col()
@@ -349,11 +366,15 @@ final class Frame {
     } else {
       body = null;
     }
+    El add = Menu.dropdown(
+        Button.icon(
+            Button.Variant.GHOST, Symbol.ADD, "Add", s.canChange() ? c.adding::toggle : null),
+        c.adding,
+        List.of(
+            Menu.item("New connection…", create).icon(Symbol.ADD),
+            Menu.item("New folder…", s.canAddFolder() ? s::newFolder : null).icon(Symbol.FOLDER)));
     return Card.flush(
-        Card.toolbar(
-            "Connections",
-            null,
-            Button.icon(Button.Variant.GHOST, Symbol.ADD, "Add connection", create)),
+        Card.toolbar("Workspace", null, add),
         problem == null ? null : col().padding(t.space().s()).child(problem),
         s.update == null ? null : update(s, modal),
         s.notices.isEmpty() ? null : notices(s),
@@ -557,7 +578,8 @@ final class Frame {
     boolean free = !mainDialog(s);
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
     boolean several = group.tabs().size() > 1;
-    boolean tree = group == s.tabs.main() && s.loaded && !s.profiles.isEmpty();
+    boolean tree =
+        group == s.tabs.main() && s.loaded && !s.workspace().entries().isEmpty();
     return List.of(
         Menu.submenu(
             "&File",
@@ -566,6 +588,8 @@ final class Frame {
                         "New connection…",
                         free && s.canChange() ? inMain(s, s::newConnection) : null)
                     .icon(Symbol.ADD),
+                Menu.item("New folder…", free && s.canAddFolder() ? inMain(s, s::newFolder) : null)
+                    .icon(Symbol.FOLDER),
                 Menu.item(
                         "New console", console == null ? null : () -> s.openConsole(console, group))
                     .icon(Symbol.CODE)
@@ -607,8 +631,7 @@ final class Frame {
                     .shortcut(Key.CONTROL, "PageUp")
                     .alsoShortcut(Key.CONTROL | Key.SHIFT, "Tab"),
                 Menu.separator(),
-                Menu.item("Connections", tree ? () -> focusTree(s) : null)
-                    .shortcut(Key.CONTROL, "0"),
+                Menu.item("Workspace", tree ? () -> focusTree(s) : null).shortcut(Key.CONTROL, "0"),
                 Menu.item("Tab content", close == null ? null : () -> focusContent(s, group))
                     .shortcut(Key.CONTROL, "1"))),
         Menu.submenu(
@@ -641,12 +664,13 @@ final class Frame {
   private static boolean mainDialog(State s) {
     return s.dialog != null
         || s.deleting != null
+        || s.folderDialog != null
         || s.about
         || s.driverList != null
         || asks(s, s.tabs.main());
   }
 
-  /** Gives the focus to the tree of connections. */
+  /** Gives the focus to the tree of the workspace. */
   private static void focusTree(State s) {
     focus(s.app, find(s.app.tree(), "connections"));
   }

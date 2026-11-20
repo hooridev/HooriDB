@@ -248,7 +248,7 @@ class WorkspaceStoreTest {
       assertEquals(workspace, store.load(), depth + " folders deep");
       saved = depth;
     }
-    assertTrue(saved >= 240 && saved < 260, "saved up to " + saved);
+    assertTrue(saved >= Workspace.DEPTH && saved < 260, "saved up to " + saved);
   }
 
   private static Workspace nested(int depth) {

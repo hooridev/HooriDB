@@ -4,19 +4,31 @@ import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Workspace;
 import java.util.UUID;
 
 /**
- * A row of the catalog: a connection, or what its server holds, as the records core read. Nodes
- * compare with {@code equals}, so that the selection and what is open survive a new read.
+ * A row of the catalog: a folder of the workspace, a connection, or what its server holds, as the
+ * records core read. Nodes compare with {@code equals}, so that the selection and what is open
+ * survive a new read, and a connection's survive a move to another folder, which none of them
+ * names.
  */
 sealed interface Node {
 
-  /** The connection's id. */
+  /** The connection's id; a folder's own, which is no connection's. */
   UUID id();
 
-  /** The node it is under, or null for a connection. */
+  /** The node it is under within a connection, or null for a connection or a folder. */
   Node parent();
+
+  /** The row of an entry of the workspace. */
+  static Node of(Workspace.Entry entry) {
+    return switch (entry) {
+      case Workspace.Folder f -> new Folder(f.id());
+      case ConnectionProfile p -> new Connection(p.id());
+    };
+  }
 
   /** Whether it is the node or under it. */
   default boolean within(Node node) {
@@ -26,6 +38,13 @@ sealed interface Node {
       }
     }
     return false;
+  }
+
+  record Folder(UUID id) implements Node {
+    @Override
+    public Node parent() {
+      return null;
+    }
   }
 
   record Connection(UUID id) implements Node {

@@ -33,6 +33,7 @@ import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.query.QueryException;
@@ -48,8 +49,9 @@ import java.util.UUID;
 import java.util.function.Consumer;
 
 /**
- * The connections as a tree of what their servers hold: opening a connection connects, and each
- * level below it is read when it is opened. Each connection to a server is a {@link Lane}, which
+ * The workspace as a tree: its folders, which the user opens, closes and moves, and its
+ * connections with what their servers hold: opening a connection connects, and each level below
+ * it is read when it is opened. Each connection to a server is a {@link Lane}, which
  * serves one call at a time; connections do not wait for one another. Only the app's thread uses
  * it.
  */
@@ -162,6 +164,8 @@ final class CatalogTree {
 
   private final Map<Want, Fetch> fetches = new HashMap<>();
   final Menu.State menu = new Menu.State();
+  final Menu.State adding = new Menu.State(); // the menu of the sidebar's "+"
+  final Tree.Dragging dragging = new Tree.Dragging();
   Disconnecting disconnecting; // the question before an edit or a delete, or null
 
   CatalogTree(Servers servers) {
@@ -182,6 +186,10 @@ final class CatalogTree {
 
   /** The user opens or closes a node: opening a connection connects, opening a level reads it. */
   void toggle(State s, Node node, boolean opens) {
+    if (node instanceof Node.Folder f) {
+      s.openFolder(f.id(), opens);
+      return;
+    }
     if (!opens) {
       open.remove(node);
       return;
@@ -510,6 +518,7 @@ final class CatalogTree {
             .toList();
       case Node.OfColumn n -> null;
       case Node.Problem n -> null;
+      case Node.Folder n -> null;
     };
     if (call == null) {
       return;
@@ -974,9 +983,10 @@ final class CatalogTree {
         link.tables(container).stream().map(x -> (Node) new Node.OfTable(id, x)).toList();
   }
 
-  /** The database whose content the node is, or null for a connection. */
+  /** The database whose content the node is, or null for a connection or a folder. */
   static String database(Node node) {
     return switch (node) {
+      case Node.Folder n -> null;
       case Node.Connection n -> null;
       case Node.OfDatabase n -> n.database().name();
       case Node.OfSchema n -> n.schema().database().name();
@@ -1233,6 +1243,7 @@ final class CatalogTree {
 
   private static String name(State s, Node node) {
     return switch (node) {
+      case Node.Folder n -> s.folder(n.id()).name();
       case Node.Connection n -> State.name(s.profile(n.id()));
       case Node.OfDatabase n -> n.database().name();
       case Node.OfSchema n -> n.schema().name();
@@ -1389,11 +1400,16 @@ final class CatalogTree {
 
     @Override
     public List<Node> roots() {
-      return s.profiles.stream().map(p -> (Node) new Node.Connection(p.id())).toList();
+      return s.workspace().entries().stream().map(Node::of).toList();
     }
 
     @Override
     public Tree.Children<Node> children(Node node) {
+      if (node instanceof Node.Folder f) {
+        var folder = s.folder(f.id());
+        return Tree.ready(
+            folder == null ? List.of() : folder.entries().stream().map(Node::of).toList());
+      }
       var c = s.catalog;
       var live = c.lives.get(node.id());
       if (live == null) {
@@ -1458,6 +1474,8 @@ final class CatalogTree {
     @Override
     public El icon(Node node) {
       return switch (node) {
+        case Node.Folder n ->
+          icon(s.folderOpen(n.id()) ? Symbol.FOLDER_OPEN : Symbol.FOLDER, false);
         case Node.Connection n -> connection(n);
         case Node.OfDatabase n -> icon(Symbol.DATABASE, n.database().system());
         case Node.OfSchema n -> icon(Symbol.FOLDER, n.schema().system());
@@ -1516,6 +1534,20 @@ final class CatalogTree {
         .icon(Symbol.ARROW_CLOCKWISE);
     Menu.Item copy = Menu.item("Copy name", () -> copyName(s, node)).icon(Symbol.COPY);
     return switch (node) {
+      case Node.Folder n -> {
+        if (s.folder(n.id()) == null) {
+          yield List.of();
+        }
+        yield List.of(
+            Menu.item("New connection…", s.canChange() ? s::newConnection : null)
+                .icon(Symbol.ADD),
+            Menu.item("New folder…", s.canAddFolder() ? s::newFolder : null).icon(Symbol.FOLDER),
+            Menu.separator(),
+            Menu.item("Rename…", () -> s.askRenameFolder(n.id())).icon(Symbol.EDIT),
+            moveTo(s, n),
+            Menu.separator(),
+            Menu.item("Delete…", () -> s.askDeleteFolder(n.id())).icon(Symbol.DELETE));
+      }
       case Node.Connection n -> {
         var p = s.profile(n.id());
         yield List.of(
@@ -1529,6 +1561,7 @@ final class CatalogTree {
             Menu.item("Edit…", () -> change(s, p, Then.EDIT)).icon(Symbol.EDIT),
             Menu.submenu("Color", colors(s, p)),
             Menu.item("Duplicate", () -> s.duplicate(p)).icon(Symbol.COPY),
+            moveTo(s, n),
             Menu.separator(),
             Menu.item("Delete…", () -> change(s, p, Then.DELETE)).icon(Symbol.DELETE));
       }
@@ -1540,6 +1573,70 @@ final class CatalogTree {
             refresh,
             copy);
       default -> List.of(refresh, copy);
+    };
+  }
+
+  /**
+   * Move to: the top and every folder by its path, but the node itself and the folders it holds;
+   * where it is now checked, and where it does not fit disabled.
+   */
+  private static Menu.Item moveTo(State s, Node node) {
+    var path = s.workspace().path(node.id());
+    UUID now = path == null || path.isEmpty() ? null : path.getLast().id();
+    var items = new ArrayList<Menu.Item>();
+    items.add(Menu.item(
+            "Top level",
+            now != null && s.canMove(node, null, Workspace.Place.INTO)
+                ? () -> s.move(node, null, Workspace.Place.INTO)
+                : null)
+        .checked(now == null));
+    folders(s, node, now, s.workspace().entries(), "", items);
+    return Menu.submenu("Move to", items);
+  }
+
+  private static void folders(
+      State s,
+      Node node,
+      UUID now,
+      List<Workspace.Entry> entries,
+      String above,
+      List<Menu.Item> items) {
+    for (var entry : entries) {
+      if (!(entry instanceof Workspace.Folder f) || f.id().equals(node.id())) {
+        continue;
+      }
+      var target = new Node.Folder(f.id());
+      String name = above + f.name();
+      items.add(Menu.item(
+              name,
+              !f.id().equals(now) && s.canMove(node, target, Workspace.Place.INTO)
+                  ? () -> s.move(node, target, Workspace.Place.INTO)
+                  : null)
+          .checked(f.id().equals(now)));
+      folders(s, node, now, f.entries(), name + " / ", items);
+    }
+  }
+
+  /** Whether the user may drag the node: a folder or a connection, not what is below one. */
+  static boolean canDrag(Node node) {
+    return node instanceof Node.Folder || node instanceof Node.Connection;
+  }
+
+  /** Whether the node can go where the pointer is; asked at every step of a drag. */
+  static boolean canDrop(State s, Tree.Move<Node> move) {
+    return s.canMove(move.node(), move.target(), place(move.place()));
+  }
+
+  /** Moves the dropped node and selects it, so that the rows follow it. */
+  static void dropped(State s, Tree.Move<Node> move) {
+    s.move(move.node(), move.target(), place(move.place()));
+  }
+
+  private static Workspace.Place place(Tree.Place place) {
+    return switch (place) {
+      case BEFORE -> Workspace.Place.BEFORE;
+      case AFTER -> Workspace.Place.AFTER;
+      case INTO -> Workspace.Place.INTO;
     };
   }
 

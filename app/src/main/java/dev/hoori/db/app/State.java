@@ -91,6 +91,8 @@ final class State {
   private Workspace workspace = Workspace.EMPTY; // what is saved: the connections in folders
   // The workspace's connections from the top down, in the order shown; set with it in change().
   List<ConnectionProfile> profiles = List.of();
+  // Its folders by id, for the tree, which asks for them at every frame; set with it too.
+  private Map<UUID, Workspace.Folder> folders = Map.of();
   boolean loaded; // whether the workspace was loaded, or failed to
   String loadError; // why the workspace could not be loaded, or null
   // Where what a file that could not be understood held is kept once a save replaced it, or null.
@@ -105,6 +107,8 @@ final class State {
   ConnectionDialog dialog; // null while closed
   DriversDialog driverList; // the Drivers dialog, null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
+  FolderDialog folderDialog; // a folder's name or the question before its delete; null while closed
+  private UUID placing; // the folder the new connection's dialog puts it in, or null for the top
   boolean about; // whether the About dialog is open
   Pending pending; // the one act that waits, or null
   // Its deletion runs: it waits for the keyring to be found, then for its password to go.
@@ -543,9 +547,153 @@ final class State {
     return keyring instanceof Keyring.Available(var secrets) ? secrets : null;
   }
 
-  /** Opens the dialog for a new connection. */
+  /** Opens the dialog for a new connection, which goes where {@link #folderFor} the selection. */
   void newConnection() {
+    placing = folderFor(selected);
     dialog = ConnectionDialog.create(this);
+  }
+
+  /** What is saved: the connections in folders. */
+  Workspace workspace() {
+    return workspace;
+  }
+
+  /** The folder of the id, or null where there is none. */
+  Workspace.Folder folder(UUID id) {
+    return folders.get(id);
+  }
+
+  /**
+   * The folder something new goes into from the node: the node itself where it is a folder, else
+   * the folder its connection is in; null for the top.
+   */
+  UUID folderFor(Node node) {
+    if (node instanceof Node.Folder f) {
+      return f.id();
+    }
+    var path = node == null ? null : workspace.path(node.id());
+    return path == null || path.isEmpty() ? null : path.getLast().id();
+  }
+
+  private static final Workspace.Folder NEW_FOLDER =
+      new Workspace.Folder(new UUID(0, 0), "", true, List.of());
+
+  /** Whether a new folder fits where {@link #folderFor} the selection, folders nesting so deep. */
+  boolean canAddFolder() {
+    return canChange() && workspace.fits(folderFor(selected), NEW_FOLDER);
+  }
+
+  /** Whether the folder of the id is open in the tree; not where there is none. */
+  boolean folderOpen(UUID id) {
+    var folder = folders.get(id);
+    return folder != null && folder.open();
+  }
+
+  /** Opens the dialog for a new folder, which goes where {@link #folderFor} the selection. */
+  void newFolder() {
+    folderDialog = FolderDialog.create(folderFor(selected));
+  }
+
+  /** A new folder of the name, open and last in the folder of the id or at the top; selected. */
+  void createFolder(UUID in, String name) {
+    folderDialog = null;
+    var folder = new Workspace.Folder(UUID.randomUUID(), name, true, List.of());
+    var at = folder(in) == null ? null : in; // gone meanwhile: at the top
+    if (!workspace.fits(at, folder)) {
+      tell("The folder was not made: folders nest at most " + Workspace.DEPTH + " deep.");
+      return;
+    }
+    change(revealing(workspace.into(at, folder), folder.id()));
+    selected = new Node.Folder(folder.id());
+    persist();
+  }
+
+  void askRenameFolder(UUID id) {
+    var folder = folder(id);
+    if (folder != null) {
+      folderDialog = FolderDialog.rename(id, folder.name());
+    }
+  }
+
+  void renameFolder(UUID id, String name) {
+    folderDialog = null;
+    if (folder(id) != null) {
+      change(workspace.rename(id, name));
+      persist();
+    }
+  }
+
+  /** The user opens or closes a folder in the tree, which is saved. */
+  void openFolder(UUID id, boolean open) {
+    var folder = folder(id);
+    if (folder != null && folder.open() != open) {
+      change(workspace.open(id, open));
+      persist();
+    }
+  }
+
+  /**
+   * Whether the node can go to the place at the target, or last at the top where the target is
+   * null: folders and connections alone, as {@link Workspace#canMove} allows.
+   */
+  boolean canMove(Node node, Node target, Workspace.Place place) {
+    return entry(node)
+        && (target == null || entry(target))
+        && workspace.canMove(node.id(), target == null ? null : target.id(), place);
+  }
+
+  private static boolean entry(Node node) {
+    return node instanceof Node.Folder || node instanceof Node.Connection;
+  }
+
+  /**
+   * Moves the node, where it can go, and selects it with the folders on its way open. A connection
+   * keeps what is open and read below it, its tabs and its consoles, which none of them names.
+   */
+  void move(Node node, Node target, Workspace.Place place) {
+    if (!canMove(node, target, place)) {
+      return;
+    }
+    var moved = workspace.move(node.id(), target == null ? null : target.id(), place);
+    change(revealing(moved, node.id()));
+    selected = node;
+    persist();
+  }
+
+  // The workspace with the folders on the way to the entry of the id open, so that its row shows.
+  private static Workspace revealing(Workspace workspace, UUID id) {
+    for (var folder : workspace.path(id)) {
+      if (!folder.open()) {
+        workspace = workspace.open(folder.id(), true);
+      }
+    }
+    return workspace;
+  }
+
+  /** Delete…: an empty folder goes at once, else the dialog asks what becomes of what it holds. */
+  void askDeleteFolder(UUID id) {
+    var folder = folder(id);
+    if (folder == null) {
+      return;
+    }
+    if (folder.entries().isEmpty()) {
+      dissolveFolder(id);
+    } else {
+      folderDialog = FolderDialog.delete(id, folder.name());
+    }
+  }
+
+  /** Deletes the folder, and what it held takes its place, one level up. */
+  void dissolveFolder(UUID id) {
+    folderDialog = null;
+    if (folder(id) == null) {
+      return;
+    }
+    change(workspace.dissolve(id));
+    if (new Node.Folder(id).equals(selected)) {
+      selected = null;
+    }
+    persist();
   }
 
   void edit(ConnectionProfile profile) {
@@ -571,9 +719,10 @@ final class State {
   }
 
   /**
-   * Puts the profile in place of the one with its id, or at the end, and selects it. Where it
-   * reaches another server or database now, the tabs of its tables close: their records name
-   * tables of the old one. Its consoles stay, with their texts and databases.
+   * Puts the profile in place of the one with its id, and selects it; a new one goes last into the
+   * folder its dialog was opened for, which opens, else at the top. Where it reaches another
+   * server or database now, the tabs of its tables close: their records name tables of the old
+   * one. Its consoles stay, with their texts and databases.
    */
   void put(ConnectionProfile profile) {
     var old = profile(profile.id());
@@ -584,7 +733,11 @@ final class State {
             || !database(old).equals(database(profile)))) {
       close(tables(profile.id()));
     }
-    change(workspace.put(profile));
+    if (old == null && workspace.fits(placing, profile)) { // a folder gone meanwhile: the top
+      change(revealing(workspace.into(placing, profile), profile.id()));
+    } else {
+      change(workspace.put(profile));
+    }
     selected = new Node.Connection(profile.id());
     // A color alone leaves a connection connected, and its consoles' sessions; its tabs take it.
     boolean color = old != null && old.withColor(profile.color()).equals(profile);
@@ -652,7 +805,11 @@ final class State {
 
   /** Whether a dialog is open, which an act that opens one must not replace. */
   boolean dialogOpen() {
-    return dialog != null || deleting != null || about || driverList != null;
+    return dialog != null
+        || deleting != null
+        || folderDialog != null
+        || about
+        || driverList != null;
   }
 
   /** The act of deleting the connection, which its disconnect and its delete share. */
@@ -1066,10 +1223,10 @@ final class State {
 
   /**
    * The connection a new console in the window is for: in the main window the one selected in the
-   * tree, else that of the window's active tab; null for none.
+   * tree, or that of the node selected, else that of the window's active tab; null for none.
    */
   UUID consoleFor(TabGroups.Group<Tab> group) {
-    if (group == tabs.main() && selected != null) {
+    if (group == tabs.main() && selected != null && !(selected instanceof Node.Folder)) {
       return selected.id();
     }
     return switch (group.activeTab()) {
@@ -1371,6 +1528,18 @@ final class State {
   private void change(Workspace changed) {
     workspace = changed;
     profiles = changed.connections();
+    var byId = new HashMap<UUID, Workspace.Folder>();
+    index(changed.entries(), byId);
+    folders = byId;
+  }
+
+  private static void index(List<Workspace.Entry> entries, Map<UUID, Workspace.Folder> byId) {
+    for (var entry : entries) {
+      if (entry instanceof Workspace.Folder f) {
+        byId.put(f.id(), f);
+        index(f.entries(), byId);
+      }
+    }
   }
 
   ConnectionProfile profile(UUID id) {
