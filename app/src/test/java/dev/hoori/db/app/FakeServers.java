@@ -54,7 +54,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>A table has rows made up from their position, of the kinds its columns' types say, 3 unless
  * {@link #rows} says how many, or the rows {@link #values} gives. Its rows' calls are keyed {@code
  * estimate <host>/<path>}, {@code count <host>/<path>} and {@code read <host>/<path> <from>-<to>},
- * the path as of {@code columns}, such as {@code pg.example.com/shop.public.orders}.
+ * the path as of {@code columns}, such as {@code pg.example.com/shop.public.orders}, and a whole
+ * value's, which {@link #whole} gives, {@code whole <host>/<path> <column> <key>}, the key's values
+ * joined by commas.
  *
  * <p>A statement gives what {@link #statement} says, on any server, and one it does not know fails
  * as invalid. Its calls are keyed {@code run <host> <sql>} for the first portion, {@code next
@@ -106,6 +108,7 @@ final class FakeServers implements Servers {
   private final Map<String, Long> counts = new ConcurrentHashMap<>();
   private final Map<String, OptionalLong> estimates = new ConcurrentHashMap<>();
   private final Map<String, List<List<Object>>> values = new ConcurrentHashMap<>();
+  private final Map<String, String> wholes = new ConcurrentHashMap<>();
   private final Map<String, Answer> statements = new ConcurrentHashMap<>();
 
   /** How long each portion of a statement took, as the server would say. */
@@ -292,6 +295,15 @@ final class FakeServers implements Servers {
   FakeServers values(String path, List<List<Object>> rows) {
     values.put(path, rows);
     return rows(path, rows.size(), OptionalLong.of(rows.size()));
+  }
+
+  /**
+   * The whole text of the column of the table at the path, for the row whose key has the values,
+   * joined by commas; a row without one is not found.
+   */
+  FakeServers whole(String path, String column, String key, String text) {
+    wholes.put(path + " " + column + " " + key, text);
+    return this;
   }
 
   /** A failure of a call on rows, as core reports it, with the server's words. */
@@ -668,6 +680,20 @@ final class FakeServers implements Servers {
       });
     }
 
+    @Override
+    public String whole(Table t, List<Column> columns, List<Object> row, int column)
+        throws QueryException {
+      var key = new StringBuilder();
+      for (int i = 0; i < columns.size(); i++) {
+        if (columns.get(i).keyPosition() > 0) {
+          key.append(key.isEmpty() ? "" : ",").append(row.get(i));
+        }
+      }
+      var at = path(t) + " " + columns.get(column).name() + " " + key;
+      return rows("whole " + at, t, table -> Optional.ofNullable(wholes.get(at)))
+          .orElseThrow(() -> queryFailure(QueryException.Failure.NOT_FOUND));
+    }
+
     private Outline container(Container c) {
       return switch (c) {
         case Database d -> find(root(), d.name());
@@ -987,6 +1013,9 @@ final class FakeServers implements Servers {
     if (t.equals("bytea") || t.endsWith("blob") || t.contains("binary")) {
       return Kind.BINARY;
     }
+    if (t.startsWith("json")) {
+      return Kind.JSON;
+    }
     if (t.startsWith("text")
         || t.startsWith("char")
         || t.startsWith("varchar")
@@ -1009,7 +1038,7 @@ final class FakeServers implements Servers {
       case DATE_TIME_ZONED ->
         LocalDateTime.of(2026, 1, 1, 9, 0).plusMinutes(i).atOffset(ZoneOffset.UTC);
       case BINARY -> new Binary(new byte[] {(byte) i, (byte) (i >> 8), 0x0d, 0x0a}, 4);
-      case OTHER -> "{\"n\": " + (i + 1) + "}";
+      case JSON, OTHER -> "{\"n\": " + (i + 1) + "}";
     };
   }
 

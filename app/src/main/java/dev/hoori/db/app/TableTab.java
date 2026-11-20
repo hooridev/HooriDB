@@ -24,6 +24,8 @@ import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.data.Changes;
+import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
@@ -34,6 +36,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.function.LongPredicate;
@@ -120,6 +123,15 @@ final class TableTab implements Tab {
   private int says;
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   final Menu.State menu = new Menu.State();
+  final ValuePanel value = new ValuePanel();
+  private Whole whole; // the current cell's whole value, for the value panel; or null
+
+  /**
+   * The whole value of a cell that a page holds in part, asked for by its row as read: the text,
+   * null for NULL, or why it could not be read, once it came.
+   */
+  private record Whole(
+      List<Object> row, int column, Lane.Asked asked, String text, String failure) {}
 
   TableTab(UUID id, Table table) {
     this.id = id;
@@ -213,7 +225,7 @@ final class TableTab implements Tab {
 
   /**
    * The grid built these rows: the pages they are on are read first, then one on each side, and
-   * what is read for rows far from them is given up.
+   * what is read for rows far from them is given up, but for the page of the value panel's cell.
    */
   void want(State s, int first, int last) {
     this.first = first;
@@ -223,7 +235,8 @@ final class TableTab implements Tab {
     }
     long top = first / PAGE;
     long bottom = last / PAGE;
-    giveUp(page -> page < top - AROUND || page > bottom + AROUND);
+    long shown = panelPage();
+    giveUp(page -> (page < top - AROUND || page > bottom + AROUND) && page != shown);
     for (long page = top; page <= bottom; page++) {
       var asked = reading.get(page);
       if (asked != null && asked.priority() != Lane.Priority.VIEW) {
@@ -320,17 +333,26 @@ final class TableTab implements Tab {
     keep();
   }
 
-  /** Drops the pages farthest from those in view, beyond {@link #KEPT}. */
+  /**
+   * Drops the pages farthest from those in view, beyond {@link #KEPT}; not that of the cell the
+   * value panel shows.
+   */
   private void keep() {
     if (pages.size() <= KEPT) {
       return;
     }
     long middle = ((long) first + Math.max(first, last)) / 2 / PAGE;
     var far = new ArrayList<>(pages.keySet());
+    far.remove(Long.valueOf(panelPage()));
     far.sort(Comparator.comparingLong(p -> -Math.abs(p - middle)));
     for (int i = 0; pages.size() > KEPT; i++) {
       pages.remove(far.get(i));
     }
+  }
+
+  /** The page of the cell the open value panel shows, which stays; -1 for none. */
+  private long panelPage() {
+    return value.open && selection.row() >= 0 ? selection.row() / PAGE : -1;
   }
 
   /**
@@ -461,6 +483,10 @@ final class TableTab implements Tab {
    */
   void stop() {
     var gone = asked(page -> true);
+    if (whole != null && whole.asked() != null) {
+      gone.add(whole.asked());
+    }
+    whole = null; // read anew with the pages
     if (opening != null) {
       gone.add(opening);
       opening = null;
@@ -550,7 +576,7 @@ final class TableTab implements Tab {
     // Loading cells only while something is read, or was: not for a table that failed at once.
     boolean grid = columns != null && (fields != null || failure == null);
     if (grid) {
-      content.child(grid(s, app).grow(1));
+      content.child(withValue(s, app, grid(s, app)));
     } else if (opening != null) {
       content.child(col()
           .grow(1)
@@ -582,8 +608,117 @@ final class TableTab implements Tab {
       // After the grid: the rows in view are those its build in this view scrolled to.
       end.add(Label.label(Label.Variant.MUTED, inViewText()).key("rows-in-view"));
       end.add(paging());
+      end.add(value.button());
     }
     return content.child(Card.footer(rowsStatus, end.toArray(El[]::new)));
+  }
+
+  /**
+   * The grid with the value panel, which shows the current cell's value: one that a page holds in
+   * part is read whole by its row's key as the panel shows it, and given up once it shows another
+   * cell or closes.
+   */
+  private El withValue(State s, App<State> app, El grid) {
+    int row = selection.row();
+    int column = selection.column();
+    ValuePanel.Cell cell = null;
+    String note = null;
+    boolean waiting = false;
+    boolean wanted = false; // the whole value, by the row's key
+    if (value.open
+        && fields != null
+        && row >= 0
+        && row < gridRows()
+        && column >= 0
+        && column < columns.size()) {
+      var c = columns.get(column);
+      Object v = null;
+      if (loaded(row)) {
+        var values = pages.get((long) row / PAGE).get(row % PAGE);
+        v = values.get(column);
+        if (v instanceof Cut && !Changes.names(columns, values)) {
+          note = Cells.icon(v).tooltip() + "; without a primary key the rest cannot be read";
+        } else if (v instanceof Cut) {
+          wanted = true;
+          // The row as read: a page read again may hold another value of the same start.
+          if (whole == null || whole.row() != values || whole.column() != column) {
+            ask(s, values, column);
+          }
+          if (whole == null) {
+            note = Cells.icon(v).tooltip();
+          } else if (whole.asked() != null) {
+            waiting = true;
+          } else if (whole.failure() != null) {
+            note = whole.failure();
+          } else {
+            v = whole.text();
+          }
+        }
+      } else {
+        // Out of the pages held, as after a refresh far from it: read as a page in view.
+        long page = row / PAGE;
+        if (!closed && failure == null && opening == null && !ending) {
+          read(s, page, Lane.Priority.VIEW);
+        }
+        waiting = opening != null || reading.containsKey(page);
+      }
+      cell = loaded(row) || waiting
+          ? new ValuePanel.Cell(c.name(), c.type(), fields.get(column).kind(), v)
+          : null;
+    }
+    // What was asked for a cell the panel no longer shows is given up.
+    if (!wanted && whole != null) {
+      if (whole.asked() != null) {
+        whole.asked().cancel();
+      }
+      whole = null;
+    }
+    return value.around(app, s.zone, grid, cell, note, waiting);
+  }
+
+  /**
+   * Asks for the whole value of the row's column, in place of what was asked before; not while
+   * the tab cannot read, which leaves nothing asked.
+   */
+  private void ask(State s, List<Object> row, int column) {
+    if (whole != null && whole.asked() != null) {
+      whole.asked().cancel();
+    }
+    whole = null;
+    var lane = closed || failure != null || opening != null ? null : s.catalog.lane(s, id, table);
+    if (lane == null) {
+      return;
+    }
+    var live = s.catalog.live(id);
+    var of = table;
+    var with = columns;
+    var asked = lane.ask(
+        s.app,
+        "read a value of " + table.name(),
+        Lane.Priority.VIEW,
+        link -> Optional.ofNullable(link.whole(of, with, row, column)),
+        text -> whole = new Whole(row, column, null, text.orElse(null), null),
+        error -> {
+          whole = null;
+          if (error instanceof InterruptedException) {
+            return; // the lane closed under it: asked again as the panel shows it
+          }
+          if (error instanceof ConnectionException
+              || error instanceof QueryException e
+                  && (e.failure() == QueryException.Failure.CONNECTION_LOST
+                      || e.failure() == QueryException.Failure.ABORTED)) {
+            failed(s, error, false, live);
+            return;
+          }
+          var detail = CatalogTree.words(live, detail(error));
+          whole = new Whole(
+              row,
+              column,
+              null,
+              null,
+              "Could not be read whole" + (detail.isEmpty() ? "" : ": " + detail));
+        });
+    whole = new Whole(row, column, asked, null, null);
   }
 
   /** The rows wholly in view, as "Rows 201–223"; empty before the grid was laid out. */
@@ -730,7 +865,7 @@ final class TableTab implements Tab {
       if (column.keyPosition() > 0) {
         grid = grid.icon(Symbol.KEY, Icon.Variant.WARNING);
       }
-      if (kind == Kind.TEXT || kind == Kind.OTHER) {
+      if (kind == Kind.TEXT || kind == Kind.JSON || kind == Kind.OTHER) {
         grid = grid.cellIcon(row -> Cells.icon(value(row, at)));
       }
       shown.add(grid);

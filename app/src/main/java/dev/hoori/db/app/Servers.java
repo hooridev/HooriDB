@@ -86,6 +86,10 @@ interface Servers {
     /** The rows from {@code from} up to {@code to}, fewer at the end, as {@link Rows#read}. */
     Page read(Table table, List<Column> columns, long from, long to) throws QueryException;
 
+    /** The whole text of a column of the row its key names, as {@link Rows#whole}. */
+    String whole(Table table, List<Column> columns, List<Object> row, int column)
+        throws QueryException;
+
     /**
      * A statement to run, as {@link Execution} runs it; nothing runs before its first next.
      *
@@ -229,6 +233,13 @@ interface Servers {
     public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
       usable();
       return Rows.read(connection, provider, table, columns, from, to);
+    }
+
+    @Override
+    public String whole(Table table, List<Column> columns, List<Object> row, int column)
+        throws QueryException {
+      usable();
+      return Rows.whole(connection, provider, table, columns, row, column);
     }
 
     @Override

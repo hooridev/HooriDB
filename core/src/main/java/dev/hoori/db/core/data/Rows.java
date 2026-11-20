@@ -43,10 +43,10 @@ import java.util.regex.Pattern;
  * and on PostgreSQL then by the table and place of each row, as the children of a table that
  * inherit from it may repeat its keys. Without a key, a PostgreSQL table is read in the order of
  * its rows' tables and physical places, which an update or a {@code VACUUM FULL} changes; anything
- * else, a foreign table among them, by all its columns but those of kind {@link Kind#OTHER}, which
- * may have no order, and then by the bytes of its texts, so that texts a collation takes for equal
- * keep their order; rows alike in all those columns may swap places between two reads. That order
- * sorts the whole table for every page.
+ * else, a foreign table among them, by all its columns but those of kind {@link Kind#OTHER} or
+ * {@link Kind#JSON}, which may have no order, and then by the bytes of its texts, so that texts a
+ * collation takes for equal keep their order; rows alike in all those columns may swap places
+ * between two reads. That order sorts the whole table for every page.
  *
  * <p>Values are typed as {@link Kind} says. They are read from the server's own text rather than
  * through the drivers' conversions to Java types, which shift a time in a daylight saving gap of
@@ -164,11 +164,13 @@ public final class Rows {
    * <p>The columns may have changed since they were read. The read notices it from what the
    * server reports with the rows, without asking anything more, and fails with {@link
    * QueryException.Failure#COLUMNS_CHANGED} where their names, number or order differ, or on
-   * MariaDB and MySQL where a column's type is now read another way: of another kind, or a {@code
-   * bigint} that became unsigned or signed. A type that keeps how its values are read, such as a
-   * longer {@code varchar}, is not told apart, and on MySQL neither are {@code tinyint(1)} and
-   * {@code bit(1)}, which its driver reports alike. PostgreSQL's values are read by the types the
-   * server reports for that very read, so a page's fields give the kinds the columns have now.
+   * MariaDB and MySQL where a column's type is now read another way: of another kind, apart from
+   * {@link Kind#JSON} and {@link Kind#TEXT}, which are read alike, or a {@code bigint} that became
+   * unsigned or signed. A type that keeps how its values are read, such as a longer {@code
+   * varchar}, is not told apart, and on MySQL neither are {@code tinyint(1)} and {@code bit(1)},
+   * which its driver reports alike. PostgreSQL's values are read by the types the server reports
+   * for that very read, so a page's fields give the kinds the columns have now; on MariaDB, a
+   * column its catalog calls {@code longtext} is of kind {@link Kind#JSON} where the rows say so.
    *
    * @param columns all the table's columns, in their order, as {@link
    *     dev.hoori.db.core.catalog.Catalog#columns} read them, which give the primary key
@@ -213,21 +215,78 @@ public final class Rows {
             : "")
         + order(provider, columns, reads, places, children)
         + " LIMIT " + (to - from) + " OFFSET " + from;
-    List<List<Object>> rows;
+    var fields = reads.stream().map(Read::field).toList();
+    Page page;
     try {
-      rows = Query.query(connection, provider, sql, result -> {
-        if (witness && !dialect.same(columns, reads, result.getMetaData(), selected.size())) {
-          return null;
-        }
-        return rows(result, reads);
+      page = Query.query(connection, provider, sql, result -> {
+        var shown = witness
+            ? dialect.witnessed(columns, reads, result.getMetaData(), selected.size())
+            : fields;
+        return shown == null ? null : new Page(shown, List.copyOf(rows(result, reads)));
       });
     } catch (QueryException e) {
       throw columnGone(provider, e) ? changed(table) : e;
     }
-    if (rows == null) {
+    if (page == null) {
       throw changed(table);
     }
-    return new Page(reads.stream().map(Read::field).toList(), List.copyOf(rows));
+    return page;
+  }
+
+  /**
+   * The whole text of the column of the row that has the values of the given row, as it was read,
+   * in its primary key, as the driver gives it; null for NULL. It reads what a page holds only in
+   * part, a {@link Cut}, of a text, JSON or any other value as the server writes it.
+   *
+   * @param columns all the table's columns, as {@link #read} takes them
+   * @param row a row of a page of the table, with those columns
+   * @param column the column's index among them
+   * @throws QueryException as {@link Query} reports it; {@link QueryException.Failure#NOT_FOUND}
+   *     also where no row has the key's values now, or more than one, as children that inherit
+   *     from a PostgreSQL table may
+   * @throws IllegalArgumentException if no column is in a primary key, a column is not the table's,
+   *     the row has a value for another number of columns, a value of its key cannot name it, as
+   *     NULL or one read in part, or a PostgreSQL connection is to another database than the
+   *     table's
+   */
+  public static String whole(
+      Connection connection,
+      Provider provider,
+      Table table,
+      List<Column> columns,
+      List<Object> row,
+      int column)
+      throws QueryException {
+    var keyed = Changes.of(table, columns)
+        .orElseThrow(() -> new IllegalArgumentException(table.name() + " has no primary key"));
+    Changes.requireRow(columns, row);
+    requireConnectedTo(connection, provider, table);
+    var dialect = provider.dialect().rows();
+    var values = new ArrayList<Object>();
+    // shortcut: on MariaDB and MySQL a moment of the key in an hour that the session's zone repeats
+    // can name the other moment's row, as Changes.write refuses; check it if such keys show up.
+    var sql = "SELECT " + provider.quote(columns.get(column).name()) + " FROM "
+        + qualified(provider, table)
+        + keyed.where(provider, row, dialect.equal(), Changes.parameters(dialect, values));
+    var texts = Query.run(connection, provider, sql, statement -> {
+      for (var i = 0; i < values.size(); i++) {
+        dialect.bind(statement, i + 1, values.get(i));
+      }
+      var read = new ArrayList<String>();
+      try (var rows = statement.executeQuery()) {
+        while (read.size() < 2 && rows.next()) {
+          read.add(rows.getString(1));
+        }
+      }
+      return read;
+    });
+    if (texts.size() != 1) {
+      throw QueryException.of(
+          QueryException.Failure.NOT_FOUND,
+          (texts.isEmpty() ? "No row" : "More than one row") + " of " + table.name()
+              + " has the key");
+    }
+    return texts.getFirst();
   }
 
   private static List<List<Object>> rows(ResultSet result, List<Read> reads) throws SQLException {
@@ -272,7 +331,7 @@ public final class Rows {
       order.addAll(places);
     } else if (order.isEmpty() && places.isEmpty()) {
       for (var read : reads) {
-        if (read.field().kind() != Kind.OTHER) {
+        if (read.field().kind() != Kind.OTHER && read.field().kind() != Kind.JSON) {
           order.add(read.column());
         }
       }

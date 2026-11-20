@@ -43,10 +43,4 @@ public final class MariaDbRows extends MySqlFamilyRows {
   boolean bitLikeTinyint() {
     return false;
   }
-
-  // MariaDB Connector/J names its json JSON, which the catalog calls longtext.
-  @Override
-  String json() {
-    return "longtext";
-  }
 }

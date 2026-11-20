@@ -39,8 +39,15 @@ public enum Kind {
   /** Binary data, as {@link Binary}, of at most {@link Rows#LIMIT} bytes. */
   BINARY,
   /**
+   * JSON as the server writes it, which need not be valid: a {@code String}, or {@link Cut} beyond
+   * {@link Rows#LIMIT} characters. PostgreSQL's {@code json} and {@code jsonb}, MySQL's {@code
+   * json}, and MariaDB's {@code json}, a {@code longtext} that {@code json_valid()} checks, also
+   * where the check is written by hand, where its driver says so with the rows.
+   */
+  JSON,
+  /**
    * Anything else, as the server writes it: a {@code String}, or {@link Cut} beyond {@link
-   * Rows#LIMIT} characters. Among them JSON, UUIDs, arrays, intervals and PostgreSQL's bit strings.
+   * Rows#LIMIT} characters. Among them UUIDs, arrays, intervals and PostgreSQL's bit strings.
    */
   OTHER
 }

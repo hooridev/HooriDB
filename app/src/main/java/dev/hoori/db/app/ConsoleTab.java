@@ -39,6 +39,7 @@ import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.StoredConsole;
+import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.driver.LoadedDriver;
@@ -269,6 +270,7 @@ final class ConsoleTab implements Tab {
   Output shown; // the results tab shown; null for Messages
   final List<Logged> log = new ArrayList<>();
   final DataGrid.Selection logSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
+  final ValuePanel value = new ValuePanel(); // of the result shown
   Problem problem; // of the last run, or null
   private int results; // numbered so far
   private int firstOfRun = 1; // the number of the last run's first result
@@ -2651,9 +2653,36 @@ final class ConsoleTab implements Tab {
     return col()
         .grow(1)
         .minSize(0, 0)
-        .child(grid(s, app, o).grow(1))
+        .child(withValue(s, app, o, grid(s, app, o)))
         .child(Card.footer(
-            Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(), pin));
+            Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
+            value.button(),
+            pin));
+  }
+
+  /**
+   * The result's grid with the value panel, which shows the current cell's value as the result
+   * holds it: a text cut short stays so, as the statement may not name a row to read it by.
+   */
+  private El withValue(State s, App<State> app, Output o, El grid) {
+    int row = o.selection.row();
+    int column = o.selection.column();
+    ValuePanel.Cell cell = null;
+    String note = null;
+    // A row beyond those read is the one that asks for more.
+    if (value.open
+        && row >= 0
+        && row < o.rows.size() + (o.more ? 1 : 0)
+        && column >= 0
+        && column < o.fields.size()) {
+      var field = o.fields.get(column);
+      var v = row < o.rows.size() ? o.rows.get(row).get(column) : null;
+      cell = new ValuePanel.Cell(field.name(), field.type(), field.kind(), v);
+      if (v instanceof Cut) {
+        note = Cells.icon(v).tooltip() + "; a result keeps no more";
+      }
+    }
+    return value.around(app, s.zone, grid, cell, note, cell != null && row >= o.rows.size());
   }
 
   /** The result's rows, read-only, with the table tab's cells. */
@@ -2675,7 +2704,7 @@ final class ConsoleTab implements Tab {
               row -> Cells.text(o.rows.get(row).get(at), zone))
           .typeName(field.type())
           .sortable(false);
-      if (kind == Kind.TEXT || kind == Kind.OTHER) {
+      if (kind == Kind.TEXT || kind == Kind.JSON || kind == Kind.OTHER) {
         column = column.cellIcon(row -> Cells.icon(o.rows.get(row).get(at)));
       }
       columns.add(column);

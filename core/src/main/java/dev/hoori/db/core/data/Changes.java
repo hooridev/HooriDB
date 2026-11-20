@@ -443,15 +443,14 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   }
 
   // A parameter for each value, which goes into the values.
-  private static Function<Object, String> parameters(RowsDialect dialect, List<Object> values) {
+  static Function<Object, String> parameters(RowsDialect dialect, List<Object> values) {
     return value -> {
       values.add(value);
       return dialect.parameter(value);
     };
   }
 
-  private String where(
-      Provider provider, List<Object> row, String equal, Function<Object, String> value) {
+  String where(Provider provider, List<Object> row, String equal, Function<Object, String> value) {
     var where = new StringJoiner(" AND ", " WHERE ", "");
     for (var i : keys(columns)) {
       where.add(name(provider, i) + " " + equal + " " + value.apply(row.get(i)));
@@ -476,16 +475,24 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
         .toList();
   }
 
-  private static void requireRow(List<Column> columns, List<Object> row) {
+  static void requireRow(List<Column> columns, List<Object> row) {
     if (row.size() != columns.size()) {
       throw new IllegalArgumentException(
           "A row of " + row.size() + " values for " + columns.size() + " columns");
     }
-    for (var i : keys(columns)) {
-      if (row.get(i) == null || !whole(row.get(i))) {
-        throw new IllegalArgumentException("A key that cannot name its row");
-      }
+    if (!names(columns, row)) {
+      throw new IllegalArgumentException("A key that cannot name its row");
     }
+  }
+
+  /**
+   * Whether the row, as it was read with the columns, can be named by its primary key: they have
+   * one, and none of its values in the row is NULL or read only in part.
+   */
+  public static boolean names(List<Column> columns, List<Object> row) {
+    var keys = keys(columns);
+    return !keys.isEmpty()
+        && keys.stream().allMatch(i -> i < row.size() && row.get(i) != null && whole(row.get(i)));
   }
 
   private static void requireValues(List<Column> columns, Map<Integer, Object> values) {

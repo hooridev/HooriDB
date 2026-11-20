@@ -38,6 +38,7 @@ public final class PostgreSqlRows extends RowsDialect {
   private static final int INT4 = 23;
   private static final int TEXT = 25;
   private static final int OID = 26;
+  private static final int JSON = 114;
   private static final int FLOAT4 = 700;
   private static final int FLOAT8 = 701;
   private static final int BPCHAR = 1042;
@@ -48,6 +49,7 @@ public final class PostgreSqlRows extends RowsDialect {
   private static final int TIMESTAMPTZ = 1184;
   private static final int TIMETZ = 1266;
   private static final int NUMERIC = 1700;
+  private static final int JSONB = 3802;
 
   public PostgreSqlRows() {}
 
@@ -108,9 +110,9 @@ public final class PostgreSqlRows extends RowsDialect {
   }
 
   @Override
-  boolean same(
+  List<Field> witnessed(
       List<Column> columns, List<Rows.Read> reads, ResultSetMetaData metadata, int selected) {
-    return true; // never asked, without a witness
+    return reads.stream().map(Rows.Read::field).toList(); // never asked, without a witness
   }
 
   // Real places of rows: a foreign table's may all be the same, and a view has none.
@@ -195,6 +197,7 @@ public final class PostgreSqlRows extends RowsDialect {
             name -> "(" + name + " AT TIME ZONE 'UTC')",
             ResultSet::getString,
             PostgreSqlRows::utc);
+      case JSON, JSONB -> anyText(source, Kind.JSON);
       // Any other type as its own output function writes it, which a cast may not: concat() calls
       // that, where a cast to text can be a user's function; it gives NULL as an empty text, which
       // num_nulls() tells apart. pgjdbc reports an enum as VARCHAR, and money as DOUBLE, which it

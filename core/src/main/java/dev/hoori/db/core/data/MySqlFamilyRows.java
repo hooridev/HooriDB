@@ -19,10 +19,12 @@ import java.sql.Types;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.UnaryOperator;
 
 /** How MariaDB's and MySQL's tables and results are read alike; their drivers differ. */
@@ -39,9 +41,6 @@ abstract class MySqlFamilyRows extends RowsDialect {
 
   /** Whether the driver reports a {@code tinyint(1)} and a {@code bit(1)} alike, as a BIT(1). */
   abstract boolean bitLikeTinyint();
-
-  /** The catalog's name of a type the driver reports as JSON. */
-  abstract String json();
 
   // Rather than information_schema.TABLES.TABLE_ROWS, which MySQL keeps for a day.
   @Override
@@ -83,13 +82,16 @@ abstract class MySqlFamilyRows extends RowsDialect {
     return true;
   }
 
+  // MariaDB's catalog calls its json longtext, which its driver tells apart: a field has the kind
+  // the witness says, of the two read alike.
   @Override
-  boolean same(
+  List<Field> witnessed(
       List<Column> columns, List<Rows.Read> reads, ResultSetMetaData metadata, int selected)
       throws SQLException {
     if (metadata.getColumnCount() - selected != columns.size()) {
-      return false;
+      return null;
     }
+    var fields = new ArrayList<Field>();
     for (var i = 0; i < columns.size(); i++) {
       var at = selected + i + 1;
       var type = metadata.getColumnTypeName(at);
@@ -101,14 +103,24 @@ abstract class MySqlFamilyRows extends RowsDialect {
           && precision == 1
           && (given.equals("bit(1)") || given.startsWith("tinyint(1)"));
       var now = read(
-          new Rows.Source(metadata.getColumnLabel(at), type, ALIAS), catalogType(type, precision));
+              new Rows.Source(metadata.getColumnLabel(at), type, ALIAS),
+              catalogType(type, precision))
+          .field()
+          .kind();
+      var was = reads.get(i).field();
       if (!metadata.getColumnLabel(at).equals(columns.get(i).name())
-          || !bit && now.field().kind() != reads.get(i).field().kind()
+          || !bit && !alike(now, was.kind())
           || unsignedBigint(type.toLowerCase(Locale.ROOT)) != unsignedBigint(given)) {
-        return false;
+        return null;
       }
+      fields.add(now == was.kind() || bit ? was : new Field(was.name(), was.type(), now));
     }
-    return true;
+    return List.copyOf(fields);
+  }
+
+  // JSON is read as text is.
+  private static boolean alike(Kind now, Kind was) {
+    return now == was || Set.of(Kind.TEXT, Kind.JSON).containsAll(List.of(now, was));
   }
 
   private static boolean unsignedBigint(String type) {
@@ -131,14 +143,13 @@ abstract class MySqlFamilyRows extends RowsDialect {
   }
 
   // The type as the catalog would name it, from what the driver reports: MariaDB Connector/J
-  // names tinyint(1) BOOLEAN and its json JSON, which the catalog calls longtext, while MySQL
-  // Connector/J reports tinyint(1) and bit(1) alike as a BIT of precision 1, which is taken for the
-  // tinyint(1), as a whole number holds either.
+  // names tinyint(1) BOOLEAN, and its json JSON as MySQL's, which its catalog calls longtext,
+  // while MySQL Connector/J reports tinyint(1) and bit(1) alike as a BIT of precision 1, which is
+  // taken for the tinyint(1), as a whole number holds either.
   private String catalogType(String type, int precision) {
     return switch (type.toLowerCase(Locale.ROOT)) {
       case "boolean" -> "tinyint(1)";
       case "bit" -> bitLikeTinyint() && precision == 1 ? "tinyint(1)" : "bit(" + precision + ")";
-      case "json" -> json();
       case String other -> other;
     };
   }
@@ -202,6 +213,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
                     return text;
                   }
                 });
+      case "json" -> Rows.text(source, Kind.JSON, start, "LENGTH(");
       case "char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set" ->
         Rows.text(source, Kind.TEXT, start, "LENGTH(")
             .withBytes(Rows.bytes(source, name -> "CAST(" + name + " AS BINARY)"));
