@@ -177,6 +177,8 @@ final class State {
   final Kept queriesKept;
   // The queries saved on purpose, of every connection, in the order they were first saved.
   List<SavedQuery> queries = List.of();
+  // Until the file is read nothing is saved or deleted, so that each name and id is the file's.
+  boolean queriesLoading = true;
   // The statements run from consoles, of every connection, the oldest first.
   List<HistoryEntry> history = List.of();
   // Connections deleted: what is loaded of their history and consoles after that goes too.
@@ -346,9 +348,6 @@ final class State {
               .toList();
           // Those of a connection deleted while they loaded are deleted from the file too.
           boolean dropped = all.size() != list.size();
-          for (var query : this.queries) { // saved before the load
-            all = QueryStore.put(all, query);
-          }
           this.queries = all;
           if (dropped) {
             queriesKept.unsaved = true;
@@ -362,6 +361,7 @@ final class State {
   }
 
   private void queriesLoaded(boolean canSave) {
+    queriesLoading = false;
     queriesKept.canSave = canSave;
     if (queriesKept.unsaved) {
       save(queriesKept);

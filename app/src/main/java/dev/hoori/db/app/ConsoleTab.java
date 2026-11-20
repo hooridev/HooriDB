@@ -2496,12 +2496,20 @@ final class ConsoleTab implements Tab {
         .key("cancel")
         .keepFocus());
     actions.add(Tooltip.tooltip(
-        Button.icon(Button.Variant.GHOST, Symbol.SAVE, "Save query", this::saveQuery)
+        Button.icon(
+                Button.Variant.GHOST,
+                Symbol.SAVE,
+                "Save query",
+                s.queriesLoading ? null : this::saveQuery)
             .key("query-save-open")
             .keepFocus(),
         "Save query: the selection, or else the whole text, under a name"));
     actions.add(Tooltip.tooltip(
-        Button.icon(Button.Variant.GHOST, Symbol.STAR, "Saved queries", this::openQueries)
+        Button.icon(
+                Button.Variant.GHOST,
+                Symbol.STAR,
+                "Saved queries",
+                s.queriesLoading ? null : this::openQueries)
             .key("queries-open")
             .keepFocus(),
         "Saved queries"));
