@@ -371,6 +371,57 @@ class UpdatesTest {
     assertEquals(List.of(), updater.restarts);
   }
 
+  /** A switch of the channel while the start reads the result offers no Try again of the old one. */
+  @Test
+  void aSwitchDuringTheStartOffersNoTryAgainOfTheOldChannel() throws Exception {
+    var file = Files.createDirectories(dir.resolve("updates").resolve("downloads"))
+        .resolve("download-HooriDB-" + NIGHTLY + "-linux-x64.tar.gz");
+    Files.writeString(file, NIGHTLY);
+    new UpdateStore(dir.resolve("config"))
+        .save(new StoredUpdates(
+            Channel.NIGHTLY,
+            null,
+            new StoredUpdates.Attempt(Version.parse(NIGHTLY), file, "1".repeat(64))));
+    var updater = updater();
+    updater.result = new Installation.Result(
+        Installation.Result.Status.REJECTED, "locked", "A file stayed locked");
+    updater.reading = new CountDownLatch(1);
+    var app = app(updater, "0.1.0");
+    run(
+        app,
+        "size 1200 760\nframe\n" + HELP + "press role=menuitem label=\"Stable updates\"\nframe\n");
+    updater.reading.countDown();
+    run(app, "await\nframe\n".repeat(3) + OPENED + "snap start\n");
+    var start = tree("start");
+    assertTrue(start.contains("A file stayed locked"), start);
+    assertFalse(start.contains("Try again"), start);
+  }
+
+  /** An Exit while the start reads the result waits for it, so a rollback's skip is kept. */
+  @Test
+  void anExitDuringTheStartWaitsForTheResult() throws Exception {
+    new UpdateStore(dir.resolve("config"))
+        .save(new StoredUpdates(
+            Channel.STABLE,
+            null,
+            new StoredUpdates.Attempt(
+                Version.parse("0.3.0"), dir.resolve("download-x"), "0".repeat(64))));
+    var updater = updater();
+    updater.result = new Installation.Result(
+        Installation.Result.Status.ROLLED_BACK, "not-confirmed", "Not confirmed in time");
+    updater.reading = new CountDownLatch(1);
+    var app = app(updater, "0.2.0");
+    run(
+        app,
+        "size 1200 760\nframe\npress role=menuitem label=\"File\"\nframe\n" + OPENED
+            + "press role=menuitem label=\"Exit\"\nframe\nframe\n");
+    assertFalse(app.windows().all().isEmpty(), "waits for the start");
+    updater.reading.countDown();
+    run(app, "await\nframe\n".repeat(3));
+    assertTrue(app.windows().all().isEmpty());
+    assertEquals(Version.parse("0.3.0"), stored().skipped());
+  }
+
   /** A version outside the app image, without an updater, chooses no channel by itself. */
   @Test
   void withoutAnUpdaterNoChannelIsStored() throws Exception {

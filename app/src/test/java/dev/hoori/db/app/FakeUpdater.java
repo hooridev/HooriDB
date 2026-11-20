@@ -33,6 +33,8 @@ final class FakeUpdater implements Updater {
   volatile IOException failRestart;
   // Holds each download before it writes its file, until it opens.
   volatile CountDownLatch downloading;
+  // Holds the reading of the result, until it opens.
+  volatile CountDownLatch reading;
   final List<String> downloaded = new CopyOnWriteArrayList<>(); // the versions, in order
   final List<Download> restarts = new CopyOnWriteArrayList<>();
   final List<Path> cleared = new CopyOnWriteArrayList<>(); // what each clear kept, or the folder
@@ -76,7 +78,16 @@ final class FakeUpdater implements Updater {
   }
 
   @Override
-  public Optional<Installation.Result> result() {
+  public Optional<Installation.Result> result() throws IOException {
+    var gate = reading;
+    if (gate != null) {
+      try {
+        gate.await();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new InterruptedIOException();
+      }
+    }
     var last = result;
     result = null;
     return Optional.ofNullable(last);

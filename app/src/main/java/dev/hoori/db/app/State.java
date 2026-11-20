@@ -181,6 +181,7 @@ final class State {
   private Ready restartWith; // what the exit that Restart now began restarts with, or null
   private Work restarting; // the save of the attempt and the start of the helper, or null
   private boolean confirmed; // whether shown() ran
+  private Work beginning; // the start of updates, which may hold the helper's report, or null
 
   /** An update downloaded and verified: its version and its file. */
   record Ready(Version version, Download download) {}
@@ -910,7 +911,7 @@ final class State {
 
   /** What was on its way has ended: the window closes now if it was asked to. */
   void settled() {
-    if (!quitting() || keyringBusy() || saving != null || restarting != null) {
+    if (!quitting() || keyringBusy() || saving != null || restarting != null || beginning != null) {
       return;
     }
     // The one way out: the file saved, unless the user chose to go without it ("anyway" waives
@@ -1399,7 +1400,7 @@ final class State {
   private void startUpdates() {
     var store = updateStore;
     var updater = this.updater;
-    app.background(
+    beginning = app.background(
         "load update settings",
         () -> {
           StoredUpdates stored;
@@ -1445,6 +1446,7 @@ final class State {
   }
 
   private void begun(Begun begun) {
+    beginning = null;
     var stored = begun.stored();
     updates = chosen == null ? stored : stored.withChannel(chosen);
     if (installed != null && updater != null) {
@@ -1473,7 +1475,10 @@ final class State {
                   : result.message());
         }
         case REJECTED -> {
-          if (locked(result) && attempt != null) {
+          if (locked(result)
+              && attempt != null
+              && (Channel.of(attempt.version()) == Channel.STABLE
+                  || channel() == Channel.NIGHTLY)) {
             boolean kept = begun.kept();
             update = new UpdateNotice(
                 Callout.Kind.WARNING,
@@ -1499,6 +1504,7 @@ final class State {
     if (result == null || result.status() == Installation.Result.Status.APPLIED) {
       check();
     }
+    settled(); // an Exit waited for the report to be taken
   }
 
   private static UpdateNotice notice(Callout.Kind kind, String title, String text) {
@@ -1660,8 +1666,12 @@ final class State {
     restarting = app.background(
         "restart to update",
         () -> {
-          store.save(now);
-          updater.restart(download);
+          updater.restart(download); // refused while a helper is at work: nothing written then
+          try {
+            store.save(now);
+          } catch (IOException unsaved) {
+            // The helper waits for HooriDB to close: it closes, and a rollback is not skipped.
+          }
           return download;
         },
         started -> {
