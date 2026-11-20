@@ -5,6 +5,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.List;
@@ -12,8 +13,9 @@ import java.util.OptionalLong;
 
 /**
  * How {@link Rows} reads a provider's tables and results: the estimate and the count, the order
- * and the checks of a page, and how each type's values are read. A provider's dialect hands one
- * out; what it does is this package's own, as it builds on the ways {@link Rows} reads a value.
+ * and the checks of a page, and how each type's values are read; and how {@link Changes} writes
+ * them back. A provider's dialect hands one out; what it does is this package's own, as it builds
+ * on the ways {@link Rows} reads a value.
  */
 public abstract class RowsDialect {
 
@@ -64,4 +66,35 @@ public abstract class RowsDialect {
   /** How the column of a result, or of the table as {@link #describe} reads it, is read. */
   abstract Rows.Read read(Rows.Source source, ResultSetMetaData metadata, int column)
       throws SQLException;
+
+  /** The operator that compares a column of a key with its value, as the reads name theirs. */
+  abstract String equal();
+
+  /**
+   * Binds the value, of the Java type of its kind or null, to the parameter, so that the server
+   * takes it for the value that was read.
+   *
+   * @throws IllegalArgumentException if it is of no kind's type
+   */
+  abstract void bind(PreparedStatement statement, int index, Object value) throws SQLException;
+
+  /**
+   * The value as a literal of the provider's SQL, for people to read.
+   *
+   * @throws IllegalArgumentException if it is of no kind's type
+   */
+  abstract String literal(Object value);
+
+  /** Whether a rollback undoes changes of the table's rows, which a storage engine may not. */
+  abstract boolean rollsBack(Connection connection, Provider provider, Table table)
+      throws QueryException;
+
+  /**
+   * Has the session take the text of a moment, as {@link #bind} gives it, in UTC; what restores the
+   * session as it was, or null where nothing changed.
+   */
+  abstract String utc(Connection connection) throws SQLException;
+
+  /** Restores the session as {@link #utc} found it. */
+  abstract void restore(Connection connection, String zone) throws SQLException;
 }

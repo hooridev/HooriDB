@@ -11,11 +11,15 @@ import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.OptionalLong;
@@ -220,6 +224,88 @@ abstract class MySqlFamilyRows extends RowsDialect {
         Rows.binary(source, name -> "SUBSTRING(" + name + ", 1, " + LIMIT + ")", "LENGTH");
       default -> Rows.text(source, Kind.OTHER, start, "LENGTH(");
     };
+  }
+
+  @Override
+  String equal() {
+    return "=";
+  }
+
+  // Numbers as numbers, as the servers compare a number with a text as floating point; binary data
+  // as bytes, and anything else as the server's text, which it reads as the column's type.
+  @Override
+  void bind(PreparedStatement statement, int index, Object value) throws SQLException {
+    switch (value) {
+      case null -> statement.setNull(index, Types.NULL);
+      case Long number -> statement.setLong(index, number);
+      case BigInteger number -> statement.setBigDecimal(index, new BigDecimal(number));
+      case BigDecimal number -> statement.setBigDecimal(index, number);
+      case Float number -> statement.setFloat(index, number);
+      case Double number -> statement.setDouble(index, number);
+      case Boolean truth -> statement.setBoolean(index, truth);
+      case Binary binary -> statement.setBytes(index, binary.bytes());
+      // In UTC, which the session takes it in while it writes.
+      case OffsetDateTime moment ->
+        statement.setString(
+            index,
+            Rows.text(moment.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime(), false));
+      default -> statement.setString(index, Rows.text(value, false));
+    }
+  }
+
+  // A text as the servers read it unless their SQL mode says NO_BACKSLASH_ESCAPES, and a moment
+  // with its offset, as MySQL reads it, which tells that it is in UTC.
+  @Override
+  String literal(Object value) {
+    return switch (value) {
+      case null -> "NULL";
+      case Boolean truth -> truth ? "TRUE" : "FALSE";
+      case Long number -> Rows.text(number, false);
+      case BigInteger number -> Rows.text(number, false);
+      case BigDecimal number -> Rows.text(number, false);
+      case Float number -> Rows.text(number, false);
+      case Double number -> Rows.text(number, false);
+      case Binary binary -> "X'" + HexFormat.of().formatHex(binary.bytes()) + "'";
+      default -> "'" + Rows.text(value, false).replace("\\", "\\\\").replace("'", "''") + "'";
+    };
+  }
+
+  // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails
+  // the statement that names it.
+  @Override
+  boolean rollsBack(Connection connection, Provider provider, Table table) throws QueryException {
+    var sql = "SELECT e.TRANSACTIONS FROM information_schema.TABLES t"
+        + " JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE"
+        + " WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?";
+    return Query.run(connection, provider, sql, statement -> {
+      statement.setString(1, table.container().name());
+      statement.setString(2, table.name());
+      try (var rows = statement.executeQuery()) {
+        return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
+      }
+    });
+  }
+
+  // The session reads the text of a timestamp in its zone, which may repeat an hour.
+  @Override
+  String utc(Connection connection) throws SQLException {
+    try (var statement = connection.createStatement()) {
+      String zone;
+      try (var rows = statement.executeQuery("SELECT @@session.time_zone")) {
+        rows.next();
+        zone = rows.getString(1);
+      }
+      statement.execute("SET time_zone = '+00:00'");
+      return zone;
+    }
+  }
+
+  @Override
+  void restore(Connection connection, String zone) throws SQLException {
+    try (var statement = connection.prepareStatement("SET time_zone = ?")) {
+      statement.setString(1, zone);
+      statement.execute();
+    }
   }
 
   private static String bit(ResultSet rows, int index) throws SQLException {
