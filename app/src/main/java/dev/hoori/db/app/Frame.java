@@ -573,7 +573,7 @@ final class Frame {
         || s.deleting != null
         || s.about
         || s.driverList != null
-        || s.catalog.dialog(s, s.tabs.main()) != null;
+        || s.catalog.asks(s, s.tabs.main());
   }
 
   /** Gives the focus to the tree of connections. */
