@@ -41,6 +41,27 @@ public record DocumentMonitor(DocumentSession session) implements Monitor {
     }
   }
 
+  /** Through {@link DocumentSession#command}, which refuses it on a read-only session. */
+  @Override
+  public boolean cancel(ServerSession session) throws QueryException {
+    if (!session.cancellable()) {
+      throw new IllegalArgumentException("Session " + session.id() + " runs nothing to cancel");
+    }
+    var monitor = this.session.dialect().monitor();
+    try {
+      this.session.command(monitor.database(), monitor.cancel(session.operation()));
+      return true;
+    } catch (DocumentException e) {
+      throw DocumentSession.query(e);
+    }
+  }
+
+  /** The server has no command that ends another client's connection. */
+  @Override
+  public boolean end(ServerSession session) {
+    throw new IllegalArgumentException("Session " + session.id() + " cannot be ended here");
+  }
+
   // The documents of a command's cursor, all of them; its cursor is freed where reading fails.
   private List<Document> all(String database, Document command) throws DocumentException {
     var cursor = session.cursor(database, session.command(database, command));

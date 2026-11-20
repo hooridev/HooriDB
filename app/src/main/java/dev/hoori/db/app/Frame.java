@@ -274,6 +274,7 @@ final class Frame {
     return questioned(s, group)
         || group.activeTab() instanceof ConsoleTab console
             && (console.confirming != null || console.history != null || console.queries != null)
+        || group.activeTab() instanceof MonitorTab monitor && monitor.asked != null
         || s.catalog.asks(s, group);
   }
 
@@ -282,6 +283,9 @@ final class Frame {
    * console behind another tab waits until its tab is shown.
    */
   private static El confirmation(State s, TabGroups.Group<Tab> group) {
+    if (group.activeTab() instanceof MonitorTab monitor) {
+      return monitor.question(s);
+    }
     if (!(group.activeTab() instanceof ConsoleTab console)) {
       return null;
     }

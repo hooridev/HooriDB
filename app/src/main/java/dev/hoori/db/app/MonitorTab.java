@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import static com.rethinkj.ui.El.col;
 import static com.rethinkj.ui.El.row;
+import static com.rethinkj.ui.kit.Button.Variant.PRIMARY;
 import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 
@@ -12,6 +13,7 @@ import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.DataGrid;
+import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
@@ -20,6 +22,7 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.monitor.ServerSession;
@@ -44,6 +47,23 @@ final class MonitorTab implements Tab {
   /** Why the sessions could not be read, in words for the user. */
   record Problem(String title, String text) {}
 
+  /** What can be done to a session, after a question. */
+  enum Action {
+    CANCEL("Cancel statement", "Cancel the statement?"),
+    END("End session", "End the session?");
+
+    final String title;
+    final String question;
+
+    Action(String title, String question) {
+      this.title = title;
+      this.question = question;
+    }
+  }
+
+  /** The question before an action on a session, as it was when asked. */
+  record Asked(Action action, ServerSession session) {}
+
   final UUID id;
   final Refresh refresh = new Refresh();
   List<ServerSession> sessions = List.of();
@@ -53,6 +73,10 @@ final class MonitorTab implements Tab {
   String said; // what the tab says for a while in its status line; or null
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.ROWS);
   final Menu.State intervals = new Menu.State();
+  final Menu.State menu = new Menu.State(); // the grid's context menu
+  Asked asked; // the question before an action, or null
+  Lane.Asked acting; // the action under way, or null
+  Problem refused; // why the last action failed, until the next or a dismiss; or null
   private String selected; // the id of the session selected, which a read keeps selected
   private int says;
   private Lane lane; // the monitor's own session, or null while it has none
@@ -225,9 +249,83 @@ final class MonitorTab implements Tab {
     }
   }
 
-  /** Whether anything of the tab is read now. */
+  /** The session selected, as read last; null for none. */
+  ServerSession selected() {
+    int at = indexOf(selected);
+    return at < 0 ? null : sessions.get(at);
+  }
+
+  /** Asks before the action on the session; nothing where it cannot be done to it. */
+  void ask(Action action, ServerSession session) {
+    if (session != null && can(action, session) && lane != null && acting == null) {
+      asked = new Asked(action, session);
+    }
+  }
+
+  private static boolean can(Action action, ServerSession session) {
+    return switch (action) {
+      case CANCEL -> session.cancellable();
+      case END -> session.ends();
+    };
+  }
+
+  /** The question was declined: nothing is done. */
+  void decline() {
+    asked = null;
+  }
+
+  /**
+   * The question was answered: the action runs on the monitor's session, the status line says
+   * what came of it, and the list is read again.
+   */
+  void proceed(State s) {
+    var what = asked;
+    asked = null;
+    if (what == null || lane == null || acting != null) {
+      return;
+    }
+    refused = null;
+    var live = s.catalog.live(id);
+    var session = what.session();
+    acting = lane.ask(
+        s.app,
+        what.action().title.toLowerCase(Locale.ROOT),
+        Lane.Priority.VIEW,
+        link -> switch (what.action()) {
+          case CANCEL -> link.monitor().cancel(session);
+          case END -> link.monitor().end(session);
+        },
+        found -> {
+          acting = null;
+          say(
+              s,
+              !found
+                  ? "Session " + session.id() + " had ended already"
+                  : what.action() == Action.CANCEL
+                      ? "Cancelled the statement of session " + session.id()
+                      : "Ended session " + session.id());
+          read(s);
+        },
+        error -> {
+          acting = null;
+          if (error instanceof InterruptedException) {
+            return;
+          }
+          var detail = CatalogTree.words(live, detail(error));
+          refused = new Problem(
+              what.action() == Action.CANCEL ? "Not cancelled" : "Not ended",
+              error instanceof QueryException q
+                      && q.failure() == QueryException.Failure.ACCESS_DENIED
+                  ? "The server does not let this user do that to session " + session.id() + "."
+                      + (detail.isEmpty() ? "" : "\n" + detail)
+                  : detail);
+          read(s);
+        });
+  }
+
+  /** Whether anything of the tab is read or done now. */
   boolean busy() {
-    return reading != null;
+    return reading != null || acting != null;
   }
 
   /** Says something in the tab's status line for a while. */
@@ -256,6 +354,11 @@ final class MonitorTab implements Tab {
       reading.cancel();
       reading = null;
     }
+    if (acting != null) {
+      acting.cancel();
+      acting = null;
+    }
+    asked = null;
     if (lane != null) {
       s.closing();
       var closing = lane.close(ended -> {});
@@ -306,7 +409,8 @@ final class MonitorTab implements Tab {
             intervals,
             i -> every(s, i))
         .key("interval")
-        .label("Refresh interval"));
+        .label("Refresh interval")
+        .w(5 * t.size().control()));
     actions.add(Button.toggle(Symbol.PAUSE, "Pause", refresh.paused(), pause -> pause(s, pause))
         .key("pause"));
     actions.add(button(
@@ -317,6 +421,9 @@ final class MonitorTab implements Tab {
                 .icon(Symbol.ARROW_CLOCKWISE)
                 .state(reading != null ? Button.State.BUSY : Button.State.READY))
         .key("refresh"));
+    var chosen = can ? selected() : null;
+    actions.add(action(s, Action.CANCEL, Symbol.STOP, chosen).key("cancel-statement"));
+    actions.add(action(s, Action.END, Symbol.PROHIBITED, chosen).key("end-session"));
     El top = Card.toolbar("Sessions", where, actions.toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     El content =
@@ -324,6 +431,17 @@ final class MonitorTab implements Tab {
     El note = note(s);
     if (note != null) {
       content.child(col().padding(t.space().m()).shrink(0).child(note));
+    }
+    if (refused != null) {
+      content.child(col()
+          .padding(t.space().m())
+          .shrink(0)
+          .child(Callout.callout(
+                  Callout.Kind.DANGER,
+                  refused.title(),
+                  refused.text(),
+                  button(SECONDARY, "Dismiss", () -> refused = null))
+              .key("refused")));
     }
     if (took < 0 && reading != null) {
       content.child(col()
@@ -335,7 +453,7 @@ final class MonitorTab implements Tab {
           .child(Progress.spinner())
           .child(Label.label(Label.Variant.MUTED, "Reading the sessions…")));
     } else if (took >= 0) {
-      content.child(grid(app));
+      content.child(grid(s, app));
     } else {
       content.child(col().grow(1));
     }
@@ -397,8 +515,86 @@ final class MonitorTab implements Tab {
         button(SECONDARY, "Try again", () -> open(s)));
   }
 
+  /**
+   * The button of an action on the session selected: off, and saying why, where it cannot be done
+   * to it.
+   */
+  private El action(State s, Action action, Symbol icon, ServerSession session) {
+    boolean can = session != null && can(action, session) && acting == null;
+    El button = button(
+        SECONDARY,
+        action.title,
+        can ? () -> ask(action, session) : null,
+        Button.options()
+            .icon(icon)
+            .tone(Button.Tone.DANGER)
+            .state(acting != null ? Button.State.BUSY : Button.State.READY));
+    var why = why(action, session);
+    return why == null ? button : Tooltip.tooltip(button, why);
+  }
+
+  /** Why the action cannot be done to the session, or null where it can or none is selected. */
+  static String why(Action action, ServerSession session) {
+    if (session == null) {
+      return null;
+    }
+    if (session.own()) {
+      return "The monitor's own session";
+    }
+    return switch (action) {
+      case CANCEL -> session.cancellable() ? null : "It runs nothing that can be cancelled";
+      case END ->
+        session.ends()
+            ? null
+            : "The server does not end another client's connection; cancel what it runs instead";
+    };
+  }
+
+  /** The question before an action on a session, naming it; null while none is asked. */
+  El question(State s) {
+    Theme t = Theme.CURRENT.get();
+    var what = asked;
+    if (what == null) {
+      return null;
+    }
+    var session = what.session();
+    var who = "Session " + session.id()
+        + (session.user().isEmpty() ? "" : " of " + session.user())
+        + (session.client().isEmpty() ? "" : ", from " + session.client());
+    var text = switch (what.action()) {
+      case CANCEL ->
+        who + ", runs:\n" + brief(session.statement())
+            + "\n\nThe server stops the statement; the session stays connected.";
+      case END ->
+        who + "." + "\n\nThe server closes its connection and rolls back what it did not commit.";
+    };
+    return Dialog.dialog(
+            what.action().question,
+            col()
+                .w(ConnectionDialog.width())
+                .gap(t.space().m())
+                .child(Label.label(text).wrapText()),
+            List.of(
+                button(SECONDARY, "Keep it", this::decline).key("question-keep"),
+                button(
+                        PRIMARY,
+                        what.action().title,
+                        () -> proceed(s),
+                        Button.options().tone(Button.Tone.DANGER))
+                    .key("question-go")),
+            this::decline)
+        .key("monitor-question");
+  }
+
+  /** At most {@link #BRIEF} characters of the statement, as a question names it. */
+  static String brief(String statement) {
+    return statement.length() <= BRIEF ? statement : statement.substring(0, BRIEF) + "…";
+  }
+
+  static final int BRIEF = 400;
+
   /** The sessions, a row each; the monitor's own marked. */
-  private El grid(App<State> app) {
+  private El grid(State s, App<State> app) {
     var shown = List.copyOf(sessions);
     var columns = new ArrayList<DataGrid.Column>();
     columns.add(column("ID", 4, DataGrid.DataType.INTEGER, shown, ServerSession::id)
@@ -419,12 +615,29 @@ final class MonitorTab implements Tab {
           int row = selection.row();
           selected = row >= 0 && row < shown.size() ? shown.get(row).id() : null;
         })
-        .copy(app.clipboard());
+        .copy(app.clipboard())
+        .contextMenu(menu, menuItems(s));
     return DataGrid.dataGrid(columns, shown.size(), options)
         .key("sessions")
         .label("Sessions")
         .grow(1)
         .defaultFocus();
+  }
+
+  /** The grid's context menu, of the session selected. */
+  private List<Menu.Item> menuItems(State s) {
+    var session = lane == null || acting != null ? null : selected();
+    return List.of(
+        Menu.item(
+                Action.CANCEL.title + "…",
+                session != null && session.cancellable() ? () -> ask(Action.CANCEL, session) : null)
+            .icon(Symbol.STOP),
+        Menu.item(
+                Action.END.title + "…",
+                session != null && session.ends() ? () -> ask(Action.END, session) : null)
+            .icon(Symbol.PROHIBITED),
+        Menu.separator(),
+        Menu.item("Refresh", lane == null ? null : () -> read(s)).icon(Symbol.ARROW_CLOCKWISE));
   }
 
   private static DataGrid.Column column(

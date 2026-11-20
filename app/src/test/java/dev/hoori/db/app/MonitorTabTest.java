@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Path;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -191,6 +192,101 @@ class MonitorTabTest {
     long first = reads();
     c.run(app, "press role=button label=\"Connect\"\nframe\n" + SETTLE + SETTLE);
     assertEquals(first + 1, reads());
+  }
+
+  /** Selects the session of the row, counted from 0, the monitor's own first. */
+  static String pick(int row) {
+    return "press #cell-" + row + "-1\nframe\n";
+  }
+
+  static final String SHOWN = "frame\nadvance 1\nframe\n";
+
+  @Test
+  void cancelAsksFirstNamingTheSessionThenReadsAgain() throws Exception {
+    var app = monitor();
+    c.run(app, pick(1) + "press #cancel-statement\n" + SHOWN + "snap asked\n");
+    var asked = c.tree("asked");
+    assertTrue(asked.contains("Cancel the statement?"), asked);
+    assertTrue(asked.contains("Session 101 of ada, from psql (10.0.0.101:5000), runs:"), asked);
+    assertTrue(asked.contains("SELECT pg_sleep(60)"), asked);
+    long first = reads();
+    c.run(app, "press #question-go\n" + SHOWN + SETTLE + "snap cancelled\n");
+    assertTrue(c.servers.linked.contains("2 cancel " + PG + " 101"), c.servers.linked.toString());
+    assertTrue(reads() > first);
+    var tree = c.tree("cancelled");
+    assertTrue(tree.contains("\"Cancelled the statement of session 101\""), tree);
+    assertFalse(tree.contains("SELECT pg_sleep(60)"), tree);
+    // The session stays selected, and runs nothing now.
+    assertTrue(line(tree, "#cancel-statement").contains("disabled"), tree);
+  }
+
+  @Test
+  void declinedNothingIsSent() throws Exception {
+    var app = monitor();
+    c.run(app, pick(1) + "press #cancel-statement\n" + SHOWN);
+    c.run(app, "press #question-keep\n" + SHOWN + SETTLE + "snap kept\n");
+    assertFalse(c.servers.calls.stream().anyMatch(k -> k.startsWith("cancel ")));
+    assertFalse(c.tree("kept").contains("Cancel the statement?"), c.tree("kept"));
+  }
+
+  @Test
+  void endAsksFirstThenTheSessionIsGone() throws Exception {
+    var app = monitor();
+    c.run(app, pick(2) + "press #end-session\n" + SHOWN + "snap asked\n");
+    var asked = c.tree("asked");
+    assertTrue(asked.contains("End the session?"), asked);
+    assertTrue(asked.contains("Session 102 of bob, from psql (10.0.0.102:5000)."), asked);
+    c.run(app, "press #question-go\n" + SHOWN + SETTLE + "snap ended\n");
+    assertTrue(c.servers.calls.contains("end " + PG + " 102"), c.servers.calls.toString());
+    var tree = c.tree("ended");
+    assertTrue(tree.contains("\"Ended session 102\""), tree);
+    assertTrue(tree.contains("\"3 sessions\""), tree);
+  }
+
+  @Test
+  void theContextMenuAsksToo() throws Exception {
+    var app = monitor();
+    c.run(app, pick(1) + "press #cell-1-1 right\n" + SHOWN + "snap menu\n");
+    var menu = c.tree("menu");
+    assertFalse(line(menu, "label=\"Cancel statement…\"").contains("disabled"), menu);
+    c.run(app, "press role=menuitem label=\"End session…\"\n" + SHOWN + "snap asked\n");
+    assertTrue(c.tree("asked").contains("End the session?"), c.tree("asked"));
+  }
+
+  @Test
+  void theMonitorsOwnSessionCannotBeEndedOrCancelled() throws Exception {
+    var app = monitor();
+    c.run(app, pick(0) + "snap own\n");
+    var tree = c.tree("own");
+    assertTrue(line(tree, "#end-session").contains("disabled"), tree);
+    assertTrue(line(tree, "#cancel-statement").contains("disabled"), tree);
+    c.run(app, "press #cell-0-1 right\n" + SHOWN + "snap menu\n");
+    var menu = c.tree("menu");
+    assertTrue(line(menu, "label=\"End session…\"").contains("disabled"), menu);
+    assertTrue(line(menu, "label=\"Cancel statement…\"").contains("disabled"), menu);
+  }
+
+  @Test
+  void aSessionThatEndedMeanwhileIsSaidSo() throws Exception {
+    var app = monitor();
+    c.run(app, pick(2) + "press #end-session\n" + SHOWN);
+    c.servers.sessions(PG, session("101", "ada", "SELECT pg_sleep(60)"));
+    c.run(app, "press #question-go\n" + SHOWN + SETTLE + "snap gone\n");
+    assertTrue(c.tree("gone").contains("\"Session 102 had ended already\""), c.tree("gone"));
+  }
+
+  @Test
+  void aRefusalShowsTheServersWords() throws Exception {
+    var app = monitor();
+    c.servers.fail(
+        "end " + PG + " 102", FakeServers.queryFailure(QueryException.Failure.ACCESS_DENIED));
+    c.run(app, pick(2) + "press #end-session\n" + SHOWN);
+    c.run(app, "press #question-go\n" + SHOWN + SETTLE + "snap refused\n");
+    var tree = c.tree("refused");
+    assertTrue(tree.contains("Not ended"), tree);
+    assertTrue(tree.contains("The server does not let this user do that to session 102."), tree);
+    c.run(app, "press role=button label=\"Dismiss\"\n" + SHOWN + "snap dismissed\n");
+    assertFalse(c.tree("dismissed").contains("Not ended"), c.tree("dismissed"));
   }
 
   @Test

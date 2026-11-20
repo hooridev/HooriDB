@@ -58,7 +58,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
         case COLUMN_GONE -> Set.of("42S22");
         // MariaDB's and MySQL's "Query execution was interrupted".
         case CANCELLED -> Set.of("70100");
-        case ACCESS_DENIED, ROUTINE_DENIED, TIME_LIMIT, TIMEOUT, CONSTRAINT -> Set.of();
+        case ACCESS_DENIED, ROUTINE_DENIED, TIME_LIMIT, TIMEOUT, CONSTRAINT, NO_SUCH_SESSION ->
+          Set.of();
       };
     }
 
@@ -77,6 +78,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
         case TIMEOUT -> Set.of(1969, 3024, 1205);
         // MySQL's check constraint, whose state is the general HY000.
         case CONSTRAINT -> Set.of(3819);
+        // MariaDB's and MySQL's unknown thread id, of a KILL.
+        case NO_SUCH_SESSION -> Set.of(1094);
         case COLUMN_GONE, CANCELLED -> Set.of();
       };
     }
@@ -415,6 +418,17 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     public String sessions() {
       return "SELECT ID, ID = CONNECTION_ID(), USER, HOST, DB, COMMAND, STATE, INFO, " + elapsed
           + " FROM information_schema.PROCESSLIST ORDER BY ID";
+    }
+
+    // An unknown thread fails as NO_SUCH_SESSION.
+    @Override
+    public String cancel(String operation) {
+      return "KILL QUERY " + Long.parseLong(operation);
+    }
+
+    @Override
+    public String end(String id) {
+      return "KILL " + Long.parseLong(id);
     }
 
     // A thread's state that waits says what for; any other says what the command does.

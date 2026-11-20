@@ -15,4 +15,13 @@ public interface MonitorDialect {
 
   /** The session of the query's current row, its statement as the server tells it. */
   ServerSession session(ResultSet row) throws SQLException;
+
+  /**
+   * The statement that cancels what runs by the operation's id; one that gives a row says in it
+   * whether the server found the session.
+   */
+  String cancel(String operation);
+
+  /** The statement that ends the session of the id, as {@link #cancel} answers. */
+  String end(String id);
 }

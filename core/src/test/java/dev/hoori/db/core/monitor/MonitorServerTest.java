@@ -3,6 +3,7 @@ package dev.hoori.db.core.monitor;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.TestServer;
@@ -15,6 +16,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -74,6 +76,62 @@ class MonitorServerTest {
       assertFalse(found.own());
       assertFalse(found.cancellable(), found.toString());
       assertTrue(found.ends());
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aCancelStopsTheStatementAndLeavesTheSession(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var mark = "m" + UUID.randomUUID().toString().replace("-", "");
+    try (var connection = open(server);
+        var other = open(server)) {
+      var monitor = new SqlMonitor(connection, provider);
+      var sleeping = sleep(other, provider, mark, 30);
+      try {
+        var found = waitFor(monitor, mark);
+        assertTrue(monitor.cancel(found));
+        // MariaDB and MySQL end SLEEP early with 1 and no error, PostgreSQL with a cancel.
+        sleeping.handle((done, failed) -> null).get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        assertFalse(other.isClosed());
+        assertEquals(id(other, provider) + "", found.id());
+      } finally {
+        sleeping.cancel(true);
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void anEndClosesTheSessionAndOneThatIsGoneIsNotFound(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    try (var connection = open(server);
+        var other = open(server)) {
+      var monitor = new SqlMonitor(connection, provider);
+      var id = String.valueOf(id(other, provider));
+      var found =
+          monitor.sessions().stream().filter(s -> s.id().equals(id)).findFirst().orElseThrow();
+      assertTrue(monitor.end(found));
+      long until = System.nanoTime() + TIMEOUT.toNanos();
+      while (monitor.sessions().stream().anyMatch(s -> s.id().equals(id))) {
+        assertTrue(System.nanoTime() < until, "Session " + id + " did not end");
+        Thread.sleep(50);
+      }
+      assertFalse(monitor.end(found));
+      assertThrows(QueryException.class, () -> id(other, provider));
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void theOwnSessionIsNeitherCancelledNorEnded(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    try (var connection = open(server)) {
+      var monitor = new SqlMonitor(connection, provider);
+      var own =
+          monitor.sessions().stream().filter(ServerSession::own).findFirst().orElseThrow();
+      assertThrows(IllegalArgumentException.class, () -> monitor.end(own));
+      assertThrows(IllegalArgumentException.class, () -> monitor.cancel(own));
     }
   }
 

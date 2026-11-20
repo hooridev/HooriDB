@@ -325,7 +325,7 @@ public final class PostgreSql implements Dialect {
         // PostgreSQL's statement timeout, which a cancel from another session shares, and
         // lock_not_available, of lock_timeout and NOWAIT.
         case TIMEOUT -> Set.of("57014", "55P03");
-        case ROUTINE_DENIED, TIME_LIMIT, CONSTRAINT -> Set.of();
+        case ROUTINE_DENIED, TIME_LIMIT, CONSTRAINT, NO_SUCH_SESSION -> Set.of();
       };
     }
 
@@ -687,6 +687,17 @@ public final class PostgreSql implements Dialect {
           MonitorRows.text(row, 9),
           MonitorRows.seconds(row, 10),
           MonitorRows.joined(": ", MonitorRows.text(row, 11), MonitorRows.text(row, 12)));
+    }
+
+    // A process id that is gone gives false, with a warning.
+    @Override
+    public String cancel(String operation) {
+      return "SELECT pg_catalog.pg_cancel_backend(" + Integer.parseInt(operation) + ")";
+    }
+
+    @Override
+    public String end(String id) {
+      return "SELECT pg_catalog.pg_terminate_backend(" + Integer.parseInt(id) + ")";
     }
 
     // The client's address and port; a port of -1 is a Unix socket, which has no address.

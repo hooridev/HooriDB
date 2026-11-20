@@ -86,7 +86,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <host>}.
  *
  * <p>A server's monitor lists the sessions {@link #sessions} gives after the monitor's own, whose
- * id is the number of its link; a read of them is keyed {@code sessions <host>}.
+ * id is the number of its link; a read of them is keyed {@code sessions <host>}. Cancelling what one
+ * runs, keyed {@code cancel <host> <operation>}, leaves it idle, and ending one, keyed {@code end
+ * <host> <id>}, takes it out; either says false for a session the server does not have.
  */
 final class FakeServers implements Servers {
 
@@ -1007,6 +1009,43 @@ final class FakeServers implements Servers {
               ""));
           all.addAll(FakeServers.this.sessions.getOrDefault(host, List.of()));
           return all;
+        }
+
+        @Override
+        public boolean cancel(ServerSession session) throws QueryException {
+          return stop("cancel " + host + " " + session.operation(), session, true);
+        }
+
+        @Override
+        public boolean end(ServerSession session) throws QueryException {
+          return stop("end " + host + " " + session.id(), session, false);
+        }
+
+        private boolean stop(String key, ServerSession session, boolean idle)
+            throws QueryException {
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception e) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          done.add(key);
+          var now = new ArrayList<ServerSession>();
+          boolean found = false;
+          for (var other : FakeServers.this.sessions.getOrDefault(host, List.of())) {
+            if (!other.id().equals(session.id())) {
+              now.add(other);
+              continue;
+            }
+            found = true;
+            if (idle) {
+              now.add(FakeServers.session(other.id(), other.user(), ""));
+            }
+          }
+          FakeServers.this.sessions.put(host, List.copyOf(now));
+          return found;
         }
       };
     }

@@ -15,4 +15,21 @@ public interface Monitor {
    * as far as the user may see them.
    */
   List<ServerSession> sessions() throws QueryException;
+
+  /**
+   * Cancels what the session runs, by its {@link ServerSession#operation}; the session stays.
+   *
+   * @return whether the server found the session, false where it had ended meanwhile; a server
+   *     that does not tell says true
+   * @throws IllegalArgumentException for a session that is not {@link ServerSession#cancellable}
+   */
+  boolean cancel(ServerSession session) throws QueryException;
+
+  /**
+   * Ends the session: the server closes its connection, and rolls back what it did not commit.
+   *
+   * @return whether the server found the session, false where it had ended meanwhile
+   * @throws IllegalArgumentException for a session that does not {@link ServerSession#ends}
+   */
+  boolean end(ServerSession session) throws QueryException;
 }

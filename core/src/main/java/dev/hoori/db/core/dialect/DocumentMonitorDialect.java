@@ -23,4 +23,7 @@ public interface DocumentMonitorDialect {
    * order of their ids; the connection that runs the entry with the mark is the own.
    */
   List<ServerSession> sessions(List<Document> entries, String mark);
+
+  /** The command that stops what runs by the operation's id; the server does not say whether. */
+  Document cancel(String operation);
 }

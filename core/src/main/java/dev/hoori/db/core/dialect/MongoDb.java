@@ -142,6 +142,14 @@ public final class MongoDb implements DocumentDialect {
       return sessions;
     }
 
+    // An operation's id is a number, but through mongos, which names its shard before it.
+    @Override
+    public Document cancel(String operation) {
+      Object op =
+          operation.matches("-?\\d{1,9}") ? (Object) Integer.parseInt(operation) : operation;
+      return Document.of("killOp", 1, "op", op);
+    }
+
     private static ServerSession session(Document entry, boolean own) {
       boolean active = Boolean.TRUE.equals(entry.get("active"));
       var opid = active && entry.get("opid") != null ? String.valueOf(entry.get("opid")) : "";
