@@ -580,6 +580,11 @@ class ExecutionServerTest {
       }
       stillInterrupted[0] = Thread.currentThread().isInterrupted();
     });
+    // Once the call waits for its step: an interrupt before would stop the call before it begins.
+    var deadline = System.nanoTime() + TIMEOUT.toNanos();
+    while (caller.getState() == Thread.State.RUNNABLE && System.nanoTime() < deadline) {
+      Thread.sleep(1);
+    }
     wait.await();
     var started = System.nanoTime();
     caller.interrupt();
