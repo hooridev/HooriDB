@@ -13,11 +13,13 @@ import java.util.Set;
  * {@code t.where}, nor a MariaDB or MySQL user variable of that name. The ways it may be read are
  * with a backslash in a string an escape and not, and MariaDB's and MySQL's executable comments
  * read as code and as comments. Read from the statement's text alone, by the lexical rules of
- * {@link Statements}; whatever it cannot read for certain, as a WITH of another shape, asks.
+ * {@link Statements}; whatever it cannot read for certain, as a WITH of another shape, asks. A
+ * command of MongoDB that updates many or deletes all with an empty filter is one too, of its
+ * collection, as {@link dev.hoori.db.core.document.Commands#every} reads it.
  *
  * @param verb {@code UPDATE} or {@code DELETE}
- * @param table the first table it names, as written, such as {@code shop."order lines"}; empty
- *     where none can be read
+ * @param table the first table it names, as written, such as {@code shop."order lines"}, or the
+ *     collection; empty where none can be read
  * @param certain whether every way of reading it finds no such bound, so that it has none; else
  *     the text could not tell
  */

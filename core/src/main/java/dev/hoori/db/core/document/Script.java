@@ -1,9 +1,11 @@
 package dev.hoori.db.core.document;
 
 import dev.hoori.db.core.document.Request.Shape;
+import dev.hoori.db.core.sql.EveryRow;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -16,10 +18,43 @@ import java.util.Set;
 public final class Script {
 
   /**
-   * A statement of a text: where it starts and ends, as offsets of characters, and its text, which
-   * may end in a semicolon.
+   * A statement of a text: where it starts and ends, as offsets of characters, its text, and
+   * whether that ends in a semicolon that ends it, not one in a string or comment left open.
    */
-  public record Piece(int start, int end, String text) {}
+  public record Piece(int start, int end, String text, boolean terminated) {}
+
+  /**
+   * A statement read once, before it runs: the request it makes, or the syntax error that keeps it
+   * from making one.
+   */
+  public record Parsed(String statement, Request request, SyntaxException error) {
+
+    /** The statement read. */
+    public static Parsed of(String statement) {
+      try {
+        return new Parsed(statement, parse(statement), null);
+      } catch (SyntaxException e) {
+        return new Parsed(statement, null, e);
+      }
+    }
+
+    /** The change of every document that it asks for, as {@link Commands#every} tells it. */
+    public Optional<EveryRow> every() {
+      return request == null || request.command() == null
+          ? Optional.empty()
+          : Commands.every(request.command());
+    }
+
+    /** Whether it is a cursor that only reads, as find and aggregate without $out give. */
+    public boolean readsCursor() {
+      return request != null && request.shape() == Shape.CURSOR && request.reads();
+    }
+
+    /** The database that it switches to with use, or null for any other statement. */
+    public String use() {
+      return request == null ? null : request.use();
+    }
+  }
 
   /** The collection methods that only read. */
   public static final Set<String> READING_METHODS = Set.of(
@@ -79,187 +114,88 @@ public final class Script {
    * out.
    */
   public static List<Piece> split(String text) {
+    var tokens = Lexer.tokens(text);
     var pieces = new ArrayList<Piece>();
     int depth = 0;
-    int start = 0;
-    int i = 0;
-    int n = text.length();
-    char last = 0; // the last character of code before, past space and comments; 0 for none
-    while (i < n) {
-      char c = text.charAt(i);
-      if (c == '\'' || c == '"' || c == '`') {
-        i = skipString(text, i);
-        last = c;
-        continue;
+    int start = -1; // where the statement's code starts, or -1 before it has any
+    int end = 0; // where its last code ends
+    int broken = -1; // the first line break after that code, between tokens, or -1
+    int before = 0; // where the token before ends
+    for (int k = 0; k < tokens.size(); k++) {
+      var token = tokens.get(k);
+      if (start >= 0 && broken < 0) {
+        broken = lineBreak(text, before, token.start());
       }
-      if (text.startsWith("//", i)) {
-        while (i < n && text.charAt(i) != '\n') {
-          i++;
+      before = token.end();
+      if (start >= 0 && depth == 0 && broken >= 0) {
+        if (continues(text, tokens, k, broken)) {
+          broken = -1; // past this break: only one after the comments before the dot ends it
+        } else {
+          add(pieces, text, start, end, false);
+          start = -1;
+        }
+      }
+      if (token.kind() == Lexer.Kind.COMMENT) {
+        if (start >= 0 && token.open() && text.startsWith("/*", token.start())) {
+          end = token.end(); // not closed: the statement keeps it, which the parser refuses
         }
         continue;
       }
-      if (text.startsWith("/*", i)) {
-        int close = text.indexOf("*/", i + 2);
-        i = close < 0 ? n : close + 2;
-        continue;
+      if (start < 0) {
+        start = token.start();
       }
-      if (c == '/' && depth > 0 && regexMayStart(last)) {
-        i = skipRegex(text, i);
-        last = '/';
-        continue;
-      }
-      if (!Character.isWhitespace(c)) {
-        last = c;
-      }
+      end = token.end();
+      broken = -1;
+      char c = token.kind() == Lexer.Kind.PUNCTUATION ? text.charAt(token.start()) : 0;
       if (c == '(' || c == '[' || c == '{') {
         depth++;
       } else if (c == ')' || c == ']' || c == '}') {
         depth = Math.max(0, depth - 1);
       } else if (c == ';' && depth == 0) {
-        add(pieces, text, start, i + 1);
-        start = i + 1;
-      } else if (c == '\n' && depth == 0 && !continues(text, i + 1)) {
-        add(pieces, text, start, i);
-        start = i + 1;
+        add(pieces, text, start, end, true);
+        start = -1;
       }
-      i++;
     }
-    add(pieces, text, start, n);
+    if (start >= 0) {
+      add(pieces, text, start, end, false);
+    }
     return pieces;
   }
 
   // Whether the line after the break goes on with a dot, as in a chain of calls, also after a
-  // block comment.
-  private static boolean continues(String text, int from) {
-    int i = from;
-    while (i < text.length()) {
-      if (text.startsWith("/*", i)) {
-        int close = text.indexOf("*/", i + 2);
-        if (close < 0) {
-          return false;
-        }
-        i = close + 2;
-        continue;
+  // block comment: the token at k is the first after the break.
+  private static boolean continues(String text, List<Lexer.Token> tokens, int k, int broken) {
+    int from = broken + 1;
+    for (int j = k; j < tokens.size(); j++) {
+      var token = tokens.get(j);
+      if (lineBreak(text, from, token.start()) >= 0) {
+        return false;
       }
-      char c = text.charAt(i);
-      if (c == '\n' || !Character.isWhitespace(c)) {
-        return c == '.' && !(i + 1 < text.length() && Character.isDigit(text.charAt(i + 1)));
+      if (token.kind() != Lexer.Kind.COMMENT) {
+        return token.is(text, '.');
       }
-      i++;
+      if (token.open() || !text.startsWith("/*", token.start())) {
+        return false;
+      }
+      from = token.end();
     }
     return false;
   }
 
-  private static void add(List<Piece> pieces, String text, int start, int end) {
-    // Trimmed of space and of comments around it, so that its offsets are its words'.
-    int s = start;
-    int e = end;
-    while (true) {
-      while (s < e && Character.isWhitespace(text.charAt(s))) {
-        s++;
-      }
-      if (text.startsWith("//", s) && s < e) {
-        int line = text.indexOf('\n', s);
-        s = line < 0 || line > e ? e : line + 1;
-        continue;
-      }
-      if (text.startsWith("/*", s) && s < e) {
-        int close = text.indexOf("*/", s + 2);
-        s = close < 0 || close + 2 > e ? e : close + 2;
-        continue;
-      }
-      break;
-    }
-    e = codeEnd(text, s, e); // without the comments after it, whose semicolons are no ends
-    if (e > s && !(e - s == 1 && text.charAt(s) == ';')) {
-      pieces.add(new Piece(s, e, text.substring(s, e)));
-    }
-  }
-
-  private static int skipString(String text, int at) {
-    char quote = text.charAt(at);
-    int i = at + 1;
-    while (i < text.length()) {
-      char c = text.charAt(i);
-      if (c == '\\') {
-        i += 2;
-        continue;
-      }
-      if (c == quote || c == '\n' && quote != '`') {
-        return i + 1;
-      }
-      i++;
-    }
-    return text.length();
-  }
-
-  // Where the last code of the part ends: past its strings and regular expressions, before the
-  // space and comments after it.
-  private static int codeEnd(String text, int start, int end) {
-    int code = start;
-    char last = 0;
-    int i = start;
-    while (i < end) {
-      char c = text.charAt(i);
-      if (c == '\'' || c == '"' || c == '`') {
-        i = Math.min(end, skipString(text, i));
-        code = i;
-        last = c;
-      } else if (text.startsWith("//", i)) {
-        int line = text.indexOf('\n', i);
-        i = line < 0 || line > end ? end : line;
-      } else if (text.startsWith("/*", i)) {
-        int close = text.indexOf("*/", i + 2);
-        if (close < 0 || close + 2 > end) {
-          return end; // not closed: the statement keeps it, which the parser refuses
-        }
-        i = close + 2;
-      } else if (c == '/' && regexMayStart(last)) {
-        i = Math.min(end, skipRegex(text, i));
-        code = i;
-        last = '/';
-      } else {
-        if (!Character.isWhitespace(c)) {
-          code = i + 1;
-          last = c;
-        }
-        i++;
-      }
-    }
-    return code;
-  }
-
-  /**
-   * Whether a slash after this character of code, the last before it past space and comments,
-   * starts a regular expression: after punctuation it does, after a value it divides; 0 for none.
-   */
-  public static boolean regexMayStart(char last) {
-    return last == 0 || "(,:[{!&|?;=".indexOf(last) >= 0;
-  }
-
-  /** Where the regular expression that starts at the slash ends, or the line or text does. */
-  public static int skipRegex(String text, int at) {
-    int i = at + 1;
-    boolean inClass = false;
-    while (i < text.length()) {
-      char c = text.charAt(i);
-      if (c == '\\') {
-        i += 2;
-        continue;
-      }
-      if (c == '\n') {
+  // The first line break from the one offset to the other, or -1.
+  private static int lineBreak(String text, int from, int to) {
+    for (int i = from; i < to; i++) {
+      if (text.charAt(i) == '\n') {
         return i;
       }
-      if (c == '[') {
-        inClass = true;
-      } else if (c == ']') {
-        inClass = false;
-      } else if (c == '/' && !inClass) {
-        return i + 1;
-      }
-      i++;
     }
-    return text.length();
+    return -1;
+  }
+
+  private static void add(List<Piece> pieces, String text, int start, int end, boolean terminated) {
+    if (!text.startsWith(";", start) || end - start > 1) {
+      pieces.add(new Piece(start, end, text.substring(start, end), terminated));
+    }
   }
 
   /** The request of one statement, which may end in a semicolon. */
@@ -290,7 +226,7 @@ public final class Script {
           name = r.string();
         } else {
           while (r.at < r.text.length()
-              && !Character.isWhitespace(r.text.charAt(r.at))
+              && !Lexer.whitespace(r.text.charAt(r.at))
               && r.text.charAt(r.at) != ';'
               && !r.text.startsWith("//", r.at)
               && !r.text.startsWith("/*", r.at)) {

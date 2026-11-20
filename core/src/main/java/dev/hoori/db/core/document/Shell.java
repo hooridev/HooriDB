@@ -11,8 +11,12 @@ import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -25,6 +29,18 @@ import java.util.regex.Pattern;
  * a {@code Long}, and one with a point or an exponent a {@code Double}.
  */
 public final class Shell {
+
+  /**
+   * The names of the constructors of values that the shell takes, such as {@code ObjectId} and
+   * {@code Binary.createFromBase64}.
+   */
+  public static final Set<String> CONSTRUCTORS = Set.copyOf(Reader.MAKERS.keySet());
+
+  /** Those of them that completions offer: the common ones, without their aliases. */
+  public static final List<String> OFFERED = Reader.MAKERS.entrySet().stream()
+      .filter(e -> e.getValue().offered())
+      .map(Map.Entry::getKey)
+      .toList();
 
   /** Where {@link #pretty} writes a document or array on one line. */
   static final int LINE = 72;
@@ -277,22 +293,18 @@ public final class Shell {
     /** Skips spaces, line breaks and comments. */
     void space() throws SyntaxException {
       while (at < text.length()) {
-        char c = text.charAt(at);
-        if (Character.isWhitespace(c) || c == '\u00a0' || c == '\ufeff') {
+        if (Lexer.whitespace(text.charAt(at))) {
           at++;
-        } else if (text.startsWith("//", at)) {
-          while (at < text.length() && text.charAt(at) != '\n') {
-            at++;
-          }
-        } else if (text.startsWith("/*", at)) {
-          int close = text.indexOf("*/", at + 2);
-          if (close < 0) {
-            throw error("The comment is not closed: */ is missing");
-          }
-          at = close + 2;
-        } else {
+          continue;
+        }
+        if (!text.startsWith("//", at) && !text.startsWith("/*", at)) {
           return;
         }
+        var token = Lexer.token(text, at, false);
+        if (token.open() && text.startsWith("/*", at)) {
+          throw error("The comment is not closed: */ is missing");
+        }
+        at = token.end();
       }
     }
 
@@ -421,27 +433,24 @@ public final class Shell {
       if (quote != '\'' && quote != '"') {
         throw error("A string in quotes is needed here");
       }
-      int start = at++;
-      var out = new StringBuilder();
-      while (true) {
-        if (end()) {
-          at = start;
+      var token = Lexer.token(text, at, false);
+      if (token.open()) {
+        if (token.end() == text.length()) {
           throw error("The string is not closed: " + quote + " is missing");
         }
+        at = token.end();
+        throw error("The string is not closed on its line: " + quote + " is missing");
+      }
+      at++;
+      var out = new StringBuilder();
+      while (true) {
         char c = text.charAt(at++);
         if (c == quote) {
           return out.toString();
         }
-        if (c == '\n') {
-          at--;
-          throw error("The string is not closed on its line: " + quote + " is missing");
-        }
         if (c != '\\') {
           out.append(c);
           continue;
-        }
-        if (end()) {
-          throw error("An escape is cut short");
         }
         char e = text.charAt(at++);
         switch (e) {
@@ -481,36 +490,26 @@ public final class Shell {
     }
 
     Bson.Regex regex() throws SyntaxException {
-      int start = at++;
+      var token = Lexer.token(text, at, false);
+      if (token.open()) {
+        throw error("The regular expression is not closed: / is missing");
+      }
+      int options = token.end();
+      while (Character.isLetter(text.charAt(options - 1))) {
+        options--;
+      }
       var pattern = new StringBuilder();
-      boolean inClass = false;
-      while (true) {
-        if (end() || peek() == '\n') {
-          at = start;
-          throw error("The regular expression is not closed: / is missing");
+      int i = at + 1;
+      while (i < options - 1) {
+        char c = text.charAt(i++);
+        if (c == '\\') {
+          char next = text.charAt(i++); // \/ is the slash itself; any other escape stays as written
+          pattern.append(next == '/' ? "/" : "\\" + next);
+        } else {
+          pattern.append(c);
         }
-        char c = text.charAt(at++);
-        if (c == '\\' && !end()) {
-          char next = text.charAt(at++);
-          if (next != '/') {
-            pattern.append('\\');
-          }
-          pattern.append(next);
-          continue;
-        }
-        if (c == '[') {
-          inClass = true;
-        } else if (c == ']') {
-          inClass = false;
-        } else if (c == '/' && !inClass) {
-          break;
-        }
-        pattern.append(c);
       }
-      int options = at;
-      while (at < text.length() && Character.isLetter(text.charAt(at))) {
-        at++;
-      }
+      at = token.end();
       return new Bson.Regex(pattern.toString(), sorted(text.substring(options, at)));
     }
 
@@ -671,53 +670,105 @@ public final class Shell {
           break;
         }
       }
+      var constructor = MAKERS.get(type);
+      if (constructor == null) {
+        throw new SyntaxException("Unknown name " + type + ": a value is needed here", start);
+      }
       try {
-        return construct(type, args);
+        return constructor.maker().make(args);
       } catch (IllegalArgumentException | DateTimeParseException e) {
         var message = e.getMessage() == null ? "Not a valid " + type : e.getMessage();
         throw new SyntaxException(message, starts.isEmpty() ? start : starts.getFirst());
-      } catch (Unknown e) {
-        throw new SyntaxException("Unknown name " + type + ": a value is needed here", start);
       }
     }
 
-    private static final class Unknown extends Exception {}
+    /** Makes a value of what a constructor was given. */
+    private interface Maker {
+      Object make(List<Object> args);
+    }
 
-    private static Object construct(String type, List<Object> args) throws Unknown {
-      return switch (type) {
-        case "ObjectId" -> args.isEmpty() ? Bson.ObjectId.next() : Bson.ObjectId.of(text(args, 0));
-        case "ISODate", "Date" -> args.isEmpty() ? Instant.now() : instant(args.getFirst());
-        case "NumberLong", "Long" -> Long.parseLong(digits(args));
-        case "NumberInt", "Int32" -> Integer.parseInt(digits(args));
-        case "Double" -> ((Number) number(args)).doubleValue();
-        case "NumberDecimal", "Decimal128" -> new Bson.Decimal128(digits(args));
-        case "UUID" -> args.isEmpty() ? Bson.Binary.of(UUID.randomUUID()) : uuid(text(args, 0));
-        case "BinData" -> {
-          if (args.size() != 2) {
-            throw new IllegalArgumentException("BinData needs a subtype and a base64 string");
-          }
-          yield new Bson.Binary(subtype(args.getFirst()), base64(text(args, 1)));
-        }
-        case "Binary.createFromBase64" ->
-          new Bson.Binary(args.size() > 1 ? subtype(args.get(1)) : 0, base64(text(args, 0)));
-        case "Binary.createFromHexString" ->
-          new Bson.Binary(
-              args.size() > 1 ? subtype(args.get(1)) : 0, HexFormat.of().parseHex(text(args, 0)));
-        case "Timestamp" -> timestamp(args);
-        case "MinKey" -> Bson.Special.MIN_KEY;
-        case "MaxKey" -> Bson.Special.MAX_KEY;
-        case "RegExp", "BSONRegExp" ->
-          new Bson.Regex(text(args, 0), args.size() > 1 ? sorted(text(args, 1)) : "");
-        case "Code" -> {
-          var scope = args.size() > 1 ? args.get(1) : null;
-          if (scope != null && !(scope instanceof Document)) {
-            throw new IllegalArgumentException("The scope of Code is a document");
-          }
-          yield new Bson.Code(text(args, 0), (Document) scope);
-        }
-        case "Symbol", "BSONSymbol" -> new Bson.Symbol(text(args, 0));
-        default -> throw new Unknown();
-      };
+    /**
+     * A constructor: how it makes its value, and whether completions offer it, as they do the
+     * common ones and not their aliases, such as Long for NumberLong.
+     */
+    record Constructor(Maker maker, boolean offered) {}
+
+    /** The constructors of values, by their names. */
+    static final Map<String, Constructor> MAKERS = makers();
+
+    private static void put(
+        Map<String, Constructor> makers, String name, boolean offered, Maker maker) {
+      makers.put(name, new Constructor(maker, offered));
+    }
+
+    private static Map<String, Constructor> makers() {
+      var makers = new TreeMap<String, Constructor>();
+      Maker date = args -> args.isEmpty() ? Instant.now() : instant(args.getFirst());
+      Maker whole = args -> Long.parseLong(digits(args));
+      Maker integer = args -> Integer.parseInt(digits(args));
+      Maker decimal = args -> new Bson.Decimal128(digits(args));
+      Maker regex =
+          args -> new Bson.Regex(text(args, 0), args.size() > 1 ? sorted(text(args, 1)) : "");
+      Maker symbol = args -> new Bson.Symbol(text(args, 0));
+      put(
+          makers,
+          "ObjectId",
+          true,
+          args -> args.isEmpty() ? Bson.ObjectId.next() : Bson.ObjectId.of(text(args, 0)));
+      put(makers, "ISODate", true, date);
+      put(makers, "Date", false, date);
+      put(makers, "NumberLong", true, whole);
+      put(makers, "Long", false, whole);
+      put(makers, "NumberInt", true, integer);
+      put(makers, "Int32", false, integer);
+      put(makers, "Double", false, args -> ((Number) number(args)).doubleValue());
+      put(makers, "NumberDecimal", true, decimal);
+      put(makers, "Decimal128", false, decimal);
+      put(
+          makers,
+          "UUID",
+          true,
+          args -> args.isEmpty() ? Bson.Binary.of(UUID.randomUUID()) : uuid(text(args, 0)));
+      put(makers, "BinData", false, Reader::binData);
+      put(
+          makers,
+          "Binary.createFromBase64",
+          false,
+          args -> new Bson.Binary(subtypeAt(args, 1), base64(text(args, 0))));
+      put(
+          makers,
+          "Binary.createFromHexString",
+          false,
+          args -> new Bson.Binary(subtypeAt(args, 1), HexFormat.of().parseHex(text(args, 0))));
+      put(makers, "Timestamp", true, Reader::timestamp);
+      put(makers, "MinKey", false, args -> Bson.Special.MIN_KEY);
+      put(makers, "MaxKey", false, args -> Bson.Special.MAX_KEY);
+      put(makers, "RegExp", false, regex);
+      put(makers, "BSONRegExp", false, regex);
+      put(makers, "Code", false, Reader::code);
+      put(makers, "Symbol", false, symbol);
+      put(makers, "BSONSymbol", false, symbol);
+      return Collections.unmodifiableMap(makers);
+    }
+
+    private static Bson.Binary binData(List<Object> args) {
+      if (args.size() != 2) {
+        throw new IllegalArgumentException("BinData needs a subtype and a base64 string");
+      }
+      return new Bson.Binary(subtype(args.getFirst()), base64(text(args, 1)));
+    }
+
+    // The subtype at the index, or 0, the generic one, where none is given.
+    private static int subtypeAt(List<Object> args, int index) {
+      return args.size() > index ? subtype(args.get(index)) : 0;
+    }
+
+    private static Bson.Code code(List<Object> args) {
+      var scope = args.size() > 1 ? args.get(1) : null;
+      if (scope != null && !(scope instanceof Document)) {
+        throw new IllegalArgumentException("The scope of Code is a document");
+      }
+      return new Bson.Code(text(args, 0), (Document) scope);
     }
 
     private static String text(List<Object> args, int index) {
