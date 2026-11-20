@@ -61,6 +61,13 @@ class ExtendedJsonTest {
   }
 
   @Test
+  void regularExpressionOptionsAreInAlphabeticalOrder() {
+    assertEquals(
+        "{\"$regularExpression\": {\"pattern\": \"x\", \"options\": \"im\"}}",
+        ExtendedJson.of(new Bson.Regex("x", "mi")));
+  }
+
+  @Test
   void aDocumentOrAnArrayInTheGridIsJson() {
     var fields = Values.found(List.of(Document.of("a", Document.of("x", 1), "b", List.of(1))));
     assertEquals(Kind.JSON, fields.get(0).kind());

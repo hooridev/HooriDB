@@ -128,10 +128,19 @@ public final class Script {
     return pieces;
   }
 
-  // Whether the line after the break goes on with a dot, as in a chain of calls.
+  // Whether the line after the break goes on with a dot, as in a chain of calls, also after a
+  // block comment.
   private static boolean continues(String text, int from) {
     int i = from;
     while (i < text.length()) {
+      if (text.startsWith("/*", i)) {
+        int close = text.indexOf("*/", i + 2);
+        if (close < 0) {
+          return false;
+        }
+        i = close + 2;
+        continue;
+      }
       char c = text.charAt(i);
       if (c == '\n' || !Character.isWhitespace(c)) {
         return c == '.' && !(i + 1 < text.length() && Character.isDigit(text.charAt(i + 1)));
@@ -586,6 +595,8 @@ public final class Script {
             }
             documents.add(withId(d));
           }
+        } else if (method.equals("insertMany")) {
+          throw new SyntaxException("insertMany needs an array of documents", at);
         } else {
           documents.add(withId(document(args, 0, method, r)));
         }
@@ -744,7 +755,9 @@ public final class Script {
       case "dropIndex", "dropIndexes" -> {
         // One index by its name or keys; all but _id's only as dropIndexes asks.
         if (method.equals("dropIndex")
-            && (args.isEmpty() || "*".equals(args.getFirst()) || args.getFirst() == null)) {
+            && (args.isEmpty()
+                || "*".equals(args.getFirst())
+                || !(args.getFirst() instanceof String || args.getFirst() instanceof Document))) {
           throw new SyntaxException(
               "dropIndex needs the name or the keys of an index; dropIndexes() drops all", at);
         }
@@ -787,8 +800,14 @@ public final class Script {
           var limit = whole(args, call, r);
           // A negative limit is that many in one batch, as the shell has it; find wants it so.
           if (limit instanceof Number n && n.longValue() < 0) {
+            if (n.longValue() == Long.MIN_VALUE) {
+              throw new SyntaxException("limit is out of range", at);
+            }
+            long magnitude = -n.longValue();
             command = command
-                .with("limit", n instanceof Long ? (Object) (-n.longValue()) : -n.intValue())
+                .with(
+                    "limit",
+                    magnitude <= Integer.MAX_VALUE ? (Object) (int) magnitude : (Object) magnitude)
                 .with("singleBatch", true);
           } else {
             command = command.with("limit", limit);

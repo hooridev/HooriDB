@@ -203,6 +203,22 @@ class ScriptTest {
   }
 
   @Test
+  void roundThreeOfTheShellsEdges() throws Exception {
+    assertEquals(
+        List.of("db.a.find({})\n/* cap */ .limit(1)"),
+        Script.split("db.a.find({})\n/* cap */ .limit(1)").stream()
+            .map(Script.Piece::text)
+            .toList());
+    assertWhere(5, "db.a.insertMany({ x: 1 })");
+    assertEquals(
+        1, ((List<?>) Script.parse("db.a.insert({ x: 1 })").command().get("documents")).size());
+    assertWhere(5, "db.a.dropIndex(['a_1', 'b_1'])");
+    assertEquals("a_1", Script.parse("db.a.dropIndex('a_1')").command().get("index"));
+    assertEquals(
+        2147483648L, Script.parse("db.a.find().limit(-2147483648)").command().get("limit"));
+  }
+
+  @Test
   void anUnclosedCommentStaysInItsStatement() throws Exception {
     var text = "db.a.insertOne({ x: 1 }) /* not closed";
     var pieces = Script.split(text);

@@ -207,16 +207,20 @@ final class Mongo {
 
   // Why a server could not be reached, from the causes, or the words that say them.
   private static Kind kind(Throwable thrown, String detail) {
+    // A certificate refused is one also inside the handshake's failure that wraps it.
     int depth = 0;
     for (var t = thrown; t != null && depth < 32; t = t.getCause(), depth++) {
-      if (t instanceof MongoSecurityException) {
-        return Kind.LOGIN_REFUSED;
-      }
       if (t instanceof CertificateException
           || t instanceof CertPathValidatorException
           || t instanceof CertPathBuilderException
           || t instanceof SSLPeerUnverifiedException) {
         return Kind.CERTIFICATE_REJECTED;
+      }
+    }
+    depth = 0;
+    for (var t = thrown; t != null && depth < 32; t = t.getCause(), depth++) {
+      if (t instanceof MongoSecurityException) {
+        return Kind.LOGIN_REFUSED;
       }
       if (t instanceof SSLException) {
         return Kind.TLS_UNAVAILABLE;

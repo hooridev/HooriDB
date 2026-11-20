@@ -82,7 +82,10 @@ public final class ExtendedJson {
         out.append("{\"$regularExpression\": {\"pattern\": ");
         string(out, r.pattern());
         out.append(", \"options\": ");
-        string(out, r.options());
+        // In alphabetical order, as Extended JSON has them.
+        var options = r.options().toCharArray();
+        java.util.Arrays.sort(options);
+        string(out, new String(options));
         out.append("}}");
       }
       case Bson.Code c -> {
