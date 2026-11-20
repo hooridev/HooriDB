@@ -14,6 +14,7 @@ import com.rethinkj.ui.window.WindowIcon;
 import com.rethinkj.ui.window.WindowLoop;
 import com.rethinkj.updater.Installation;
 import dev.hoori.db.core.AppFolders;
+import dev.hoori.db.core.DesktopEntry;
 import dev.hoori.db.core.driver.MavenRepository;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
@@ -143,9 +144,17 @@ public final class HooriDb {
     // shortcut: confirms nothing yet, until the framework tells the app its first shown frame; then
     // call State.shown().
     app.textRendering(TextRendering.platform());
+    // The menu's entry and the dock's icon of an unpacked app image; without them it still runs.
+    var os = System.getProperty("os.name");
+    var launcher = System.getProperty("jpackage.app-path");
+    app.background(
+        "write the desktop entry",
+        () -> DesktopEntry.write(os, launcher, folders),
+        wrote -> {},
+        failed -> {});
     // Shows what goes wrong before there is a window to show it in, such as no usable GPU.
     SystemDialogs.reportFailure(NAME, () -> {
-      Window.identity("dev.hoori.db", NAME);
+      Window.identity(DesktopEntry.ID, NAME);
       Window.Options options = Window.options().icon(ICON).frameless().minimumSize(640, 400);
       try (Window window = Window.open(NAME, 1200, 760, options);
           GpuPresenter presenter = new GpuPresenter(window)) {
