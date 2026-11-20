@@ -37,7 +37,9 @@ public final class DriverException extends Exception {
     /** The disk of the storage folder has no room for the download. */
     NO_SPACE,
     /** The file holds no class of the driver's name that is a {@link java.sql.Driver}. */
-    NOT_A_DRIVER
+    NOT_A_DRIVER,
+    /** The version is older than the oldest that HooriDB works with, {@link Driver#oldest}. */
+    TOO_OLD
   }
 
   private final Failure failure;

@@ -12,6 +12,7 @@ import static dev.hoori.db.core.driver.DriverException.Failure.NO_NETWORK;
 import static dev.hoori.db.core.driver.DriverException.Failure.NO_SPACE;
 import static dev.hoori.db.core.driver.DriverException.Failure.STORAGE;
 import static dev.hoori.db.core.driver.DriverException.Failure.TOO_LARGE;
+import static dev.hoori.db.core.driver.DriverException.Failure.TOO_OLD;
 import static dev.hoori.db.core.driver.DriverException.Failure.UNAVAILABLE;
 
 import dev.hoori.db.core.document.DocumentDriver;
@@ -144,6 +145,7 @@ public final class DriverStore {
     checkCancelled(path);
     return parse(path, fetch(path, MAX_METADATA_SIZE)).stream()
         .filter(Maven::isVersion)
+        .filter(driver::takes)
         .distinct()
         .sorted(Maven.NEWEST_FIRST)
         .toList();
@@ -162,6 +164,7 @@ public final class DriverStore {
    * costs one request whose body is cut off after the headers.
    */
   public long size(Driver driver, String version) throws DriverException {
+    taken(driver, version);
     long total = 0;
     for (var artifact : artifacts(driver)) {
       var path = file(driver, artifact.artifact(), version);
@@ -261,6 +264,7 @@ public final class DriverStore {
    * its checksum. Two downloads of one version at once both succeed with one of their results.
    */
   public void download(Driver driver, String version, Progress progress) throws DriverException {
+    taken(driver, version);
     var jar = jar(driver, version);
     var path = file(driver, version);
     checkCancelled(path);
@@ -520,6 +524,7 @@ public final class DriverStore {
 
   /** Loads the downloaded version in a class loader of its own. */
   public LoadedDriver load(Driver driver, String version) throws DriverException {
+    taken(driver, version);
     var jar = jar(driver, version);
     var path = file(driver, version);
     checkCancelled(path);
@@ -747,6 +752,14 @@ public final class DriverStore {
     }
     return driver.group().replace('.', '/') + "/" + artifact + "/" + version + "/" + artifact + "-"
         + version + ".jar";
+  }
+
+  // Also a version a profile chose before HooriDB needed a newer one.
+  private static void taken(Driver driver, String version) throws DriverException {
+    if (!driver.takes(version)) {
+      throw new DriverException(
+          TOO_OLD, file(driver, version) + " is older than " + driver.oldest());
+    }
   }
 
   private static void checkCancelled(String path) throws DriverException {

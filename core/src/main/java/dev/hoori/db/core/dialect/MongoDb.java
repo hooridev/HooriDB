@@ -13,7 +13,8 @@ public final class MongoDb implements DocumentDialect {
   public static final MongoDb INSTANCE = new MongoDb();
 
   // The synchronous driver needs its core and BSON beside it, and the record codec, which the core
-  // looks for at run time, from version 4.6 on.
+  // looks for at run time, from version 4.6 on. The bridge is built and tested against 5.15.0,
+  // whose API older versions lack in part, as SocketSettings' connectTimeout of a long.
   private final Driver driver = new Driver(
       "org.mongodb",
       "mongodb-driver-sync",
@@ -21,7 +22,8 @@ public final class MongoDb implements DocumentDialect {
       List.of(
           new Driver.Part("mongodb-driver-core", false),
           new Driver.Part("bson", false),
-          new Driver.Part("bson-record-codec", true)));
+          new Driver.Part("bson-record-codec", true)),
+      "5.15.0");
 
   private MongoDb() {}
 
