@@ -18,15 +18,17 @@ public final class Layout {
   private final List<Lexer.Token> tokens;
   private final int[] match; // per opening bracket the index of its closing one, else -1
   private final boolean[] ends; // per token whether it ends a statement
+  private final boolean[] kept; // per token whether the white space before it stays, as in use
   private final StringBuilder out = new StringBuilder();
   private final ArrayDeque<Boolean> open = new ArrayDeque<>(); // per bracket whether broken
   private int depth; // of the brackets broken over lines
 
-  private Layout(String text, List<Lexer.Token> tokens, List<Script.Piece> pieces) {
+  private Layout(String text, List<Lexer.Token> tokens, List<Script.Piece> pieces, boolean[] uses) {
     this.text = text;
     this.tokens = tokens;
     match = new int[tokens.size()];
     ends = new boolean[tokens.size()];
+    kept = new boolean[tokens.size()];
     Arrays.fill(match, -1);
     var openers = new ArrayDeque<Integer>();
     int piece = 0;
@@ -35,8 +37,11 @@ public final class Layout {
       while (piece < pieces.size() && pieces.get(piece).end() < token.end()) {
         piece++;
       }
-      ends[k] = piece < pieces.size() && pieces.get(piece).end() == token.end();
-      if (token.kind() != Lexer.Kind.PUNCTUATION) {
+      boolean in = piece < pieces.size() && pieces.get(piece).start() <= token.start();
+      ends[k] = in && pieces.get(piece).end() == token.end();
+      // use takes the name as it is written, up to white space: its statement stays as it is.
+      kept[k] = in && uses[piece] && pieces.get(piece).start() < token.start();
+      if (kept[k] || token.kind() != Lexer.Kind.PUNCTUATION) {
         continue;
       }
       char c = text.charAt(token.start());
@@ -54,45 +59,53 @@ public final class Layout {
    */
   public static String of(String text) throws SyntaxException {
     var pieces = Script.split(text);
-    var requests = new ArrayList<Request>(pieces.size());
-    for (var piece : pieces) {
+    var uses = new boolean[pieces.size()];
+    for (int i = 0; i < pieces.size(); i++) {
+      var piece = pieces.get(i);
       try {
-        requests.add(Script.parse(piece.text()));
+        uses[i] = Script.parse(piece.text()).use() != null;
       } catch (SyntaxException e) {
         throw new SyntaxException(e.getMessage(), piece.start() + e.offset());
       }
     }
     var tokens = Lexer.tokens(text);
-    var layout = new Layout(text, tokens, pieces);
-    var laid = layout.write();
-    return same(text, tokens, requests, laid) ? laid : text;
+    var laid = new Layout(text, tokens, pieces, uses).write();
+    return same(text, tokens, pieces, laid) ? laid : text;
   }
 
-  // Whether the text laid out has the same tokens, comments too, and makes the same requests.
+  // Whether the text laid out has the same tokens, comments too, in the same statements.
   private static boolean same(
-      String text, List<Lexer.Token> tokens, List<Request> requests, String laid) {
+      String text, List<Lexer.Token> tokens, List<Script.Piece> pieces, String laid) {
     var after = Lexer.tokens(laid);
-    var pieces = Script.split(laid);
-    if (after.size() != tokens.size() || pieces.size() != requests.size()) {
+    if (after.size() != tokens.size()) {
       return false;
     }
     for (int k = 0; k < tokens.size(); k++) {
       var a = tokens.get(k);
       var b = after.get(k);
-      if (!text.substring(a.start(), a.end()).equals(laid.substring(b.start(), b.end()))) {
+      if (a.kind() != b.kind()
+          || !text.substring(a.start(), a.end()).equals(laid.substring(b.start(), b.end()))) {
         return false;
       }
     }
-    for (int i = 0; i < pieces.size(); i++) {
-      try {
-        if (!Script.parse(pieces.get(i).text()).equals(requests.get(i))) {
-          return false;
-        }
-      } catch (SyntaxException e) {
-        return false;
+    return counts(tokens, pieces).equals(counts(after, Script.split(laid)));
+  }
+
+  // How many tokens each statement has, which with the same tokens says where each starts.
+  private static List<Integer> counts(List<Lexer.Token> tokens, List<Script.Piece> pieces) {
+    var counts = new ArrayList<Integer>(pieces.size());
+    int k = 0;
+    for (var piece : pieces) {
+      while (tokens.get(k).start() < piece.start()) {
+        k++;
       }
+      int first = k;
+      while (k < tokens.size() && tokens.get(k).end() <= piece.end()) {
+        k++;
+      }
+      counts.add(k - first);
     }
-    return true;
+    return counts;
   }
 
   private String write() {
@@ -101,7 +114,10 @@ public final class Layout {
     for (int k = 0; k < tokens.size(); k++) {
       var token = tokens.get(k);
       boolean comment = token.kind() == Lexer.Kind.COMMENT;
-      if (k > 0) {
+      if (k > 0 && kept[k]) {
+        out.append(text, tokens.get(k - 1).end(), token.start());
+        ownLine = false;
+      } else if (k > 0) {
         var gap = comment ? commentGap(k) : gap(code, k);
         if (lineComment(k - 1) && gap.indexOf('\n') < 0) {
           gap = newline();
@@ -113,10 +129,12 @@ public final class Layout {
       }
       if (!comment) {
         code = k;
+      }
+      if (!comment && !kept[k]) {
         close(k);
       }
       out.append(text, token.start(), token.end());
-      if (!comment) {
+      if (!comment && !kept[k]) {
         open(k);
       }
     }

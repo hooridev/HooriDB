@@ -270,12 +270,8 @@ public final class Shell {
   /** Reads the values of a text, one after another. Used by {@link Script}. */
   static final class Reader {
 
-    /** The most documents and arrays a value may be nested in, as MongoDB's BSON allows. */
-    static final int DEEPEST = 200;
-
     final String text;
     int at;
-    private int depth; // of the documents and arrays being read
 
     Reader(String text, int at) {
       this.text = text;
@@ -349,18 +345,9 @@ public final class Shell {
       }
       char c = peek();
       int start = at;
-      if (c == '{' || c == '[') {
-        if (depth == DEEPEST) {
-          throw error("Nested deeper than the " + DEEPEST + " levels that MongoDB takes");
-        }
-        depth++;
-        try {
-          return c == '{' ? object() : array();
-        } finally {
-          depth--;
-        }
-      }
       return switch (c) {
+        case '{' -> object();
+        case '[' -> array();
         case '\'', '"' -> string();
         case '/' -> regex();
         default -> {

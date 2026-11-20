@@ -171,5 +171,17 @@ class ShellSyntaxTest {
     assertEquals(
         new Formatted(null, new Problem(16, 16, Kind.UNEXPECTED_END)),
         ShellSyntax.format("db.c.find({ a: 1 "));
+    // A string not closed at the end of its line, where the reader stops.
+    assertEquals(
+        new Formatted(null, new Problem(13, 18, Kind.UNCLOSED_STRING)),
+        ShellSyntax.format("db.c.find({a:'oops\n  b: 2})"));
+    // Not the comment, nor the next statement: the end of the one that goes wrong.
+    assertEquals(
+        new Formatted(null, new Problem(3, 3, Kind.UNEXPECTED_END)),
+        ShellSyntax.format("use // later\ndb.c.find()"));
+    int deep = 100_000;
+    assertEquals(
+        new Formatted(null, new Problem(0, 0, Kind.TOO_LARGE)),
+        ShellSyntax.format("db.c.find({ a: " + "[".repeat(deep) + "]".repeat(deep) + " })"));
   }
 }

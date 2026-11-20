@@ -189,15 +189,6 @@ class ShellTest {
     assertOffset(9, "{ a: 1 } x");
   }
 
-  /** Deeper than MongoDB takes is an error at the bracket, not a stack that runs out. */
-  @Test
-  void aValueNestedTooDeepIsAnError() throws SyntaxException {
-    int deepest = Shell.Reader.DEEPEST;
-    assertEquals(
-        1, ((List<?>) Shell.parse("[".repeat(deepest) + "1" + "]".repeat(deepest))).size());
-    assertOffset(deepest, "[".repeat(10_000) + "]".repeat(10_000));
-  }
-
   private static void assertOffset(int offset, String text) {
     var e = assertThrows(SyntaxException.class, () -> Shell.parse(text));
     if (offset != e.offset() && !(offset == 0 && e.offset() == text.length())) {

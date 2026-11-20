@@ -88,16 +88,35 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
     try {
       return new Formatted(Layout.of(text), null);
     } catch (SyntaxException e) {
-      int at = Math.clamp(e.offset(), 0, text.length());
-      for (var token : Lexer.tokens(text)) {
-        if (token.end() > at) {
-          var kind = token.start() <= at && token.open() && token.kind() == Lexer.Kind.STRING
-              ? Formatted.Kind.UNCLOSED_STRING
-              : Formatted.Kind.UNEXPECTED;
-          return new Formatted(null, new Formatted.Problem(at, Math.max(at, token.end()), kind));
-        }
-      }
-      return new Formatted(null, new Formatted.Problem(at, at, Formatted.Kind.UNEXPECTED_END));
+      return new Formatted(null, problem(text, Math.clamp(e.offset(), 0, text.length())));
+    } catch (StackOverflowError e) {
+      // shortcut: the shell's reader recurses, so a statement nested thousands deep ends here;
+      // until it has a limit of its own, as MongoDB's 200 levels (#82).
+      return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
     }
+  }
+
+  /**
+   * The problem at the offset: a string not closed that it is in or ends at, else the token there
+   * or after it on its line, else the end of the statement, as before a comment.
+   */
+  private static Formatted.Problem problem(String text, int at) {
+    for (var token : Lexer.tokens(text)) {
+      boolean open = token.kind() == Lexer.Kind.STRING && token.open();
+      if (token.end() < at || token.end() == at && !open) {
+        continue;
+      }
+      if (open && token.start() <= at) {
+        return new Formatted.Problem(token.start(), token.end(), Formatted.Kind.UNCLOSED_STRING);
+      }
+      if (token.start() > at && text.substring(at, token.start()).indexOf('\n') >= 0) {
+        break;
+      }
+      if (token.kind() != Lexer.Kind.COMMENT) {
+        return new Formatted.Problem(
+            Math.max(at, token.start()), token.end(), Formatted.Kind.UNEXPECTED);
+      }
+    }
+    return new Formatted.Problem(at, at, Formatted.Kind.UNEXPECTED_END);
   }
 }

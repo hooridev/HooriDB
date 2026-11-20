@@ -73,6 +73,15 @@ class LayoutTest {
   @Test
   void keepsTheNameThatUseTakesAsItIsWritten() throws SyntaxException {
     assertEquals("use my-shop:1", Layout.of("use my-shop:1"));
+    assertEquals("use foo[bar]\ndb.c.find({ a: 1 })", Layout.of("use foo[bar]\ndb.c.find({a:1})"));
+  }
+
+  /** A statement that makes a new value each time it is read, as an _id, formats all the same. */
+  @Test
+  void formatsWhatMakesANewIdEachTime() throws SyntaxException {
+    assertEquals(
+        "db.c.insertOne({ a: 1, at: ISODate(), id: ObjectId() })",
+        Layout.of("db.c.insertOne({a:1,at:ISODate(),id:ObjectId()})"));
   }
 
   @Test
