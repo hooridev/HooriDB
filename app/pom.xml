@@ -35,6 +35,11 @@
       <groupId>com.rethinkj.ui</groupId>
       <artifactId>rethinkj-ui-kit</artifactId>
     </dependency>
+    <!-- The console's SQL highlighter. -->
+    <dependency>
+      <groupId>com.rethinkj.ui</groupId>
+      <artifactId>rethinkj-ui-sql</artifactId>
+    </dependency>
     <!-- The default fonts and the icon font hold no classes. -->
     <dependency>
       <groupId>com.rethinkj.ui</groupId>
