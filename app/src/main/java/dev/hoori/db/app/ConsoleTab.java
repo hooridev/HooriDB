@@ -332,6 +332,7 @@ final class ConsoleTab implements Tab {
   private Sent recording;
   private HistoryEntry recorded; // the last statement that went into the history, or null
   HistoryDialog history; // the History dialog, null while closed
+  QueriesDialog queries; // Save query or Saved queries, null while closed
 
   /** A statement of the user's on its way to the server, and since when. */
   private record Sent(String sql, Instant started) {}
@@ -2495,6 +2496,16 @@ final class ConsoleTab implements Tab {
         .key("cancel")
         .keepFocus());
     actions.add(Tooltip.tooltip(
+        Button.icon(Button.Variant.GHOST, Symbol.SAVE, "Save query", this::saveQuery)
+            .key("query-save-open")
+            .keepFocus(),
+        "Save query: the selection, or else the whole text, under a name"));
+    actions.add(Tooltip.tooltip(
+        Button.icon(Button.Variant.GHOST, Symbol.STAR, "Saved queries", this::openQueries)
+            .key("queries-open")
+            .keepFocus(),
+        "Saved queries"));
+    actions.add(Tooltip.tooltip(
         Button.icon(Button.Variant.GHOST, Symbol.HISTORY, "History", this::openHistory)
             .key("history-open")
             .keepFocus(),
@@ -3096,6 +3107,21 @@ final class ConsoleTab implements Tab {
   /** History: the statements run on the connection, to put one into the editor. */
   void openHistory() {
     history = new HistoryDialog();
+  }
+
+  /** Save query: the selection, or else the whole text, under a name. */
+  void saveQuery() {
+    int from = Math.min(editor.caret(), editor.anchor());
+    int to = Math.min(Math.max(editor.caret(), editor.anchor()), text.length());
+    var saved = from < to ? text.substring(from, to) : text;
+    if (!saved.isBlank()) {
+      queries = QueriesDialog.save(saved);
+    }
+  }
+
+  /** Saved queries: those of the connection, to put one into the editor. */
+  void openQueries() {
+    queries = QueriesDialog.list();
   }
 
   /**
