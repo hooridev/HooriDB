@@ -210,13 +210,7 @@ final class JsonFile {
     // In the same folder, so that the move is a rename on the same file system; the target takes
     // the permissions of the temporary file, which a history holding secrets must keep to its
     // owner.
-    FileAttribute<?>[] ownerOnly =
-        folder.getFileSystem().supportedFileAttributeViews().contains("posix")
-            ? new FileAttribute<?>[] {
-              PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
-            }
-            : new FileAttribute<?>[0];
-    var temporary = Files.createTempFile(folder, name + ".", ".tmp", ownerOnly);
+    var temporary = Files.createTempFile(folder, name + ".", ".tmp", ownerOnly(folder));
     try {
       try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
         content.write(channel);
@@ -228,6 +222,18 @@ final class JsonFile {
     } finally {
       Files.deleteIfExists(temporary);
     }
+  }
+
+  /**
+   * What makes a new file in the folder readable and writable by its owner alone, where its file
+   * system has POSIX permissions; nothing elsewhere.
+   */
+  static FileAttribute<?>[] ownerOnly(Path folder) {
+    return folder.getFileSystem().supportedFileAttributeViews().contains("posix")
+        ? new FileAttribute<?>[] {
+          PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
+        }
+        : new FileAttribute<?>[0];
   }
 
   private JsonNode field(
