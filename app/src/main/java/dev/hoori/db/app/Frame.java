@@ -78,22 +78,27 @@ final class Frame {
         .onKeyUp(MenuBar.keysUp(s.bar, menus))
         .child(TitleBar.titleBar(
             icon(), HooriDb.NAME, List.of(MenuBar.menuBar(s.bar, menus)), null, List.of()))
-        .child(Split.cards(
-                Split.Direction.ROW,
-                s.sidebar,
-                State.SIDEBAR,
-                p -> s.sidebar = p,
-                catalog,
-                160,
-                tabs,
-                320)
+        .child(s.logPanel
+            .around(
+                s,
+                Split.cards(
+                    Split.Direction.ROW,
+                    s.sidebar,
+                    State.SIDEBAR,
+                    p -> s.sidebar = p,
+                    catalog,
+                    160,
+                    tabs,
+                    320))
             .grow(1)
             .padding(0, t.space().m(), t.space().m(), t.space().m()))
         .child(StatusBar.statusBar(
             Arrays.asList(connections(s), uncommitted(s, modal), downloading(s)),
             s.message == null ? null : StatusBar.text(s.message).key("message"),
-            List.of(StatusBar.item(null, s.version, modal ? null : () -> s.about = true)
-                .key("version"))));
+            List.of(
+                s.logPanel.toggle(s, modal),
+                StatusBar.item(null, s.version, modal ? null : () -> s.about = true)
+                    .key("version"))));
     // The window closes once what was begun has ended and the connections are written.
     Windows.Handle window = s.app == null ? null : s.app.windows().of(s.app);
     if (window != null) {
@@ -627,6 +632,9 @@ final class Frame {
                 Menu.item("Command palette…", modal ? null : palette::open)
                     .icon(Symbol.SEARCH)
                     .shortcut(Key.CONTROL | Key.SHIFT, "P"),
+                Menu.item("Statement log", s.logPanel::toggle)
+                    .icon(Symbol.TEXT_BULLET_LIST_LTR)
+                    .checked(s.logPanel.open),
                 Menu.separator(),
                 themeItem(s, Theme.DARK, "Dark theme"),
                 themeItem(s, Theme.LIGHT, "Light theme"))),

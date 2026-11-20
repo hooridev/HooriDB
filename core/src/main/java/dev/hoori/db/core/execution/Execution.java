@@ -131,7 +131,7 @@ public final class Execution implements AutoCloseable {
    * How a statement's first portion went: its failure, else the rows it read and whether more
    * follow, else what it changed.
    */
-  static Outcome outcome(Portion portion) {
+  public static Outcome outcome(Portion portion) {
     long rows = 0;
     long changed = 0;
     boolean counted = false;

@@ -169,6 +169,9 @@ final class State {
     }
   }
 
+  // What HooriDB sent to servers, and the panel that shows it.
+  final StatementLog statements;
+  final LogPanel logPanel = new LogPanel();
   private final ConsoleStore consoleStore;
   private final HistoryStore historyStore;
   private final QueryStore queryStore;
@@ -306,7 +309,8 @@ final class State {
     this.findKeyring = keyring;
     this.drivers = drivers;
     this.tester = tester;
-    this.catalog = new CatalogTree(servers);
+    this.statements = new StatementLog(folder);
+    this.catalog = new CatalogTree(new Recorded(servers, statements));
   }
 
   /**
@@ -316,6 +320,7 @@ final class State {
   void start() {
     load();
     startUpdates();
+    statements.start(app);
     var consoles = consoleStore;
     app.background(
         "load consoles",
