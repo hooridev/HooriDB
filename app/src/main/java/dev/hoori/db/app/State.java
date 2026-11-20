@@ -1400,7 +1400,7 @@ final class State {
   private void startUpdates() {
     var store = updateStore;
     var updater = this.updater;
-    beginning = app.background(
+    var work = app.background(
         "load update settings",
         () -> {
           StoredUpdates stored;
@@ -1438,6 +1438,7 @@ final class State {
         },
         this::begun,
         error -> begun(new Begun(StoredUpdates.NONE, null, false)));
+    beginning = updater == null ? null : work; // only a helper's report, read once, is worth it
   }
 
   private static boolean locked(Installation.Result result) {
@@ -1682,7 +1683,7 @@ final class State {
           restarting = null;
           restartWith = null;
           stay("HooriDB stayed open, as it could not restart to update.");
-          updates = updates.withAttempt(before); // as on disk: a refused restart wrote nothing
+          updates = updates.withAttempt(before); // a refused restart wrote nothing
           update = notice(Callout.Kind.WARNING, "HooriDB could not restart", message(error));
         });
   }
