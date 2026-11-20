@@ -11,6 +11,7 @@ import com.rethinkj.ui.El;
 import com.rethinkj.ui.Highlighter;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.Style;
+import com.rethinkj.ui.json.Json;
 import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
@@ -2774,7 +2775,7 @@ final class ConsoleTab implements Tab {
       o.whole.show("r" + o.number, o.documents);
       body = o.shown == TableTab.Shown.JSON
           ? CodeEditor.embedded(
-              CodeEditor.codeEditor(app, o.whole.text(), o.whole.editor, ShellSyntax.of(), null)
+              CodeEditor.codeEditor(app, o.whole.text(), o.whole.editor, Json.of(), null)
                   .key("result-json")
                   .label("Documents of result " + o.number))
           : o.whole

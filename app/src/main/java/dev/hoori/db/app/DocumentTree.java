@@ -1,12 +1,14 @@
 package dev.hoori.db.app;
 
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.json.Json;
 import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.document.Bson;
 import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.ExtendedJson;
 import dev.hoori.db.core.document.Shell;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -19,8 +21,8 @@ import java.util.function.Consumer;
 
 /**
  * Documents as a tree and as text: each document a root, whose fields and the items of its arrays
- * open below it, each with its value or how many it holds; and the documents in the shell's syntax,
- * one after another, for a read-only editor. Its nodes go by the place of their value, so that
+ * open below it, each with its value or how many it holds; and the documents as an array of
+ * Relaxed Extended JSON, formatted, for a read-only editor. Its nodes go by the place of their value, so that
  * what is open stays open while the same documents are shown. Only the app's thread uses it.
  */
 final class DocumentTree {
@@ -70,17 +72,12 @@ final class DocumentTree {
     this.documents = documents;
   }
 
-  /** The documents in the shell's syntax, each over its lines, separated by an empty line. */
+  /** The documents as a JSON array of Relaxed Extended JSON, formatted. */
   String text() {
     if (text == null) {
-      var out = new StringBuilder();
-      for (var document : documents) {
-        if (!out.isEmpty()) {
-          out.append("\n\n");
-        }
-        out.append(Shell.pretty(document));
-      }
-      text = out.toString();
+      var json = ExtendedJson.array(documents);
+      var formatted = Json.format(json);
+      text = formatted.valid() ? formatted.text() : json;
     }
     return text;
   }

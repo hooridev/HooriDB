@@ -22,8 +22,9 @@ import java.util.Set;
 /**
  * The values of documents as a grid shows them: a field a column, with the {@link Kind} its types
  * have in common, and each value of the Java type that kind says. A field a document lacks is
- * {@code null}, as a field that is null; a value of another type than the column's, and a document
- * or an array, is the shell's text of it, cut short beyond {@link Rows#LIMIT} characters.
+ * {@code null}, as a field that is null. A document or an array is its Relaxed Extended JSON, of
+ * {@link Kind#JSON} where the field holds only them, and a value of another type than the
+ * column's the shell's text of it, each cut short beyond {@link Rows#LIMIT} characters.
  */
 public final class Values {
 
@@ -49,6 +50,7 @@ public final class Values {
       case "bool" -> Kind.BOOLEAN;
       case "date" -> Kind.DATE_TIME_ZONED;
       case "binData" -> Kind.BINARY;
+      case "object", "array" -> Kind.JSON;
       default -> Kind.OTHER;
     };
   }
@@ -120,6 +122,8 @@ public final class Values {
         var bytes = b.bytes();
         yield new Binary(Arrays.copyOf(bytes, Math.min(bytes.length, Rows.LIMIT)), bytes.length);
       }
+      case Document d -> json(d);
+      case List<?> list -> json(list);
       default -> {
         var text = Shell.compact(value);
         yield text.length() > Rows.LIMIT ? cut(text) : text;
@@ -127,9 +131,16 @@ public final class Values {
     };
   }
 
+  private static Object json(Object value) {
+    var text = ExtendedJson.of(value);
+    return text.length() > Rows.LIMIT ? cut(text) : text;
+  }
+
+  // Not between the two halves of a character beyond the 16 bits of one char.
   private static Cut cut(String text) {
+    int end = Character.isHighSurrogate(text.charAt(Rows.LIMIT - 1)) ? Rows.LIMIT - 1 : Rows.LIMIT;
     return new Cut(
-        text.substring(0, Rows.LIMIT),
+        text.substring(0, end),
         OptionalLong.of(text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length));
   }
 }

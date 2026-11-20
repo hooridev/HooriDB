@@ -8,6 +8,7 @@ import static com.rethinkj.ui.kit.Button.button;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
+import com.rethinkj.ui.json.Json;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
@@ -52,7 +53,7 @@ import java.util.function.LongPredicate;
  * Refresh reads it anew. Only the app's thread uses it.
  *
  * <p>A collection of documents shows as a grid of their fields, as a table does, or a page of
- * them at a time, whole: as the shell writes them, or as a tree of their fields.
+ * them at a time, whole: as Extended JSON, or as a tree of their fields.
  */
 final class TableTab implements Tab {
 
@@ -103,7 +104,7 @@ final class TableTab implements Tab {
   enum Shown {
     /** A row each, a column a field, read as the grid scrolls. */
     GRID("Grid"),
-    /** A page of them as the shell writes them. */
+    /** A page of them as an array of Relaxed Extended JSON. */
     JSON("JSON"),
     /** A page of them, each a tree of its fields. */
     TREE("Tree");
@@ -673,8 +674,9 @@ final class TableTab implements Tab {
             .child(Label.label(Label.Variant.MUTED, "Reading rows…"))
             .key("read-status")
         : Label.label(Label.Variant.MUTED, readText(ofDocuments)).key("read-status");
-    El rowsStatus =
-        Label.label(Label.Variant.MUTED, rowsText(ofDocuments)).key("rows-status").ellipsis();
+    El rowsStatus = Label.label(Label.Variant.MUTED, rowsText(ofDocuments))
+        .key("rows-status")
+        .ellipsis();
     var end = new ArrayList<El>();
     if (said != null) {
       end.add(Label.label(Label.Variant.MUTED, said).key("said"));
@@ -848,7 +850,7 @@ final class TableTab implements Tab {
   }
 
   /**
-   * A page of documents whole, with what turns the pages: as the shell writes them, in an editor
+   * A page of documents whole, with what turns the pages: as Extended JSON, in an editor
    * that only shows them, or as a tree.
    */
   private El documents(State s, App<State> app) {
@@ -894,7 +896,7 @@ final class TableTab implements Tab {
       shownNow = switch (shown) {
         case JSON ->
           CodeEditor.embedded(CodeEditor.codeEditor(
-                      app, documentView.text(), documentView.editor, ShellSyntax.of(), null)
+                      app, documentView.text(), documentView.editor, Json.of(), null)
                   .key("json")
                   .label("Documents of " + table.name()))
               .grow(1);
