@@ -276,7 +276,7 @@ public final class WorkspaceStore {
 
   // The names in the file, spelled out so that renaming a constant cannot change it.
   private static String stored(Provider provider) {
-    return provider.dialect().storedName();
+    return provider.traits().storedName();
   }
 
   private static String stored(Tls tls) {

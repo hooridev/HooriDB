@@ -1,30 +1,12 @@
 package dev.hoori.db.core.dialect;
 
-import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.data.RowsDialect;
-import dev.hoori.db.core.driver.Driver;
-import java.util.Map;
 
-/** Everything a provider does its own way, by concern. */
-public interface Dialect {
-
-  /** Its name as people know it. */
-  String displayName();
-
-  /** Its name in the workspace's file, spelled out so that renaming a constant cannot change it. */
-  String storedName();
-
-  /** The port its servers listen on unless told otherwise. */
-  int defaultPort();
-
-  /** The capabilities its servers have, and from which version. */
-  Map<Capability, Since> capabilities();
-
-  /** Its JDBC driver. */
-  Driver driver();
-
-  /** Its JDBC driver's name as its makers call it. */
-  String driverName();
+/**
+ * Everything a provider of SQL does its own way, by concern: a server of tables reached through
+ * its JDBC driver.
+ */
+public non-sealed interface Dialect extends Traits {
 
   /** How its driver connects. */
   ConnectDialect connecting();

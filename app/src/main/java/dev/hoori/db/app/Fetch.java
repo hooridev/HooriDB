@@ -357,7 +357,7 @@ final class Fetch {
 
   /** The driver's name as its makers call it. */
   static String name(Provider provider) {
-    return provider.dialect().driverName();
+    return provider.traits().driverName();
   }
 
   /** What is known of the driver, in a line: which one, and whether it is there. */

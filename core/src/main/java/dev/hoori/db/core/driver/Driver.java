@@ -55,6 +55,6 @@ public record Driver(String group, String artifact, String driverClass, List<Par
 
   /** The driver of the provider. */
   public static Driver of(Provider provider) {
-    return provider.dialect().driver();
+    return provider.traits().driver();
   }
 }
