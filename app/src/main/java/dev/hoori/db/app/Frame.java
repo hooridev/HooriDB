@@ -677,7 +677,7 @@ final class Frame {
   }
 
   /** The element at or below this one with the key, in tree order; or null. */
-  static El find(El el, String key) {
+  private static El find(El el, String key) {
     if (el == null || key.equals(el.key())) {
       return el;
     }

@@ -248,6 +248,9 @@ class ConsoleHistoryTest {
     // Below a statement not ended yet: on the line at the caret, the statement closed.
     c.run(app, CLEAR + type("SELECT 1\n\n-- keep below") + "key ArrowUp\n" + choose);
     assertEquals("SELECT 1;\n" + COUNT + ";\n-- keep below", tab.text);
+    // Before a combining mark: right after the terminator it follows, not before it.
+    c.run(app, CLEAR + type("SELECT 1;\u0301") + "key ArrowLeft\nkey ArrowLeft\n" + choose);
+    assertEquals("SELECT 1;\n" + COUNT + ";\n\u0301", tab.text);
   }
 
   @Test
