@@ -101,6 +101,7 @@ class DocumentsServerTest {
     var customers = c.tree("customers");
     // Relaxed Extended JSON, as the element tree writes a text with quotes.
     assertTrue(cell(customers, 0, 4).contains("[\\\"math\\\", \\\"poetry\\\"]"), customers);
+    assertTrue(cell(customers, 0, 3).contains("\"1815-12-10 00:53:28+00:53:28\""), customers);
   }
 
   @Test
@@ -125,8 +126,8 @@ class DocumentsServerTest {
     // An array of Relaxed Extended JSON, formatted: its start and its end are in the tree.
     assertTrue(editor.contains("\"[\\n    {\\n        \\\"_id\\\": 1,"), editor);
     assertTrue(editor.contains("\\\"score\\\": 42\\n    }\\n]\""), editor);
-    assertTrue(line(json, "#range").contains("\"Documents 1–3\""), json);
-    assertTrue(line(json, "#next").contains("disabled"), json);
+    assertTrue(line(json, "#rows-in-view").contains("\"Documents 1–3\""), json);
+    assertTrue(line(json, "role=button label=\"Next page\"").contains("disabled"), json);
     var tree = c.tree("tree");
     assertEquals(List.of("1", "2", "3"), documents(tree));
     c.run(app, """
@@ -141,6 +142,11 @@ class DocumentsServerTest {
     assertTrue(
         line(c.tree("open"), "role=treeitem label=\"name\"").contains("value=\"'Ada'\""),
         c.tree("open"));
+    // A moment as the grid shows it, in the computer's zone, here Berlin's of 1815.
+    assertTrue(
+        line(c.tree("open"), "role=treeitem label=\"born\"")
+            .contains("value=\"1815-12-10 00:53:28+00:53:28 · date\""),
+        c.tree("open"));
   }
 
   @Test
@@ -153,17 +159,18 @@ class DocumentsServerTest {
         advance 1
         frame
         snap first
-        press role=button label="Next documents"
+        press role=button label="Next page"
         frame
         """ + SETTLE + """
         advance 1
         frame
         snap second
         """);
-    assertTrue(line(c.tree("first"), "#range").contains("\"Documents 1–200\""), c.tree("first"));
+    assertTrue(
+        line(c.tree("first"), "#rows-in-view").contains("\"Documents 1–200\""), c.tree("first"));
     var second = c.tree("second");
-    assertTrue(line(second, "#range").contains("\"Documents 201–250\""), second);
+    assertTrue(line(second, "#rows-in-view").contains("\"Documents 201–250\""), second);
     assertTrue(line(second, "#json").contains("\\\"_id\\\": 201"), second);
-    assertTrue(line(second, "#next").contains("disabled"), second);
+    assertTrue(line(second, "role=button label=\"Next page\"").contains("disabled"), second);
   }
 }
