@@ -29,6 +29,10 @@ class MongoTest {
     assertEquals("cluster0.example.net", cluster.getSrvHost());
     assertEquals(ClusterConnectionMode.MULTIPLE, cluster.getMode());
     assertTrue(settings.getSslSettings().isEnabled());
+    var rooted = Mongo.settings(DocumentConnector.target(profile.withHost("example.net."), TIMEOUT))
+        .build()
+        .getClusterSettings();
+    assertEquals("example.net", rooted.getSrvHost());
   }
 
   @Test

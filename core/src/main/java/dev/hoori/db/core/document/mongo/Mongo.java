@@ -109,7 +109,10 @@ final class Mongo {
             // The servers the record lists, as mongodb+srv:// finds them. shortcut: the options
             // of its TXT record (replicaSet, loadBalanced) are not read, as discovery finds the
             // set; read them once a cluster needs one.
-            cluster.srvHost(host).mode(ClusterConnectionMode.MULTIPLE);
+            // Without the root's dot, which the driver counts as a label: of "example.net." it
+            // takes ".net" for the domain the servers' names must end in, and refuses that.
+            var name = host.endsWith(".") ? host.substring(0, host.length() - 1) : host;
+            cluster.srvHost(name).mode(ClusterConnectionMode.MULTIPLE);
           } else {
             // As the shell connects to one host: to that server alone, also to a member of a
             // replica set whose other members are known by names that do not resolve here.
