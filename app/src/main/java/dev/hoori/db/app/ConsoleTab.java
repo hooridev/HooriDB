@@ -3161,7 +3161,9 @@ final class ConsoleTab implements Tab {
       int at = unclosed.isPresent()
           ? unclosed.get().start()
           : inside ? part.end() : comment.map(Statements.Piece::end).orElse(from);
-      put = (at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "") + sql + ";"
+      put = (at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "")
+          + sql
+          + terminator(sql, provider)
           + (at < text.length() && text.charAt(at) != '\n' ? "\n" : "");
       from = at;
       to = at;
@@ -3176,6 +3178,29 @@ final class ConsoleTab implements Tab {
       }
     }
     editor.replace(from, to, put, put.stripTrailing().length());
+  }
+
+  // What ends the text as a statement: a semicolon, on a line of its own after a comment to the
+  // end of the line, which would take it in; none where it has its own, as a saved query may.
+  private static String terminator(String sql, Provider provider) {
+    var pieces = Statements.pieces(sql, provider);
+    for (int i = pieces.size() - 1; i >= 0; i--) {
+      var piece = pieces.get(i);
+      if (piece.kind() != Statements.Piece.Kind.COMMENT) {
+        if (piece.kind() == Statements.Piece.Kind.CODE
+            && piece.end() - piece.start() == 1
+            && sql.charAt(piece.start()) == ';') {
+          return "";
+        }
+        break;
+      }
+    }
+    var last = pieces.isEmpty() ? null : pieces.getLast();
+    boolean lineComment = last != null
+        && last.kind() == Statements.Piece.Kind.COMMENT
+        && last.end() == sql.length()
+        && !sql.startsWith("/*", last.start());
+    return lineComment ? "\n;" : ";";
   }
 
   /** What is asked before a statement is sent, while it is; in the console's window. */

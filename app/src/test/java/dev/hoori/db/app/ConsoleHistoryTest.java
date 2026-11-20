@@ -269,6 +269,23 @@ class ConsoleHistoryTest {
   }
 
   @Test
+  void anEntryThatEndsInACommentOrASemicolonStaysOneStatement() throws Exception {
+    var app = k.console(SHOP);
+    var tab = k.tab(app);
+    var cases = List.of(
+        // The semicolon after the comment, which would take it in.
+        List.of("SELECT 1 -- note", "SELECT 1 -- note\n;\nSELECT 2;"),
+        // Its own semicolon, and no second.
+        List.of("SELECT 1;", "SELECT 1;\nSELECT 2;"));
+    for (var each : cases) {
+      c.run(app, CLEAR + type("SELECT 2;") + "key Home control\nframe\n");
+      app.post(() -> tab.insert(app, each.get(0)));
+      c.run(app, "await\nframe\nframe\n");
+      assertEquals(each.get(1), tab.text);
+    }
+  }
+
+  @Test
   void aSearchThatFindsNothingSaysSoAndInsertWaits() throws Exception {
     var app = ran();
     c.run(app, HISTORY + "type \"nothing like it\"\nframe\nframe\nsnap none\n");
