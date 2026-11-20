@@ -321,6 +321,34 @@ class ChangesServerTest {
     }
   }
 
+  // Deletions alone take no lock, which PostgreSQL grants only with the UPDATE privilege.
+  @Test
+  void rowsAreDeletedWithoutThePrivilegeToUpdateThem() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var name = unique("changes_deleted");
+    var role = unique("changes_deleter");
+    var table = table(provider, name, Table.Kind.TABLE);
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name) + " (id integer PRIMARY KEY, v text)",
+          "INSERT INTO " + qualified(provider, name) + " VALUES (1, 'one'), (2, 'two')",
+          "CREATE ROLE " + role,
+          "GRANT SELECT, DELETE ON " + qualified(provider, name) + " TO " + role);
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        execute(connection, "SET ROLE " + role);
+        var changes = Changes.of(table, columns).orElseThrow().delete(read.get(1));
+        assertEquals(new Changes.Outcome.Committed(), changes.write(connection, provider));
+        execute(connection, "RESET ROLE");
+        assertEquals(List.of(row(1L, "one")), rows(provider, table));
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name), "DROP ROLE " + role);
+      }
+    }
+  }
+
   // A moment goes in as such, and the session's zone stays the one a DATETIME's default is in.
   @ParameterizedTest
   @EnumSource(

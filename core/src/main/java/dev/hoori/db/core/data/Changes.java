@@ -240,10 +240,11 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   }
 
   /**
-   * Writes the changes in a transaction of their own, all or nothing: first each row that an update
-   * or deletion names is locked and must be there, once, so that no statement meets a row that an
-   * earlier one moved to its key, as an update of a key or of what a generated key or a trigger
-   * takes it from can; then the {@link #statements} run one after another. Where a row is not
+   * Writes the changes in a transaction of their own, all or nothing: where there are updates,
+   * first each row that an update or deletion names is locked and must be there, once, so that no
+   * statement meets a row that an earlier one moved to its key, as an update of a key or of what a
+   * generated key or a trigger takes it from can; then the {@link #statements} run one after
+   * another. Where a row is not
    * there once, or a statement meets not exactly one row, or fails, all are rolled back. The
    * connection must have auto-commit on and no transaction open, as one that only reads the table
    * has, and is left so; nothing else may run on it meanwhile.
@@ -279,8 +280,11 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     if (!dialect.changeable(connection, provider, table, values)) {
       return new Outcome.Refused();
     }
+    // Only an update can move a row to a key that a later statement names: deletions alone are
+    // known by their counts, without a lock, which PostgreSQL grants only with UPDATE privilege.
+    var updates = statements.stream().anyMatch(s -> s.change() instanceof Change.Update);
     var locks = new ArrayList<Statement>();
-    for (var statement : statements) {
+    for (var statement : updates ? statements : List.<Statement>of()) {
       switch (statement.change()) {
         case Change.Update update -> locks.add(lock(provider, update, update.row()));
         case Change.Delete delete -> locks.add(lock(provider, delete, delete.row()));
