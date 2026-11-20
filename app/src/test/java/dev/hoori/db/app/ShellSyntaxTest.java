@@ -69,6 +69,31 @@ class ShellSyntaxTest {
         colored("{ _id: ObjectId('65f0c0ffee0000000000beef'), at: new Date(), n: NumberLong(5) }"));
   }
 
+  /** Every constructor the shell reads, also those it writes, as BSONRegExp and Symbol. */
+  @Test
+  void theConstructorsTheShellWrites() {
+    assertEquals(
+        List.of(
+            "keyword BSONRegExp",
+            "string 'x'",
+            "keyword Symbol",
+            "string 's'",
+            "keyword Binary",
+            "string 'AA=='"),
+        colored("{ a: BSONRegExp('x'), b: Symbol('s'), c: Binary.createFromBase64('AA==') }"));
+  }
+
+  @Test
+  void aSlashAfterAnOperatorStartsARegularExpression() {
+    assertEquals(List.of("string /'/", "number 1"), colored("{ x: a + /'/, y: 1 }"));
+  }
+
+  @Test
+  void aStringInBackticksGoesOnOverLines() {
+    assertEquals(
+        List.of("string `one", "string two`", "number 1"), colored("{ a: `one", "two`, b: 1 }"));
+  }
+
   @Test
   void aRegularExpressionWithItsFlagsAndASlashInItsClass() {
     assertEquals(

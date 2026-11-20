@@ -17,6 +17,7 @@ import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.DocumentRun;
 import dev.hoori.db.core.document.DocumentSession;
+import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
@@ -114,6 +115,11 @@ interface Servers {
      *     reported lost
      */
     Run run(String sql) throws QueryException;
+
+    /** A statement of the MongoDB shell, which runs as it was read: by its text elsewhere. */
+    default Run run(Script.Parsed statement) throws QueryException {
+      return run(statement.statement());
+    }
 
     /** Makes the database the connection's own, where the server switches on one connection. */
     void use(String database) throws QueryException;
@@ -299,8 +305,13 @@ interface Servers {
     /** A statement of the MongoDB shell, on the database the link is on now. */
     @Override
     public Run run(String sql) throws QueryException {
+      return run(Script.Parsed.of(sql));
+    }
+
+    @Override
+    public Run run(Script.Parsed statement) throws QueryException {
       usable();
-      var running = new DocumentRun(session, current.get(), sql, current::set);
+      var running = new DocumentRun(session, current.get(), statement, current::set);
       open.set(running);
       return new Run() {
         @Override

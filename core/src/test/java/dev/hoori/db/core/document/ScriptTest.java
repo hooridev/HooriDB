@@ -45,6 +45,22 @@ class ScriptTest {
         Script.split(text).stream().map(Script.Piece::text).toList());
   }
 
+  /** Where the scans of the shell's syntax disagreed before they were one lexer. */
+  @Test
+  void aSlashAfterAnOperatorAndAStringNotClosedEndStatementsAsTheEditorShowsThem() {
+    // A slash after an operator starts a regular expression: its quote starts no string.
+    assertEquals(
+        List.of("db.a.find({ x: a + /'/ })", "db.b.find()"),
+        Script.split("db.a.find({ x: a + /'/ })\ndb.b.find()").stream()
+            .map(Script.Piece::text)
+            .toList());
+    // A string not closed on its line ends before the line break, which ends the statement.
+    assertEquals(
+        List.of("use 'shop", "show dbs"),
+        Script.split("use 'shop\nshow dbs").stream().map(Script.Piece::text).toList());
+    assertWhere(4, "use 'shop");
+  }
+
   @Test
   void aUseNameEndsAtAComment() throws Exception {
     assertEquals("shop", Script.parse("use shop// note").use());

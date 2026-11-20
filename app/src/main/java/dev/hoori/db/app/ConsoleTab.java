@@ -44,11 +44,8 @@ import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
-import dev.hoori.db.core.document.Commands;
 import dev.hoori.db.core.document.Document;
-import dev.hoori.db.core.document.Request;
 import dev.hoori.db.core.document.Script;
-import dev.hoori.db.core.document.SyntaxException;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Failure;
@@ -272,6 +269,8 @@ final class ConsoleTab implements Tab {
   private final ArrayDeque<String> queue = new ArrayDeque<>(); // the run's statements still to run
   private Asking work; // the statement, the rows or the switch under way, or null
   private String running; // the statement under way, or the one whose rows are read
+  // The shell's statement under way as it was read once, on taking it from the queue; null for SQL.
+  private Script.Parsed parsed;
   boolean waiting; // for the tree's connection, which the session is opened from
   private boolean chosen; // the user chose the database: none is taken for them
   boolean stranded; // the tree's connection failed while it waited: Try again goes on
@@ -550,50 +549,25 @@ final class ConsoleTab implements Tab {
       return;
     }
     var provider = s.profile(id).provider();
-    if (provider.keepsDocuments()) {
-      var all = everyDocument(sql);
-      if (all.isPresent()) {
-        var verb = all.get().verb();
-        running = sql;
-        confirming = new Confirm(
-            sql,
-            (verb.equals("delete") ? "Delete" : "Update") + " every document?",
-            brief(sql) + " has an empty filter: it would " + verb + " every document of "
-                + all.get().collection() + ".",
-            true);
-      } else {
-        send(s, sql, true);
-      }
-      return;
-    }
-    var every = EveryRow.of(sql, provider);
+    parsed = provider.keepsDocuments() ? Script.Parsed.of(sql) : null;
+    var every = parsed != null ? parsed.every() : EveryRow.of(sql, provider);
     if (every.isPresent()) {
       var verb = every.get().verb().equals("DELETE") ? "delete" : "update";
+      var row = parsed != null ? "document" : "row";
       var table = every.get().table();
       running = sql;
-      var of = table.isEmpty() ? "its table" : table;
+      var of = !table.isEmpty() ? table : parsed != null ? "its collection" : "its table";
       confirming = new Confirm(
           sql,
-          (verb.equals("delete") ? "Delete" : "Update") + " every row?",
+          (verb.equals("delete") ? "Delete" : "Update") + " every " + row + "?",
           every.get().certain()
-              ? brief(sql) + " has no WHERE clause: it would " + verb + " every row of " + of + "."
+              ? brief(sql) + (parsed != null ? " has an empty filter" : " has no WHERE clause")
+                  + ": it would " + verb + " every " + row + " of " + of + "."
               : "Could not tell whether " + brief(sql) + " is limited by a WHERE clause; it may "
                   + verb + " every row of " + of + ".",
           true);
     } else {
       send(s, sql, true);
-    }
-  }
-
-  /** A change of every document of a collection that the statement asks for, if it does. */
-  static java.util.Optional<Commands.Every> everyDocument(String sql) {
-    try {
-      var request = Script.parse(sql);
-      return request.command() == null
-          ? java.util.Optional.empty()
-          : Commands.every(request.command());
-    } catch (SyntaxException e) {
-      return java.util.Optional.empty();
     }
   }
 
@@ -612,9 +586,10 @@ final class ConsoleTab implements Tab {
     }
     // Only a plain read in Auto with nothing open may stay open between calls; the lane call
     // decides that from the server's word, and all else is read to its end, at stake meanwhile.
-    boolean lazy = reads(sql, provider) && mode == Mode.AUTO && transaction == Transaction.NONE;
+    var statement = provider.keepsDocuments() ? parsed : null;
+    plain = statement != null ? statement.readsCursor() : reads(sql, provider);
+    boolean lazy = plain && mode == Mode.AUTO && transaction == Transaction.NONE;
     writes = !lazy;
-    plain = reads(sql, provider);
     // Not for a read Auto keeps open: no connection is opened for an estimate never asked for.
     var planner = estimate && plain && !lazy && !provider.keepsDocuments()
         ? s.catalog.planner(id, database)
@@ -631,7 +606,7 @@ final class ConsoleTab implements Tab {
     work = ask(
         s,
         "run a statement",
-        link -> start(link, sql, mode, lazy, held, KEPT, planner, on),
+        link -> start(link, sql, statement, mode, lazy, held, KEPT, planner, on),
         ran -> {
           work = null;
           ran(s, sql, ran);
@@ -1112,6 +1087,7 @@ final class ConsoleTab implements Tab {
   static Ran start(
       Servers.Link link,
       String sql,
+      Script.Parsed parsed,
       Mode mode,
       boolean lazy,
       AtomicReference<Servers.Run> held,
@@ -1146,7 +1122,7 @@ final class ConsoleTab implements Tab {
       }
       now = switched.now();
     }
-    var run = link.run(sql);
+    var run = parsed != null ? link.run(parsed) : link.run(sql);
     held.set(run); // sent: cut short now, what it did is in doubt; and the rest as the grid scrolls
     var first = run.next(PORTION);
     if (lazy && Boolean.TRUE.equals(now.autoCommit()) && now.transaction() == Transaction.NONE) {
@@ -1307,15 +1283,6 @@ final class ConsoleTab implements Tab {
    * needless caution.
    */
   static boolean reads(String sql, Provider provider) {
-    if (provider.keepsDocuments()) {
-      // A cursor that only reads, as find and aggregate without $out give.
-      try {
-        var request = Script.parse(sql);
-        return request.shape() == Request.Shape.CURSOR && request.reads();
-      } catch (SyntaxException e) {
-        return false;
-      }
-    }
     var word = Statements.firstWord(sql, provider);
     // ASCII's case alone, as the servers fold keywords: ſELECT is no SELECT.
     word = word.chars().allMatch(c -> c < 0x80) ? word.toUpperCase(Locale.ROOT) : "";
@@ -1326,14 +1293,14 @@ final class ConsoleTab implements Tab {
   // The database that the shell's use switched the session to, or null for any other statement.
   private String used(State s, String sql, Portion portion) {
     var profile = s.profile(id);
-    if (profile == null || !profile.provider().keepsDocuments() || failure(portion) != null) {
+    if (profile == null
+        || !profile.provider().keepsDocuments()
+        || failure(portion) != null
+        || parsed == null
+        || !parsed.statement().equals(sql)) {
       return null;
     }
-    try {
-      return Script.parse(sql).use();
-    } catch (SyntaxException e) {
-      return null;
-    }
+    return parsed.use();
   }
 
   // A statement that ends the transaction when it ends well, as Commit and Rollback do; a ROLLBACK

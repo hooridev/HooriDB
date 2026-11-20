@@ -104,12 +104,32 @@ class DocumentConsoleTest {
   }
 
   @Test
-  void inADocumentTheFieldsOfTheCollection() throws Exception {
+  void inADocumentTheFieldsOfTheCollectionAndAfterADollarTheOperators() throws Exception {
     var app = console();
     var fields = offered(app, "db.orders.find({ ");
     assertEquals(List.of("_id", "customer", "total"), fields.subList(0, 3), fields.toString());
     assertTrue(fields.contains("ObjectId"), fields.toString());
     var named = offered(app, "db.getCollection('orders').find({ ");
     assertEquals(List.of("_id", "customer", "total"), named.subList(0, 3), named.toString());
+    var operators = offered(app, "db.orders.find({ total: { $g");
+    assertTrue(operators.containsAll(List.of("$gt", "$gte")), operators.toString());
+    assertTrue(operators.stream().allMatch(o -> o.startsWith("$")), operators.toString());
+    // The kit's word has no dollar: the operator goes in after the one typed.
+    c.run(
+        app,
+        "press #sql\nkey A control\nkey Delete\n" + type("db.orders.find({ total: { $gt") + COMPLETE
+            + "key Enter\nframe\n");
+    assertEquals("db.orders.find({ total: { $gt", app.state().consoles(null).getFirst().text);
+  }
+
+  /** Nothing in a string, a comment or a regular expression, as in one of SQL. */
+  @Test
+  void inAStringACommentOrARegularExpressionNothing() throws Exception {
+    var app = console();
+    assertEquals(List.of(), offered(app, "db.orders.find({ note: 'db."));
+    assertEquals(List.of(), offered(app, "db.orders.find() // db."));
+    assertEquals(List.of(), offered(app, "db.orders.find({ note: /db."));
+    // After the string, the fields again.
+    assertEquals("customer", offered(app, "db.orders.find({ note: 'db.', cu").getFirst());
   }
 }

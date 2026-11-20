@@ -2,6 +2,7 @@ package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.dialect.SyntaxDialect;
+import dev.hoori.db.core.document.Lexer;
 import dev.hoori.db.core.document.Script;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -200,46 +201,17 @@ public final class Statements {
   // code between them a character each.
   private static List<Piece> shellPieces(String text) {
     var pieces = new ArrayList<Piece>();
-    int n = text.length();
-    int i = 0;
-    char last = 0; // the last character of code, as Script.split tells a regular expression
-    while (i < n) {
-      char c = text.charAt(i);
-      if (whitespace(c)) {
-        i++;
-      } else if (c == '/'
-          && !text.startsWith("//", i)
-          && !text.startsWith("/*", i)
-          && Script.regexMayStart(last)) {
-        int end = Script.skipRegex(text, i);
-        boolean closed = end > i + 1 && text.charAt(end - 1) == '/';
-        // Its flags are code after it.
-        pieces.add(new Piece(Piece.Kind.STRING, i, end, !closed));
-        i = end;
-        last = '/';
-      } else if (text.startsWith("//", i)) {
-        int end = text.indexOf('\n', i);
-        pieces.add(new Piece(Piece.Kind.COMMENT, i, end < 0 ? n : end, true));
-        i = end < 0 ? n : end;
-      } else if (text.startsWith("/*", i)) {
-        int close = text.indexOf("*/", i + 2);
-        int end = close < 0 ? n : close + 2;
-        pieces.add(new Piece(Piece.Kind.COMMENT, i, end, close < 0));
-        i = end;
-      } else if (c == '\'' || c == '"' || c == '`') {
-        int j = i + 1;
-        while (j < n && text.charAt(j) != c && (c == '`' || text.charAt(j) != '\n')) {
-          j += text.charAt(j) == '\\' ? 2 : 1;
+    for (var token : Lexer.tokens(text)) {
+      switch (token.kind()) {
+        case COMMENT ->
+          pieces.add(new Piece(Piece.Kind.COMMENT, token.start(), token.end(), token.open()));
+        case STRING, REGEX ->
+          pieces.add(new Piece(Piece.Kind.STRING, token.start(), token.end(), token.open()));
+        default -> {
+          for (int i = token.start(); i < token.end(); i++) {
+            pieces.add(new Piece(Piece.Kind.CODE, i, i + 1, false));
+          }
         }
-        boolean closed = j < n && text.charAt(j) == c;
-        int end = Math.min(n, closed ? j + 1 : j);
-        pieces.add(new Piece(Piece.Kind.STRING, i, end, !closed));
-        i = end;
-        last = c;
-      } else {
-        pieces.add(new Piece(Piece.Kind.CODE, i, i + 1, false));
-        i++;
-        last = c;
       }
     }
     return pieces;
