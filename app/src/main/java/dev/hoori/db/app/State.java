@@ -1418,6 +1418,17 @@ final class State {
             result = null;
           }
           var attempt = stored.attempt();
+          if (result != null
+              && result.status() == Installation.Result.Status.ROLLED_BACK
+              && attempt != null) {
+            // Now, as the report is gone: an Exit before it is shown must not lose the skip.
+            stored = stored.withSkipped(attempt.version());
+            try {
+              store.save(stored);
+            } catch (IOException unsaved) {
+              // Saved again once the start has taken it.
+            }
+          }
           boolean locked = result != null && locked(result) && attempt != null;
           if (result != null) {
             updater.clear(locked ? attempt.file() : null); // the helper is done with them
@@ -1436,8 +1447,9 @@ final class State {
   private void begun(Begun begun) {
     var stored = begun.stored();
     updates = chosen == null ? stored : stored.withChannel(chosen);
-    if (installed != null) {
-      updates = updates.withChannelFor(installed); // a build of its own chooses none by itself
+    if (installed != null && updater != null) {
+      // Only the app image chooses by itself: a JAR run elsewhere would choose for it.
+      updates = updates.withChannelFor(installed);
     }
     var result = begun.result();
     var attempt = updates.attempt();
@@ -1456,7 +1468,9 @@ final class State {
           update = notice(
               Callout.Kind.WARNING,
               "The update" + to + " was undone",
-              "It did not start in time, so HooriDB " + version + " runs again.");
+              result.reason().equals("not-confirmed")
+                  ? "It did not start in time, so HooriDB " + version + " runs again."
+                  : result.message());
         }
         case REJECTED -> {
           if (locked(result) && attempt != null) {
@@ -1469,7 +1483,7 @@ final class State {
                 () -> tryAgain(attempt, kept),
                 false,
                 "Dismiss",
-                false);
+                true);
           } else {
             updates = updates.withAttempt(null);
             update = notice(Callout.Kind.WARNING, "The update was not applied", result.message());
@@ -1637,6 +1651,7 @@ final class State {
   private void restartNow() {
     var with = restartWith;
     var download = with.download();
+    var before = updates.attempt(); // one a helper may still be at work on
     updates = updates.withAttempt(
         new StoredUpdates.Attempt(with.version(), download.file(), download.sha256()));
     var now = updates;
@@ -1657,7 +1672,7 @@ final class State {
           restarting = null;
           restartWith = null;
           stay("HooriDB stayed open, as it could not restart to update.");
-          updates = updates.withAttempt(null);
+          updates = updates.withAttempt(before);
           persist(updatesKept);
           update = notice(Callout.Kind.WARNING, "HooriDB could not restart", message(error));
         });

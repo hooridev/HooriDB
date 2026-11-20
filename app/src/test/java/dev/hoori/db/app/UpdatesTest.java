@@ -63,9 +63,6 @@ class UpdatesTest {
     return new UpdateStore(dir.resolve("config")).load();
   }
 
-  /** The images to look at, kept after the test in the module's build folder. */
-  static final Path IMAGES = Path.of("target", "update-images").toAbsolutePath();
-
   /**
    * A check offers the newest release of the channel, not a nightly on Stable, and once it is
    * downloaded, which the status line shows, a notice says that it is ready; in either theme.
@@ -80,7 +77,6 @@ class UpdatesTest {
         line(tree("downloading"), "#downloading").contains("Downloading HooriDB 0.3.0…"),
         tree("downloading"));
     updater.downloading.countDown();
-    Files.createDirectories(IMAGES);
     Script.run(
         "await\nframe\n".repeat(2) + OPENED + "snap ready-dark\n" + HELP + "snap help-dark\n"
             + "key Escape\nframe\n" + OPENED
@@ -88,15 +84,15 @@ class UpdatesTest {
             + "press role=menuitem label=\"Light theme\"\nframe\n" + OPENED + "advance 5\nframe\n"
             + "snap ready-light\n" + HELP + "snap help-light\n",
         app,
-        IMAGES);
+        dir.resolve("out"));
     assertEquals(List.of("0.3.0"), updater.downloaded);
-    var ready = Files.readString(IMAGES.resolve("ready-dark.tree.txt"));
+    var ready = tree("ready-dark");
     assertTrue(ready.contains("HooriDB 0.3.0 is ready"), ready);
     assertTrue(ready.contains("Restart HooriDB to update from 0.2.0."), ready);
     assertTrue(line(ready, "#update-act").contains("label=\"Restart now\""), ready);
     assertTrue(line(ready, "#update-dismiss").contains("label=\"Later\""), ready);
     assertFalse(ready.contains("#downloading"), ready);
-    var help = Files.readString(IMAGES.resolve("help-light.tree.txt"));
+    var help = tree("help-light");
     assertTrue(line(help, "label=\"Stable updates\"").contains("checked"), help);
     assertFalse(line(help, "label=\"Nightly updates\"").contains("checked"), help);
     assertFalse(line(help, "label=\"Restart to update\"").contains("disabled"), help);
@@ -196,9 +192,15 @@ class UpdatesTest {
         stored().attempt());
   }
 
-  /** A helper that cannot be started keeps HooriDB open, says why, and keeps no attempt. */
+  /**
+   * A helper that cannot be started keeps HooriDB open and says why; the attempt is the one before,
+   * as of a helper still at work on the version that runs.
+   */
   @Test
   void aRestartThatFailsStaysOpenWithANotice() throws Exception {
+    var before = new StoredUpdates.Attempt(
+        Version.parse("0.2.0"), dir.resolve("download-0.2.0"), "2".repeat(64));
+    new UpdateStore(dir.resolve("config")).save(new StoredUpdates(Channel.STABLE, null, before));
     var updater = updater().publish("0.3.0");
     updater.failRestart = new IOException("The helper JAR is neither on the class path");
     var app = app(updater, "0.2.0");
@@ -208,7 +210,7 @@ class UpdatesTest {
     assertTrue(failed.contains("HooriDB could not restart"), failed);
     assertTrue(failed.contains("The helper JAR is neither on the class path"), failed);
     assertTrue(failed.contains("HooriDB stayed open, as it could not restart to update."), failed);
-    assertEquals(null, stored().attempt());
+    assertEquals(before, stored().attempt());
     assertEquals(null, app.state().pending, "the Exit is over");
   }
 
@@ -229,6 +231,8 @@ class UpdatesTest {
     updater.result = new Installation.Result(
         Installation.Result.Status.ROLLED_BACK, "not-confirmed", "Not confirmed in time");
     var app = app(updater, "0.2.0");
+    run(app, "size 1200 760\nframe\nawait\n");
+    assertEquals(Version.parse("0.3.0"), stored().skipped(), "saved before the start takes it");
     run(app, START + "snap undone\n");
     var undone = tree("undone");
     assertTrue(undone.contains("The update to HooriDB 0.3.0 was undone"), undone);
@@ -342,6 +346,36 @@ class UpdatesTest {
     assertEquals(Channel.STABLE, stored().channel());
     var about = tree("about");
     assertTrue(about.contains("label=\"Updates\" ") && about.contains("value=\"Stable\""), about);
+  }
+
+  /** Try again offers the update of the old channel, so a switch of the channel drops it. */
+  @Test
+  void switchingTheChannelDropsTryAgain() throws Exception {
+    var file = Files.createDirectories(dir.resolve("updates").resolve("downloads"))
+        .resolve("download-HooriDB-" + NIGHTLY + "-linux-x64.tar.gz");
+    Files.writeString(file, NIGHTLY);
+    new UpdateStore(dir.resolve("config"))
+        .save(new StoredUpdates(
+            Channel.NIGHTLY,
+            null,
+            new StoredUpdates.Attempt(Version.parse(NIGHTLY), file, "1".repeat(64))));
+    var updater = updater();
+    updater.result = new Installation.Result(
+        Installation.Result.Status.REJECTED, "locked", "A file stayed locked");
+    var app = app(updater, "0.1.0");
+    run(
+        app,
+        START + HELP + "press role=menuitem label=\"Stable updates\"\nframe\n" + OPENED
+            + "await\nframe\n".repeat(2) + "snap stable\n");
+    assertFalse(tree("stable").contains("#update"), tree("stable"));
+    assertEquals(List.of(), updater.restarts);
+  }
+
+  /** A version outside the app image, without an updater, chooses no channel by itself. */
+  @Test
+  void withoutAnUpdaterNoChannelIsStored() throws Exception {
+    run(app(null, NIGHTLY), START);
+    assertFalse(Files.exists(dir.resolve("config").resolve(UpdateStore.FILE)));
   }
 
   /** Once the first frame has shown, HooriDB confirms that it runs, once. */
