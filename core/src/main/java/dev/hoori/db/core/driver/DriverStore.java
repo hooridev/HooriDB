@@ -28,6 +28,7 @@ import java.net.URLConnection;
 import java.net.URLStreamHandler;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -405,7 +406,7 @@ public final class DriverStore {
       throws IOException, DriverException {
     // Within HooriDB one download at a time checks, discards and replaces a version, so that none
     // discards what another has just put there.
-    synchronized (PUBLISHING.computeIfAbsent(dir.toAbsolutePath().normalize(), d -> new Object())) {
+    synchronized (lock(dir)) {
       for (int attempt = 0; ; attempt++) {
         try {
           Files.move(temporary, dir, StandardCopyOption.ATOMIC_MOVE);
@@ -475,18 +476,25 @@ public final class DriverStore {
   public void delete(Driver driver, String version) throws DriverException {
     var jar = jar(driver, version);
     checkCancelled(file(driver, version));
-    try {
-      Files.deleteIfExists(jar);
-    } catch (IOException e) {
-      throw storage(e);
+    // Under the lock a download publishes by, so that what one publishes meanwhile stays.
+    synchronized (lock(jar.getParent())) {
+      try {
+        Files.deleteIfExists(jar);
+      } catch (IOException e) {
+        throw storage(e);
+      }
+      // Without its file a folder is not a version, which no one lists or loads, and a download
+      // of the version replaces it.
+      try {
+        discard(jar.getParent());
+      } catch (IOException leftOver) {
+        // The record beside the file stays, in a folder that holds no version.
+      }
     }
-    // Without its file a folder is not a version, which no one lists or loads, and a download of
-    // the version replaces it.
-    try {
-      discard(jar.getParent());
-    } catch (IOException leftOver) {
-      // The record beside the file stays, in a folder that holds no version.
-    }
+  }
+
+  private static Object lock(Path dir) {
+    return PUBLISHING.computeIfAbsent(dir.toAbsolutePath().normalize(), d -> new Object());
   }
 
   /** Loads the downloaded version in a class loader of its own. */
@@ -680,8 +688,8 @@ public final class DriverStore {
         }
       }
       return recorded.equals(HexFormat.of().formatHex(sha256.digest()));
-    } catch (NoSuchFileException e) {
-      return false;
+    } catch (NoSuchFileException | CharacterCodingException e) {
+      return false; // a record that is not one, which a download replaces
     } catch (IOException e) {
       throw storage(e);
     }
