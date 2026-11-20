@@ -62,7 +62,14 @@ and databases are saved a moment after each change, beside the workspace, and re
 at the next start; each statement run from a console goes into its connection's history
 (`history.json`, at most 1,000 a connection, owner-only), which History lists, searches, inserts
 from and clears; Save query keeps the selection, or else the whole text, under a name
-(`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. A
+(`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. The
+statement log, a panel below the tabs that starts collapsed and that the status line, the View menu
+and the palette open, lists what every connection sent, from the tree, a table's grid, the
+estimates, the transactions and the consoles, with its time, connection, part, duration and
+outcome, and the chosen statement whole in its dialect's colors; it filters by connection, part
+and outcome, searches, copies a statement, clears, and can be turned off. A password in a statement
+or a MongoDB command is masked before it is logged, and the log is kept beside the workspace
+(`statement-log.jsonl`, up to 8 MB and one older file, owner-only), written in batches. A
 connection to MongoDB goes through its Java driver, downloaded as the JDBC drivers are, with its
 parts beside it, and through a bridge of core's that is loaded beside the driver; its host may name
 a DNS SRV record that lists the servers, as `mongodb+srv://` does, with TLS on by default and no
@@ -180,6 +187,10 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   for a trait named for the behavior. What every provider has is `provider.traits()`; a server of
   documents has a `DocumentDialect`, `provider.documents()`, in place of a `Dialect`, and code that
   serves both asks `provider.keepsDocuments()` or switches over the two.
+- Every statement and command that core sends goes through `dev.hoori.db.core.log.Journal`, with
+  its purpose, which records it for the recorder a caller bound and masks a password first, as the
+  dialect's `passwordWords` and `DocumentDialect.secretFields` say; a new send goes through it too.
+  The app binds it per call on a lane's link (`Recorded`), so recording never waits for the disk.
 - The shell's syntax is lexed in one place, core's `dev.hoori.db.core.document.Lexer`: splitting
   statements (`Script.split`, `Statements`), reading them (`Shell`), coloring (`ShellSyntax`, which
   maps its tokens to `Theme.Code`), laying out (`Layout`, which Control+Alt+L runs) and completing
@@ -234,7 +245,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   the catalog's tests set `State.zone`, whatever the machine's zone; its reads are keyed
   `read <host>/<path> <from>-<to>`, and those of a whole value, which `whole` gives,
   `whole <host>/<path> <column> <key>`, and, as core's do, fail as columns changed when the columns
-  they are given are not the table's now; `FakeServers.queryFailure` makes core's typed failure. A
+  they are given are not the table's now; `FakeServers.queryFailure` makes core's typed failure.
+  Its calls go through core's `Journal` as core's do, a catalog read or a page by its key and a
+  console's statement by its text, so that the statement log shows them. A
   test that closes a tab or ends a connection does it before the grid's next frame and the reads in
   flight have settled, as a user can.
 - A console's statements run against `FakeServers.statement(sql, results, messages…)`, rows made

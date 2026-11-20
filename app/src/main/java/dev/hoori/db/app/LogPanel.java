@@ -7,6 +7,7 @@ import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
+import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.CodeEditor;
@@ -16,15 +17,21 @@ import com.rethinkj.ui.kit.EmptyState;
 import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
+import com.rethinkj.ui.kit.Menu;
+import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.StatusBar;
 import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Toggle;
 import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * The statement log at the bottom of the main window, below the workspace and the tabs: what
@@ -38,15 +45,25 @@ final class LogPanel {
   static final Split.Position SPLIT = Split.Position.second(220);
 
   private static final Format<LocalTime> TIME = Format.time(3);
+  private static final List<Purpose> PARTS = List.of(Purpose.values());
+  private static final List<LogFilter.Ended> ENDINGS = List.of(LogFilter.Ended.values());
 
   boolean open;
   Split.Position split = SPLIT;
   Split.Position detail = Split.Position.share(0.6f);
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.ROWS);
+  LogFilter filter = LogFilter.ALL;
+  boolean clearing; // Clear asks first
+  private final Menu.State connections = new Menu.State();
+  private final Menu.State parts = new Menu.State();
+  private final Menu.State endings = new Menu.State();
   private CodeEditor.State editor = new CodeEditor.State().readOnly(true);
   private Logged chosen; // the entry whose statement shows, or null
-  private int seen = -1; // the log's changes when the rows were last followed
-  private Logged newest; // the last entry then
+  // The entries shown, and the changes of the log and the filter they were found from.
+  private List<Logged> shown = List.of();
+  private int seen = -1;
+  private LogFilter seenFilter;
+  private Logged newest; // the last entry shown then
 
   /** Opens it, or closes it. */
   void toggle() {
@@ -80,25 +97,26 @@ final class LogPanel {
   private El view(State s) {
     Theme t = Theme.CURRENT.get();
     var log = s.statements;
-    var entries = log.entries();
-    follow(log, entries);
+    var all = log.entries();
+    var entries = shown(log);
     El top = Card.toolbar(
         "Statement log",
-        entries.size() == 1 ? "1 entry" : entries.size() + " entries",
+        filter.narrows()
+            ? entries.size() + " of " + all.size()
+            : all.size() == 1 ? "1 entry" : all.size() + " entries",
+        Toggle.toggle(log.on(), "Logging", () -> log.turn(!log.on())).key("statement-log-on"),
+        button(SECONDARY, Symbol.COPY, "Copy statement", chosen == null ? null : () -> copy(s))
+            .key("statement-log-copy"),
+        button(
+                SECONDARY,
+                Symbol.DELETE,
+                "Clear…",
+                all.isEmpty() || clearing ? null : () -> clearing = true)
+            .key("statement-log-clear"),
         button(SECONDARY, Symbol.DISMISS, "Close", this::toggle).key("statement-log-close"));
-    El problem = log.problem() == null
-        ? null
-        : col()
-            .padding(t.space().s())
-            .child(Callout.callout(
-                Callout.Kind.WARNING, "The statement log is not kept on the disk", log.problem()));
     El body;
     if (entries.isEmpty()) {
-      body = EmptyState.emptyState(
-          Symbol.TEXT_BULLET_LIST_LTR,
-          "Nothing sent yet",
-          "What HooriDB sends to a server, from the tree, a table or a console, is listed here.",
-          null);
+      body = empty(log, all.isEmpty());
     } else {
       body = Split.split(
           Split.Direction.ROW,
@@ -110,32 +128,36 @@ final class LogPanel {
           statement(s),
           6 * t.size().control());
     }
-    return Card.flush(top, problem, body.grow(1).minSize(0, 0))
+    return Card.flush(top, Card.filters(filters(s, all)), said(s), body.grow(1).minSize(0, 0))
         .key("statement-log")
         .label("Statement log")
         .minSize(0, 0);
   }
 
-  // The newest entry is chosen as it comes, unless another was chosen; the rows follow it.
-  private void follow(StatementLog log, List<Logged> entries) {
-    if (log.changes() == seen) {
-      return;
+  // The entries the filter admits, found again where the log or the filter changed; the rows
+  // follow the newest as it comes, unless another was chosen.
+  private List<Logged> shown(StatementLog log) {
+    if (log.changes() == seen && filter.equals(seenFilter)) {
+      return shown;
     }
     seen = log.changes();
-    if (entries.isEmpty()) {
+    seenFilter = filter;
+    shown = log.entries().stream().filter(filter::admits).toList();
+    if (shown.isEmpty()) {
       selection.clear();
       choose(null);
       newest = null;
-      return;
+      return shown;
     }
-    int at = chosen == null || chosen.equals(newest) ? -1 : entries.indexOf(chosen);
+    int at = chosen == null || chosen.equals(newest) ? -1 : shown.indexOf(chosen);
     if (at < 0) {
-      at = entries.size() - 1;
+      at = shown.size() - 1;
       selection.scrollToRow(at);
-      choose(entries.get(at));
+      choose(shown.get(at));
     }
     selection.select(at, 0);
-    newest = entries.getLast();
+    newest = shown.getLast();
+    return shown;
   }
 
   private void choose(Logged entry) {
@@ -143,6 +165,110 @@ final class LogPanel {
       chosen = entry;
       editor = new CodeEditor.State().readOnly(true);
     }
+  }
+
+  // The connection, the part and how it ended, each of all or one, and the search.
+  private El filters(State s, List<Logged> all) {
+    Theme t = Theme.CURRENT.get();
+    float unit = t.size().control();
+    var ids = all.stream().map(Logged::connection).distinct().toList();
+    var names = new ArrayList<String>(List.of("All connections"));
+    ids.forEach(id -> names.add(connection(s, id)));
+    var partNames = new ArrayList<String>(List.of("All parts"));
+    PARTS.forEach(p -> partNames.add(part(p)));
+    var endingNames = new ArrayList<String>(List.of("Any outcome"));
+    ENDINGS.forEach(e -> endingNames.add(e.label));
+    return row()
+        .gap(t.space().s())
+        .align(Style.Align.CENTER)
+        .child(Select.select(
+                names,
+                filter.connection() == null ? 0 : ids.indexOf(filter.connection()) + 1,
+                connections,
+                i -> filter = filter.withConnection(i == 0 ? null : ids.get(i - 1)))
+            .label("Connection")
+            .w(7 * unit))
+        .child(Select.select(
+                partNames,
+                filter.part() == null ? 0 : PARTS.indexOf(filter.part()) + 1,
+                parts,
+                i -> filter = filter.withPart(i == 0 ? null : PARTS.get(i - 1)))
+            .label("Part")
+            .w(5 * unit))
+        .child(Select.select(
+                endingNames,
+                filter.ended() == null ? 0 : ENDINGS.indexOf(filter.ended()) + 1,
+                endings,
+                i -> filter = filter.withEnded(i == 0 ? null : ENDINGS.get(i - 1)))
+            .label("Outcome")
+            .w(5 * unit))
+        .child(TextField.withIcon(
+            TextField.textField(filter.search(), "Search", v -> filter = filter.withSearch(v))
+                .key("statement-log-search")
+                .label("Search")
+                .w(10 * unit),
+            Symbol.SEARCH));
+  }
+
+  // What the panel has to say above the entries: the question before Clear, that logging is off,
+  // or that the file could not be read or written; null for nothing.
+  private El said(State s) {
+    Theme t = Theme.CURRENT.get();
+    var log = s.statements;
+    El callout;
+    if (clearing) {
+      int n = log.entries().size();
+      callout = Callout.callout(
+              Callout.Kind.WARNING,
+              "Clear the statement log?",
+              (n == 1 ? "Its entry is" : "Its " + n + " entries are")
+                  + " deleted, here and from this computer.",
+              button(SECONDARY, "Cancel", () -> clearing = false).key("statement-log-keep"),
+              button(
+                      SECONDARY,
+                      "Clear",
+                      () -> {
+                        clearing = false;
+                        log.clear();
+                      },
+                      Button.options().tone(Button.Tone.DANGER))
+                  .key("statement-log-confirm"))
+          .key("statement-log-question");
+    } else if (!log.on()) {
+      callout = Callout.callout(
+              Callout.Kind.INFO, "Logging is off", "Nothing that is sent now is logged.")
+          .key("statement-log-off");
+    } else if (log.problem() != null) {
+      callout = Callout.callout(
+          Callout.Kind.WARNING, "The statement log is not kept on the disk", log.problem());
+    } else {
+      return null;
+    }
+    return col().padding(t.space().s()).child(callout);
+  }
+
+  private El empty(StatementLog log, boolean none) {
+    if (!none) {
+      return EmptyState.emptyState(
+          Symbol.FILTER,
+          "No entry matches",
+          "The filters and the search narrow what was sent to what they name.",
+          button(SECONDARY, "Clear filters", () -> filter = LogFilter.ALL)
+              .key("statement-log-unfilter"));
+    }
+    return EmptyState.emptyState(
+        Symbol.TEXT_BULLET_LIST_LTR,
+        log.on() ? "Nothing sent yet" : "Logging is off",
+        log.on()
+            ? "What HooriDB sends to a server, from the tree, a table or a console, is listed here."
+            : "Turned on, what HooriDB sends to a server is listed here.",
+        null);
+  }
+
+  /** Copies the chosen entry's statement, whole. */
+  private void copy(State s) {
+    s.app.clipboard().write(chosen.sent().text());
+    s.tell("Statement copied");
   }
 
   private El grid(State s, List<Logged> entries) {
@@ -158,7 +284,7 @@ final class LogPanel {
             .sortable(false),
         new DataGrid.Column(
                 "Connection",
-                6 * unit,
+                5 * unit,
                 DataGrid.DataType.TEXT,
                 row -> connection(s, entries.get(row)))
             .sortable(false),
@@ -170,7 +296,7 @@ final class LogPanel {
             .sortable(false),
         new DataGrid.Column(
                 "Statement",
-                16 * unit,
+                11 * unit,
                 DataGrid.DataType.TEXT,
                 row -> ConsoleTab.brief(entries.get(row).sent().text()))
             .sortable(false),
@@ -240,7 +366,11 @@ final class LogPanel {
   }
 
   private static String connection(State s, Logged entry) {
-    var profile = s.profile(entry.connection());
+    return connection(s, entry.connection());
+  }
+
+  private static String connection(State s, UUID id) {
+    var profile = s.profile(id);
     return profile == null ? "Deleted connection" : State.name(profile);
   }
 

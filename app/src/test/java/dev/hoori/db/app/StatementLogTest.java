@@ -156,4 +156,85 @@ class StatementLogTest {
     }
     return String.join("\n", lines.subList(from, to));
   }
+
+  /** Chooses the option of the panel's filter. */
+  static String filter(String label, String option) {
+    return "press role=combobox label=\"" + label + "\"\nframe\nadvance 1\nframe\n"
+        + "press role=menuitem label=\"" + option + "\"\nframe\nadvance 1\nframe\n";
+  }
+
+  /** A console that ran a count and a statement that failed, with the tree open to a table. */
+  App<State> ran() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, type(COUNT) + RUN + "press #sql\nkey A control\nkey Delete\n" + type(MISSING) + RUN);
+    c.run(app, open("shop-prod") + SETTLE + open("shop") + SETTLE + TOGGLE);
+    return app;
+  }
+
+  @Test
+  void theFiltersAndTheSearchNarrowTheEntries() throws Exception {
+    var app = ran();
+    c.run(app, filter("Part", "Console") + "snap console\n");
+    var console = panel(c.tree("console"));
+    assertTrue(console.contains("\"" + COUNT + "\""), console);
+    assertTrue(console.contains("\"" + MISSING + "\""), console);
+    assertFalse(console.contains("\"Tree\""), console);
+
+    c.run(app, filter("Outcome", "Failed") + "snap failed\n");
+    var failed = panel(c.tree("failed"));
+    assertTrue(failed.contains("\"" + MISSING + "\""), failed);
+    assertFalse(failed.contains("\"" + COUNT + "\""), failed);
+
+    c.run(
+        app,
+        filter("Outcome", "Any outcome") + "press #statement-log-search\ntype \"COUNT(\"\nframe\n"
+            + "snap search\n");
+    var search = panel(c.tree("search"));
+    assertTrue(search.contains("\"" + COUNT + "\""), search);
+    assertFalse(search.contains("\"" + MISSING + "\""), search);
+
+    c.run(
+        app,
+        "press #statement-log-search\nkey A control\ntype \"nothing like it\"\nframe\n"
+            + "advance 1\nframe\nsnap none\n");
+    assertTrue(c.tree("none").contains("\"No entry matches\""), c.tree("none"));
+    c.run(app, "press #statement-log-unfilter\nframe\nadvance 1\nframe\nsnap all\n");
+    assertTrue(panel(c.tree("all")).contains("\"Tree\""), c.tree("all"));
+  }
+
+  @Test
+  void copyPutsTheChosenStatementWholeOnTheClipboard() throws Exception {
+    var app = ran();
+    c.run(
+        app,
+        "press #statement-log-search\ntype \"count(\"\nframe\npress #statement-log-copy\nframe\n");
+    assertEquals(COUNT, app.clipboard().read());
+  }
+
+  @Test
+  void clearAsksFirstAndThenEmptiesTheLogAndItsFile() throws Exception {
+    var app = ran();
+    var file = dir.resolve("config").resolve(StatementLogStore.FILE);
+    assertTrue(Files.exists(file));
+    c.run(app, "press #statement-log-clear\nframe\nadvance 1\nframe\nsnap asked\n");
+    assertTrue(c.tree("asked").contains("\"Clear the statement log?\""), c.tree("asked"));
+    assertFalse(app.state().statements.entries().isEmpty(), "nothing goes before the answer");
+    c.run(app, "press #statement-log-confirm\nframe\n" + SETTLE + "snap cleared\n");
+    assertTrue(app.state().statements.entries().isEmpty());
+    assertTrue(c.tree("cleared").contains("\"Nothing sent yet\""), c.tree("cleared"));
+    assertFalse(Files.exists(file));
+  }
+
+  @Test
+  void turnedOffNothingIsLoggedAndTheChoiceIsKept() throws Exception {
+    var app = ran();
+    c.run(app, "press #statement-log-on\nframe\n" + SETTLE + "snap off\n");
+    assertTrue(c.tree("off").contains("\"Logging is off\""), c.tree("off"));
+    int before = app.state().statements.entries().size();
+    c.run(app, open("public") + SETTLE);
+    assertEquals(before, app.state().statements.entries().size());
+    assertFalse(new StatementLogStore(dir.resolve("config")).enabled());
+    c.run(app, "press #statement-log-on\nframe\n" + SETTLE + open("sales") + SETTLE);
+    assertTrue(app.state().statements.entries().size() > before);
+  }
 }
