@@ -92,7 +92,9 @@ final class Frame {
       window.onCloseRequest(s::requestClose);
     }
     if (s.dialog != null) {
-      root.overlay(s.dialog.view(s)).overlay(s.dialog.question(s));
+      root.overlay(s.dialog.view(s))
+          .overlay(s.dialog.driverDialog(s))
+          .overlay(s.dialog.question(s));
     }
     root.overlay(s.deleting == null ? null : deleteDialog(s));
     root.overlay(s.about ? aboutDialog(s) : null);

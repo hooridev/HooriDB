@@ -49,7 +49,7 @@ final class Versions {
 
   /** Reads the versions again; what was read stays until the new read is in. */
   void read(State s) {
-    close();
+    stop();
     failed = null;
     if (s.drivers == null) {
       return;
@@ -119,12 +119,17 @@ final class Versions {
     return work != null;
   }
 
-  /** Nothing it began goes on. */
-  void close() {
+  /** Stops reading the versions; a date being looked up still comes. */
+  void stop() {
     if (work != null) {
       work.cancel();
       work = null;
     }
+  }
+
+  /** Nothing it began goes on. */
+  void close() {
+    stop();
     if (datingWork != null) {
       datingWork.cancel();
       datingWork = null;

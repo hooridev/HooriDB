@@ -179,44 +179,65 @@ class TestConnectionTest {
         frame
         advance 1
         frame
+        snap form
+        press role=button label="Driver"
+        frame
+        advance 1
+        frame
         snap looking
         """);
+    assertFalse(tree("form").contains("PostgreSQL JDBC"), "the form says nothing while it looks");
     assertTrue(tree("looking").contains("\"PostgreSQL JDBC, looking up the version to use…\""));
     repository.opening.countDown();
-    run(app, SETTLE + "snap missing\n");
+    run(app, SETTLE + "snap missing\n" + DriversTest.CLOSE_DRIVER);
     assertTrue(
         tree("missing")
             .contains("\"PostgreSQL JDBC 42.7.14, not downloaded yet (" + FakeDrivers.SIZE
                 + ", from Maven" + " Central)\""),
         tree("missing"));
     repository.offline = true;
-    run(app, ConnectionsTest.provider("MySQL") + """
+    run(
+        app,
+        ConnectionsTest.provider("MySQL") + """
         await
         frame
         snap offline
-        """);
+        """ + DriversTest.DRIVER + "snap offline-driver\n"
+            + DriversTest.CLOSE_DRIVER);
+    // A lookup that failed is said under the type, without the dialog of the driver.
     assertTrue(
-        tree("offline")
+        line(tree("offline"), "#type")
+            .contains("warning=\"MySQL Connector/J, not downloaded yet (Maven Central cannot be"
+                + " reached)\""),
+        tree("offline"));
+    assertTrue(
+        tree("offline-driver")
             .contains(
                 "\"MySQL Connector/J, not downloaded yet (Maven Central cannot be reached)\\n"),
-        tree("offline"));
+        tree("offline-driver"));
     repository.offline = false;
     downloaded();
     repository.offline = true;
-    run(app, ConnectionsTest.provider("PostgreSQL") + """
+    run(
+        app,
+        ConnectionsTest.provider("PostgreSQL") + """
         await
         frame
-        snap downloaded-offline
-        """);
+        snap downloaded-offline-form
+        """ + DriversTest.DRIVER
+            + "snap downloaded-offline\n" + DriversTest.CLOSE_DRIVER);
+    assertFalse(line(tree("downloaded-offline-form"), "#type").contains("warning="));
     assertTrue(tree("downloaded-offline")
         .contains("\"PostgreSQL JDBC 42.7.14, downloaded (Maven Central cannot be reached to look"
             + " for a newer one)\\nIts versions could not be read."));
     repository.offline = false;
-    run(app, ConnectionsTest.provider("MySQL") + ConnectionsTest.provider("PostgreSQL") + """
+    run(
+        app,
+        ConnectionsTest.provider("MySQL") + ConnectionsTest.provider("PostgreSQL") + """
         await
         frame
-        snap downloaded
-        """);
+        """
+            + DriversTest.DRIVER + "snap downloaded\n");
     assertTrue(tree("downloaded").contains("\"PostgreSQL JDBC 42.7.14, downloaded\""));
   }
 
@@ -224,10 +245,10 @@ class TestConnectionTest {
   @Test
   void withoutDriversNothingIsTested() throws IOException {
     App<State> app = HooriDbTest.app(dir);
-    run(app, START + NEW_SHOP + "snap end\n");
+    run(app, START + NEW_SHOP + "snap end\n" + DriversTest.DRIVER + "snap driver\n");
     String end = tree("end");
-    assertTrue(
-        end.contains("\"A script run downloads no drivers, so connections cannot be tested.\""));
+    assertTrue(tree("driver")
+        .contains("\"A script run downloads no drivers, so connections cannot be tested.\""));
     assertTrue(line(end, "label=\"Test connection\"").endsWith("disabled"), end);
   }
 
@@ -261,7 +282,7 @@ class TestConnectionTest {
     App<State> app = app(() -> new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, "no answer"));
     run(
         app,
-        START.replace("size 1200 760", "size 900 600") + NEW_SHOP + TEST + SETTLE + SETTLE + """
+        START.replace("size 1200 760", "size 900 480") + NEW_SHOP + TEST + SETTLE + SETTLE + """
         snap tall
         press role=button label="Save"
         frame
@@ -325,8 +346,8 @@ class TestConnectionTest {
             Failure.CERTIFICATE_REJECTED,
             "#tls",
             null,
-            "The server's certificate is not trusted, or not for db.example.com. Encrypted accepts"
-                + " it, without verifying the server.",
+            "The server's certificate is not trusted, or not for db.example.com. “Encrypted, any"
+                + " certificate” accepts it, without verifying the server.",
             "The certificate was not accepted",
             null),
         new Case(Failure.OTHER, null, null, null, "The connection failed", null));
@@ -384,10 +405,10 @@ class TestConnectionTest {
     assertTrue(
         line(downloading, "label=\"Downloading PostgreSQL JDBC\"").contains("0%"), downloading);
     assertTrue(downloading.contains("\"0 B of " + FakeDrivers.SIZE + "\""), downloading);
-    run(app, SETTLE + SETTLE + SETTLE + "snap end\n");
+    run(app, SETTLE + SETTLE + SETTLE + "snap end\n" + DriversTest.DRIVER + "snap driver\n");
     String end = tree("end");
     assertTrue(end.contains("role=status label=\"Connected to PostgreSQL 16.4\""), end);
-    assertTrue(end.contains("\"PostgreSQL JDBC 42.7.14, downloaded\""), end);
+    assertTrue(tree("driver").contains("\"PostgreSQL JDBC 42.7.14, downloaded\""), end);
     assertEquals(
         List.of(FakeDrivers.VERSION),
         new DriverStore(drivers(), repository).downloaded(FakeDrivers.DRIVER));

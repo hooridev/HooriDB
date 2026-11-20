@@ -18,9 +18,12 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Tls;
+import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.DriverException;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.driver.DriverStoreTest;
@@ -148,15 +151,43 @@ class DriversTest {
     return Files.readString(dir.resolve("out").resolve(snap + ".tree.txt"));
   }
 
-  static final String VERSIONS = """
+  /** Driver…: the driver's dialog over the connection's, its versions read. */
+  static final String DRIVER = """
+      press role=button label="Driver"
+      frame
+      advance 1
+      frame
+      await
+      frame
+      advance 1
+      frame
+      """;
+
+  static final String CLOSE_DRIVER = """
+      press role=button label="Close"
+      frame
+      advance 1
+      frame
+      """;
+
+  /** The list of versions, in the driver's dialog. */
+  static final String LIST = """
       press role=combobox label="Driver version"
       frame
       advance 1
       frame
       """;
 
+  static final String VERSIONS = DRIVER + LIST;
+
+  /** Picks the version in the driver's dialog, which stays open. */
+  static String pick(String version) {
+    return LIST + "press role=option label=\"" + version + "\"\nframe\nadvance 1\nframe\n";
+  }
+
+  /** Opens the driver's dialog and picks the version; the dialog stays open. */
   static String choose(String version) {
-    return VERSIONS + "press role=option label=\"" + version + "\"\nframe\nadvance 1\nframe\n";
+    return DRIVER + pick(version);
   }
 
   static final String OPEN_DRIVERS = """
@@ -176,10 +207,18 @@ class DriversTest {
 
   @Test
   void theListOfVersionsWaitsLoadsAndFails() throws Exception {
-    repository.opening = new CountDownLatch(1);
     var app = app();
     run(app, START + """
         press role=button label="New connection"
+        frame
+        advance 1
+        frame
+        await
+        frame
+        """);
+    repository.opening = new CountDownLatch(1);
+    run(app, """
+        press role=button label="Driver"
         frame
         advance 1
         frame
@@ -189,7 +228,7 @@ class DriversTest {
     assertTrue(waiting.contains("role=status label=\"Reading the versions\""), waiting);
     assertTrue(waiting.contains("text \"Recommended\""), waiting);
     repository.opening.countDown();
-    run(app, SETTLE + VERSIONS + "snap listed\nkey Escape\nframe\nadvance 1\nframe\n");
+    run(app, SETTLE + LIST + "snap listed\nkey Escape\nframe\nadvance 1\nframe\n" + CLOSE_DRIVER);
     String listed = tree("listed");
     assertFalse(listed.contains("Reading the versions"), listed);
     assertTrue(block(listed, "role=option label=\"Recommended\"").contains("\"42.7.14\""), listed);
@@ -197,7 +236,7 @@ class DriversTest {
     assertTrue(block(listed, "role=option label=\"42.7.14\"").contains("\"recommended\""));
     assertTrue(listed.contains("role=option label=\"" + OLD + "\""), listed);
     repository.offline = true;
-    run(app, ConnectionsTest.provider("MySQL") + SETTLE + "snap failed\n");
+    run(app, ConnectionsTest.provider("MySQL") + SETTLE + DRIVER + "snap failed\n");
     String failed = tree("failed");
     assertTrue(
         failed.contains(
@@ -227,18 +266,19 @@ class DriversTest {
     var app = app();
     run(
         app,
-        START + NEW_SHOP + choose(OLD) + "await\nframe\n" + TEST + "snap asked\n" + """
+        START + NEW_SHOP + choose(OLD) + CLOSE_DRIVER + "await\nframe\n" + TEST + "snap asked\n"
+            + """
         press role=button label="Download"
         frame
         """ + SETTLE
             + SETTLE + SETTLE
-            + "snap tested\n");
+            + "snap tested\n" + DRIVER + "snap driver\n" + CLOSE_DRIVER);
     String asked = tree("asked");
     assertTrue(
         line(asked, "role=note").contains("\"Download PostgreSQL JDBC " + OLD + "?\""), asked);
     String tested = tree("tested");
     assertTrue(tested.contains("role=status label=\"Connected to PostgreSQL 16.4\""), tested);
-    assertTrue(tested.contains("\"PostgreSQL JDBC " + OLD + ", downloaded\""), tested);
+    assertTrue(tree("driver").contains("\"PostgreSQL JDBC " + OLD + ", downloaded\""), tested);
     assertEquals(List.of(OLD), store().downloaded(FakeDrivers.DRIVER));
     assertSame(app.state().drivers.loaded(FakeDrivers.DRIVER, OLD), server.drivers.getFirst());
     assertFalse(tree("tested").contains("is 1 day old"), "an old version is not warned of");
@@ -259,7 +299,7 @@ class DriversTest {
     var app = app();
     run(
         app,
-        START + NEW_SHOP + choose(YOUNG) + "await\nframe\nsnap young\n" + choose("Recommended")
+        START + NEW_SHOP + choose(YOUNG) + "await\nframe\nsnap young\n" + pick("Recommended")
             + "await\nframe\nsnap recommended\n");
     String young = tree("young");
     // The field's warning, which stays valid: the driver's line and the age, under the field.
@@ -269,10 +309,11 @@ class DriversTest {
     var box = line(young, "#driver-version");
     assertTrue(box.contains("warning=\"" + said), box);
     assertFalse(box.contains("invalid"), box);
-    float text = TestConnectionTest.top(young, "text \"" + said);
-    assertTrue(TestConnectionTest.top(young, "#driver-version") < text, young);
-    assertTrue(text < TestConnectionTest.top(young, "#host"), young);
-    assertTrue(line(young, "label=\"warning\"").contains(" 432,"), "at the field's start");
+    // Under the box in the driver's dialog, and under the type in the form beneath it too.
+    var dialog = young.substring(young.indexOf("role=dialog label=\"PostgreSQL driver\""));
+    float text = TestConnectionTest.top(dialog, "text \"" + said);
+    assertTrue(TestConnectionTest.top(dialog, "#driver-version") < text, young);
+    assertTrue(line(young, "#type").contains("warning=\"" + said), young);
     assertFalse(young.contains("role=note"), young);
     var recommended = tree("recommended");
     assertFalse(line(recommended, "#driver-version").contains("warning="), recommended);
@@ -303,9 +344,9 @@ class DriversTest {
   @Test
   void aLowerVersionPublishedYesterdayIsWarnedOf() throws Exception {
     var app = app();
-    run(app, START + NEW_SHOP);
+    run(app, START + NEW_SHOP + DRIVER);
     repository.dating = new CountDownLatch(1);
-    run(app, choose(LOWER) + "snap dating\n");
+    run(app, pick(LOWER) + "snap dating\n");
     String dating = tree("dating");
     assertTrue(
         dating.contains("role=status label=\"Looking up when " + LOWER + " was published\""),
@@ -737,6 +778,146 @@ class DriversTest {
     assertFalse(unreadable.contains(dir.toString()), "no absolute path in\n" + unreadable);
   }
 
+  /** A saved MySQL connection on this machine, its password in the keyring, its driver there. */
+  static final String EDIT_LOCAL = """
+      press role=treeitem label="localhost" right
+      frame
+      advance 1
+      frame
+      press role=menuitem label="Edit…"
+      frame
+      advance 1
+      frame
+      await
+      frame
+      advance 1
+      frame
+      """;
+
+  App<State> local(String version) throws Exception {
+    var profile = ConnectionProfile.of(Provider.MYSQL)
+        .withHost("localhost")
+        .withUser("test")
+        .withTls(Tls.OFF)
+        .withColor(Color.RED)
+        .withDriverVersion(version);
+    secrets.stored.put(profile.id(), "secret");
+    store().download(Driver.of(Provider.MYSQL), FakeDrivers.VERSION, DriverStore.Progress.NONE);
+    return app(profile);
+  }
+
+  /**
+   * The connection dialog's pictures, light and dark, into the folder that {@code
+   * -Dreview=<folder>} names; skipped without it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void dialogPictures(String look) throws Exception {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    var out = Files.createDirectories(Path.of(review));
+    var theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    var app = local(null);
+    app.state().theme = theme;
+    Script.run(
+        START + EDIT_LOCAL + "snap a-edit-" + look + "\n" + DRIVER + "snap b-driver-" + look + "\n"
+            + CLOSE_DRIVER + "key Escape\nframe\nadvance 1\nframe\n" + """
+            press role=button label="Add connection"
+            frame
+            advance 1
+            frame
+            await
+            frame
+            """
+            + ConnectionsTest.provider("MySQL") + """
+            press role=textbox label="Host"
+            type "db.example.com"
+            press role=textbox label="User"
+            type "app"
+            press role=combobox label="Encrypted, any certificate"
+            frame
+            advance 1
+            frame
+            press role=menuitem label="Off"
+            frame
+            advance 1
+            frame
+            """ + "snap c-remote-off-" + look + "\n",
+        app,
+        out);
+    var young = app();
+    young.state().theme = theme;
+    Script.run(
+        START + NEW_SHOP + choose(YOUNG) + CLOSE_DRIVER + "await\nframe\nsnap e-young-" + look
+            + "\n",
+        young,
+        out);
+    var pinned = local(FakeDrivers.VERSION);
+    pinned.state().theme = theme;
+    Script.run(START + EDIT_LOCAL + "snap d-pinned-" + look + "\n", pinned, out);
+  }
+
+  /**
+   * Driver… opens the driver's dialog over the connection's, and only then are the versions read;
+   * Close and Escape close it alone, after the list of versions in it.
+   */
+  @Test
+  void theDriversDialogReadsTheVersionsOnceOpened() throws Exception {
+    var app = app();
+    run(app, START + NEW_SHOP + "snap form\n");
+    String form = tree("form");
+    assertNull(app.state().dialog.versions.read, "not read with the connection's dialog");
+    assertFalse(form.contains("#driver-version"), form);
+    assertFalse(form.contains("PostgreSQL JDBC"), "nothing said of a driver that is well");
+    assertTrue(block(form, "role=button label=\"Driver\"").contains("\"Driver…\""), form);
+    // Published once the connection's dialog was open: the list read later has it.
+    repository.publish("42.7.16", FakeDrivers.NOW.minus(Duration.ofDays(10)));
+    run(
+        app,
+        VERSIONS + "snap listed\nkey Escape\nframe\nadvance 1\nframe\nsnap kept\n"
+            + "key Escape\nframe\nadvance 1\nframe\nsnap closed\n" + DRIVER + CLOSE_DRIVER
+            + "snap end\n");
+    String listed = tree("listed");
+    assertTrue(line(listed, "role=dialog label=\"PostgreSQL driver\"").contains("#driver"), listed);
+    assertTrue(listed.contains("role=option label=\"42.7.16\""), listed);
+    String kept = tree("kept");
+    assertFalse(kept.contains("role=option"), kept);
+    assertTrue(kept.contains("role=dialog label=\"PostgreSQL driver\""), "Escape closed the list");
+    for (var closed : List.of(tree("closed"), tree("end"))) {
+      assertFalse(closed.contains("PostgreSQL driver"), closed);
+      assertFalse(closed.contains("Discard changes?"), closed);
+      assertTrue(closed.contains("role=dialog label=\"New connection\""), closed);
+    }
+    assertFalse(app.state().dialog.choosingDriver);
+  }
+
+  /** Enter in the driver's dialog does not save the connection under it. */
+  @Test
+  void enterInTheDriversDialogSavesNothing() throws Exception {
+    var app = app();
+    run(app, START + NEW_SHOP + DRIVER + "key Enter\nframe\nawait\nframe\nsnap entered\n");
+    assertNotNull(app.state().dialog, tree("entered"));
+    assertFalse(app.state().dialog.triedToSave);
+    assertTrue(new ProfileStore(dir.resolve("config")).load().isEmpty());
+  }
+
+  /** A version chosen by hand is named on Driver…, and a young one is warned of under Type. */
+  @Test
+  void aChosenVersionIsNamedOnTheButton() throws Exception {
+    var app = app();
+    run(
+        app,
+        START + NEW_SHOP + choose(OLD) + CLOSE_DRIVER + "snap old\n" + choose(YOUNG) + CLOSE_DRIVER
+            + "await\nframe\nsnap young\n");
+    String old = tree("old");
+    assertTrue(block(old, "role=button label=\"Driver\"").contains("\"Driver " + OLD + "…\""));
+    assertFalse(line(old, "#type").contains("warning="), old);
+    String young = tree("young");
+    assertTrue(
+        line(young, "#type").contains("warning=\"PostgreSQL JDBC " + YOUNG + ", not downloaded"),
+        young);
+  }
+
   /**
    * The pictures for a review, light and dark, into the folder that {@code -Dreview=<folder>}
    * names; skipped without it.
@@ -753,7 +934,7 @@ class DriversTest {
     Script.run(
         START + NEW_SHOP + VERSIONS + "frame\nframe\nsnap connection-versions-" + look + "\n"
             + close
-            + choose(YOUNG) + "await\nframe\nsnap connection-young-" + look + "\n" + close
+            + pick(YOUNG) + "await\nframe\nsnap connection-young-" + look + "\n" + close + close
             + "press role=button label=\"Discard\"\nframe\nadvance 1\nframe\n" + OPEN_DRIVERS
             + "snap drivers-empty-" + look + "\n" + close,
         app,

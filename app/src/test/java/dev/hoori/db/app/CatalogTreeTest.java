@@ -440,8 +440,8 @@ class CatalogTreeTest {
         new Case(
             Failure.CERTIFICATE_REJECTED,
             "The certificate was not accepted",
-            "The server's certificate is not trusted, or not for pg.example.com. Encrypted accepts"
-                + " it, without verifying the server."),
+            "The server's certificate is not trusted, or not for pg.example.com. “Encrypted, any"
+                + " certificate” accepts it, without verifying the server."),
         new Case(
             Failure.UNFIT,
             "The connection failed",

@@ -938,7 +938,7 @@ class ConsoleTransactionTest {
         app,
         in("main") + "press role=textbox label=\"User\"\ntype \"2\"\n"
             + "press role=textbox label=\"Password\"\ntype \"hunter2\"\n"
-            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\n");
     assertTrue(app.state().dialog.changing, "the keyring works");
     c.run(app, in(window) + type(";\n" + PAY) + "key Enter control\nframe\nframe\nsnap locked\n");
@@ -1545,7 +1545,7 @@ class ConsoleTransactionTest {
     Script.run(
         in("main") + "press role=textbox label=\"User\"\ntype \"2\"\n"
             + "press role=textbox label=\"Password\"\ntype \"hunter2\"\n"
-            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\n" + in("shop-prod: shop")
             + "size 1200 760\nframe\nadvance 1\nframe\nsnap console-locked-" + look + "\n",
         app,
@@ -1863,7 +1863,7 @@ class ConsoleTransactionTest {
         app,
         "press role=textbox label=\"User\"\ntype \"2\"\n"
             + "press role=textbox label=\"Password\"\ntype \"hunter2\"\n"
-            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nsnap waits\n");
     assertTrue(line(c.tree("waits"), "role=button label=\"Cancel\"").contains("disabled"));
     assertTrue(app.state().pending != null, "the save holds its lock");
@@ -1924,7 +1924,7 @@ class ConsoleTransactionTest {
     Script.run(
         "press role=textbox label=\"User\"\ntype \"2\"\n"
             + "press role=textbox label=\"Password\"\ntype \"hunter2\"\n"
-            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
             + "\nframe\nadvance 1\nframe\nsnap dialog-keyring-slow-" + look + "\n"
             + "press role=button label=\"Cancel\"\nframe\nadvance 1\nframe\n"
@@ -2003,7 +2003,7 @@ class ConsoleTransactionTest {
         app,
         "press role=textbox label=\"User\"\ntype \"2\"\n"
             + "press role=textbox label=\"Password\"\ntype \"first\"\n"
-            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
             + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED
             + "press role=button label=\"Cancel\"\nframe\n" + OPENED
@@ -2273,7 +2273,7 @@ class ConsoleTransactionTest {
     c.run(
         app,
         "press role=textbox label=\"Password\"\ntype \"fresh\"\n"
-            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
             + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED);
     c.secrets.fails = true; // the delete given up fails, and so does the refresh behind it
@@ -2479,7 +2479,7 @@ class ConsoleTransactionTest {
     c.secrets.late = late;
     c.run(
         app,
-        "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+        "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
             + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED);
     c.secrets.fails = true;
@@ -2536,7 +2536,7 @@ class ConsoleTransactionTest {
     Script.run(
         "press role=textbox label=\"User\"\ntype \"2\"\n"
             + "press role=textbox label=\"Password\"\ntype \"first\"\n"
-            + "press role=checkbox label=\"Save password in the system keyring\"\nframe\n"
+            + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
             + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED
             + "press role=button label=\"Cancel\"\nframe\n" + OPENED

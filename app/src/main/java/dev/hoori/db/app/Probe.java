@@ -246,7 +246,7 @@ final class Probe {
     };
   }
 
-  /** The line under the kind of database: which driver, and whether it is there. */
+  /** The driver's line: which driver, and whether it is there. */
   String line(State s) {
     return fetch.line(s);
   }

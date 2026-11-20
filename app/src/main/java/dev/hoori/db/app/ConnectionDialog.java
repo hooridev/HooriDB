@@ -22,6 +22,7 @@ import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.ComboBox;
 import com.rethinkj.ui.kit.Dialog;
+import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Editing;
 import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Format;
@@ -102,6 +103,7 @@ final class ConnectionDialog {
   final ComboBox.State providerBox = new ComboBox.State();
   final ComboBox.State versionBox = new ComboBox.State();
   Versions versions; // of the driver of the kind of database chosen
+  boolean choosingDriver; // the dialog of the driver's version is open over this one
   final Probe probe = new Probe(this);
 
   private ConnectionDialog(ConnectionProfile profile, boolean isNew) {
@@ -128,16 +130,32 @@ final class ConnectionDialog {
     return dialog;
   }
 
-  /** Reads the versions of the kind's driver, and looks up the one to use. */
+  /**
+   * Looks up the kind's driver to use, and when the version chosen was published; the versions to
+   * choose from are read once the driver's dialog asks for them.
+   */
   private void driver(State s) {
     var p = editing.value();
     if (versions != null) {
       versions.close();
     }
     versions = new Versions(p.provider());
-    versions.read(s);
     versions.date(s, p.driverVersion());
     probe.lookUp(s, p.provider(), p.driverVersion());
+  }
+
+  /** Driver…: opens the driver's dialog, which reads the versions unless they were read. */
+  private void chooseDriver(State s) {
+    choosingDriver = true;
+    if (versions.read == null && !versions.reading()) {
+      versions.read(s);
+    }
+  }
+
+  /** Close and Escape of the driver's dialog: the versions are no longer read for it. */
+  private void closeDriver() {
+    choosingDriver = false;
+    versions.stop();
   }
 
   private void version(State s, String version) {
@@ -385,6 +403,7 @@ final class ConnectionDialog {
     }
     probe.close();
     versions.close();
+    choosingDriver = false;
     password = "";
     s.dialog = null;
   }
@@ -439,17 +458,18 @@ final class ConnectionDialog {
   static String tlsLabel(Tls tls) {
     return switch (tls) {
       case OFF -> "Off";
-      case ENCRYPTED -> "Encrypted";
-      case VERIFIED -> "Encrypted, server verified";
+      case ENCRYPTED -> "Encrypted, any certificate";
+      case VERIFIED -> "Encrypted and verified";
     };
   }
 
-  private static String help(Tls tls) {
-    return switch (tls) {
-      case OFF -> "Password and data go over the network as they are.";
-      case ENCRYPTED -> "Any certificate is accepted.";
-      case VERIFIED -> "The certificate must be trusted and name the host.";
-    };
+  /** Off where the host is not one that is off by default: on a network others may listen to. */
+  private static String tlsWarning(ConnectionProfile p) {
+    return p.tls() == Tls.OFF
+            && !p.host().isBlank()
+            && ConnectionProfile.tlsByDefault(p.host()) != Tls.OFF
+        ? "Password and data go over the network unencrypted."
+        : null;
   }
 
   /** What keeps the profile from connecting, in words for the field it concerns. */
@@ -513,120 +533,117 @@ final class ConnectionDialog {
     boolean canSave = s.secrets() != null && (stored != null || asking == null);
     boolean inKeyring = Boolean.TRUE.equals(stored);
     boolean inSession = !isNew && s.remembers(e.original().id());
-    String keepNote = password.isEmpty() && (inKeyring || inSession)
-        ? "Leave it empty to keep the current password."
-        : null;
-    String note = keyringNote(s);
     var keyring =
         Prop.of(() -> canSave && savePassword, canSave && open ? v -> savePassword = v : null);
     String fallback = String.valueOf(p.provider().defaultPort());
-    El form = Form.form(
-        Form.Labels.BESIDE,
+    var name = field(
+        "Name",
+        textField(locked(e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
+            .key("name")
+            .wFull());
+    var color = field(
+        "Color",
+        HuePicker.huePicker(
+                ConnectionColors.hue(p.color()),
+                ConnectionColors.label(null),
+                open ? v -> e.at(COLOR).set(ConnectionColors.color(v)) : null)
+            .key("color"));
+    var chosen = p.driverVersion();
+    var type = field(
+            "Type",
+            row()
+                .wFull()
+                .gap(t.space().s())
+                .child(ComboBox.items(
+                        PROVIDERS,
+                        p.provider(),
+                        ConnectionDialog::type,
+                        providerBox,
+                        open ? v -> provider(s, v) : null)
+                    .key("type")
+                    .label("Type")
+                    .grow(1))
+                .child(button(
+                        SECONDARY,
+                        chosen == null ? "Driver…" : "Driver " + chosen + "…",
+                        open ? () -> chooseDriver(s) : null)
+                    .key("driver")
+                    .label("Driver")))
+        .warning(driverWarning(s));
+    var address = Form.row(
         field(
-            "Name",
-            textField(locked(e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
-                .key("name")
-                .wFull()),
+                "Host",
+                marked(
+                    Probe.At.HOST,
+                    textField(p.host(), "Name or address", open ? this::host : null)
+                        .key("host")
+                        .wFull()))
+            .required()
+            .error(error(problems, ConnectionProfile.Field.HOST))
+            .grow(),
         field(
-            "Color",
-            HuePicker.huePicker(
-                    ConnectionColors.hue(p.color()),
-                    ConnectionColors.label(null),
-                    open ? v -> e.at(COLOR).set(ConnectionColors.color(v)) : null)
-                .key("color")),
-        Form.group(
-                "Server",
-                field(
-                    "Type",
-                    ComboBox.items(
-                            PROVIDERS,
-                            p.provider(),
-                            ConnectionDialog::type,
-                            providerBox,
-                            open ? v -> provider(s, v) : null)
-                        .key("type")
-                        .label("Type")
-                        .wFull()),
-                field("Driver", driverVersion(s, open))
-                    .help(driverHelp(s))
-                    .warning(youngWarning(s)),
-                Form.row(
-                    field(
-                            "Host",
-                            marked(
-                                Probe.At.HOST,
-                                textField(p.host(), "Name or address", open ? this::host : null)
-                                    .key("host")
-                                    .wFull()))
-                        .required()
-                        .error(error(problems, ConnectionProfile.Field.HOST))
-                        .grow(),
-                    field(
-                            "Port",
-                            valueField(
-                                    Format.INTEGER,
-                                    p.port(),
-                                    fallback,
-                                    e.at(PORT).draft(),
-                                    open ? this::port : null)
-                                .key("port")
-                                .maxLength(5)
-                                .w(3 * t.size().control()))
-                        .required()
-                        .error(or(
-                            error(problems, ConnectionProfile.Field.PORT),
-                            probe.error(Probe.At.PORT)))),
-                field(
-                        "Database",
-                        textField(locked(e.at(DATABASE)), "Optional")
-                            .key("database")
-                            .wFull())
-                    .error(or(
-                        error(problems, ConnectionProfile.Field.DATABASE),
-                        probe.error(Probe.At.DATABASE))),
-                field(
-                        "TLS",
-                        Select.select(
-                                List.of(Tls.values()),
-                                p.tls(),
-                                ConnectionDialog::tlsLabel,
-                                tlsMenu,
-                                open ? this::tls : null)
-                            .key("tls")
-                            .wFull())
-                    .help(help(p.tls()))
-                    .error(probe.error(Probe.At.TLS)))
-            .divided()
-            .level(3),
-        Form.group(
-                "Login",
-                field(
-                        "User",
-                        marked(
-                            Probe.At.USER,
-                            textField(locked(e.at(USER))).key("user").wFull()))
-                    .error(error(problems, ConnectionProfile.Field.USER)),
-                field(
-                        "Password",
-                        col()
-                            .wFull()
-                            .gap(t.space().s())
-                            .child(revealable(
-                                    passwordField(
-                                            Prop.of(() -> password, open ? this::password : null),
-                                            inKeyring
-                                                ? "Saved in the system keyring"
-                                                : inSession ? "Kept until HooriDB closes" : null)
-                                        .key("password")
-                                        .wFull(),
-                                    revealed,
-                                    () -> revealed = !revealed)
-                                .wFull())
-                            .child(checkbox(keyring, "Save password in the system keyring")))
-                    .help(keepNote == null ? note : note == null ? keepNote : keepNote + " " + note)
-                    .error(probe.error(Probe.At.PASSWORD)))
-            .divided()
-            .level(3));
+                "Port",
+                valueField(
+                        Format.INTEGER,
+                        p.port(),
+                        fallback,
+                        e.at(PORT).draft(),
+                        open ? this::port : null)
+                    .key("port")
+                    .maxLength(5)
+                    .w(3 * t.size().control()))
+            .required()
+            .error(or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))));
+    var database = field(
+            "Database",
+            textField(locked(e.at(DATABASE)), "Optional").key("database").wFull())
+        .error(
+            or(error(problems, ConnectionProfile.Field.DATABASE), probe.error(Probe.At.DATABASE)));
+    var tls = field(
+            "TLS",
+            Select.select(
+                    List.of(Tls.values()),
+                    p.tls(),
+                    ConnectionDialog::tlsLabel,
+                    tlsMenu,
+                    open ? this::tls : null)
+                .key("tls")
+                .wFull())
+        .warning(tlsWarning(p))
+        .error(probe.error(Probe.At.TLS));
+    var user = field(
+            "User",
+            marked(Probe.At.USER, textField(locked(e.at(USER))).key("user").wFull()))
+        .error(error(problems, ConnectionProfile.Field.USER));
+    var pass = field(
+            "Password",
+            col()
+                .wFull()
+                .gap(t.space().s())
+                .child(revealable(
+                        passwordField(
+                                Prop.of(() -> password, open ? this::password : null),
+                                inKeyring
+                                    ? "Unchanged, saved in the keyring"
+                                    : inSession ? "Unchanged, kept until HooriDB closes" : null)
+                            .key("password")
+                            .wFull(),
+                        revealed,
+                        () -> revealed = !revealed)
+                    .wFull())
+                .child(checkbox(keyring, "Save in system keyring")))
+        .help(keyringNote(s))
+        .error(probe.error(Probe.At.PASSWORD));
+    // shortcut: three forms in one label column, as Form.group always draws a heading; groups
+    // once one can go without.
+    float labels = Form.labelWidth(name, color, type, address, database, tls, user, pass);
+    El form = col()
+        .wFull()
+        .gap(t.space().xl())
+        .child(Form.form(Form.Labels.BESIDE, labels, name, color))
+        .child(Form.form(Form.Labels.BESIDE, labels, type, address, database, tls))
+        .child(Divider.divider())
+        .child(Form.form(Form.Labels.BESIDE, labels, user, pass));
     El content = col()
         .w(width())
         .gap(t.space().l())
@@ -745,6 +762,14 @@ final class ConnectionDialog {
         + " days, once a bad release would be withdrawn.";
   }
 
+  /**
+   * What needs attention about the driver, under the kind of database: a version too new, or a
+   * lookup that failed; null where all is well, which the form does not say.
+   */
+  private String driverWarning(State s) {
+    return probe.fetch.lookup instanceof Fetch.Missing ? probe.line(s) : youngWarning(s);
+  }
+
   /** Which driver, and whether it is there; and what keeps the list of versions from showing. */
   private String driverHelp(State s) {
     var line = probe.line(s);
@@ -764,6 +789,22 @@ final class ConnectionDialog {
   /** The prop, or one that cannot be written while the keyring is being changed. */
   private <T> Prop<T> locked(Prop<T> prop) {
     return changing ? Prop.of(prop::get, null) : prop;
+  }
+
+  /** The dialog of the driver's version, over this one, or null while it is closed. */
+  El driverDialog(State s) {
+    if (!choosingDriver) {
+      return null;
+    }
+    El form = Form.form(
+        Form.Labels.BESIDE,
+        field("Version", driverVersion(s, !changing)).help(driverHelp(s)).warning(youngWarning(s)));
+    return Dialog.dialog(
+            editing.value().provider().displayName() + " driver",
+            col().w(width()).child(form),
+            List.of(button(PRIMARY, "Close", this::closeDriver)),
+            this::closeDriver)
+        .key("driver");
   }
 
   /** The question whether to throw the changes away, or null while it is not asked. */
