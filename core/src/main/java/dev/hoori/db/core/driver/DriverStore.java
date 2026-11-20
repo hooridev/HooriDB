@@ -373,19 +373,36 @@ public final class DriverStore {
       throws DriverException {
     var path = file(driver, artifact.artifact(), version);
     var name = artifact.artifact() + "-" + version + ".jar";
+    Wanted wanted = null;
     try {
-      return new Wanted(path, name, checksum(path + ".sha256", 64), true);
+      wanted = new Wanted(path, name, checksum(path + ".sha256", 64), true);
     } catch (DriverException e) {
       if (e.failure() != NOT_FOUND) {
         throw e;
       }
     }
-    try {
-      return new Wanted(path, name, checksum(path + ".sha1", 40), false);
-    } catch (DriverException e) {
-      if (e.failure() != NOT_FOUND) {
+    if (wanted == null) {
+      try {
+        wanted = new Wanted(path, name, checksum(path + ".sha1", 40), false);
+      } catch (DriverException e) {
+        if (e.failure() != NOT_FOUND) {
+          throw e;
+        }
+      }
+    }
+    // A checksum does not show that an optional part is there: the repository may lack its file.
+    if (wanted != null && artifact.optional()) {
+      try {
+        remote(path, () -> repository.published(path));
+      } catch (DriverException e) {
+        if (e.failure() == NOT_FOUND) {
+          return null;
+        }
         throw e;
       }
+    }
+    if (wanted != null) {
+      return wanted;
     }
     // Without either checksum the file itself may be missing, which is NOT_FOUND.
     try {
@@ -407,6 +424,8 @@ public final class DriverStore {
     // Within HooriDB one download at a time checks, discards and replaces a version, so that none
     // discards what another has just put there.
     synchronized (lock(dir)) {
+      // A cancel while it waited for the lock leaves what is there.
+      checkCancelled(file(driver, version));
       for (int attempt = 0; ; attempt++) {
         try {
           Files.move(temporary, dir, StandardCopyOption.ATOMIC_MOVE);
@@ -419,6 +438,7 @@ public final class DriverStore {
             throw e;
           }
           // An earlier download that no longer matches its record, which this one replaces.
+          checkCancelled(file(driver, version));
           discard(dir);
         }
       }
