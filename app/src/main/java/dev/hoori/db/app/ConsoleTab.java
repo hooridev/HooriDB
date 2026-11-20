@@ -3142,6 +3142,7 @@ final class ConsoleTab implements Tab {
     int from = Math.min(editor.caret(), editor.anchor());
     int to = Math.min(Math.max(editor.caret(), editor.anchor()), text.length());
     var put = sql;
+    int caret = sql.stripTrailing().length(); // in what is put: after it, or as ending says
     var provider = provider(app.state());
     if (from == to && provider != null) {
       int here = from;
@@ -3161,10 +3162,13 @@ final class ConsoleTab implements Tab {
       int at = unclosed.isPresent()
           ? unclosed.get().start()
           : inside ? part.end() : comment.map(Statements.Piece::end).orElse(from);
-      put = (at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "")
+      var before = at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "";
+      var ending = ending(sql, provider);
+      put = before
           + sql
-          + terminator(sql, provider)
+          + ending.terminator()
           + (at < text.length() && text.charAt(at) != '\n' ? "\n" : "");
+      caret = before.length() + ending.caret();
       from = at;
       to = at;
       if (open != null && open.start() < at) {
@@ -3173,34 +3177,40 @@ final class ConsoleTab implements Tab {
         while (end > open.start() && Character.isWhitespace(text.charAt(end - 1))) {
           end--;
         }
-        put = ";" + text.substring(end, at) + put;
+        var closing = ";" + text.substring(end, at);
+        put = closing + put;
+        caret += closing.length();
         from = end;
       }
     }
-    editor.replace(from, to, put, put.stripTrailing().length());
+    editor.replace(from, to, put, caret);
   }
 
-  // What ends the text as a statement: a semicolon, on a line of its own after a comment to the
-  // end of the line, which would take it in; none where it has its own, as a saved query may.
-  private static String terminator(String sql, Provider provider) {
-    var pieces = Statements.pieces(sql, provider);
-    for (int i = pieces.size() - 1; i >= 0; i--) {
-      var piece = pieces.get(i);
-      if (piece.kind() != Statements.Piece.Kind.COMMENT) {
-        if (piece.kind() == Statements.Piece.Kind.CODE
-            && piece.end() - piece.start() == 1
-            && sql.charAt(piece.start()) == ';') {
-          return "";
-        }
-        break;
-      }
+  /**
+   * What ends the text as a statement, and where the caret goes in the text so ended: a semicolon
+   * where its last statement has no terminator, on a line of its own after a comment to the end of
+   * the line, which would take it in, the caret after it; none where it has one, as a saved query
+   * may, the caret at its last statement's end, before the comments after it, so that Run runs it.
+   * As the provider's statements are split, so that an executable comment is code.
+   */
+  record Ending(String terminator, int caret) {}
+
+  static Ending ending(String sql, Provider provider) {
+    var scan = Statements.of(sql, provider);
+    var statements = scan.statements();
+    if (statements.isEmpty()) {
+      return new Ending("", sql.length());
     }
-    var last = pieces.isEmpty() ? null : pieces.getLast();
-    boolean lineComment = last != null
-        && last.kind() == Statements.Piece.Kind.COMMENT
+    if (!scan.open()) {
+      return new Ending("", statements.getLast().end());
+    }
+    var pieces = Statements.pieces(sql, provider);
+    var last = pieces.getLast();
+    boolean lineComment = last.kind() == Statements.Piece.Kind.COMMENT
         && last.end() == sql.length()
         && !sql.startsWith("/*", last.start());
-    return lineComment ? "\n;" : ";";
+    var terminator = lineComment ? "\n;" : ";";
+    return new Ending(terminator, sql.length() + terminator.length());
   }
 
   /** What is asked before a statement is sent, while it is; in the console's window. */
