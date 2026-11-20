@@ -468,4 +468,17 @@ class StatementsTest {
     assertFalse(Statements.of("SELECT 1;\n-- after", Provider.MYSQL).open());
     assertFalse(Statements.of("-- nothing", Provider.MARIADB).open());
   }
+
+  @Test
+  void theShellsStatementsEndAtSemicolonsAndCompleteLines() {
+    var text = "db.a.find({\n  x: 1\n});  \ndb.b.find()\n\n// done\n";
+    var statements = Statements.split(text, Provider.MONGODB);
+    assertEquals(
+        List.of("db.a.find({\n  x: 1\n})", "db.b.find()"),
+        statements.stream().map(x -> text.substring(x.start(), x.end())).toList());
+    var scanned = Statements.of(text, Provider.MONGODB);
+    assertEquals(statements.get(0), scanned.at(text.indexOf(";") + 2).orElseThrow());
+    assertEquals(statements.get(1), scanned.at(text.length()).orElseThrow());
+    assertEquals("find", Statements.firstWord("db.a.find()", Provider.MONGODB));
+  }
 }

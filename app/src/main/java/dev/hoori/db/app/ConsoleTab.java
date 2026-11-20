@@ -8,6 +8,7 @@ import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.Highlighter;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.kit.Badge;
@@ -42,6 +43,11 @@ import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.document.Commands;
+import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.Request;
+import dev.hoori.db.core.document.Script;
+import dev.hoori.db.core.document.SyntaxException;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Failure;
@@ -138,6 +144,10 @@ final class ConsoleTab implements Tab {
     boolean pinned; // the next run leaves it
     float[] widths;
     final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
+    // Of a server of documents, the documents of the rows, whole, and how they show.
+    final List<Document> documents = new ArrayList<>();
+    TableTab.Shown shown = TableTab.Shown.GRID;
+    final DocumentTree whole = new DocumentTree();
 
     Output(int number, String statement, List<Field> fields, long count) {
       this.number = number;
@@ -407,6 +417,11 @@ final class ConsoleTab implements Tab {
     return profile == null ? null : profile.provider();
   }
 
+  private boolean keepsDocuments(State s) {
+    var provider = provider(s);
+    return provider != null && provider.keepsDocuments();
+  }
+
   /** The statements, with offsets from {@code from} in the text, run once the console takes them. */
   private void start(State s, int from, List<Statement> chosen) {
     s.acted();
@@ -532,6 +547,22 @@ final class ConsoleTab implements Tab {
       return;
     }
     var provider = s.profile(id).provider();
+    if (provider.keepsDocuments()) {
+      var all = everyDocument(sql);
+      if (all.isPresent()) {
+        var verb = all.get().verb();
+        running = sql;
+        confirming = new Confirm(
+            sql,
+            (verb.equals("delete") ? "Delete" : "Update") + " every document?",
+            brief(sql) + " has an empty filter: it would " + verb + " every document of "
+                + all.get().collection() + ".",
+            true);
+      } else {
+        send(s, sql, true);
+      }
+      return;
+    }
     var every = EveryRow.of(sql, provider);
     if (every.isPresent()) {
       var verb = every.get().verb().equals("DELETE") ? "delete" : "update";
@@ -551,6 +582,18 @@ final class ConsoleTab implements Tab {
     }
   }
 
+  /** A change of every document of a collection that the statement asks for, if it does. */
+  static java.util.Optional<Commands.Every> everyDocument(String sql) {
+    try {
+      var request = Script.parse(sql);
+      return request.command() == null
+          ? java.util.Optional.empty()
+          : Commands.every(request.command());
+    } catch (SyntaxException e) {
+      return java.util.Optional.empty();
+    }
+  }
+
   /**
    * Sends the statement on the session. A plain read that the session reads whole is first
    * estimated, unless {@code estimate} is off as the user said to run it anyway.
@@ -565,7 +608,9 @@ final class ConsoleTab implements Tab {
     writes = !lazy;
     plain = reads(sql, provider);
     // Not for a read Auto keeps open: no connection is opened for an estimate never asked for.
-    var planner = estimate && plain && !lazy ? s.catalog.planner(id, database) : null;
+    var planner = estimate && plain && !lazy && !provider.keepsDocuments()
+        ? s.catalog.planner(id, database)
+        : null;
     var on = database;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
@@ -1240,11 +1285,33 @@ final class ConsoleTab implements Tab {
    * needless caution.
    */
   static boolean reads(String sql, Provider provider) {
+    if (provider.keepsDocuments()) {
+      // A cursor that only reads, as find and aggregate without $out give.
+      try {
+        var request = Script.parse(sql);
+        return request.shape() == Request.Shape.CURSOR && request.reads();
+      } catch (SyntaxException e) {
+        return false;
+      }
+    }
     var word = Statements.firstWord(sql, provider);
     // ASCII's case alone, as the servers fold keywords: ſELECT is no SELECT.
     word = word.chars().allMatch(c -> c < 0x80) ? word.toUpperCase(Locale.ROOT) : "";
     // shortcut: INTO in a literal or comment makes a read count as a change, a needless caution.
     return READS.contains(word) && !WRITING.matcher(sql).find();
+  }
+
+  // The database that the shell's use switched the session to, or null for any other statement.
+  private String used(State s, String sql, Portion portion) {
+    var profile = s.profile(id);
+    if (profile == null || !profile.provider().keepsDocuments() || failure(portion) != null) {
+      return null;
+    }
+    try {
+      return Script.parse(sql).use();
+    } catch (SyntaxException e) {
+      return null;
+    }
   }
 
   // A statement that ends the transaction when it ends well, as Commit and Rollback do; a ROLLBACK
@@ -1275,6 +1342,11 @@ final class ConsoleTab implements Tab {
 
   private void ran(State s, String sql, Ran ran) {
     var portion = ran.portion();
+    var used = used(s, sql, portion);
+    if (used != null) {
+      database = used; // the shell's use: the console runs on there from now on
+      s.edited();
+    }
     var failure = failure(portion);
     record(s, outcomeOf(portion), portion.elapsed());
     applied = true; // it was sent, after the session's mode was made sure of
@@ -1546,11 +1618,16 @@ final class ConsoleTab implements Tab {
     for (int i = 0; i < results.size(); i++) {
       var result = results.get(i);
       switch (result) {
-        case Result.Rows r when r.from() > 0 && reading != null -> reading.rows.addAll(r.rows());
+        case Result.Rows r
+        when r.from() > 0 && reading != null -> {
+          reading.rows.addAll(r.rows());
+          reading.documents.addAll(r.documents());
+        }
         case Result.Rows r -> {
           finished();
           var output = new Output(++this.results, sql, r.fields(), 0);
           output.rows.addAll(r.rows());
+          output.documents.addAll(r.documents());
           output.dropped = dropped == null ? 0 : dropped.get(i);
           outputs.add(output);
           reading = output;
@@ -2328,6 +2405,10 @@ final class ConsoleTab implements Tab {
     return String.format(Locale.ROOT, "%,d", n) + (n == 1 ? " row" : " rows");
   }
 
+  static String documents(long n) {
+    return String.format(Locale.ROOT, "%,d", n) + (n == 1 ? " document" : " documents");
+  }
+
   // The view
 
   /** The statement Control+Enter would run, or null where it would run the selection or none. */
@@ -2358,18 +2439,21 @@ final class ConsoleTab implements Tab {
     actions.add(databases(s));
     // Off where Manual cannot be made sure of, which its tooltip and a note say.
     boolean switchable = !busy && locked == null && unavailable == null;
-    actions.add(Tooltip.tooltip(
-        Segmented.segmented(
-                List.of(Mode.values()),
-                mode,
-                m -> m == Mode.AUTO ? "Auto" : "Manual",
-                switchable ? m -> mode(s, m) : null)
-            .key("mode")
-            .label("Transactions"),
-        unavailable != null
-            ? "Manual is unavailable: " + unavailable
-            : "Auto commits each statement by itself; in Manual, Commit or Rollback ends the"
-                + " transaction"));
+    // A server of documents commits each command by itself, and has no Manual to offer.
+    if (!provider.keepsDocuments()) {
+      actions.add(Tooltip.tooltip(
+          Segmented.segmented(
+                  List.of(Mode.values()),
+                  mode,
+                  m -> m == Mode.AUTO ? "Auto" : "Manual",
+                  switchable ? m -> mode(s, m) : null)
+              .key("mode")
+              .label("Transactions"),
+          unavailable != null
+              ? "Manual is unavailable: " + unavailable
+              : "Auto commits each statement by itself; in Manual, Commit or Rollback ends the"
+                  + " transaction"));
+    }
     if (mode == Mode.MANUAL || transaction != Transaction.NONE) {
       actions.add(Tooltip.tooltip(
           button(
@@ -2477,14 +2561,14 @@ final class ConsoleTab implements Tab {
   }
 
   private El editor(State s, App<State> app, Provider provider) {
-    var dialect = switch (provider) {
-      case POSTGRESQL -> Sql.Dialect.POSTGRES;
-      case MARIADB, MYSQL -> Sql.Dialect.MYSQL;
-      case MONGODB -> throw new IllegalStateException("A console of SQL on MongoDB");
+    Highlighter syntax = switch (provider) {
+      case POSTGRESQL -> Sql.of(Sql.Dialect.POSTGRES);
+      case MARIADB, MYSQL -> Sql.of(Sql.Dialect.MYSQL);
+      case MONGODB -> ShellSyntax.of();
     };
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
-    El editor = CodeEditor.codeEditor(app, text, this.editor, Sql.of(dialect), v -> {
+    El editor = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
           text = v;
           s.edited();
         })
@@ -2635,30 +2719,76 @@ final class ConsoleTab implements Tab {
       return col()
           .grow(1)
           .minSize(0, 0)
-          .child(
-              EmptyState.emptyState(Symbol.CHECKMARK_CIRCLE, rows(o.count) + " changed", null, null)
-                  .key("changed"))
+          .child(EmptyState.emptyState(
+                  Symbol.CHECKMARK_CIRCLE,
+                  (keepsDocuments(s) ? documents(o.count) : rows(o.count)) + " changed",
+                  null,
+                  null)
+              .key("changed"))
           .child(
               Card.footer(Label.label(Label.Variant.MUTED, brief(o.statement)).ellipsis(), pin));
     }
-    String count = rows(o.rows.size());
+    boolean whole = !o.documents.isEmpty();
+    String count = whole ? documents(o.rows.size()) : rows(o.rows.size());
     String about = brief(o.statement) + " · "
         + (o.more
             ? count + " so far, more as it scrolls"
             : o.cut
                 ? "the first " + count + "; the rest was not read"
                 : o.dropped > 0
-                    ? "the first " + count + " of " + rows(o.rows.size() + o.dropped)
+                    ? "the first " + count + " of "
+                        + (whole
+                            ? documents(o.rows.size() + o.dropped)
+                            : rows(o.rows.size() + o.dropped))
                         + "; the rest was read and not kept"
                     : count);
+    if (o.documents.isEmpty()) {
+      return col()
+          .grow(1)
+          .minSize(0, 0)
+          .child(withValue(s, app, o, grid(s, app, o)))
+          .child(Card.footer(
+              Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
+              value.button(),
+              pin));
+    }
+    // Documents: as a grid, or whole, those read so far, with what reads more.
+    var footer = new ArrayList<El>();
+    footer.add(Segmented.segmented(
+            List.of(TableTab.Shown.values()), o.shown, v -> v.title, v -> o.shown = v)
+        .key("result-shown")
+        .label("Show documents as"));
+    if (o.more && o.shown != TableTab.Shown.GRID) {
+      int at = o.rows.size();
+      footer.add(
+          button(SECONDARY, "Read more", () -> want(s, o, at, at + PORTION - 1)).key("read-more"));
+    }
+    if (o.shown == TableTab.Shown.GRID) {
+      footer.add(value.button());
+    }
+    footer.add(pin);
+    El body;
+    if (o.shown == TableTab.Shown.GRID) {
+      body = withValue(s, app, o, grid(s, app, o));
+    } else {
+      o.whole.show("r" + o.number, o.documents);
+      body = o.shown == TableTab.Shown.JSON
+          ? CodeEditor.embedded(
+              CodeEditor.codeEditor(app, o.whole.text(), o.whole.editor, ShellSyntax.of(), null)
+                  .key("result-json")
+                  .label("Documents of result " + o.number))
+          : o.whole
+              .tree(s.zone, node -> {})
+              .key("result-tree")
+              .label("Documents of result " + o.number);
+    }
     return col()
         .grow(1)
         .minSize(0, 0)
-        .child(withValue(s, app, o, grid(s, app, o)))
+        .child(body.grow(1))
         .child(Card.footer(
             Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
-            value.button(),
-            pin));
+            footer.toArray(El[]::new)));
   }
 
   /**
@@ -3037,7 +3167,7 @@ final class ConsoleTab implements Tab {
    * while neither the console nor the tree is, and "Ready" before the first run.
    */
   private String status(State s) {
-    var status = !connected() && !s.catalog.connected(id) ? "Not connected" : ran();
+    var status = !connected() && !s.catalog.connected(id) ? "Not connected" : ran(s);
     // shortcut: Manual reads every result whole before showing it, as it may not stay open in a
     // transaction; read lazily in Manual too once giving up a read can keep the transaction.
     return mode != Mode.MANUAL ? status : status + " · " + WHOLE;
@@ -3045,7 +3175,7 @@ final class ConsoleTab implements Tab {
 
   static final String WHOLE = "Manual reads each result whole";
 
-  private String ran() {
+  private String ran(State s) {
     if (took == null || statements == 0 && !cancelled && !failedRun) {
       return "Ready";
     }
@@ -3083,11 +3213,12 @@ final class ConsoleTab implements Tab {
         more |= o.more;
       }
     }
+    boolean whole = keepsDocuments(s);
     if (rows) {
-      text.append(" · ").append(rows(read)).append(more ? " so far" : "");
+      text.append(" · ").append(whole ? documents(read) : rows(read)).append(more ? " so far" : "");
     }
     if (counts) {
-      text.append(" · ").append(rows(changed)).append(" changed");
+      text.append(" · ").append(whole ? documents(changed) : rows(changed)).append(" changed");
     }
     return text.toString();
   }

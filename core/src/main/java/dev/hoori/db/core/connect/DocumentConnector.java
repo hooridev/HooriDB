@@ -8,6 +8,7 @@ import dev.hoori.db.core.document.DocumentException;
 import dev.hoori.db.core.document.Target;
 import dev.hoori.db.core.driver.LoadedDriver;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -106,7 +107,7 @@ public final class DocumentConnector {
           } catch (Throwable e) {
             result.completeExceptionally(e);
           } finally {
-            java.util.Arrays.fill(secret, '\0');
+            Arrays.fill(secret, '\0');
             if (client != null) {
               client.close();
             }

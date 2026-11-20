@@ -15,6 +15,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.DocumentRun;
 import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
@@ -50,7 +51,11 @@ interface Servers {
       var opened = DocumentConnector.open(profile, password, driver, Tester.TIMEOUT);
       var session =
           new DocumentSession(opened.client(), profile.provider().documents(), profile.readOnly());
-      return Documents.of(session, opened.server().parsed(), opened.database());
+      return Documents.of(
+          session,
+          opened.server().parsed(),
+          opened.database(),
+          profile.provider().documents().defaultDatabase());
     }
     var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
     return Real.of(
@@ -159,12 +164,23 @@ interface Servers {
       ServerVersion version,
       String database,
       AtomicReference<String> current, // the database a run is on
+      AtomicReference<DocumentRun> open, // the statement whose documents are not all read
       AtomicBoolean gone)
       implements Link {
 
-    static Documents of(DocumentSession session, ServerVersion version, String database) {
+    /**
+     * @param database the database the profile names, or null for none
+     * @param otherwise the database a run is on where the profile names none
+     */
+    static Documents of(
+        DocumentSession session, ServerVersion version, String database, String otherwise) {
       return new Documents(
-          session, version, database, new AtomicReference<>(database), new AtomicBoolean());
+          session,
+          version,
+          database,
+          new AtomicReference<>(database != null ? database : otherwise),
+          new AtomicReference<>(),
+          new AtomicBoolean());
     }
 
     private void usable() throws QueryException {
@@ -269,10 +285,30 @@ interface Servers {
       }
     }
 
-    // shortcut: statements of the shell run in a console of their own, which comes later.
+    /** A statement of the MongoDB shell, on the database the link is on now. */
     @Override
     public Run run(String sql) throws QueryException {
-      throw QueryException.of(QueryException.Failure.OTHER, "Not a server of SQL");
+      usable();
+      var running = new DocumentRun(session, current.get(), sql, current::set);
+      open.set(running);
+      return new Run() {
+        @Override
+        public Portion next(int count) {
+          var portion = running.next(count);
+          for (var result : portion.results()) {
+            if (result instanceof Failure f && f.kind() == Failure.Kind.CONNECTION_LOST) {
+              gone.set(true);
+            }
+          }
+          return portion;
+        }
+
+        @Override
+        public Abandoned close() {
+          open.compareAndSet(running, null);
+          return running.close();
+        }
+      };
     }
 
     @Override
@@ -297,14 +333,16 @@ interface Servers {
 
     @Override
     public Abandoned giveUp() {
-      return Abandoned.NOTHING;
+      var left = open.getAndSet(null);
+      return left == null ? Abandoned.NOTHING : left.close();
     }
 
     @Override
     public Abandoned close() {
+      var ended = giveUp();
       gone.set(true);
       session.close();
-      return Abandoned.NOTHING;
+      return ended;
     }
 
     @Override

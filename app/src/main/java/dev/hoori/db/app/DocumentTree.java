@@ -48,6 +48,7 @@ final class DocumentTree {
   Node selected;
   private String scope = ""; // the documents shown, such as a page; what is open is theirs
   private List<Document> documents = List.of();
+  private int size; // of the documents when the text was made, as more come to a result
   private String text; // the documents as text, made once for them
   final CodeEditor.State editor = new CodeEditor.State().readOnly(true);
 
@@ -61,9 +62,10 @@ final class DocumentTree {
       selected = null;
       editor.select(0, 0);
     }
-    if (!scope.equals(this.scope) || documents != this.documents) {
+    if (!scope.equals(this.scope) || documents != this.documents || documents.size() != size) {
       text = null;
     }
+    size = documents.size();
     this.scope = scope;
     this.documents = documents;
   }

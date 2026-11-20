@@ -1,6 +1,7 @@
 package dev.hoori.db.core.document;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -45,6 +46,49 @@ public final class Commands {
   static final Set<String> WRITING_STAGES = Set.of("$out", "$merge");
 
   private Commands() {}
+
+  /** A change of every document of the collection: an update or a delete of them all. */
+  public record Every(String verb, String collection) {}
+
+  /**
+   * The change of every document that the command asks for: an update of many, or a delete of
+   * all, with an empty filter; empty for any other.
+   */
+  public static Optional<Every> every(Document command) {
+    var collection = command.get(command.first()) instanceof String c ? c : "its collection";
+    return switch (command.first()) {
+      case "update" -> {
+        for (var item : list(command.get("updates"))) {
+          if (item instanceof Document u
+              && Boolean.TRUE.equals(u.get("multi"))
+              && empty(u.get("q"))) {
+            yield Optional.of(new Every("update", collection));
+          }
+        }
+        yield Optional.empty();
+      }
+      case "delete" -> {
+        for (var item : list(command.get("deletes"))) {
+          if (item instanceof Document d
+              && d.get("limit") instanceof Number n
+              && n.intValue() == 0
+              && empty(d.get("q"))) {
+            yield Optional.of(new Every("delete", collection));
+          }
+        }
+        yield Optional.empty();
+      }
+      default -> Optional.empty();
+    };
+  }
+
+  private static List<?> list(Object value) {
+    return value instanceof List<?> list ? list : List.of();
+  }
+
+  private static boolean empty(Object filter) {
+    return filter == null || filter instanceof Document d && d.isEmpty();
+  }
 
   /**
    * Whether the command only reads: one of {@link #READING}, an aggregate whose pipeline writes
