@@ -518,7 +518,9 @@ final class Frame {
         Menu.submenu(
             "&File",
             List.of(
-                Menu.item("New connection…", free && s.canChange() ? s::newConnection : null)
+                Menu.item(
+                        "New connection…",
+                        free && s.canChange() ? inMain(s, s::newConnection) : null)
                     .icon(Symbol.ADD),
                 Menu.item(
                         "New console", console == null ? null : () -> s.openConsole(console, group))
@@ -530,7 +532,9 @@ final class Frame {
                     .icon(Symbol.HISTORY),
                 Menu.item(
                     "Drivers…",
-                    s.drivers == null || !free ? null : () -> s.driverList = DriversDialog.open(s)),
+                    s.drivers == null || !free
+                        ? null
+                        : inMain(s, () -> s.driverList = DriversDialog.open(s))),
                 Menu.separator(),
                 Menu.item("Close tab", close).icon(Symbol.DISMISS).shortcut(Key.CONTROL, "W"),
                 Menu.separator(),
@@ -564,16 +568,31 @@ final class Frame {
                 Menu.item("Tab content", close == null ? null : () -> focusContent(s, group))
                     .shortcut(Key.CONTROL, "1"))),
         Menu.submenu(
-            "&Help", List.of(Menu.item("About HooriDB", free ? () -> s.about = true : null))));
+            "&Help",
+            List.of(Menu.item("About HooriDB", free ? inMain(s, () -> s.about = true) : null))));
   }
 
-  /** Whether a dialog of the main window is open: its own, or one the catalog asks there. */
+  /** Opens a dialog of the main window and brings that window forward, as it may lie behind. */
+  private static Runnable inMain(State s, Runnable open) {
+    return () -> {
+      open.run();
+      var window = s.app.windows().of(s.app);
+      if (window != null) {
+        window.raise();
+      }
+    };
+  }
+
+  /**
+   * Whether a dialog of the main window is open: its own, or one that its console or the catalog
+   * asks there.
+   */
   private static boolean mainDialog(State s) {
     return s.dialog != null
         || s.deleting != null
         || s.about
         || s.driverList != null
-        || s.catalog.asks(s, s.tabs.main());
+        || asks(s, s.tabs.main());
   }
 
   /** Gives the focus to the tree of connections. */
