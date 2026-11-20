@@ -5,7 +5,8 @@ export const site = 'https://db.hoori.dev';
 export const docsRoute = '/docs';
 export const docsContentRoute = '/llms.mdx/docs';
 export const repository = 'https://github.com/hooridev/HooriDB';
-export const download = `${repository}/releases/latest`;
+// shortcut: the release list, as there is no stable release yet; point at /releases/latest once one is out.
+export const download = `${repository}/releases`;
 
 const getContentUrl = createGetUrl(docsContentRoute);
 
