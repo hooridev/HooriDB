@@ -1682,8 +1682,7 @@ final class State {
           restarting = null;
           restartWith = null;
           stay("HooriDB stayed open, as it could not restart to update.");
-          updates = updates.withAttempt(before);
-          persist(updatesKept);
+          updates = updates.withAttempt(before); // as on disk: a refused restart wrote nothing
           update = notice(Callout.Kind.WARNING, "HooriDB could not restart", message(error));
         });
   }
