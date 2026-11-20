@@ -41,6 +41,7 @@ class ReadWriteTest {
       turnsOff(p, "SET @@session.transaction_read_only = 0");
       turnsOff(p, "SET @@tx_read_only=OFF");
       turnsOff(p, "SET SESSION `transaction_read_only` = DEFAULT");
+      turnsOff(p, "SET SESSION `transaction_read_only  ` = 0");
       turnsOff(p, "/*!50605 SET SESSION TRANSACTION READ WRITE */");
       turnsOff(p, "PREPARE s FROM 'SET SESSION TRANSACTION READ WRITE'");
       turnsOff(p, "/*!50000 PREPARE s FROM 'SET SESSION TRANSACTION READ WRITE' */");

@@ -71,8 +71,9 @@ public final class ReadWrite {
       word = word.substring(1);
     }
     if (word.length() > 1 && "\"`[".indexOf(word.charAt(0)) >= 0) {
-      // One name, which its spaces do not split into words such as START TRANSACTION.
-      word = SPACES.matcher(word.substring(1, word.length() - 1)).replaceAll("_");
+      // One name, which its spaces do not split into words such as START TRANSACTION; trimmed, as
+      // MySQL finds a variable whose name has trailing spaces.
+      word = SPACES.matcher(word.substring(1, word.length() - 1).strip()).replaceAll("_");
     }
     return word;
   }
