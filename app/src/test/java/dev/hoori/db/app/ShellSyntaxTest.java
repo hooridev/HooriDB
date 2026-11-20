@@ -179,6 +179,13 @@ class ShellSyntaxTest {
     assertEquals(
         new Formatted(null, new Problem(3, 3, Kind.UNEXPECTED_END)),
         ShellSyntax.format("use // later\ndb.c.find()"));
+    // The token after the offset in the same statement, and a block comment not closed.
+    assertEquals(
+        new Formatted(null, new Problem(19, 24, Kind.UNEXPECTED)),
+        ShellSyntax.format("db.c.find({a:new\n  Bogus()})"));
+    assertEquals(
+        new Formatted(null, new Problem(12, 25, Kind.UNEXPECTED_END)),
+        ShellSyntax.format("db.c.find() /* unfinished"));
     int deep = 100_000;
     assertEquals(
         new Formatted(null, new Problem(0, 0, Kind.TOO_LARGE)),

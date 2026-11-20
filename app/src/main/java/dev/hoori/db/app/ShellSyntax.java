@@ -8,6 +8,7 @@ import com.rethinkj.ui.Spans;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.document.Layout;
 import dev.hoori.db.core.document.Lexer;
+import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.document.Shell;
 import dev.hoori.db.core.document.SyntaxException;
 import java.util.ArrayList;
@@ -97,20 +98,26 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
   }
 
   /**
-   * The problem at the offset: a string not closed that it is in or ends at, else the token there
-   * or after it on its line, else the end of the statement, as before a comment.
+   * The problem at the offset: a string or block comment not closed that it is in or ends at, else
+   * the token there or after it in the statement, else the statement's end.
    */
   private static Formatted.Problem problem(String text, int at) {
+    int end = Script.split(text).stream()
+        .mapToInt(Script.Piece::end)
+        .filter(e -> e >= at)
+        .findFirst()
+        .orElse(text.length());
     for (var token : Lexer.tokens(text)) {
-      boolean open = token.kind() == Lexer.Kind.STRING && token.open();
-      if (token.end() < at || token.end() == at && !open) {
+      if (token.end() < at || token.end() == at && !token.open()) {
         continue;
       }
-      if (open && token.start() <= at) {
-        return new Formatted.Problem(token.start(), token.end(), Formatted.Kind.UNCLOSED_STRING);
-      }
-      if (token.start() > at && text.substring(at, token.start()).indexOf('\n') >= 0) {
+      if (token.start() > at && token.start() >= end) {
         break;
+      }
+      boolean block = token.kind() == Lexer.Kind.COMMENT && text.startsWith("/*", token.start());
+      if (token.open() && token.start() <= at && (block || token.kind() == Lexer.Kind.STRING)) {
+        var kind = block ? Formatted.Kind.UNEXPECTED_END : Formatted.Kind.UNCLOSED_STRING;
+        return new Formatted.Problem(token.start(), token.end(), kind);
       }
       if (token.kind() != Lexer.Kind.COMMENT) {
         return new Formatted.Problem(
