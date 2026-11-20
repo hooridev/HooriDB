@@ -1,6 +1,6 @@
 ---
 title: Files and uninstall
-description: Where HooriDB keeps the workspace, history, drivers and passwords, and how to remove it all.
+description: Where HooriDB keeps the workspace, history, saved queries, drivers and passwords, and how to remove it all.
 ---
 
 HooriDB keeps configuration, downloaded drivers, passwords, and application files in separate places.
@@ -17,9 +17,10 @@ Files kept in this folder:
 | `workspace.json` | Folders, their open/closed state, and connection profiles (no passwords), including `readOnly` for read-only MongoDB connections. On first start, if `workspace.json` is missing and an earlier version's `connections.json` exists, HooriDB imports those connections. |
 | `consoles.json` | Open consoles (their connection, selected database, and text). |
 | `history.json` | Statements run from consoles (up to 1,000 per connection). |
+| `queries.json` | Saved queries (their connection, name, text, and when they were saved). |
 | `updates.json` | Update channel (`stable` or `nightly`) and update state. |
 
-On Linux, HooriDB writes these files with owner-only permissions (`rw-------`), because console text and history can contain sensitive values. If any of these files cannot be read, HooriDB saves a copy as `<filename>.unreadable` before replacing it.
+On Linux, HooriDB writes these files with owner-only permissions (`rw-------`), because console text, history, and saved queries can contain sensitive values. If HooriDB cannot understand one of these files, it saves a copy as `<filename>.unreadable` before replacing it.
 
 ## Drivers and update downloads
 
