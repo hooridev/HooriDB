@@ -17,7 +17,9 @@ import java.util.regex.Pattern;
  * in the system keyring under the id. The color that marks it is null for none, and the version
  * of its driver is null for the recommended one. A read-only connection to a server of documents
  * sends only commands that read, as {@link dev.hoori.db.core.document.Commands#reads} says; a
- * server of SQL does not take it. In the workspace it is an entry of its own.
+ * server of SQL does not take it. Neither does it SRV: the host of such a profile names a DNS SRV
+ * record that lists the servers, as {@code mongodb+srv://} does, and its port is not used. In the
+ * workspace it is an entry of its own.
  */
 public record ConnectionProfile(
     UUID id,
@@ -30,7 +32,8 @@ public record ConnectionProfile(
     Tls tls,
     Color color,
     String driverVersion,
-    boolean readOnly)
+    boolean readOnly,
+    boolean srv)
     implements Workspace.Entry {
 
   private static final Pattern LABEL =
@@ -113,6 +116,7 @@ public record ConnectionProfile(
         tlsByDefault(""),
         null,
         null,
+        false,
         false);
   }
 
@@ -166,7 +170,7 @@ public record ConnectionProfile(
     } else if (!isHost(host)) {
       problems.add(Problem.HOST_INVALID);
     }
-    if (port < 1 || port > 65535) {
+    if (!srv && (port < 1 || port > 65535)) {
       problems.add(Problem.PORT_OUT_OF_RANGE);
     }
     if (database.indexOf('\0') >= 0) {
@@ -233,51 +237,56 @@ public record ConnectionProfile(
 
   public ConnectionProfile withName(String name) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 
   public ConnectionProfile withProvider(Provider provider) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 
   public ConnectionProfile withHost(String host) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 
   public ConnectionProfile withPort(int port) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 
   public ConnectionProfile withDatabase(String database) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 
   public ConnectionProfile withUser(String user) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 
   public ConnectionProfile withTls(Tls tls) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 
   public ConnectionProfile withColor(Color color) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 
   public ConnectionProfile withDriverVersion(String driverVersion) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 
   public ConnectionProfile withReadOnly(boolean readOnly) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly);
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+  }
+
+  public ConnectionProfile withSrv(boolean srv) {
+    return new ConnectionProfile(
+        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
   }
 }

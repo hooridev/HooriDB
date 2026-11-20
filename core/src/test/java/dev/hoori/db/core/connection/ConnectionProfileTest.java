@@ -68,6 +68,7 @@ class ConnectionProfileTest {
             Tls.VERIFIED,
             Color.TEAL,
             null,
+            false,
             false),
         q);
     assertEquals(null, p.color());
@@ -80,15 +81,16 @@ class ConnectionProfileTest {
   void equalFieldsAreEqual() {
     var id = UUID.randomUUID();
     var a = new ConnectionProfile(
-        id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null, false);
+        id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null, false, false);
     var b = new ConnectionProfile(
-        id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null, false);
+        id, "n", Provider.POSTGRESQL, "h", 1, "d", "u", Tls.OFF, null, null, false, false);
     assertEquals(a, b);
     assertEquals(a.hashCode(), b.hashCode());
     assertNotEquals(a, b.withUser("v"));
     assertNotEquals(a, b.withColor(Color.RED));
     assertNotEquals(a, b.withDriverVersion("42.7.10"));
     assertNotEquals(a, b.withReadOnly(true));
+    assertNotEquals(a, b.withSrv(true));
   }
 
   @Test
@@ -342,6 +344,15 @@ class ConnectionProfileTest {
     assertEquals(
         fit ? Set.of() : Set.of(Problem.PORT_OUT_OF_RANGE), FIT.withPort(port).problems());
     assertEquals(Field.PORT, Problem.PORT_OUT_OF_RANGE.field());
+  }
+
+  /** An SRV address names a record that gives the servers' ports: the profile's is not used. */
+  @Test
+  void anSrvProfileHasNoPortToCheck() {
+    var mongo =
+        ConnectionProfile.of(Provider.MONGODB).withHost("cluster0.example.net").withPort(0);
+    assertEquals(Set.of(), mongo.withSrv(true).problems());
+    assertEquals(Set.of(Problem.PORT_OUT_OF_RANGE), mongo.problems());
   }
 
   @Test

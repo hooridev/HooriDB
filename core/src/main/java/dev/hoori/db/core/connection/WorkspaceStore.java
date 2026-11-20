@@ -174,7 +174,8 @@ public final class WorkspaceStore {
         tls(in, node, where),
         color(in, node, where),
         driverVersion(in, node, where),
-        node.get("readOnly") != null && in.bool(node, where, "readOnly"));
+        node.get("readOnly") != null && in.bool(node, where, "readOnly"),
+        node.get("srv") != null && in.bool(node, where, "srv"));
   }
 
   /**
@@ -224,6 +225,9 @@ public final class WorkspaceStore {
           // Left out where it may write, as in a file from before there was the choice.
           if (profile.readOnly()) {
             object.put("readOnly", true);
+          }
+          if (profile.srv()) {
+            object.put("srv", true);
           }
         }
       }
