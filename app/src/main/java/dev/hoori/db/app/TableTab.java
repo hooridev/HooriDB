@@ -130,8 +130,8 @@ final class TableTab implements Tab {
   final Map<Long, List<List<Object>>> pages = new HashMap<>(); // the rows read, by page
   // A collection's documents of the pages read, whole; none for a table.
   final Map<Long, List<Document>> documents = new HashMap<>();
-  Shown shown = Shown.GRID;
-  long page; // the page of documents that JSON and Tree show
+  Shown view = Shown.GRID;
+  long documentPage; // the page of documents that JSON and Tree show
   final DocumentTree documentView = new DocumentTree();
   final Map<Long, Lane.Asked> reading = new HashMap<>(); // the pages asked for
   Lane.Asked opening; // the columns, the estimate and the first page, or null
@@ -193,7 +193,8 @@ final class TableTab implements Tab {
     var known = anew ? null : columns;
     boolean recount = anew && counted == Counted.EXACT; // a refresh counts again what was counted
     var of = table;
-    long from = (long) first / PAGE * PAGE;
+    // The page in view: of the grid, or of the documents JSON and Tree show.
+    long from = view == Shown.GRID ? (long) first / PAGE * PAGE : documentPage * PAGE;
     record Opened(List<Column> columns, OptionalLong estimate, Page page, long took) {}
     opening = lane.ask(
         s.app,
@@ -357,6 +358,9 @@ final class TableTab implements Tab {
       pages.keySet().removeIf(p -> p * PAGE >= rows);
       documents.keySet().retainAll(pages.keySet());
       giveUp(p -> ending || p * PAGE >= rows);
+      if (view != Shown.GRID && !ending && documentPage > 0 && documentPage * PAGE >= rows) {
+        turn(s, Math.max(0, (rows - 1) / PAGE));
+      }
     } else if (from + PAGE > rows || from + PAGE == rows && counted != Counted.EXACT) {
       rows = from + PAGE;
       counted = Counted.AT_LEAST;
@@ -379,7 +383,7 @@ final class TableTab implements Tab {
     far.sort(Comparator.comparingLong(p -> -Math.abs(p - middle)));
     for (int i = 0; pages.size() > KEPT; i++) {
       // Not the page of documents shown whole.
-      if (shown == Shown.GRID || far.get(i) != page) {
+      if (view == Shown.GRID || far.get(i) != documentPage) {
         pages.remove(far.get(i));
         documents.remove(far.get(i));
       }
@@ -433,8 +437,8 @@ final class TableTab implements Tab {
           pages.keySet().removeIf(p -> p * PAGE >= n);
           documents.keySet().retainAll(pages.keySet());
           want(s, first, last);
-          if (shown != Shown.GRID) {
-            turn(s, Math.min(page, Math.max(0, (n - 1) / PAGE)));
+          if (view != Shown.GRID) {
+            turn(s, Math.min(documentPage, Math.max(0, (n - 1) / PAGE)));
           }
         },
         error -> {
@@ -560,32 +564,34 @@ final class TableTab implements Tab {
 
   /** Shows the documents as asked: whole, the page the grid was at. */
   void show(State s, Shown next) {
-    if (next == shown) {
+    if (next == view) {
       return;
     }
-    if (shown == Shown.GRID) {
-      page = (long) first / PAGE;
+    if (view == Shown.GRID) {
+      documentPage = (long) first / PAGE;
     }
-    shown = next;
+    view = next;
     if (next == Shown.GRID) {
-      want(s, (int) Math.min(page * PAGE, GRID_ROWS), (int)
-          Math.min(page * PAGE + PAGE - 1, GRID_ROWS));
+      // The grid at the page shown last, which it scrolls to as it is built.
+      int top = (int) Math.min(documentPage * PAGE, GRID_ROWS);
+      selection.scrollToRow(top);
+      want(s, top, (int) Math.min(documentPage * PAGE + PAGE - 1, GRID_ROWS));
     } else {
-      turn(s, page);
+      turn(s, documentPage);
     }
   }
 
   /** Shows the page of documents whole, read where it is not. */
   void turn(State s, long to) {
-    page = Math.max(0, to);
+    documentPage = Math.max(0, to);
     if (closed || columns == null || opening != null || failure != null) {
       return;
     }
-    var asked = reading.get(page);
+    var asked = reading.get(documentPage);
     if (asked != null) {
       asked.promote(Lane.Priority.VIEW);
     }
-    read(s, page, Lane.Priority.VIEW);
+    read(s, documentPage, Lane.Priority.VIEW);
   }
 
   /** Whether anything of the tab is read now. */
@@ -623,7 +629,7 @@ final class TableTab implements Tab {
     boolean ofDocuments = profile != null && profile.provider().keepsDocuments();
     var actions = new ArrayList<El>();
     if (ofDocuments) {
-      actions.add(Segmented.segmented(List.of(Shown.values()), shown, v -> v.title, v -> show(s, v))
+      actions.add(Segmented.segmented(List.of(Shown.values()), view, v -> v.title, v -> show(s, v))
           .key("shown")
           .label("Show documents as"));
     }
@@ -651,7 +657,7 @@ final class TableTab implements Tab {
     }
     // Loading cells only while something is read, or was: not for a table that failed at once.
     boolean readable = columns != null && (fields != null || failure == null);
-    boolean grid = readable && !(ofDocuments && shown != Shown.GRID);
+    boolean grid = readable && !(ofDocuments && view != Shown.GRID);
     if (readable) {
       content.child(grid ? withValue(s, app, grid(s, app)) : documents(s, app).grow(1));
     } else if (opening != null) {
@@ -855,14 +861,14 @@ final class TableTab implements Tab {
    */
   private El documents(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
-    var read = documents.get(page);
-    long from = page * PAGE;
+    var read = documents.get(documentPage);
+    long from = documentPage * PAGE;
     long to = read == null ? Math.min(from + PAGE, shown()) : from + read.size();
     var range = to <= from
         ? "No documents"
         : "Documents " + String.format(Locale.ROOT, "%,d", from + 1) + "–"
             + String.format(Locale.ROOT, "%,d", to);
-    boolean last = (page + 1) * PAGE >= shown();
+    boolean last = (documentPage + 1) * PAGE >= shown();
     El pager = row()
         .gap(t.space().s())
         .padding(t.space().s())
@@ -872,17 +878,23 @@ final class TableTab implements Tab {
                 Button.Variant.GHOST,
                 Symbol.CHEVRON_LEFT,
                 "Previous documents",
-                page > 0 ? () -> turn(s, page - 1) : null)
+                documentPage > 0 ? () -> turn(s, documentPage - 1) : null)
             .key("previous"))
         .child(Label.label(Label.Variant.MUTED, range).key("range"))
         .child(Button.icon(
                 Button.Variant.GHOST,
                 Symbol.CHEVRON_RIGHT,
                 "Next documents",
-                !last ? () -> turn(s, page + 1) : null)
+                !last ? () -> turn(s, documentPage + 1) : null)
             .key("next"));
     El shownNow;
-    if (read == null) {
+    if (read == null && !reading.containsKey(documentPage) && opening == null) {
+      // Nothing comes: an empty collection, or a page past its end.
+      shownNow = col()
+          .grow(1)
+          .center()
+          .child(Label.label(Label.Variant.MUTED, "No documents").key("no-documents"));
+    } else if (read == null) {
       shownNow = col()
           .grow(1)
           .center()
@@ -892,8 +904,8 @@ final class TableTab implements Tab {
           .child(Progress.spinner())
           .child(Label.label(Label.Variant.MUTED, "Reading documents…"));
     } else {
-      documentView.show("p" + page, read);
-      shownNow = switch (shown) {
+      documentView.show("p" + documentPage, read);
+      shownNow = switch (view) {
         case JSON ->
           CodeEditor.embedded(CodeEditor.codeEditor(
                       app, documentView.text(), documentView.editor, Json.of(), null)
