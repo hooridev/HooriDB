@@ -2,6 +2,9 @@ package dev.hoori.db.app;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.rethinkj.ui.Formatted;
+import com.rethinkj.ui.Formatted.Kind;
+import com.rethinkj.ui.Formatted.Problem;
 import com.rethinkj.ui.Spans;
 import com.rethinkj.ui.kit.Theme;
 import java.util.ArrayList;
@@ -151,5 +154,41 @@ class ShellSyntaxTest {
     assertEquals(
         List.of("keyword db", "string 'open", "keyword db"),
         colored("db.a.find({ x: 'open", "db.b.find()"));
+  }
+
+  /** Control+Alt+L: the statements laid out, or the first problem, where and of which kind. */
+  @Test
+  void formatsOrSaysWhereAStatementGoesWrong() {
+    assertEquals(
+        new Formatted("db.c.find({ a: ObjectId('65f0c0ffee0000000000beef') }) // one", null),
+        ShellSyntax.format("db.c.find({a:ObjectId('65f0c0ffee0000000000beef')}) // one"));
+    assertEquals(
+        new Formatted(null, new Problem(15, 16, Kind.UNEXPECTED)),
+        ShellSyntax.format("db.c.find({ a: }, {})"));
+    assertEquals(
+        new Formatted(null, new Problem(15, 18, Kind.UNCLOSED_STRING)),
+        ShellSyntax.format("db.c.find({ a: 'Ad"));
+    assertEquals(
+        new Formatted(null, new Problem(16, 16, Kind.UNEXPECTED_END)),
+        ShellSyntax.format("db.c.find({ a: 1 "));
+    // A string not closed at the end of its line, where the reader stops.
+    assertEquals(
+        new Formatted(null, new Problem(13, 18, Kind.UNCLOSED_STRING)),
+        ShellSyntax.format("db.c.find({a:'oops\n  b: 2})"));
+    // Not the comment, nor the next statement: the end of the one that goes wrong.
+    assertEquals(
+        new Formatted(null, new Problem(3, 3, Kind.UNEXPECTED_END)),
+        ShellSyntax.format("use // later\ndb.c.find()"));
+    // The token after the offset in the same statement, and a block comment not closed.
+    assertEquals(
+        new Formatted(null, new Problem(19, 24, Kind.UNEXPECTED)),
+        ShellSyntax.format("db.c.find({a:new\n  Bogus()})"));
+    assertEquals(
+        new Formatted(null, new Problem(12, 25, Kind.UNEXPECTED_END)),
+        ShellSyntax.format("db.c.find() /* unfinished"));
+    int deep = 100_000;
+    assertEquals(
+        new Formatted(null, new Problem(0, 0, Kind.TOO_LARGE)),
+        ShellSyntax.format("db.c.find({ a: " + "[".repeat(deep) + "]".repeat(deep) + " })"));
   }
 }

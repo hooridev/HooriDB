@@ -21,6 +21,8 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryStore;
+import dev.hoori.db.core.connection.QueryStore;
+import dev.hoori.db.core.connection.SavedQuery;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.connection.StoredUpdates;
 import dev.hoori.db.core.connection.UpdateStore;
@@ -169,12 +171,28 @@ final class State {
 
   private final ConsoleStore consoleStore;
   private final HistoryStore historyStore;
+  private final QueryStore queryStore;
   final Kept consolesKept;
   final Kept historyKept;
+  final Kept queriesKept;
+  // The queries saved on purpose, of every connection, in the order they were first saved.
+  List<SavedQuery> queries = List.of();
+  // Until the file is read nothing is saved or deleted, so that each name and id is the file's.
+  boolean queriesLoading = true;
+
+  /**
+   * Whether a query can be saved or deleted now: once the file was read, and not where it could not
+   * be, as nothing would be written.
+   */
+  boolean queriesUsable() {
+    return !queriesLoading && queriesKept.canSave;
+  }
   // The statements run from consoles, of every connection, the oldest first.
   List<HistoryEntry> history = List.of();
   // Connections deleted: what is loaded of their history and consoles after that goes too.
   private final Set<UUID> forgotten = new HashSet<>();
+  // Connections deleted: their saved queries go, also those loaded after.
+  private final Set<UUID> deletedConnections = new HashSet<>();
   // The consoles loaded and not yet restored, which waits for the profiles; null before and after.
   private List<StoredConsole> restoring;
   // The consoles kept of connections not known, saved along with the others and not shown.
@@ -240,6 +258,7 @@ final class State {
     this.store = new WorkspaceStore(folder);
     this.consoleStore = new ConsoleStore(folder);
     this.historyStore = new HistoryStore(folder);
+    this.queryStore = new QueryStore(folder);
     consolesKept = new Kept("consoles", () -> {
       var list = new ArrayList<StoredConsole>();
       consoles(null).forEach(x -> list.add(x.stored()));
@@ -253,6 +272,14 @@ final class State {
     historyKept = new Kept("history", () -> {
       var list = this.history;
       var store = historyStore;
+      return () -> {
+        store.save(list);
+        return list;
+      };
+    });
+    queriesKept = new Kept("saved queries", () -> {
+      var list = this.queries;
+      var store = queryStore;
       return () -> {
         store.save(list);
         return list;
@@ -319,6 +346,65 @@ final class State {
           loadFailed(historyKept, error);
           historyLoaded(error instanceof WorkspaceStore.UnreadableException);
         });
+    var saved = queryStore;
+    app.background(
+        "load saved queries",
+        saved::load,
+        list -> {
+          var all = list.stream()
+              .filter(q -> !deletedConnections.contains(q.connection()))
+              .toList();
+          // Those of a connection deleted while they loaded are deleted from the file too.
+          boolean dropped = all.size() != list.size();
+          this.queries = all;
+          if (dropped) {
+            queriesKept.unsaved = true;
+          }
+          queriesLoaded(true);
+        },
+        error -> {
+          loadFailed(queriesKept, error);
+          queriesLoaded(error instanceof WorkspaceStore.UnreadableException);
+        });
+  }
+
+  private void queriesLoaded(boolean canSave) {
+    queriesLoading = false;
+    queriesKept.canSave = canSave;
+    dropOrphanQueries();
+    if (queriesKept.unsaved) {
+      save(queriesKept);
+    }
+  }
+
+  /**
+   * Deletes the queries of connections the workspace does not have, as those of one deleted while
+   * HooriDB closed before they were read; once both files are read, and not where the workspace
+   * failed to load, which then has none.
+   */
+  private void dropOrphanQueries() {
+    if (!loaded || loadError != null || queriesLoading || !queriesKept.canSave) {
+      return;
+    }
+    var known = new HashSet<UUID>();
+    workspace.connections().forEach(p -> known.add(p.id()));
+    var kept = queries.stream().filter(q -> known.contains(q.connection())).toList();
+    if (kept.size() != queries.size()) {
+      queries = kept;
+      persist(queriesKept);
+    }
+  }
+
+  /** Keeps the query, in place of one of its connection and name. */
+  void saveQuery(SavedQuery query) {
+    queries = QueryStore.put(queries, query);
+    persist(queriesKept);
+  }
+
+  /** Deletes the saved query. */
+  void deleteQuery(UUID id) {
+    queries = queries.stream().filter(q -> !q.id().equals(id)).toList();
+    persist(queriesKept);
   }
 
   private void loadFailed(Kept kept, Exception error) {
@@ -475,7 +561,9 @@ final class State {
             tell("The update settings could not be saved: " + kept.saveError);
           } else if (first) {
             notice(
-                kept == historyKept ? "History" : "Consoles",
+                kept == historyKept
+                    ? "History"
+                    : kept == queriesKept ? "Saved queries" : "Consoles",
                 "not saved",
                 kept.saveError,
                 true,
@@ -499,6 +587,7 @@ final class State {
           change(found);
           loaded = true;
           setAside = null;
+          dropOrphanQueries();
           lookForKeyring();
           restore();
         },
@@ -967,6 +1056,13 @@ final class State {
     closeTabs(profile.id()); // its consoles, and with them their texts
     forget(profile.id());
     change(workspace.remove(profile.id()));
+    // Its saved queries go too; those not loaded yet go as they load.
+    deletedConnections.add(profile.id());
+    var before = queries;
+    queries = queries.stream().filter(q -> !q.connection().equals(profile.id())).toList();
+    if (queries.size() != before.size()) {
+      persist(queriesKept);
+    }
     if (selected != null && selected.id().equals(profile.id())) {
       selected = null;
     }
@@ -1235,11 +1331,11 @@ final class State {
   }
 
   /**
-   * Whether Exit waits for the consoles or the history to be saved; a save due begins. Changes that
-   * cannot be saved, as the file was not read, stop it once.
+   * Whether Exit waits for the consoles, the history or the saved queries to be saved; a save due
+   * begins. Changes that cannot be saved, as the file was not read, stop it once.
    */
   private boolean keptWaits() {
-    for (var kept : List.of(consolesKept, historyKept, updatesKept)) {
+    for (var kept : List.of(consolesKept, historyKept, queriesKept, updatesKept)) {
       if (kept.waits()) {
         if (kept.saving == null) {
           save(kept);

@@ -266,7 +266,7 @@ final class Frame {
   private static boolean asks(State s, TabGroups.Group<Tab> group) {
     return questioned(s, group)
         || group.activeTab() instanceof ConsoleTab console
-            && (console.confirming != null || console.history != null)
+            && (console.confirming != null || console.history != null || console.queries != null)
         || s.catalog.asks(s, group);
   }
 
@@ -279,16 +279,26 @@ final class Frame {
       return null;
     }
     El asked = console.confirmation(s);
-    return asked != null || console.history == null
-        ? asked
-        : console.history.view(s, console, app(s, group));
+    if (asked != null) {
+      return asked;
+    }
+    if (console.queries != null) {
+      return console.queries.view(s, console, app(s, group));
+    }
+    return console.history == null ? null : console.history.view(s, console, app(s, group));
   }
 
   /** The question of the History dialog of the window's console in front, or null. */
   private static El historyQuestion(State s, TabGroups.Group<Tab> group) {
-    return group.activeTab() instanceof ConsoleTab console && console.history != null
-        ? console.history.question(s, console)
-        : null;
+    if (group.activeTab() instanceof ConsoleTab console) {
+      if (console.queries != null) {
+        return console.queries.question(s);
+      }
+      if (console.history != null) {
+        return console.history.question(s, console);
+      }
+    }
+    return null;
   }
 
   /** The app of the window of these tabs. */

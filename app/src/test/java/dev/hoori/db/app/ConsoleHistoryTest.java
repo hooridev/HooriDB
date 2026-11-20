@@ -269,6 +269,41 @@ class ConsoleHistoryTest {
   }
 
   @Test
+  void anEntryThatEndsInACommentOrASemicolonStaysOneStatement() throws Exception {
+    var app = k.console(SHOP);
+    var tab = k.tab(app);
+    var cases = List.of(
+        // The semicolon after the comment, which would take it in.
+        List.of("SELECT 1 -- note", "SELECT 1 -- note\n;\nSELECT 2;"),
+        // Its own semicolon, and no second.
+        List.of("SELECT 1;", "SELECT 1;\nSELECT 2;"),
+        // Its own, before a comment.
+        List.of("SELECT 1; -- note", "SELECT 1; -- note\nSELECT 2;"));
+    for (var each : cases) {
+      c.run(app, CLEAR + type("SELECT 2;") + "key Home control\nframe\n");
+      app.post(() -> tab.insert(app, each.get(0)));
+      c.run(app, "await\nframe\nframe\n");
+      assertEquals(each.get(1), tab.text);
+    }
+  }
+
+  @Test
+  void theCaretEndsAtTheInsertedStatementSoThatRunRunsIt() {
+    // Before its comments, where it has its own semicolon; after the one it is given.
+    assertEquals(
+        new ConsoleTab.Ending("", "SELECT 1".length()),
+        ConsoleTab.ending("SELECT 1; -- note", Provider.POSTGRESQL));
+    assertEquals(
+        new ConsoleTab.Ending("\n;", "SELECT 1 -- note\n;".length()),
+        ConsoleTab.ending("SELECT 1 -- note", Provider.POSTGRESQL));
+    // An executable comment is code, which needs its own terminator.
+    assertEquals(
+        ";", ConsoleTab.ending("SELECT 0; /*! SELECT 1 */", Provider.MYSQL).terminator());
+    assertEquals(
+        "", ConsoleTab.ending("SELECT 0; /* a note */", Provider.POSTGRESQL).terminator());
+  }
+
+  @Test
   void aSearchThatFindsNothingSaysSoAndInsertWaits() throws Exception {
     var app = ran();
     c.run(app, HISTORY + "type \"nothing like it\"\nframe\nframe\nsnap none\n");

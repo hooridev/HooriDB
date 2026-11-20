@@ -64,27 +64,31 @@ previous tab, and the focus on the tree or the tab. Consoles are kept: their tex
 databases are saved a moment after each change, beside the workspace, and reopened unconnected at
 the next start; each statement run from a console goes into its connection's history
 (`history.json`, at most 1,000 a connection, owner-only), which History lists, searches, inserts
-from and clears. A connection to MongoDB goes through its Java driver, downloaded as the JDBC
-drivers are, with its parts beside it, and through a bridge of core's that is loaded beside the
-driver; its host may name a DNS SRV record that lists the servers, as `mongodb+srv://` does, with
-TLS on by default and no port; its user may be defined in a database other than `admin`, which it
-names (`authSource`); it may be read-only, which sends only commands that read, as find, aggregate
-without `$out` or `$merge` and counts, and refuses the others unsent. Its databases and collections
-show in the tree, with the fields that a sample of their documents has; a collection opens in a tab
-as a grid of its fields, read in pages, with a document or an array in a cell as Relaxed Extended
-JSON, or a page of documents at a time as Relaxed Extended JSON or as a tree of their fields. Its
-console runs statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls,
-`aggregate`, counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their
-documents in the same three ways, underlines where a statement goes wrong, completes collections,
-methods, operators and fields, and asks before an update or delete of every document; it has no
-transactions. Run from its app image, HooriDB looks for a newer GitHub release at each start, in the
-channel Help chooses, Stable or Nightly (at first that of its own version), downloads it and
-restarts into it through its own Exit when asked; the new version confirms once its window has shown
-its first frame, and the updater's helper puts the old version back where it does not, and a version
-put back is not offered again until a higher one comes out. Help, About HooriDB shows the version
-that runs, its channel of updates, its authors, license and website. Started from the unpacked Linux
-bundle, it puts itself into the application menu, which gives its windows their icon in the dock.
-Nothing can be edited, filtered or sorted yet.
+from and clears; Save query keeps the selection, or else the whole text, under a name
+(`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. A
+connection to MongoDB goes through its Java driver, downloaded as the JDBC drivers are, with its
+parts beside it, and through a bridge of core's that is loaded beside the driver; its host may name
+a DNS SRV record that lists the servers, as `mongodb+srv://` does, with TLS on by default and no
+port; its user may be defined in a database other than `admin`, which it names (`authSource`); it
+may be read-only, which sends only commands that read, as find, aggregate without `$out` or `$merge`
+and counts, and refuses the others unsent. Its databases and collections show in the tree, with the
+fields that a sample of their documents has; a collection opens in a tab as a grid of its fields,
+read in pages, with a document or an array in a cell as Relaxed Extended JSON and a field a
+document does not have as an empty cell, where a `null` shows NULL, or a page of documents at a
+time as Relaxed Extended JSON or as a tree of their fields. Its console runs
+statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls, `aggregate`,
+counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their documents in
+the same three ways, underlines where a statement goes wrong, lays its statements out with
+Control+Alt+L, changing only white space, completes collections, methods, operators and fields, and
+asks before an update or delete of every document; it has no transactions. Run from its app image,
+HooriDB looks for a newer GitHub release at each start, in the channel Help chooses, Stable or
+Nightly (at first that of its own version), downloads it and restarts into it through its own Exit
+when asked; the new version confirms once its window has shown its first frame, and the updater's
+helper puts the old version back where it does not, and a version put back is not offered again
+until a higher one comes out. Help, About HooriDB shows the version that runs, its channel of
+updates, its authors, license and website. Started from the unpacked Linux bundle, it puts itself
+into the application menu, which gives its windows their icon in the dock. Nothing can be edited,
+filtered or sorted yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it
@@ -182,9 +186,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   serves both asks `provider.keepsDocuments()` or switches over the two.
 - The shell's syntax is lexed in one place, core's `dev.hoori.db.core.document.Lexer`: splitting
   statements (`Script.split`, `Statements`), reading them (`Shell`), coloring (`ShellSyntax`, which
-  maps its tokens to `Theme.Code`) and completing (`Suggestions`) all go by its tokens. A console
-  reads each statement once, as a `Script.Parsed`, when it takes it to run; the constructors of
-  values are named once, in `Shell`.
+  maps its tokens to `Theme.Code`), laying out (`Layout`, which Control+Alt+L runs) and completing
+  (`Suggestions`) all go by its tokens. A console reads each statement once, as a `Script.Parsed`,
+  when it takes it to run; the constructors of values are named once, in `Shell`.
 - No MongoDB driver is on the class path. Core compiles its bridge,
   `dev.hoori.db.core.document.mongo`, against the driver as a provided dependency, and `DriverStore`
   defines that package's classes from core's file in the downloaded driver's class loader, where
@@ -281,10 +285,10 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `DocumentSessionServerTest` and `DocumentRunServerTest`, and the app's `DocumentsServerTest`,
   `DocumentConsoleServerTest`, which drive the app through `Servers.SERVER` with the real driver as
   `BudgetTest` does; the statements of the shell are tested without a server by `ScriptTest` and
-  `ShellTest`, their colors by `ShellSyntaxTest`, the console's completions by `DocumentConsoleTest`
-  on a made-up MongoDB server of `FakeServers`, which knows the catalog alone, and Extended JSON by
-  `ExtendedJsonTest`. Without Docker the tests against the real server are skipped; those without
-  one run anyway.
+  `ShellTest`, their colors by `ShellSyntaxTest`, their layout by `LayoutTest`, the console's
+  completions by `DocumentConsoleTest` on a made-up MongoDB server of `FakeServers`, which knows the
+  catalog alone, and Extended JSON by `ExtendedJsonTest`. Without Docker the tests against the real
+  server are skipped; those without one run anyway.
 - The app's `ServersServerTest` runs its seam to servers, `Servers.SERVER` on a `Lane`, against
   core's `TestServer`, which comes with core's test-jar; the JDBC drivers for such tests are copied
   by the `jdbc-drivers` execution of the root POM, which a module takes by naming

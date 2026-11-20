@@ -152,4 +152,24 @@ class DocumentConsoleTest {
     // After the string, the fields again.
     assertEquals("customer", offered(app, "db.orders.find({ note: 'db.', cu").getFirst());
   }
+
+  @Test
+  void controlAltLLaysTheStatementsOutOrMarksWhereOneGoesWrong() throws Exception {
+    var app = console();
+    c.run(
+        app,
+        "press #sql\nkey A control\nkey Delete\n" + type("db.orders.find({customer:'Ada'}) // hers")
+            + "key L control alt\nframe\n");
+    assertEquals("db.orders.find({ customer: 'Ada' }) // hers", tab(app).text);
+    c.run(
+        app,
+        "key A control\nkey Delete\n" + type("db.orders.find({customer:})")
+            + "key L control alt\nframe\nsnap wrong\n");
+    assertEquals("db.orders.find({customer:})", tab(app).text);
+    assertTrue(c.tree("wrong").contains("Not expected here"), c.tree("wrong"));
+  }
+
+  ConsoleTab tab(App<State> app) {
+    return app.state().consoles(null).getFirst();
+  }
 }

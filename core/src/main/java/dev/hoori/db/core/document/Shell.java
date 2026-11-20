@@ -807,7 +807,7 @@ public final class Shell {
           }
           yield BigDecimal.valueOf(n).toBigInteger().toString();
         }
-        default -> throw new IllegalArgumentException("A number is needed");
+        case null, default -> throw new IllegalArgumentException("A number is needed");
       };
     }
 
@@ -854,7 +854,7 @@ public final class Shell {
         case Long n -> Instant.ofEpochMilli(n);
         case Double n -> Instant.ofEpochMilli(n.longValue());
         case String s -> instant(s.strip());
-        default -> throw new IllegalArgumentException("A date in quotes is needed");
+        case null, default -> throw new IllegalArgumentException("A date in quotes is needed");
       };
     }
 

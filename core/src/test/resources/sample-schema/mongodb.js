@@ -4,8 +4,7 @@ const hoori = db.getSiblingDB('hoori');
 hoori.customers.insertMany([
   { _id: 1, name: 'Ada', email: 'ada@example.com', born: ISODate('1815-12-10T00:00:00Z'),
     tags: ['math', 'poetry'], address: { city: 'London', zip: 'W1' } },
-  { _id: 2, name: 'Grace', email: 'grace@example.com', born: ISODate('1906-12-09T00:00:00Z'),
-    tags: ['navy'] },
+  { _id: 2, name: 'Grace', email: null, born: ISODate('1906-12-09T00:00:00Z'), tags: ['navy'] },
   { _id: 3, name: 'Edsger', born: ISODate('1930-05-11T00:00:00Z'), score: NumberLong(42) },
 ]);
 
