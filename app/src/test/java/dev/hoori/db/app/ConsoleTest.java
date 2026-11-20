@@ -196,7 +196,7 @@ class ConsoleTest {
     c.run(app, "press role=tab label=\"Messages\"\nframe\nsnap messages\n");
     String messages = c.tree("messages");
     assertTrue(cell(messages, 0, 0).contains("\"" + COUNT + "\""), messages);
-    assertTrue(cell(messages, 0, 1).contains("\"4 ms\""), messages);
+    assertTrue(cell(messages, 0, 1).contains("\"4.0 ms\""), messages);
     assertTrue(cell(messages, 1, 2).contains("\"200 rows so far\""), messages);
     assertTrue(cell(messages, 2, 2).contains("\"3 rows changed\""), messages);
     assertTrue(cell(messages, 3, 2).contains("\"3 rows already paid (01000)\""), messages);
