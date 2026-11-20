@@ -100,6 +100,8 @@ public final class WorkspaceStore {
     return older == null ? Workspace.EMPTY : older(older);
   }
 
+  // shortcut: folders nest some 248 deep, within the JSON parser's limit of 500, and a save of a
+  // deeper workspace fails and leaves the file; parse and write without recursion to go deeper.
   private Workspace parse(byte[] bytes) throws UnreadableException {
     var root = file.root(bytes, VERSION);
     // Fields this version does not know are ignored: a later HooriDB may add one without raising

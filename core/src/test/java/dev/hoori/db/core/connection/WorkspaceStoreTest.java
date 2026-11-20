@@ -381,6 +381,24 @@ class WorkspaceStoreTest {
   }
 
   @Test
+  void aWorkspaceTooLargeToReadIsNotSaved() throws IOException {
+    var store = new WorkspaceStore(folder);
+    store.save(WORKSPACE);
+    var file = folder.resolve(WorkspaceStore.FILE);
+    var before = Files.readAllBytes(file);
+    var name = "x".repeat(1 << 20);
+    var large = new ArrayList<Workspace.Entry>();
+    for (int i = 0; i < 17; i++) {
+      large.add(ConnectionProfile.of(Provider.MYSQL).withName(name));
+    }
+    var failure = assertThrows(IOException.class, () -> store.save(new Workspace(large)));
+    assertEquals(
+        "Cannot save the connections in " + file + ": it would be larger than 16 MB.",
+        failure.getMessage());
+    assertArrayEquals(before, Files.readAllBytes(file));
+  }
+
+  @Test
   void theConnectionsOfAnOlderHooriDbAreTakenAtTheTopInTheirOrder() throws IOException {
     var older = older(OLDER);
     var store = new WorkspaceStore(folder);
