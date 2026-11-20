@@ -60,7 +60,11 @@ interface Servers {
     }
     var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
     return Real.of(
-        opened.connection(), profile.provider(), opened.server().parsed(), opened.database());
+        opened.connection(),
+        profile.provider(),
+        opened.server().parsed(),
+        opened.database(),
+        profile.readOnly());
   };
 
   String GONE = "The connection was lost or given up: nothing more is sent on it.";
@@ -394,14 +398,25 @@ interface Servers {
       Provider provider,
       ServerVersion version,
       String database,
+      boolean readOnly, // of a read-only profile, whose session the server keeps read-only
       AtomicReference<Execution> open, // the statement whose rows are not all read, or null
       AtomicBoolean gone)
       implements Link {
 
     static Real of(
-        Connection connection, Provider provider, ServerVersion version, String database) {
+        Connection connection,
+        Provider provider,
+        ServerVersion version,
+        String database,
+        boolean readOnly) {
       return new Real(
-          connection, provider, version, database, new AtomicReference<>(), new AtomicBoolean());
+          connection,
+          provider,
+          version,
+          database,
+          readOnly,
+          new AtomicReference<>(),
+          new AtomicBoolean());
     }
 
     private void usable() throws QueryException {
@@ -492,7 +507,7 @@ interface Servers {
     @Override
     public Run run(String sql) throws QueryException {
       usable();
-      var execution = new Execution(connection, provider, sql);
+      var execution = new Execution(connection, provider, sql, readOnly);
       open.set(execution);
       return new Run() {
         @Override

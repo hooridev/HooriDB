@@ -5,6 +5,7 @@ import dev.hoori.db.core.data.RowReader;
 import dev.hoori.db.core.dialect.SessionDialect;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sql.ReadWrite;
 import dev.hoori.db.core.sql.Statements;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -80,6 +81,7 @@ public final class Execution implements AutoCloseable {
   private final Provider provider;
   private final SessionDialect session;
   private final String sql;
+  private final boolean readOnly;
   private Statement statement;
   // Whether auto-commit was turned off for this statement, to be turned on again when it is over.
   private boolean ownTransaction;
@@ -98,10 +100,20 @@ public final class Execution implements AutoCloseable {
 
   /** A statement to run on the connection, to a server of the provider; nothing runs yet. */
   public Execution(Connection connection, Provider provider, String sql) {
+    this(connection, provider, sql, false);
+  }
+
+  /**
+   * As {@link #Execution(Connection, Provider, String)}, on a session that is read-only where
+   * {@code readOnly}: there a statement that may turn that off, as {@link ReadWrite} reads it, is
+   * not sent, and its first portion is a failure that says so.
+   */
+  public Execution(Connection connection, Provider provider, String sql, boolean readOnly) {
     this.connection = connection;
     this.provider = provider;
     this.session = provider.dialect().session();
     this.sql = sql;
+    this.readOnly = readOnly;
   }
 
   /**
@@ -117,6 +129,10 @@ public final class Execution implements AutoCloseable {
     }
     if (over) {
       throw new IllegalStateException("The statement is over");
+    }
+    var refused = refused();
+    if (refused != null) {
+      return refused;
     }
     var started = System.nanoTime();
     try {
@@ -149,6 +165,31 @@ public final class Execution implements AutoCloseable {
           transaction(-1),
           autoCommit(-1));
     }
+  }
+
+  // On a read-only session, the first portion of a statement that may turn that off, not sent;
+  // null for any other.
+  private Portion refused() {
+    if (statement != null || !readOnly || !ReadWrite.in(sql, provider)) {
+      return null;
+    }
+    over = true;
+    var refused = new Failure(
+        Failure.Kind.ACCESS_DENIED,
+        "The connection is read-only, and this statement may turn that off for the session, so"
+            + " it was not sent. SHOW reads a setting.",
+        "",
+        0,
+        0,
+        "",
+        0,
+        0,
+        "",
+        "",
+        "",
+        "");
+    return new Portion(
+        List.of(refused), List.of(), false, Duration.ZERO, transaction(-1), autoCommit(-1));
   }
 
   /** How long ending a statement that is given up may take before its connection is. */

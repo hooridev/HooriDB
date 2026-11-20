@@ -435,7 +435,6 @@ final class ConnectionDialog {
     editing.at(PROVIDER).set(provider);
     editing.at(DRIVER_VERSION).set(null); // a version of the other kind's driver
     if (!provider.keepsDocuments()) {
-      editing.at(READ_ONLY).set(false); // a server of SQL does not take it
       srv(false);
       editing.at(AUTH_DATABASE).set("");
     }
@@ -669,8 +668,12 @@ final class ConnectionDialog {
                     Prop.of(() -> p.readOnly(), open ? v -> e.at(READ_ONLY).set(v) : null),
                     "Read-only")
                 .key("read-only"))
-        .help("Only reads are sent: find, aggregate without $out or $merge, counts and the"
-            + " like. Inserts, updates, deletes and every other change are refused.");
+        .help(
+            p.provider().keepsDocuments()
+                ? "Only reads are sent: find, aggregate without $out or $merge, counts and the"
+                    + " like. Inserts, updates, deletes and every other change are refused."
+                : "The server keeps the session read-only and refuses what writes to tables or"
+                    + " changes the schema. A statement that would turn that off is not sent.");
     var srv = field(
             "SRV",
             checkbox(Prop.of(() -> p.srv(), open ? this::srv : null), "Servers from DNS")
@@ -716,7 +719,7 @@ final class ConnectionDialog {
         Form.group(null, name),
         p.provider().keepsDocuments()
             ? Form.group(null, type, address, srv, database, tls, readOnly)
-            : Form.group(null, type, address, database, tls),
+            : Form.group(null, type, address, database, tls, readOnly),
         p.provider().keepsDocuments()
             ? Form.group(null, user, authDatabase, pass).divided()
             : Form.group(null, user, pass).divided());

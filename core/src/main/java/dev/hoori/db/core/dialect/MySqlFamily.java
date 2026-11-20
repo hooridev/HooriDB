@@ -144,6 +144,17 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     }
 
     @Override
+    public String readOnly() {
+      return "SET SESSION TRANSACTION READ ONLY";
+    }
+
+    // tx_read_only is the older name, which MariaDB keeps beside transaction_read_only.
+    @Override
+    public Set<String> readWrite() {
+      return Set.of("transaction_read_only", "tx_read_only", "read write");
+    }
+
+    @Override
     public ConnectionException.Failure refusal(
         SQLException e, String state, String message, boolean tls) {
       return switch (e.getErrorCode()) {
