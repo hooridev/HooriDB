@@ -1,0 +1,29 @@
+# Builds and tests everything on each pull request and each push to main. Its job is the check
+# that main's ruleset requires before a merge; it runs on every path, so that the check is there.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      # -U: the framework's SNAPSHOTs change with each of its pushes, and a pull request is checked
+      # against the newest, as main will be built.
+      - run: mvn -B -U verify
