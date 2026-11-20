@@ -31,11 +31,11 @@ To open a table or view in a tab, double-click it in the tree, select it and pre
 
 - Reload a level: right-click a connection, database, schema, or table and choose **Refresh**. HooriDB reloads its children and clears previously loaded items below it.
 - Copy an object name: right-click any item in the tree and choose **Copy name** to copy its name to the clipboard.
-- Disconnect: right-click an open connection and choose **Disconnect**. If a console on that connection may hold uncommitted work, HooriDB asks before disconnecting.
+- Disconnect: right-click an open connection and choose **Disconnect**. If a console on that connection may hold uncommitted work, HooriDB asks before disconnecting. Disconnecting leaves the connection's table and console tabs open; a table tab shows **Connect** so you can reconnect from there.
 
 ## When a connection or level fails
 
 If connecting or reading a level fails, an error row appears under that item in the tree, and a details box appears at the bottom of the Workspace sidebar.
 
-- Press **Try again** (or right-click the error row and choose **Try again**) to retry.
+- For a failed read in the tree, press **Try again** on the error row. For a failed connection, press **Try again** in the details box or right-click the error row and choose **Try again**.
 - If the server refused your login, press **Enter password…** to type a different password.

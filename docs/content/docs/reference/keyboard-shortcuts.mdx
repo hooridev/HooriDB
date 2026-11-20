@@ -1,6 +1,6 @@
 ---
 title: Keyboard shortcuts
-description: Every key HooriDB knows, by where it works.
+description: Keyboard shortcuts in HooriDB, grouped by where they work.
 ---
 
 ## Window and navigation
@@ -10,11 +10,12 @@ These shortcuts work in both the main window and torn-off tab windows.
 | Shortcut | Action |
 | --- | --- |
 | `Ctrl+N` | **File > New console**: open a new SQL console |
-| `Ctrl+W` | **File > Close tab**: close the active tab |
-| `Ctrl+Shift+P` | **View > Command palette…**: open the command palette |
+| `Ctrl+W` or `Ctrl+F4` | **File > Close tab**: close the active tab |
+| `Ctrl+Shift+P` or `F1` | **View > Command palette…**: open the command palette |
 | `Ctrl+P` | **Go > Go to table…**: search and open tables and views (`@` mode) |
 | `Ctrl+PageDown` or `Ctrl+Tab` | **Go > Next tab**: switch to the next tab in the window |
 | `Ctrl+PageUp` or `Ctrl+Shift+Tab` | **Go > Previous tab**: switch to the previous tab in the window |
+| `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | Move the active tab left or right |
 | `Ctrl+0` | **Go > Workspace**: focus the Workspace tree (main window) |
 | `Ctrl+1` | **Go > Tab content**: focus the active tab's grid or SQL editor |
 
@@ -23,13 +24,15 @@ These shortcuts work in both the main window and torn-off tab windows.
 | Shortcut | Action |
 | --- | --- |
 | `Enter` | Connect to the selected connection, or open the selected table or view |
+| `Right` | Unfold the selected item, or move to its first child |
+| `Left` | Fold the selected item, or move to its parent |
 
 ## Table and result grids
 
 | Shortcut | Action |
 | --- | --- |
 | `Shift+Enter` | Open or close the value panel (works in the grid and inside the value panel) |
-| `Ctrl+C` | Copy selected cells or rows (table grids, console result grids, and History) |
+| `Ctrl+C` or `Ctrl+Insert` | Copy selected cells or rows (table grids, console result grids, and History) |
 | `Ctrl+A` | Select all cells in the grid |
 
 ## SQL console
@@ -47,4 +50,5 @@ These shortcuts work in both the main window and torn-off tab windows.
 | Shortcut | Action |
 | --- | --- |
 | `Enter` | Confirm the dialog's default button, insert the selected statement in History, accept a completion, or run the highlighted palette item |
+| `Tab` | Accept the highlighted completion in the SQL console |
 | `Escape` | Close the open dialog, completion list, or command palette |

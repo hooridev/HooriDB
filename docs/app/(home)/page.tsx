@@ -33,10 +33,10 @@ const content = {
     },
     {
       title: 'Table data',
-      text: 'Open any table or view to read its rows in pages and move through them by scrolling or using the paging buttons. Inspect the selected cell in a side panel with formatted JSON.',
+      text: 'Open any table or view to read its rows as you scroll or move through them with the paging buttons. Inspect the selected cell in a side panel with formatted JSON.',
       points: [
-        'Pages of 200 rows loaded as you scroll, with first, previous, next, and last page buttons',
-        'Side value panel with formatted, syntax-colored JSON and full values fetched by primary key',
+        'Rows load as you scroll, with buttons to move one screen up or down or jump to the start and known end',
+        'Side value panel with formatted, syntax-colored JSON; reads shortened table values whole by primary key when the table has one',
         'Timestamps with a time zone shown and copied in your computer\'s time zone',
       ],
       link: 'Read about table data',
@@ -59,11 +59,11 @@ const content = {
     },
     {
       title: 'Transactions',
-      text: 'Switch each console between Auto and Manual commit and end open transactions with Commit or Rollback. HooriDB tracks the transaction state and asks before an action would drop uncommitted work.',
+      text: 'Switch each console between Auto and Manual commit and end open transactions with Commit or Rollback. HooriDB shows whether a transaction is open, as the server reports it, and asks before an action would drop uncommitted work.',
       points: [
-        'Manual mode reads each result whole and asks first when the query plan estimates over 100,000 rows',
+        'The transaction state in the console and the number of consoles with uncommitted work in the status bar',
         'Prompts before closing a tab, switching databases, disconnecting, or exiting with an open transaction',
-        'Confirmation prompt before running an UPDATE or DELETE without a WHERE clause',
+        'Asks before running an UPDATE or DELETE without a WHERE clause (or LIMIT on MySQL and MariaDB)',
       ],
       link: 'Read about transactions',
       href: '/docs/features/transactions',
@@ -72,10 +72,10 @@ const content = {
     },
     {
       title: 'Command palette',
-      text: 'Run menu commands from the keyboard in any window. Type @ or press Ctrl+P to find and open tables and views by name across open connections.',
+      text: 'Run menu commands from the keyboard in any window. Type @ in the open palette, or press Ctrl+P to open it with @ already there, to find and open tables and views by name across open connections.',
       points: [
-        'Press Ctrl+Shift+P to search and run any menu command',
-        'Press Ctrl+P to jump to tables and views and load unread databases on demand',
+        'Press Ctrl+Shift+P or F1 to search and run any menu command',
+        'Press Ctrl+P to open the palette with @ and jump to tables and views, loading unread databases on demand',
       ],
       link: 'Read about the command palette',
       href: '/docs/features/command-palette',
