@@ -179,6 +179,14 @@ final class State {
   List<SavedQuery> queries = List.of();
   // Until the file is read nothing is saved or deleted, so that each name and id is the file's.
   boolean queriesLoading = true;
+
+  /**
+   * Whether a query can be saved or deleted now: once the file was read, and not where it could not
+   * be, as nothing would be written.
+   */
+  boolean queriesUsable() {
+    return !queriesLoading && queriesKept.canSave;
+  }
   // The statements run from consoles, of every connection, the oldest first.
   List<HistoryEntry> history = List.of();
   // Connections deleted: what is loaded of their history and consoles after that goes too.
@@ -363,8 +371,27 @@ final class State {
   private void queriesLoaded(boolean canSave) {
     queriesLoading = false;
     queriesKept.canSave = canSave;
+    dropOrphanQueries();
     if (queriesKept.unsaved) {
       save(queriesKept);
+    }
+  }
+
+  /**
+   * Deletes the queries of connections the workspace does not have, as those of one deleted while
+   * HooriDB closed before they were read; once both files are read, and not where the workspace
+   * failed to load, which then has none.
+   */
+  private void dropOrphanQueries() {
+    if (!loaded || loadError != null || queriesLoading || !queriesKept.canSave) {
+      return;
+    }
+    var known = new HashSet<UUID>();
+    workspace.connections().forEach(p -> known.add(p.id()));
+    var kept = queries.stream().filter(q -> known.contains(q.connection())).toList();
+    if (kept.size() != queries.size()) {
+      queries = kept;
+      persist(queriesKept);
     }
   }
 
@@ -534,7 +561,9 @@ final class State {
             tell("The update settings could not be saved: " + kept.saveError);
           } else if (first) {
             notice(
-                kept == historyKept ? "History" : "Consoles",
+                kept == historyKept
+                    ? "History"
+                    : kept == queriesKept ? "Saved queries" : "Consoles",
                 "not saved",
                 kept.saveError,
                 true,
@@ -558,6 +587,7 @@ final class State {
           change(found);
           loaded = true;
           setAside = null;
+          dropOrphanQueries();
           lookForKeyring();
           restore();
         },

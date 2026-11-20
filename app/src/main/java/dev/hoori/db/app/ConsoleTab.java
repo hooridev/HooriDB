@@ -2500,7 +2500,7 @@ final class ConsoleTab implements Tab {
                 Button.Variant.GHOST,
                 Symbol.SAVE,
                 "Save query",
-                s.queriesLoading ? null : this::saveQuery)
+                s.queriesUsable() ? this::saveQuery : null)
             .key("query-save-open")
             .keepFocus(),
         "Save query: the selection, or else the whole text, under a name"));
@@ -2509,7 +2509,7 @@ final class ConsoleTab implements Tab {
                 Button.Variant.GHOST,
                 Symbol.STAR,
                 "Saved queries",
-                s.queriesLoading ? null : this::openQueries)
+                s.queriesUsable() ? this::openQueries : null)
             .key("queries-open")
             .keepFocus(),
         "Saved queries"));

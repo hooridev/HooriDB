@@ -11,7 +11,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.QueryStore;
+import dev.hoori.db.core.connection.SavedQuery;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,8 +34,17 @@ class SavedQueriesTest {
   final ConsoleTest k = new ConsoleTest();
   CatalogTreeTest c;
 
+  // Of a connection deleted while HooriDB closed before its saved queries were read.
+  static final SavedQuery ORPHAN = new SavedQuery(
+      UUID.fromString("00000000-0000-0000-0000-00000000dead"),
+      UUID.fromString("00000000-0000-0000-0000-00000000beef"),
+      "Gone",
+      "SELECT 1",
+      Instant.parse("2026-01-01T00:00:00Z"));
+
   @BeforeEach
   void setUp() throws Exception {
+    new QueryStore(dir.resolve("config")).save(List.of(ORPHAN));
     k.dir = dir;
     k.setUp();
     c = k.c;
@@ -87,6 +100,20 @@ class SavedQueriesTest {
     assertTrue(listed.contains("\"all ORDERS\""), listed);
     c.run(app, "press role=button label=\"Insert\"\nframe\nadvance 1\nframe\nsnap inserted\n");
     assertEquals("SELECT 2;", k.tab(app).text); // as one from the history goes in
+  }
+
+  @Test
+  void theQueriesOfAConnectionTheWorkspaceLacksAreDeletedFromTheFile() throws Exception {
+    var app = k.console(SHOP);
+    c.run(app, SETTLE);
+    assertTrue(app.state().queries.isEmpty(), app.state().queries.toString());
+    CatalogTreeTest.eventually(() -> {
+      try {
+        return new QueryStore(dir.resolve("config")).load().isEmpty();
+      } catch (Exception e) {
+        return false;
+      }
+    });
   }
 
   @Test
