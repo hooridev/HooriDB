@@ -9,7 +9,8 @@ import java.util.regex.Pattern;
  * connection does not send it: one that holds what the dialect's {@link
  * dev.hoori.db.core.dialect.ConnectDialect#readWrite} names, in its words, quoted names and
  * variables or in a string, by every way the server may read its text, as {@link EveryRow} reads
- * it. A {@code SHOW}, which only reads a setting, is let through.
+ * it, and one with a {@code START TRANSACTION} after its first word. A {@code SHOW}, which only
+ * reads a setting, is let through.
  */
 // shortcut: a name put together at run time, as from two strings, or a setting changed by a
 // function, procedure or trigger that already exists, is not seen. The server still refuses each
@@ -38,6 +39,11 @@ public final class ReadWrite {
             || piece.kind() == Statements.Piece.Kind.COMMENT && executable(sql, piece, provider)) {
           strings.append(sql, piece.start(), piece.end()).append('\n');
         }
+      }
+      // A START TRANSACTION inside another statement, as MySQL's CREATE TABLE … START TRANSACTION,
+      // opens a transaction that is not read-only; elsewhere it is no statement at all.
+      if (words.indexOf(" start transaction ", 1) > 0) {
+        return true;
       }
       var text = SPACES.matcher(strings).replaceAll(" ").toLowerCase(Locale.ROOT);
       for (var phrase : phrases) {

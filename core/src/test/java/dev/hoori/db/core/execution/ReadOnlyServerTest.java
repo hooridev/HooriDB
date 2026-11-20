@@ -81,7 +81,10 @@ class ReadOnlyServerTest {
     table(provider, "still_empty");
     var off = provider == Provider.POSTGRESQL
         ? List.of("SET default_transaction_read_only = off", "RESET ALL", "BEGIN READ WRITE")
-        : List.of("SET SESSION TRANSACTION READ WRITE", "SET @@session.transaction_read_only = 0");
+        : List.of(
+            "SET SESSION TRANSACTION READ WRITE",
+            "SET @@session.transaction_read_only = 0",
+            "CREATE TABLE made_anyway (id integer) START TRANSACTION");
     try (var connection = readOnly(provider, TestServer.DATABASE)) {
       for (var sql : off) {
         var failure = failure(run(connection, provider, sql).results());

@@ -46,6 +46,7 @@ class ReadWriteTest {
       turnsOff(p, "/*!50000 PREPARE s FROM 'SET SESSION TRANSACTION READ WRITE' */");
     }
     turnsOff(Provider.MARIADB, "SET SESSION AUTHORIZATION 'other'@'%'");
+    turnsOff(Provider.MYSQL, "CREATE TABLE t (id integer) ENGINE=InnoDB START TRANSACTION");
   }
 
   @Test
@@ -54,6 +55,8 @@ class ReadWriteTest {
       keeps(p, "SELECT * FROM t WHERE a = 1");
       keeps(p, "INSERT INTO t VALUES (1)");
       keeps(p, "SET TRANSACTION READ ONLY");
+      keeps(p, "START TRANSACTION");
+      keeps(p, "start transaction read only");
       keeps(p, "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
       keeps(p, "SHOW transaction_read_only");
       keeps(p, "SELECT 1 -- SET transaction_read_only = off");
