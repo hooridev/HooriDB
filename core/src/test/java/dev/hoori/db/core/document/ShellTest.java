@@ -2,6 +2,7 @@ package dev.hoori.db.core.document;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -119,10 +120,16 @@ class ShellTest {
 
   @Test
   void aNewObjectIdIsMadeEachTime() throws Exception {
+    long before = Instant.now().getEpochSecond();
     var one = assertInstanceOf(Bson.ObjectId.class, Shell.parse("ObjectId()"));
     var two = assertInstanceOf(Bson.ObjectId.class, Shell.parse("new ObjectId()"));
-    assertTrue(one.compareTo(two) < 0);
-    assertTrue(Math.abs(one.time().getEpochSecond() - Instant.now().getEpochSecond()) < 5);
+    long after = Instant.now().getEpochSecond();
+    // Not ordered: the counter may wrap between them.
+    assertNotEquals(one, two);
+    for (var id : List.of(one, two)) {
+      long at = id.time().getEpochSecond();
+      assertTrue(before <= at && at <= after, id.toString());
+    }
   }
 
   @Test

@@ -180,6 +180,37 @@ class ScriptTest {
   }
 
   @Test
+  void optionsGoWhereTheServerTakesThemAndReplaceNothing() throws Exception {
+    var insert = Script.parse("db.a.insertOne({ _id: 1 }, { writeConcern: { w: 'majority' } })");
+    assertEquals(Document.of("w", "majority"), insert.command().get("writeConcern"));
+    var one = Script.parse("db.a.findOne({}, {}, { sort: { total: -1 } })").command();
+    assertEquals(Document.of("total", -1), one.get("sort"));
+    assertEquals(1, one.get("limit"));
+    var count = Script.parse("db.a.countDocuments({}, { hint: '_id_', maxTimeMS: 100 })");
+    assertEquals("_id_", count.command().get("hint"));
+    assertEquals(100, count.command().get("maxTimeMS"));
+    var indexes =
+        Script.parse("db.a.createIndexes([{ email: 1 }], { unique: true })").command();
+    var index = (Document) ((List<?>) indexes.get("indexes")).getFirst();
+    assertEquals(true, index.get("unique"));
+    var view = Script.parse("db.createView('v', 'a', [], { collation: { locale: 'en' } })");
+    assertEquals(Document.of("locale", "en"), view.command().get("collation"));
+    var aggregate = Script.parse("db.aggregate([{ $currentOp: {} }], { maxTimeMS: 5 })");
+    assertEquals(5, aggregate.command().get("maxTimeMS"));
+    // What the call says it is stays what it is.
+    assertWhere(46, "db.a.findOneAndUpdate({}, { $set: { x: 1 } }, { query: { y: 1 } })");
+    assertWhere(19, "db.a.aggregate([], { pipeline: [{ $out: 'b' }] })");
+  }
+
+  @Test
+  void anUnclosedCommentStaysInItsStatement() throws Exception {
+    var text = "db.a.insertOne({ x: 1 }) /* not closed";
+    var pieces = Script.split(text);
+    assertEquals(text, pieces.getFirst().text());
+    assertThrows(SyntaxException.class, () -> Script.parse(pieces.getFirst().text()));
+  }
+
+  @Test
   void theShellsMethodsDoWhatTheShellDoes() throws Exception {
     assertWhere(26, "db.a.findOneAndUpdate({}, { x: 1 })");
     assertWhere(27, "db.a.findOneAndReplace({}, { $set: { x: 1 } })");

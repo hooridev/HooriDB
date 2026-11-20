@@ -201,7 +201,10 @@ public final class Script {
         i = line < 0 || line > end ? end : line;
       } else if (text.startsWith("/*", i)) {
         int close = text.indexOf("*/", i + 2);
-        i = close < 0 || close + 2 > end ? end : close + 2;
+        if (close < 0 || close + 2 > end) {
+          return end; // not closed: the statement keeps it, which the parser refuses
+        }
+        i = close + 2;
       } else if (c == '/' && regexMayStart(last)) {
         i = Math.min(end, skipRegex(text, i));
         code = i;
@@ -378,11 +381,16 @@ public final class Script {
       case "getCollection" -> collection(r, database, string(args, 0, method, r));
       case "runCommand" -> Request.of(command(args, method, r), Shape.REPLY);
       case "adminCommand" -> new Request("admin", command(args, method, r), Shape.REPLY, null);
-      case "aggregate" ->
-        cursor(
-            r,
-            Document.of(
-                "aggregate", 1, "pipeline", pipeline(args, method, r), "cursor", Document.EMPTY));
+      case "aggregate" -> {
+        var command = Document.of(
+            "aggregate", 1, "pipeline", pipeline(args, method, r), "cursor", Document.EMPTY);
+        if (args.size() > 1
+            && args.get(0) instanceof List<?>
+            && args.get(1) instanceof Document o) {
+          command = merged(command, notReplacing(o, command, method, at(args, 1, r)));
+        }
+        yield cursor(r, command);
+      }
       case "getCollectionNames", "getCollectionInfos" ->
         Request.of(
             Document.of(
@@ -404,16 +412,21 @@ public final class Script {
         }
         yield Request.of(command, Shape.REPLY);
       }
-      case "createView" ->
-        Request.of(
-            Document.of(
-                "create",
-                string(args, 0, method, r),
-                "viewOn",
-                string(args, 1, method, r),
-                "pipeline",
-                pipeline(args.subList(Math.min(2, args.size()), args.size()), method, r)),
-            Shape.REPLY);
+      case "createView" -> {
+        var command = Document.of(
+            "create",
+            string(args, 0, method, r),
+            "viewOn",
+            string(args, 1, method, r),
+            "pipeline",
+            pipeline(args.subList(Math.min(2, args.size()), Math.min(3, args.size())), method, r));
+        if (args.size() > 3) {
+          var options = document(args, 3, method, r);
+          known(options, List.of("collation"), method, at(args, 3, r));
+          command = options(command, options, List.of("collation"));
+        }
+        yield Request.of(command, Shape.REPLY);
+      }
       case "dropDatabase" -> Request.of(Document.of("dropDatabase", 1), Shape.REPLY);
       case "stats" -> Request.of(Document.of("dbStats", 1), Shape.REPLY);
       case "serverStatus" -> Request.of(Document.of("serverStatus", 1), Shape.REPLY);
@@ -477,6 +490,12 @@ public final class Script {
         if (args.size() > 1) {
           command = command.with("projection", document(args, 1, method, r));
         }
+        if (args.size() > 2) {
+          var options = document(args, 2, method, r);
+          var names = List.of("sort", "skip", "hint", "maxTimeMS", "collation", "comment", "let");
+          known(options, names, method, at(args, 2, r));
+          command = options(command, options, names);
+        }
         command = command.with("limit", 1).with("singleBatch", true);
         yield ended(r, Request.of(command, Shape.ONE));
       }
@@ -489,7 +508,7 @@ public final class Script {
             "cursor",
             Document.EMPTY);
         if (args.size() > 1 && args.get(1) instanceof Document options) {
-          command = merged(command, options);
+          command = merged(command, notReplacing(options, command, method, at(args, 1, r)));
         }
         yield cursor(r, command);
       }
@@ -497,8 +516,15 @@ public final class Script {
         var stages = new ArrayList<Object>();
         stages.add(
             Document.of("$match", args.isEmpty() ? Document.EMPTY : document(args, 0, method, r)));
+        Document counted = Document.EMPTY;
         if (args.size() > 1) {
           var options = document(args, 1, method, r);
+          known(
+              options,
+              List.of("skip", "limit", "hint", "maxTimeMS", "collation", "comment"),
+              method,
+              at(args, 1, r));
+          counted = options(counted, options, List.of("hint", "maxTimeMS", "collation", "comment"));
           if (options.get("skip") != null) {
             stages.add(Document.of("$skip", options.get("skip")));
           }
@@ -510,13 +536,15 @@ public final class Script {
         yield ended(
             r,
             Request.of(
-                Document.of(
-                    "aggregate",
-                    collection,
-                    "pipeline",
-                    Document.array(stages),
-                    "cursor",
-                    Document.EMPTY),
+                merged(
+                    Document.of(
+                        "aggregate",
+                        collection,
+                        "pipeline",
+                        Document.array(stages),
+                        "cursor",
+                        Document.EMPTY),
+                    counted),
                 Shape.COUNT));
       }
       case "estimatedDocumentCount" ->
@@ -541,14 +569,14 @@ public final class Script {
             Request.of(
                 Document.of("listIndexes", collection, "cursor", Document.EMPTY), Shape.CURSOR));
       case "stats" -> ended(r, Request.of(Document.of("collStats", collection), Shape.REPLY));
-      case "insertOne" ->
-        write(
-            r,
-            Document.of(
-                "insert",
-                collection,
-                "documents",
-                Document.array(withId(document(args, 0, method, r)))));
+      case "insertOne" -> {
+        var command = Document.of(
+            "insert",
+            collection,
+            "documents",
+            Document.array(withId(document(args, 0, method, r))));
+        yield write(r, insertOptions(command, args, 1, method, r));
+      }
       case "insertMany", "insert" -> {
         var documents = new ArrayList<Object>();
         if (!args.isEmpty() && args.getFirst() instanceof List<?> list) {
@@ -562,10 +590,7 @@ public final class Script {
           documents.add(withId(document(args, 0, method, r)));
         }
         var command = Document.of("insert", collection, "documents", Document.array(documents));
-        if (args.size() > 1 && args.get(1) instanceof Document options && options.has("ordered")) {
-          command = command.with("ordered", options.get("ordered"));
-        }
-        yield write(r, command);
+        yield write(r, insertOptions(command, args, 1, method, r));
       }
       case "updateOne", "updateMany", "replaceOne" -> {
         var filter = document(args, 0, method, r);
@@ -654,6 +679,24 @@ public final class Script {
             options = document(args, 2, method, r);
           }
         }
+        known(
+            options,
+            List.of(
+                "returnDocument",
+                "returnNewDocument",
+                "projection",
+                "sort",
+                "upsert",
+                "arrayFilters",
+                "collation",
+                "hint",
+                "maxTimeMS",
+                "let",
+                "comment",
+                "writeConcern",
+                "bypassDocumentValidation"),
+            method,
+            at(args, args.size() - 1, r));
         for (var entry : options.entries()) {
           switch (entry.name()) {
             case "returnDocument" -> command = command.with("new", "after".equals(entry.value()));
@@ -685,7 +728,12 @@ public final class Script {
           if (!(keys instanceof Document d)) {
             throw new SyntaxException("createIndexes needs an array of keys", at);
           }
-          indexes.add(Document.of("key", d, "name", indexName(d)));
+          var index = Document.of("key", d, "name", indexName(d));
+          // The options, such as unique, are each index's, as the shell gives them.
+          if (args.size() > 1) {
+            index = merged(index, document(args, 1, method, r));
+          }
+          indexes.add(index);
         }
         yield ended(
             r,
@@ -812,6 +860,30 @@ public final class Script {
       }
       arguments(r);
     }
+  }
+
+  // An insert's options, which it knows.
+  private static Document insertOptions(
+      Document command, List<Object> args, int index, String method, Shell.Reader r)
+      throws SyntaxException {
+    if (args.size() <= index) {
+      return command;
+    }
+    var options = document(args, index, method, r);
+    var names = List.of("ordered", "writeConcern", "bypassDocumentValidation", "comment");
+    known(options, names, method, at(args, index, r));
+    return options(command, options, names);
+  }
+
+  // Options that would replace what the command is, as its pipeline, are refused.
+  private static Document notReplacing(Document options, Document command, String method, int at)
+      throws SyntaxException {
+    for (var name : List.of(command.first(), "pipeline", "cursor")) {
+      if (options.has(name)) {
+        throw new SyntaxException(method + " takes no option " + name, at);
+      }
+    }
+    return options;
   }
 
   // The options of the names that are given, put into the document.
