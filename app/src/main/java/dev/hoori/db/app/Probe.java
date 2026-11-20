@@ -218,7 +218,9 @@ final class Probe {
   /** What the outcome says at the field, or null. */
   String error(At at) {
     var done = outcome();
-    if (done != null && done.result() instanceof Tester.Refused r && at(r.failure()) == at) {
+    if (done != null
+        && done.result() instanceof Tester.Refused r
+        && at(r.failure(), done.profile()) == at) {
       return Words.note(r.failure(), done.profile(), done.withPassword());
     }
     return null;
@@ -231,16 +233,17 @@ final class Probe {
         && done.result() instanceof Tester.Refused r
         && switch (r.failure()) {
           case LOGIN_REFUSED -> at == At.USER;
-          case UNREACHABLE, TIMED_OUT -> at == At.HOST;
+          case UNREACHABLE, TIMED_OUT -> at == At.HOST && !done.profile().srv();
           default -> false;
         };
   }
 
-  private static At at(ConnectionException.Failure failure) {
+  private static At at(ConnectionException.Failure failure, ConnectionProfile profile) {
     return switch (failure) {
       case LOGIN_REFUSED -> At.PASSWORD;
       case NO_SUCH_DATABASE -> At.DATABASE;
-      case UNREACHABLE, TIMED_OUT -> At.PORT;
+      // With SRV there is no port to show it under.
+      case UNREACHABLE, TIMED_OUT -> profile.srv() ? At.HOST : At.PORT;
       case TLS_UNAVAILABLE, CERTIFICATE_REJECTED -> At.TLS;
       case UNFIT, CANCELLED, OTHER -> null;
     };

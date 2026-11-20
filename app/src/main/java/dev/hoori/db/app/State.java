@@ -727,7 +727,8 @@ final class State {
         profile.tls(),
         profile.color(),
         profile.driverVersion(),
-        profile.readOnly());
+        profile.readOnly(),
+        profile.srv());
     change(workspace.after(profile.id(), copy));
     selected = new Node.Connection(copy.id());
     persist();
@@ -745,6 +746,7 @@ final class State {
         && (old.provider() != profile.provider()
             || !old.host().equals(profile.host())
             || old.port() != profile.port()
+            || old.srv() != profile.srv()
             || !database(old).equals(database(profile)))) {
       close(tables(profile.id()));
     }

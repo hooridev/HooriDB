@@ -73,6 +73,8 @@ final class ConnectionDialog {
       Part.of(ConnectionProfile::driverVersion, ConnectionProfile::withDriverVersion);
   static final Part<ConnectionProfile, Boolean> READ_ONLY =
       Part.of(ConnectionProfile::readOnly, ConnectionProfile::withReadOnly);
+  static final Part<ConnectionProfile, Boolean> SRV =
+      Part.of(ConnectionProfile::srv, ConnectionProfile::withSrv);
 
   private static final List<Provider> PROVIDERS = List.of(Provider.values());
 
@@ -113,7 +115,7 @@ final class ConnectionDialog {
     this.isNew = isNew;
     this.editing = Editing.of(profile);
     portByHand = profile.port() != profile.provider().defaultPort();
-    tlsByHand = profile.tls() != ConnectionProfile.tlsByDefault(profile.host());
+    tlsByHand = profile.tls() != tlsByDefault(profile);
     if (isNew) {
       stored = false;
       savePassword = true;
@@ -432,6 +434,7 @@ final class ConnectionDialog {
     editing.at(DRIVER_VERSION).set(null); // a version of the other kind's driver
     if (!provider.keepsDocuments()) {
       editing.at(READ_ONLY).set(false); // a server of SQL does not take it
+      srv(false);
     }
     if (!portByHand && !portTyped()) {
       editing.at(PORT).set(provider.defaultPort());
@@ -449,8 +452,23 @@ final class ConnectionDialog {
     hostTyped = true;
     editing.at(HOST).set(host);
     if (!tlsByHand) {
-      editing.at(TLS).set(ConnectionProfile.tlsByDefault(host));
+      editing.at(TLS).set(tlsByDefault(editing.value()));
     }
+  }
+
+  private void srv(boolean srv) {
+    editing.at(SRV).set(srv);
+    if (srv) {
+      editing.at(PORT).draft().clear(); // hidden now: a text that is no port keeps nothing back
+    }
+    if (!tlsByHand) {
+      editing.at(TLS).set(tlsByDefault(editing.value()));
+    }
+  }
+
+  // On with SRV, as the driver turns it on for mongodb+srv://, whatever the host.
+  private static Tls tlsByDefault(ConnectionProfile p) {
+    return p.srv() ? Tls.ENCRYPTED : ConnectionProfile.tlsByDefault(p.host());
   }
 
   private void password(String password) {
@@ -482,9 +500,7 @@ final class ConnectionDialog {
 
   /** Off where the host is not one that is off by default: on a network others may listen to. */
   private static String tlsWarning(ConnectionProfile p) {
-    return p.tls() == Tls.OFF
-            && !p.host().isBlank()
-            && ConnectionProfile.tlsByDefault(p.host()) != Tls.OFF
+    return p.tls() == Tls.OFF && !p.host().isBlank() && tlsByDefault(p) != Tls.OFF
         ? "Password and data go over the network unencrypted."
         : null;
   }
@@ -596,30 +612,37 @@ final class ConnectionDialog {
                     // A long version is cut short by the kit, which shows it whole in a tooltip.
                     .maxSize(6 * t.size().control(), Float.POSITIVE_INFINITY)))
         .warning(driverWarning(s));
-    var address = Form.row(
-        field(
-                "Host",
-                marked(
-                    Probe.At.HOST,
-                    textField(p.host(), "Name or address", open ? this::host : null)
-                        .key("host")
-                        .wFull()))
-            .required()
-            .error(error(problems, ConnectionProfile.Field.HOST))
-            .grow(),
-        field(
-                "Port",
-                valueField(
-                        Format.INTEGER,
-                        p.port(),
-                        fallback,
-                        e.at(PORT).draft(),
-                        open ? this::port : null)
-                    .key("port")
-                    .maxLength(5)
-                    .w(3 * t.size().control()))
-            .required()
-            .error(or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))));
+    var host = field(
+            "Host",
+            marked(
+                Probe.At.HOST,
+                textField(
+                        p.host(),
+                        p.srv() ? "As in mongodb+srv://" : "Name or address",
+                        open ? this::host : null)
+                    .key("host")
+                    .wFull()))
+        .required()
+        .error(or(error(problems, ConnectionProfile.Field.HOST), probe.error(Probe.At.HOST)));
+    // With SRV the record gives the servers' ports.
+    var address = p.srv()
+        ? host
+        : Form.row(
+            host.grow(),
+            field(
+                    "Port",
+                    valueField(
+                            Format.INTEGER,
+                            p.port(),
+                            fallback,
+                            e.at(PORT).draft(),
+                            open ? this::port : null)
+                        .key("port")
+                        .maxLength(5)
+                        .w(3 * t.size().control()))
+                .required()
+                .error(
+                    or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))));
     var database = field(
             "Database",
             textField(locked(open, e.at(DATABASE)), "Optional").key("database").wFull())
@@ -645,6 +668,12 @@ final class ConnectionDialog {
                 .key("read-only"))
         .help("Only reads are sent: find, aggregate without $out or $merge, counts and the"
             + " like. Inserts, updates, deletes and every other change are refused.");
+    var srv = field(
+            "SRV",
+            checkbox(Prop.of(() -> p.srv(), open ? this::srv : null), "Servers from DNS")
+                .key("srv"))
+        .help("The host of a mongodb+srv:// address, such as cluster0.example.net, for which DNS"
+            + " lists the servers and their ports.");
     var user = field(
             "User",
             marked(
@@ -674,7 +703,7 @@ final class ConnectionDialog {
         Form.Labels.BESIDE,
         Form.group(null, name),
         p.provider().keepsDocuments()
-            ? Form.group(null, type, address, database, tls, readOnly)
+            ? Form.group(null, type, address, srv, database, tls, readOnly)
             : Form.group(null, type, address, database, tls),
         Form.group(null, user, pass).divided());
     El content = col()
