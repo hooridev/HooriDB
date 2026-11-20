@@ -124,10 +124,10 @@ final class Suggestions {
   // A collection's name after db, as the shell writes it, and in getCollection('…').
   private static final Pattern COLLECTION = Pattern.compile(
       "db\\s*\\.\\s*(?:getCollection\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)|([A-Za-z_$][\\w$]*))");
-  private static final Pattern AFTER_DB = Pattern.compile("(?s).*\\bdb\\s*\\.\\s*$");
+  // Found at the end of the text: no repetition of a group, which the engine would recurse on.
+  private static final Pattern AFTER_DB = Pattern.compile("\\bdb\\s*\\.\\s*$");
   private static final Pattern AFTER_COLLECTION = Pattern.compile(
-      "(?s).*\\bdb\\s*\\.\\s*(?:getCollection\\([^)]*\\)|[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)"
-          + "\\s*\\.\\s*$");
+      "\\bdb\\s*\\.\\s*(?:getCollection\\([^)]*\\)|[A-Za-z_$][\\w$.]*)\\s*\\.\\s*$");
   private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_$][\\w$]*");
 
   /** The operators of queries, updates and pipelines, offered after a dollar. */
@@ -220,7 +220,7 @@ final class Suggestions {
       return into;
     }
     var known = new Known(s, provider);
-    if (AFTER_DB.matcher(before).matches()) {
+    if (AFTER_DB.matcher(before).find()) {
       for (var table : known.tables()) {
         var name = table.name();
         var text = IDENTIFIER.matcher(name).matches() && !Script.DATABASE_METHODS.contains(name)
@@ -240,7 +240,7 @@ final class Suggestions {
       }
       return into;
     }
-    if (AFTER_COLLECTION.matcher(before).matches()) {
+    if (AFTER_COLLECTION.matcher(before).find()) {
       for (var method : Script.READING_METHODS) {
         into.add(new Candidate(method, method, method, Symbol.CODE, "method", false));
       }
