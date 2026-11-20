@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
  * How to reach one database. The strings may be empty, as while a form edits a new profile, and
  * {@link #problems} says what keeps it from connecting. The password is not part of it: it is kept
  * in the system keyring under the id. The color that marks it is null for none, and the version
- * of its driver is null for the recommended one.
+ * of its driver is null for the recommended one. In the workspace it is an entry of its own.
  */
 public record ConnectionProfile(
     UUID id,
@@ -27,7 +27,8 @@ public record ConnectionProfile(
     String user,
     Tls tls,
     Color color,
-    String driverVersion) {
+    String driverVersion)
+    implements Workspace.Entry {
 
   private static final Pattern LABEL =
       Pattern.compile("[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?");

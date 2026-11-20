@@ -122,7 +122,7 @@ class HistoryStoreTest {
     var file =
         Files.writeString(folder.resolve(HistoryStore.FILE), VALID.replace(parts[0], parts[1]));
     var failure =
-        assertThrows(ProfileStore.UnreadableException.class, new HistoryStore(folder)::load);
+        assertThrows(WorkspaceStore.UnreadableException.class, new HistoryStore(folder)::load);
     assertTrue(
         failure.getMessage().startsWith("Cannot read the history in " + file),
         failure.getMessage());

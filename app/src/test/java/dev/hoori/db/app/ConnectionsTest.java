@@ -10,9 +10,10 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
-import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
+import dev.hoori.db.core.connection.Workspace;
+import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.io.IOException;
@@ -133,11 +134,11 @@ class ConnectionsTest {
   }
 
   void store(ConnectionProfile... profiles) throws IOException {
-    new ProfileStore(dir.resolve("config")).save(List.of(profiles));
+    new WorkspaceStore(dir.resolve("config")).save(new Workspace(List.of(profiles)));
   }
 
   List<ConnectionProfile> stored() throws IOException {
-    return new ProfileStore(dir.resolve("config")).load();
+    return new WorkspaceStore(dir.resolve("config")).load().connections();
   }
 
   static ConnectionProfile shop() {
@@ -265,7 +266,7 @@ class ConnectionsTest {
     assertEquals(1, secrets.received.size());
     assertEquals("\0".repeat(PASSWORD.length()), new String(secrets.received.getFirst()), "wiped");
     assertEquals("", app.state().dialog == null ? "" : app.state().dialog.password);
-    String file = Files.readString(dir.resolve("config").resolve(ProfileStore.FILE));
+    String file = Files.readString(dir.resolve("config").resolve(WorkspaceStore.FILE));
     assertFalse(file.contains(PASSWORD), file);
   }
 
@@ -505,6 +506,64 @@ class ConnectionsTest {
     assertEquals(3, stored().size());
   }
 
+  /**
+   * The tree shows the connections of the workspace's folders as its roots, from the top down,
+   * and every change of one keeps the folders in the file, an emptied one too.
+   */
+  @Test
+  void foldersInTheFileOutlastEveryChange() throws IOException {
+    var shop = shop();
+    var crm = shop().withName("crm");
+    var analytics = shop().withName("analytics");
+    var inner = new Workspace.Folder(UUID.randomUUID(), "inner", false, List.of(crm));
+    var reports = new Workspace.Folder(UUID.randomUUID(), "reports", false, List.of(analytics));
+    var outer = new Workspace.Folder(UUID.randomUUID(), "outer", true, List.of(inner, reports));
+    var empty = new Workspace.Folder(UUID.randomUUID(), "empty", false, List.of());
+    var config = new WorkspaceStore(dir.resolve("config"));
+    config.save(new Workspace(List.of(shop, outer, empty)));
+    App<State> app = app();
+    run(app, """
+        snap start
+        press role=treeitem label="crm" right
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Duplicate"
+        frame
+        """ + SETTLE);
+    assertEquals(List.of("shop-prod", "crm", "analytics"), roots(tree("start")));
+    app.state().put(crm.withHost("crm.example.com"));
+    app.state().put(shop.withColor(Color.GREEN));
+    more(app, SETTLE + DELETE_SHOP.replace("shop-prod", "analytics") + SETTLE + "snap end\n");
+    assertEquals(List.of("shop-prod", "crm", "crm (copy)"), roots(tree("end")));
+    var saved = config.load();
+    var copy = saved.connections().get(2);
+    assertEquals("crm (copy)", copy.name());
+    assertEquals(crm.host(), copy.host(), "made before the edit");
+    assertFalse(copy.id().equals(crm.id()));
+    assertEquals(
+        new Workspace(List.of(
+            shop.withColor(Color.GREEN),
+            new Workspace.Folder(
+                outer.id(),
+                "outer",
+                true,
+                List.of(
+                    new Workspace.Folder(
+                        inner.id(), "inner", false, List.of(crm.withHost("crm.example.com"), copy)),
+                    new Workspace.Folder(reports.id(), "reports", false, List.of()))),
+            empty)),
+        saved);
+  }
+
+  /** The labels of the tree's items, from the top down. */
+  static List<String> roots(String tree) {
+    return tree.lines()
+        .filter(l -> l.contains("role=treeitem"))
+        .map(l -> l.replaceAll(".*role=treeitem label=\"([^\"]*)\".*", "$1"))
+        .toList();
+  }
+
   @Test
   void aDuplicateHasANewIdAndDeletingTakesThePasswordAlong() throws IOException {
     var shop = shop().withColor(Color.RED);
@@ -645,11 +704,34 @@ class ConnectionsTest {
   @Test
   void anUnreadableFileIsNotAnEmptyList() throws IOException {
     Files.createDirectories(dir.resolve("config"));
-    Files.writeString(dir.resolve("config").resolve(ProfileStore.FILE), "{");
+    Files.writeString(dir.resolve("config").resolve(WorkspaceStore.FILE), "{");
     String tree = run(app(), "snap end\n");
     assertFalse(tree.contains("No connections yet"), tree);
     assertTrue(line(tree, "role=note").contains("label=\"Connections could not be read\""), tree);
     assertTrue(tree.contains("it is not valid JSON"), tree);
+  }
+
+  /**
+   * The list of an older HooriDB is taken only where there is no workspace; one that cannot be
+   * read stays as it is, as no save writes it, and the user is told so.
+   */
+  @Test
+  void anOlderListThatCannotBeReadStaysAsItIs() throws IOException {
+    var older = dir.resolve("config").resolve(WorkspaceStore.CONNECTIONS);
+    Files.createDirectories(older.getParent());
+    Files.writeString(older, "{");
+    App<State> app = app();
+    run(app, "snap blocked\n");
+    String blocked = tree("blocked");
+    assertTrue(line(blocked, "role=note").contains("\"Connections could not be read\""), blocked);
+    assertFalse(line(blocked, "label=\"Add connection\"").endsWith("disabled"), blocked);
+    more(app, NEW_SHOP.replace("New connection", "Add connection") + "key Enter\nframe\n" + SETTLE);
+    assertEquals(
+        "The connections that could not be read were kept in connections.json",
+        app.state().message);
+    assertEquals("{", Files.readString(older));
+    assertEquals(
+        List.of("shop-prod"), stored().stream().map(ConnectionProfile::name).toList());
   }
 
   static final String DELETE_SHOP = """
@@ -688,14 +770,14 @@ class ConnectionsTest {
   /** A file that is there but could not be read is not replaced, until a reload has read it. */
   @Test
   void aFileThatCouldNotBeReadIsNotReplaced() throws IOException {
-    Files.createDirectories(dir.resolve("config").resolve(ProfileStore.FILE)); // no file to read
+    Files.createDirectories(dir.resolve("config").resolve(WorkspaceStore.FILE)); // no file to read
     App<State> app = app();
     run(app, "snap blocked\n");
     String blocked = tree("blocked");
     assertTrue(line(blocked, "role=note").contains("\"Connections could not be read\""), blocked);
     assertTrue(line(blocked, "label=\"Add connection\"").endsWith("disabled"), blocked);
     assertFalse(blocked.contains("No connections yet"), blocked);
-    Files.delete(dir.resolve("config").resolve(ProfileStore.FILE));
+    Files.delete(dir.resolve("config").resolve(WorkspaceStore.FILE));
     store(shop());
     more(app, """
         press role=button label="Try again"
@@ -840,7 +922,7 @@ class ConnectionsTest {
   void aFailedSaveIsTriedAgain() throws IOException {
     App<State> app = app();
     run(app, "snap start\n");
-    Path file = dir.resolve("config").resolve(ProfileStore.FILE);
+    Path file = dir.resolve("config").resolve(WorkspaceStore.FILE);
     Files.createDirectories(file); // the store cannot write here
     more(app, NEW_SHOP + "key Enter\nframe\n" + SETTLE + """
         snap failed

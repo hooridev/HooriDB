@@ -17,7 +17,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.connection.Color;
-import dev.hoori.db.core.connection.ProfileStore;
+import dev.hoori.db.core.connection.Workspace;
+import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -129,7 +130,12 @@ class ConnectionColorsTest {
     assertFalse(saved.contains("role=dialog"), saved);
     assertTrue(marks(row(saved, "shop-prod"), "red") == 1, saved);
     assertEquals(
-        Color.RED, new ProfileStore(dir.resolve("config")).load().getFirst().color());
+        Color.RED,
+        new WorkspaceStore(dir.resolve("config"))
+            .load()
+            .connections()
+            .getFirst()
+            .color());
 
     c.run(restart(), START + "snap restarted\n");
     assertTrue(marks(row(c.tree("restarted"), "shop-prod"), "red") == 1);
@@ -167,7 +173,13 @@ class ConnectionColorsTest {
     var dialog = none.substring(none.indexOf("role=dialog label=\"Edit connection\""));
     assertEquals(0, marks(dialog, "red"), "no mark beside the title: " + none);
     assertFalse(row(c.tree("saved"), "shop-prod").contains("#color "), c.tree("saved"));
-    assertEquals(null, new ProfileStore(dir.resolve("config")).load().getFirst().color());
+    assertEquals(
+        null,
+        new WorkspaceStore(dir.resolve("config"))
+            .load()
+            .connections()
+            .getFirst()
+            .color());
   }
 
   @Test
@@ -198,13 +210,18 @@ class ConnectionColorsTest {
     assertEquals(
         1, c.servers.calls.stream().filter(("open " + PG + "/shop")::equals).count());
     assertEquals(
-        Color.GREEN, new ProfileStore(dir.resolve("config")).load().getFirst().color());
+        Color.GREEN,
+        new WorkspaceStore(dir.resolve("config"))
+            .load()
+            .connections()
+            .getFirst()
+            .color());
   }
 
   @Test
   void anUnknownColorIsRefusedAsABrokenFile() throws Exception {
-    new ProfileStore(dir.resolve("config")).save(java.util.List.of(SHOP));
-    var file = dir.resolve("config").resolve(ProfileStore.FILE);
+    new WorkspaceStore(dir.resolve("config")).save(new Workspace(java.util.List.of(SHOP)));
+    var file = dir.resolve("config").resolve(WorkspaceStore.FILE);
     Files.writeString(
         file, Files.readString(file).replace("\"tls\"", "\"color\": \"crimson\", \"tls\""));
     c.run(restart(), START + "snap end\n");

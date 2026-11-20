@@ -21,10 +21,11 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryStore;
-import dev.hoori.db.core.connection.ProfileStore;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.connection.StoredUpdates;
 import dev.hoori.db.core.connection.UpdateStore;
+import dev.hoori.db.core.connection.Workspace;
+import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
@@ -80,19 +81,22 @@ final class State {
   String message; // in the status line for a while, or null
   private int messages; // told so far
 
-  private final ProfileStore store;
+  private final WorkspaceStore store;
   private final Callable<Keyring> findKeyring;
   // Finds the keyring, and makes every call of it, one after another.
   final KeyringWorker keyringWorker = new KeyringWorker();
   final Drivers drivers; // null in a script run, which downloads none
   final Tester tester;
   final CatalogTree catalog;
-  List<ConnectionProfile> profiles = List.of(); // in the order shown and saved
-  boolean loaded; // whether the profiles were loaded, or failed to
-  String loadError; // why the profiles could not be loaded, or null
-  private boolean unreadable; // whether the file was there but could not be understood
-  String saveError; // why the profiles could not be saved, or null
-  private boolean unsaved; // the list differs from what was last written
+  private Workspace workspace = Workspace.EMPTY; // what is saved: the connections in folders
+  // The workspace's connections from the top down, in the order shown; set with it in change().
+  List<ConnectionProfile> profiles = List.of();
+  boolean loaded; // whether the workspace was loaded, or failed to
+  String loadError; // why the workspace could not be loaded, or null
+  // Where what a file that could not be understood held is kept once a save replaced it, or null.
+  private String setAside;
+  String saveError; // why the workspace could not be saved, or null
+  private boolean unsaved; // the workspace differs from what was last written
   Keyring keyring; // null while it is looked up
   private boolean lookingForKeyring;
   // Passwords typed but not saved, for this session only.
@@ -118,8 +122,8 @@ final class State {
   private int exits; // counted, so that a late patience is dropped
   // Sessions that did not say in time how they closed, which the next Exit does not wait for.
   private int waived;
-  private Work saving; // the save of the profiles on its way, or null
-  private boolean saveAgain; // the profiles changed while it ran
+  private Work saving; // the save of the workspace on its way, or null
+  private boolean saveAgain; // the workspace changed while it ran
   private boolean quitAnyway; // the last save at the end failed and the user was told
 
   // How long after the last edit of a console its text is saved.
@@ -205,7 +209,7 @@ final class State {
       boolean offer) {}
 
   /**
-   * @param folder where the profiles are kept
+   * @param folder where the workspace is kept
    * @param keyring finds the system keyring, off the app's thread
    * @param drivers where drivers are kept and come from, or null for none
    * @param tester tests a connection, off the app's thread
@@ -221,7 +225,7 @@ final class State {
       Servers servers,
       Updater updater,
       String version) {
-    this.store = new ProfileStore(folder);
+    this.store = new WorkspaceStore(folder);
     this.consoleStore = new ConsoleStore(folder);
     this.historyStore = new HistoryStore(folder);
     consolesKept = new Kept("consoles", () -> {
@@ -267,7 +271,7 @@ final class State {
   }
 
   /**
-   * Loads the profiles, then looks up the keyring; and the consoles, the history and what updates
+   * Loads the workspace, then looks up the keyring; and the consoles, the history and what updates
    * keep beside.
    */
   void start() {
@@ -284,7 +288,7 @@ final class State {
         error -> {
           loadFailed(consolesKept, error);
           // Not restored; what the user opens is saved where the old file is set aside.
-          consolesKept.canSave = error instanceof ProfileStore.UnreadableException;
+          consolesKept.canSave = error instanceof WorkspaceStore.UnreadableException;
         });
     var history = historyStore;
     app.background(
@@ -301,7 +305,7 @@ final class State {
         },
         error -> {
           loadFailed(historyKept, error);
-          historyLoaded(error instanceof ProfileStore.UnreadableException);
+          historyLoaded(error instanceof WorkspaceStore.UnreadableException);
         });
   }
 
@@ -468,7 +472,7 @@ final class State {
         });
   }
 
-  /** Loads the profiles again after a failure that left the file as it was. */
+  /** Loads the workspace again after a failure that left the file as it was. */
   void reload() {
     loaded = false;
     loadError = null;
@@ -479,17 +483,19 @@ final class State {
     app.background(
         "load connections",
         store::load,
-        list -> {
-          profiles = list;
+        found -> {
+          change(found);
           loaded = true;
-          unreadable = false;
+          setAside = null;
           lookForKeyring();
           restore();
         },
         error -> {
           loaded = true;
           loadError = message(error);
-          unreadable = error instanceof ProfileStore.UnreadableException;
+          setAside = error instanceof WorkspaceStore.UnreadableException unreadable
+              ? WorkspaceStore.kept(unreadable)
+              : null;
           lookForKeyring();
         });
   }
@@ -529,7 +535,7 @@ final class State {
    * could not understand, as a save would replace the file that is still there.
    */
   boolean canChange() {
-    return loaded && (loadError == null || unreadable);
+    return loaded && (loadError == null || setAside != null);
   }
 
   /** The keyring's store, or null while there is none. */
@@ -559,9 +565,7 @@ final class State {
         profile.tls(),
         profile.color(),
         profile.driverVersion());
-    var list = new ArrayList<>(profiles);
-    list.add(list.indexOf(profile) + 1, copy);
-    profiles = List.copyOf(list);
+    change(workspace.after(profile.id(), copy));
     selected = new Node.Connection(copy.id());
     persist();
   }
@@ -580,14 +584,7 @@ final class State {
             || !database(old).equals(database(profile)))) {
       close(tables(profile.id()));
     }
-    var list = new ArrayList<>(profiles);
-    int at = indexOf(profile.id());
-    if (at < 0) {
-      list.add(profile);
-    } else {
-      list.set(at, profile);
-    }
-    profiles = List.copyOf(list);
+    change(workspace.put(profile));
     selected = new Node.Connection(profile.id());
     // A color alone leaves a connection connected, and its consoles' sessions; its tabs take it.
     boolean color = old != null && old.withColor(profile.color()).equals(profile);
@@ -731,7 +728,7 @@ final class State {
     catalog.drop(this, profile.id());
     closeTabs(profile.id()); // its consoles, and with them their texts
     forget(profile.id());
-    profiles = profiles.stream().filter(p -> !p.id().equals(profile.id())).toList();
+    change(workspace.remove(profile.id()));
     if (selected != null && selected.id().equals(profile.id())) {
       selected = null;
     }
@@ -800,8 +797,8 @@ final class State {
   }
 
   /**
-   * Writes the profiles as they are now, off the app's thread. One save runs at a time: a change
-   * meanwhile saves again once it is done, with the list as it is then. The list counts as unsaved
+   * Writes the workspace as it is now, off the app's thread. One save runs at a time: a change
+   * meanwhile saves again once it is done, with the workspace as it is then. It counts as unsaved
    * until a write of it has succeeded.
    */
   void persist() {
@@ -813,20 +810,20 @@ final class State {
       saveAgain = true;
       return;
     }
-    var list = profiles;
+    var saved = workspace;
     var store = this.store;
     saving = app.background(
         "save connections",
         () -> {
-          store.save(list);
-          return list;
+          store.save(saved);
+          return saved;
         },
         done -> {
           saving = null;
           saveError = null;
           if (loadError != null) { // the file is readable now
             loadError = null;
-            tell("The connections that could not be read were kept in " + ProfileStore.UNREADABLE);
+            tell("The connections that could not be read were kept in " + setAside);
             restore();
           }
           if (saveAgain) {
@@ -1368,6 +1365,12 @@ final class State {
   Color color(UUID id) {
     var profile = profile(id);
     return profile == null ? null : profile.color();
+  }
+
+  // The one place that sets the workspace, and with it the connections shown.
+  private void change(Workspace changed) {
+    workspace = changed;
+    profiles = changed.connections();
   }
 
   ConnectionProfile profile(UUID id) {

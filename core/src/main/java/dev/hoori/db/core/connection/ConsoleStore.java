@@ -35,15 +35,15 @@ public final class ConsoleStore {
    * The consoles in the order they were saved, or none when there is no file. A file that cannot
    * be understood is left as it is.
    *
-   * @throws ProfileStore.UnreadableException if the file was read but not understood
-   * @throws IOException if it could not be read, with a message as {@link ProfileStore#load} gives
+   * @throws WorkspaceStore.UnreadableException if the file was read but not understood
+   * @throws IOException if it could not be read, with a message as {@link WorkspaceStore#load} gives
    */
   public List<StoredConsole> load() throws IOException {
     var bytes = file.load();
     return bytes == null ? List.of() : parse(bytes);
   }
 
-  private List<StoredConsole> parse(byte[] bytes) throws ProfileStore.UnreadableException {
+  private List<StoredConsole> parse(byte[] bytes) throws WorkspaceStore.UnreadableException {
     var list = file.objects(file.root(bytes, VERSION), "consoles", "console");
     var consoles = new ArrayList<StoredConsole>();
     for (int i = 0; i < list.size(); i++) {
@@ -58,7 +58,7 @@ public final class ConsoleStore {
   }
 
   /**
-   * Replaces the file with the consoles, as {@link ProfileStore#save} replaces its own.
+   * Replaces the file with the consoles, as {@link WorkspaceStore#save} replaces its own.
    *
    * @throws IOException if it could not be written, or would be larger than {@link #load} reads
    */

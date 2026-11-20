@@ -1,6 +1,6 @@
 package dev.hoori.db.core.connection;
 
-import dev.hoori.db.core.connection.ProfileStore.UnreadableException;
+import dev.hoori.db.core.connection.WorkspaceStore.UnreadableException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
@@ -24,7 +24,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * A JSON file of HooriDB's in a folder, read whole and replaced whole: what the stores of the
- * profiles, the consoles and the history share. A JSON object in UTF-8 with a {@code version}.
+ * workspace, the consoles and the history share. A JSON object in UTF-8 with a {@code version}.
  * Every call blocks on the disk.
  */
 final class JsonFile {
@@ -240,6 +240,15 @@ final class JsonFile {
 
   String text(JsonNode object, String where, String field) throws UnreadableException {
     return field(object, where, field, JsonNode::isString, "text").stringValue();
+  }
+
+  boolean bool(JsonNode object, String where, String field) throws UnreadableException {
+    return field(object, where, field, JsonNode::isBoolean, "true or false").booleanValue();
+  }
+
+  /** An array, whose items are for the caller to check. */
+  JsonNode array(JsonNode object, String where, String field) throws UnreadableException {
+    return field(object, where, field, JsonNode::isArray, "an array");
   }
 
   int integer(JsonNode object, String where, String field) throws UnreadableException {
