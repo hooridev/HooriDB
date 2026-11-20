@@ -1,0 +1,11 @@
+{
+  "title": "HooriDB",
+  "description": "A desktop database manager for PostgreSQL, MySQL and MariaDB.",
+  "root": true,
+  "pages": [
+    "index",
+    "get-started",
+    "features",
+    "reference"
+  ]
+}
