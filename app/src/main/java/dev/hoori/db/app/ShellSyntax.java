@@ -90,7 +90,7 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
       return new Formatted(Layout.of(text), null);
     } catch (SyntaxException e) {
       return new Formatted(null, problem(text, Math.clamp(e.offset(), 0, text.length())));
-    } catch (StackOverflowError e) {
+    } catch (StackOverflowError _) {
       // shortcut: the shell's reader recurses, so a statement nested thousands deep ends here;
       // until it has a limit of its own, as MongoDB's 200 levels (#82).
       return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
@@ -108,22 +108,30 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
         .findFirst()
         .orElse(text.length());
     for (var token : Lexer.tokens(text)) {
-      if (token.end() < at || token.end() == at && !token.open()) {
-        continue;
-      }
       if (token.start() > at && token.start() >= end) {
         break;
       }
-      boolean block = token.kind() == Lexer.Kind.COMMENT && text.startsWith("/*", token.start());
-      if (token.open() && token.start() <= at && (block || token.kind() == Lexer.Kind.STRING)) {
-        var kind = block ? Formatted.Kind.UNEXPECTED_END : Formatted.Kind.UNCLOSED_STRING;
-        return new Formatted.Problem(token.start(), token.end(), kind);
-      }
-      if (token.kind() != Lexer.Kind.COMMENT) {
-        return new Formatted.Problem(
-            Math.max(at, token.start()), token.end(), Formatted.Kind.UNEXPECTED);
+      var problem = problem(text, at, token);
+      if (problem != null) {
+        return problem;
       }
     }
     return new Formatted.Problem(at, at, Formatted.Kind.UNEXPECTED_END);
+  }
+
+  // The problem at the token; null for one before the offset and a comment that is closed.
+  private static Formatted.Problem problem(String text, int at, Lexer.Token token) {
+    if (token.end() < at || token.end() == at && !token.open()) {
+      return null;
+    }
+    boolean block = token.kind() == Lexer.Kind.COMMENT && text.startsWith("/*", token.start());
+    if (token.open() && token.start() <= at && (block || token.kind() == Lexer.Kind.STRING)) {
+      var kind = block ? Formatted.Kind.UNEXPECTED_END : Formatted.Kind.UNCLOSED_STRING;
+      return new Formatted.Problem(token.start(), token.end(), kind);
+    }
+    return token.kind() == Lexer.Kind.COMMENT
+        ? null
+        : new Formatted.Problem(
+            Math.max(at, token.start()), token.end(), Formatted.Kind.UNEXPECTED);
   }
 }

@@ -22,6 +22,8 @@ public final class Layout {
   private final StringBuilder out = new StringBuilder();
   private final ArrayDeque<Boolean> open = new ArrayDeque<>(); // per bracket whether broken
   private int depth; // of the brackets broken over lines
+  private int code = -1; // the last token written that is no comment
+  private boolean ownLine; // whether the comment written last starts its line
 
   private Layout(String text, List<Lexer.Token> tokens, List<Script.Piece> pieces, boolean[] uses) {
     this.text = text;
@@ -109,36 +111,41 @@ public final class Layout {
   }
 
   private String write() {
-    int code = -1; // the last token that is no comment
-    boolean ownLine = false; // whether the comment before starts its line
     for (int k = 0; k < tokens.size(); k++) {
       var token = tokens.get(k);
       boolean comment = token.kind() == Lexer.Kind.COMMENT;
-      if (k > 0 && kept[k]) {
-        out.append(text, tokens.get(k - 1).end(), token.start());
-        ownLine = false;
-      } else if (k > 0) {
-        var gap = comment ? commentGap(k) : gap(code, k);
-        if (lineComment(k - 1) && gap.indexOf('\n') < 0) {
-          gap = newline();
-        } else if (!comment && ownLine && breaks(k) == 0 && gap.indexOf('\n') >= 0) {
-          gap = " "; // after a block comment that starts its line, as it stood before the code
-        }
-        ownLine = comment && gap.indexOf('\n') >= 0;
-        out.append(gap);
+      if (k > 0) {
+        out.append(before(k, comment));
       }
       if (!comment) {
         code = k;
       }
-      if (!comment && !kept[k]) {
+      boolean laid = !comment && !kept[k];
+      if (laid) {
         close(k);
       }
       out.append(text, token.start(), token.end());
-      if (!comment && !kept[k]) {
+      if (laid) {
         open(k);
       }
     }
     return out.toString();
+  }
+
+  /** The white space before the token at k, which is not the first. */
+  private String before(int k, boolean comment) {
+    if (kept[k]) {
+      ownLine = false;
+      return text.substring(tokens.get(k - 1).end(), tokens.get(k).start());
+    }
+    var gap = comment ? commentGap(k) : gap(code, k);
+    if (lineComment(k - 1) && gap.indexOf('\n') < 0) {
+      gap = newline();
+    } else if (!comment && ownLine && breaks(k) == 0 && gap.indexOf('\n') >= 0) {
+      gap = " "; // after a block comment that starts its line, as it stood before the code
+    }
+    ownLine = comment && gap.indexOf('\n') >= 0;
+    return gap;
   }
 
   /** What goes before a comment: its own line where it had one, else a space. */
@@ -154,11 +161,14 @@ public final class Layout {
   private String gap(int a, int k) {
     if (a < 0 || ends[a]) { // a statement's first token, after comments or a statement
       int breaks = breaks(k);
-      return breaks > 1 ? "\n\n" : breaks > 0 || a >= 0 ? "\n" : " ";
+      if (breaks > 1) {
+        return "\n\n";
+      }
+      return breaks > 0 || a >= 0 ? "\n" : " ";
     }
     char before = punctuation(a);
     char c = punctuation(k);
-    if (open.isEmpty() || !open.peek()) { // outside brackets, or in one on a line
+    if (!Boolean.TRUE.equals(open.peek())) { // outside brackets, or in one on a line
       return inline(a, k, !open.isEmpty());
     }
     if (c == '}' || c == ']') {
@@ -209,7 +219,7 @@ public final class Layout {
 
   private void close(int k) {
     char c = punctuation(k);
-    if ((c == ')' || c == ']' || c == '}') && !open.isEmpty() && open.pop()) {
+    if ((c == ')' || c == ']' || c == '}') && Boolean.TRUE.equals(open.poll())) {
       depth--;
     }
   }

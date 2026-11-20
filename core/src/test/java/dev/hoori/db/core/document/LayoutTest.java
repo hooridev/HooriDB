@@ -92,9 +92,10 @@ class LayoutTest {
 
   @Test
   void refusesAStatementThatDoesNotParse() {
-    var e = assertThrows(
-        SyntaxException.class,
-        () -> Layout.of("db.c.find({ a: 1 })\ndb.c.find({ a: 1, })\n" + "db.c.find({ a: })"));
+    var e = assertThrows(SyntaxException.class, () -> Layout.of("""
+            db.c.find({ a: 1 })
+            db.c.find({ a: 1, })
+            db.c.find({ a: })"""));
     assertEquals(56, e.offset());
     var open = assertThrows(SyntaxException.class, () -> Layout.of("db.c.find({ a: 'x"));
     assertEquals(15, open.offset());
