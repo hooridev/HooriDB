@@ -33,6 +33,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** A table's rows in a tab: read in pages, late, on the lane of its connection. */
 class TableTabTest {
@@ -817,6 +819,110 @@ class TableTabTest {
     assertTrue(status(c.tree("read")).contains("\"At least 200 rows\""), c.tree("read"));
     assertTrue(line(c.tree("read"), "#rows ").contains("/201"), c.tree("read"));
     c.run(app, scroll(199) + SETTLE + "snap end\n");
+    assertTrue(status(c.tree("end")).contains("\"200 rows\""), c.tree("end"));
+  }
+
+  // Paging
+
+  /** Presses a paging button; the grid tells the rows it built in the frame after. */
+  static String page(String label) {
+    return "press role=button label=\"" + label + "\"\nframe\nframe\n";
+  }
+
+  static String inView(String tree) {
+    return line(tree, "#rows-in-view");
+  }
+
+  static boolean off(String tree, String label) {
+    return line(tree, "role=button label=\"" + label + "\"").contains(" disabled");
+  }
+
+  @Test
+  void thePagingButtonsScrollByTheRowsInViewAndKeepTheSelection() throws Exception {
+    servers.rows(BIG, 10_000, OptionalLong.of(10_000));
+    var app = shop();
+    c.run(app, table("big") + SETTLE + "press #cell-2-1\nadvance 1\nframe\nsnap top\n");
+    String top = c.tree("top");
+    assertTrue(inView(top).contains("\"Rows 1–23\""), top);
+    assertTrue(off(top, "First page") && off(top, "Previous page"), top);
+    assertFalse(off(top, "Next page") || off(top, "Last page"), top);
+    int before = servers.calls.size();
+    c.run(app, page("Next page") + SETTLE + "snap next\n");
+    String next = c.tree("next");
+    assertTrue(inView(next).contains("\"Rows 24–46\""), next);
+    assertFalse(off(next, "First page") || off(next, "Previous page"), next);
+    // The rows of the next page were read with the first.
+    assertEquals(before, servers.calls.size(), servers.calls.toString());
+    c.run(app, page("Previous page") + SETTLE + "snap back\n");
+    assertTrue(inView(c.tree("back")).contains("\"Rows 1–23\""), c.tree("back"));
+    c.run(app, page("Last page") + SETTLE + "snap last\n");
+    String last = c.tree("last");
+    assertTrue(inView(last).contains("\"Rows 9,978–10,000\""), last);
+    assertTrue(cell(last, 9_999, 0).contains("\"10000\""), last);
+    assertTrue(off(last, "Next page") && off(last, "Last page"), last);
+    assertFalse(off(last, "First page") || off(last, "Previous page"), last);
+    // As scrolling there reads: the page in view, and the one before it ahead.
+    assertEquals(
+        List.of("read " + BIG + " 9800-10000", "read " + BIG + " 9600-9800"),
+        servers.calls.subList(before, servers.calls.size()));
+    c.run(app, page("First page") + SETTLE + "snap first\n");
+    assertTrue(inView(c.tree("first")).contains("\"Rows 1–23\""), c.tree("first"));
+    var selection = tab(app).selection;
+    assertEquals(List.of(2, 1), List.of(selection.row(), selection.column()));
+    assertFalse(servers.overlapped);
+  }
+
+  /** Last page, as Control+End, finds the end where the estimate was far too high. */
+  @ParameterizedTest
+  @ValueSource(strings = {"press role=button label=\"Last page\"\n", "key End control\n"})
+  void theLastPageOfAnEstimateTooHighIsTheLastRow(String last) throws Exception {
+    servers.rows(BIG, 1000, OptionalLong.of(1_000_000));
+    var app = shop();
+    c.run(app, table("big") + SETTLE + "press #cell-0-0\nadvance 1\nframe\n");
+    int before = servers.calls.size();
+    c.run(app, last + "frame\nframe\n" + SETTLE + SETTLE + "snap end\n");
+    var after = servers.calls.subList(before, servers.calls.size());
+    String end = c.tree("end");
+    assertTrue(status(end).contains("\"1,000 rows\""), end);
+    assertTrue(inView(end).contains("–1,000\""), end);
+    assertTrue(cell(end, 999, 0).contains("\"1000\""), end);
+    assertTrue(off(end, "Next page") && off(end, "Last page"), end);
+    assertEquals(1, after.stream().filter(x -> x.startsWith("count")).count(), after.toString());
+    assertTrue(after.size() <= 7, after.toString());
+  }
+
+  /** Each tab keeps its own rows in view, also a table wide enough for a bar along the bottom. */
+  @Test
+  void eachTabPagesItsOwnGrid() throws Exception {
+    servers.rows(BIG, 10_000, OptionalLong.of(10_000));
+    servers.rows(KINDS, 1000, OptionalLong.of(1000));
+    var app = shop();
+    c.run(app, table("big") + SETTLE + "advance 1\nframe\n" + page("Next page") + SETTLE);
+    c.run(app, table("kinds") + SETTLE + "advance 1\nframe\nframe\nsnap kinds\n");
+    String kinds = c.tree("kinds");
+    assertTrue(inView(kinds).contains("\"Rows 1–"), kinds);
+    c.run(app, page("Last page") + SETTLE + "snap end\n");
+    String end = c.tree("end");
+    assertTrue(inView(end).contains("–1,000\""), end);
+    assertTrue(off(end, "Next page") && off(end, "Last page"), end);
+    c.run(app, "press role=tab label=\"big\"\nframe\nadvance 1\nframe\nframe\nsnap big\n");
+    assertTrue(inView(c.tree("big")).contains("\"Rows 24–46\""), c.tree("big"));
+  }
+
+  /** The row that asks whether there are more is not said to be in view. */
+  @Test
+  void theRowThatAsksForMoreIsNotInView() throws Exception {
+    var logs = PG + "/shop.public.logs";
+    servers.rows(logs, 200, OptionalLong.empty());
+    var app = shop();
+    c.run(app, table("logs") + SETTLE + "advance 1\nframe\n");
+    var held = servers.hold("read " + logs + " 200-400");
+    c.run(app, page("Last page") + "snap asking\n");
+    String asking = c.tree("asking");
+    assertTrue(inView(asking).contains("–200\""), asking);
+    assertTrue(off(asking, "Next page") && off(asking, "Last page"), asking);
+    held.countDown();
+    c.run(app, SETTLE + "snap end\n");
     assertTrue(status(c.tree("end")).contains("\"200 rows\""), c.tree("end"));
   }
 

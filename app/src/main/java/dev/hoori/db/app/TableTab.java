@@ -548,7 +548,8 @@ final class TableTab implements Tab {
       content.child(col().padding(t.space().m()).shrink(0).child(note));
     }
     // Loading cells only while something is read, or was: not for a table that failed at once.
-    if (columns != null && (fields != null || failure == null)) {
+    boolean grid = columns != null && (fields != null || failure == null);
+    if (grid) {
       content.child(grid(s, app).grow(1));
     } else if (opening != null) {
       content.child(col()
@@ -572,10 +573,67 @@ final class TableTab implements Tab {
         : Label.label(Label.Variant.MUTED, readText()).key("read-status");
     El rowsStatus =
         Label.label(Label.Variant.MUTED, rowsText()).key("rows-status").ellipsis();
-    return content.child(
-        said == null
-            ? Card.footer(rowsStatus, read)
-            : Card.footer(rowsStatus, Label.label(Label.Variant.MUTED, said).key("said"), read));
+    var end = new ArrayList<El>();
+    if (said != null) {
+      end.add(Label.label(Label.Variant.MUTED, said).key("said"));
+    }
+    end.add(read);
+    if (grid) {
+      // After the grid: the rows in view are those its build in this view scrolled to.
+      end.add(Label.label(Label.Variant.MUTED, inViewText()).key("rows-in-view"));
+      end.add(paging());
+    }
+    return content.child(Card.footer(rowsStatus, end.toArray(El[]::new)));
+  }
+
+  /** The rows wholly in view, as "Rows 201–223"; empty before the grid was laid out. */
+  private String inViewText() {
+    int top = selection.firstRowInView();
+    if (top < 0 || top >= rows) {
+      return "";
+    }
+    // Not the row that asks whether there are more, which is not known to be there.
+    long bottom = Math.min(selection.lastRowInView() + 1L, rows);
+    return String.format(Locale.ROOT, "Rows %,d–%,d", top + 1, bottom);
+  }
+
+  /**
+   * Buttons that scroll the grid a page, the rows in view, back or on, or to its start or end; the
+   * selection stays. Each is off where the grid shows its first or last row already.
+   */
+  private El paging() {
+    Theme t = Theme.CURRENT.get();
+    int top = selection.firstRowInView();
+    int bottom = selection.lastRowInView();
+    boolean back = top > 0;
+    boolean on = bottom >= 0 && bottom < gridRows() - 1;
+    // The handlers read the rows in view anew: the label may be behind by the rows built around.
+    return row()
+        .gap(t.space().xs())
+        .align(Style.Align.CENTER)
+        .child(page(Symbol.ARROW_UP, "First page", back, () -> selection.scrollToRow(0)))
+        .child(page(Symbol.CHEVRON_UP, "Previous page", back, () -> {
+          int first = selection.firstRowInView();
+          int last = selection.lastRowInView();
+          selection.scrollToRow(Math.max(0, first - (last - first + 1)));
+        }))
+        .child(page(
+            Symbol.CHEVRON_DOWN,
+            "Next page",
+            on,
+            () -> selection.scrollToRow(selection.lastRowInView() + 1)))
+        // As Control+End: an estimate too high shows the end once the reads there correct it.
+        .child(page(Symbol.ARROW_DOWN, "Last page", on, () -> selection.scrollToRow(gridRows())))
+        .key("paging");
+  }
+
+  private static El page(Symbol icon, String label, boolean enabled, Runnable onPress) {
+    return Button.icon(
+        Button.Variant.GHOST,
+        icon,
+        label,
+        enabled ? onPress : null,
+        Button.options().size(Button.Size.SMALL));
   }
 
   /** How many rows, and what the number rests on; empty before the first read. */
@@ -688,10 +746,15 @@ final class TableTab implements Tab {
         .contextMenu(
             menu, List.of(Menu.item("Refresh", () -> open(s, true)).icon(Symbol.ARROW_CLOCKWISE)))
         .loading(this::loaded, (first, last) -> want(s, first, last));
-    return DataGrid.dataGrid(shown, (int) Math.min(shown(), GRID_ROWS), options)
+    return DataGrid.dataGrid(shown, gridRows(), options)
         .key("grid")
         .label("Rows of " + table.name())
         .defaultFocus();
+  }
+
+  /** The rows in the grid, which counts them in an int. */
+  private int gridRows() {
+    return (int) Math.min(shown(), GRID_ROWS);
   }
 
   private boolean loaded(int row) {
