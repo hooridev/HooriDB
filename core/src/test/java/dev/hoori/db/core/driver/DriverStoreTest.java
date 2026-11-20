@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
@@ -90,7 +91,10 @@ public class DriverStoreTest {
     repository.publish(DRIVER, "43.0.0-rc1", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(9)));
     repository.publish(DRIVER, "42.7.11.jre7", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(9)));
 
-    assertEquals(new Recommended("42.7.10", false), store.recommended(DRIVER, NOW));
+    var recommended = store.recommended(DRIVER, NOW);
+    assertEquals("42.7.10", recommended.version());
+    assertFalse(recommended.offline());
+    assertEquals("42.7.10", recommended.choices().recommended(), "what named it");
     // Newest first, and no further than the first that qualifies.
     assertEquals(
         List.of(
@@ -98,10 +102,13 @@ public class DriverStoreTest {
             "dev/hoori/fake/fake-jdbc/42.7.10/fake-jdbc-42.7.10.jar"),
         repository.asked);
 
-    assertEquals(
-        new Recommended("42.7.11", false), store.recommended(DRIVER, NOW, Duration.ofDays(1)));
-    assertFailure(
-        Failure.NO_RECOMMENDATION, () -> store.recommended(DRIVER, NOW, Duration.ofDays(60)));
+    assertEquals("42.7.11", store.recommended(DRIVER, NOW, Duration.ofDays(1)).version());
+    // None qualifies: no version, and the choices read, which say so.
+    var none = store.recommended(DRIVER, NOW, Duration.ofDays(60));
+    assertNull(none.version());
+    assertFalse(none.offline());
+    assertTrue(none.choices().versions().containsAll(List.of("42.7.11", "42.7.10", "42.7.9")));
+    assertNull(none.choices().recommended());
   }
 
   @Test
@@ -129,7 +136,7 @@ public class DriverStoreTest {
         storage.resolve("dev.hoori.fake/fake-jdbc/1.11.0/fake-jdbc-1.11.0.jar"),
         FakeDriver.plain("changed"));
     repository.offline = true;
-    assertEquals(new Recommended("1.10.0", true), store.recommended(DRIVER, NOW));
+    assertEquals(new Recommended("1.10.0", true, null), store.recommended(DRIVER, NOW));
   }
 
   @Test
@@ -137,7 +144,7 @@ public class DriverStoreTest {
     for (int i = 1; i <= 8; i++) {
       repository.publish(DRIVER, "1." + i + ".0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(1)));
     }
-    assertFailure(Failure.NO_RECOMMENDATION, () -> store.recommended(DRIVER, NOW));
+    assertNull(store.recommended(DRIVER, NOW).version());
     assertEquals(DriverStore.MAX_CANDIDATES, repository.asked.size());
   }
 
@@ -500,7 +507,7 @@ public class DriverStoreTest {
     repository.refusing = false;
     store.download(DRIVER, "1.0.0", DriverStore.Progress.NONE);
     repository.refusing = true;
-    assertEquals(new Recommended("1.0.0", true), store.recommended(DRIVER, NOW));
+    assertEquals(new Recommended("1.0.0", true, null), store.recommended(DRIVER, NOW));
   }
 
   @Test

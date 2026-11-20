@@ -9,7 +9,6 @@ import static dev.hoori.db.core.driver.DriverException.Failure.NOT_DOWNLOADED;
 import static dev.hoori.db.core.driver.DriverException.Failure.NOT_FOUND;
 import static dev.hoori.db.core.driver.DriverException.Failure.NO_CHECKSUM;
 import static dev.hoori.db.core.driver.DriverException.Failure.NO_NETWORK;
-import static dev.hoori.db.core.driver.DriverException.Failure.NO_RECOMMENDATION;
 import static dev.hoori.db.core.driver.DriverException.Failure.NO_SPACE;
 import static dev.hoori.db.core.driver.DriverException.Failure.STORAGE;
 import static dev.hoori.db.core.driver.DriverException.Failure.TOO_LARGE;
@@ -78,8 +77,14 @@ public final class DriverStore {
   private static final int MAX_METADATA_SIZE = 4 << 20;
   private static final int MAX_CHECKSUM_SIZE = 1024;
 
-  /** The version to use, and whether it was chosen from what is downloaded, without a network. */
-  public record Recommended(String version, boolean offline) {}
+  /**
+   * The version to use, and whether it was chosen from what is downloaded, without a network.
+   *
+   * @param version the version, or null where none of the newest few releases qualifies
+   * @param choices what the repository offered, which named it or none; null when it was chosen
+   *     offline
+   */
+  public record Recommended(String version, boolean offline, Choices choices) {}
 
   /**
    * The stable versions that can be chosen, newest first; the recommended one among them, or null
@@ -178,8 +183,8 @@ public final class DriverStore {
    * The newest stable release that was published at least the waiting period before now. A bad
    * release is usually noticed and withdrawn within days, so a younger one is never recommended,
    * though it can still be downloaded by name. Only the newest few releases are asked for their
-   * date; when none of them qualifies, this fails with {@link
-   * DriverException.Failure#NO_RECOMMENDATION}. When the repository cannot be reached or fails,
+   * date; when none of them qualifies, the version is null, with the choices read. When the
+   * repository cannot be reached or fails,
    * this is the newest stable version that is downloaded and matches its record, and {@link
    * DriverException.Failure#NO_NETWORK} or {@link DriverException.Failure#UNAVAILABLE} only when
    * there is none.
@@ -188,10 +193,7 @@ public final class DriverStore {
       throws DriverException {
     try {
       var choices = choices(driver, now, waitingPeriod);
-      if (choices.recommended() == null) {
-        throw new DriverException(NO_RECOMMENDATION, base(driver));
-      }
-      return new Recommended(choices.recommended(), false);
+      return new Recommended(choices.recommended(), false, choices);
     } catch (DriverException e) {
       if (e.failure() != NO_NETWORK && e.failure() != UNAVAILABLE) {
         throw e;
@@ -200,7 +202,7 @@ public final class DriverStore {
       // which is good enough offline, so its age is not checked again and no dates are kept.
       for (var version : downloaded(driver)) {
         if (Maven.isStable(version) && matchesRecord(jar(driver, version))) {
-          return new Recommended(version, true);
+          return new Recommended(version, true, null);
         }
       }
       throw e;

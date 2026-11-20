@@ -248,11 +248,10 @@ class ConnectionsTest {
     assertTrue(line(typed, "label=\"Save\"").endsWith("56x24"), "Save can go: " + typed);
     // It fits, also with the checkbox at its end: no scrollbar.
     assertFalse(line(typed, "#dialog-content").contains("thumb-y"), typed);
-    for (var heading : List.of("Server", "Login")) {
-      assertTrue(typed.contains("role=group label=\"" + heading + "\""), typed);
-      assertTrue(line(typed, "role=heading \"" + heading + "\"").contains("level=3"), typed);
-    }
-    assertTrue(line(typed, "#tls").contains("label=\"Encrypted\""), "TLS followed the host");
+    assertFalse(typed.contains("role=heading \"Server\""), "no headings: " + typed);
+    assertTrue(
+        line(typed, "#tls").contains("label=\"Encrypted, any certificate\""),
+        "TLS followed the host");
     assertTrue(line(tree("saving"), "label=\"Save\"").contains("busy"), "the keyring answers");
     assertFalse(tree.contains("role=dialog"), tree);
     assertTrue(line(tree, "role=treeitem").contains("label=\"shop-prod\""), tree);
@@ -362,6 +361,40 @@ class ConnectionsTest {
     assertTrue(end.contains("\"Enter the server's name or address.\""), end);
   }
 
+  /** TLS off is warned of only where the host would have it on: on a network, not this machine. */
+  @Test
+  void tlsOffIsWarnedOfOnARemoteHostOnly() throws IOException {
+    run(app(), """
+        press role=button label="New connection"
+        frame
+        advance 1
+        frame
+        press role=combobox label="Encrypted, any certificate"
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Off"
+        frame
+        advance 1
+        frame
+        snap empty
+        press role=textbox label="Host"
+        type "db.example.com"
+        frame
+        snap remote
+        press role=textbox label="Host"
+        key A control
+        type "localhost"
+        frame
+        snap local
+        """);
+    var warning = "warning=\"Password and data go over the network unencrypted.\"";
+    assertFalse(line(tree("empty"), "#tls").contains("warning="), "no host yet");
+    assertTrue(line(tree("remote"), "#tls").contains(warning), tree("remote"));
+    assertTrue(line(tree("local"), "#tls").contains("label=\"Off\""), "set by hand");
+    assertFalse(line(tree("local"), "#tls").contains("warning="), tree("local"));
+  }
+
   @Test
   void thePortFollowsTheProviderAndTheTlsTheHostUntilSetByHand() throws IOException {
     run(app(), """
@@ -384,7 +417,7 @@ class ConnectionsTest {
         frame
         advance 1
         frame
-        press role=menuitem label="Encrypted, server verified"
+        press role=menuitem label="Encrypted and verified"
         frame
         press role=textbox label="Host"
         key A control
@@ -395,7 +428,7 @@ class ConnectionsTest {
     assertTrue(line(tree("mysql"), "#port").contains("\"3306\""));
     assertTrue(line(tree("mariadb"), "#port").contains("\"3400\""), "set by hand");
     assertTrue(line(tree("local"), "#tls").contains("label=\"Off\""));
-    assertTrue(line(tree("end"), "#tls").contains("label=\"Encrypted, server verified\""));
+    assertTrue(line(tree("end"), "#tls").contains("label=\"Encrypted and verified\""));
   }
 
   @Test
@@ -429,9 +462,12 @@ class ConnectionsTest {
     String edit = tree("edit");
     assertTrue(line(edit, "role=dialog").contains("label=\"Edit connection\""), edit);
     assertTrue(line(edit, "#host").contains("\"db.example.com\""), edit);
-    assertTrue(line(edit, "#tls").contains("label=\"Encrypted, server verified\""));
-    assertTrue(edit.contains("\"Leave it empty to keep the current password.\""), edit);
-    assertTrue(line(edit, "label=\"Save password in the system keyring\"").endsWith(" checked"));
+    assertTrue(line(edit, "#tls").contains("label=\"Encrypted and verified\""));
+    // The placeholder says that an empty field keeps it.
+    assertTrue(
+        line(edit, "#password").contains("placeholder=\"Unchanged, saved in the keyring\""), edit);
+    assertFalse(edit.contains("Leave it empty"), edit);
+    assertTrue(line(edit, "label=\"Save in system keyring\"").endsWith(" checked"));
     assertTrue(line(edit, "label=\"Save\"").endsWith("disabled"), "nothing changed yet");
     String end = tree("end");
     assertFalse(end.contains("role=dialog"), end);
@@ -542,7 +578,7 @@ class ConnectionsTest {
         snap end
         """);
     String typed = tree("typed");
-    assertTrue(line(typed, "label=\"Save password in the system keyring\"").contains("disabled"));
+    assertTrue(line(typed, "label=\"Save in system keyring\"").contains("disabled"));
     assertTrue(
         typed.contains("\"No keyring service, such as GNOME Keyring or KWallet, is running."
             + " The password is kept until HooriDB closes.\""),
@@ -755,7 +791,7 @@ class ConnectionsTest {
     secrets.stored.put(shop.id(), PASSWORD);
     App<State> app = app();
     run(app, EDIT_SHOP + """
-        press role=checkbox label="Save password in the system keyring"
+        press role=checkbox label="Save in system keyring"
         frame
         press role=button label="Save"
         frame
@@ -764,14 +800,14 @@ class ConnectionsTest {
     assertTrue(app.state().remembers(shop.id()), "into the session");
     more(app, "advance 1\nframe\n" + EDIT_SHOP + """
         snap kept
-        press role=checkbox label="Save password in the system keyring"
+        press role=checkbox label="Save in system keyring"
         frame
         press role=button label="Save"
         frame
         """ + SETTLE);
-    assertTrue(tree("kept")
-        .contains("\"Leave it empty to keep the current password. The password"
-            + " is kept until HooriDB closes.\""));
+    assertTrue(tree("kept").contains("\"The password is kept until HooriDB closes.\""));
+    assertTrue(line(tree("kept"), "#password")
+        .contains("placeholder=\"Unchanged, kept until HooriDB closes\""));
     assertEquals(PASSWORD, secrets.stored.get(shop.id()), "back into the keyring");
     assertFalse(app.state().remembers(shop.id()));
   }

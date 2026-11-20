@@ -1188,6 +1188,11 @@ final class State {
     }
   }
 
+  /** Whether the act waits: for a console's answer, or until it is done. */
+  boolean pends(Object owner) {
+    return pending != null && Objects.equals(pending.owner(), owner);
+  }
+
   /** Why the console may start nothing now, or null. */
   String locked(ConsoleTab console) {
     return pending != null
@@ -1739,6 +1744,9 @@ final class State {
   }
 
   private void closeAll() {
+    if (dialog != null) {
+      dialog.close(this); // and what it reads, its driver's dialog's too
+    }
     consoles(null).forEach(ConsoleTab::close);
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {

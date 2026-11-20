@@ -50,7 +50,7 @@ final class Words {
             + " network as they are.";
       case CERTIFICATE_REJECTED ->
         "The server's certificate is not trusted, or not for " + p.host()
-            + ". Encrypted accepts it, without verifying the server.";
+            + ". “Encrypted, any certificate” accepts it, without verifying the server.";
       case UNFIT, CANCELLED, OTHER -> null;
     };
   }
