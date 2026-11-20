@@ -25,7 +25,10 @@ public final class MongoBridge implements DocumentDriver {
     QUIET.setLevel(Level.OFF);
   }
 
-  public MongoBridge() {}
+  /** As the class loader of the driver makes it, by its name. */
+  public MongoBridge() {
+    // Nothing to set up: the driver is made for each connection.
+  }
 
   @Override
   public DocumentClient connect(Target target, char[] password) throws DocumentException {

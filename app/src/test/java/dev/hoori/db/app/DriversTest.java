@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -205,6 +206,15 @@ class DriversTest {
       advance 1
       frame
       """;
+
+  @Test
+  void theAppHasNoDriverOfMongoDbOnItsClassPath() {
+    // It is downloaded as the JDBC drivers are, and core's bridge is loaded beside it.
+    assertThrows(
+        ClassNotFoundException.class,
+        () -> Class.forName(
+            "com.mongodb.client.MongoClients", false, DriversTest.class.getClassLoader()));
+  }
 
   @Test
   void theListOfVersionsWaitsLoadsAndFails() throws Exception {

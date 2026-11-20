@@ -88,7 +88,9 @@ final class Mongo {
         .applyToSslSettings(ssl -> {
           ssl.enabled(target.tls() != Tls.OFF);
           if (target.tls() == Tls.ENCRYPTED) {
-            // Encrypted, but any certificate for any name, as the JDBC drivers' "encrypted".
+            // Encrypted, but any certificate for any name, as the JDBC drivers' "encrypted"
+            // (sslmode=require, trustServerCertificate) on the user's choice: Verified checks it.
+            // The driver has no option for it, so it gets a trust manager that takes all.
             ssl.invalidHostNameAllowed(true).context(trustingAll());
           }
         });
@@ -120,10 +122,14 @@ final class Mongo {
           new TrustManager[] {
             new X509TrustManager() {
               @Override
-              public void checkClientTrusted(X509Certificate[] chain, String type) {}
+              public void checkClientTrusted(X509Certificate[] chain, String type) {
+                // HooriDB is the client; no server asks it to be trusted here.
+              }
 
               @Override
-              public void checkServerTrusted(X509Certificate[] chain, String type) {}
+              public void checkServerTrusted(X509Certificate[] chain, String type) { // NOSONAR
+                // Any certificate: Encrypted, as the user chose it, does not check the server's.
+              }
 
               @Override
               public X509Certificate[] getAcceptedIssuers() {
@@ -289,7 +295,7 @@ final class Mongo {
         };
       case Document d -> document(d);
       case List<?> list -> {
-        var array = new BsonArray(list.size());
+        var array = new BsonArray();
         for (var item : list) {
           array.add(value(item));
         }

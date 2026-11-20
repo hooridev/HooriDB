@@ -89,14 +89,11 @@ class DocumentConnectorServerTest {
   }
 
   @Test
-  void theBridgeSeesTheDriverAndCoreAndTheAppSeesNoDriver() throws Exception {
+  // That the app's class path has no driver is the app's DriversTest's: core compiles against it.
+  void theBridgeSeesTheDriverAndCore() throws Exception {
     var driver = TestServer.driver(Provider.MONGODB);
     assertTrue(driver.documents());
     assertThrows(IllegalStateException.class, driver::driver);
-    assertThrows(
-        ClassNotFoundException.class,
-        () -> Class.forName(
-            "com.mongodb.client.MongoClients", false, ClassLoader.getPlatformClassLoader()));
     var server = TestServer.of(Provider.MONGODB);
     var opened =
         DocumentConnector.open(server.profile(), TestServer.password(), server.driver(), TIMEOUT);
