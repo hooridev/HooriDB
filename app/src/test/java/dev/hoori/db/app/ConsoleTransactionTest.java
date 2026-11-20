@@ -2166,20 +2166,20 @@ class ConsoleTransactionTest {
   @Test
   void exitWaitsForASilentSessionOnlySoLong() throws Exception {
     var app = k.console(SHOP);
-    // shortcut: nothing is kept, as Exit would wait for its save, whose end a script hears only at
-    // an await, which waits for the silent session too; keep them once a script can hear one.
-    app.state().consolesKept.canSave = false;
-    app.state().historyKept.canSave = false;
     c.run(app, type(ORDERS) + RUN);
     servers.dead = true; // the held call ends only once its gate opens, interrupted or not
     var gate = servers.hold("run " + PG + " " + COUNT);
     c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains("run " + PG + " " + COUNT));
-    app.state().consolesKept.quitAnyway = true; // and Exit does not stop for what is not kept
-    app.state().historyKept.quitAnyway = true;
     c.run(app, EXIT + "advance " + State.EXIT_SECONDS + "\nframe\nsnap silent\n");
     assertFalse(app.windows().all().isEmpty());
     assertTrue(c.tree("silent").contains("did not say in time"), c.tree("silent"));
+    // The saves end, which an await would not hear, as it waits for the silent session too; the
+    // consoles' change since the save on its way is saved after it.
+    c.run(
+        app,
+        "await \"save history\"\nawait \"save consoles\"\nframe\n"
+            + "await \"save consoles\"\nframe\n");
     c.run(app, EXIT);
     assertTrue(app.windows().all().isEmpty(), "the second Exit goes");
     gate.countDown();

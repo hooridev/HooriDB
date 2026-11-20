@@ -20,6 +20,7 @@ import com.rethinkj.ui.kit.DataGrid.CellIcon;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.EmptyState;
+import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
@@ -2698,10 +2699,11 @@ final class ConsoleTab implements Tab {
                 DataGrid.DataType.TEXT,
                 row -> log.get(row).statement())
             .sortable(false),
-        new DataGrid.Column("Took", 4 * unit, DataGrid.DataType.INTEGER, row -> {
-              var took = log.get(row).took();
-              return took == null ? "" : took.toMillis() + " ms";
-            })
+        new DataGrid.Column(
+                "Took",
+                4 * unit,
+                Format.DURATION.type(),
+                row -> Format.DURATION.text(log.get(row).took()))
             .sortable(false),
         new DataGrid.Column(
                 "Result", 20 * unit, DataGrid.DataType.TEXT, row -> log.get(row).text())
@@ -2963,8 +2965,8 @@ final class ConsoleTab implements Tab {
       }
     }
     int caret = from + put.stripTrailing().length();
-    // shortcut: the editor's field is looked up in the tree, as CodeEditor.State cannot insert by
-    // itself; let the state insert once the kit offers it.
+    // shortcut: the editor's field is looked up in the tree, as CodeEditor.State's replaceSelection
+    // puts the caret after the text, here after the line break; use it once it takes a caret.
     var field = Frame.find(app.tree(), "sql");
     if (field != null) {
       app.edit(field, from, to, put, caret);
