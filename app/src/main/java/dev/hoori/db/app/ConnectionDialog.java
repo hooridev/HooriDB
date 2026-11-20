@@ -132,7 +132,7 @@ final class ConnectionDialog {
 
   /**
    * Looks up the kind's driver to use, and when the version chosen was published; the versions to
-   * choose from are read once the driver's dialog asks for them.
+   * choose from are those the lookup read, or are read once the driver's dialog opens.
    */
   private void driver(State s) {
     var p = editing.value();
@@ -144,18 +144,41 @@ final class ConnectionDialog {
     probe.lookUp(s, p.provider(), p.driverVersion());
   }
 
-  /** Driver…: opens the driver's dialog, which reads the versions unless they were read. */
+  /**
+   * The versions were read, or could not be: the recommended version is the one they name, for a
+   * test as in the list, where the list was read on its own.
+   */
+  private void listed(State s) {
+    var p = editing.value();
+    if (p.driverVersion() != null) {
+      return;
+    }
+    var recommended = versions.recommended();
+    var lookup = probe.fetch.lookup;
+    // The versions name none, or the one looked up: nothing to look up again.
+    if (recommended == null || lookup instanceof Fetch.Found f && f.version().equals(recommended)) {
+      return;
+    }
+    if (!(lookup instanceof Fetch.Looking)) {
+      probe.stop(); // a test or a download is for the version recommended before
+    }
+    probe.fetch.lookUp(s, p.provider(), null, versions.choices());
+  }
+
+  /**
+   * Driver…: opens the driver's dialog, with the versions the lookup read, or else read now; and
+   * what was downloaded.
+   */
   private void chooseDriver(State s) {
     choosingDriver = true;
     if (versions.read == null && !versions.reading()) {
-      versions.read(s);
+      versions.read(s, probe.fetch.choices, () -> listed(s));
     }
   }
 
-  /** Close and Escape of the driver's dialog: the versions are no longer read for it. */
+  /** Close and Escape of the driver's dialog. */
   private void closeDriver() {
     choosingDriver = false;
-    versions.stop();
   }
 
   private void version(State s, String version) {
@@ -165,7 +188,7 @@ final class ConnectionDialog {
     editing.at(DRIVER_VERSION).set(version);
     versions.date(s, version);
     probe.stop(); // a test or a download is for the other version
-    probe.lookUp(s, editing.value().provider(), version);
+    probe.fetch.lookUp(s, editing.value().provider(), version, versions.choices());
   }
 
   /** Asks the keyring whether it holds a password for the profile edited, once there is one. */
@@ -518,7 +541,8 @@ final class ConnectionDialog {
     var e = editing;
     var p = e.value();
     var problems = p.problems();
-    boolean open = !changing; // nothing changes while the keyring is being changed
+    // Nothing changes while a Save waits for a console's answer or the keyring: it saves the form.
+    boolean open = !changing && !s.pends(act);
     El save = button(
         PRIMARY,
         "Save",
@@ -528,7 +552,8 @@ final class ConnectionDialog {
                 changing
                     ? Button.State.BUSY
                     : ready() ? Button.State.READY : Button.State.DISABLED));
-    El cancel = button(SECONDARY, "Cancel", open ? () -> cancel(s) : slow ? () -> giveUp(s) : null);
+    El cancel =
+        button(SECONDARY, "Cancel", !changing ? () -> cancel(s) : slow ? () -> giveUp(s) : null);
     // Also where it is not known whether the keyring holds one: the choice is the user's.
     boolean canSave = s.secrets() != null && (stored != null || asking == null);
     boolean inKeyring = Boolean.TRUE.equals(stored);
@@ -538,7 +563,7 @@ final class ConnectionDialog {
     String fallback = String.valueOf(p.provider().defaultPort());
     var name = field(
         "Name",
-        textField(locked(e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
+        textField(locked(open, e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
             .key("name")
             .wFull());
     var color = field(
@@ -563,10 +588,7 @@ final class ConnectionDialog {
                     .key("type")
                     .label("Type")
                     .grow(1))
-                .child(button(
-                        SECONDARY,
-                        chosen == null ? "Driver…" : "Driver " + chosen + "…",
-                        open ? () -> chooseDriver(s) : null)
+                .child(button(SECONDARY, driverText(chosen), open ? () -> chooseDriver(s) : null)
                     .key("driver")
                     .label("Driver")))
         .warning(driverWarning(s));
@@ -596,7 +618,7 @@ final class ConnectionDialog {
             .error(or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))));
     var database = field(
             "Database",
-            textField(locked(e.at(DATABASE)), "Optional").key("database").wFull())
+            textField(locked(open, e.at(DATABASE)), "Optional").key("database").wFull())
         .error(
             or(error(problems, ConnectionProfile.Field.DATABASE), probe.error(Probe.At.DATABASE)));
     var tls = field(
@@ -613,7 +635,8 @@ final class ConnectionDialog {
         .error(probe.error(Probe.At.TLS));
     var user = field(
             "User",
-            marked(Probe.At.USER, textField(locked(e.at(USER))).key("user").wFull()))
+            marked(
+                Probe.At.USER, textField(locked(open, e.at(USER))).key("user").wFull()))
         .error(error(problems, ConnectionProfile.Field.USER));
     var pass = field(
             "Password",
@@ -739,7 +762,7 @@ final class ConnectionDialog {
           Button.Variant.GHOST,
           Symbol.ARROW_CLOCKWISE,
           "Read the versions again",
-          () -> versions.read(s)));
+          () -> versions.read(s, probe.fetch.choices, () -> listed(s))));
     }
     return line;
   }
@@ -750,24 +773,46 @@ final class ConnectionDialog {
    * failed, which the help says instead.
    */
   private String youngWarning(State s) {
-    var chosen = editing.value().driverVersion();
-    if (!versions.young(chosen)
+    var young = young();
+    if (young == null
         || probe.fetch.lookup instanceof Fetch.Missing
         || s.drivers != null && versions.problem(s.drivers) != null) {
       return null;
     }
+    return probe.line(s) + ". " + young + ", once a bad release would be withdrawn.";
+  }
+
+  /** How young the version chosen is, from its date alone, where it is too new; null otherwise. */
+  private String young() {
+    var chosen = editing.value().driverVersion();
+    if (!versions.young(chosen)) {
+      return null;
+    }
     var age = versions.age(chosen);
-    return probe.line(s) + ". " + (age == null ? "Very new" : "Only " + age)
-        + ": recommended after " + DriverStore.WAITING_PERIOD.toDays()
-        + " days, once a bad release would be withdrawn.";
+    return (age == null ? "Very new" : "Only " + age) + ": recommended after "
+        + DriverStore.WAITING_PERIOD.toDays() + " days";
   }
 
   /**
-   * What needs attention about the driver, under the kind of database: a version too new, or a
-   * lookup that failed; null where all is well, which the form does not say.
+   * What needs attention about the driver, under the kind of database, in short: a lookup that
+   * failed, and a version too new; null where all is well, which the form does not say.
    */
   private String driverWarning(State s) {
-    return probe.fetch.lookup instanceof Fetch.Missing ? probe.line(s) : youngWarning(s);
+    var young = young();
+    var missing = probe.fetch.lookup instanceof Fetch.Missing ? probe.line(s) : null;
+    if (young == null) {
+      return missing;
+    }
+    return (missing == null ? "" : missing + " ") + young + ".";
+  }
+
+  /** Driver…, with the version chosen by hand, cut short so that the button fits beside Type. */
+  static String driverText(String version) {
+    if (version == null) {
+      return "Driver…";
+    }
+    // The one ellipsis says both: the dialog it opens, and a version cut short.
+    return "Driver " + (version.length() > 12 ? version.substring(0, 11) : version) + "…";
   }
 
   /** Which driver, and whether it is there; and what keeps the list of versions from showing. */
@@ -786,9 +831,9 @@ final class ConnectionDialog {
     return 2 * t.size().field() + 3 * t.size().control();
   }
 
-  /** The prop, or one that cannot be written while the keyring is being changed. */
-  private <T> Prop<T> locked(Prop<T> prop) {
-    return changing ? Prop.of(prop::get, null) : prop;
+  /** The prop, or one that cannot be written while the form is not open to changes. */
+  private static <T> Prop<T> locked(boolean open, Prop<T> prop) {
+    return open ? prop : Prop.of(prop::get, null);
   }
 
   /** The dialog of the driver's version, over this one, or null while it is closed. */

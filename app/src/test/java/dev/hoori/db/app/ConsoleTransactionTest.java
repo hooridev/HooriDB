@@ -1136,6 +1136,33 @@ class ConsoleTransactionTest {
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
   }
 
+  /** A Save that waits for a console's answer saves the form as it was: nothing changes it. */
+  @Test
+  void theFormWaitsWithItsSaveForTheConsolesAnswer() throws Exception {
+    var app = k.console(SHOP);
+    var window = "shop-prod: shop";
+    c.run(
+        app,
+        type(COUNT + ";") + RUN + tearOff(window) + in("main") + menu("shop-prod", "Edit…")
+            + "press role=button label=\"Disconnect\"\nframe\n" + OPENED + SETTLE);
+    c.run(app, in(window) + MANUAL + type("\n" + PAY) + RUN);
+    c.run(
+        app,
+        in("main") + "press role=textbox label=\"User\"\ntype \"2\"\n"
+            + "press role=button label=\"Save\"\nframe\n" + OPENED + "snap waiting\n"
+            + "press role=button label=\"Driver\"\nframe\n" + OPENED);
+    assertTrue(app.state().pending != null, "the console asks");
+    String waiting = c.tree("waiting");
+    assertTrue(line(waiting, "role=button label=\"Driver\"").endsWith("disabled"), waiting);
+    assertTrue(line(waiting, "role=textbox label=\"User\"").contains("disabled"), waiting);
+    assertFalse(line(waiting, "role=button label=\"Cancel\"").contains("disabled"), waiting);
+    assertFalse(app.state().dialog.choosingDriver, "Driver… opens nothing");
+    c.run(app, in(window) + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
+    assertEquals(null, app.state().dialog);
+    assertEquals(SHOP.user() + "2", app.state().profile(SHOP.id()).user());
+    assertEquals(null, app.state().profile(SHOP.id()).driverVersion());
+  }
+
   /** New 5: so with the delete dialog's Cancel. */
   @Test
   void cancellingTheDeleteGivesUpTheDeleteItsQuestionWaitsFor() throws Exception {

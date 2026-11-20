@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import javax.tools.ToolProvider;
@@ -70,6 +71,10 @@ final class FakeDrivers implements Repository {
   volatile CountDownLatch dating;
   // Holds a driver's file after its first half, until it opens.
   volatile CountDownLatch reading;
+  /** Every call, as "open <path>" or "published <path>", in order. */
+  final List<String> calls = new CopyOnWriteArrayList<>();
+  // How many calls held at a gate were interrupted: what asked for them was cancelled.
+  final AtomicInteger interrupted = new AtomicInteger();
   // Opens once a driver's file has been read halfway: the transfer is under way.
   final CountDownLatch halfway = new CountDownLatch(1);
 
@@ -85,12 +90,13 @@ final class FakeDrivers implements Repository {
 
   @Override
   public Response open(String path) throws IOException, InterruptedException {
+    calls.add("open " + path);
     if (offline) {
       throw new ConnectException("offline");
     }
     var gate = opening;
     if (gate != null) {
-      gate.await();
+      held(gate);
     }
     var bytes = Files.readAllBytes(root.resolve(path));
     InputStream body = new ByteArrayInputStream(bytes);
@@ -102,14 +108,32 @@ final class FakeDrivers implements Repository {
 
   @Override
   public Optional<Instant> published(String path) throws IOException, InterruptedException {
+    calls.add("published " + path);
     if (offline) {
       throw new ConnectException("offline");
     }
     var gate = dating;
     if (gate != null) {
-      gate.await();
+      held(gate);
     }
     return Optional.of(Files.getLastModifiedTime(root.resolve(path)).toInstant());
+  }
+
+  private void held(CountDownLatch gate) throws InterruptedException {
+    try {
+      gate.await();
+    } catch (InterruptedException e) {
+      interrupted.incrementAndGet();
+      throw e;
+    }
+  }
+
+  /** How many times the list of the provider's versions was read. */
+  long listings(Provider provider) {
+    var driver = Driver.of(provider);
+    var path = "open " + driver.group().replace('.', '/') + "/" + driver.artifact()
+        + "/maven-metadata.xml";
+    return calls.stream().filter(path::equals).count();
   }
 
   /** Waits at the half of the file while {@link #reading} is shut. */

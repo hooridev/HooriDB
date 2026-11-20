@@ -49,6 +49,15 @@ final class Versions {
 
   /** Reads the versions again; what was read stays until the new read is in. */
   void read(State s) {
+    read(s, null, () -> {});
+  }
+
+  /**
+   * As {@link #read(State)}, and then runs once the read is in or failed; not when it was stopped.
+   *
+   * @param known what the repository offers, read already, or null to read it
+   */
+  void read(State s, DriverStore.Choices known, Runnable then) {
     stop();
     failed = null;
     if (s.drivers == null) {
@@ -67,7 +76,8 @@ final class Versions {
             sizes.put(version, store.sizeOnDisk(driver, version));
           }
           try {
-            return new Read(sizes, store.choices(driver, clock.instant()), null);
+            return new Read(
+                sizes, known != null ? known : store.choices(driver, clock.instant()), null);
           } catch (DriverException e) {
             if (e.failure() == DriverException.Failure.CANCELLED) {
               throw e;
@@ -78,10 +88,12 @@ final class Versions {
         done -> {
           work = null;
           read = done;
+          then.run();
         },
         error -> {
           work = null;
           failed = error;
+          then.run();
         });
   }
 
@@ -143,6 +155,11 @@ final class Versions {
         ? null
         : read.choices().published().get(version);
     return listed != null ? listed : dates.get(version);
+  }
+
+  /** What the repository offers, or null while that is not known. */
+  DriverStore.Choices choices() {
+    return read == null ? null : read.choices();
   }
 
   /** The recommended version, or null while it is not known. */

@@ -71,6 +71,9 @@ final class Fetch {
   private final BiConsumer<State, LoadedDriver> then; // gets the driver once it is loaded
   private String chosen; // the version looked up, or null for the recommended one
   Lookup lookup; // null without drivers, as in a script run
+  // What the repository offered when the recommended version was looked up, or null: the one source
+  // of the recommended version for the list of versions too.
+  DriverStore.Choices choices;
   private Work looking; // the lookup under way, or null
   Step step; // null while the driver is not asked for
   private Work work; // the download under way, or null
@@ -88,10 +91,23 @@ final class Fetch {
    * @param chosen the version to use, or null for the recommended one
    */
   void lookUp(State s, Provider provider, String chosen) {
+    lookUp(s, provider, chosen, null);
+  }
+
+  /**
+   * As {@link #lookUp(State, Provider, String)}, with the repository's choices where they were read
+   * already: the recommended version is theirs, without reading the repository again.
+   *
+   * @param known what the repository offers, or null to read it
+   */
+  void lookUp(State s, Provider provider, String chosen, DriverStore.Choices known) {
     this.chosen = chosen;
     if (looking != null) {
       looking.cancel();
       looking = null;
+    }
+    if (lookup == null || lookup.provider() != provider) {
+      choices = null; // another kind's driver
     }
     var drivers = s.drivers;
     if (drivers == null) {
@@ -104,16 +120,26 @@ final class Fetch {
     looking = s.app.background(
         "look up a driver",
         () -> {
-          var recommended = chosen == null ? store.recommended(driver, clock.instant()) : null;
+          var recommended = chosen != null
+              ? null
+              : known != null
+                  ? recommended(known, driver)
+                  : store.recommended(driver, clock.instant());
           var version = chosen == null ? recommended.version() : chosen;
           boolean offline = recommended != null && recommended.offline();
           boolean there = store.downloaded(driver).contains(version);
           long size = there || offline ? -1 : size(store, driver, version);
-          return new Found(provider, version, offline, there, size);
+          return new Looked(
+              new Found(provider, version, offline, there, size),
+              recommended == null ? null : recommended.choices());
         },
-        found -> {
+        looked -> {
           looking = null;
+          var found = looked.found();
           lookup = found;
+          if (looked.choices() != null) {
+            choices = looked.choices();
+          }
           if (chosen == null) {
             drivers.recommend(driver, found.version());
           }
@@ -129,6 +155,18 @@ final class Fetch {
           }
         });
   }
+
+  /** The version the choices recommend, as the store would say it. */
+  private static DriverStore.Recommended recommended(DriverStore.Choices known, Driver driver)
+      throws DriverException {
+    if (known.recommended() == null) {
+      throw new DriverException(DriverException.Failure.NO_RECOMMENDATION, driver.artifact());
+    }
+    return new DriverStore.Recommended(known.recommended(), false, known);
+  }
+
+  /** What a lookup found, with what the repository offered where it was read. */
+  private record Looked(Found found, DriverStore.Choices choices) {}
 
   /** Gets the driver, as far as is needed: asks before a download. */
   void start(State s) {

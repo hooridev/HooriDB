@@ -208,16 +208,13 @@ class DriversTest {
   @Test
   void theListOfVersionsWaitsLoadsAndFails() throws Exception {
     var app = app();
-    run(app, START + """
+    run(app, START);
+    repository.opening = new CountDownLatch(1);
+    run(app, """
         press role=button label="New connection"
         frame
         advance 1
         frame
-        await
-        frame
-        """);
-    repository.opening = new CountDownLatch(1);
-    run(app, """
         press role=button label="Driver"
         frame
         advance 1
@@ -313,7 +310,9 @@ class DriversTest {
     var dialog = young.substring(young.indexOf("role=dialog label=\"PostgreSQL driver\""));
     float text = TestConnectionTest.top(dialog, "text \"" + said);
     assertTrue(TestConnectionTest.top(dialog, "#driver-version") < text, young);
-    assertTrue(line(young, "#type").contains("warning=\"" + said), young);
+    assertTrue(
+        line(young, "#type").contains("warning=\"Only 1 day old: recommended after 3 days.\""),
+        young);
     assertFalse(young.contains("role=note"), young);
     var recommended = tree("recommended");
     assertFalse(line(recommended, "#driver-version").contains("warning="), recommended);
@@ -855,31 +854,37 @@ class DriversTest {
     var pinned = local(FakeDrivers.VERSION);
     pinned.state().theme = theme;
     Script.run(START + EDIT_LOCAL + "snap d-pinned-" + look + "\n", pinned, out);
+    var longVersion = local("1.0.0-" + "a".repeat(58));
+    longVersion.state().theme = theme;
+    Script.run(START + EDIT_LOCAL + "snap f-long-version-" + look + "\n", longVersion, out);
   }
 
   /**
-   * Driver… opens the driver's dialog over the connection's, and only then are the versions read;
-   * Close and Escape close it alone, after the list of versions in it.
+   * The versions are read once, with the connection's dialog, and name the recommended version for
+   * the list and a test alike, also where a newer one comes out meanwhile. Close and Escape close
+   * the driver's dialog alone, after the list in it.
    */
   @Test
-  void theDriversDialogReadsTheVersionsOnceOpened() throws Exception {
+  void theListAndATestAgreeOnTheRecommendedVersion() throws Exception {
     var app = app();
     run(app, START + NEW_SHOP + "snap form\n");
     String form = tree("form");
-    assertNull(app.state().dialog.versions.read, "not read with the connection's dialog");
+    assertEquals(1, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
     assertFalse(form.contains("#driver-version"), form);
     assertFalse(form.contains("PostgreSQL JDBC"), "nothing said of a driver that is well");
     assertTrue(block(form, "role=button label=\"Driver\"").contains("\"Driver…\""), form);
-    // Published once the connection's dialog was open: the list read later has it.
+    // Out since the dialog opened, and old enough to be recommended: neither takes it now.
     repository.publish("42.7.16", FakeDrivers.NOW.minus(Duration.ofDays(10)));
     run(
         app,
         VERSIONS + "snap listed\nkey Escape\nframe\nadvance 1\nframe\nsnap kept\n"
             + "key Escape\nframe\nadvance 1\nframe\nsnap closed\n" + DRIVER + CLOSE_DRIVER
-            + "snap end\n");
+            + "snap end\n" + TEST + "snap asked\n");
+    assertEquals(1, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
     String listed = tree("listed");
     assertTrue(line(listed, "role=dialog label=\"PostgreSQL driver\"").contains("#driver"), listed);
-    assertTrue(listed.contains("role=option label=\"42.7.16\""), listed);
+    assertTrue(block(listed, "role=option label=\"Recommended\"").contains("\"42.7.14\""));
+    assertFalse(listed.contains("role=option label=\"42.7.16\""), listed);
     String kept = tree("kept");
     assertFalse(kept.contains("role=option"), kept);
     assertTrue(kept.contains("role=dialog label=\"PostgreSQL driver\""), "Escape closed the list");
@@ -889,6 +894,68 @@ class DriversTest {
       assertTrue(closed.contains("role=dialog label=\"New connection\""), closed);
     }
     assertFalse(app.state().dialog.choosingDriver);
+    String asked = tree("asked");
+    assertTrue(line(asked, "role=note").contains("\"Download PostgreSQL JDBC 42.7.14?\""), asked);
+  }
+
+  /**
+   * A version chosen by hand needs no list until the driver's dialog opens, which reads it once;
+   * Recommended then reads nothing more.
+   */
+  @Test
+  void recommendedAfterAChosenVersionReadsTheListNoMore() throws Exception {
+    var app = app(ConnectionProfile.of(Provider.POSTGRESQL)
+        .withHost("db.example.com")
+        .withDriverVersion(OLD));
+    run(app, START + edit("db.example.com") + SETTLE);
+    assertEquals(0, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
+    run(app, choose("Recommended") + "await\nframe\nsnap recommended\n");
+    assertEquals(1, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
+    assertTrue(
+        tree("recommended").contains("\"PostgreSQL JDBC 42.7.14, not downloaded yet ("),
+        tree("recommended"));
+  }
+
+  static String edit(String connection) {
+    return """
+        press role=treeitem label="%s" right
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Edit…"
+        frame
+        advance 1
+        frame
+        """.formatted(connection);
+  }
+
+  /**
+   * Closing the window closes the connection's dialog, and cancels what it reads: here the lookup
+   * and the driver's dialog's versions, both held by the repository.
+   */
+  @Test
+  void closingTheWindowCancelsWhatTheDialogReads() throws Exception {
+    var app = app();
+    run(app, START);
+    repository.opening = new CountDownLatch(1);
+    run(app, """
+        press role=button label="New connection"
+        frame
+        advance 1
+        frame
+        press role=button label="Driver"
+        frame
+        advance 1
+        frame
+        """);
+    CatalogTreeTest.eventually(() -> repository.listings(Provider.POSTGRESQL) == 2);
+    assertTrue(app.state().dialog.versions.reading(), "held by the repository");
+    app.state().requestClose();
+    run(app, "frame\n");
+    assertNull(app.state().dialog);
+    // Cancelled work counts as ended at once: its thread sees the interrupt a moment later.
+    CatalogTreeTest.eventually(() -> repository.interrupted.get() == 2);
+    assertEquals(1, repository.opening.getCount(), "the gate stayed shut");
   }
 
   /** Enter in the driver's dialog goes to neither Save nor the form under it. */
@@ -916,20 +983,41 @@ class DriversTest {
     var app = app(ConnectionProfile.of(Provider.POSTGRESQL)
         .withHost("db.example.com")
         .withDriverVersion(YOUNG));
-    run(app, START + """
-        press role=treeitem label="db.example.com" right
-        frame
-        advance 1
-        frame
-        press role=menuitem label="Edit…"
-        frame
-        advance 1
-        frame
-        """ + SETTLE + "snap edit\n");
+    run(app, START + edit("db.example.com") + SETTLE + "snap edit\n");
     String edit = tree("edit");
-    assertNull(app.state().dialog.versions.read, edit);
     assertTrue(block(edit, "role=button label=\"Driver\"").contains("\"Driver " + YOUNG + "…\""));
-    assertTrue(line(edit, "#type").contains(". Only 1 day old: recommended after 3 days"), edit);
+    var warning = "warning=\"Only 1 day old: recommended after 3 days.\"";
+    assertTrue(line(edit, "#type").contains(warning), edit);
+    // The list fails, as without a network: the age is known from the date all the same.
+    app.state().dialog.versions.read = new Versions.Read(
+        java.util.Map.of(),
+        null,
+        new DriverException(DriverException.Failure.NO_NETWORK, "offline"));
+    app.invalidate();
+    run(app, DRIVER + "snap failed\n" + CLOSE_DRIVER + "snap closed\n");
+    assertTrue(tree("failed").contains("Its versions could not be read."), tree("failed"));
+    assertTrue(line(tree("closed"), "#type").contains(warning), tree("closed"));
+  }
+
+  /** A version too long for the button is cut short there, so that the Type row fits. */
+  @Test
+  void aLongVersionFitsBesideType() throws Exception {
+    var version = "1.0.0-" + "a".repeat(58);
+    var app = app(ConnectionProfile.of(Provider.POSTGRESQL)
+        .withHost("db.example.com")
+        .withDriverVersion(version));
+    run(app, START + edit("db.example.com") + SETTLE + "snap long\n");
+    String tree = tree("long");
+    var button = line(tree, "role=button label=\"Driver\"");
+    assertTrue(block(tree, "role=button label=\"Driver\"").contains("\"Driver 1.0.0-aaaaa…\""));
+    assertTrue(right(button) <= right(line(tree, "#tls")), tree);
+  }
+
+  /** Where an element of the tree ends on the right. */
+  static float right(String line) {
+    var m = java.util.regex.Pattern.compile(" (-?[\\d.]+),-?[\\d.]+ ([\\d.]+)x").matcher(line);
+    assertTrue(m.find(), line);
+    return Float.parseFloat(m.group(1)) + Float.parseFloat(m.group(2));
   }
 
   /** A version chosen by hand is named on Driver…, and a young one is warned of under Type. */
@@ -945,7 +1033,7 @@ class DriversTest {
     assertFalse(line(old, "#type").contains("warning="), old);
     String young = tree("young");
     assertTrue(
-        line(young, "#type").contains("warning=\"PostgreSQL JDBC " + YOUNG + ", not downloaded"),
+        line(young, "#type").contains("warning=\"Only 1 day old: recommended after 3 days.\""),
         young);
   }
 
