@@ -78,8 +78,12 @@ public final class DriverStore {
   private static final int MAX_METADATA_SIZE = 4 << 20;
   private static final int MAX_CHECKSUM_SIZE = 1024;
 
-  /** The version to use, and whether it was chosen from what is downloaded, without a network. */
-  public record Recommended(String version, boolean offline) {}
+  /**
+   * The version to use, and whether it was chosen from what is downloaded, without a network.
+   *
+   * @param choices what the repository offered, which named it; null when it was chosen offline
+   */
+  public record Recommended(String version, boolean offline, Choices choices) {}
 
   /**
    * The stable versions that can be chosen, newest first; the recommended one among them, or null
@@ -191,7 +195,7 @@ public final class DriverStore {
       if (choices.recommended() == null) {
         throw new DriverException(NO_RECOMMENDATION, base(driver));
       }
-      return new Recommended(choices.recommended(), false);
+      return new Recommended(choices.recommended(), false, choices);
     } catch (DriverException e) {
       if (e.failure() != NO_NETWORK && e.failure() != UNAVAILABLE) {
         throw e;
@@ -200,7 +204,7 @@ public final class DriverStore {
       // which is good enough offline, so its age is not checked again and no dates are kept.
       for (var version : downloaded(driver)) {
         if (Maven.isStable(version) && matchesRecord(jar(driver, version))) {
-          return new Recommended(version, true);
+          return new Recommended(version, true, null);
         }
       }
       throw e;
