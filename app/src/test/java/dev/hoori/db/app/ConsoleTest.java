@@ -139,6 +139,7 @@ class ConsoleTest {
     assertTrue(line(empty, "#sql").contains("focused"), empty);
     assertTrue(near(empty, "#database").contains("\"shop\""), empty);
     assertTrue(empty.contains("label=\"Nothing run yet\""), empty);
+    assertTrue(status(empty).contains("\"Not connected\""), empty);
     // The caret in the middle of the first statement's line: that statement runs, and only it.
     c.run(
         app,
@@ -150,9 +151,12 @@ class ConsoleTest {
     assertTrue(line(one, "#column-0").contains("label=\"count\""), one);
     assertTrue(cell(one, 0, 0).contains("\"1\""), one);
     assertTrue(status(one).contains("\"Ran in 4 ms · 1 row\""), one);
-    // Its own connection, opened behind the tree's.
+    // Its own connection, opened behind the tree's, which the status bar counts alone.
     assertEquals(
         2, servers.calls.stream().filter(k -> k.equals("open " + PG + "/shop")).count());
+    String connections = line(one, "#connected");
+    assertTrue(
+        connections.contains("label=\"1 connected\"") && connections.contains("value=\"ok\""), one);
     // Run, with the second line selected: the selection runs.
     c.run(
         app,
@@ -292,6 +296,25 @@ class ConsoleTest {
     assertTrue(line(window, "#sql").contains("caret 28 (1:29)"), window);
     c.run(app, "window \"shop-prod: shop\"\nkey Z control\nframe\nsnap undone\n");
     assertFalse(tab.text.contains(ORDERS), tab.text);
+  }
+
+  /** The footer: Ready while the tree is connected, Not connected once it was disconnected. */
+  @Test
+  void theFooterSaysReadyOnAConnectedTreeAndNotConnectedAfterADisconnect() throws Exception {
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START + open("shop-prod") + SETTLE + menu(SHOP.name(), "New console") + SETTLE
+            + "snap ready\n");
+    String ready = c.tree("ready");
+    assertTrue(line(ready, "#run-status").contains("\"Ready\""), ready);
+    c.run(app, type(COUNT) + RUN + "snap ran\n");
+    String ran = c.tree("ran");
+    assertTrue(line(ran, "#run-status").contains("\"Ran in 4 ms · 1 row\""), ran);
+    c.run(app, menu(SHOP.name(), "Disconnect") + SETTLE + "snap gone\n");
+    String gone = c.tree("gone");
+    assertTrue(line(gone, "#run-status").contains("\"Not connected\""), gone);
   }
 
   /** Two consoles, the second with a result. */

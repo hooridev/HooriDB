@@ -2740,7 +2740,7 @@ final class ConsoleTab implements Tab {
           .child(Label.label(Label.Variant.MUTED, what))
           .key("run-status");
     } else {
-      status = Label.label(Label.Variant.MUTED, status()).key("run-status").ellipsis();
+      status = Label.label(Label.Variant.MUTED, status(s)).key("run-status").ellipsis();
     }
     El badge = badge();
     if (said == null) {
@@ -3001,19 +3001,22 @@ final class ConsoleTab implements Tab {
         .key("answer-go-on");
   }
 
-  /** "Ran in 12 ms · 3 rows": the last run's time on the server, and its rows. */
-  String status() {
-    var status = ran();
+  /**
+   * "Ran in 12 ms · 3 rows": the last run's time on the server, and its rows; "Not connected"
+   * while neither the console nor the tree is, and "Ready" before the first run.
+   */
+  private String status(State s) {
+    var status = !connected() && !s.catalog.connected(id) ? "Not connected" : ran();
     // shortcut: Manual reads every result whole before showing it, as it may not stay open in a
     // transaction; read lazily in Manual too once giving up a read can keep the transaction.
-    return mode != Mode.MANUAL ? status : status.isEmpty() ? WHOLE : status + " · " + WHOLE;
+    return mode != Mode.MANUAL ? status : status + " · " + WHOLE;
   }
 
   static final String WHOLE = "Manual reads each result whole";
 
   private String ran() {
     if (took == null || statements == 0 && !cancelled && !failedRun) {
-      return connected() ? "Connected" : "";
+      return "Ready";
     }
     if (statements == 0 && !cancelled) {
       return "Not run"; // the session could not be opened

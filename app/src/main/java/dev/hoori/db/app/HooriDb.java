@@ -36,6 +36,12 @@ public final class HooriDb {
 
   private HooriDb() {}
 
+  /** The version that runs, as its JAR's manifest names it; a build of its own has none. */
+  static String version() {
+    String version = HooriDb.class.getPackage().getImplementationVersion();
+    return version == null ? "Development build" : version;
+  }
+
   /** The app without drivers, as in a script run: no connection can be tested. */
   static App<State> app(Path folder, Callable<Keyring> keyring) {
     return app(folder, keyring, null, Tester.SERVER);

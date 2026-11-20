@@ -1571,11 +1571,23 @@ final class CatalogTree {
       El content = col().w(ConnectionDialog.width()).child(fetch.view(s, stop));
       return Dialog.dialog("Driver needed", content, buttons, stop);
     }
+    var live = forPassword(s, group);
+    return live == null ? null : passwordDialog(s, live);
+  }
+
+  /** Whether {@link #dialog} shows one in the window of these tabs, without making it. */
+  boolean asks(State s, TabGroups.Group<Tab> group) {
+    boolean main = group == s.tabs.main();
+    return main && (disconnecting != null || asking() != null) || forPassword(s, group) != null;
+  }
+
+  /** The connection whose password the window of these tabs asks for, or null. */
+  private Live forPassword(State s, TabGroups.Group<Tab> group) {
     for (var live : lives.values()) {
       // In the window that asked, while it is open; else in the main one, where its tabs went.
       var asked = live.window != null ? live.window : s.tabs.main();
       if (live.phase instanceof ForPassword && asked == group) {
-        return passwordDialog(s, live);
+        return live;
       }
     }
     return null;
