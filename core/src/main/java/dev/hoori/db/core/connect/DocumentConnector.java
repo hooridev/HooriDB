@@ -65,7 +65,9 @@ public final class DocumentConnector {
         profile.port(),
         profile.srv(),
         profile.user(),
-        profile.provider().documents().authDatabase(),
+        profile.authDatabase().isEmpty()
+            ? profile.provider().documents().authDatabase()
+            : profile.authDatabase(),
         profile.tls(),
         timeout);
   }
