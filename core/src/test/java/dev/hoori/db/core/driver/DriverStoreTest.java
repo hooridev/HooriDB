@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
@@ -102,8 +103,12 @@ public class DriverStoreTest {
         repository.asked);
 
     assertEquals("42.7.11", store.recommended(DRIVER, NOW, Duration.ofDays(1)).version());
-    assertFailure(
-        Failure.NO_RECOMMENDATION, () -> store.recommended(DRIVER, NOW, Duration.ofDays(60)));
+    // None qualifies: no version, and the choices read, which say so.
+    var none = store.recommended(DRIVER, NOW, Duration.ofDays(60));
+    assertNull(none.version());
+    assertFalse(none.offline());
+    assertTrue(none.choices().versions().containsAll(List.of("42.7.11", "42.7.10", "42.7.9")));
+    assertNull(none.choices().recommended());
   }
 
   @Test
@@ -139,7 +144,7 @@ public class DriverStoreTest {
     for (int i = 1; i <= 8; i++) {
       repository.publish(DRIVER, "1." + i + ".0", BYTES, Sum.SHA256, NOW.minus(Duration.ofDays(1)));
     }
-    assertFailure(Failure.NO_RECOMMENDATION, () -> store.recommended(DRIVER, NOW));
+    assertNull(store.recommended(DRIVER, NOW).version());
     assertEquals(DriverStore.MAX_CANDIDATES, repository.asked.size());
   }
 
