@@ -84,10 +84,12 @@ public final class Script {
     int start = 0;
     int i = 0;
     int n = text.length();
+    char last = 0; // the last character of code before, past space and comments; 0 for none
     while (i < n) {
       char c = text.charAt(i);
       if (c == '\'' || c == '"' || c == '`') {
         i = skipString(text, i);
+        last = c;
         continue;
       }
       if (text.startsWith("//", i)) {
@@ -101,9 +103,13 @@ public final class Script {
         i = close < 0 ? n : close + 2;
         continue;
       }
-      if (c == '/' && depth > 0 && regexMayStart(text, i)) {
+      if (c == '/' && depth > 0 && regexMayStart(last)) {
         i = skipRegex(text, i);
+        last = '/';
         continue;
+      }
+      if (!Character.isWhitespace(c)) {
+        last = c;
       }
       if (c == '(' || c == '[' || c == '{') {
         depth++;
@@ -181,12 +187,8 @@ public final class Script {
   }
 
   // A slash after a value divides; after punctuation it starts a regular expression.
-  private static boolean regexMayStart(String text, int at) {
-    int i = at - 1;
-    while (i >= 0 && Character.isWhitespace(text.charAt(i))) {
-      i--;
-    }
-    return i < 0 || "(,:[{!&|?;=".indexOf(text.charAt(i)) >= 0;
+  private static boolean regexMayStart(char last) {
+    return last == 0 || "(,:[{!&|?;=".indexOf(last) >= 0;
   }
 
   private static int skipRegex(String text, int at) {
@@ -242,7 +244,9 @@ public final class Script {
         } else {
           while (r.at < r.text.length()
               && !Character.isWhitespace(r.text.charAt(r.at))
-              && r.text.charAt(r.at) != ';') {
+              && r.text.charAt(r.at) != ';'
+              && !r.text.startsWith("//", r.at)
+              && !r.text.startsWith("/*", r.at)) {
             r.at++;
           }
           name = r.text.substring(at, r.at);
@@ -380,7 +384,7 @@ public final class Script {
       case "serverStatus" -> Request.of(Document.of("serverStatus", 1), Shape.REPLY);
       case "hello" -> Request.of(Document.of("hello", 1), Shape.REPLY);
       case "version" -> new Request("admin", Document.of("buildInfo", 1), Shape.REPLY, null);
-      case "getName" -> Request.of(Document.of("dbStats", 1, "scale", 1), Shape.REPLY);
+      case "getName" -> Request.name();
       default ->
         throw new SyntaxException(
             "db has no method " + method + " that a console runs; as a collection, write"
@@ -553,20 +557,34 @@ public final class Script {
         }
         var statement = Document.of(
             "q", filter, "u", update, "multi", method.equals("updateMany"), "upsert", false);
+        var command = Document.of("update", collection);
         if (args.size() > 2) {
           var options = document(args, 2, method, r);
-          for (var option : List.of("upsert", "arrayFilters", "collation", "hint")) {
-            if (options.has(option)) {
-              statement = statement.with(option, options.get(option));
-            }
-          }
+          var each = List.of("upsert", "arrayFilters", "collation", "hint", "sort");
+          var all = List.of("let", "comment", "writeConcern", "bypassDocumentValidation");
+          var names = new ArrayList<>(each);
+          names.addAll(all);
+          known(options, names, method, at(args, 2, r));
+          statement = options(statement, options, each);
+          command = options(command, options, all);
         }
-        yield write(r, Document.of("update", collection, "updates", Document.array(statement)));
+        yield write(r, command.with("updates", Document.array(statement)));
       }
       case "deleteOne", "deleteMany" -> {
         var statement = Document.of(
             "q", document(args, 0, method, r), "limit", method.equals("deleteOne") ? 1 : 0);
-        yield write(r, Document.of("delete", collection, "deletes", Document.array(statement)));
+        var command = Document.of("delete", collection);
+        if (args.size() > 1) {
+          var options = document(args, 1, method, r);
+          known(
+              options,
+              List.of("collation", "hint", "let", "comment", "writeConcern"),
+              method,
+              at(args, 1, r));
+          statement = options(statement, options, List.of("collation", "hint"));
+          command = options(command, options, List.of("let", "comment", "writeConcern"));
+        }
+        yield write(r, command.with("deletes", Document.array(statement)));
       }
       case "findOneAndUpdate", "findOneAndReplace", "findOneAndDelete" -> {
         var command =
@@ -581,7 +599,22 @@ public final class Script {
           if (args.size() < 2) {
             throw new SyntaxException(method + " needs a filter and an update", at);
           }
-          command = command.with("update", args.get(1));
+          var update = args.get(1);
+          if (method.equals("findOneAndUpdate")
+              && !(update instanceof Document d && !d.isEmpty() && d.first().startsWith("$"))
+              && !(update instanceof List<?>)) {
+            throw new SyntaxException(
+                method + " needs an update of operators, such as { $set: { … } }, or a pipeline;"
+                    + " findOneAndReplace replaces the document",
+                at(args, 1, r));
+          }
+          if (method.equals("findOneAndReplace")
+              && !(update instanceof Document d
+                  && d.names().stream().noneMatch(n -> n.startsWith("$")))) {
+            throw new SyntaxException(
+                method + " needs a document without operators", at(args, 1, r));
+          }
+          command = command.with("update", update);
           if (args.size() > 2) {
             options = document(args, 2, method, r);
           }
@@ -626,6 +659,12 @@ public final class Script {
                 Shape.REPLY));
       }
       case "dropIndex", "dropIndexes" -> {
+        // One index by its name or keys; all but _id's only as dropIndexes asks.
+        if (method.equals("dropIndex")
+            && (args.isEmpty() || "*".equals(args.getFirst()) || args.getFirst() == null)) {
+          throw new SyntaxException(
+              "dropIndex needs the name or the keys of an index; dropIndexes() drops all", at);
+        }
         Object index = args.isEmpty() ? "*" : args.getFirst();
         if (index instanceof Document keys) {
           index = keys;
@@ -655,14 +694,22 @@ public final class Script {
       }
       var args = arguments(r);
       switch (call) {
-        case "pretty", "toArray", "itcount", "readPref", "noCursorTimeout" -> {}
+        case "pretty", "toArray", "readPref", "noCursorTimeout" -> {}
         case "sort" -> {
           findOnly(find, call, at);
           command = command.with("sort", document(args, 0, call, r));
         }
         case "limit" -> {
           findOnly(find, call, at);
-          command = command.with("limit", whole(args, call, r));
+          var limit = whole(args, call, r);
+          // A negative limit is that many in one batch, as the shell has it; find wants it so.
+          if (limit instanceof Number n && n.longValue() < 0) {
+            command = command
+                .with("limit", n instanceof Long ? (Object) (-n.longValue()) : -n.intValue())
+                .with("singleBatch", true);
+          } else {
+            command = command.with("limit", limit);
+          }
         }
         case "skip" -> {
           findOnly(find, call, at);
@@ -681,13 +728,13 @@ public final class Script {
           command =
               command.with("allowDiskUse", args.isEmpty() || Boolean.TRUE.equals(args.get(0)));
         case "batchSize" -> {}
-        case "count", "size" -> {
+        case "count", "size", "itcount" -> {
           findOnly(find, call, at);
           var count = Document.of("count", command.get("find"));
           if (command.get("filter") != null) {
             count = count.with("query", command.get("filter"));
           }
-          if (call.equals("size")) {
+          if (!call.equals("count")) {
             for (var option : List.of("skip", "limit")) {
               if (command.has(option)) {
                 count = count.with(option, command.get(option));
@@ -729,6 +776,26 @@ public final class Script {
         throw new SyntaxException("Nothing more can be called on this", at);
       }
       arguments(r);
+    }
+  }
+
+  // The options of the names that are given, put into the document.
+  private static Document options(Document into, Document options, List<String> names) {
+    for (var name : names) {
+      if (options.has(name)) {
+        into = into.with(name, options.get(name));
+      }
+    }
+    return into;
+  }
+
+  // An option that the console does not send is refused, rather than the write run without it.
+  private static void known(Document options, List<String> names, String method, int at)
+      throws SyntaxException {
+    for (var name : options.names()) {
+      if (!names.contains(name)) {
+        throw new SyntaxException(method + " has no option " + name + " that a console sends", at);
+      }
     }
   }
 

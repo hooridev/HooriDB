@@ -34,14 +34,24 @@ public record Request(String database, Document command, Shape shape, String use
     /** The reply itself, as one document. */
     REPLY,
     /** Nothing is sent: {@code use} switches the database. */
-    USE
+    USE,
+    /** Nothing is sent: the name of the database it runs on, as {@code db.getName()} gives it. */
+    NAME
   }
 
   public Request {
     Objects.requireNonNull(shape, "shape");
-    if (shape == Shape.USE ? use == null || command != null : command == null || use != null) {
+    if (shape == Shape.USE ? use == null || command != null : use != null) {
       throw new IllegalArgumentException("A use names a database and sends nothing");
     }
+    if ((shape == Shape.NAME) != (shape != Shape.USE && command == null)) {
+      throw new IllegalArgumentException("Every request but a use and a name sends a command");
+    }
+  }
+
+  /** The name of the console's database, sent nowhere. */
+  public static Request name() {
+    return new Request(null, null, Shape.NAME, null);
   }
 
   /** A command on the console's database, shown as its shape says. */

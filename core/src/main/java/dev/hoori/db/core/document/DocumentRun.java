@@ -79,8 +79,8 @@ public final class DocumentRun {
             0,
             statement.codePointCount(0, Math.min(e.offset(), statement.length())) + 1));
       } catch (DocumentException e) {
+        // The cursor stays for close(), which frees it: a cancel ends the call, not the cursor.
         over = true;
-        cursor = null;
         results.add(failure(e));
       }
     }
@@ -100,6 +100,12 @@ public final class DocumentRun {
       over = true;
       use.accept(request.use());
       messages.add(new Message("Switched to the database " + request.use(), "", 0));
+      return;
+    }
+    if (request.shape() == Request.Shape.NAME) {
+      over = true;
+      var name = request.database() != null ? request.database() : database;
+      results.add(rows(List.of(Document.of("name", name)), 0));
       return;
     }
     if (session.readOnly() && !request.reads()) {
@@ -151,7 +157,7 @@ public final class DocumentRun {
             .toList();
         results.add(rows(List.of(new Document(entries)), 0));
       }
-      case USE -> throw new IllegalStateException("A use sends nothing");
+      case USE, NAME -> throw new IllegalStateException("It sends nothing");
     }
   }
 
