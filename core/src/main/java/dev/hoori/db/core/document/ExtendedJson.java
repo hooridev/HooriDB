@@ -138,8 +138,11 @@ public final class ExtendedJson {
   }
 
   private static void string(StringBuilder out, String text) {
-    out.append('"');
-    JsonStringEncoder.getInstance().quoteAsString(text, out);
-    out.append('"');
+    var quoted = new StringBuilder();
+    JsonStringEncoder.getInstance().quoteAsString(text, quoted);
+    // Valid JSON as they are, but an editor breaks the line at them.
+    out.append('"')
+        .append(quoted.toString().replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+        .append('"');
   }
 }

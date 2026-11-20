@@ -97,11 +97,29 @@ class DocumentConsoleServerTest {
     assertTrue(line(first, "#rows-in-view").contains("\"Documents 1–200\""), first);
     assertTrue(line(first, "role=button label=\"Previous page\"").contains("disabled"), first);
     assertFalse(line(first, "role=button label=\"Next page\"").contains("disabled"), first);
+    // The last page is known only once the result is read to its end.
+    assertTrue(line(first, "role=button label=\"Last page\"").contains("disabled"), first);
     c.run(app, "press role=button label=\"Next page\"\nframe\n" + SETTLE + "snap second\n");
     var second = c.tree("second");
     assertTrue(line(second, "#rows-in-view").contains("\"Documents 201–250\""), second);
     assertTrue(line(second, "#json").contains("\\\"_id\\\": 201"), second);
     assertTrue(line(second, "role=button label=\"Next page\"").contains("disabled"), second);
+  }
+
+  @Test
+  void aNextPageThatDoesNotComeLeavesTheLastShown() throws Exception {
+    var app = console(docs());
+    c.run(
+        app,
+        type("db.orders.find()") + RUN
+            + "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\n"
+            + "press role=button label=\"Next page\"\nframe\nsnap reading\n"
+            + "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap after\n");
+    var reading = c.tree("reading");
+    assertTrue(reading.contains("Reading documents…"), reading);
+    var after = c.tree("after");
+    assertTrue(line(after, "#rows-in-view").contains("\"Documents 1–200\""), after);
+    assertTrue(line(after, "#json").contains("\\\"_id\\\": 1,"), after);
   }
 
   @Test

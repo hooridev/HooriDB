@@ -2786,20 +2786,22 @@ final class ConsoleTab implements Tab {
       footer.add(value.button());
       body = withValue(s, app, o, grid(s, app, o));
     } else {
+      int last = Math.max(0, (o.documents.size() - 1) / PORTION);
+      if (o.page > last && (o != reading || work == null)) {
+        o.page = last; // the next page did not come: nothing was left, or the read stopped
+      }
       int from = o.page * PORTION;
       int to = Math.min(from + PORTION, o.documents.size());
-      // As the table's: one more where its statement has more, which the next page reads.
-      int shown = o.documents.size() + (o.more ? 1 : 0);
       footer.add(Label.label(
               Label.Variant.MUTED, to <= from ? "No documents" : TableTab.range(from + 1, to, true))
           .key("rows-in-view"));
       footer.add(TableTab.paging(
           o.page > 0,
-          (o.page + 1) * PORTION < shown,
+          (o.page + 1) * PORTION < o.documents.size() || o.more,
           () -> turn(s, o, 0),
           () -> turn(s, o, o.page - 1),
           () -> turn(s, o, o.page + 1),
-          () -> turn(s, o, (shown - 1) / PORTION)));
+          o.more ? null : () -> turn(s, o, last))); // the last is known once all is read
       if (to > from) {
         o.whole.show("p" + o.page, o.documents, from, to);
         body = o.whole.view(app, o.shown, s.zone, "Documents of result " + o.number);

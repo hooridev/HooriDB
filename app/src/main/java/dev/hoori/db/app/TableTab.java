@@ -857,7 +857,7 @@ final class TableTab implements Tab {
 
   /**
    * Buttons that turn to the first, the previous, the next or the last page: those back are on
-   * where back is, those on where on is.
+   * where back is, those on where on is, the last only where it is given.
    */
   static El paging(
       boolean back, boolean on, Runnable first, Runnable previous, Runnable next, Runnable last) {
@@ -868,7 +868,7 @@ final class TableTab implements Tab {
         .child(page(Symbol.ARROW_UP, "First page", back, first))
         .child(page(Symbol.CHEVRON_UP, "Previous page", back, previous))
         .child(page(Symbol.CHEVRON_DOWN, "Next page", on, next))
-        .child(page(Symbol.ARROW_DOWN, "Last page", on, last))
+        .child(page(Symbol.ARROW_DOWN, "Last page", on && last != null, last))
         .key("paging");
   }
 
