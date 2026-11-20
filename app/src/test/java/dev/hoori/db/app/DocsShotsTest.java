@@ -414,9 +414,13 @@ class DocsShotsTest {
         type(PENDING + ";")
             + RUN
             // At the end of the text, where the caret is, not where a press would put it.
-            + type("\n\nSELECT o.id, o.total, o.placed_at\nFROM orders o\nJOIN customers c ON"
-                    + " c.id = o.customer_id\nWHERE c.")
-                .replace("press #sql\n", "key End control\n")
+            + type("""
+
+
+                    SELECT o.id, o.total, o.placed_at
+                    FROM orders o
+                    JOIN customers c ON c.id = o.customer_id
+                    WHERE c.""").replace("press #sql\n", "key End control\n")
             + (COMPLETE + SETTLE).repeat(3)
             + COMPLETE,
         "completion",

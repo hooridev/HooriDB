@@ -69,5 +69,5 @@ This removes `%LOCALAPPDATA%\Programs\HooriDB` and the Start menu shortcut.
 Uninstalling the application leaves your configuration, drivers, and saved passwords intact. To remove everything:
 
 1. Before uninstalling, delete your connections in HooriDB so it removes their saved passwords from the system keyring. If you already uninstalled HooriDB, remove the `HooriDB:` entries in Windows Credential Manager or the `HooriDB ` entries in your Linux keyring manager.
-2. Delete the configuration folder (`%APPDATA%\HooriDB` on Windows, `~/.config/hooridb` on Linux).
-3. Delete the data folder (`%LOCALAPPDATA%\HooriDB` on Windows, `~/.local/share/hooridb` on Linux).
+2. Delete the configuration folder: `%APPDATA%\HooriDB` on Windows; on Linux `$XDG_CONFIG_HOME/hooridb`, by default `~/.config/hooridb`.
+3. Delete the data folder: `%LOCALAPPDATA%\HooriDB` on Windows; on Linux `$XDG_DATA_HOME/hooridb`, by default `~/.local/share/hooridb`.
