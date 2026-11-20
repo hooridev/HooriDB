@@ -2924,8 +2924,8 @@ final class ConsoleTab implements Tab {
   /**
    * Puts the statement in place of the selection; without one, as a statement of its own on a line
    * of its own: at the caret, or after the statement the caret is in, closing the statement before
-   * it where that has no terminator yet. As one step that Undo takes back, through the editor of
-   * the console's window; the caret after it, where Run runs it.
+   * it where that has no terminator yet. As one step that Undo takes back; the caret after it,
+   * where Run runs it.
    */
   void insert(App<State> app, String sql) {
     int from = Math.min(editor.caret(), editor.anchor());
@@ -2964,14 +2964,7 @@ final class ConsoleTab implements Tab {
         from = end;
       }
     }
-    int caret = from + put.stripTrailing().length();
-    // shortcut: the editor's field is looked up in the tree, as CodeEditor.State replaces only its
-    // selection, and selecting the range first makes Undo restore that selection, not the caret;
-    // use the state once it can replace a range.
-    var field = Frame.find(app.tree(), "sql");
-    if (field != null) {
-      app.edit(field, from, to, put, caret);
-    }
+    editor.replace(from, to, put, put.stripTrailing().length());
   }
 
   /** What is asked before a statement is sent, while it is; in the console's window. */
