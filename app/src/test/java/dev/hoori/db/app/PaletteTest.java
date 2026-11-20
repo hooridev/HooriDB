@@ -123,7 +123,8 @@ class PaletteTest {
             "Go: Next tab",
             "Go: Connections",
             "Go: Tab content",
-            "Help: About HooriDB")),
+            // The rows that fit: About comes after the channels of updates.
+            "Help: Stable updates")),
         all.toString());
     assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
