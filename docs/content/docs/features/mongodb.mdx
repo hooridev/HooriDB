@@ -41,7 +41,7 @@ Expanding a MongoDB connection in the tree shows its databases, then their colle
 Open a collection or view as you open a table (double-click it, or select it and press `Enter`). The **Show documents as** switch in the toolbar has three views:
 
 - **Grid**: the fields as columns, read in pages as you scroll, with the same paging buttons, row count, copying, and [value panel](/docs/features/table-data#inspect-a-cell-in-the-value-panel) as a table. A document or an array in a cell is shown as Relaxed Extended JSON, which the value panel formats and colors when the field holds only documents or arrays. A value shortened in the grid is read whole by its document's `_id`.
-- **JSON**: 200 documents at a time as a formatted array of Relaxed Extended JSON. Use **Previous documents** and **Next documents** to move between pages.
+- **JSON**: 200 documents at a time as a formatted array of Relaxed Extended JSON. The paging buttons in the status bar move between pages, as in the grid.
 - **Tree**: the same 200 documents, each as a tree of its fields.
 
 Documents are read in pages ordered by `_id`. The status bar shows the document count just as a table tab shows the [row count](/docs/features/table-data#row-count-and-paging-controls); press **Count documents** for an exact count.
@@ -60,7 +60,7 @@ The console understands:
 
 For a collection whose name is not a valid shell identifier, use `db.getCollection('name')`.
 
-Results that return documents have the same **Grid**, **JSON**, and **Tree** switch as a collection tab. In **JSON** and **Tree**, press **Read more** to load additional documents while the result's cursor is open (running the next statement closes it). An insert, update, replace, or delete shows how many documents it changed; the `findOneAnd…` methods show the server's reply.
+Results that return documents have the same **Grid**, **JSON**, and **Tree** switch as a collection tab. **JSON** and **Tree** show 200 documents at a time with the same paging buttons; the next page reads more documents while the result's cursor is open (running the next statement closes it), and the last page is known once the cursor is read to its end. An insert, update, replace, or delete shows how many documents it changed; the `findOneAnd…` methods show the server's reply.
 
 `use <database>` switches the console's **Database** for the statements after it. You can also choose the database from the **Database** dropdown in the toolbar.
 
