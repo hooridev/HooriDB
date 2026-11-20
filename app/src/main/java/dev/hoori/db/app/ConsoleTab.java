@@ -2429,8 +2429,8 @@ final class ConsoleTab implements Tab {
 
   /** How many rows, or documents, as "1,024 rows". */
   static String rows(long n, boolean documents) {
-    return String.format(Locale.ROOT, "%,d", n)
-        + (documents ? n == 1 ? " document" : " documents" : n == 1 ? " row" : " rows");
+    var noun = documents ? " document" : " row";
+    return String.format(Locale.ROOT, "%,d", n) + noun + (n == 1 ? "" : "s");
   }
 
   // The view
@@ -2793,7 +2793,8 @@ final class ConsoleTab implements Tab {
       int from = o.page * PORTION;
       int to = Math.min(from + PORTION, o.documents.size());
       footer.add(Label.label(
-              Label.Variant.MUTED, to <= from ? "No documents" : TableTab.range(from + 1, to, true))
+              Label.Variant.MUTED,
+              to <= from ? "No documents" : TableTab.range(from + 1L, to, true))
           .key("rows-in-view"));
       footer.add(TableTab.paging(
           o.page > 0,
@@ -2828,7 +2829,7 @@ final class ConsoleTab implements Tab {
    */
   private void turn(State s, Output o, int page) {
     int at = o.documents.size();
-    o.page = Math.max(0, Math.min(page, at / PORTION));
+    o.page = Math.clamp(page, 0, at / PORTION);
     if ((o.page + 1) * PORTION > at) {
       want(s, o, at, at + PORTION - 1);
     }

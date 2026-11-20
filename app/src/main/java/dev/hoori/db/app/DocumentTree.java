@@ -172,14 +172,16 @@ final class DocumentTree {
     return Tree.tree(
         model,
         new Tree.Options<Node>()
-            .open(node -> open.contains(node.key()), (node, opened) -> {
-              if (opened) {
-                open.add(node.key());
-              } else {
-                open.remove(node.key());
-              }
-            })
+            .open(node -> open.contains(node.key()), this::opened)
             .select(selected, node -> selected = node));
+  }
+
+  private void opened(Node node, boolean opened) {
+    if (opened) {
+      open.add(node.key());
+    } else {
+      open.remove(node.key());
+    }
   }
 
   private static Node child(Node parent, int index, String name, Object value) {

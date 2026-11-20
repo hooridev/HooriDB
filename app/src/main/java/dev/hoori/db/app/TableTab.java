@@ -825,7 +825,7 @@ final class TableTab implements Tab {
     }
     // Not the row that asks whether there are more, which is not known to be there.
     long bottom = Math.min(selection.lastRowInView() + 1L, rows);
-    return range(top + 1, bottom, documents);
+    return range(top + 1L, bottom, documents);
   }
 
   /** Rows or documents from first to last, counted from 1, as "Rows 201–223". */
