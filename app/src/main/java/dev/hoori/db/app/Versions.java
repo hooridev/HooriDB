@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
+import java.util.function.Supplier;
 
 /**
  * The versions of a kind's driver that can be chosen, as the repository lists them, and those
@@ -42,22 +43,20 @@ final class Versions {
   private final Map<String, Instant> dates = new HashMap<>();
   String dating; // the version whose date is being looked up, or null
   private Work datingWork;
+  // What the connection's lookup of the driver read, and the version it recommends: they win over
+  // what this reads, which then only fills in where the lookup has none. Null for none.
+  Supplier<DriverStore.Choices> lookedUp = () -> null;
+  Supplier<String> recommendedByLookup = () -> null;
 
   Versions(Provider provider) {
     this.provider = provider;
   }
 
-  /** Reads the versions again; what was read stays until the new read is in. */
-  void read(State s) {
-    read(s, null, () -> {});
-  }
-
   /**
-   * As {@link #read(State)}, and then runs once the read is in or failed; not when it was stopped.
-   *
-   * @param known what the repository offers, read already, or null to read it
+   * Reads the versions again; what was read stays until the new read is in. The repository is not
+   * asked where the lookup's choices are there.
    */
-  void read(State s, DriverStore.Choices known, Runnable then) {
+  void read(State s) {
     stop();
     failed = null;
     if (s.drivers == null) {
@@ -66,6 +65,7 @@ final class Versions {
     var store = s.drivers.store;
     var driver = Driver.of(provider);
     var clock = this.clock = s.drivers.clock;
+    var known = lookedUp.get();
     // shortcut: what is downloaded shows only once the repository answered or failed, which takes
     // as long as its timeout without a network; read the folder first if that is felt.
     work = s.app.background(
@@ -88,12 +88,10 @@ final class Versions {
         done -> {
           work = null;
           read = done;
-          then.run();
         },
         error -> {
           work = null;
           failed = error;
-          then.run();
         });
   }
 
@@ -151,20 +149,25 @@ final class Versions {
 
   /** When the version was published, or null while that is not known. */
   private Instant published(String version) {
-    var listed = read == null || read.choices() == null
-        ? null
-        : read.choices().published().get(version);
+    var choices = choices();
+    var listed = choices == null ? null : choices.published().get(version);
     return listed != null ? listed : dates.get(version);
   }
 
-  /** What the repository offers, or null while that is not known. */
+  /** What the repository offers, the lookup's first, or null while that is not known. */
   DriverStore.Choices choices() {
-    return read == null ? null : read.choices();
+    var known = lookedUp.get();
+    return known != null ? known : read == null ? null : read.choices();
   }
 
-  /** The recommended version, or null while it is not known. */
+  /** The recommended version, the lookup's first, or null while it is not known. */
   String recommended() {
-    return read == null || read.choices() == null ? null : read.choices().recommended();
+    var looked = recommendedByLookup.get();
+    if (looked != null) {
+      return looked;
+    }
+    var choices = choices();
+    return choices == null ? null : choices.recommended();
   }
 
   /**
@@ -175,9 +178,10 @@ final class Versions {
     var versions = new TreeSet<String>(Maven.NEWEST_FIRST);
     if (read != null) {
       versions.addAll(read.sizes().keySet());
-      if (read.choices() != null) {
-        versions.addAll(read.choices().versions());
-      }
+    }
+    var choices = choices();
+    if (choices != null) {
+      versions.addAll(choices.versions());
     }
     if (chosen != null) {
       versions.add(chosen);
@@ -201,8 +205,6 @@ final class Versions {
     var age = age(version);
     if (age != null) {
       notes.add(age);
-    } else if (young(version)) {
-      notes.add("too new to be recommended");
     }
     if (read != null && read.sizes().containsKey(version)) {
       notes.add("downloaded");
@@ -211,19 +213,13 @@ final class Versions {
   }
 
   /**
-   * Whether the version is too new to be recommended: published less than the waiting period ago,
-   * or, without a date, newer than the recommended one.
+   * Whether the version is too new to be recommended: published less than the waiting period ago.
+   * Without a date it is not said to be, whatever it sorts above.
    */
   boolean young(String version) {
-    if (version == null) {
-      return false;
-    }
-    var published = published(version);
-    if (published != null) {
-      return published.isAfter(clock.instant().minus(DriverStore.WAITING_PERIOD));
-    }
-    var recommended = recommended();
-    return recommended != null && Maven.NEWEST_FIRST.compare(version, recommended) < 0;
+    var published = version == null ? null : published(version);
+    return published != null
+        && published.isAfter(clock.instant().minus(DriverStore.WAITING_PERIOD));
   }
 
   /** How long ago a version too new to be recommended was published, or null when not known. */
@@ -243,7 +239,7 @@ final class Versions {
           + (failed instanceof DriverException e ? Fetch.why(e) : "")
           + ". Check that HooriDB may read it, then try again.";
     }
-    if (read != null && read.error() != null) {
+    if (lookedUp.get() == null && read != null && read.error() != null) {
       return "Its versions could not be read. " + Fetch.text(read.error(), drivers);
     }
     return null;

@@ -189,9 +189,7 @@ class TestConnectionTest {
     assertFalse(tree("form").contains("PostgreSQL JDBC"), "the form says nothing while it looks");
     assertTrue(tree("looking").contains("\"PostgreSQL JDBC, looking up the version to use…\""));
     repository.opening.countDown();
-    // The list, read as the lookup had not ended, then looks the version it names up: a second
-    // step.
-    run(app, SETTLE + SETTLE + "snap missing\n" + DriversTest.CLOSE_DRIVER);
+    run(app, SETTLE + "snap missing\n" + DriversTest.CLOSE_DRIVER);
     assertTrue(
         tree("missing")
             .contains("\"PostgreSQL JDBC 42.7.14, not downloaded yet (" + FakeDrivers.SIZE

@@ -4,6 +4,7 @@ import static com.rethinkj.ui.El.col;
 import static com.rethinkj.ui.El.row;
 import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
+import static dev.hoori.db.core.driver.DriverException.Failure.NO_RECOMMENDATION;
 
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
@@ -71,8 +72,8 @@ final class Fetch {
   private final BiConsumer<State, LoadedDriver> then; // gets the driver once it is loaded
   private String chosen; // the version looked up, or null for the recommended one
   Lookup lookup; // null without drivers, as in a script run
-  // What the repository offered when the recommended version was looked up, or null: the one source
-  // of the recommended version for the list of versions too.
+  // What the repository offered when the recommended version was last looked up, or null: the one
+  // source of the recommended version and its list, which the list of versions shows.
   DriverStore.Choices choices;
   private Work looking; // the lookup under way, or null
   Step step; // null while the driver is not asked for
@@ -123,28 +124,42 @@ final class Fetch {
           var recommended = chosen != null
               ? null
               : known != null
-                  ? recommended(known, driver)
+                  ? new DriverStore.Recommended(known.recommended(), false, known)
                   : store.recommended(driver, clock.instant());
+          var read = recommended == null ? null : recommended.choices();
+          if (recommended != null && recommended.version() == null) {
+            // None of the newest releases has waited long enough: the list read stays all the same.
+            return new Looked(
+                new Missing(provider, new DriverException(NO_RECOMMENDATION, driver.artifact())),
+                read);
+          }
           var version = chosen == null ? recommended.version() : chosen;
           boolean offline = recommended != null && recommended.offline();
           boolean there = store.downloaded(driver).contains(version);
           long size = there || offline ? -1 : size(store, driver, version);
-          return new Looked(
-              new Found(provider, version, offline, there, size),
-              recommended == null ? null : recommended.choices());
+          return new Looked(new Found(provider, version, offline, there, size), read);
         },
         looked -> {
           looking = null;
-          var found = looked.found();
-          lookup = found;
+          lookup = looked.lookup();
           if (looked.choices() != null) {
             choices = looked.choices();
           }
-          if (chosen == null) {
-            drivers.recommend(driver, found.version());
-          }
-          if (step instanceof Waiting) {
-            start(s);
+          switch (looked.lookup()) {
+            case Found found -> {
+              if (chosen == null) {
+                drivers.recommend(driver, found.version());
+              }
+              if (step instanceof Waiting) {
+                start(s);
+              }
+            }
+            case Missing missing -> {
+              if (step instanceof Waiting) {
+                step = new Failed(Stage.LOOK_UP, missing.error());
+              }
+            }
+            case Looking ignored -> {}
           }
         },
         error -> {
@@ -156,17 +171,8 @@ final class Fetch {
         });
   }
 
-  /** The version the choices recommend, as the store would say it. */
-  private static DriverStore.Recommended recommended(DriverStore.Choices known, Driver driver)
-      throws DriverException {
-    if (known.recommended() == null) {
-      throw new DriverException(DriverException.Failure.NO_RECOMMENDATION, driver.artifact());
-    }
-    return new DriverStore.Recommended(known.recommended(), false, known);
-  }
-
-  /** What a lookup found, with what the repository offered where it was read. */
-  private record Looked(Found found, DriverStore.Choices choices) {}
+  /** What a lookup found, or that none qualifies, with what the repository offered where read. */
+  private record Looked(Lookup lookup, DriverStore.Choices choices) {}
 
   /** Gets the driver, as far as is needed: asks before a download. */
   void start(State s) {

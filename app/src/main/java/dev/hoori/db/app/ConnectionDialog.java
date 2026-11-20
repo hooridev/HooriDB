@@ -131,54 +131,40 @@ final class ConnectionDialog {
   }
 
   /**
-   * Looks up the kind's driver to use, and when the version chosen was published; the versions to
-   * choose from are those the lookup read, or are read once the driver's dialog opens.
+   * Looks up the kind's driver to use, and when the version chosen was published. The lookup owns
+   * the recommended version and the list it read, which the driver's dialog shows.
    */
   private void driver(State s) {
     var p = editing.value();
     if (versions != null) {
       versions.close();
     }
+    var fetch = probe.fetch;
     versions = new Versions(p.provider());
+    versions.lookedUp = () -> fetch.choices;
+    versions.recommendedByLookup = () ->
+        editing.value().driverVersion() == null && fetch.lookup instanceof Fetch.Found f
+            ? f.version()
+            : null;
     versions.date(s, p.driverVersion());
     probe.lookUp(s, p.provider(), p.driverVersion());
   }
 
   /**
-   * The versions were read, or could not be: the recommended version is the one they name, for a
-   * test as in the list, where the list was read on its own.
-   */
-  private void listed(State s) {
-    var p = editing.value();
-    if (p.driverVersion() != null) {
-      return;
-    }
-    var recommended = versions.recommended();
-    var lookup = probe.fetch.lookup;
-    // The versions name none, or the one looked up: nothing to look up again.
-    if (recommended == null || lookup instanceof Fetch.Found f && f.version().equals(recommended)) {
-      return;
-    }
-    if (!(lookup instanceof Fetch.Looking)) {
-      probe.stop(); // a test or a download is for the version recommended before
-    }
-    probe.fetch.lookUp(s, p.provider(), null, versions.choices());
-  }
-
-  /**
-   * Driver…: opens the driver's dialog, with the versions the lookup read, or else read now; and
-   * what was downloaded.
+   * Driver…: opens the driver's dialog. It reads what is downloaded, and the repository's list only
+   * where the lookup has none: that read changes nothing of the lookup's.
    */
   private void chooseDriver(State s) {
     choosingDriver = true;
-    if (versions.read == null && !versions.reading()) {
-      versions.read(s, probe.fetch.choices, () -> listed(s));
+    if ((versions.read == null || versions.choices() == null) && !versions.reading()) {
+      versions.read(s);
     }
   }
 
-  /** Close and Escape of the driver's dialog. */
+  /** Close and Escape of the driver's dialog: what it reads is cancelled. */
   private void closeDriver() {
     choosingDriver = false;
+    versions.stop();
   }
 
   private void version(State s, String version) {
@@ -588,9 +574,14 @@ final class ConnectionDialog {
                     .key("type")
                     .label("Type")
                     .grow(1))
-                .child(button(SECONDARY, driverText(chosen), open ? () -> chooseDriver(s) : null)
+                .child(button(
+                        SECONDARY,
+                        chosen == null ? "Driver…" : "Driver " + chosen + "…",
+                        open ? () -> chooseDriver(s) : null)
                     .key("driver")
-                    .label("Driver")))
+                    .label("Driver")
+                    // A long version is cut short by the kit, which shows it whole in a tooltip.
+                    .maxSize(6 * t.size().control(), Float.POSITIVE_INFINITY)))
         .warning(driverWarning(s));
     var address = Form.row(
         field(
@@ -762,7 +753,7 @@ final class ConnectionDialog {
           Button.Variant.GHOST,
           Symbol.ARROW_CLOCKWISE,
           "Read the versions again",
-          () -> versions.read(s, probe.fetch.choices, () -> listed(s))));
+          () -> versions.read(s)));
     }
     return line;
   }
@@ -804,15 +795,6 @@ final class ConnectionDialog {
       return missing;
     }
     return (missing == null ? "" : missing + " ") + young + ".";
-  }
-
-  /** Driver…, with the version chosen by hand, cut short so that the button fits beside Type. */
-  static String driverText(String version) {
-    if (version == null) {
-      return "Driver…";
-    }
-    // The one ellipsis says both: the dialog it opens, and a version cut short.
-    return "Driver " + (version.length() > 12 ? version.substring(0, 11) : version) + "…";
   }
 
   /** Which driver, and whether it is there; and what keeps the list of versions from showing. */
