@@ -343,6 +343,47 @@ class ConnectionsTest {
     assertEquals(Tls.ENCRYPTED, saved.tls());
   }
 
+  /**
+   * A connection to MongoDB may name the database its user is defined in, admin where it names
+   * none; a server of SQL does not offer it.
+   */
+  @Test
+  void aMongoDbConnectionCanNameItsAuthDatabase() throws IOException {
+    App<State> app = app();
+    run(
+        app,
+        NEW_SHOP + provider("MongoDB") + """
+        snap mongo
+        press role=textbox label="Auth database"
+        type "a.b"
+        frame
+        snap invalid
+        """ + provider("PostgreSQL") + """
+        snap sql
+        """ + provider("MongoDB")
+            + """
+        snap again
+        press role=textbox label="Auth database"
+        type "shop"
+        frame
+        press role=button label="Save"
+        frame
+        """ + SETTLE + """
+        advance 1
+        frame
+        snap saved
+        """);
+    String mongo = tree("mongo");
+    assertTrue(line(mongo, "#auth-database").contains("placeholder=\"admin\""), mongo);
+    String invalid = tree("invalid");
+    assertTrue(invalid.contains("Use a name of fewer than 64 bytes"), invalid);
+    assertFalse(tree("sql").contains("Auth database"), tree("sql"));
+    String again = tree("again");
+    assertFalse(line(again, "#auth-database").contains("a.b"), again);
+    assertFalse(tree("saved").contains("role=dialog"), tree("saved"));
+    assertEquals("shop", stored().getFirst().authDatabase());
+  }
+
   @Test
   void aNewConnectionIsListedAndSaved() throws IOException {
     App<State> app = app();
@@ -740,7 +781,8 @@ class ConnectionsTest {
             copy.color(),
             copy.driverVersion(),
             copy.readOnly(),
-            copy.srv()));
+            copy.srv(),
+            copy.authDatabase()));
   }
 
   @Test

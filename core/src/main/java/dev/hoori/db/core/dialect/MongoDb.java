@@ -63,8 +63,7 @@ public final class MongoDb implements DocumentDialect {
     return Set.of("admin", "config", "local");
   }
 
-  // shortcut: the user is looked for in admin, where the server's own setup, Atlas and most
-  // deployments define users; give the profile a field for it once users need another.
+  // Where the server's own setup, Atlas and most deployments define users.
   @Override
   public String authDatabase() {
     return "admin";

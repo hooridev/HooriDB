@@ -20,6 +20,17 @@ final class Words {
     };
   }
 
+  // A server of documents looks the user up in one database, which a wrong one fails as a wrong
+  // password does.
+  private static String definedIn(ConnectionProfile p) {
+    if (!p.provider().keepsDocuments()) {
+      return "";
+    }
+    var database =
+        p.authDatabase().isEmpty() ? p.provider().documents().authDatabase() : p.authDatabase();
+    return " in the database " + database;
+  }
+
   /**
    * What the user can do about the failure, or null where the driver's words are all there is.
    *
@@ -30,7 +41,7 @@ final class Words {
     return switch (failure) {
       case LOGIN_REFUSED ->
         withPassword
-            ? "The server refused this user name and password."
+            ? "The server refused this user name and password" + definedIn(p) + "."
             : "The server refused the login without a password. Enter the password.";
       case NO_SUCH_DATABASE ->
         p.database().isBlank()

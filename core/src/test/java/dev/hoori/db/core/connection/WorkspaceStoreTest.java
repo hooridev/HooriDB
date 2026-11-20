@@ -87,7 +87,8 @@ class WorkspaceStoreTest {
           Color.RED,
           null,
           false,
-          false),
+          false,
+          ""),
       new ConnectionProfile(
           UUID.randomUUID(),
           "",
@@ -100,7 +101,8 @@ class WorkspaceStoreTest {
           null,
           "8.4.0",
           false,
-          false),
+          false,
+          ""),
       new ConnectionProfile(
           UUID.randomUUID(),
           "{\"x\": 1}",
@@ -113,7 +115,8 @@ class WorkspaceStoreTest {
           Color.GRAY,
           "3.5.1",
           false,
-          false),
+          false,
+          ""),
       new ConnectionProfile(
           UUID.randomUUID(),
           "docs",
@@ -126,7 +129,8 @@ class WorkspaceStoreTest {
           null,
           null,
           true,
-          false),
+          false,
+          "shop"),
       new ConnectionProfile(
           UUID.randomUUID(),
           "atlas",
@@ -139,7 +143,8 @@ class WorkspaceStoreTest {
           null,
           null,
           false,
-          true));
+          true,
+          ""));
 
   /** Folders in folders, open and closed, one empty, with connections at each level. */
   private static final Workspace WORKSPACE = new Workspace(List.of(
@@ -258,6 +263,17 @@ class WorkspaceStoreTest {
   }
 
   @Test
+  void authDatabaseIsStoredOnlyWhereItIsSet() throws IOException {
+    new WorkspaceStore(folder).save(flat(PROFILES));
+    var stored = new ArrayList<String>();
+    for (var profile : entries()) {
+      stored.add(profile.has("authDatabase") ? profile.get("authDatabase").stringValue() : null);
+    }
+    assertEquals(Arrays.asList(null, null, null, "shop", null), stored);
+    assertEquals(flat(PROFILES), new WorkspaceStore(folder).load());
+  }
+
+  @Test
   void srvIsStoredOnlyWhereItIs() throws IOException {
     new WorkspaceStore(folder).save(flat(PROFILES));
     var flags = new ArrayList<Boolean>();
@@ -280,6 +296,7 @@ class WorkspaceStoreTest {
     assertEquals(null, profile.color());
     assertEquals(null, profile.driverVersion());
     assertEquals(false, profile.srv());
+    assertEquals("", profile.authDatabase());
   }
 
   @Test
@@ -496,7 +513,8 @@ class WorkspaceStoreTest {
             Color.GRAY,
             "3.5.1",
             false,
-            false),
+            false,
+            ""),
         taken.connections().get(1));
     var changed = taken.remove(first.id());
     store.save(changed);

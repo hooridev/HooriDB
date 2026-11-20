@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.UUID;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The workspace, kept in {@value #FILE} in a folder. Every call blocks on the disk, so none of them
@@ -175,7 +176,14 @@ public final class WorkspaceStore {
         color(in, node, where),
         driverVersion(in, node, where),
         node.get("readOnly") != null && in.bool(node, where, "readOnly"),
-        node.get("srv") != null && in.bool(node, where, "srv"));
+        node.get("srv") != null && in.bool(node, where, "srv"),
+        optionalText(in, node, where, "authDatabase"));
+  }
+
+  // Empty where it is missing, as in a file from before there was the field.
+  private static String optionalText(JsonFile in, JsonNode node, String where, String field)
+      throws UnreadableException {
+    return node.get(field) != null ? in.text(node, where, field) : "";
   }
 
   /**
@@ -205,32 +213,37 @@ public final class WorkspaceStore {
               .put("open", folder.open());
           write(object.putArray("entries"), folder.entries());
         }
-        case ConnectionProfile profile -> {
-          object
-              .put("kind", "connection")
-              .put("id", profile.id().toString())
-              .put("name", profile.name())
-              .put("provider", stored(profile.provider()))
-              .put("host", profile.host())
-              .put("port", profile.port())
-              .put("database", profile.database())
-              .put("user", profile.user())
-              .put("tls", stored(profile.tls()));
-          if (profile.color() != null) {
-            object.put("color", stored(profile.color()));
-          }
-          if (profile.driverVersion() != null) {
-            object.put("driverVersion", profile.driverVersion());
-          }
-          // Left out where it may write, as in a file from before there was the choice.
-          if (profile.readOnly()) {
-            object.put("readOnly", true);
-          }
-          if (profile.srv()) {
-            object.put("srv", true);
-          }
-        }
+        case ConnectionProfile profile -> write(object, profile);
       }
+    }
+  }
+
+  private static void write(ObjectNode object, ConnectionProfile profile) {
+    object
+        .put("kind", "connection")
+        .put("id", profile.id().toString())
+        .put("name", profile.name())
+        .put("provider", stored(profile.provider()))
+        .put("host", profile.host())
+        .put("port", profile.port())
+        .put("database", profile.database())
+        .put("user", profile.user())
+        .put("tls", stored(profile.tls()));
+    if (profile.color() != null) {
+      object.put("color", stored(profile.color()));
+    }
+    if (profile.driverVersion() != null) {
+      object.put("driverVersion", profile.driverVersion());
+    }
+    // Left out where it may write, as in a file from before there was the choice.
+    if (profile.readOnly()) {
+      object.put("readOnly", true);
+    }
+    if (profile.srv()) {
+      object.put("srv", true);
+    }
+    if (!profile.authDatabase().isEmpty()) {
+      object.put("authDatabase", profile.authDatabase());
     }
   }
 

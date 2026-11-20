@@ -19,9 +19,10 @@ import java.util.regex.Pattern;
  * sends only commands that read, as {@link dev.hoori.db.core.document.Commands#reads} says; one to
  * a server of SQL has the server keep its sessions read-only, as {@link
  * dev.hoori.db.core.connect.Connector#open} does. A server of SQL does not take SRV: the host of
- * such a profile names a DNS SRV
- * record that lists the servers, as {@code mongodb+srv://} does, and its port is not used. In the
- * workspace it is an entry of its own.
+ * such a profile names a DNS SRV record that lists the servers, as {@code mongodb+srv://} does, and
+ * its port is not used. The database its user is defined in, MongoDB's {@code authSource}, is
+ * empty for the provider's default, also for a server of SQL, which has none. In the workspace it
+ * is an entry of its own.
  */
 public record ConnectionProfile(
     UUID id,
@@ -35,7 +36,8 @@ public record ConnectionProfile(
     Color color,
     String driverVersion,
     boolean readOnly,
-    boolean srv)
+    boolean srv,
+    String authDatabase)
     implements Workspace.Entry {
 
   private static final Pattern LABEL =
@@ -51,6 +53,7 @@ public record ConnectionProfile(
     Objects.requireNonNull(database, "database");
     Objects.requireNonNull(user, "user");
     Objects.requireNonNull(tls, "tls");
+    Objects.requireNonNull(authDatabase, "authDatabase");
     if (driverVersion != null && !Maven.isVersion(driverVersion)) {
       throw new IllegalArgumentException("Not a driver version");
     }
@@ -61,7 +64,8 @@ public record ConnectionProfile(
     HOST,
     PORT,
     DATABASE,
-    USER
+    USER,
+    AUTH_DATABASE
   }
 
   /** What keeps a profile from connecting. */
@@ -78,7 +82,9 @@ public record ConnectionProfile(
     DATABASE_HAS_NUL(Field.DATABASE),
     /** Not a name of a database that the provider's servers take, as MongoDB's with a dot. */
     DATABASE_NAME_INVALID(Field.DATABASE),
-    USER_HAS_NUL(Field.USER);
+    USER_HAS_NUL(Field.USER),
+    /** Not a name of a database that the provider's servers take, as for the database. */
+    AUTH_DATABASE_NAME_INVALID(Field.AUTH_DATABASE);
 
     private final Field field;
 
@@ -119,7 +125,8 @@ public record ConnectionProfile(
         null,
         null,
         false,
-        false);
+        false,
+        "");
   }
 
   /**
@@ -183,6 +190,9 @@ public record ConnectionProfile(
     if (user.indexOf('\0') >= 0) {
       problems.add(Problem.USER_HAS_NUL);
     }
+    if (provider.keepsDocuments() && !provider.documents().isDatabaseName(authDatabase)) {
+      problems.add(Problem.AUTH_DATABASE_NAME_INVALID);
+    }
     return problems;
   }
 
@@ -239,56 +249,205 @@ public record ConnectionProfile(
 
   public ConnectionProfile withName(String name) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withProvider(Provider provider) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withHost(String host) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withPort(int port) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withDatabase(String database) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withUser(String user) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withTls(Tls tls) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withColor(Color color) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withDriverVersion(String driverVersion) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withReadOnly(boolean readOnly) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 
   public ConnectionProfile withSrv(boolean srv) {
     return new ConnectionProfile(
-        id, name, provider, host, port, database, user, tls, color, driverVersion, readOnly, srv);
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
+  }
+
+  public ConnectionProfile withAuthDatabase(String authDatabase) {
+    return new ConnectionProfile(
+        id,
+        name,
+        provider,
+        host,
+        port,
+        database,
+        user,
+        tls,
+        color,
+        driverVersion,
+        readOnly,
+        srv,
+        authDatabase);
   }
 }
