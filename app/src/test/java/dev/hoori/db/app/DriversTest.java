@@ -823,8 +823,9 @@ class DriversTest {
         START + EDIT_LOCAL + "snap a-edit-" + look + "\n" + ConnectionColorsTest.COLOR
             + "snap g-color-" + look
             + "\nkey Escape\nframe\nadvance 1\nframe\n" + DRIVER + "snap b-driver-" + look + "\n"
-            + CLOSE_DRIVER + "key Escape\nframe\nadvance 1\nframe\n" + """
-            press role=button label="Add connection"
+            + CLOSE_DRIVER + "key Escape\nframe\nadvance 1\nframe\n"
+            + ConnectionsTest.ADD_CONNECTION
+            + """
             frame
             advance 1
             frame

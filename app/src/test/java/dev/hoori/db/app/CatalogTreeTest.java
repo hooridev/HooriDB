@@ -163,7 +163,31 @@ class CatalogTreeTest {
       java.util.concurrent.Callable<Keyring> keyring,
       ConnectionProfile... profiles)
       throws IOException {
-    // A start of its own: what an app before it kept of its consoles is not restored.
+    fresh();
+    return again(servers, keyring, profiles);
+  }
+
+  /** The app with this workspace, the made-up servers and the keyring in memory. */
+  App<State> app(Workspace workspace) throws IOException {
+    fresh();
+    new WorkspaceStore(dir.resolve("config")).save(workspace);
+    return start(servers, () -> new Keyring.Available(secrets));
+  }
+
+  /** The app started again with what the apps before it saved, once they are done. */
+  App<State> restarted() throws IOException {
+    settled();
+    return start(servers, () -> new Keyring.Available(secrets));
+  }
+
+  // A start of its own: what an app before it kept of its consoles is not restored.
+  private void fresh() throws IOException {
+    settled();
+    Files.deleteIfExists(dir.resolve("config").resolve(ConsoleStore.FILE));
+    Files.deleteIfExists(dir.resolve("config").resolve(HistoryStore.FILE));
+  }
+
+  private void settled() throws IOException {
     try {
       for (var earlier : apps) {
         earlier.await(Duration.ofSeconds(10));
@@ -172,9 +196,6 @@ class CatalogTreeTest {
       Thread.currentThread().interrupt();
       throw new java.io.InterruptedIOException();
     }
-    Files.deleteIfExists(dir.resolve("config").resolve(ConsoleStore.FILE));
-    Files.deleteIfExists(dir.resolve("config").resolve(HistoryStore.FILE));
-    return again(servers, keyring, profiles);
   }
 
   /** The app started again with these connections, and the consoles and history kept before. */
@@ -188,6 +209,10 @@ class CatalogTreeTest {
       ConnectionProfile... profiles)
       throws IOException {
     new WorkspaceStore(dir.resolve("config")).save(new Workspace(List.of(profiles)));
+    return start(servers, keyring);
+  }
+
+  private App<State> start(Servers servers, java.util.concurrent.Callable<Keyring> keyring) {
     var app = HooriDb.app(
         dir.resolve("config"),
         keyring,

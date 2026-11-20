@@ -150,6 +150,20 @@ class ConnectionsTest {
         .withTls(Tls.VERIFIED);
   }
 
+  /** The sidebar's "+" and its New connection…, which opens the dialog. */
+  static final String ADD_CONNECTION = """
+      press role=button label="Add"
+      frame
+      advance 1
+      frame
+      press role=menuitem label="New connection…"
+      """;
+
+  /** The script with its press of the empty state's New connection made through the "+". */
+  static String viaAdd(String script) {
+    return script.replace("press role=button label=\"New connection\"\n", ADD_CONNECTION);
+  }
+
   static final String NEW_SHOP = """
       press role=button label="New connection"
       frame
@@ -507,16 +521,16 @@ class ConnectionsTest {
   }
 
   /**
-   * The tree shows the connections of the workspace's folders as its roots, from the top down,
-   * and every change of one keeps the folders in the file, an emptied one too.
+   * The tree shows the workspace's folders with their connections, and every change of a
+   * connection keeps the folders in the file, an emptied one too.
    */
   @Test
   void foldersInTheFileOutlastEveryChange() throws IOException {
     var shop = shop();
     var crm = shop().withName("crm");
     var analytics = shop().withName("analytics");
-    var inner = new Workspace.Folder(UUID.randomUUID(), "inner", false, List.of(crm));
-    var reports = new Workspace.Folder(UUID.randomUUID(), "reports", false, List.of(analytics));
+    var inner = new Workspace.Folder(UUID.randomUUID(), "inner", true, List.of(crm));
+    var reports = new Workspace.Folder(UUID.randomUUID(), "reports", true, List.of(analytics));
     var outer = new Workspace.Folder(UUID.randomUUID(), "outer", true, List.of(inner, reports));
     var empty = new Workspace.Folder(UUID.randomUUID(), "empty", false, List.of());
     var config = new WorkspaceStore(dir.resolve("config"));
@@ -531,11 +545,15 @@ class ConnectionsTest {
         press role=menuitem label="Duplicate"
         frame
         """ + SETTLE);
-    assertEquals(List.of("shop-prod", "crm", "analytics"), roots(tree("start")));
+    assertEquals(
+        List.of("shop-prod", "outer", "inner", "crm", "reports", "analytics", "empty"),
+        roots(tree("start")));
     app.state().put(crm.withHost("crm.example.com"));
     app.state().put(shop.withColor(Color.GREEN));
     more(app, SETTLE + DELETE_SHOP.replace("shop-prod", "analytics") + SETTLE + "snap end\n");
-    assertEquals(List.of("shop-prod", "crm", "crm (copy)"), roots(tree("end")));
+    assertEquals(
+        List.of("shop-prod", "outer", "inner", "crm", "crm (copy)", "reports", "empty"),
+        roots(tree("end")));
     var saved = config.load();
     var copy = saved.connections().get(2);
     assertEquals("crm (copy)", copy.name());
@@ -550,8 +568,8 @@ class ConnectionsTest {
                 true,
                 List.of(
                     new Workspace.Folder(
-                        inner.id(), "inner", false, List.of(crm.withHost("crm.example.com"), copy)),
-                    new Workspace.Folder(reports.id(), "reports", false, List.of()))),
+                        inner.id(), "inner", true, List.of(crm.withHost("crm.example.com"), copy)),
+                    new Workspace.Folder(reports.id(), "reports", true, List.of()))),
             empty)),
         saved);
   }
@@ -724,8 +742,8 @@ class ConnectionsTest {
     run(app, "snap blocked\n");
     String blocked = tree("blocked");
     assertTrue(line(blocked, "role=note").contains("\"Connections could not be read\""), blocked);
-    assertFalse(line(blocked, "label=\"Add connection\"").endsWith("disabled"), blocked);
-    more(app, NEW_SHOP.replace("New connection", "Add connection") + "key Enter\nframe\n" + SETTLE);
+    assertFalse(line(blocked, "label=\"Add\"").endsWith("disabled"), blocked);
+    more(app, viaAdd(NEW_SHOP) + "key Enter\nframe\n" + SETTLE);
     assertEquals(
         "The connections that could not be read were kept in connections.json",
         app.state().message);
@@ -775,7 +793,7 @@ class ConnectionsTest {
     run(app, "snap blocked\n");
     String blocked = tree("blocked");
     assertTrue(line(blocked, "role=note").contains("\"Connections could not be read\""), blocked);
-    assertTrue(line(blocked, "label=\"Add connection\"").endsWith("disabled"), blocked);
+    assertTrue(line(blocked, "label=\"Add\"").endsWith("disabled"), blocked);
     assertFalse(blocked.contains("No connections yet"), blocked);
     Files.delete(dir.resolve("config").resolve(WorkspaceStore.FILE));
     store(shop());
@@ -788,7 +806,7 @@ class ConnectionsTest {
         """);
     String end = tree("end");
     assertTrue(line(end, "role=treeitem").contains("label=\"shop-prod\""), end);
-    assertFalse(line(end, "label=\"Add connection\"").endsWith("disabled"), end);
+    assertFalse(line(end, "label=\"Add\"").endsWith("disabled"), end);
     assertFalse(end.contains("role=note"), end);
   }
 
@@ -1028,8 +1046,7 @@ class ConnectionsTest {
   void aPortThatIsNoPortYetCountsAsTyped() throws IOException {
     store(shop());
     App<State> app = app();
-    run(app, """
-        press role=button label="Add connection"
+    run(app, ADD_CONNECTION + """
         frame
         advance 1
         frame

@@ -735,7 +735,7 @@ class ConsoleTransactionTest {
     c.secrets.gate = new CountDownLatch(1);
     c.run(
         app,
-        "window main\n" + ConnectionsTest.NEW_SHOP.replace("New connection", "Add connection")
+        "window main\n" + ConnectionsTest.viaAdd(ConnectionsTest.NEW_SHOP)
             + "key Enter\nframe\nclose\nframe\n");
     assertFalse(app.windows().all().isEmpty());
     // The console, in its own window, starts nothing meanwhile, and says why.

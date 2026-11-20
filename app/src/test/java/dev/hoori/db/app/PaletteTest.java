@@ -115,16 +115,16 @@ class PaletteTest {
     assertTrue(
         all.containsAll(List.of(
             "File: New connection…",
+            "File: New folder…",
             "File: New console",
             "File: Close tab",
             "View: Command palette…",
             "View: Light theme",
             "Go: Go to table…",
             "Go: Next tab",
-            "Go: Connections",
-            "Go: Tab content",
-            // The rows that fit: About comes after the channels of updates.
-            "Help: Stable updates")),
+            "Go: Workspace",
+            // The rows that fit: Help's come after.
+            "Go: Tab content")),
         all.toString());
     assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
@@ -153,8 +153,7 @@ class PaletteTest {
     var pageDown = Menu.shortcutText(new Key("PageDown", Key.CONTROL, false));
     assertTrue(next.contains("\"" + pageDown + "\"") && !next.contains("Ctrl+Tab"), next);
     assertTrue(
-        ConnectionsTest.after(go, "role=menuitem label=\"Connections\"").contains("\"Ctrl+0\""),
-        go);
+        ConnectionsTest.after(go, "role=menuitem label=\"Workspace\"").contains("\"Ctrl+0\""), go);
     var palette = c.tree("palette");
     assertTrue(line(palette, "role=dialog").contains("label=\"Command palette\""), palette);
     assertTrue(line(palette, "role=textbox").contains("focused"), palette);
@@ -460,7 +459,7 @@ class PaletteTest {
     c.run(app, PALETTE + "snap palette\n");
     var palette = c.tree("customers-palette");
     assertTrue(line(palette, "role=dialog").contains("label=\"Command palette\""), palette);
-    assertTrue(line(palette, "label=\"Go: Connections\"").contains("disabled"), palette);
+    assertTrue(line(palette, "label=\"Go: Workspace\"").contains("disabled"), palette);
     assertFalse(c.tree("palette").contains("label=\"Command palette\""), "not in the main window");
     c.run(app, "type \"close tab\"\nframe\nkey Enter\n" + SHOWN + SETTLE);
     assertEquals(1, app.windows().all().size(), "its window closed with its last tab");
@@ -486,7 +485,7 @@ class PaletteTest {
     var app = torn();
     c.run(
         app,
-        "press role=button label=\"Add connection\"\n" + SHOWN
+        ConnectionsTest.ADD_CONNECTION + SHOWN
             + "press role=textbox label=\"Name\"\ntype \"half done\"\nframe\n"
             + "window \"customers\"\n" + PALETTE + "snap all\ntype \"new connection\"\nframe\n"
             + "snap asked\nkey Enter\n" + SHOWN + "window main\nframe\nsnap main\n");
