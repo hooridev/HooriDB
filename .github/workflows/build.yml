@@ -1,11 +1,21 @@
-# Builds the release bundle on each platform and keeps it as workflow artifacts. The release
-# calls it, and it runs by hand on any branch, without a release, and on a pull request that
-# changes how the bundle is built.
+# Builds the release bundle on each platform and keeps it as workflow artifacts. The release and
+# the nightly call it, the nightly with its own version, and it runs by hand on any branch,
+# without a release, and on a pull request that changes how the bundle is built.
 name: Build
 
 on:
   workflow_call:
+    inputs:
+      version:
+        description: The version to build as, such as a nightly's, instead of the POMs'
+        type: string
+        required: false
   workflow_dispatch:
+    inputs:
+      version:
+        description: The version to build as, such as a nightly's, instead of the POMs'
+        type: string
+        required: false
   pull_request:
     paths:
       - .github/workflows/build.yml
@@ -33,6 +43,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+      - name: Set the version
+        if: inputs.version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: mvn -B -q org.codehaus.mojo:versions-maven-plugin:2.25.2:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
       - run: mvn -B -Pbundle verify
       - name: Smoke test
         # Without a window: the launcher, the runtime and the native libraries, which load from
