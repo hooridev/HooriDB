@@ -386,9 +386,9 @@
                     <argument>--main-jar</argument>
                     <argument>${project.build.finalName}.jar</argument>
                     <argument>--vendor</argument>
-                    <argument>Patrick Trautmann</argument>
+                    <argument>HooriDB contributors</argument>
                     <argument>--copyright</argument>
-                    <argument>Copyright (C) Patrick Trautmann</argument>
+                    <argument>Copyright (C) Patrick Trautmann and the HooriDB contributors</argument>
                     <argument>--main-class</argument>
                     <argument>dev.hoori.db.app.HooriDb</argument>
                     <argument>--dest</argument>

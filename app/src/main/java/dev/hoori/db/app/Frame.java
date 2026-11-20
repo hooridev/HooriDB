@@ -541,7 +541,7 @@ final class Frame {
         .key("uncommitted");
   }
 
-  /** The version that runs, its author, license and website. */
+  /** The version that runs, its authors, license and website. */
   private static El aboutDialog(State s) {
     float side = Theme.CURRENT.get().size().icon();
     El mark = AppIcon.appIcon(Math.round(side), HooriDb.COLOR, Symbol.DATABASE).size(side, side);
@@ -551,7 +551,7 @@ final class Frame {
         List.of(
             Properties.property("Version", s.version),
             Properties.property("Updates", s.channel() == Channel.NIGHTLY ? "Nightly" : "Stable"),
-            Properties.property("Author", "Patrick Trautmann"),
+            Properties.property("Authors", "HooriDB contributors"),
             Properties.property("License", "MIT"),
             Properties.property("Website", "https://db.hoori.dev")),
         null);

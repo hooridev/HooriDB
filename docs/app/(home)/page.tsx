@@ -107,7 +107,7 @@ const content = {
     ],
   },
   footer: {
-    note: 'MIT License. Made by Patrick Trautmann.',
+    note: 'MIT License. Made by the HooriDB contributors.',
     links: [
       { text: 'Docs', href: '/docs' },
       { text: 'Releases', href: `${repository}/releases` },
