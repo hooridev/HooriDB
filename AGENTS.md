@@ -61,27 +61,29 @@ and previous tab, and the focus on the tree or the tab. Consoles are kept: their
 and databases are saved a moment after each change, beside the workspace, and reopened unconnected
 at the next start; each statement run from a console goes into its connection's history
 (`history.json`, at most 1,000 a connection, owner-only), which History lists, searches, inserts
-from and clears. A connection to MongoDB goes through its Java driver, downloaded as the JDBC
-drivers are, with its parts beside it, and through a bridge of core's that is loaded beside the
-driver; its host may name a DNS SRV record that lists the servers, as `mongodb+srv://` does, with
-TLS on by default and no port; its user may be defined in a database other than `admin`, which it
-names (`authSource`); it may be read-only, which sends only commands that read, as find, aggregate
-without `$out` or `$merge` and counts, and refuses the others unsent. Its databases and collections
-show in the tree, with the fields that a sample of their documents has; a collection opens in a tab
-as a grid of its fields, read in pages, with a document or an array in a cell as Relaxed Extended
-JSON, or a page of documents at a time as Relaxed Extended JSON or as a tree of their fields. Its
-console runs statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls,
-`aggregate`, counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their
-documents in the same three ways, underlines where a statement goes wrong, completes collections,
-methods, operators and fields, and asks before an update or delete of every document; it has no
-transactions. Run from its app image, HooriDB looks for a newer GitHub release at each start, in the
-channel Help chooses, Stable or Nightly (at first that of its own version), downloads it and
-restarts into it through its own Exit when asked; the new version confirms once its window has shown
-its first frame, and the updater's helper puts the old version back where it does not, and a version
-put back is not offered again until a higher one comes out. Help, About HooriDB shows the version
-that runs, its channel of updates, its authors, license and website. Started from the unpacked Linux
-bundle, it puts itself into the application menu, which gives its windows their icon in the dock.
-Nothing can be edited, filtered or sorted yet.
+from and clears; Save query keeps the selection, or else the whole text, under a name
+(`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. A
+connection to MongoDB goes through its Java driver, downloaded as the JDBC drivers are, with its
+parts beside it, and through a bridge of core's that is loaded beside the driver; its host may name
+a DNS SRV record that lists the servers, as `mongodb+srv://` does, with TLS on by default and no
+port; its user may be defined in a database other than `admin`, which it names (`authSource`); it
+may be read-only, which sends only commands that read, as find, aggregate without `$out` or `$merge`
+and counts, and refuses the others unsent. Its databases and collections show in the tree, with the
+fields that a sample of their documents has; a collection opens in a tab as a grid of its fields,
+read in pages, with a document or an array in a cell as Relaxed Extended JSON, or a page of
+documents at a time as Relaxed Extended JSON or as a tree of their fields. Its console runs
+statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls, `aggregate`,
+counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their documents in
+the same three ways, underlines where a statement goes wrong, completes collections, methods,
+operators and fields, and asks before an update or delete of every document; it has no transactions.
+Run from its app image, HooriDB looks for a newer GitHub release at each start, in the channel Help
+chooses, Stable or Nightly (at first that of its own version), downloads it and restarts into it
+through its own Exit when asked; the new version confirms once its window has shown its first frame,
+and the updater's helper puts the old version back where it does not, and a version put back is not
+offered again until a higher one comes out. Help, About HooriDB shows the version that runs, its
+channel of updates, its authors, license and website. Started from the unpacked Linux bundle, it
+puts itself into the application menu, which gives its windows their icon in the dock. Nothing can
+be edited, filtered or sorted yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it
