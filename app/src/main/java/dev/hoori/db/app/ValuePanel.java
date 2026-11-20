@@ -114,10 +114,7 @@ final class ValuePanel {
     } else if (cell.value() == null) {
       body = col().grow(1).center().child(Label.label(Label.Variant.MUTED, "NULL"));
     } else if (cell.value() == Missing.FIELD) {
-      body = col()
-          .grow(1)
-          .center()
-          .child(Label.label(Label.Variant.MUTED, "The document has no such field"));
+      body = col().grow(1).center().child(Label.label(Label.Variant.MUTED, "No such field"));
     } else {
       make(cell.value(), cell.kind(), zone);
       body = CodeEditor.embedded(CodeEditor.codeEditor(

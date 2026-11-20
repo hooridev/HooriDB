@@ -119,7 +119,7 @@ class DocumentsServerTest {
     assertFalse(cell(missing, 2, 2).contains("NULL"), missing);
     // The kit's empty field, quoted where it is alone on its line.
     assertEquals("\"\"", app.clipboard().read());
-    assertTrue(missing.contains("\"The document has no such field\""), missing);
+    assertTrue(missing.contains("\"No such field\""), missing);
   }
 
   @Test

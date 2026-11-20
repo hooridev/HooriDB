@@ -102,10 +102,9 @@ public final class Values {
   public static List<Object> row(List<Field> fields, Document document) {
     var row = new ArrayList<Object>(fields.size());
     for (var field : fields) {
+      var value = document.get(field.name());
       row.add(
-          document.has(field.name())
-              ? value(document.get(field.name()), field.kind())
-              : Missing.FIELD);
+          value != null || document.has(field.name()) ? value(value, field.kind()) : Missing.FIELD);
     }
     return Collections.unmodifiableList(row);
   }

@@ -236,9 +236,9 @@ class ValuePanelTest {
     String missing = t.c.tree("missing");
     assertFalse(TableTabTest.cell(missing, 0, 0).contains("NULL"), missing);
     assertTrue(TableTabTest.cell(missing, 0, 1).contains("\"NULL\""), missing);
-    assertTrue(missing.contains("\"The document has no such field\""), missing);
+    assertTrue(missing.contains("\"No such field\""), missing);
     String nulled = t.c.tree("null");
-    assertFalse(nulled.contains("no such field"), nulled);
+    assertFalse(nulled.contains("No such field"), nulled);
   }
 
   @Test

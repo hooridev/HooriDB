@@ -41,7 +41,7 @@ Expanding a MongoDB connection in the tree shows its databases, then their colle
 
 Open a collection or view as you open a table (double-click it, or select it and press `Enter`). The **Show documents as** switch in the toolbar has three views:
 
-- **Grid**: the fields as columns, read in pages as you scroll, with the same paging buttons, row count, copying, and [value panel](/docs/features/table-data#inspect-a-cell-in-the-value-panel) as a table. A document or an array in a cell is shown as Relaxed Extended JSON, which the value panel formats and colors when the field holds only documents or arrays. A value shortened in the grid is read whole by its document's `_id`. A field that a document does not have is an empty cell, which copies as empty text and for which the value panel says that the document has no such field; a field that is `null` shows `NULL`.
+- **Grid**: the fields as columns, read in pages as you scroll, with the same paging buttons, row count, copying, and [value panel](/docs/features/table-data#inspect-a-cell-in-the-value-panel) as a table. A document or an array in a cell is shown as Relaxed Extended JSON, which the value panel formats and colors when the field holds only documents or arrays. A value shortened in the grid is read whole by its document's `_id`. A field that a document does not have is an empty cell, which copies as empty text and for which the value panel shows **No such field**; a field that is `null` shows `NULL`.
 - **JSON**: 200 documents at a time as a formatted array of Relaxed Extended JSON. The paging buttons in the status bar move between pages, as in the grid.
 - **Tree**: the same 200 documents, each as a tree of its fields.
 
