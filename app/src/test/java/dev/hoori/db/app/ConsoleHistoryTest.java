@@ -181,7 +181,7 @@ class ConsoleHistoryTest {
     assertTrue(line(history, "role=dialog").contains("label=\"History of shop-prod\""), history);
     assertTrue(line(history, "#history-search").contains("focused"), history);
     assertTrue(cell(history, 0, 0).contains("\"" + ORDERS + "\""), history);
-    assertTrue(cell(history, 0, 2).contains("ms\""), history);
+    assertTrue(cell(history, 3, 2).contains("\"4.0 ms\""), history);
     assertTrue(cell(history, 0, 3).contains("\"Cancelled\""), history);
     assertTrue(cell(history, 1, 3).contains("relation \\\"missing\\\" does not exist"), history);
     assertTrue(cell(history, 2, 3).contains("\"3 rows changed\""), history);
@@ -227,6 +227,10 @@ class ConsoleHistoryTest {
     assertEquals(tab.text.length(), tab.editor.caret(), "where Run runs it");
     c.run(app, CLEAR + type("SELECT 1;\nSELECT 2;") + "key ArrowUp\nkey ArrowLeft\n" + choose);
     assertEquals("SELECT 1;\n" + COUNT + ";\nSELECT 2;", tab.text);
+    // Before a statement on the caret's line: the caret after the entry, not in the one below.
+    c.run(app, CLEAR + type("SELECT 1;") + "key Home\n" + choose);
+    assertEquals(COUNT + ";\nSELECT 1;", tab.text);
+    assertEquals(COUNT.length() + 1, tab.editor.caret(), "where Run runs it");
     // Between a statement and its terminator: after the terminator.
     c.run(app, CLEAR + type("SELECT 1 ;") + "key ArrowLeft\n" + choose);
     assertEquals("SELECT 1 ;\n" + COUNT + ";", tab.text);

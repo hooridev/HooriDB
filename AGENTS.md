@@ -83,7 +83,7 @@ mvn -pl app -am verify -Dbudget -Dtest=BudgetTest -Dsurefire.failIfNoSpecifiedTe
 
 `BudgetTest` prints each number beside its budget and asserts no timing; without `-Dbudget` it is skipped. The start opens real windows and is skipped without a display, the first rows without Docker.
 
-- Start: HooriDB's `main` as a process of its own in a real window, with no connections or drivers, a warm-up and then six runs; the first frame as the framework logs it, in milliseconds after the process started.
+- Start: HooriDB's `main` as a process of its own in a real window, with the bundle's initial heap (`-Xms32m`) and no connections or drivers, a warm-up and then six runs; the first frame as the framework logs it, in milliseconds after the process started.
 - First rows: from Enter on the table in the tree to the frame that shows its first rows, without a window, on each of core's `TestServer`s, five times.
 - Scrolling: each `App.frame()` while the wheel scrolls a grid of 1,000,000 made-up rows one step a frame at 60 frames a second, with the pointer over the grid. This is the app's share of a frame (input, build and layout) without drawing: the framework has no public way yet to drive a real window and time its frames.
 - Memory: the resident memory (on Windows the working set) of the started process 10 seconds after its first frame.
@@ -97,6 +97,7 @@ A release is a GitHub release of the tag `vX.Y.Z`, whose commit has the version 
 - The framework and the updater's helper are SNAPSHOTs, which Central deletes after 90 days. So a release pins each `rethinkj-*.version` property of the root `pom.xml` to its timestamped SNAPSHOT, as the artifact's `maven-metadata.xml` in Central's snapshot repository names it, such as `0.1.0-20261118.121633-120`; the artifacts of one push can differ in it. main keeps plain `-SNAPSHOT`.
 - To release: on a branch of its own, set the version of the three POMs to `X.Y.Z` and pin the properties, check that `mvn -U -Pbundle verify` passes, commit, and push the tag `vX.Y.Z` of that commit. The workflow `release.yml` refuses a tag that is not the version and any `-SNAPSHOT` left in a POM, builds, and publishes the release. main then gets the next `-SNAPSHOT` version.
 - A version with a SemVer pre-release part, such as `X.Y.Z-rc.1`, is a pre-release: `release.yml` marks its GitHub release as one, and nightlies and update channels treat it as one too, never offering it as stable.
+- Nightlies: each night at 03:00 UTC, and by hand, `nightly.yml` builds main when it changed since the last nightly as `X.Y.Z-nightly.YYYYMMDDHHMM`, main's version without `-SNAPSHOT` and the UTC minute, set for the build alone, and publishes it as a pre-release of the tag `vX.Y.Z-nightly.YYYYMMDDHHMM` with the same assets, never marked Latest, which stays on the stable release; it keeps the 14 newest nightlies and deletes older ones with their tags. It fails while a stable release has main's X.Y.Z or a higher one, as after a release before main got its next version. `release.yml` ignores nightly tags.
 
 ## Changes
 
