@@ -49,6 +49,11 @@ public final class DocumentSession implements AutoCloseable {
     return readOnly;
   }
 
+  /** What its server's provider does its own way. */
+  public DocumentDialect dialect() {
+    return dialect;
+  }
+
   /**
    * Runs the command on the database, unless the session is read-only and the command would change
    * something: then nothing is sent, and it fails with {@link DocumentException.Kind#READ_ONLY}.

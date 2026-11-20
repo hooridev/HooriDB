@@ -185,6 +185,11 @@ final class Frame {
                 Symbol.CODE,
                 ConnectionColors.hue(s.color(x.id)),
                 x.busy());
+          case MonitorTab x ->
+            new Tabs.Tab(s.title(x))
+                .icon(Symbol.SERVER)
+                .hue(ConnectionColors.hue(s.color(x.id)))
+                .busy(x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -198,6 +203,7 @@ final class Frame {
                 : null;
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
+          case MonitorTab x -> x.view(s, app);
         });
   }
 
@@ -207,6 +213,7 @@ final class Frame {
       case null -> HooriDb.NAME;
       case TableTab x -> s.title(x);
       case ConsoleTab x -> s.title(x);
+      case MonitorTab x -> s.title(x);
     };
   }
 
@@ -608,6 +615,10 @@ final class Frame {
                         "New console", console == null ? null : () -> s.openConsole(console, group))
                     .icon(Symbol.CODE)
                     .shortcut(Key.CONTROL, "N"),
+                Menu.item(
+                        "Server monitor",
+                        console == null ? null : () -> s.openMonitor(console, group))
+                    .icon(Symbol.SERVER),
                 Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c ? c::openHistory : null)

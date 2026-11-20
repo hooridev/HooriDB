@@ -117,20 +117,21 @@ class PaletteTest {
             "File: New connection…",
             "File: New folder…",
             "File: New console",
+            "File: Server monitor",
             "File: Close tab",
             "View: Command palette…",
             "View: Light theme",
             "Go: Go to table…",
             "Go: Next tab",
-            "Go: Workspace",
-            // The rows that fit: Help's come after.
-            "Go: Tab content")),
+            // The rows that fit: the rest of Go's and Help's come after.
+            "Go: Workspace")),
         all.toString());
     assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
     // Disabled in the menu, disabled here: no tab is open, and nothing is selected for a console.
     assertTrue(line(open, "label=\"File: Close tab\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: New console\"").contains("disabled"), open);
+    assertTrue(line(open, "label=\"File: Server monitor\"").contains("disabled"), open);
     assertFalse(line(open, "label=\"View: Light theme\"").contains("disabled"), open);
     c.run(app, "type \"light th\"\nframe\nkey Enter\n" + SHOWN + "snap ran\n");
     assertSame(Theme.LIGHT, app.state().theme);

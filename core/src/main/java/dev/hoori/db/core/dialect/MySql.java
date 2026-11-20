@@ -74,6 +74,7 @@ public final class MySql extends MySqlFamily {
   private final PlanDialect plan = new Plan();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MySqlRows();
+  private final MonitorDialect monitor = new MySqlFamily.Monitor("TIME");
 
   private MySql() {}
 
@@ -125,6 +126,11 @@ public final class MySql extends MySqlFamily {
   @Override
   public RowsDialect rows() {
     return rows;
+  }
+
+  @Override
+  public MonitorDialect monitor() {
+    return monitor;
   }
 
   static final class Plan extends MySqlFamily.Plan {

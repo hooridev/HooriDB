@@ -22,6 +22,8 @@ import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.monitor.Monitor;
+import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -82,6 +84,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * commits what is open, which notes {@code commit by auto-commit <host>} among the calls; a change
  * notes {@code autocommit <host> on} or {@code off}. Asking for it is keyed {@code transaction
  * <host>}.
+ *
+ * <p>A server's monitor lists the sessions {@link #sessions} gives after the monitor's own, whose
+ * id is the number of its link; a read of them is keyed {@code sessions <host>}.
  */
 final class FakeServers implements Servers {
 
@@ -209,6 +214,34 @@ final class FakeServers implements Servers {
         link.transaction = Transaction.NONE;
       }
     }
+  }
+
+  private final Map<String, List<ServerSession>> sessions = new ConcurrentHashMap<>();
+
+  /** The host's server has these sessions besides the monitor's own, as a test may change. */
+  FakeServers sessions(String host, ServerSession... others) {
+    sessions.put(host, List.of(others));
+    return this;
+  }
+
+  /**
+   * A session of another client, which runs the statement, cancellable, or is idle where it is
+   * empty.
+   */
+  static ServerSession session(String id, String user, String statement) {
+    boolean runs = !statement.isEmpty();
+    return new ServerSession(
+        id,
+        runs ? id : "",
+        false,
+        true,
+        user,
+        "psql (10.0.0." + id + ":5000)",
+        "shop",
+        runs ? "active" : "idle",
+        statement,
+        Duration.ofSeconds(Integer.parseInt(id)),
+        "");
   }
 
   /** Rows of the columns, given as {@code name: type}, made up from their position. */
@@ -942,6 +975,40 @@ final class FakeServers implements Servers {
         return new Status(Transaction.OPEN, false); // pgjdbc's, while core reads in its own
       }
       return new Status(transaction, !manual);
+    }
+
+    @Override
+    public Monitor monitor() {
+      return new Monitor() {
+        @Override
+        public List<ServerSession> sessions() throws QueryException {
+          var key = "sessions " + host;
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception e) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          done.add(key);
+          var all = new ArrayList<ServerSession>();
+          all.add(new ServerSession(
+              String.valueOf(number),
+              "",
+              true,
+              true,
+              "hoori",
+              "HooriDB (10.0.0.1:5000)",
+              "shop",
+              "active",
+              "SELECT the sessions",
+              Duration.ZERO,
+              ""));
+          all.addAll(FakeServers.this.sessions.getOrDefault(host, List.of()));
+          return all;
+        }
+      };
     }
 
     @Override

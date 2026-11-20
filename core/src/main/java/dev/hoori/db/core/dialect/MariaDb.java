@@ -77,6 +77,7 @@ public final class MariaDb extends MySqlFamily {
   private final PlanDialect plan = new Plan();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MariaDbRows();
+  private final MonitorDialect monitor = new MySqlFamily.Monitor("TIME_MS / 1000");
 
   private MariaDb() {}
 
@@ -128,6 +129,11 @@ public final class MariaDb extends MySqlFamily {
   @Override
   public RowsDialect rows() {
     return rows;
+  }
+
+  @Override
+  public MonitorDialect monitor() {
+    return monitor;
   }
 
   // MariaDB's plan gives only the rows read of each table: the product over the tables of each

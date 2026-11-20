@@ -5,6 +5,7 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.monitor.ServerSession;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -394,6 +395,48 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     @Override
     public boolean pendingRowsHoldConnection() {
       return true;
+    }
+  }
+
+  /**
+   * Their process lists, alike but for how long a thread has been in its state: MariaDB tells it
+   * to the millisecond, MySQL in whole seconds.
+   */
+  static final class Monitor implements MonitorDialect {
+
+    private final String elapsed; // the seconds in its state, as a column of the list
+
+    Monitor(String elapsed) {
+      this.elapsed = elapsed;
+    }
+
+    // Without the PROCESS privilege the server lists the user's own threads alone.
+    @Override
+    public String sessions() {
+      return "SELECT ID, ID = CONNECTION_ID(), USER, HOST, DB, COMMAND, STATE, INFO, " + elapsed
+          + " FROM information_schema.PROCESSLIST ORDER BY ID";
+    }
+
+    // A thread's state that waits says what for; any other says what the command does.
+    @Override
+    public ServerSession session(ResultSet row) throws SQLException {
+      var id = row.getString(1);
+      var command = MonitorRows.text(row, 6);
+      var stage = MonitorRows.text(row, 7);
+      boolean waits = stage.startsWith("Waiting") || stage.equals("Locked");
+      boolean runs = command.equals("Query") || command.equals("Execute");
+      return new ServerSession(
+          id,
+          runs ? id : "",
+          row.getBoolean(2),
+          true,
+          MonitorRows.text(row, 3),
+          MonitorRows.text(row, 4),
+          MonitorRows.text(row, 5),
+          waits || command.equals("Sleep") ? command : MonitorRows.joined(": ", command, stage),
+          MonitorRows.text(row, 8),
+          MonitorRows.seconds(row, 9),
+          waits ? stage : "");
     }
   }
 }

@@ -25,6 +25,7 @@ import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.monitor.ServerSession;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -57,6 +58,7 @@ public final class PostgreSql implements Dialect {
   private final SyntaxDialect syntax = new Syntax();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new PostgreSqlRows();
+  private final MonitorDialect monitor = new Monitor();
 
   private PostgreSql() {}
 
@@ -123,6 +125,11 @@ public final class PostgreSql implements Dialect {
   @Override
   public RowsDialect rows() {
     return rows;
+  }
+
+  @Override
+  public MonitorDialect monitor() {
+    return monitor;
   }
 
   // pgjdbc.
@@ -639,6 +646,59 @@ public final class PostgreSql implements Dialect {
     @Override
     public boolean streamedRowsClosedLast() {
       return false;
+    }
+  }
+
+  static final class Monitor implements MonitorDialect {
+
+    private static final String EQ = " OPERATOR(pg_catalog.=) ";
+
+    // The backends of clients, not the server's own workers; the time in the state measured on
+    // the server, whose clock the computer's may not match.
+    @Override
+    public String sessions() {
+      return "SELECT a.pid, a.pid" + EQ + "pg_catalog.pg_backend_pid(), a.usename,"
+          + " a.application_name, pg_catalog.host(a.client_addr), a.client_port, a.datname,"
+          + " a.state, a.query,"
+          + " EXTRACT(EPOCH FROM pg_catalog.clock_timestamp() OPERATOR(pg_catalog.-)"
+          + " a.state_change),"
+          + " a.wait_event_type, a.wait_event"
+          + " FROM pg_catalog.pg_stat_activity a"
+          + " WHERE a.backend_type" + EQ + "'client backend' ORDER BY a.pid";
+    }
+
+    // A session of another user, without the privilege to see it, has no state and a query that
+    // says so.
+    @Override
+    public ServerSession session(ResultSet row) throws SQLException {
+      var pid = row.getString(1);
+      boolean own = row.getBoolean(2);
+      var state = MonitorRows.text(row, 8);
+      boolean runs = state.equals("active") || state.startsWith("fastpath");
+      return new ServerSession(
+          pid,
+          runs ? pid : "",
+          own,
+          true,
+          MonitorRows.text(row, 3),
+          ServerSession.client(MonitorRows.text(row, 4), address(row)),
+          MonitorRows.text(row, 7),
+          state,
+          MonitorRows.text(row, 9),
+          MonitorRows.seconds(row, 10),
+          MonitorRows.joined(": ", MonitorRows.text(row, 11), MonitorRows.text(row, 12)));
+    }
+
+    // The client's address and port; a port of -1 is a Unix socket, which has no address.
+    private static String address(ResultSet row) throws SQLException {
+      var host = MonitorRows.text(row, 5);
+      int port = row.getInt(6);
+      boolean none = row.wasNull();
+      if (host.isEmpty()) {
+        return !none && port == -1 ? "local socket" : "";
+      }
+      var shown = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
+      return none ? shown : shown + ":" + port;
     }
   }
 }
