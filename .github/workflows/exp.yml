@@ -1,0 +1,61 @@
+name: exp
+on:
+  push:
+    branches: [exp/ci-measure]
+env:
+  MAVEN_OPTS: -XX:TieredStopAtLevel=1 -XX:+UseParallelGC
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [1, 2, 3]
+    steps:
+      - run: echo "T0=$(date +%s.%N)" >> "$GITHUB_ENV"; nproc; free -m; df -h / | tail -1; docker images; docker info 2>/dev/null | grep -iE "storage|cgroup|cpus|total mem"
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: actions/cache/restore@v5
+        with:
+          path: ~/.m2/repository
+          key: maven-test-x
+          restore-keys: maven-test-
+      - name: probe
+        run: |
+          el() { echo "$(date +%s.%N) $1" | awk '{printf "%.1f", $1-$2}'; }
+          echo "since job start: $(el $T0) s"
+          s=$(date +%s.%N); mvn -v >/dev/null; echo "mvn -v: $(el $s)"
+          s=$(date +%s.%N); mvn -v >/dev/null; echo "mvn -v again: $(el $s)"
+          s=$(date +%s.%N); mvn -B -q -o validate; echo "mvn -o validate: $(el $s)"
+          s=$(date +%s.%N); mvn -B -q -U validate; echo "mvn -U validate: $(el $s)"
+          s=$(date +%s.%N); mvn -B -q -o test-compile -pl core; echo "core test-compile: $(el $s)"
+          s=$(date +%s.%N); mvn -B -q -o test-compile -pl app; echo "app test-compile (core reused): $(el $s)"
+          s=$(date +%s.%N); mvn -B -q -o clean test-compile; echo "both test-compile: $(el $s)"
+          s=$(date +%s.%N); mvn -B -q -o test-compile -T 2 -pl core,app; echo "both, no clean, T2: $(el $s)"
+          s=$(date +%s.%N); mvn -B -q -o clean compile -pl core; echo "core compile only: $(el $s)"
+          # images
+          for i in postgres:18 mariadb:12 mysql:9 mongo:8; do s=$(date +%s.%N); docker pull -q $i >/dev/null; echo "pull $i: $(el $s)"; done
+          docker images
+          s=$(date +%s.%N); docker save postgres:18 mariadb:12 mysql:9 | zstd -T0 -1 -q -o /tmp/sql.tar.zst; echo "save+zstd sql: $(el $s), $(du -m /tmp/sql.tar.zst | cut -f1) MB"
+          docker rmi -f postgres:18 mariadb:12 mysql:9 >/dev/null; docker image prune -af >/dev/null
+          s=$(date +%s.%N); zstd -d -q -c /tmp/sql.tar.zst | docker load -q >/dev/null; echo "load sql: $(el $s)"
+          docker rmi -f postgres:18 mariadb:12 mysql:9 >/dev/null; docker image prune -af >/dev/null
+          s=$(date +%s.%N); printf '%s\n' postgres:18 mariadb:12 mysql:9 | xargs -P 3 -n 1 docker pull -q >/dev/null; echo "pull sql parallel: $(el $s)"
+          # servers
+          s=$(date +%s.%N); ./.github/exp/servers.sh 1; echo "one set: $(el $s)"
+          docker rm -f pg1 maria1 mysql1 >/dev/null
+          s=$(date +%s.%N); for k in 1 2; do ./.github/exp/servers.sh $k & done; wait; echo "two sets: $(el $s)"
+          docker rm -f $(docker ps -aq) >/dev/null
+          s=$(date +%s.%N); for k in 1 2 3 4; do ./.github/exp/servers.sh $k & done; wait; echo "four sets: $(el $s)"
+          free -m; docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'
+          docker rm -f $(docker ps -aq) >/dev/null
+          # one set while javac compiles both modules
+          s=$(date +%s.%N); (./.github/exp/servers.sh 1; echo "one set beside compile: $(el $s)") &
+          mvn -B -q -o clean test-compile; echo "compile beside one set: $(el $s)"; wait
+          docker rm -f $(docker ps -aq) >/dev/null
+          s=$(date +%s.%N); (for k in 1 2 3 4; do ./.github/exp/servers.sh $k & done; wait; echo "four sets beside compile: $(el $s)") &
+          mvn -B -q -o clean test-compile; echo "compile beside four sets: $(el $s)"; wait
+          docker rm -f $(docker ps -aq) >/dev/null
