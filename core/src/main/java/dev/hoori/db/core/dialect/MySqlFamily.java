@@ -53,9 +53,10 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return Set.of();
     }
 
-    // BEGIN, START TRANSACTION, COMMIT, ROLLBACK, but to a savepoint, XA, and a SET of
-    // autocommit, which commits as it turns it on; and MariaDB's compound statement BEGIN NOT
-    // ATOMIC where its body holds one of them, which it runs at once, unlike a routine's body.
+    // BEGIN, START TRANSACTION, COMMIT, ROLLBACK, but to a savepoint, XA, and a SET that assigns
+    // autocommit, which commits as it turns it on, not one that only reads it, as SET @saved =
+    // @@autocommit does; and MariaDB's compound statement BEGIN NOT ATOMIC where its body holds
+    // one of them, which it runs at once, unlike a routine's body.
     @Override
     public boolean controlsTransaction(List<String> words) {
       if (words.isEmpty()) {
@@ -67,7 +68,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
         case "start" -> second.equals("transaction");
         case "commit", "xa" -> true;
         case "rollback" -> !words.contains("to");
-        case "set" -> words.contains("autocommit");
+        case "set" -> assignsAutocommit(words);
         default -> false;
       };
     }
@@ -75,17 +76,36 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     private static boolean controlsWithin(List<String> words) {
       for (int i = 0; i < words.size(); i++) {
         var next = i + 1 < words.size() ? words.get(i + 1) : "";
+        var after = i + 2 < words.size() ? words.get(i + 2) : "";
         boolean controls = switch (words.get(i)) {
-          case "commit", "xa", "autocommit" -> true;
-          case "rollback" -> !next.equals("to");
+          case "commit", "xa" -> true;
+          // ROLLBACK [WORK] TO a savepoint leaves the transaction open.
+          case "rollback" -> !next.equals("to") && !(next.equals("work") && after.equals("to"));
           case "start" -> next.equals("transaction");
-          default -> false;
+          default -> assigns(words, i);
         };
         if (controls) {
           return true;
         }
       }
       return false;
+    }
+
+    private static boolean assignsAutocommit(List<String> words) {
+      for (int i = 0; i < words.size(); i++) {
+        if (assigns(words, i)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Whether the word at i is autocommit, quoted or not, as the target of = or :=.
+    private static boolean assigns(List<String> words, int i) {
+      var word = words.get(i);
+      var next = i + 1 < words.size() ? words.get(i + 1) : "";
+      return (word.equals("autocommit") || word.equals("`autocommit`"))
+          && (next.equals("=") || next.equals(":"));
     }
 
     // Of the statements that MySQL's manual lists as causing an implicit commit, those that are

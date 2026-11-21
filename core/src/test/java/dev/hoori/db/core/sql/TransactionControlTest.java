@@ -46,6 +46,8 @@ class TransactionControlTest {
         "XA START 'x'",
         "SET autocommit=0",
         "SET @@session.autocommit = 1",
+        "SET @saved = @@autocommit, autocommit := 0",
+        "SET SESSION `autocommit`=1",
         "/*!40101 SET AUTOCOMMIT=1 */")) {
       assertTrue(TransactionControl.in(sql, MYSQL), sql);
     }
@@ -53,6 +55,9 @@ class TransactionControlTest {
         "ROLLBACK TO SAVEPOINT s",
         "START REPLICA",
         "SET NAMES utf8mb4",
+        // Only reads it, to set it back later.
+        "SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT",
+        "SET autocommit_x = @@autocommit",
         "LOCK TABLES t WRITE",
         "CREATE PROCEDURE p() BEGIN COMMIT; END")) {
       assertFalse(TransactionControl.in(sql, MYSQL), sql);
@@ -61,11 +66,14 @@ class TransactionControlTest {
     assertFalse(TransactionControl.in("BEGIN NOT ATOMIC SELECT 1; END", MARIADB));
     assertFalse(TransactionControl.in(
         "BEGIN NOT ATOMIC SAVEPOINT s; ROLLBACK TO SAVEPOINT s; END", MARIADB));
+    assertFalse(TransactionControl.in(
+        "BEGIN NOT ATOMIC SAVEPOINT s; ROLLBACK WORK TO s; SET @a = @@autocommit; END", MARIADB));
     for (var sql : List.of(
         "BEGIN NOT ATOMIC COMMIT; END",
         "BEGIN NOT ATOMIC INSERT INTO t VALUES (1); ROLLBACK; END",
         "BEGIN NOT ATOMIC START TRANSACTION; END",
         "BEGIN NOT ATOMIC SET autocommit = 1; END",
+        "BEGIN NOT ATOMIC ROLLBACK WORK; END",
         "BEGIN NOT ATOMIC DECLARE EXIT HANDLER FOR SQLEXCEPTION ROLLBACK; SELECT 1; END")) {
       assertTrue(TransactionControl.in(sql, MARIADB), sql);
     }
