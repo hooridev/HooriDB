@@ -4,6 +4,7 @@ import static java.util.Map.entry;
 
 import dev.hoori.db.core.document.Request.Shape;
 import dev.hoori.db.core.sql.EveryRow;
+import java.io.Serial;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -969,6 +970,9 @@ public final class Script {
 
   // The arguments of a call, with where each starts and where the call closes.
   private static final class Args extends ArrayList<Object> {
+    @Serial
+    private static final long serialVersionUID = 1L;
+
     private final transient List<Integer> starts = new ArrayList<>();
     private transient int end;
 

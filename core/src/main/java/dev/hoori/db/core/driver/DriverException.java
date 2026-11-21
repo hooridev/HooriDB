@@ -1,7 +1,11 @@
 package dev.hoori.db.core.driver;
 
+import java.io.Serial;
+
 /** Why a driver could not be listed, downloaded or loaded. */
 public final class DriverException extends Exception {
+  @Serial
+  private static final long serialVersionUID = 1L;
 
   public enum Failure {
     /** The version is not in the storage folder. */

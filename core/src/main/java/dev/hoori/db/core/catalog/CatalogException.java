@@ -1,10 +1,14 @@
 package dev.hoori.db.core.catalog;
 
+import java.io.Serial;
+
 /**
  * Why the catalog could not be read. The message is the failure and the driver's or the server's
  * own words, or the name of what is missing.
  */
 public final class CatalogException extends Exception {
+  @Serial
+  private static final long serialVersionUID = 1L;
 
   public enum Failure {
     /** The connection is closed or broken; reading on needs a new one. */

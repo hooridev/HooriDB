@@ -1,7 +1,11 @@
 package dev.hoori.db.core.query;
 
+import java.io.Serial;
+
 /** Why a query failed. The message is the failure and the driver's or the server's own words. */
 public final class QueryException extends Exception {
+  @Serial
+  private static final long serialVersionUID = 1L;
 
   public enum Failure {
     /** The connection is closed or broken; going on needs a new one. */

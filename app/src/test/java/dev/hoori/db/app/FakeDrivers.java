@@ -71,7 +71,7 @@ final class FakeDrivers implements Repository {
   volatile CountDownLatch dating;
   // Holds a driver's file after its first half, until it opens.
   volatile CountDownLatch reading;
-  /** Every call, as "open <path>" or "published <path>", in order. */
+  /** Every call, as {@code "open <path>"} or {@code "published <path>"}, in order. */
   final List<String> calls = new CopyOnWriteArrayList<>();
   // How many calls held at a gate were interrupted: what asked for them was cancelled.
   final AtomicInteger interrupted = new AtomicInteger();

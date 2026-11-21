@@ -401,6 +401,7 @@ class CatalogServerTest {
 
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
+  @SuppressWarnings("try") // closes the connection in its try, to read from it closed
   void aConnectionThatTheServerEndedIsLost(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     try (var connection = open(server, TestServer.DATABASE);

@@ -2,6 +2,7 @@ package dev.hoori.db.core.connection;
 
 import dev.hoori.db.core.driver.Maven;
 import java.io.IOException;
+import java.io.Serial;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -64,6 +65,9 @@ public final class WorkspaceStore {
    * message says why and names the file.
    */
   public static final class UnreadableException extends IOException {
+    @Serial
+    private static final long serialVersionUID = 1L;
+
     private final transient Path file; // a Path is not serializable
 
     UnreadableException(String what, Path file, String why) {
@@ -202,7 +206,7 @@ public final class WorkspaceStore {
   /**
    * Replaces the file with the workspace, creating the folder if it is missing. A crash leaves the
    * old file or the new one, never a part of it. A file that {@link #load} cannot understand is
-   * kept as {@value #UNREADABLE} first, in place of an older copy. One save runs at a time; which of
+   * kept as {@link #UNREADABLE} first, in place of an older copy. One save runs at a time; which of
    * two saves lands last is for the caller to order.
    *
    * @throws IOException if it could not be written, with a message as {@link #load} gives
