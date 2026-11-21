@@ -76,7 +76,12 @@ statements of the shell without JavaScript (`db.c.find(…)` with its cursor's c
 counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their documents in
 the same three ways, underlines where a statement goes wrong, lays its statements out with
 Control+Alt+L, changing only white space, completes collections, methods, operators and fields, and
-asks before an update or delete of every document; it has no transactions. Run from its app image,
+asks before an update or delete of every document; it has no transactions. "Server monitor", in a
+connection's menu, the File menu or the palette, opens a tab with the server's sessions, variables,
+status counters and who blocks whom, read on a session of its own at an interval that can be
+changed and paused, and not while the tab is hidden; a session's statement is cancelled and a
+session ended after a question, never the monitor's own, and credentials in other sessions'
+statements are masked. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Help chooses, Stable or
 Nightly (at first that of its own version), downloads it and restarts into it through its own Exit
 when asked; the new version confirms once its window has shown its first frame, and the updater's
@@ -270,6 +275,10 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   connection, keyed `explain <host> <sql>`, with what `plans` gives, on the database `estimatedOn`
   names; `linked` notes every call after the number of the link it ran on, so a test tells the
   console's session from the tree's.
+- A server monitor's reads run against `FakeServers` too: `sessions`, `variables`, `counters` and
+  `locks` give what a host's server has, besides the monitor's own session, numbered as its link;
+  the reads are keyed `sessions <host>`, `variables <host>`, `status <host>` and `locks <host>`,
+  a cancel `cancel <host> <operation>` and an end `end <host> <id>`.
 - Updates run against `FakeUpdater`: releases published by version, the helper's result given,
   downloads and restarts recorded, each failable and the download held at its gate `downloading`.
   `State.shown()`, which `main` hands the window's `onShown`, stands for the first frame shown,
