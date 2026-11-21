@@ -1142,7 +1142,7 @@ final class ConsoleTab implements Tab {
           Level.WARNING,
           "",
           null,
-          words("The server did not say whether a transaction is open: " + State.message(error))));
+          words("The server did not say whether a transaction is open: " + State.messageOf(error))));
     }
   }
 
@@ -1345,10 +1345,10 @@ final class ConsoleTab implements Tab {
       return heard(Words.title(e.failure()), lines(Words.note(e.failure(), on, true), e.detail()));
     }
     if (lost) {
-      var detail = error instanceof QueryException e ? e.detail() : State.message(error);
+      var detail = error instanceof QueryException e ? e.detail() : State.messageOf(error);
       return heard(DISCONNECTED, lines(detail, gone()));
     }
-    return heard("The statement could not be run", State.message(error));
+    return heard("The statement could not be run", State.messageOf(error));
   }
 
   /** Two texts on lines of their own, where either is null or empty the other alone. */

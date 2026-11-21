@@ -344,7 +344,7 @@ final class State {
   }
 
   private void loadFailed(Kept kept, Exception error) {
-    notice(kept.title(), "not read", message(error), true, null);
+    notice(kept.title(), "not read", messageOf(error), true, null);
   }
 
   private void historyLoaded(boolean canSave) {
@@ -483,7 +483,7 @@ final class State {
   private void saveFailed(Kept kept, Exception error) {
     kept.saving = null;
     boolean first = kept.saveError == null;
-    kept.saveError = message(error);
+    kept.saveError = messageOf(error);
     if (kept.again) {
       kept.again = false;
       save(kept);
@@ -525,7 +525,7 @@ final class State {
         },
         error -> {
           loaded = true;
-          loadError = message(error);
+          loadError = messageOf(error);
           setAside = error instanceof WorkspaceStore.UnreadableException unreadable
               ? WorkspaceStore.kept(unreadable)
               : null;
@@ -548,7 +548,7 @@ final class State {
             found instanceof Keyring.Available(var secrets)
                 ? new Keyring.Available(worker.serial(secrets))
                 : found),
-        error -> keyringFound(new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, message(error))));
+        error -> keyringFound(new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, messageOf(error))));
   }
 
   private void keyringFound(Keyring found) {
@@ -1049,7 +1049,7 @@ final class State {
         },
         error -> {
           saving = null;
-          saveError = message(error);
+          saveError = messageOf(error);
           if (saveAgain) {
             saveAgain = false;
             persist();
@@ -1693,7 +1693,7 @@ final class State {
     return profile.name().isBlank() ? profile.host() : profile.name();
   }
 
-  static String message(Exception e) {
+  static String messageOf(Exception e) {
     return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
   }
 

@@ -506,7 +506,7 @@ final class MonitorTab implements Tab {
     return switch (error) {
       case QueryException e -> e.detail();
       case ConnectionException e -> e.detail();
-      default -> State.message(error);
+      default -> State.messageOf(error);
     };
   }
 

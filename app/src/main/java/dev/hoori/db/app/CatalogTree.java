@@ -999,7 +999,7 @@ final class CatalogTree {
       case ConnectionException e -> e.detail();
       case CatalogException e -> e.detail();
       case QueryException e -> e.detail();
-      default -> State.message(error);
+      default -> State.messageOf(error);
     };
   }
 

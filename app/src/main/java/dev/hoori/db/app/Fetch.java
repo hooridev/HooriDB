@@ -324,7 +324,7 @@ final class Fetch {
   /** What went wrong with a driver, in words. */
   static String text(Exception error, Drivers drivers) {
     if (!(error instanceof DriverException e)) {
-      return State.message(error);
+      return State.messageOf(error);
     }
     var source = drivers.source;
     return switch (e.failure()) {

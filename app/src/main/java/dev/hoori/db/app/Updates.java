@@ -329,7 +329,7 @@ final class Updates {
           work = null;
           downloading = null;
           notice =
-              warning(named(release.version()) + " could not be downloaded", State.message(error));
+              warning(named(release.version()) + " could not be downloaded", State.messageOf(error));
         });
   }
 
@@ -408,7 +408,7 @@ final class Updates {
           restartWith = null;
           s.stay("HooriDB stayed open, as it could not restart to update.");
           stored = stored.withAttempt(before); // a refused restart wrote nothing
-          notice = warning("HooriDB could not restart", State.message(error));
+          notice = warning("HooriDB could not restart", State.messageOf(error));
         });
   }
 
@@ -439,7 +439,7 @@ final class Updates {
         "confirm the update",
         confirm(updater),
         done -> {},
-        error -> s.tell("HooriDB could not confirm the update: " + State.message(error)));
+        error -> s.tell("HooriDB could not confirm the update: " + State.messageOf(error)));
   }
 
   /** The confirmation that the version the helper started runs, off the app's thread. */

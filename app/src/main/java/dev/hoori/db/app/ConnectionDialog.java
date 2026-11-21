@@ -265,7 +265,7 @@ final class ConnectionDialog {
         },
         error -> {
           lookup = new Lookup.Unknown();
-          keyringError = State.message(error);
+          keyringError = State.messageOf(error);
         });
     var asking = new Lookup.Asking(work, unknown);
     lookup = asking;
@@ -461,7 +461,7 @@ final class ConnectionDialog {
   private void notMoved(State s, char[] put, char[] typed, Exception error) {
     change = new Change.None();
     s.drop(act);
-    keyringError = State.message(error);
+    keyringError = State.messageOf(error);
     if (put == null && typed != null) {
       Arrays.fill(typed, '\0');
     }

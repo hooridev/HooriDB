@@ -548,7 +548,7 @@ final class TableTab implements Tab {
       case QueryException e -> e.detail();
       case CatalogException e -> e.detail();
       case ConnectionException e -> e.detail();
-      default -> State.message(error);
+      default -> State.messageOf(error);
     };
   }
 

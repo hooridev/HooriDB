@@ -98,7 +98,7 @@ final class Removal {
           slow = false;
           doomed.removeFirst();
           kept.add(profile); // and the next ones are tried
-          error = State.message(failure);
+          error = State.messageOf(failure);
           next(s);
         });
   }
