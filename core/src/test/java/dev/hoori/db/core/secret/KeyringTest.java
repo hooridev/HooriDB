@@ -55,7 +55,7 @@ class KeyringTest {
     UUID key = UUID.fromString("0F8FAD5B-D9CB-469F-A165-70867728950E");
     assertEquals("HooriDB:0f8fad5b-d9cb-469f-a165-70867728950e", WindowsCredentials.target(key));
     assertEquals("HooriDB 0f8fad5b-d9cb-469f-a165-70867728950e", LinuxSecretService.label(key));
-    assertEquals("dev.hoori.db.Secret", LinuxSecretService.SCHEMA);
+    assertEquals("dev.hoori.db.Secret", LinuxSecretService.SCHEMA_NAME);
   }
 
   @Test
@@ -75,9 +75,8 @@ class KeyringTest {
   @Test
   void secretsThatLibsecretCannotHoldAreRefused() {
     try (Arena arena = Arena.ofConfined()) {
-      assertThrows(
-          IllegalArgumentException.class,
-          () -> LinuxSecretService.utf8("a\0b".toCharArray(), arena));
+      var nul = "a\0b".toCharArray();
+      assertThrows(IllegalArgumentException.class, () -> LinuxSecretService.utf8(nul, arena));
       assertThrows(
           IllegalArgumentException.class,
           () -> LinuxSecretService.utf8(new char[] {'\uD834'}, arena));

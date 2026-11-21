@@ -105,7 +105,9 @@ public final class FolderRepository implements Repository {
         Files.writeString(
             dir.resolve(file.getFileName() + ".sha1"),
             hex("SHA-1", jar) + "  " + file.getFileName());
-      case NONE -> {}
+      case NONE -> {
+        // No checksum beside the file.
+      }
     }
     var metadata = dir.getParent().resolve("maven-metadata.xml");
     var versions = new TreeSet<String>(Maven.NEWEST_FIRST);
