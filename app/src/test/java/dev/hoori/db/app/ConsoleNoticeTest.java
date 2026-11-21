@@ -131,13 +131,13 @@ class ConsoleNoticeTest extends ConsoleTransactions {
             snap waits
             """);
     assertTrue(line(c.tree("waits"), "role=button label=\"Cancel\"").contains("disabled"));
-    assertTrue(app.state().pending != null, "the save holds its lock");
+    assertTrue(app.state().guard.pending != null, "the save holds its lock");
     c.run(app, "advance " + State.KEYRING_SECONDS + "\nframe\nsnap slow\n");
     assertTrue(c.tree("slow").contains("The system keyring does not answer"), c.tree("slow"));
     c.run(app, "press role=button label=\"Cancel\"\nframe\nsnap given\n");
     String given = c.tree("given");
     assertTrue(given.contains("the save was given up"), given);
-    assertEquals(null, app.state().pending, "the lock ended");
+    assertEquals(null, app.state().guard.pending, "the lock ended");
     assertFalse(app.state().dialog.changing());
     c.secrets.gate.countDown();
     c.run(app, SETTLE);
@@ -252,7 +252,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
       assertTrue(slow.contains("The system keyring does not answer"), slow);
       c.run(app, "press role=button label=\"Cancel\"\nframe\n" + OPENED + "snap given\n");
       assertTrue(c.tree("given").contains("the deletion was given up"), c.tree("given"));
-      assertEquals(null, app.state().pending);
+      assertEquals(null, app.state().guard.pending);
       // Delete again, and Exit: the first gives the delete up once it is slow, the next goes.
       c.run(
           app,
@@ -262,7 +262,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
       c.run(app, "frame\n");
       assertFalse(app.windows().all().isEmpty(), "the first close gave up the delete");
       assertEquals(1, app.state().profiles.size());
-      assertEquals(null, app.state().pending);
+      assertEquals(null, app.state().guard.pending);
       app.state().requestClose();
       c.run(app, "frame\n");
       assertTrue(app.windows().all().isEmpty());
@@ -307,7 +307,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     c.run(app, type(ORDERS) + RUN + EXIT + SETTLE + "snap stayed\n");
     assertFalse(app.windows().all().isEmpty(), "stayed open");
     assertTrue(near(c.tree("stayed"), "#notice-1").contains(DUPLICATE), c.tree("stayed"));
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
     c.run(app, EXIT + SETTLE);
     assertTrue(app.windows().all().isEmpty());
   }

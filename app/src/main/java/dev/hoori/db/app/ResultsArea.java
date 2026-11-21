@@ -105,7 +105,7 @@ final class ResultsArea {
     }
     // An outcome in doubt stays said, also over later runs, until the user has read it.
     // The act that holds the connection, as a save of it: nothing runs until it is done.
-    var locked = s.locked(tab);
+    var locked = s.guard.locked(tab);
     El lock = locked == null
         ? null
         : Callout.callout(

@@ -990,13 +990,14 @@ final class CatalogTree {
    * ends its consoles' sessions, after their questions where something may be open in them.
    */
   void disconnect(State s, UUID id) {
-    disconnect(s, new State.Act("disconnect", id), id, () -> {});
+    disconnect(s, new Guard.Act("disconnect", id), id, () -> {});
   }
 
-  private void disconnect(State s, State.Act act, UUID id, Runnable then) {
+  private void disconnect(State s, Guard.Act act, UUID id, Runnable then) {
     var profile = s.profile(id);
     var name = profile == null ? "the connection" : State.name(profile);
-    if (s.asks(act, name + " disconnects", s.consoles(id), () -> disconnect(s, act, id, then))) {
+    if (s.guard.asks(
+        s, act, name + " disconnects", s.consoles(id), () -> disconnect(s, act, id, then))) {
       return;
     }
     var live = lives.get(id);
@@ -1133,8 +1134,8 @@ final class CatalogTree {
   }
 
   /** Edit's or Delete's act, which its disconnect asks for. */
-  private static State.Act act(ConnectionProfile profile, Then then) {
-    return then == Then.DELETE ? State.deleteAct(profile) : new State.Act("edit", profile.id());
+  private static Guard.Act act(ConnectionProfile profile, Then then) {
+    return then == Then.DELETE ? State.deleteAct(profile) : new Guard.Act("edit", profile.id());
   }
 
   /**

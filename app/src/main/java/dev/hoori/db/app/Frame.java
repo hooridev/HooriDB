@@ -260,8 +260,8 @@ final class Frame {
   }
 
   /** The question a console of the window asks about what may be open in it, or null. */
-  private static State.Pending.Question questioned(State s, TabGroups.Group<Tab> group) {
-    return s.pending instanceof State.Pending.Question question
+  private static Guard.Pending.Question questioned(State s, TabGroups.Group<Tab> group) {
+    return s.guard.pending instanceof Guard.Pending.Question question
             && s.tabs.groupOf(question.console()) == group
         ? question
         : null;
@@ -690,7 +690,9 @@ final class Frame {
                 channelItem(s, Channel.NIGHTLY, "Nightly updates"),
                 Menu.item(
                     "Restart to update",
-                    free && s.updates.ready != null && !s.exiting() ? s::restartToUpdate : null),
+                    free && s.updates.ready != null && !s.guard.exiting()
+                        ? s::restartToUpdate
+                        : null),
                 Menu.separator(),
                 Menu.item("About HooriDB", free ? inMain(s, () -> s.about = true) : null))));
   }
@@ -765,7 +767,7 @@ final class Frame {
 
   /** Where updates come from; not while HooriDB closes. */
   private static Menu.Item channelItem(State s, Channel channel, String name) {
-    return Menu.item(name, s.exiting() ? null : () -> s.updates.channel(s, channel))
+    return Menu.item(name, s.guard.exiting() ? null : () -> s.updates.channel(s, channel))
         .checked(s.updates.channel() == channel);
   }
 

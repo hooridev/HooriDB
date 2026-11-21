@@ -63,7 +63,7 @@ final class ConsoleView {
   /** The toolbar's actions: the database, the transaction's, the runs' and the statements kept. */
   List<El> actions(State s, Provider provider) {
     boolean busy = tab.busy();
-    var locked = s.locked(tab);
+    var locked = s.guard.locked(tab);
     var actions = new ArrayList<El>();
     actions.add(databases(s));
     // Off where Manual cannot be made sure of, which its tooltip and a note say.

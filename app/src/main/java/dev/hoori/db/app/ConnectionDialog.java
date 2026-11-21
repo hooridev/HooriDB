@@ -100,7 +100,7 @@ final class ConnectionDialog {
   // apart from both, shown while the keyring is asked again after a change given up.
   String keyringError;
   private Change change = new Change.None();
-  private final State.Act act = new State.Act("save", this);
+  private final Guard.Act act = new Guard.Act("save", this);
   Over over = Over.NONE;
   final Menu.State tlsMenu = new Menu.State();
   final Popover.State colorPopover = new Popover.State();
@@ -366,8 +366,8 @@ final class ConnectionDialog {
     // The consoles ask first, before anything is written, so that Cancel leaves it all as it was;
     // then they start nothing until the save is done.
     if (ends(s, profile)
-        && (s.asks(act, SAVED, s.consoles(id), () -> save(s))
-            || !s.lock(act, State.name(profile) + " is being saved", Set.of(id)))) {
+        && (s.guard.asks(s, act, SAVED, s.consoles(id), () -> save(s))
+            || !s.guard.lock(s, act, State.name(profile) + " is being saved", Set.of(id)))) {
       return;
     }
     var secrets = s.secrets();
@@ -423,7 +423,7 @@ final class ConnectionDialog {
     s.app.after(State.KEYRING_SECONDS, () -> {
       if (change == changing) { // a late patience of an earlier change is dropped
         change = new Change.Changing(work, true, held);
-        if (s.quitting()) {
+        if (s.guard.quitting()) {
           giveUp(s); // closing never waits for a keyring that does not answer
         }
       }
@@ -460,7 +460,7 @@ final class ConnectionDialog {
   /** The keyring failed: nothing is saved, and the dialog says what it answered. */
   private void notMoved(State s, char[] put, char[] typed, Exception error) {
     change = new Change.None();
-    s.drop(act);
+    s.guard.drop(act);
     keyringError = State.messageOf(error);
     if (put == null && typed != null) {
       Arrays.fill(typed, '\0');
@@ -505,7 +505,7 @@ final class ConnectionDialog {
       Arrays.fill(held, '\0');
     }
     keyringError = GAVE_UP;
-    s.drop(act);
+    s.guard.drop(act);
     s.keyringFailed();
     lookUp(s); // queued behind the change given up: what the keyring holds once it has answered
   }
@@ -514,7 +514,7 @@ final class ConnectionDialog {
 
   /** Puts the profile in place and closes; its consoles were locked since their answers. */
   private void apply(State s, ConnectionProfile profile) {
-    s.drop(act);
+    s.guard.drop(act);
     password = "";
     probe.close();
     versions.close();
@@ -543,7 +543,7 @@ final class ConnectionDialog {
   }
 
   void close(State s) {
-    s.drop(act); // the way out a Save asked for goes with the dialog
+    s.guard.drop(act); // the way out a Save asked for goes with the dialog
     colorPopover.close();
     if (lookup instanceof Lookup.Asking a) {
       a.work().cancel();
@@ -689,7 +689,7 @@ final class ConnectionDialog {
     Theme t = Theme.CURRENT.get();
     var p = editing.value();
     // Nothing changes while a Save waits for a console's answer or the keyring: it saves the form.
-    boolean open = !changing() && !s.pends(act);
+    boolean open = !changing() && !s.guard.pends(act);
     El save = button(
         PRIMARY, "Save", () -> save(s), Button.options().state(buttonState(changing(), ready())));
     El cancel = button(SECONDARY, "Cancel", cancelAction(s));

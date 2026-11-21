@@ -356,7 +356,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
   void anExitCancelledAtItsQuestionIsOverForGood() throws Exception {
     var app = open(SHOP);
     c.run(app, EXIT + "press #answer-cancel\nframe\n" + OPENED);
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
     app.state().put(SHOP.withColor(Color.GREEN)); // a save of the connections, which settles
     c.run(app, "frame\n" + SETTLE + "press #sql\n" + RUN + COMMIT_BUTTON + SETTLE);
     assertFalse(app.windows().all().isEmpty());
@@ -502,7 +502,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     assertFalse(c.tree("shop-prod-shop-saved").contains("role=dialog"));
     assertEquals(SHOP.user() + "2", app.state().profile(SHOP.id()).user());
     assertEquals(null, app.state().dialog);
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
     assertFalse(k.tab(app).connected(), "its session, opened with what changed, ended");
     assertFalse(servers.calls.contains("run " + PG + " " + PAY), servers.calls.toString());
   }
@@ -528,7 +528,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     c.secrets.gate.countDown();
     c.run(app, SETTLE);
     assertTrue(app.state().profiles.isEmpty());
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
     assertFalse(servers.calls.contains("run " + PG + " " + PAY), servers.calls.toString());
   }
 
@@ -563,13 +563,13 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
             + "snap failed\n");
     String failed = c.tree("failed");
     assertEquals(1, app.state().consoles(null).size(), "the close was given up");
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
     assertTrue(line(failed, "#problem").contains("A constraint was violated"), failed);
     assertFalse(failed.contains("role=dialog"), failed);
     // And Exit.
     c.run(app, "press #sql\n" + RUN + EXIT + "press #answer-commit\nframe\n" + OPENED + SETTLE);
     assertFalse(app.windows().all().isEmpty());
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
   }
 
   /** New 4: so where the COMMIT is not sent, as the server ended the transaction by itself. */
@@ -600,12 +600,12 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
         app,
         in("main") + "press role=textbox label=\"User\"\ntype \"2\"\n"
             + "press role=button label=\"Save\"\nframe\n" + OPENED);
-    assertTrue(app.state().pending != null, "the console asks");
+    assertTrue(app.state().guard.pending != null, "the console asks");
     c.run(
         app,
         in("main") + "key Escape\nframe\n" + OPENED + "press role=button label=\"Discard\"\nframe\n"
             + OPENED + SETTLE + in(window) + OPENED + "snap after\n");
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
     assertFalse(c.tree("shop-prod-shop-after").contains("role=dialog"));
     assertEquals(SHOP.user(), app.state().profile(SHOP.id()).user());
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
@@ -626,7 +626,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
         in("main") + "press role=textbox label=\"User\"\ntype \"2\"\n"
             + "press role=button label=\"Save\"\nframe\n" + OPENED + "snap waiting\n"
             + "press role=button label=\"Driver\"\nframe\n" + OPENED);
-    assertTrue(app.state().pending != null, "the console asks");
+    assertTrue(app.state().guard.pending != null, "the console asks");
     String waiting = c.tree("waiting");
     assertTrue(line(waiting, "role=button label=\"Driver\"").endsWith("disabled"), waiting);
     assertTrue(line(waiting, "role=textbox label=\"User\"").contains("disabled"), waiting);
@@ -636,7 +636,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     // Cancel gives the Save up, and the form is open to changes again.
     c.run(app, in(window) + "press #answer-cancel\nframe\n" + OPENED + SETTLE);
     c.run(app, in("main") + "frame\nsnap open\n");
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
     String open = c.tree("open");
     assertFalse(line(open, "role=button label=\"Driver\"").contains("disabled"), open);
     assertFalse(line(open, "role=textbox label=\"User\"").contains("disabled"), open);
@@ -660,12 +660,12 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
             + "press role=button label=\"Disconnect\"\nframe\n" + OPENED + SETTLE);
     c.run(app, in(window) + MANUAL + type("\n" + PAY) + RUN);
     c.run(app, in("main") + "press role=button label=\"Delete\"\nframe\n" + OPENED);
-    assertTrue(app.state().pending != null, "the console asks");
+    assertTrue(app.state().guard.pending != null, "the console asks");
     c.run(
         app,
         in("main") + "press role=button label=\"Cancel\"\nframe\n" + OPENED + SETTLE + in(window)
             + OPENED + "snap after\n");
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
     assertFalse(c.tree("shop-prod-shop-after").contains("role=dialog"));
     assertEquals(1, app.state().profiles.size());
   }
@@ -704,7 +704,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     commit.countDown();
     c.run(app, SETTLE + SETTLE);
     assertFalse(app.windows().all().isEmpty(), "the Cancel gave the Exit up");
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
   }
 
   /** Third review, 8: another act that would ask is refused, visibly, while one waits. */
@@ -715,10 +715,10 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     c.run(app, menu("shop-prod", "New console") + MANUAL + type(PAY) + RUN + tearOff(b));
     // Closing B's tab asks in B's window; an Exit from the main window meanwhile is refused.
     c.run(app, in(b) + "press #close-0\nframe\n" + OPENED);
-    var pending = app.state().pending;
+    var pending = app.state().guard.pending;
     assertTrue(pending != null && pending.what().equals("the console closes"));
     c.run(app, in("main") + EXIT + "snap refused\n");
-    assertTrue(app.state().pending == pending, "not replaced");
+    assertTrue(app.state().guard.pending == pending, "not replaced");
     assertTrue(line(c.tree("refused"), "#message").contains("waits for its answer"));
   }
 
@@ -757,14 +757,15 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     assertTrue(k.tab(app).activity instanceof ConsoleTab.Waiting);
     // As a Save of the connection does, once nothing of its consoles was at stake.
     var save = new Object();
-    assertTrue(app.state().lock(save, "shop-prod is being saved", Set.of(SHOP.id())));
+    assertTrue(
+        app.state().guard.lock(app.state(), save, "shop-prod is being saved", Set.of(SHOP.id())));
     opening.countDown();
     c.run(app, SETTLE + "snap refused\n");
     String refused = c.tree("refused");
     assertFalse(servers.calls.contains("run " + PG + " " + PAY), servers.calls.toString());
     assertTrue(line(refused, "#problem").contains("Not run"), refused);
     assertTrue(refused.contains("shop-prod is being saved"), refused);
-    app.state().drop(save);
+    app.state().guard.drop(save);
   }
 
   /** F3: Run all goes on to its next statement only through the same gate. */
@@ -781,12 +782,13 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
             + "key Enter control shift\nframe\nawait\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
     var save = new Object();
-    assertTrue(app.state().lock(save, "shop-prod is being saved", Set.of(SHOP.id())));
+    assertTrue(
+        app.state().guard.lock(app.state(), save, "shop-prod is being saved", Set.of(SHOP.id())));
     held.countDown();
     c.run(app, SETTLE + "snap stopped\n");
     assertFalse(servers.calls.contains("run " + PG + " " + PAY), servers.calls.toString());
     assertTrue(line(c.tree("stopped"), "#problem").contains("Not run"), c.tree("stopped"));
-    app.state().drop(save);
+    app.state().guard.drop(save);
   }
 
   /** F3: and the grid's further rows are not read under a lock. */
@@ -795,11 +797,12 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     var app = k.console(SHOP);
     c.run(app, type(ORDERS) + RUN);
     var save = new Object();
-    assertTrue(app.state().lock(save, "shop-prod is being saved", Set.of(SHOP.id())));
+    assertTrue(
+        app.state().guard.lock(app.state(), save, "shop-prod is being saved", Set.of(SHOP.id())));
     c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE);
     assertFalse(
         servers.calls.contains("next " + PG + " " + ORDERS + " 200"), servers.calls.toString());
-    app.state().drop(save);
+    app.state().guard.drop(save);
   }
 
   /** F8: an Edit that waited on a question does not replace a dialog opened meanwhile. */
@@ -812,7 +815,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
         app,
         in("main") + menu("shop-prod", "Edit…") + "press role=button label=\"Disconnect\"\nframe\n"
             + OPENED);
-    assertTrue(app.state().pending != null, "the console asks");
+    assertTrue(app.state().guard.pending != null, "the console asks");
     c.run(
         app,
         in("main") + "press role=menuitem label=\"File\"\nframe\nadvance 0.3\nframe\n"
@@ -835,12 +838,12 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
         app,
         in("main") + menu("shop-prod", "Edit…") + "press role=button label=\"Disconnect\"\nframe\n"
             + OPENED);
-    var edit = app.state().pending;
+    var edit = app.state().guard.pending;
     c.run(
         app,
         in("main") + menu("shop-prod", "Delete…")
             + "press role=button label=\"Disconnect\"\nframe\n" + OPENED);
-    assertEquals(edit, app.state().pending, "the edit still waits");
+    assertEquals(edit, app.state().guard.pending, "the edit still waits");
     c.run(app, in(window) + "press #answer-rollback\nframe\n" + SETTLE + OPENED);
     assertTrue(app.state().dialog != null, "the edit goes on");
     assertEquals(null, app.state().deleting);
@@ -860,7 +863,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
             + "snap partly\n");
     String partly = c.tree("partly");
     assertEquals(1, app.state().consoles(null).size(), "the close stopped");
-    assertEquals(null, app.state().pending);
+    assertEquals(null, app.state().guard.pending);
     assertTrue(line(partly, "#problem").contains(ConsoleTab.PARTLY), partly);
     assertTrue(noticed(app).contains(ConsoleTab.PARTLY), noticed(app));
   }

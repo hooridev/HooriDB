@@ -221,7 +221,7 @@ final class Keeping {
 
   /** A console's text or database changed: it is saved once it has not changed for a while. */
   void edited() {
-    if (!s.quitting()) {
+    if (!s.guard.quitting()) {
       consolesKept.quitAnyway = false; // a change since: the next Exit tries to save it
     }
     consolesKept.unsaved = true;
@@ -265,7 +265,7 @@ final class Keeping {
    * the profiles; a failure goes to the notices once, until a save succeeds.
    */
   void persist(Kept kept) {
-    if (!s.quitting()) {
+    if (!s.guard.quitting()) {
       kept.quitAnyway = false;
     }
     kept.unsaved = true;
@@ -313,7 +313,7 @@ final class Keeping {
     if (kept.again) {
       kept.again = false;
       save(kept);
-    } else if (s.quitting()) {
+    } else if (s.guard.quitting()) {
       kept.quitAnyway = true;
       s.stay("HooriDB stayed open, as the " + kept.what + " could not be saved. Close it again"
           + " to quit without "

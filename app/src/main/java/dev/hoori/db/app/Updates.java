@@ -351,7 +351,7 @@ final class Updates {
    * channel. Not while HooriDB closes.
    */
   void channel(State s, Channel channel) {
-    if (s.exiting()) {
+    if (s.guard.exiting()) {
       return;
     }
     var was = channel();

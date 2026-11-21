@@ -28,8 +28,6 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -96,7 +94,7 @@ final class State {
   FolderDialog folderDialog; // a folder's name or the question before its delete; null while closed
   private UUID placing; // the folder the new connection's dialog puts it in, or null for the top
   boolean about; // whether the About dialog is open
-  Pending pending; // the one act that waits, or null
+  final Guard guard = new Guard(); // the one act that waits
   final Removal removal = new Removal(); // the deletion of connections, out of the keyring first
   // What finishing something on a console's session did, failures and warnings, in the order they
   // came, each until the user dismisses it: the app's from the moment it exists.
@@ -394,7 +392,7 @@ final class State {
       return;
     }
     folderDialog = null;
-    drop(deleteFolderAct(id)); // and a console's question it asked
+    guard.drop(deleteFolderAct(id)); // and a console's question it asked
     if (folder(id) == null) {
       return;
     }
@@ -508,7 +506,7 @@ final class State {
    */
   void acted() {
     waived = 0;
-    if (!quitting()) {
+    if (!guard.quitting()) {
       quitAnyway = false;
     }
   }
@@ -526,8 +524,8 @@ final class State {
   }
 
   /** The act of deleting the connection, which its disconnect and its delete share. */
-  static Act deleteAct(ConnectionProfile profile) {
-    return new Act("delete", profile.id());
+  static Guard.Act deleteAct(ConnectionProfile profile) {
+    return new Guard.Act("delete", profile.id());
   }
 
   /** Asks before the connection is deleted. */
@@ -544,7 +542,8 @@ final class State {
     var profile = deleting;
     if (profile == null
         || removal.running
-        || asks(
+        || guard.asks(
+            this,
             deleteAct(profile),
             name(profile) + " is deleted",
             consoles(profile.id()),
@@ -555,8 +554,8 @@ final class State {
   }
 
   /** The act of deleting the folder with what it holds. */
-  static Act deleteFolderAct(UUID folder) {
-    return new Act("delete folder", folder);
+  static Guard.Act deleteFolderAct(UUID folder) {
+    return new Guard.Act("delete folder", folder);
   }
 
   /**
@@ -567,7 +566,7 @@ final class State {
   void deleteFolder(UUID id) {
     var folder = folder(id);
     if (folder == null) {
-      drop(deleteFolderAct(id)); // gone while a console's question waited
+      guard.drop(deleteFolderAct(id)); // gone while a console's question waited
       return;
     }
     if (removal.running) {
@@ -576,7 +575,7 @@ final class State {
     var held = folder.connections();
     var consoles = held.stream().flatMap(p -> consoles(p.id()).stream()).toList();
     var act = deleteFolderAct(id);
-    if (asks(act, folder.name() + " is deleted", consoles, () -> deleteFolder(id))) {
+    if (guard.asks(this, act, folder.name() + " is deleted", consoles, () -> deleteFolder(id))) {
       return;
     }
     remove(act, folder.name() + " is being deleted", held, id);
@@ -586,10 +585,10 @@ final class State {
    * Takes the connections out one after another, their consoles locked meanwhile, and then the
    * folder where it is one's.
    */
-  private void remove(Act act, String what, List<ConnectionProfile> profiles, UUID folder) {
+  private void remove(Guard.Act act, String what, List<ConnectionProfile> profiles, UUID folder) {
     var ids = new HashSet<UUID>();
     profiles.forEach(p -> ids.add(p.id()));
-    if (!lock(act, what, ids)) {
+    if (!guard.lock(this, act, what, ids)) {
       return;
     }
     removal.start(this, act, profiles, folder);
@@ -641,7 +640,7 @@ final class State {
       return;
     }
     if (deleting != null && !removal.running) {
-      drop(deleteAct(deleting)); // and the way out it asked for
+      guard.drop(deleteAct(deleting)); // and the way out it asked for
       deleting = null;
     }
   }
@@ -653,7 +652,7 @@ final class State {
       return;
     }
     if (folderDialog != null && !removal.running) {
-      drop(deleteFolderAct(folderDialog.folder));
+      guard.drop(deleteFolderAct(folderDialog.folder));
       folderDialog = null;
     }
   }
@@ -688,7 +687,7 @@ final class State {
    * until a write of it has succeeded.
    */
   void persist() {
-    if (!quitting()) {
+    if (!guard.quitting()) {
       quitAnyway = false; // a change since: the next Exit tries to save it
     }
     unsaved = true;
@@ -721,8 +720,8 @@ final class State {
           if (saveAgain) {
             saveAgain = false;
             persist();
-          } else if (quitting()) {
-            pending = null;
+          } else if (guard.quitting()) {
+            guard.pending = null;
             quitAnyway = true;
             tell("HooriDB stayed open, as the connections could not be saved. Close it again to"
                 + " quit without them.");
@@ -758,7 +757,7 @@ final class State {
 
   private void close() {
     // The consoles first: their answers come back here, and Cancel gives up closing.
-    if (asks(EXIT, "HooriDB closes", consoles(null), this::close)) {
+    if (guard.asks(this, Guard.EXIT, "HooriDB closes", consoles(null), this::close)) {
       return;
     }
     if (dialog != null) {
@@ -778,7 +777,7 @@ final class State {
       removal.giveUp(this);
       return;
     }
-    if (!lock(EXIT, "HooriDB is closing", null)) {
+    if (!guard.lock(this, Guard.EXIT, "HooriDB is closing", null)) {
       return;
     }
     if (keyringBusy() || saving != null || unsaved && !quitAnyway) {
@@ -789,7 +788,7 @@ final class State {
 
   /** What was on its way has ended: the window closes now if it was asked to. */
   void settled() {
-    if (!quitting() || keyringBusy() || saving != null || updates.busy()) {
+    if (!guard.quitting() || keyringBusy() || saving != null || updates.busy()) {
       return;
     }
     // The one way out: the file saved, unless the user chose to go without it ("anyway" waives
@@ -829,7 +828,7 @@ final class State {
     monitors(null).forEach(m -> m.end(this));
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
-      if (exits == at && quitting() && closing > waived) {
+      if (exits == at && guard.quitting() && closing > waived) {
         int silent = closing - waived;
         stay(silent + (silent == 1 ? " session" : " sessions")
             + " did not say in time that it closed, so what it finished is not confirmed."
@@ -842,7 +841,7 @@ final class State {
 
   /** Exit stops, and says why; the next one asks again. */
   void stay(String why) {
-    pending = null;
+    guard.pending = null;
     exitAt = -1;
     exits++;
     tell(why);
@@ -850,8 +849,8 @@ final class State {
 
   /** The keyring refused a change: the window stays open, so that the user sees why. */
   void keyringFailed() {
-    if (quitting()) {
-      pending = null;
+    if (guard.quitting()) {
+      guard.pending = null;
       tell("HooriDB stayed open, as the system keyring reported a problem.");
     }
   }
@@ -1013,121 +1012,15 @@ final class State {
     }
   }
 
-  /**
-   * The one act in the app that waits, with what owns it and what it is: a {@link Question} while a
-   * console asks, or {@link Locked} once it is armed.
-   */
-  sealed interface Pending {
-    Object owner();
-
-    String what();
-
-    /** The act waits on the question of a console, and goes on by {@code then} once it is settled. */
-    record Question(Object owner, String what, ConsoleTab console, Runnable then)
-        implements Pending {}
-
-    /**
-     * The act is armed and locks the consoles of a scope until it is done: those of these
-     * connections, or all of them for null.
-     */
-    record Locked(Object owner, String what, Set<UUID> scope) implements Pending {}
-  }
-
-  /**
-   * An act that may wait, as the owner of {@link Pending}: what it does, and to what. Two are the
-   * same act only where both are the same; another act, on the same connection or console, is
-   * refused while one waits.
-   */
-  record Act(String kind, Object target) {}
-
-  private static final Object EXIT = new Object();
-
-  /**
-   * The one guard of every way out that would end consoles' sessions or their transactions: the
-   * first of the consoles where something is at stake ({@link ConsoleTab#atStake}) asks in its
-   * window what becomes of it, and {@code then} runs again once that is settled. True while one
-   * asks, and the caller goes no further. While another act waits, one that would ask is refused,
-   * visibly, instead of taking its place.
-   */
-  boolean asks(Object owner, String what, List<ConsoleTab> consoles, Runnable then) {
-    var asking = consoles.stream().filter(ConsoleTab::atStake).findFirst().orElse(null);
-    boolean mine = pending != null && Objects.equals(pending.owner(), owner);
-    if (asking == null) {
-      if (mine && pending instanceof Pending.Question) {
-        pending = null;
-      }
-      return false;
-    }
-    if (pending != null && !mine) {
-      refuse();
-      return true;
-    }
-    pending = new Pending.Question(owner, what, asking, then);
-    asking.show(this);
-    return true;
-  }
-
-  /**
-   * Arms the act once nothing of its consoles is at stake: from now until it is done or given up
-   * ({@link #drop}), those consoles start nothing, so that nothing comes between the answers and the
-   * act. False, refused visibly, while another act waits.
-   *
-   * @param scope the connections whose consoles it locks, or null for all
-   */
-  boolean lock(Object owner, String what, Set<UUID> scope) {
-    if (pending != null && !Objects.equals(pending.owner(), owner)) {
-      refuse();
-      return false;
-    }
-    pending = new Pending.Locked(owner, what, scope);
-    return true;
-  }
-
-  private void refuse() {
-    switch (pending) {
-      case Pending.Locked locked -> tell(locked.what() + ": that comes first.");
-      case Pending.Question question -> {
-        tell("A question about a console's transaction waits for its answer.");
-        question.console().show(this);
-      }
-    }
-  }
-
-  /** The act is done, or given up: with what owns it, or with the console it waited on. */
-  void drop(Object owner) {
-    if (pending != null
-        && (Objects.equals(pending.owner(), owner)
-            || pending instanceof Pending.Question question && question.console() == owner)) {
-      pending = null;
-    }
-  }
-
-  /** Whether the act waits: for a console's answer, or until it is done. */
-  boolean pends(Object owner) {
-    return pending != null && Objects.equals(pending.owner(), owner);
-  }
-
-  /** Why the console may start nothing now, or null. */
-  String locked(ConsoleTab console) {
-    return pending instanceof Pending.Locked locked
-            && (locked.scope() == null || locked.scope().contains(console.id))
-        ? locked.what()
-        : null;
-  }
-
-  boolean quitting() {
-    return pending instanceof Pending.Locked locked && locked.owner() == EXIT;
-  }
-
-  /** Whether Exit, or Restart now, asks or is under way: nothing comes between. */
-  boolean exiting() {
-    return pending != null && pending.owner() == EXIT;
-  }
-
   /** The user closes a tab, by its cross or Control+W: a console asks first. */
   private void closeTab(TabGroups.Group<Tab> group, int index) {
     if (!(group.tabs().get(index) instanceof ConsoleTab x
-        && asks(new Act("close", x), "the console closes", List.of(x), () -> closeTab(x)))) {
+        && guard.asks(
+            this,
+            new Guard.Act("close", x),
+            "the console closes",
+            List.of(x),
+            () -> closeTab(x)))) {
       tabs.close(group, index);
     }
   }
