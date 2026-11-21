@@ -158,7 +158,8 @@ public final class HooriDb {
           GpuPresenter presenter = new GpuPresenter(window)) {
         var loop = new WindowLoop(window, app, presenter);
         // Not at the start: a version whose window cannot show is put back by the helper.
-        loop.windows().of(app).onShown(app.state()::shown);
+        var state = app.state();
+        loop.windows().of(app).onShown(() -> state.updates.shown(state));
         loop.run();
       }
     });
