@@ -717,7 +717,7 @@ class DriversTest {
     Files.delete(jarFolder(OLD).resolve(FakeDrivers.HOLD));
     run(app, SETTLE + SETTLE);
     var live = app.state().catalog.lives.get(shop.id());
-    assertTrue(live.phase instanceof CatalogTree.Connected, String.valueOf(live.phase));
+    assertTrue(live.phase instanceof Live.Connected, String.valueOf(live.phase));
     assertEquals(List.of(FakeDrivers.VERSION, OLD), store().downloaded(FakeDrivers.DRIVER));
   }
 
@@ -737,7 +737,7 @@ class DriversTest {
         line(asked, "role=note").contains("\"Download PostgreSQL JDBC " + OLD + "?\""), asked);
     s.drivers.deleting(FakeDrivers.DRIVER, OLD, false); // the delete failed: the file is there
     run(app, "press role=button label=\"Download\"\nframe\n" + SETTLE + SETTLE + SETTLE);
-    assertTrue(s.catalog.lives.get(shop.id()).phase instanceof CatalogTree.Connected);
+    assertTrue(s.catalog.lives.get(shop.id()).phase instanceof Live.Connected);
   }
 
   /** Its file went, then its folder could not be renamed away: the version is gone, as it says. */

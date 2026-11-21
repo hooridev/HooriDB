@@ -4,7 +4,6 @@ import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.El;
-import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.HuePicker;
 import com.rethinkj.ui.kit.Menu;
@@ -48,43 +47,6 @@ final class CatalogTree {
 
   static final String TRY_AGAIN = "Try again";
 
-  /** Where a connection the user opened is. */
-  sealed interface Phase {}
-
-  /** For its driver, which the {@link Fetch} of its kind gets. */
-  record ForDriver() implements Phase {}
-
-  /** For the system keyring to be found. */
-  record ForKeyring() implements Phase {}
-
-  /** For the keyring to give the password. */
-  record ReadingPassword() implements Phase {}
-
-  /** For the user to give the password; silent, as the keyring did not answer in time. */
-  record ForPassword(boolean silent) implements Phase {}
-
-  record Connecting() implements Phase {}
-
-  /**
-   * @param database the one database the first connection reads, or null where it reads them all
-   * @param schemas whether the server has a level of schemas
-   */
-  record Connected(ServerVersion version, String database, boolean schemas) implements Phase {}
-
-  /** @param withPassword whether a password was sent */
-  record Failed(ConnectionException.Failure failure, String detail, boolean withPassword)
-      implements Phase {}
-
-  /**
-   * The connection broke while it was open.
-   *
-   * @param discarded whether core closed it, as the server did not stop a cancelled call
-   */
-  record Lost(String detail, boolean discarded) implements Phase {}
-
-  /** A script run has no drivers. */
-  record WithoutDrivers() implements Phase {}
-
   /** What is known of a node's children. */
   sealed interface Level {}
 
@@ -107,41 +69,6 @@ final class CatalogTree {
   }
 
   record Disconnecting(ConnectionProfile profile, Then then) {}
-
-  /** A connection the user opened: its server connections and what was read of them. */
-  static final class Live {
-    final ConnectionProfile profile; // as it was when opened
-    Phase phase;
-    Work work; // reading the password, or null
-    Lane.Asked connecting; // the wait for the first connection, or null
-    Handover handover; // the password on its way from the keyring, or null
-    LoadedDriver driver;
-    boolean typing; // the user asked to type the password, which nothing kept is tried before
-    // The tabs whose window asks for the password: a console's there; null for the main window.
-    TabGroups.Group<Tab> window;
-    // While connected, for the connections to further databases; wiped when it ends.
-    char[] password;
-    Lane lane; // the first connection
-    final Map<String, Lane> lanes = new HashMap<>(); // further connections, by database
-    // The connections of the consoles' estimates, by database on PostgreSQL, else one under "".
-    final Map<String, Lane> planners = new HashMap<>();
-    final Map<Node, Level> levels = new HashMap<>();
-    // The background reads of go to table and of completions: a database's tables, a table's
-    // columns.
-    final Map<Node, Scan> scans = new HashMap<>();
-    // The password dialog; the kit's field holds a String, which goes with the dialog.
-    String typed = "";
-    boolean revealed;
-    boolean keep;
-
-    Live(ConnectionProfile profile) {
-      this.profile = profile;
-    }
-
-    UUID id() {
-      return profile.id();
-    }
-  }
 
   private final Servers servers;
   final Map<UUID, Live> lives = new LinkedHashMap<>(); // the connections opened, in that order
@@ -169,8 +96,10 @@ final class CatalogTree {
     return live != null && !ended(live.phase);
   }
 
-  static boolean ended(Phase phase) {
-    return phase instanceof Failed || phase instanceof Lost || phase instanceof WithoutDrivers;
+  static boolean ended(Live.Phase phase) {
+    return phase instanceof Live.Failed
+        || phase instanceof Live.Lost
+        || phase instanceof Live.WithoutDrivers;
   }
 
   // Handlers
@@ -193,7 +122,7 @@ final class CatalogTree {
       }
       return;
     }
-    if (live != null && live.phase instanceof Connected && !(node instanceof Node.Problem)) {
+    if (live != null && live.phase instanceof Live.Connected && !(node instanceof Node.Problem)) {
       var level = live.levels.get(node);
       if (level == null || level instanceof NotRead || level instanceof NotOpened) {
         read(s, live, node); // opening it again tries again
@@ -238,7 +167,7 @@ final class CatalogTree {
     live.typing = typing;
     lives.put(id, live);
     if (s.drivers == null) {
-      live.phase = new WithoutDrivers();
+      live.phase = new Live.WithoutDrivers();
       return;
     }
     var want = Want.of(profile);
@@ -247,7 +176,7 @@ final class CatalogTree {
       password(s, live, loaded);
       return;
     }
-    live.phase = new ForDriver();
+    live.phase = new Live.ForDriver();
     var fetch = fetches.computeIfAbsent(want, w -> new Fetch((st, d) -> fetched(st, w, d)));
     if (fetch.step == null) {
       fetch.lookUp(s, want.provider(), want.version());
@@ -257,7 +186,7 @@ final class CatalogTree {
 
   private void fetched(State s, Want want, LoadedDriver driver) {
     for (var live : List.copyOf(lives.values())) {
-      if (live.phase instanceof ForDriver && Want.of(live.profile).equals(want)) {
+      if (live.phase instanceof Live.ForDriver && Want.of(live.profile).equals(want)) {
         password(s, live, driver);
       }
     }
@@ -268,7 +197,7 @@ final class CatalogTree {
     fetches.get(want).stop();
     var names = new ArrayList<String>();
     for (var live : List.copyOf(lives.values())) {
-      if (live.phase instanceof ForDriver && Want.of(live.profile).equals(want)) {
+      if (live.phase instanceof Live.ForDriver && Want.of(live.profile).equals(want)) {
         names.add(State.name(live.profile));
         drop(s, live.id());
       }
@@ -286,7 +215,7 @@ final class CatalogTree {
         continue;
       }
       for (var live : lives.values()) {
-        if (live.phase instanceof ForDriver && Want.of(live.profile).equals(entry.getKey())) {
+        if (live.phase instanceof Live.ForDriver && Want.of(live.profile).equals(entry.getKey())) {
           return entry.getValue();
         }
       }
@@ -310,7 +239,7 @@ final class CatalogTree {
   private void password(State s, Live live, LoadedDriver driver) {
     live.driver = driver;
     if (live.typing) {
-      live.phase = new ForPassword(false);
+      live.phase = new Live.ForPassword(false);
       return;
     }
     var id = live.id();
@@ -320,18 +249,18 @@ final class CatalogTree {
       return;
     }
     if (s.keyring == null) {
-      live.phase = new ForKeyring();
+      live.phase = new Live.ForKeyring();
       patience(s, live);
       return;
     }
     var secrets = s.secrets();
     if (secrets == null) {
-      live.phase = new ForPassword(false);
+      live.phase = new Live.ForPassword(false);
       return;
     }
-    live.phase = new ReadingPassword();
+    live.phase = new Live.ReadingPassword();
     patience(s, live);
-    var handover = new Handover();
+    var handover = new Live.Handover();
     live.handover = handover;
     live.work = s.app.background(
         "read a password",
@@ -344,7 +273,7 @@ final class CatalogTree {
           live.handover = null;
           char[] password = given.take();
           if (password == null) {
-            live.phase = new ForPassword(false);
+            live.phase = new Live.ForPassword(false);
           } else {
             connect(s, live, password);
           }
@@ -352,7 +281,7 @@ final class CatalogTree {
         error -> {
           live.work = null;
           live.handover = null;
-          live.phase = new ForPassword(false); // the user can still type it
+          live.phase = new Live.ForPassword(false); // the user can still type it
         });
   }
 
@@ -373,47 +302,15 @@ final class CatalogTree {
           live.handover.drop();
           live.handover = null;
         }
-        live.phase = new ForPassword(true);
+        live.phase = new Live.ForPassword(true);
       }
     });
-  }
-
-  /**
-   * A password on its way from the keyring's thread to the app's. Whoever comes last of the two
-   * wipes it, should the app's side be cancelled before it takes it.
-   */
-  static final class Handover {
-    private char[] password;
-    private boolean closed;
-
-    synchronized void put(char[] given) {
-      if (closed) {
-        Arrays.fill(given, '\0');
-      } else {
-        password = given;
-      }
-    }
-
-    /** The password, which the caller owns now; null if there was none. */
-    synchronized char[] take() {
-      closed = true;
-      var given = password;
-      password = null;
-      return given;
-    }
-
-    synchronized void drop() {
-      var given = take();
-      if (given != null) {
-        Arrays.fill(given, '\0');
-      }
-    }
   }
 
   /** The system keyring was found: connections that waited for it go on. */
   void keyringFound(State s) {
     for (var live : List.copyOf(lives.values())) {
-      if (live.phase instanceof ForKeyring) {
+      if (live.phase instanceof Live.ForKeyring) {
         password(s, live, live.driver);
       }
     }
@@ -441,13 +338,13 @@ final class CatalogTree {
     live.typed = "";
     live.revealed = false;
     live.keep = false;
-    live.phase = new ForPassword(false);
+    live.phase = new Live.ForPassword(false);
   }
 
   /** Opens the first connection, with the password, which is the live's now. */
   private void connect(State s, Live live, char[] password) {
     live.password = password;
-    live.phase = new Connecting();
+    live.phase = new Live.Connecting();
     live.lane = lane(s, live);
     live.lane.open(servers, live.profile, password, live.driver);
     record Opened(ServerVersion version, String database) {}
@@ -466,7 +363,7 @@ final class CatalogTree {
               ? opened.database()
               : null;
           live.phase =
-              new Connected(version, database, provider.supports(Capability.SCHEMAS, version));
+              new Live.Connected(version, database, provider.supports(Capability.SCHEMAS, version));
           s.tell("Connected to " + State.name(live.profile));
           s.connected(live.id());
         },
@@ -476,7 +373,7 @@ final class CatalogTree {
           var failure = checked instanceof ConnectionException e
               ? e.failure()
               : ConnectionException.Failure.OTHER;
-          live.phase = new Failed(failure, detail(checked), live.password.length > 0);
+          live.phase = new Live.Failed(failure, detail(checked), live.password.length > 0);
           end(live);
           s.unconnected(live.id());
           s.tell(State.name(live.profile) + ": " + Words.title(failure));
@@ -488,7 +385,7 @@ final class CatalogTree {
   /** Reads the children of the node on the connection that reads its database. */
   private void read(State s, Live live, Node node) {
     // The databases are read on the first connection, also while it opens.
-    var c = live.phase instanceof Connected connected ? connected : null;
+    var c = live.phase instanceof Live.Connected connected ? connected : null;
     if (live.lane == null || c == null && !(node instanceof Node.Connection)) {
       return;
     }
@@ -527,7 +424,7 @@ final class CatalogTree {
    * The call that reads the node's children, or null for a node that has none to read; the
    * connection is connected for any node but a connection's own.
    */
-  private static Lane.Call<List<Node>> children(UUID id, Node node, Connected c) {
+  private static Lane.Call<List<Node>> children(UUID id, Node node, Live.Connected c) {
     return switch (node) {
       case Node.Connection n ->
         link -> link.databases().stream()
@@ -589,7 +486,7 @@ final class CatalogTree {
    */
   Scan scan(State s, Node.OfDatabase node) {
     var live = lives.get(node.id());
-    if (!(live != null && live.phase instanceof Connected c)) {
+    if (!(live != null && live.phase instanceof Live.Connected c)) {
       return null;
     }
     var database = node.database();
@@ -611,7 +508,7 @@ final class CatalogTree {
   Scan scan(State s, Node.OfTable node) {
     var live = lives.get(node.id());
     if (live == null
-        || !(live.phase instanceof Connected)
+        || !(live.phase instanceof Live.Connected)
         || live.levels.get(node) instanceof Reading) {
       return null; // the tree reads them already
     }
@@ -743,7 +640,7 @@ final class CatalogTree {
     if (database == null) {
       return live.lane; // the databases themselves, read also while it opens
     }
-    var c = (Connected) live.phase;
+    var c = (Live.Connected) live.phase;
     return c.database() == null || database.equals(c.database())
         ? live.lane
         : further(s, live, database);
@@ -752,7 +649,7 @@ final class CatalogTree {
   /** The lane that reads the table's rows, or null while its connection is not connected. */
   Lane lane(State s, UUID id, Table table) {
     var live = lives.get(id);
-    return live != null && live.phase instanceof Connected
+    return live != null && live.phase instanceof Live.Connected
         ? lane(s, live, table.container().database().name())
         : null;
   }
@@ -775,7 +672,7 @@ final class CatalogTree {
    */
   Lane planner(UUID id, String database) {
     var live = lives.get(id);
-    if (live == null || !(live.phase instanceof Connected c) || live.password == null) {
+    if (live == null || !(live.phase instanceof Live.Connected c) || live.password == null) {
       return null;
     }
     var key = c.database() == null ? "" : database;
@@ -796,7 +693,7 @@ final class CatalogTree {
   /** Whether the connection is connected, so that its lanes can be used. */
   boolean connected(UUID id) {
     var live = lives.get(id);
-    return live != null && live.phase instanceof Connected;
+    return live != null && live.phase instanceof Live.Connected;
   }
 
   /**
@@ -832,7 +729,7 @@ final class CatalogTree {
    */
   Session session(UUID id, String database) {
     var live = lives.get(id);
-    if (live == null || !(live.phase instanceof Connected)) {
+    if (live == null || !(live.phase instanceof Live.Connected)) {
       return null;
     }
     // A console finds a lost connection in what its statements give, not through the tree.
@@ -884,7 +781,7 @@ final class CatalogTree {
   /** The version of the connected server, or null while it is not connected. */
   ServerVersion version(UUID id) {
     var live = lives.get(id);
-    return live != null && live.phase instanceof Connected c ? c.version() : null;
+    return live != null && live.phase instanceof Live.Connected c ? c.version() : null;
   }
 
   /** The table's columns as the tree read them, or null where it has not. */
@@ -920,7 +817,7 @@ final class CatalogTree {
 
   /** A call found the connection gone: it is closed, and its node says so; once, and only it. */
   void lost(State s, Live live, String detail, boolean discarded) {
-    if (live != null && lives.get(live.id()) == live && live.phase instanceof Connected) {
+    if (live != null && lives.get(live.id()) == live && live.phase instanceof Live.Connected) {
       lose(s, live, detail, discarded);
     }
   }
@@ -931,16 +828,16 @@ final class CatalogTree {
   }
 
   /** Why the connection broke, in the words the tree and the tabs say it. */
-  static String why(Lost lost) {
+  static String why(Live.Lost lost) {
     return lost.discarded()
         ? "The connection was closed, as the server did not stop a cancelled read."
         : "The connection was lost: the server closed it, or the network to it failed.";
   }
 
   /** Why the connection broke while it was open, or null where it did not. */
-  Lost lost(UUID id) {
+  Live.Lost lost(UUID id) {
     var live = lives.get(id);
-    return live != null && live.phase instanceof Lost l ? l : null;
+    return live != null && live.phase instanceof Live.Lost l ? l : null;
   }
 
   /**
@@ -1026,7 +923,7 @@ final class CatalogTree {
   private void lose(State s, Live live, String detail, boolean discarded) {
     end(live);
     s.ended(live.id());
-    live.phase = new Lost(detail, discarded);
+    live.phase = new Live.Lost(detail, discarded);
     s.unconnected(live.id()); // a console that waited for the databases, whose read ended too
     var root = new Node.Connection(live.id());
     forgetBelow(s, root);
@@ -1046,7 +943,7 @@ final class CatalogTree {
       }
       return;
     }
-    if (!(live.phase instanceof Connected)) {
+    if (!(live.phase instanceof Live.Connected)) {
       return;
     }
     forgetBelow(s, node);
@@ -1103,7 +1000,7 @@ final class CatalogTree {
       return;
     }
     var live = lives.get(id);
-    boolean was = live != null && live.phase instanceof Connected;
+    boolean was = live != null && live.phase instanceof Live.Connected;
     drop(s, id);
     s.consoles(id).forEach(ConsoleTab::end);
     if (was) {
@@ -1134,7 +1031,7 @@ final class CatalogTree {
   private int waiting(Want want) {
     int n = 0;
     for (var live : lives.values()) {
-      if (live.phase instanceof ForDriver && Want.of(live.profile).equals(want)) {
+      if (live.phase instanceof Live.ForDriver && Want.of(live.profile).equals(want)) {
         n++;
       }
     }
@@ -1218,7 +1115,9 @@ final class CatalogTree {
       return s.drivers.version(live.driver);
     }
     var fetch = fetches.get(Want.of(live.profile));
-    return live.phase instanceof ForDriver && fetch != null && fetch.known instanceof Fetch.Found f
+    return live.phase instanceof Live.ForDriver
+            && fetch != null
+            && fetch.known instanceof Fetch.Found f
         ? f.version()
         : null;
   }
@@ -1314,7 +1213,7 @@ final class CatalogTree {
     if (failedWhole(live, node)) {
       var p = live.profile;
       return switch (live.phase) {
-        case Failed(var failure, var detail, var withPassword) -> {
+        case Live.Failed(var failure, var detail, var withPassword) -> {
           var note = failure == ConnectionException.Failure.UNFIT
               ? "Its settings cannot connect as they are. Edit the connection to complete them."
               : Words.note(failure, p, withPassword);
@@ -1323,8 +1222,8 @@ final class CatalogTree {
               join(note, detail),
               failure == ConnectionException.Failure.LOGIN_REFUSED);
         }
-        case Lost l -> new Trouble("Disconnected", join(why(l), l.detail()), false);
-        case WithoutDrivers _ ->
+        case Live.Lost l -> new Trouble("Disconnected", join(why(l), l.detail()), false);
+        case Live.WithoutDrivers _ ->
           new Trouble(
               "No driver",
               "A script run downloads no drivers, so connections cannot be opened.",
@@ -1357,7 +1256,7 @@ final class CatalogTree {
    * in the tree's row of its failure, with its action.
    */
   static boolean failedWhole(Live live, Node node) {
-    return node instanceof Node.Connection && !(live.phase instanceof Connected);
+    return node instanceof Node.Connection && !(live.phase instanceof Live.Connected);
   }
 
   /** A note and the server's words below it, either of which may be missing. */
@@ -1431,7 +1330,7 @@ final class CatalogTree {
       return List.of();
     }
     var live = lives.get(node.id());
-    boolean connected = live != null && live.phase instanceof Connected;
+    boolean connected = live != null && live.phase instanceof Live.Connected;
     Menu.Item refresh = Menu.item("Refresh", connected ? () -> refresh(s, node) : null)
         .icon(Symbol.ARROW_CLOCKWISE);
     Menu.Item copy = Menu.item("Copy name", () -> copyName(s, node)).icon(Symbol.COPY);
@@ -1580,7 +1479,7 @@ final class CatalogTree {
     for (var live : lives.values()) {
       // In the window that asked, while it is open; else in the main one, where its tabs went.
       var asked = live.window != null ? live.window : s.tabs.main();
-      if (live.phase instanceof ForPassword && asked == group) {
+      if (live.phase instanceof Live.ForPassword && asked == group) {
         return live;
       }
     }

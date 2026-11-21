@@ -54,7 +54,7 @@ final class CatalogDialogs {
   }
 
   /** The password of the connection, which the user types. */
-  static El password(State s, CatalogTree.Live live) {
+  static El password(State s, Live live) {
     Theme t = Theme.CURRENT.get();
     var p = live.profile;
     String who = p.user().isBlank() ? p.host() : p.user() + " on " + p.host();
@@ -75,7 +75,7 @@ final class CatalogDialogs {
             Prop.of(() -> live.keep, v -> live.keep = v), "Keep it until HooriDB closes"))
         .child(Label.label(
                 Label.Variant.MUTED,
-                live.phase instanceof CatalogTree.ForPassword(var silent) && silent
+                live.phase instanceof Live.ForPassword(var silent) && silent
                     ? "The system keyring did not answer, so the password typed here is used for"
                         + " this session only."
                     : "It is not saved in the system keyring.")

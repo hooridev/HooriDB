@@ -468,7 +468,7 @@ final class TableTab implements Tab {
    *
    * @param again whether opening anew may help: not after the columns were just read
    */
-  private void failed(State s, Exception error, boolean again, CatalogTree.Live live) {
+  private void failed(State s, Exception error, boolean again, Live live) {
     stop();
     if (closed) {
       return;
