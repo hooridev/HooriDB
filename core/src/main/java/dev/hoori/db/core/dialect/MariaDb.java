@@ -216,11 +216,11 @@ public final class MariaDb extends MySqlFamily {
       return "mariadb";
     }
 
-    // SET SESSION AUTHORIZATION starts the session over with the server's defaults.
+    // These start the session over with the server's defaults.
     @Override
     public Set<String> readWrite() {
       var words = new HashSet<>(super.readWrite());
-      words.add("session authorization");
+      words.addAll(Set.of("session authorization", "reset connection"));
       return Set.copyOf(words);
     }
 
