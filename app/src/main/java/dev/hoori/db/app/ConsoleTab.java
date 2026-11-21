@@ -36,6 +36,7 @@ import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.sql.Sql;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
+import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.Provider;
@@ -125,7 +126,7 @@ final class ConsoleTab implements Tab {
   /** How much of a statement a line of Messages shows. */
   static final int SHORT = 80;
 
-  static final Split.Position SPLIT = Split.Position.share(0.45f);
+  static final Split.Position FIRST_SPLIT = Split.Position.share(0.45f);
 
   /** A result of a run, in a tab of its own below the editor: rows, or a count of changed rows. */
   static final class Output {
@@ -176,8 +177,19 @@ final class ConsoleTab implements Tab {
 
   /** Whether each statement commits by itself, or the user ends the transaction. */
   enum Mode {
-    AUTO,
-    MANUAL
+    AUTO("Auto"),
+    MANUAL("Manual");
+
+    final String title;
+
+    Mode(String title) {
+      this.title = title;
+    }
+
+    /** The mode a session's auto-commit makes: on, Auto. */
+    static Mode of(boolean autoCommit) {
+      return autoCommit ? AUTO : MANUAL;
+    }
   }
 
   /** A question to the server about the transaction: on which session, and after what was known. */
@@ -209,7 +221,8 @@ final class ConsoleTab implements Tab {
    * the session has.
    */
   static final class NotRun extends Exception {
-    final Status status;
+    // Never serialized: it only carries the session's status from the lane to the app's thread.
+    final transient Status status;
     final boolean unverifiable; // the driver cannot say the server's auto-commit
 
     NotRun(String why, Status status, boolean unverifiable) {
@@ -225,7 +238,7 @@ final class ConsoleTab implements Tab {
    */
   static final class TooMany extends Exception {
     final long rows;
-    final Status status;
+    final transient Status status; // never serialized, as NotRun's
 
     TooMany(long rows, Status status) {
       super(rows(rows));
@@ -245,6 +258,16 @@ final class ConsoleTab implements Tab {
   static final String COMMIT = "COMMIT";
   static final String ROLLBACK = "ROLLBACK";
 
+  // What the console says in more than one place.
+  static final String NOT_RUN = "Not run";
+  static final String CANCELLED_TEXT = "Cancelled";
+  static final String DISCONNECTED = "Disconnected";
+  static final String CHANGED = " changed";
+  static final String AUTO_COMMIT = "Auto-commit";
+  static final String ROLLBACK_BUTTON = "Rollback";
+  static final String CANCEL_BUTTON = "Cancel";
+  static final String ROLL_BACK_FIRST = "Roll back the transaction?";
+
   final UUID id;
   // The one it runs on: the tree node's, the profile's, the one chosen, or else the one database of
   // the user's the tree read, until the session opens; empty for none.
@@ -254,7 +277,7 @@ final class ConsoleTab implements Tab {
   String text = "";
   final CodeEditor.State editor = new CodeEditor.State();
   final ConsoleEditor help = new ConsoleEditor(this); // the error's place, completions
-  Split.Position split = SPLIT;
+  Split.Position split = FIRST_SPLIT;
   final Menu.State databases = new Menu.State();
   private Lane lane; // the session, or null until it is needed
   // Tells the app what finishing something on the session did, from the thread that sees it.
@@ -352,18 +375,18 @@ final class ConsoleTab implements Tab {
    * The statement sent ended so: it goes into the history, with the time on the server where the
    * server said it, else the time until now.
    */
-  private void record(State s, Outcome outcome, Duration took) {
-    var sent = recording;
-    if (sent == null) {
+  private void remember(State s, Outcome outcome, Duration took) {
+    var entry = recording;
+    if (entry == null) {
       return;
     }
     recording = null;
+    var time = took != null ? took : Duration.between(entry.started(), Instant.now());
     recorded = new HistoryEntry(
         id,
-        sent.sql(),
-        sent.started(),
-        (took != null ? took : Duration.between(sent.started(), Instant.now()))
-            .truncatedTo(ChronoUnit.MILLIS), // as it is kept
+        entry.sql(),
+        entry.started(),
+        time.truncatedTo(ChronoUnit.MILLIS), // as it is kept
         outcome);
     s.ran(recorded);
   }
@@ -380,8 +403,8 @@ final class ConsoleTab implements Tab {
       if (result instanceof Result.Rows) {
         return new Outcome.Rows();
       }
-      if (result instanceof Result.Count c) {
-        return new Outcome.Changed(c.count());
+      if (result instanceof Result.Count(var count)) {
+        return new Outcome.Changed(count);
       }
     }
     return new Outcome.Changed(0);
@@ -554,25 +577,29 @@ final class ConsoleTab implements Tab {
     parsed = provider.keepsDocuments() ? Script.Parsed.of(sql) : null;
     var every = parsed != null ? parsed.every() : EveryRow.of(sql, provider);
     if (every.isPresent()) {
-      var verb = every.get().verb().equals("DELETE") ? "delete" : "update";
-      boolean documents = parsed != null;
-      var row = documents ? "document" : "row";
-      var unbounded = documents ? " has an empty filter" : " has no WHERE clause";
-      var its = documents ? "its collection" : "its table";
-      var table = every.get().table();
       running = sql;
-      var of = table.isEmpty() ? its : table;
-      confirming = new Confirm(
-          sql,
-          (verb.equals("delete") ? "Delete" : "Update") + " every " + row + "?",
-          every.get().certain()
-              ? brief(sql) + unbounded + ": it would " + verb + " every " + row + " of " + of + "."
-              : "Could not tell whether " + brief(sql) + " is limited by a WHERE clause; it may "
-                  + verb + " every row of " + of + ".",
-          true);
+      confirming = everyRow(sql, every.get(), parsed != null);
     } else {
       send(s, sql, true);
     }
+  }
+
+  /** The question before a statement that would change every row, or document, it reaches. */
+  private static Confirm everyRow(String sql, EveryRow every, boolean documents) {
+    var verb = every.verb().equals("DELETE") ? "delete" : "update";
+    var row = documents ? "document" : "row";
+    var unbounded = documents ? " has an empty filter" : " has no WHERE clause";
+    var its = documents ? "its collection" : "its table";
+    var table = every.table();
+    var of = table.isEmpty() ? its : table;
+    return new Confirm(
+        sql,
+        (verb.equals("delete") ? "Delete" : "Update") + " every " + row + "?",
+        every.certain()
+            ? brief(sql) + unbounded + ": it would " + verb + " every " + row + " of " + of + "."
+            : "Could not tell whether " + brief(sql) + " is limited by a WHERE clause; it may "
+                + verb + " every row of " + of + ".",
+        true);
   }
 
   /**
@@ -605,52 +632,58 @@ final class ConsoleTab implements Tab {
     empty = false;
     var held = new AtomicReference<Servers.Run>();
     sent = held;
-    var mode = this.mode;
+    var asked = mode;
     recording = new Sent(sql, Instant.now());
     work = ask(
         s,
         "run a statement",
-        link -> start(link, sql, statement, mode, lazy, held, KEPT, planner, on),
+        link -> start(link, sql, statement, asked, lazy, held, KEPT, planner, on),
         ran -> {
           work = null;
           ran(s, sql, ran);
         },
         error -> {
           work = null;
-          if (error instanceof TooMany e) {
-            recording = null; // not sent: it is asked about first
-            knew(e.status);
-            empty |= wasEmpty; // nothing was sent
-            confirming = new Confirm(
-                sql,
-                "Read about " + rows(e.rows) + "?",
-                brief(sql) + " may give about " + rows(e.rows) + ", as its plan estimates. In"
-                    + " Manual, and while a transaction may be open, the console reads a result"
-                    + " whole: it would read all of them from the server and keep the first "
-                    + rows(KEPT) + ".",
-                false);
-            return;
-          }
-          failedRun = true;
-          if (error instanceof NotRun e) {
-            recording = null;
-            notRun(s, sql, e);
-          } else {
-            failed(s, sql, error);
-            if (error instanceof InterruptedException || closed) {
-              record(s, new Outcome.Cancelled(), null);
-            } else if (error instanceof GaveUp) {
-              recording = null; // not sent
-            } else {
-              record(
-                  s,
-                  new Outcome.Failed(problem.text().isEmpty() ? problem.title() : problem.text()),
-                  null);
-            }
-          }
+          sendFailed(s, sql, wasEmpty, error);
         });
     open = held; // after ask, which gives up the one open before
     openSql = sql;
+  }
+
+  /**
+   * The statement's call failed, or did not send it: a read estimated too long is asked about,
+   * one not run says why, and any other failure is said and goes into the history.
+   */
+  private void sendFailed(State s, String sql, boolean wasEmpty, Exception error) {
+    if (error instanceof TooMany e) {
+      recording = null; // not sent: it is asked about first
+      knew(e.status);
+      empty |= wasEmpty; // nothing was sent
+      confirming = new Confirm(
+          sql,
+          "Read about " + rows(e.rows) + "?",
+          brief(sql) + " may give about " + rows(e.rows) + ", as its plan estimates. In"
+              + " Manual, and while a transaction may be open, the console reads a result"
+              + " whole: it would read all of them from the server and keep the first "
+              + rows(KEPT) + ".",
+          false);
+      return;
+    }
+    failedRun = true;
+    if (error instanceof NotRun e) {
+      recording = null;
+      notRun(s, sql, e);
+      return;
+    }
+    failed(s, sql, error);
+    if (error instanceof InterruptedException || closed) {
+      remember(s, new Outcome.Cancelled(), null);
+    } else if (error instanceof GaveUp) {
+      recording = null; // not sent
+    } else {
+      remember(
+          s, new Outcome.Failed(problem.text().isEmpty() ? problem.title() : problem.text()), null);
+    }
   }
 
   /**
@@ -674,8 +707,8 @@ final class ConsoleTab implements Tab {
     }
     queue.clear();
     failedRun = true;
-    problem = new Problem("Not run", why + ": nothing more runs until that is done.");
-    log.add(new Logged(Level.ERROR, brief(sql), null, "Not run"));
+    problem = new Problem(NOT_RUN, why + ": nothing more runs until that is done.");
+    log.add(new Logged(Level.ERROR, brief(sql), null, NOT_RUN));
     return false;
   }
 
@@ -741,20 +774,20 @@ final class ConsoleTab implements Tab {
         what,
         Lane.Priority.VIEW,
         link -> {
-          T value;
+          T result;
           try {
-            value = call.call(link);
+            result = call.call(link);
           } catch (Exception e) {
             delivery.done(e);
             throw e;
           }
-          delivery.done(value);
-          return value;
+          delivery.done(result);
+          return result;
         },
-        value -> {
+        result -> {
           outstanding.remove(delivery);
           if (delivery.deliver()) {
-            done.accept(value);
+            done.accept(result);
             settle(s);
           }
         },
@@ -925,19 +958,33 @@ final class ConsoleTab implements Tab {
     }
     if (!plain) {
       for (var m : portion.messages()) {
-        all.add(
-            m.code() == NOT_ROLLED_BACK
-                ? new Matter(PARTLY + ": " + m.text() + ". Those changes stand.", true)
-                : new Matter(warned(m), false));
+        all.add(matter(m));
       }
     }
     return all;
   }
 
+  /** What a notice says of a message of the server's: a rollback in part, or a warning. */
+  private static Matter matter(Message m) {
+    return m.code() == NOT_ROLLED_BACK
+        ? new Matter(PARTLY + ": " + m.text() + ". Those changes stand.", true)
+        : new Matter(warned(m), false);
+  }
+
   /** A warning of the server's, with its code. */
   static String warned(Message m) {
-    var code = !m.state().isEmpty() ? m.state() : m.code() != 0 ? String.valueOf(m.code()) : "";
-    return "The server warned: " + m.text() + (code.isEmpty() ? "" : " (" + code + ")");
+    return "The server warned: " + m.text() + coded(m);
+  }
+
+  /** A message's code in parentheses after a space, its SQLSTATE before the vendor's; or none. */
+  private static String coded(Message m) {
+    String code;
+    if (m.state().isEmpty()) {
+      code = m.code() == 0 ? "" : String.valueOf(m.code());
+    } else {
+      code = m.state();
+    }
+    return code.isEmpty() ? "" : " (" + code + ")";
   }
 
   /** For a test: whether an outcome is there that the console has not taken. */
@@ -976,7 +1023,7 @@ final class ConsoleTab implements Tab {
   /** Giving up what was still open on the session failed: what wanted to run after it did not. */
   static final class GaveUp extends Exception {
     final String sql;
-    final Failure failure;
+    final transient Failure failure; // never serialized, as NotRun's status
 
     GaveUp(String sql, Failure failure) {
       super(failure.message());
@@ -1112,20 +1159,7 @@ final class ConsoleTab implements Tab {
         throw new TooMany(rows, now);
       }
     }
-    if (now.autoCommit() != null && now.autoCommit() != (mode == Mode.AUTO)) {
-      var switched = setMode(link, mode == Mode.MANUAL, false, now);
-      if (!switched.done()) {
-        throw new NotRun(
-            "The session's auto-commit is "
-                + (Boolean.TRUE.equals(switched.now().autoCommit()) ? "on" : "off")
-                + " with a transaction open, so it was not sent in "
-                + (mode == Mode.AUTO ? "Auto" : "Manual")
-                + ". The console shows the session's mode now.",
-            switched.now(),
-            false);
-      }
-      now = switched.now();
-    }
+    now = inMode(link, mode, now);
     var run = parsed != null ? link.run(parsed) : link.run(sql);
     held.set(run); // sent: cut short now, what it did is in doubt; and the rest as the grid scrolls
     var first = run.next(PORTION);
@@ -1133,6 +1167,29 @@ final class ConsoleTab implements Tab {
       return new Ran(first, Collections.nCopies(first.results().size(), 0L), true);
     }
     return drained(run, first, keep);
+  }
+
+  /**
+   * The session in the mode asked for, by the server's word: where it says another, it takes the
+   * mode where nothing is open, else the statement is not sent. Where it cannot say, it is left.
+   */
+  private static Status inMode(Servers.Link link, Mode mode, Status now)
+      throws QueryException, NotRun {
+    if (now.autoCommit() == null || now.autoCommit() == (mode == Mode.AUTO)) {
+      return now;
+    }
+    var switched = setMode(link, mode == Mode.MANUAL, false, now);
+    if (!switched.done()) {
+      throw new NotRun(
+          "The session's auto-commit is "
+              + (Boolean.TRUE.equals(switched.now().autoCommit()) ? "on" : "off")
+              + " with a transaction open, so it was not sent in "
+              + mode.title
+              + ". The console shows the session's mode now.",
+          switched.now(),
+          false);
+    }
+    return switched.now();
   }
 
   /**
@@ -1148,7 +1205,7 @@ final class ConsoleTab implements Tab {
     Future<OptionalLong> asked;
     try {
       asked = planner.submit(link -> link.estimate(database, sql));
-    } catch (RejectedExecutionException e) {
+    } catch (RejectedExecutionException _) {
       return 0; // its lane has closed
     }
     try {
@@ -1156,7 +1213,7 @@ final class ConsoleTab implements Tab {
     } catch (InterruptedException e) {
       asked.cancel(true);
       throw e;
-    } catch (ExecutionException | CancellationException e) {
+    } catch (ExecutionException | CancellationException _) {
       return 0;
     }
   }
@@ -1177,26 +1234,13 @@ final class ConsoleTab implements Tab {
       took = took.plus(portion.elapsed());
       messages.addAll(portion.messages());
       for (var result : portion.results()) {
-        if (!(result instanceof Result.Rows r)) {
+        if (result instanceof Result.Rows r) {
+          join(r, results, dropped, documents, keep);
+        } else {
           results.add(result);
           dropped.add(0L);
           documents.add(null);
-          continue;
         }
-        int at = results.size() - 1;
-        if (r.from() == 0 || at < 0 || !(results.get(at) instanceof Result.Rows)) {
-          results.add(new Result.Rows(r.fields(), 0, new ArrayList<>()));
-          dropped.add(0L);
-          documents.add(new ArrayList<>());
-          at++;
-        }
-        var kept = ((Result.Rows) results.get(at)).rows();
-        int room = Math.max(0, Math.min(r.rows().size(), keep - kept.size()));
-        kept.addAll(r.rows().subList(0, room));
-        if (!r.documents().isEmpty()) {
-          documents.get(at).addAll(r.documents().subList(0, room));
-        }
-        dropped.set(at, dropped.get(at) + r.rows().size() - room);
       }
       if (!portion.more()) {
         break;
@@ -1218,6 +1262,32 @@ final class ConsoleTab implements Tab {
         new Portion(results, messages, false, took, portion.transaction(), portion.autoCommit()),
         dropped,
         false);
+  }
+
+  /**
+   * Rows of a portion, kept as a result of their own where they begin one, else joined to the
+   * result before: at most {@code keep} of a result, those beyond counted as dropped.
+   */
+  private static void join(
+      Result.Rows r,
+      List<Result> results,
+      List<Long> dropped,
+      List<List<Document>> documents,
+      int keep) {
+    int at = results.size() - 1;
+    if (r.from() == 0 || at < 0 || !(results.get(at) instanceof Result.Rows)) {
+      results.add(new Result.Rows(r.fields(), 0, new ArrayList<>()));
+      dropped.add(0L);
+      documents.add(new ArrayList<>());
+      at++;
+    }
+    var kept = ((Result.Rows) results.get(at)).rows();
+    int room = Math.clamp(keep - (long) kept.size(), 0, r.rows().size());
+    kept.addAll(r.rows().subList(0, room));
+    if (!r.documents().isEmpty()) {
+      documents.get(at).addAll(r.documents().subList(0, room));
+    }
+    dropped.set(at, dropped.get(at) + r.rows().size() - room);
   }
 
   /**
@@ -1258,15 +1328,8 @@ final class ConsoleTab implements Tab {
           true);
     }
     for (var m : portion.messages()) {
-      if (m.code() == NOT_ROLLED_BACK) {
-        tell.tell(sql, PARTLY + ": " + m.text() + ". Those changes stand.", true);
-      } else {
-        var code = !m.state().isEmpty() ? m.state() : m.code() != 0 ? String.valueOf(m.code()) : "";
-        tell.tell(
-            sql,
-            "The server warned: " + m.text() + (code.isEmpty() ? "" : " (" + code + ")"),
-            false);
-      }
+      var matter = matter(m);
+      tell.tell(sql, matter.what(), matter.failure());
     }
   }
 
@@ -1341,7 +1404,7 @@ final class ConsoleTab implements Tab {
       s.edited();
     }
     var failure = failure(portion);
-    record(s, outcomeOf(portion), portion.elapsed());
+    remember(s, outcomeOf(portion), portion.elapsed());
     applied = true; // it was sent, after the session's mode was made sure of
     statements++;
     took = took.plus(portion.elapsed());
@@ -1384,11 +1447,11 @@ final class ConsoleTab implements Tab {
   private void notRun(State s, String sql, NotRun e) {
     queue.clear();
     problem = new Problem(
-        "Not run",
+        NOT_RUN,
         e.unverifiable
             ? "It was not sent, as Manual cannot be made sure of on this connection."
             : e.getMessage());
-    log.add(new Logged(Level.ERROR, brief(sql), null, "Not run"));
+    log.add(new Logged(Level.ERROR, brief(sql), null, NOT_RUN));
     knew(e.status);
     if (e.unverifiable) {
       unavailable = UNVERIFIABLE;
@@ -1406,28 +1469,12 @@ final class ConsoleTab implements Tab {
   private void ended(State s, String sql, Ended ended) {
     var portion = ended.portion();
     if (portion == null) { // a COMMIT not sent: nothing it could commit was open
-      knew(new Status(ended.before(), null));
-      var why = switch (ended.before()) {
-        case FAILED ->
-          "The transaction failed: the server takes nothing more in it but a rollback.";
-        case NONE ->
-          "No transaction was open: the server ended it before, as it does after a deadlock.";
-        default -> "The server did not say that a transaction is open.";
-      };
-      problem = new Problem("Not committed", why);
-      log.add(new Logged(Level.WARNING, sql, null, "Not committed"));
-      s.drop(this);
+      notCommitted(s, sql, ended.before());
       return;
     }
     var failure = failure(portion);
     boolean partly = incomplete(portion);
-    var done = sql.equals(COMMIT)
-        ? portion.messages().isEmpty() ? "Committed" : "Committed, with warnings"
-        : partly
-            ? "Rolled back in part"
-            : doubt != null
-                ? "ROLLBACK ran; what is in doubt still is"
-                : portion.messages().isEmpty() ? "Rolled back" : "Rolled back, with warnings";
+    var done = endedAs(sql, portion, partly);
     heard(
         failure == null ? Level.RAN : Level.ERROR,
         sql,
@@ -1445,12 +1492,54 @@ final class ConsoleTab implements Tab {
       if (partly) {
         partly(s, sql);
       }
-    } else if (failure.kind() == Failure.Kind.CONNECTION_LOST && sql.equals(COMMIT)) {
+    } else {
+      unended(s, sql, portion, failure);
+    }
+    if (transaction == Transaction.UNKNOWN && lane != null) {
+      check(s);
+    }
+  }
+
+  /** A COMMIT not sent, as the server did not say that a transaction is open: it says why. */
+  private void notCommitted(State s, String sql, Transaction before) {
+    knew(new Status(before, null));
+    var why = switch (before) {
+      case FAILED -> "The transaction failed: the server takes nothing more in it but a rollback.";
+      case NONE ->
+        "No transaction was open: the server ended it before, as it does after a deadlock.";
+      default -> "The server did not say that a transaction is open.";
+    };
+    problem = new Problem("Not committed", why);
+    log.add(new Logged(Level.WARNING, sql, null, "Not committed"));
+    s.drop(this);
+  }
+
+  /** What Commit's or Rollback's statement did, as Messages and the status line say it. */
+  private String endedAs(String sql, Portion portion, boolean partly) {
+    boolean warned = !portion.messages().isEmpty();
+    if (sql.equals(COMMIT)) {
+      return warned ? "Committed, with warnings" : "Committed";
+    }
+    if (partly) {
+      return PARTLY;
+    }
+    if (doubt != null) {
+      return "ROLLBACK ran; what is in doubt still is";
+    }
+    return warned ? "Rolled back, with warnings" : "Rolled back";
+  }
+
+  /**
+   * Commit's or Rollback's statement failed: a COMMIT that lost its connection is in doubt, a
+   * ROLLBACK that lost it is what the server does anyway, and any other failure is said.
+   */
+  private void unended(State s, String sql, Portion portion, Failure failure) {
+    if (failure.kind() == Failure.Kind.CONNECTION_LOST && sql.equals(COMMIT)) {
       doubt(sql, "the connection was lost while it committed");
       closeSession();
     } else if (failure.kind() == Failure.Kind.CONNECTION_LOST) {
       problem = new Problem(
-          "Disconnected",
+          DISCONNECTED,
           "The connection was lost while it rolled back: the server rolls back what was not"
               + " committed.");
       s.drop(this);
@@ -1458,9 +1547,6 @@ final class ConsoleTab implements Tab {
     } else {
       learn(portion, false);
       fail(s, failure);
-    }
-    if (transaction == Transaction.UNKNOWN && lane != null) {
-      check(s);
     }
   }
 
@@ -1536,14 +1622,14 @@ final class ConsoleTab implements Tab {
     if (autoCommit == null || !applied) {
       return;
     }
-    var now = autoCommit ? Mode.AUTO : Mode.MANUAL;
+    var now = Mode.of(autoCommit);
     if (now != mode && lane != null) {
       log.add(new Logged(
           Level.WARNING,
           "",
           null,
           "The session's auto-commit is " + (autoCommit ? "on" : "off") + ": the console shows "
-              + (autoCommit ? "Auto" : "Manual")));
+              + now.title));
     }
     mode = now;
   }
@@ -1607,9 +1693,9 @@ final class ConsoleTab implements Tab {
 
   /** Puts the portion's results in tabs: rows from a position on go on with the result before. */
   private void take(String sql, Portion portion, List<Long> dropped) {
-    var results = portion.results();
-    for (int i = 0; i < results.size(); i++) {
-      var result = results.get(i);
+    var all = portion.results();
+    for (int i = 0; i < all.size(); i++) {
+      var result = all.get(i);
       switch (result) {
         case Result.Rows r
         when r.from() > 0 && reading != null -> {
@@ -1618,18 +1704,20 @@ final class ConsoleTab implements Tab {
         }
         case Result.Rows r -> {
           finished();
-          var output = new Output(++this.results, sql, r.fields(), 0);
+          var output = new Output(++results, sql, r.fields(), 0);
           output.rows.addAll(r.rows());
           output.documents.addAll(r.documents());
           output.dropped = dropped == null ? 0 : dropped.get(i);
           outputs.add(output);
           reading = output;
         }
-        case Result.Count c -> {
+        case Result.Count(var count) -> {
           finished();
-          outputs.add(new Output(++this.results, sql, null, c.count()));
+          outputs.add(new Output(++results, sql, null, count));
         }
-        case Failure f -> {}
+        case Failure _ -> {
+          // no tab: the failure is said where the portion is taken, through failure(portion)
+        }
       }
     }
     if (portion.more() && reading != null) {
@@ -1650,8 +1738,7 @@ final class ConsoleTab implements Tab {
 
   private void messages(Portion portion) {
     for (var m : portion.messages()) {
-      var code = !m.state().isEmpty() ? m.state() : m.code() != 0 ? String.valueOf(m.code()) : "";
-      heard(Level.WARNING, null, null, m.text() + (code.isEmpty() ? "" : " (" + code + ")"));
+      heard(Level.WARNING, null, null, m.text() + coded(m));
     }
   }
 
@@ -1682,19 +1769,19 @@ final class ConsoleTab implements Tab {
    * seen, and a lost session is opened anew next.
    */
   private void fail(State s, Failure f) {
-    var text = new StringBuilder(f.message());
+    var message = new StringBuilder(f.message());
     if (!f.detail().isEmpty()) {
-      text.append('\n').append(f.detail());
+      message.append('\n').append(f.detail());
     }
     if (!f.hint().isEmpty()) {
-      text.append("\nHint: ").append(f.hint());
+      message.append("\nHint: ").append(f.hint());
     }
     // What may have changed something leaves it in doubt, not gone.
     var gone = f.kind() == Failure.Kind.CONNECTION_LOST && !changes() ? gone() : null;
     if (gone != null) {
-      text.append('\n').append(gone);
+      message.append('\n').append(gone);
     }
-    problem = heard(title(f.kind()), text.toString());
+    problem = heard(title(f.kind()), message.toString());
     if (doubt == null) {
       s.drop(this);
     }
@@ -1727,8 +1814,8 @@ final class ConsoleTab implements Tab {
       case INVALID -> "The statement is not valid";
       case CONSTRAINT -> "A constraint was violated";
       case ACCESS_DENIED -> "Access denied";
-      case CONNECTION_LOST -> "Disconnected";
-      case CANCELLED -> "Cancelled";
+      case CONNECTION_LOST -> DISCONNECTED;
+      case CANCELLED -> CANCELLED_TEXT;
       case TIMEOUT -> "Timed out";
       case OTHER -> "The statement failed";
     };
@@ -1752,31 +1839,8 @@ final class ConsoleTab implements Tab {
     if (closed || error instanceof InterruptedException) {
       return; // the session closed under it, which says why where it says anything
     }
-    if (error instanceof GaveUp g && g.failure.kind() == Failure.Kind.CONNECTION_LOST) {
-      // Ending it lost the connection, or ran past its deadline: the session is over, at once
-      // and for good, as with any lost connection; the next run opens another.
-      s.drop(this);
-      failedRun = true;
-      var gone = gone();
-      problem = heard(
-          "Disconnected",
-          brief(g.sql) + " could not be ended, and the connection was given up: "
-              + g.failure.message() + (gone == null ? "" : "\n" + gone));
-      log.add(new Logged(Level.ERROR, brief(sql), null, "Not run: the connection ended"));
-      closeSession();
-      return;
-    }
     if (error instanceof GaveUp g) {
-      // Its notice is the app's already; here the console stops, and an act that waited too.
-      s.drop(this);
-      failedRun = true;
-      problem = heard(
-          "Not run",
-          brief(g.sql) + " could not be ended, so " + brief(sql) + " was not sent and nothing"
-              + " more runs: " + g.failure.message() + MAY_NOT_STAND);
-      log.add(new Logged(Level.ERROR, brief(sql), null, "Not run"));
-      transaction = Transaction.UNKNOWN;
-      learned++;
+      gaveUp(s, sql, g);
       return;
     }
     var profile = s.profile(id);
@@ -1784,21 +1848,7 @@ final class ConsoleTab implements Tab {
     if (doubt == null) {
       s.drop(this);
     }
-    if (error instanceof ConnectionException e && profile != null) {
-      var on = database.isEmpty() ? profile : profile.withDatabase(database);
-      var note = Words.note(e.failure(), on, true);
-      var detail = e.detail();
-      problem = heard(
-          Words.title(e.failure()),
-          note == null ? detail : detail.isEmpty() ? note : note + "\n" + detail);
-    } else if (lost) {
-      var detail = error instanceof QueryException e ? e.detail() : State.message(error);
-      var gone = gone();
-      problem = heard(
-          "Disconnected", gone == null ? detail : detail.isEmpty() ? gone : detail + "\n" + gone);
-    } else {
-      problem = heard("The statement could not be run", State.message(error));
-    }
+    problem = problem(profile, error, lost);
     log.add(new Logged(Level.ERROR, brief(sql), null, problem.title()));
     if (lost) {
       closeSession();
@@ -1809,10 +1859,60 @@ final class ConsoleTab implements Tab {
   }
 
   /**
-   * The grid built these rows of the result: near the end of those read, the next portion is read,
-   * where its statement has more.
+   * What was still open could not be given up, so the call was not made: the console stops, and
+   * an act that waited too. Where that lost the connection, the session is over.
    */
-  void want(State s, Output output, int first, int last) {
+  private void gaveUp(State s, String sql, GaveUp g) {
+    s.drop(this);
+    failedRun = true;
+    if (g.failure.kind() == Failure.Kind.CONNECTION_LOST) {
+      // Ending it lost the connection, or ran past its deadline: the session is over, at once
+      // and for good, as with any lost connection; the next run opens another.
+      var gone = gone();
+      problem = heard(
+          DISCONNECTED,
+          brief(g.sql) + " could not be ended, and the connection was given up: "
+              + g.failure.message() + (gone == null ? "" : "\n" + gone));
+      log.add(new Logged(Level.ERROR, brief(sql), null, "Not run: the connection ended"));
+      closeSession();
+      return;
+    }
+    // Its notice is the app's already.
+    problem = heard(
+        NOT_RUN,
+        brief(g.sql) + " could not be ended, so " + brief(sql) + " was not sent and nothing"
+            + " more runs: " + g.failure.message() + MAY_NOT_STAND);
+    log.add(new Logged(Level.ERROR, brief(sql), null, NOT_RUN));
+    transaction = Transaction.UNKNOWN;
+    learned++;
+  }
+
+  /** What the results area says of a call that failed rather than gave a result. */
+  private Problem problem(ConnectionProfile profile, Exception error, boolean lost) {
+    if (error instanceof ConnectionException e && profile != null) {
+      var on = database.isEmpty() ? profile : profile.withDatabase(database);
+      return heard(Words.title(e.failure()), lines(Words.note(e.failure(), on, true), e.detail()));
+    }
+    if (lost) {
+      var detail = error instanceof QueryException e ? e.detail() : State.message(error);
+      return heard(DISCONNECTED, lines(detail, gone()));
+    }
+    return heard("The statement could not be run", State.message(error));
+  }
+
+  /** Two texts on lines of their own, where either is null or empty the other alone. */
+  private static String lines(String first, String second) {
+    if (first == null || first.isEmpty()) {
+      return second == null ? "" : second;
+    }
+    return second == null || second.isEmpty() ? first : first + "\n" + second;
+  }
+
+  /**
+   * The grid built the rows of the result up to {@code last}: near the end of those read, the next
+   * portion is read, where its statement has more.
+   */
+  void want(State s, Output output, int last) {
     if (output != reading
         || !output.more
         || work != null
@@ -1885,7 +1985,7 @@ final class ConsoleTab implements Tab {
     if (waiting) {
       waiting = false;
       queue.clear();
-      say(s, "Not run");
+      say(s, NOT_RUN);
       return;
     }
     if (work == null || firm) {
@@ -1901,7 +2001,7 @@ final class ConsoleTab implements Tab {
       closeSession();
     }
     cancelled = true;
-    log.add(new Logged(Level.WARNING, brief(running), null, "Cancelled"));
+    log.add(new Logged(Level.WARNING, brief(running), null, CANCELLED_TEXT));
     // Not where it was never sent, as one cancelled while the session opened.
     if (changes() && !firm && sent.get() != null) {
       doubt(running, "it was cancelled");
@@ -1952,7 +2052,8 @@ final class ConsoleTab implements Tab {
     }
     leave();
     switching = name;
-    running = "Database " + name;
+    var switched = "Database " + name; // what Messages names the switch by
+    running = switched;
     writes = true;
     plain = false;
     sent = new AtomicReference<>(); // no statement of the user's
@@ -1968,12 +2069,12 @@ final class ConsoleTab implements Tab {
           switching = null;
           database = done;
           s.edited();
-          log.add(new Logged(Level.RAN, "Database " + done, null, "Switched"));
+          log.add(new Logged(Level.RAN, switched, null, "Switched"));
         },
         error -> {
           work = null;
           switching = null;
-          failed(s, "Database " + name, error);
+          failed(s, switched, error);
         });
   }
 
@@ -1986,11 +2087,11 @@ final class ConsoleTab implements Tab {
     if (recording != null && teller != null) { // none comes from here on
       switch (work.delivery().waiting() ? work.delivery().outcome : null) {
         case Ran r -> // it ran to its end before the cancel
-          record(teller.state(), outcomeOf(r.portion()), r.portion().elapsed());
+          remember(teller.state(), outcomeOf(r.portion()), r.portion().elapsed());
         case TooMany e -> recording = null; // not sent, as in run's own outcome
         case NotRun e -> recording = null;
         case GaveUp e -> recording = null;
-        case null, default -> record(teller.state(), new Outcome.Cancelled(), null);
+        case null, default -> remember(teller.state(), new Outcome.Cancelled(), null);
       }
     }
     work.cancel(); // its outcome, if the lane has it already, becomes a notice
@@ -2043,11 +2144,7 @@ final class ConsoleTab implements Tab {
     outstanding.forEach(Delivery::giveUp);
     outstanding.clear();
     open = null; // closed with the connection
-    if (reading != null && reading.more) {
-      reading.more = false;
-      reading.cut = true;
-    }
-    reading = null;
+    leave();
     if (lane != null) {
       // Interrupts what runs, which core cancels, gives up what is still open, as a read whose
       // rest was not read, and closes the connection, each within a bound. What that says goes
@@ -2055,20 +2152,20 @@ final class ConsoleTab implements Tab {
       // waits for, so that Exit can wait for it as for any work.
       var sql = openSql;
       var tell = teller;
-      var said = new CompletableFuture<Void>();
+      var reported = new CompletableFuture<Void>();
       lane.close(ended -> {
         try {
           told(ended, sql, SESSION_ENDED, tell);
         } finally {
           tell.wipe();
-          said.complete(null);
+          reported.complete(null);
         }
       });
       var state = tell.state();
       state.closing();
       tell.app()
           .background(
-              "close a console's session", said::get, done -> state.closed(), e -> state.closed());
+              "close a console's session", reported::get, _ -> state.closed(), _ -> state.closed());
       lane = null;
     }
     driver = null;
@@ -2144,7 +2241,7 @@ final class ConsoleTab implements Tab {
   }
 
   /** Auto or Manual; asks first where something is at stake. */
-  void mode(State s, Mode mode) {
+  void switchMode(State s, Mode mode) {
     if (busy() || mode == this.mode || locked(s) != null) {
       return;
     }
@@ -2156,55 +2253,55 @@ final class ConsoleTab implements Tab {
       this.mode = mode; // the next session takes it, before any statement of the user's
       return;
     }
-    var before = "it switches to " + (mode == Mode.AUTO ? "Auto" : "Manual");
+    var before = "it switches to " + mode.title;
     var act = new State.Act("switch to " + mode, this);
-    if (s.asks(act, before, List.of(this), () -> mode(s, mode))) {
+    if (s.asks(act, before, List.of(this), () -> switchMode(s, mode))) {
       return;
     }
-    boolean empty = this.empty;
+    boolean wasEmpty = empty;
     firm = true;
     watchFirm(s);
     writes = true;
     plain = false;
-    running = "Auto-commit";
+    running = AUTO_COMMIT;
     work = ask(
         s,
         "switch auto-commit",
-        link -> setMode(link, mode == Mode.MANUAL, empty),
+        link -> setMode(link, mode == Mode.MANUAL, wasEmpty),
         switched -> {
           work = null;
           firm = false;
           applied |= switched.done();
           knew(switched.now());
-          this.empty = empty || transaction == Transaction.NONE;
+          empty = wasEmpty || transaction == Transaction.NONE;
           if (switched.now().autoCommit() == null) {
             unavailable = UNVERIFIABLE;
             say(s, UNVERIFIABLE);
           } else if (switched.done()) {
             applied = true;
             log.add(new Logged(
-                Level.RAN, "Auto-commit", null, mode == Mode.AUTO ? "Turned on" : "Turned off"));
+                Level.RAN, AUTO_COMMIT, null, mode == Mode.AUTO ? "Turned on" : "Turned off"));
           } else {
             // The server had one open after all.
-            s.asks(act, before, List.of(this), () -> mode(s, mode));
+            s.asks(act, before, List.of(this), () -> switchMode(s, mode));
           }
         },
         error -> {
           work = null;
           firm = false;
-          failed(s, "Auto-commit", error);
+          failed(s, AUTO_COMMIT, error);
         });
   }
 
   /** Commit: as the statement COMMIT, on the session's lane, where the server said one is open. */
-  void commit(State s) {
+  void commitTransaction(State s) {
     if (canCommit() && locked(s) == null) {
       end(s, COMMIT);
     }
   }
 
   /** Rollback: as the statement ROLLBACK. */
-  void rollback(State s) {
+  void rollBackTransaction(State s) {
     if (canRollback() && locked(s) == null) {
       end(s, ROLLBACK);
     }
@@ -2256,15 +2353,17 @@ final class ConsoleTab implements Tab {
   /** Shows the console's tab, in its window raised, for the question {@link State#asks} put. */
   void show(State s) {
     var group = s.tabs.groupOf(this);
-    if (group != null) {
-      s.tabs.select(group, group.tabs().indexOf(this));
-      // The main window's tabs have no window of their own: the app's is theirs.
-      var window = group.window() != null
-          ? group.window()
-          : s.app == null ? null : s.app.windows().of(s.app);
-      if (window != null) {
-        window.raise();
-      }
+    if (group == null) {
+      return;
+    }
+    s.tabs.select(group, group.tabs().indexOf(this));
+    // The main window's tabs have no window of their own: the app's is theirs.
+    var window = group.window();
+    if (window == null && s.app != null) {
+      window = s.app.windows().of(s.app);
+    }
+    if (window != null) {
+      window.raise();
     }
   }
 
@@ -2307,7 +2406,7 @@ final class ConsoleTab implements Tab {
         asked.then().run();
         return;
       }
-      case COMMIT -> commit(s);
+      case COMMIT -> commitTransaction(s);
       case ROLLBACK -> {
         if (firm || work != null && changes()) {
           return;
@@ -2317,7 +2416,7 @@ final class ConsoleTab implements Tab {
           queue.clear();
           leave();
           cancelled = true;
-          log.add(new Logged(Level.WARNING, brief(running), null, "Cancelled"));
+          log.add(new Logged(Level.WARNING, brief(running), null, CANCELLED_TEXT));
         }
         if (lane != null) {
           end(s, ROLLBACK);
@@ -2387,8 +2486,9 @@ final class ConsoleTab implements Tab {
     for (var result : portion.results()) {
       switch (result) {
         case Result.Rows r -> parts.add(rows(r.rows().size()) + (portion.more() ? " so far" : ""));
-        case Result.Count c -> parts.add(rows(c.count()) + " changed");
-        case Failure f -> parts.add(f.kind() == Failure.Kind.CANCELLED ? "Cancelled" : f.message());
+        case Result.Count(var count) -> parts.add(rows(count) + CHANGED);
+        case Failure f ->
+          parts.add(f.kind() == Failure.Kind.CANCELLED ? CANCELLED_TEXT : f.message());
       }
     }
     return parts.isEmpty() ? "Done" : String.join(", ", parts);
@@ -2430,6 +2530,50 @@ final class ConsoleTab implements Tab {
     Theme t = Theme.CURRENT.get();
     var profile = s.profile(id);
     var provider = profile.provider();
+    El top =
+        // Without the provider's name, which the tree says: Commit and Rollback need its room.
+        Card.toolbar(State.name(profile), null, actions(s, provider).toArray(El[]::new));
+    El line = ConnectionColors.line(s.color(id));
+    El code = editor(s, app, provider);
+    El panes = Split.split(
+            Split.Direction.COLUMN,
+            split,
+            FIRST_SPLIT,
+            p -> split = p,
+            code,
+            3 * t.size().control(),
+            results(s, app),
+            4 * t.size().control())
+        .grow(1);
+    return col()
+        .grow(1)
+        .minSize(0, 0)
+        .onKey(keys(s))
+        .child(top)
+        .child(line == null ? Divider.divider() : line)
+        .child(panes)
+        .child(footer(s));
+  }
+
+  /** Keys go up from the focused element: these work from the editor and from the grids. */
+  private Predicate<Key> keys(State s) {
+    return key -> {
+      if (key.modifiers() != (Key.CONTROL | Key.SHIFT)) {
+        return false;
+      }
+      switch (key.name()) {
+        case "C" -> commitTransaction(s);
+        case "R" -> rollBackTransaction(s);
+        default -> {
+          return false;
+        }
+      }
+      return true;
+    };
+  }
+
+  /** The toolbar's actions: the database, the transaction's, the runs' and the statements kept. */
+  private List<El> actions(State s, Provider provider) {
     boolean busy = busy();
     var locked = s.locked(this);
     var actions = new ArrayList<El>();
@@ -2438,124 +2582,112 @@ final class ConsoleTab implements Tab {
     boolean switchable = !busy && locked == null && unavailable == null;
     // A server of documents commits each command by itself, and has no Manual to offer.
     if (!provider.keepsDocuments()) {
-      actions.add(Tooltip.tooltip(
-          Segmented.segmented(
-                  List.of(Mode.values()),
-                  mode,
-                  m -> m == Mode.AUTO ? "Auto" : "Manual",
-                  switchable ? m -> mode(s, m) : null)
-              .key("mode")
-              .label("Transactions"),
-          unavailable != null
-              ? "Manual is unavailable: " + unavailable
-              : "Auto commits each statement by itself; in Manual, Commit or Rollback ends the"
-                  + " transaction"));
+      actions.add(modes(s, switchable));
     }
     if (mode == Mode.MANUAL || transaction != Transaction.NONE) {
-      actions.add(Tooltip.tooltip(
-          button(
-                  SECONDARY,
-                  "Commit",
-                  canCommit() ? () -> commit(s) : null,
-                  Button.options()
-                      .icon(Symbol.CHECKMARK)
-                      .state(
-                          firm && COMMIT.equals(running) ? Button.State.BUSY : Button.State.READY))
-              .key("commit")
-              .keepFocus(),
-          "Commit (Control+Shift+C)"));
-      actions.add(Tooltip.tooltip(
-          button(
-                  SECONDARY,
-                  "Rollback",
-                  canRollback() ? () -> rollback(s) : null,
-                  Button.options()
-                      .icon(Symbol.ARROW_UNDO)
-                      .state(
-                          firm && ROLLBACK.equals(running)
-                              ? Button.State.BUSY
-                              : Button.State.READY))
-              .key("rollback")
-              .keepFocus(),
-          "Roll back (Control+Shift+R)"));
+      actions.add(commitButton(s));
+      actions.add(rollbackButton(s));
     }
-    actions.add(button(
-            PRIMARY,
-            "Run",
-            firm || locked != null ? null : () -> run(s),
-            Button.options()
-                .icon(Symbol.PLAY)
-                // Off, not busy, while a change of its connection is saved or deleted.
-                .state(
-                    working() && !firm && locked == null ? Button.State.BUSY : Button.State.READY))
-        .key("run")
-        .keepFocus());
-    actions.add(button(SECONDARY, "Run all", busy || locked != null ? null : () -> runAll(s))
-        .key("run-all")
-        .keepFocus());
-    actions.add(button(SECONDARY, "Cancel", busy && !firm ? () -> cancel(s) : null)
-        .key("cancel")
-        .keepFocus());
-    actions.add(Tooltip.tooltip(
-        Button.icon(
-                Button.Variant.GHOST,
-                Symbol.SAVE,
-                "Save query",
-                s.queriesUsable() ? this::saveQuery : null)
-            .key("query-save-open")
+    actions.addAll(runs(s, busy, locked));
+    actions.addAll(kept(s));
+    return actions;
+  }
+
+  /** Auto or Manual, with what each does, or why Manual is unavailable. */
+  private El modes(State s, boolean switchable) {
+    return Tooltip.tooltip(
+        Segmented.segmented(
+                List.of(Mode.values()),
+                mode,
+                m -> m.title,
+                switchable ? m -> switchMode(s, m) : null)
+            .key("mode")
+            .label("Transactions"),
+        unavailable == null
+            ? "Auto commits each statement by itself; in Manual, Commit or Rollback ends the"
+                + " transaction"
+            : "Manual is unavailable: " + unavailable);
+  }
+
+  private El commitButton(State s) {
+    return Tooltip.tooltip(
+        button(
+                SECONDARY,
+                "Commit",
+                canCommit() ? () -> commitTransaction(s) : null,
+                Button.options().icon(Symbol.CHECKMARK).state(busyWith(COMMIT)))
+            .key("commit")
             .keepFocus(),
-        "Save query: the selection, or else the whole text, under a name"));
-    actions.add(Tooltip.tooltip(
-        Button.icon(
-                Button.Variant.GHOST,
-                Symbol.STAR,
-                "Saved queries",
-                s.queriesUsable() ? this::openQueries : null)
-            .key("queries-open")
+        "Commit (Control+Shift+C)");
+  }
+
+  private El rollbackButton(State s) {
+    return Tooltip.tooltip(
+        button(
+                SECONDARY,
+                ROLLBACK_BUTTON,
+                canRollback() ? () -> rollBackTransaction(s) : null,
+                Button.options().icon(Symbol.ARROW_UNDO).state(busyWith(ROLLBACK)))
+            .key("rollback")
             .keepFocus(),
-        "Saved queries"));
-    actions.add(Tooltip.tooltip(
-        Button.icon(Button.Variant.GHOST, Symbol.HISTORY, "History", this::openHistory)
-            .key("history-open")
+        "Roll back (Control+Shift+R)");
+  }
+
+  /** Busy while Commit's or Rollback's own statement runs. */
+  private Button.State busyWith(String sql) {
+    return firm && sql.equals(running) ? Button.State.BUSY : Button.State.READY;
+  }
+
+  /** Run, Run all and Cancel. */
+  private List<El> runs(State s, boolean busy, String locked) {
+    return List.of(
+        button(
+                PRIMARY,
+                "Run",
+                firm || locked != null ? null : () -> run(s),
+                Button.options()
+                    .icon(Symbol.PLAY)
+                    // Off, not busy, while a change of its connection is saved or deleted.
+                    .state(
+                        working() && !firm && locked == null
+                            ? Button.State.BUSY
+                            : Button.State.READY))
+            .key("run")
             .keepFocus(),
-        "History"));
-    El top =
-        // Without the provider's name, which the tree says: Commit and Rollback need its room.
-        Card.toolbar(State.name(profile), null, actions.toArray(El[]::new));
-    El line = ConnectionColors.line(s.color(id));
-    El editor = editor(s, app, provider);
-    El split = Split.split(
-            Split.Direction.COLUMN,
-            this.split,
-            SPLIT,
-            p -> this.split = p,
-            editor,
-            3 * t.size().control(),
-            results(s, app),
-            4 * t.size().control())
-        .grow(1);
-    // Keys go up from the focused element: these work from the editor and from the grids.
-    Predicate<Key> keys = key -> {
-      if (key.modifiers() != (Key.CONTROL | Key.SHIFT)) {
-        return false;
-      }
-      switch (key.name()) {
-        case "C" -> commit(s);
-        case "R" -> rollback(s);
-        default -> {
-          return false;
-        }
-      }
-      return true;
-    };
-    return col()
-        .grow(1)
-        .minSize(0, 0)
-        .onKey(keys)
-        .child(top)
-        .child(line == null ? Divider.divider() : line)
-        .child(split)
-        .child(footer(s));
+        button(SECONDARY, "Run all", busy || locked != null ? null : () -> runAll(s))
+            .key("run-all")
+            .keepFocus(),
+        button(SECONDARY, CANCEL_BUTTON, busy && !firm ? () -> cancel(s) : null)
+            .key("cancel")
+            .keepFocus());
+  }
+
+  /** Save query, Saved queries and History. */
+  private List<El> kept(State s) {
+    return List.of(
+        Tooltip.tooltip(
+            Button.icon(
+                    Button.Variant.GHOST,
+                    Symbol.SAVE,
+                    "Save query",
+                    s.queriesUsable() ? this::saveQuery : null)
+                .key("query-save-open")
+                .keepFocus(),
+            "Save query: the selection, or else the whole text, under a name"),
+        Tooltip.tooltip(
+            Button.icon(
+                    Button.Variant.GHOST,
+                    Symbol.STAR,
+                    "Saved queries",
+                    s.queriesUsable() ? this::openQueries : null)
+                .key("queries-open")
+                .keepFocus(),
+            "Saved queries"),
+        Tooltip.tooltip(
+            Button.icon(Button.Variant.GHOST, Symbol.HISTORY, "History", this::openHistory)
+                .key("history-open")
+                .keepFocus(),
+            "History"));
   }
 
   /** The databases to switch to: those the tree read, and the one it is on. */
@@ -2583,7 +2715,7 @@ final class ConsoleTab implements Tab {
     };
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
-    El editor = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
+    El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
           text = v;
           s.edited();
         })
@@ -2606,15 +2738,16 @@ final class ConsoleTab implements Tab {
       }
       return false;
     };
-    editor.onKey(editor.onKey() == null ? keys : keys.or(editor.onKey()));
-    return help.editor(s, app, provider, editor);
+    code.onKey(code.onKey() == null ? keys : keys.or(code.onKey()));
+    return help.editor(s, app, provider, code);
   }
 
   /** The results of the last runs in tabs, with Messages; what went wrong above them. */
   private El results(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     El note = note(s);
-    if (outputs.isEmpty() && log.isEmpty() && working()) {
+    boolean none = outputs.isEmpty() && log.isEmpty();
+    if (none && working()) {
       return col()
           .grow(1)
           .center()
@@ -2623,27 +2756,31 @@ final class ConsoleTab implements Tab {
           .child(Progress.spinner())
           .child(Label.label(Label.Variant.MUTED, waiting ? "Connecting…" : "Running…"));
     }
-    if (outputs.isEmpty() && log.isEmpty()) {
-      return col()
-          .grow(1)
-          .minSize(0, 0)
-          .label("Results")
-          .child(note == null ? null : col().padding(t.space().m()).shrink(0).child(note))
-          .child(EmptyState.emptyState(
-              Symbol.PLAY,
-              "Nothing run yet",
-              "Control+Enter runs the statement at the caret, Control+Shift+Enter all of them.",
-              null));
-    }
+    El body = none
+        ? EmptyState.emptyState(
+            Symbol.PLAY,
+            "Nothing run yet",
+            "Control+Enter runs the statement at the caret, Control+Shift+Enter all of them.",
+            null)
+        : tabs(s, app);
+    return col()
+        .grow(1)
+        .minSize(0, 0)
+        .label("Results")
+        .child(note == null ? null : col().padding(t.space().m()).shrink(0).child(note))
+        .child(body);
+  }
+
+  /** A tab for each result and one for Messages, with the one shown. */
+  private El tabs(State s, App<State> app) {
     var tabs = new ArrayList<Tabs.Tab>();
     for (var o : outputs) {
-      var icon = o.pinned ? Symbol.PIN : o.fields == null ? Symbol.CHECKMARK_CIRCLE : Symbol.TABLE;
-      tabs.add(new Tabs.Tab("Result " + o.number, false, false, icon));
+      tabs.add(new Tabs.Tab("Result " + o.number, false, false, icon(o)));
     }
     tabs.add(new Tabs.Tab("Messages", false, false, Symbol.TEXT_BULLET_LIST_LTR));
     int at = shown == null ? -1 : outputs.indexOf(shown);
     El content = at < 0 ? messages() : output(s, app, shown);
-    El bar = Tabs.tabs(
+    return Tabs.tabs(
             tabs,
             at < 0 ? outputs.size() : at,
             i -> shown = i < outputs.size() ? outputs.get(i) : null,
@@ -2652,30 +2789,21 @@ final class ConsoleTab implements Tab {
             Tabs.options().switchKeys(false))
         .key("results")
         .grow(1);
-    return col()
-        .grow(1)
-        .minSize(0, 0)
-        .label("Results")
-        .child(note == null ? null : col().padding(t.space().m()).shrink(0).child(note))
-        .child(bar);
+  }
+
+  /** A result's tab's icon: pinned, a count, or rows. */
+  private static Symbol icon(Output o) {
+    if (o.pinned) {
+      return Symbol.PIN;
+    }
+    return o.fields == null ? Symbol.CHECKMARK_CIRCLE : Symbol.TABLE;
   }
 
   /** Why nothing runs or what failed, with what the user can do; null for nothing. */
   private El note(State s) {
     Theme t = Theme.CURRENT.get();
     if (stranded) {
-      var trouble = s.catalog.problem(s, new Node.Connection(id));
-      var actions = new ArrayList<El>();
-      if (trouble != null && trouble.password()) {
-        actions.add(button(SECONDARY, "Enter password…", () -> retry(s, true)));
-      }
-      actions.add(button(SECONDARY, "Try again", () -> retry(s, false)).key("try-again"));
-      return Callout.callout(
-              Callout.Kind.DANGER,
-              trouble == null ? "Not connected" : trouble.title(),
-              trouble == null ? null : trouble.text(),
-              actions.toArray(El[]::new))
-          .key("unconnected");
+      return strandedNote(s);
     }
     // An outcome in doubt stays said, also over later runs, until the user has read it.
     // The act that holds the connection, as a save of it: nothing runs until it is done.
@@ -2699,30 +2827,48 @@ final class ConsoleTab implements Tab {
                 doubt,
                 button(SECONDARY, "Acknowledge", () -> acknowledge(s)).key("acknowledge"))
             .key("doubt");
-    El failed = transaction != Transaction.FAILED
-        ? null
-        : Callout.callout(
-                Callout.Kind.WARNING,
-                "The transaction failed",
-                "The server ignores every statement in it until it is rolled back; its changes are"
-                    + " lost.",
-                button(SECONDARY, "Rollback", canRollback() ? () -> rollback(s) : null)
-                    .key("roll-back"))
-            .key("failed");
-    El shown = problem == null
+    El failed = transaction == Transaction.FAILED ? failedNote(s) : null;
+    El reported = problem == null
         ? null
         : Callout.callout(Callout.Kind.DANGER, problem.title(), problem.text()).key("problem");
     var notes = new ArrayList<El>();
-    for (var note : new El[] {lock, doubted, shown, manual, failed}) {
+    for (var note : new El[] {lock, doubted, reported, manual, failed}) {
       if (note != null) {
         notes.add(note);
       }
     }
-    return notes.isEmpty()
-        ? null
-        : notes.size() == 1
-            ? notes.getFirst()
-            : col().gap(t.space().s()).children(notes.toArray(El[]::new));
+    if (notes.size() <= 1) {
+      return notes.isEmpty() ? null : notes.getFirst();
+    }
+    return col().gap(t.space().s()).children(notes.toArray(El[]::new));
+  }
+
+  /** The tree's connection failed while the console waited for it: why, with Try again. */
+  private El strandedNote(State s) {
+    var trouble = s.catalog.problem(s, new Node.Connection(id));
+    var actions = new ArrayList<El>();
+    if (trouble != null && trouble.password()) {
+      actions.add(button(SECONDARY, "Enter password…", () -> retry(s, true)));
+    }
+    actions.add(button(SECONDARY, "Try again", () -> retry(s, false)).key("try-again"));
+    return Callout.callout(
+            Callout.Kind.DANGER,
+            trouble == null ? "Not connected" : trouble.title(),
+            trouble == null ? null : trouble.text(),
+            actions.toArray(El[]::new))
+        .key("unconnected");
+  }
+
+  /** The transaction failed: the server takes nothing more in it but a rollback. */
+  private El failedNote(State s) {
+    return Callout.callout(
+            Callout.Kind.WARNING,
+            "The transaction failed",
+            "The server ignores every statement in it until it is rolled back; its changes are"
+                + " lost.",
+            button(SECONDARY, ROLLBACK_BUTTON, canRollback() ? () -> rollBackTransaction(s) : null)
+                .key("roll-back"))
+        .key("failed");
   }
 
   /** A result: its rows in the grid, or the number of rows it changed; whether it is pinned. */
@@ -2731,29 +2877,9 @@ final class ConsoleTab implements Tab {
             Symbol.PIN, o.pinned ? "Unpin" : "Pin", o.pinned, on -> o.pinned = on)
         .key("pin");
     if (o.fields == null) {
-      return col()
-          .grow(1)
-          .minSize(0, 0)
-          .child(EmptyState.emptyState(
-                  Symbol.CHECKMARK_CIRCLE,
-                  rows(o.count, keepsDocuments(s)) + " changed",
-                  null,
-                  null)
-              .key("changed"))
-          .child(
-              Card.footer(Label.label(Label.Variant.MUTED, brief(o.statement)).ellipsis(), pin));
+      return changed(s, o, pin);
     }
-    boolean whole = !o.documents.isEmpty();
-    String count = rows(o.rows.size(), whole);
-    String about = brief(o.statement) + " · "
-        + (o.more
-            ? count + " so far, more as it scrolls"
-            : o.cut
-                ? "the first " + count + "; the rest was not read"
-                : o.dropped > 0
-                    ? "the first " + count + " of " + rows(o.rows.size() + o.dropped, whole)
-                        + "; the rest was read and not kept"
-                    : count);
+    String about = about(o);
     if (o.documents.isEmpty()) {
       return col()
           .grow(1)
@@ -2764,7 +2890,40 @@ final class ConsoleTab implements Tab {
               value.button(),
               pin));
     }
-    // Documents: as a grid, or whole, a page of those read so far, with the table's pager.
+    return documents(s, app, o, about, pin);
+  }
+
+  /** A count: the number of rows, or documents, the statement changed. */
+  private El changed(State s, Output o, El pin) {
+    return col()
+        .grow(1)
+        .minSize(0, 0)
+        .child(EmptyState.emptyState(
+                Symbol.CHECKMARK_CIRCLE, rows(o.count, keepsDocuments(s)) + CHANGED, null, null)
+            .key("changed"))
+        .child(Card.footer(Label.label(Label.Variant.MUTED, brief(o.statement)).ellipsis(), pin));
+  }
+
+  /** What a result's status line says: its statement, and how many of its rows it holds. */
+  private static String about(Output o) {
+    boolean whole = !o.documents.isEmpty();
+    String count = rows(o.rows.size(), whole);
+    String held;
+    if (o.more) {
+      held = count + " so far, more as it scrolls";
+    } else if (o.cut) {
+      held = "the first " + count + "; the rest was not read";
+    } else if (o.dropped > 0) {
+      held = "the first " + count + " of " + rows(o.rows.size() + o.dropped, whole)
+          + "; the rest was read and not kept";
+    } else {
+      held = count;
+    }
+    return brief(o.statement) + " · " + held;
+  }
+
+  /** Documents: as a grid, or whole, a page of those read so far, with the table's pager. */
+  private El documents(State s, App<State> app, Output o, String about, El pin) {
     var footer = new ArrayList<El>();
     footer.add(Segmented.segmented(
             List.of(TableTab.Shown.values()), o.shown, v -> v.title, v -> o.shown = v)
@@ -2775,32 +2934,7 @@ final class ConsoleTab implements Tab {
       footer.add(value.button());
       body = withValue(s, app, o, grid(s, app, o));
     } else {
-      int last = Math.max(0, (o.documents.size() - 1) / PORTION);
-      if (o.page > last && (o != reading || work == null)) {
-        o.page = last; // the next page did not come: nothing was left, or the read stopped
-      }
-      int from = o.page * PORTION;
-      int to = Math.min(from + PORTION, o.documents.size());
-      footer.add(Label.label(
-              Label.Variant.MUTED,
-              to <= from ? "No documents" : TableTab.range(from + 1L, to, true))
-          .key("rows-in-view"));
-      footer.add(TableTab.paging(
-          o.page > 0,
-          (o.page + 1) * PORTION < o.documents.size() || o.more,
-          () -> turn(s, o, 0),
-          () -> turn(s, o, o.page - 1),
-          () -> turn(s, o, o.page + 1),
-          o.more ? null : () -> turn(s, o, last))); // the last is known once all is read
-      if (to > from) {
-        o.whole.show("p" + o.page, o.documents, from, to);
-        body = o.whole.view(app, o.shown, s.zone, "Documents of result " + o.number);
-      } else {
-        body = col()
-            .center()
-            .child(Label.label(Label.Variant.MUTED, o.more ? "Reading documents…" : "No documents")
-                .key("no-documents"));
-      }
+      body = page(s, app, o, footer);
     }
     footer.add(pin);
     return col()
@@ -2812,6 +2946,34 @@ final class ConsoleTab implements Tab {
             footer.toArray(El[]::new)));
   }
 
+  /** The page of the documents shown whole; its range and pager go into the footer. */
+  private El page(State s, App<State> app, Output o, List<El> footer) {
+    int last = Math.max(0, (o.documents.size() - 1) / PORTION);
+    if (o.page > last && (o != reading || work == null)) {
+      o.page = last; // the next page did not come: nothing was left, or the read stopped
+    }
+    int from = o.page * PORTION;
+    int to = Math.min(from + PORTION, o.documents.size());
+    footer.add(Label.label(
+            Label.Variant.MUTED, to <= from ? "No documents" : TableTab.range(from + 1L, to, true))
+        .key("rows-in-view"));
+    footer.add(TableTab.paging(
+        o.page > 0,
+        (o.page + 1) * PORTION < o.documents.size() || o.more,
+        () -> turn(s, o, 0),
+        () -> turn(s, o, o.page - 1),
+        () -> turn(s, o, o.page + 1),
+        o.more ? null : () -> turn(s, o, last))); // the last is known once all is read
+    if (to <= from) {
+      return col()
+          .center()
+          .child(Label.label(Label.Variant.MUTED, o.more ? "Reading documents…" : "No documents")
+              .key("no-documents"));
+    }
+    o.whole.show("p" + o.page, o.documents, from, to);
+    return o.whole.view(app, o.shown, s.zone, "Documents of result " + o.number);
+  }
+
   /**
    * Shows the page of the result's documents, reading the next portion where it is not full: not
    * past one that is not, which shows what comes first.
@@ -2820,7 +2982,7 @@ final class ConsoleTab implements Tab {
     int at = o.documents.size();
     o.page = Math.clamp(page, 0, at / PORTION);
     if ((o.page + 1) * PORTION > at) {
-      want(s, o, at, at + PORTION - 1);
+      want(s, o, at + PORTION - 1);
     }
   }
 
@@ -2879,9 +3041,9 @@ final class ConsoleTab implements Tab {
         .fitColumns(o.fit)
         .rowNumbers()
         .copy(app.clipboard())
-        .loading(row -> row < o.rows.size(), (first, last) -> want(s, o, first, last));
-    int shown = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), TableTab.GRID_ROWS);
-    return DataGrid.dataGrid(columns, shown, options)
+        .loading(row -> row < o.rows.size(), (_, last) -> want(s, o, last));
+    int count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), TableTab.GRID_ROWS);
+    return DataGrid.dataGrid(columns, count, options)
         .key("grid")
         .label("Rows of result " + o.number);
   }
@@ -2920,35 +3082,49 @@ final class ConsoleTab implements Tab {
 
   /** The last run's time and rows, or that it runs. */
   private El footer(State s) {
+    El status = runStatus(s).key("run-status");
+    El badge = badge();
+    var end = new ArrayList<El>();
+    if (said != null) {
+      end.add(Label.label(Label.Variant.MUTED, said).key("said"));
+    }
+    if (badge != null) {
+      end.add(badge);
+    }
+    return Card.footer(status, end.toArray(El[]::new));
+  }
+
+  /** That the console waits for the user's answer, what runs, or how the last run went. */
+  private El runStatus(State s) {
     Theme t = Theme.CURRENT.get();
-    El status;
     if (confirming != null) {
-      status = Label.label(Label.Variant.MUTED, "Waiting for your answer").key("run-status");
-    } else if (busy()) {
-      var what = waiting
-          ? "Connecting…"
-          : switching != null
-              ? "Switching to " + (switching.isEmpty() ? "no database" : switching) + "…"
-              : !firm
-                  ? writes ? "Running; rows show once all are read…" : "Running…"
-                  : COMMIT.equals(running)
-                      ? "Committing…"
-                      : ROLLBACK.equals(running) ? "Rolling back…" : "Switching auto-commit…";
-      status = row()
+      return Label.label(Label.Variant.MUTED, "Waiting for your answer");
+    }
+    if (busy()) {
+      return row()
           .gap(t.space().s())
           .align(Style.Align.CENTER)
           .child(Progress.spinner().label("Running"))
-          .child(Label.label(Label.Variant.MUTED, what))
-          .key("run-status");
-    } else {
-      status = Label.label(Label.Variant.MUTED, status(s)).key("run-status").ellipsis();
+          .child(Label.label(Label.Variant.MUTED, underWay()));
     }
-    El badge = badge();
-    if (said == null) {
-      return badge == null ? Card.footer(status) : Card.footer(status, badge);
+    return Label.label(Label.Variant.MUTED, status(s)).ellipsis();
+  }
+
+  /** What runs or waits, as the status line says it. */
+  private String underWay() {
+    if (waiting) {
+      return "Connecting…";
     }
-    El words = Label.label(Label.Variant.MUTED, said).key("said");
-    return badge == null ? Card.footer(status, words) : Card.footer(status, words, badge);
+    if (switching != null) {
+      return "Switching to " + (switching.isEmpty() ? "no database" : switching) + "…";
+    }
+    if (!firm) {
+      return writes ? "Running; rows show once all are read…" : "Running…";
+    }
+    if (COMMIT.equals(running)) {
+      return "Committing…";
+    }
+    return ROLLBACK.equals(running) ? "Rolling back…" : "Switching auto-commit…";
   }
 
   /** The transaction, as the server last said it; in Auto none while none is open. */
@@ -2958,7 +3134,7 @@ final class ConsoleTab implements Tab {
       o.kind(Badge.Kind.DANGER).strong().icon(Symbol.ERROR_CIRCLE);
       return Badge.badge("Outcome not known", o).key("transaction");
     }
-    String text = switch (transaction) {
+    String label = switch (transaction) {
       case NONE -> {
         o.kind(Badge.Kind.NEUTRAL);
         yield mode == Mode.MANUAL ? "No transaction" : null;
@@ -2969,10 +3145,7 @@ final class ConsoleTab implements Tab {
           yield "Transaction open · empty";
         }
         o.kind(Badge.Kind.WARNING).strong().icon(Symbol.LOCK_OPEN);
-        yield "Transaction open"
-            + (inTransaction > 0
-                ? " · " + inTransaction + (inTransaction == 1 ? " statement" : " statements")
-                : "");
+        yield "Transaction open" + (inTransaction > 0 ? " · " + counted(inTransaction) : "");
       }
       case FAILED -> {
         o.kind(Badge.Kind.DANGER).strong().icon(Symbol.ERROR_CIRCLE);
@@ -2983,8 +3156,16 @@ final class ConsoleTab implements Tab {
         yield "Transaction may be open";
       }
     };
-    return text == null ? null : Badge.badge(text, o).key("transaction");
+    return label == null ? null : Badge.badge(label, o).key("transaction");
   }
+
+  /** How many statements, as "1 statement" or "3 statements". */
+  private static String counted(int statements) {
+    return statements + (statements == 1 ? " statement" : " statements");
+  }
+
+  /** What the question about what may be open says, and the buttons it adds to Cancel. */
+  private record Wording(String title, String text, List<El> buttons) {}
 
   /**
    * The question about what may be open, while it is asked; in the console's window. What it
@@ -2997,76 +3178,21 @@ final class ConsoleTab implements Tab {
     if (asked == null) {
       return null;
     }
-    var name = s.title(this);
-    var before = asked.what();
     var buttons = new ArrayList<El>();
-    buttons.add(button(SECONDARY, "Cancel", () -> answer(s, null)).key("answer-cancel"));
-    El rollback = button(PRIMARY, "Rollback", () -> answer(s, ROLLBACK)).key("answer-rollback");
-    String title;
-    String text;
+    buttons.add(button(SECONDARY, CANCEL_BUTTON, () -> answer(s, null)).key("answer-cancel"));
     boolean waits = firm || work != null && changes();
-    if (doubt != null) {
-      title = UNSURE;
-      text = "On " + name + ", " + doubt + " Go on, and " + before + "?";
-      buttons.add(button(PRIMARY, "Continue", () -> answer(s, CONTINUE)).key("answer-continue"));
-    } else if (firm) {
-      title = COMMIT.equals(running)
-          ? "Waiting for the commit"
-          : ROLLBACK.equals(running) ? "Waiting for the rollback" : "Waiting for the server";
-      text = name + " waits for the server's answer. Once nothing is left open, " + before + ".";
-      if (overdue) {
-        text += " It has not answered for a while. Or end the connection now: it is closed, the"
-            + " server rolls back what was not committed, and what this did is not known.";
-        buttons.add(endIt(s));
-      }
-    } else if (waits) {
-      // What it promises nothing of: no Rollback, which could not say what it undid.
-      title = "Waiting for " + brief(running);
-      text = brief(running) + " still runs on " + name + ". Wait: once it has ended with nothing"
-          + " left open, " + before + ". Or go on now: the connection ends, the server rolls back"
-          + " what was not committed, and what it did with this statement will not be known.";
-      buttons.add(button(
-              SECONDARY,
-              "Go on now",
-              () -> answer(s, GO_ON),
-              Button.options().tone(Button.Tone.DANGER))
-          .key("answer-go-on"));
-    } else if (work != null) {
-      title = "Roll back the transaction?";
-      text = "A statement still runs on " + name + ", and a transaction may be open. Roll back,"
-          + " which cancels the statement, or wait: once it has ended with nothing open, " + before
-          + ".";
-      buttons.add(rollback);
-    } else if (transaction == Transaction.FAILED) {
-      title = "Roll back the transaction?";
-      text = "The transaction of " + name + " failed: the server takes nothing more in it but a"
-          + " rollback. Roll it back before " + before + ".";
-      buttons.add(rollback);
-    } else if (!canCommit()) {
-      title = "Roll back the transaction?";
-      text = "A transaction may be open on " + name + ": the server has not said. Roll it back"
-          + " before " + before + ".";
-      buttons.add(rollback);
-    } else {
-      title = "Commit the transaction?";
-      // A transaction is open, which is not to say that anything in it changed.
-      text = name + " has a transaction open"
-          + (inTransaction > 0
-              ? ", after " + inTransaction + (inTransaction == 1 ? " statement" : " statements")
-              : "")
-          + ". Commit it or roll it back before " + before + ".";
-      buttons.add(button(SECONDARY, "Rollback", () -> answer(s, ROLLBACK)).key("answer-rollback"));
-      buttons.add(button(PRIMARY, "Commit", () -> answer(s, COMMIT)).key("answer-commit"));
-    }
+    var wording = wording(s, s.title(this), asked.what(), waits);
+    buttons.addAll(wording.buttons());
+    var body = wording.text();
     if (endFailed && !firm && work == null && doubt == null) {
-      text += " Or end the connection: it is closed, and the server rolls back what was not"
+      body += " Or end the connection: it is closed, and the server rolls back what was not"
           + " committed.";
       buttons.add(1, endIt(s));
     }
     El content = col()
         .w(ConnectionDialog.width())
         .gap(t.space().m())
-        .child(Label.label(text).wrapText())
+        .child(Label.label(body).wrapText())
         .child(
             waits && doubt == null
                 ? row()
@@ -3081,8 +3207,94 @@ final class ConsoleTab implements Tab {
                 ? null
                 : Callout.callout(Callout.Kind.DANGER, problem.title(), problem.text())
                     .key("question-problem"));
-    return Dialog.dialog(title, content, buttons, () -> answer(s, null))
+    return Dialog.dialog(wording.title(), content, buttons, () -> answer(s, null))
         .key("transaction-question");
+  }
+
+  /** What the question says on the console {@code name} before the act {@code before}. */
+  private Wording wording(State s, String name, String before, boolean waits) {
+    if (doubt != null) {
+      return new Wording(
+          UNSURE,
+          "On " + name + ", " + doubt + " Go on, and " + before + "?",
+          List.of(button(PRIMARY, "Continue", () -> answer(s, CONTINUE)).key("answer-continue")));
+    }
+    if (firm) {
+      return waitingForEnd(s, name, before);
+    }
+    if (waits) {
+      // What it promises nothing of: no Rollback, which could not say what it undid.
+      return new Wording(
+          "Waiting for " + brief(running),
+          brief(running) + " still runs on " + name + ". Wait: once it has ended with nothing"
+              + " left open, " + before + ". Or go on now: the connection ends, the server rolls"
+              + " back what was not committed, and what it did with this statement will not be"
+              + " known.",
+          List.of(button(
+                  SECONDARY,
+                  "Go on now",
+                  () -> answer(s, GO_ON),
+                  Button.options().tone(Button.Tone.DANGER))
+              .key("answer-go-on")));
+    }
+    if (work != null) {
+      return rollBackFirst(
+          s,
+          "A statement still runs on " + name + ", and a transaction may be open. Roll back,"
+              + " which cancels the statement, or wait: once it has ended with nothing open, "
+              + before + ".");
+    }
+    if (transaction == Transaction.FAILED) {
+      return rollBackFirst(
+          s,
+          "The transaction of " + name + " failed: the server takes nothing more in it but a"
+              + " rollback. Roll it back before " + before + ".");
+    }
+    if (!canCommit()) {
+      return rollBackFirst(
+          s,
+          "A transaction may be open on " + name + ": the server has not said. Roll it back"
+              + " before " + before + ".");
+    }
+    // A transaction is open, which is not to say that anything in it changed.
+    return new Wording(
+        "Commit the transaction?",
+        name + " has a transaction open"
+            + (inTransaction > 0 ? ", after " + counted(inTransaction) : "")
+            + ". Commit it or roll it back before " + before + ".",
+        List.of(
+            button(SECONDARY, ROLLBACK_BUTTON, () -> answer(s, ROLLBACK)).key("answer-rollback"),
+            button(PRIMARY, "Commit", () -> answer(s, COMMIT)).key("answer-commit")));
+  }
+
+  /** Commit, Rollback or a switch of auto-commit runs: the question waits for it. */
+  private Wording waitingForEnd(State s, String name, String before) {
+    String title;
+    if (COMMIT.equals(running)) {
+      title = "Waiting for the commit";
+    } else if (ROLLBACK.equals(running)) {
+      title = "Waiting for the rollback";
+    } else {
+      title = "Waiting for the server";
+    }
+    var body = name + " waits for the server's answer. Once nothing is left open, " + before + ".";
+    if (!overdue) {
+      return new Wording(title, body, List.of());
+    }
+    return new Wording(
+        title,
+        body + " It has not answered for a while. Or end the connection now: it is closed, the"
+            + " server rolls back what was not committed, and what this did is not known.",
+        List.of(endIt(s)));
+  }
+
+  /** The question that offers Rollback alone, with Cancel. */
+  private Wording rollBackFirst(State s, String text) {
+    return new Wording(
+        ROLL_BACK_FIRST,
+        text,
+        List.of(
+            button(PRIMARY, ROLLBACK_BUTTON, () -> answer(s, ROLLBACK)).key("answer-rollback")));
   }
 
   /** Run anyway: the statement asked about is sent, through the gate again. */
@@ -3111,7 +3323,7 @@ final class ConsoleTab implements Tab {
     confirming = null;
     queue.clear();
     cancelled = true;
-    log.add(new Logged(Level.WARNING, brief(asked.sql()), null, "Not run"));
+    log.add(new Logged(Level.WARNING, brief(asked.sql()), null, NOT_RUN));
   }
 
   /** History: the statements run on the connection, to put one into the editor. */
@@ -3121,12 +3333,23 @@ final class ConsoleTab implements Tab {
 
   /** Save query: the selection, or else the whole text, under a name. */
   void saveQuery() {
-    int from = Math.min(editor.caret(), editor.anchor());
-    int to = Math.min(Math.max(editor.caret(), editor.anchor()), text.length());
+    int from = selectionStart();
+    int to = selectionEnd();
     var saved = from < to ? text.substring(from, to) : text;
     if (!saved.isBlank()) {
       queries = QueriesDialog.save(saved);
     }
+  }
+
+  /** Where the selection starts in the text. */
+  private int selectionStart() {
+    return Math.min(editor.caret(), editor.anchor());
+  }
+
+  /** Where the selection ends in the text, at most at its end. */
+  private int selectionEnd() {
+    int end = Math.max(editor.caret(), editor.anchor());
+    return Math.min(end, text.length());
   }
 
   /** Saved queries: those of the connection, to put one into the editor. */
@@ -3141,51 +3364,58 @@ final class ConsoleTab implements Tab {
    * where Run runs it.
    */
   void insert(App<State> app, String sql) {
-    int from = Math.min(editor.caret(), editor.anchor());
-    int to = Math.min(Math.max(editor.caret(), editor.anchor()), text.length());
-    var put = sql;
-    int caret = sql.stripTrailing().length(); // in what is put: after it, or as ending says
+    int from = selectionStart();
+    int to = selectionEnd();
     var provider = provider(app.state());
-    if (from == to && provider != null) {
-      int here = from;
-      var all = statements(provider);
-      var part = all.around(from); // the statement the caret writes in, up to its terminator
-      var open = all.open() ? all.statements().getLast() : null; // none to end it
-      var comment = Statements.pieces(text, provider).stream()
-          .filter(x -> x.kind() == Statements.Piece.Kind.COMMENT && x.holds(here))
-          .findFirst();
-      // A block comment not closed, executable ones too, holds all after it: before its opener.
-      var unclosed = comment.filter(x -> x.open() && text.startsWith("/*", x.start()));
-      boolean inside = unclosed.isEmpty()
-          && all.statements().stream()
-              .anyMatch(x -> part.start() <= x.start()
-                  && x.start() < here
-                  && (here <= x.end() || !x.equals(open)));
-      int at = unclosed.isPresent()
-          ? unclosed.get().start()
-          : inside ? part.end() : comment.map(Statements.Piece::end).orElse(from);
-      var before = at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "";
-      var ending = ending(sql, provider);
-      put = before
-          + sql
-          + ending.terminator()
-          + (at < text.length() && text.charAt(at) != '\n' ? "\n" : "");
-      caret = before.length() + ending.caret();
-      from = at;
-      to = at;
-      if (open != null && open.start() < at) {
-        // Closed right after its last word before the entry, not after its comments.
-        int end = Math.min(open.end(), at);
-        while (end > open.start() && Character.isWhitespace(text.charAt(end - 1))) {
-          end--;
-        }
-        var closing = ";" + text.substring(end, at);
-        put = closing + put;
-        caret += closing.length();
-        from = end;
-      }
+    if (from != to || provider == null) {
+      editor.replace(from, to, sql, sql.stripTrailing().length()); // the caret after it
+      return;
     }
-    editor.replace(from, to, put, caret);
+    var all = statements(provider);
+    int at = place(all, provider, from);
+    var before = at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "";
+    var ending = ending(sql, provider);
+    var put = before
+        + sql
+        + ending.terminator()
+        + (at < text.length() && text.charAt(at) != '\n' ? "\n" : "");
+    int caret = before.length() + ending.caret();
+    int start = at;
+    var unterminated = all.open() ? all.statements().getLast() : null; // none to end it
+    if (unterminated != null && unterminated.start() < at) {
+      // Closed right after its last word before the entry, not after its comments.
+      int end = Math.min(unterminated.end(), at);
+      while (end > unterminated.start() && Character.isWhitespace(text.charAt(end - 1))) {
+        end--;
+      }
+      var closing = ";" + text.substring(end, at);
+      put = closing + put;
+      caret += closing.length();
+      start = end;
+    }
+    editor.replace(start, at, put, caret);
+  }
+
+  /**
+   * Where a statement inserted with the caret at {@code here} goes: after the statement the caret
+   * writes in, or after the comment it is in, else at the caret; before the opener of a block
+   * comment not closed, executable ones too, which holds all after it.
+   */
+  private int place(Statements all, Provider provider, int here) {
+    var part = all.around(here); // the statement the caret writes in, up to its terminator
+    var unterminated = all.open() ? all.statements().getLast() : null;
+    var comment = Statements.pieces(text, provider).stream()
+        .filter(x -> x.kind() == Statements.Piece.Kind.COMMENT && x.holds(here))
+        .findFirst();
+    var unclosed = comment.filter(x -> x.open() && text.startsWith("/*", x.start()));
+    if (unclosed.isPresent()) {
+      return unclosed.get().start();
+    }
+    boolean inside = all.statements().stream()
+        .anyMatch(x -> part.start() <= x.start()
+            && x.start() < here
+            && (here <= x.end() || !x.equals(unterminated)));
+    return inside ? part.end() : comment.map(Statements.Piece::end).orElse(here);
   }
 
   /**
@@ -3230,7 +3460,7 @@ final class ConsoleTab implements Tab {
                 .gap(t.space().m())
                 .child(Label.label(asked.text()).wrapText()),
             List.of(
-                button(SECONDARY, "Cancel", this::decline).key("confirm-cancel"),
+                button(SECONDARY, CANCEL_BUTTON, this::decline).key("confirm-cancel"),
                 button(PRIMARY, "Run anyway", () -> proceed(s), options).key("confirm-run")),
             this::decline)
         .key("run-question");
@@ -3254,7 +3484,7 @@ final class ConsoleTab implements Tab {
     var status = !connected() && !s.catalog.connected(id) ? "Not connected" : ran(s);
     // shortcut: Manual reads every result whole before showing it, as it may not stay open in a
     // transaction; read lazily in Manual too once giving up a read can keep the transaction.
-    return mode != Mode.MANUAL ? status : status + " · " + WHOLE;
+    return mode == Mode.MANUAL ? status + " · " + WHOLE : status;
   }
 
   static final String WHOLE = "Manual reads each result whole";
@@ -3264,21 +3494,29 @@ final class ConsoleTab implements Tab {
       return "Ready";
     }
     if (statements == 0 && !cancelled) {
-      return "Not run"; // the session could not be opened
+      return NOT_RUN; // the session could not be opened
     }
+    return how() + tally(keepsDocuments(s));
+  }
+
+  /** How the last run went, and its time on the server. */
+  private String how() {
     var ms = took.toMillis() + " ms";
-    var text = new StringBuilder();
     if (cancelled) {
-      text.append("Cancelled");
-    } else if (failedRun && statements == 1) {
-      text.append("Failed after ").append(ms);
-    } else {
-      text.append("Ran");
-      if (statements > 1) {
-        text.append(' ').append(statements).append(" statements");
-      }
-      text.append(" in ").append(ms).append(failedRun ? ", the last failed" : "");
+      return CANCELLED_TEXT;
     }
+    if (failedRun && statements == 1) {
+      return "Failed after " + ms;
+    }
+    return "Ran"
+        + (statements > 1 ? " " + counted(statements) : "")
+        + " in "
+        + ms
+        + (failedRun ? ", the last failed" : "");
+  }
+
+  /** The rows the last run's results read and changed, each after a " · ". */
+  private String tally(boolean whole) {
     long read = 0;
     long changed = 0;
     boolean rows = false;
@@ -3297,13 +3535,13 @@ final class ConsoleTab implements Tab {
         more |= o.more;
       }
     }
-    boolean whole = keepsDocuments(s);
+    var parts = new StringBuilder();
     if (rows) {
-      text.append(" · ").append(rows(read, whole)).append(more ? " so far" : "");
+      parts.append(" · ").append(rows(read, whole)).append(more ? " so far" : "");
     }
     if (counts) {
-      text.append(" · ").append(rows(changed, whole)).append(" changed");
+      parts.append(" · ").append(rows(changed, whole)).append(CHANGED);
     }
-    return text.toString();
+    return parts.toString();
   }
 }
