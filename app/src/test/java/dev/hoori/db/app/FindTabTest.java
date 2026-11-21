@@ -208,6 +208,8 @@ class FindTabTest {
     var running = c.tree("running");
     assertTrue(running.contains("role=progressbar label=\"Searching customers\""), running);
     assertTrue(running.contains("value=\"0%\""), running);
+    // Once the search has its call, which a cancel before it would take off the lane unrun.
+    CatalogTreeTest.eventually(() -> c.servers.calls.contains(key));
     c.run(app, "press role=button label=\"Cancel\"\nframe\n");
     gate.countDown();
     c.run(app, SETTLE + "snap cancelled\n");
@@ -226,6 +228,7 @@ class FindTabTest {
     var gate = c.servers.hold(key);
     c.run(app, "press #find-text\ntype \"42\"\nkey Enter\nframe\nadvance 1\nframe\n");
     c.run(app, "press role=radio label=\"Objects\"\nframe\nadvance 1\nframe\n");
+    CatalogTreeTest.eventually(() -> c.servers.calls.contains(key));
     c.run(app, "press role=button label=\"Cancel\"\nframe\n");
     gate.countDown();
     c.run(app, SETTLE + "press role=radio label=\"Data\"\nframe\nadvance 1\nframe\nsnap data\n");
