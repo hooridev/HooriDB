@@ -1006,9 +1006,11 @@ public final class PostgreSql implements Dialect {
       return (at < 0 ? type : type.substring(0, at)).strip();
     }
 
+    // In the database's collation, which is deterministic: a column's may not be, and then = goes
+    // by it whatever the case asked, and ILIKE and regular expressions refuse it.
     @Override
     public String asText(String column) {
-      return "CAST(" + column + " AS pg_catalog.text)";
+      return "CAST(" + column + " AS pg_catalog.text) COLLATE pg_catalog.\"default\"";
     }
 
     // LIKE and ILIKE as their operators, which take a backslash before a character that is meant

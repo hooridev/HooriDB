@@ -349,6 +349,34 @@ class FinderServerTest {
   }
 
   @Test
+  void aColumnOfANondeterministicCollationIsSearchedAsTheCaseAsks() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    try (var scratch = scratch(provider)) {
+      var ci = provider.quote(scratch.container().name()) + ".ci";
+      var fruit = scratch.name("fruit");
+      scratch.execute(
+          "CREATE COLLATION " + ci
+              + " (provider = icu, locale = 'und-u-ks-level2', deterministic = false)",
+          "CREATE TABLE " + fruit + " (id integer PRIMARY KEY, name text COLLATE " + ci + ")",
+          "INSERT INTO " + fruit + " VALUES (1, 'Apple'), (2, 'apple')");
+      var table = Finder.candidates(scratch.connection(), provider, scratch.container()).stream()
+          .filter(c -> c.table().name().equals("fruit"))
+          .findFirst()
+          .orElseThrow();
+      for (var match : Match.values()) {
+        for (boolean sensitive : List.of(true, false)) {
+          var hits = Finder.search(
+              scratch.connection(), provider, table, new Search("apple", match, sensitive), false);
+          assertEquals(
+              List.of(new Hits.Hit("name", sensitive ? 1 : 2)),
+              hits.columns(),
+              match + (sensitive ? ", case sensitive" : ""));
+        }
+      }
+    }
+  }
+
+  @Test
   void aPartitionIsSearchedWithItsTableAlone() throws Exception {
     try (var scratch = scratch(Provider.POSTGRESQL)) {
       var sale = scratch.name("sale");

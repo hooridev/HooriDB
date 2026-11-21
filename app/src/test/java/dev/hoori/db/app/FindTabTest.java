@@ -187,13 +187,15 @@ class FindTabTest {
     // query of its rows, which runs.
     c.servers.statement(
         "SELECT * FROM \"public\".\"customers\" WHERE CAST(\"name\" AS pg_catalog.text)"
+            + " COLLATE pg_catalog.\"default\""
             + " OPERATOR(pg_catalog.~~*) '%name 2%'",
         List.of(FakeServers.made(1, "id: integer", "name: text")));
     c.run(app, "press text=\"name\" clicks 2\nframe\n" + SETTLE + "snap rows\n");
     var console = c.tree("rows");
     assertTrue(
         console.contains("SELECT * FROM \\\"public\\\".\\\"customers\\\" WHERE CAST(\\\"name\\\" AS"
-            + " pg_catalog.text) OPERATOR(pg_catalog.~~*) '%name 2%'"),
+            + " pg_catalog.text) COLLATE pg_catalog.\\\"default\\\" OPERATOR(pg_catalog.~~*)"
+            + " '%name 2%'"),
         console);
     assertTrue(console.contains("\"Ran in 4 ms · 1 row\""), console);
   }

@@ -137,6 +137,7 @@ class FinderTest {
     var candidate = candidate(table, "name: text", "total: integer", "made: date");
     assertEquals(
         Optional.of("SELECT * FROM \"Public\".\"t\" WHERE CAST(\"name\" AS pg_catalog.text)"
+            + " COLLATE pg_catalog.\"default\""
             + " OPERATOR(pg_catalog.~~*) '%it''s 50\\%%'"),
         Finder.rows(
             Provider.POSTGRESQL,
