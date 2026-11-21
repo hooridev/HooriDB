@@ -17,9 +17,12 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * How PostgreSQL's objects are exported: their definitions built from its catalog, by its own
@@ -27,15 +30,30 @@ import java.util.Set;
  * pg_get_triggerdef}, {@code pg_get_constraintdef}, {@code pg_get_indexdef}), and what each needs
  * from {@code pg_depend}. Objects of extensions are left to their extension, an identity column's
  * sequence to its column, a partition's inherited constraints, indexes and triggers to its table.
+ * A materialized view is refreshed from its tables once their rows are in, as {@code pg_dump} does.
  *
  * <p>The snapshot's search path is empty, so that the server names every object with its schema,
  * and nothing a user created under the name of a function or operator of {@code pg_catalog} runs.
+ * It reads without row security, so that a table whose policies would hide rows from the user
+ * fails the export rather than leaving them out.
  */
 public final class PostgreSqlDump extends DumpDialect {
 
   private static final String CLASS = "'pg_catalog.pg_class'::pg_catalog.regclass";
   private static final String PROC = "'pg_catalog.pg_proc'::pg_catalog.regclass";
   private static final String TYPE = "'pg_catalog.pg_type'::pg_catalog.regclass";
+
+  // What the file's header sets, and its footer puts back from where the header kept it.
+  private static final List<String> SETTINGS = List.of(
+      "statement_timeout",
+      "lock_timeout",
+      "client_encoding",
+      "standard_conforming_strings",
+      "search_path",
+      "check_function_bodies",
+      "client_min_messages",
+      "IntervalStyle",
+      "DateStyle");
 
   public PostgreSqlDump() {
     // Nothing to set up.
@@ -48,16 +66,35 @@ public final class PostgreSqlDump extends DumpDialect {
 
   @Override
   void begin(Connection connection, Provider provider) throws QueryException {
-    autoCommit(connection, provider, false);
-    Sql.execute(connection, provider, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY");
-    Sql.rows(
-        connection,
-        provider,
-        "SELECT pg_catalog.set_config('search_path', '', true)",
-        rows -> rows.getString(1));
-    Sql.execute(connection, provider, "SET LOCAL IntervalStyle = 'postgres'");
-    Sql.execute(connection, provider, "SET LOCAL DateStyle = 'ISO, YMD'");
-    Sql.execute(connection, provider, "SET LOCAL extra_float_digits = 3");
+    try {
+      autoCommit(connection, provider, false);
+      Sql.execute(
+          connection, provider, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY");
+      Sql.rows(
+          connection,
+          provider,
+          "SELECT pg_catalog.set_config('search_path', '', true)",
+          rows -> rows.getString(1));
+      Sql.execute(connection, provider, "SET LOCAL row_security = off");
+      Sql.execute(connection, provider, "SET LOCAL IntervalStyle = 'postgres'");
+      Sql.execute(connection, provider, "SET LOCAL DateStyle = 'ISO, YMD'");
+      Sql.execute(connection, provider, "SET LOCAL extra_float_digits = 3");
+    } catch (QueryException e) {
+      // Where auto-commit went off, also as an interrupt cut its call short after it did.
+      throw Sql.undone(e, () -> {
+        if (!autoCommits(connection)) {
+          end(connection, provider);
+        }
+      });
+    }
+  }
+
+  private static boolean autoCommits(Connection connection) {
+    try {
+      return connection.getAutoCommit();
+    } catch (SQLException _) {
+      return false; // a connection that does not tell is ended all the same
+    }
   }
 
   // Rolled back, the transaction takes its settings with it.
@@ -105,10 +142,11 @@ public final class PostgreSqlDump extends DumpDialect {
         schemas.addAll(Sql.rows(
             connection,
             provider,
-            "SELECT n.nspname FROM pg_catalog.pg_namespace n"
-                + " WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'"
-                + notOfExtension("pg_catalog.pg_namespace", "n.oid")
-                + " ORDER BY n.nspname",
+            """
+            SELECT n.nspname FROM pg_catalog.pg_namespace n
+            WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+            %s
+            ORDER BY n.nspname""".formatted(notOfExtension("pg_catalog.pg_namespace", "n.oid")),
             rows -> new Schema(database, rows.getString(1), false)));
     }
     var found = new ArrayList<Found>();
@@ -120,48 +158,25 @@ public final class PostgreSqlDump extends DumpDialect {
 
   private static List<Found> found(Connection connection, Provider provider, Schema schema)
       throws QueryException {
-    var found = new ArrayList<Found>();
     var relations = Sql.rows(
-        connection,
-        provider,
-        "SELECT c.oid, c.relname, c.relkind, c.reltuples, pg_catalog.pg_table_size(c.oid)"
-            + " FROM pg_catalog.pg_class c"
-            + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
-            + " WHERE n.nspname = ? AND c.relkind IN ('r', 'p', 'v', 'm', 'S')"
-            + " AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d WHERE d.classid = " + CLASS
-            + " AND d.objid = c.oid AND d.objsubid = 0 AND d.deptype IN ('e', 'i'))"
-            + " ORDER BY c.relname",
-        rows -> {
-          var relkind = rows.getString(3);
-          var kind = switch (relkind) {
-            case "v", "m" -> Item.Kind.VIEW;
-            case "S" -> Item.Kind.SEQUENCE;
-            default -> Item.Kind.TABLE;
-          };
-          var item = Item.of(schema, kind, rows.getString(2));
-          if (!relkind.equals("r")) {
-            return new Found(Listed.of(item), rows.getLong(1));
-          }
-          // A table never analyzed counts -1 rows.
-          var estimate = rows.getDouble(4);
-          return new Found(
-              new Listed(
-                  item,
-                  estimate < 0 ? OptionalLong.empty() : OptionalLong.of((long) estimate),
-                  OptionalLong.of(rows.getLong(5)),
-                  true),
-              rows.getLong(1));
-        },
-        schema.name());
+        connection, provider, """
+        SELECT c.oid, c.relname, c.relkind, c.reltuples, pg_catalog.pg_table_size(c.oid)
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = ? AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
+        AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d WHERE d.classid = %s
+          AND d.objid = c.oid AND d.objsubid = 0 AND d.deptype IN ('e', 'i'))
+        ORDER BY c.relname""".formatted(CLASS), rows -> relation(schema, rows), schema.name());
     var routines = Sql.rows(
         connection,
         provider,
-        "SELECT p.oid, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid),"
-            + " p.prokind FROM pg_catalog.pg_proc p"
-            + " JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace"
-            + " WHERE n.nspname = ? AND p.prokind IN ('f', 'p')"
-            + notOfExtension("pg_catalog.pg_proc", "p.oid")
-            + " ORDER BY p.proname, 3",
+        """
+        SELECT p.oid, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), p.prokind
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = ? AND p.prokind IN ('f', 'p')
+        %s
+        ORDER BY p.proname, 3""".formatted(notOfExtension("pg_catalog.pg_proc", "p.oid")),
         rows -> new Found(
             Listed.of(new Item(
                 schema,
@@ -175,11 +190,12 @@ public final class PostgreSqlDump extends DumpDialect {
     var triggers = Sql.rows(
         connection,
         provider,
-        "SELECT t.oid, t.tgname, c.relname FROM pg_catalog.pg_trigger t"
-            + " JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid"
-            + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
-            + " WHERE n.nspname = ? AND NOT t.tgisinternal AND t.tgparentid = 0"
-            + " ORDER BY c.relname, t.tgname",
+        """
+        SELECT t.oid, t.tgname, c.relname FROM pg_catalog.pg_trigger t
+        JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = ? AND NOT t.tgisinternal AND t.tgparentid = 0
+        ORDER BY c.relname, t.tgname""",
         rows -> new Found(
             Listed.of(
                 new Item(schema, Item.Kind.TRIGGER, rows.getString(2), "", rows.getString(3))),
@@ -188,15 +204,40 @@ public final class PostgreSqlDump extends DumpDialect {
     var all = new ArrayList<Found>(relations);
     all.addAll(routines);
     all.addAll(triggers);
+    var found = new ArrayList<Found>();
     for (var kind : Item.Kind.values()) {
       all.stream().filter(f -> f.listed().item().kind() == kind).forEach(found::add);
     }
     return found;
   }
 
+  // A relation as listed: a table with the server's estimates, which a table never analyzed
+  // has as -1 rows.
+  private static Found relation(Schema schema, ResultSet rows) throws SQLException {
+    var relkind = rows.getString(3);
+    var kind = switch (relkind) {
+      case "v", "m" -> Item.Kind.VIEW;
+      case "S" -> Item.Kind.SEQUENCE;
+      default -> Item.Kind.TABLE;
+    };
+    var item = Item.of(schema, kind, rows.getString(2));
+    if (!relkind.equals("r")) {
+      return new Found(Listed.of(item), rows.getLong(1));
+    }
+    var estimate = rows.getDouble(4);
+    return new Found(
+        new Listed(
+            item,
+            estimate < 0 ? OptionalLong.empty() : OptionalLong.of((long) estimate),
+            OptionalLong.of(rows.getLong(5)),
+            true),
+        rows.getLong(1));
+  }
+
   private static String notOfExtension(String catalog, String oid) {
-    return " AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d WHERE d.classid = '" + catalog
-        + "'::pg_catalog.regclass AND d.objid = " + oid + " AND d.deptype = 'e')";
+    return """
+        AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d
+          WHERE d.classid = '%s'::pg_catalog.regclass AND d.objid = %s AND d.deptype = 'e')""".formatted(catalog, oid);
   }
 
   // What the definitions are read from: the objects of the schemas asked about, by item, and the
@@ -211,13 +252,7 @@ public final class PostgreSqlDump extends DumpDialect {
   List<Definition> define(Connection connection, Provider provider, List<Item> items)
       throws QueryException {
     var known = new Known();
-    var schemas = new ArrayList<Container>();
-    for (var item : items) {
-      if (!schemas.contains(item.container())) {
-        schemas.add(item.container());
-      }
-    }
-    for (var schema : schemas) {
+    for (var schema : items.stream().map(Item::container).distinct().toList()) {
       for (var found : found(connection, provider, schema)) {
         var item = found.listed().item();
         known.items.put(item, found);
@@ -253,6 +288,10 @@ public final class PostgreSqlDump extends DumpDialect {
 
   // The definition of one object.
   private static final class Defining {
+
+    private static final String SEQUENCE_OPTIONS = """
+        pg_catalog.format_type(s.seqtypid, NULL), s.seqstart, s.seqincrement, s.seqmin, s.seqmax,
+        s.seqcache, s.seqcycle""";
 
     private final Connection connection;
     private final Provider provider;
@@ -300,15 +339,20 @@ public final class PostgreSqlDump extends DumpDialect {
 
     private record Constraint(String name, String type, String definition, long refers) {}
 
+    // A table's constraints: those that go into its CREATE TABLE, and its foreign keys apart.
+    private record Constraints(
+        List<String> inline, List<String> keys, List<String> dropKeys, Set<Item> refers) {}
+
     // A table as CREATE TABLE writes it: its own columns and its constraints but foreign keys; a
     // partition as one of its table, whose columns it has; a child with the tables it inherits.
     Definition table() throws QueryException {
       var relation = one(
-          "SELECT c.relpersistence, c.relkind, pg_catalog.array_to_string(c.reloptions, ', '),"
-              + " CASE WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) END,"
-              + " CASE WHEN c.relispartition THEN pg_catalog.pg_get_expr(c.relpartbound, c.oid)"
-              + " END, pg_catalog.obj_description(c.oid, 'pg_class')"
-              + " FROM pg_catalog.pg_class c WHERE c.oid = " + oid,
+          """
+          SELECT c.relpersistence, c.relkind, pg_catalog.array_to_string(c.reloptions, ', '),
+            CASE WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) END,
+            CASE WHEN c.relispartition THEN pg_catalog.pg_get_expr(c.relpartbound, c.oid) END,
+            pg_catalog.obj_description(c.oid, 'pg_class')
+          FROM pg_catalog.pg_class c WHERE c.oid = %s""".formatted(oid),
           rows -> new Relation(
               rows.getString(1),
               rows.getString(2),
@@ -316,11 +360,10 @@ public final class PostgreSqlDump extends DumpDialect {
               rows.getString(4),
               rows.getString(5),
               rows.getString(6)));
-      var parents = rows(
-          "SELECT i.inhparent, i.inhparent::pg_catalog.regclass::pg_catalog.text"
-              + " FROM pg_catalog.pg_inherits i WHERE i.inhrelid = " + oid
-              + " ORDER BY i.inhseqno",
-          rows -> new Parent(rows.getLong(1), rows.getString(2)));
+      var parents =
+          rows("""
+          SELECT i.inhparent, i.inhparent::pg_catalog.regclass::pg_catalog.text
+          FROM pg_catalog.pg_inherits i WHERE i.inhrelid = %s ORDER BY i.inhseqno""".formatted(oid), rows -> new Parent(rows.getLong(1), rows.getString(2)));
       var needs = new HashSet<>(needs(CLASS));
       for (var parent : parents) {
         var of = known.relations.get(parent.oid());
@@ -340,67 +383,9 @@ public final class PostgreSqlDump extends DumpDialect {
           lines.add(column(column, restore));
         }
       }
-      var keys = new ArrayList<String>();
-      var dropKeys = new ArrayList<String>();
-      var refers = new HashSet<Item>();
-      // Constraints that a partition or a child has from its table come with it.
-      var constraints = rows(
-          "SELECT co.conname, co.contype, pg_catalog.pg_get_constraintdef(co.oid), co.confrelid"
-              + " FROM pg_catalog.pg_constraint co WHERE co.conrelid = " + oid
-              + " AND co.contype IN ('p', 'u', 'c', 'x', 'f') AND co.conislocal"
-              + " ORDER BY co.contype = 'f', co.contype = 'c', co.conname",
-          rows -> new Constraint(
-              rows.getString(1), rows.getString(2), rows.getString(3), rows.getLong(4)));
-      var only = relation.kind().equals("p") ? "" : "ONLY ";
-      var constrained = new ArrayList<String>();
-      for (var constraint : constraints) {
-        var named = "CONSTRAINT " + quote(constraint.name()) + " " + constraint.definition();
-        if (!constraint.type().equals("f")) {
-          constrained.add(named);
-          continue;
-        }
-        keys.add("ALTER TABLE " + only + name + " ADD " + named);
-        dropKeys.add("ALTER TABLE IF EXISTS " + only + name + " DROP CONSTRAINT IF EXISTS "
-            + quote(constraint.name()));
-        var to = known.relations.get(constraint.refers());
-        if (to != null && !to.equals(item)) {
-          refers.add(to);
-        }
-      }
-      var create = new StringBuilder("CREATE ");
-      if (relation.persistence().equals("u")) {
-        create.append("UNLOGGED ");
-      }
-      create.append("TABLE ").append(name);
-      if (relation.bound() != null && !parents.isEmpty()) {
-        // A partition's columns are its table's.
-        create.append(" PARTITION OF ").append(parents.getFirst().name());
-        if (!constrained.isEmpty()) {
-          create.append(" (\n    ").append(String.join(",\n    ", constrained)).append("\n)");
-        }
-        create.append(' ').append(relation.bound());
-      } else {
-        lines.addAll(constrained);
-        create.append(" (");
-        if (!lines.isEmpty()) {
-          create.append("\n    ").append(String.join(",\n    ", lines)).append('\n');
-        }
-        create.append(')');
-        if (!parents.isEmpty()) {
-          create
-              .append(" INHERITS (")
-              .append(String.join(", ", parents.stream().map(Parent::name).toList()))
-              .append(')');
-        }
-      }
-      if (relation.partitionKey() != null) {
-        create.append(" PARTITION BY ").append(relation.partitionKey());
-      }
-      if (relation.options() != null && !relation.options().isEmpty()) {
-        create.append(" WITH (").append(relation.options()).append(')');
-      }
+      var constraints = constraints(relation.kind().equals("p") ? "" : "ONLY ");
       var statements = new ArrayList<String>();
-      statements.add(create.toString());
+      statements.add(created(relation, parents, lines, constraints.inline()));
       if (relation.comment() != null) {
         statements.add("COMMENT ON TABLE " + name + " IS " + literal(relation.comment()));
       }
@@ -411,12 +396,82 @@ public final class PostgreSqlDump extends DumpDialect {
           statements,
           false,
           indexes(),
-          keys,
-          dropKeys,
+          constraints.keys(),
+          constraints.dropKeys(),
           "DROP TABLE IF EXISTS " + name,
           restore,
           needs,
-          refers);
+          constraints.refers());
+    }
+
+    // Those that a partition or a child has from its table come with it.
+    private Constraints constraints(String only) throws QueryException {
+      var constraints = rows(
+          """
+          SELECT co.conname, co.contype, pg_catalog.pg_get_constraintdef(co.oid), co.confrelid
+          FROM pg_catalog.pg_constraint co WHERE co.conrelid = %s
+          AND co.contype IN ('p', 'u', 'c', 'x', 'f') AND co.conislocal
+          ORDER BY co.contype = 'f', co.contype = 'c', co.conname""".formatted(oid),
+          rows -> new Constraint(
+              rows.getString(1), rows.getString(2), rows.getString(3), rows.getLong(4)));
+      var inline = new ArrayList<String>();
+      var keys = new ArrayList<String>();
+      var dropKeys = new ArrayList<String>();
+      var refers = new HashSet<Item>();
+      for (var constraint : constraints) {
+        var named = "CONSTRAINT " + quote(constraint.name()) + " " + constraint.definition();
+        if (!constraint.type().equals("f")) {
+          inline.add(named);
+          continue;
+        }
+        keys.add("ALTER TABLE " + only + name + " ADD " + named);
+        dropKeys.add("ALTER TABLE IF EXISTS " + only + name + " DROP CONSTRAINT IF EXISTS "
+            + quote(constraint.name()));
+        var to = known.relations.get(constraint.refers());
+        if (to != null) {
+          refers.add(to);
+        }
+      }
+      return new Constraints(inline, keys, dropKeys, refers);
+    }
+
+    // The CREATE TABLE itself.
+    private String created(
+        Relation relation, List<Parent> parents, List<String> lines, List<String> constraints) {
+      var create = new StringBuilder("CREATE ");
+      if (relation.persistence().equals("u")) {
+        create.append("UNLOGGED ");
+      }
+      create.append("TABLE ").append(name);
+      if (relation.bound() != null && !parents.isEmpty()) {
+        // A partition's columns are its table's.
+        create.append(" PARTITION OF ").append(parents.getFirst().name());
+        if (!constraints.isEmpty()) {
+          create.append(" (\n    ").append(String.join(",\n    ", constraints)).append("\n)");
+        }
+        create.append(' ').append(relation.bound());
+      } else {
+        var all = new ArrayList<>(lines);
+        all.addAll(constraints);
+        create.append(" (");
+        if (!all.isEmpty()) {
+          create.append("\n    ").append(String.join(",\n    ", all)).append('\n');
+        }
+        create.append(')');
+        if (!parents.isEmpty()) {
+          create
+              .append(" INHERITS (")
+              .append(parents.stream().map(Parent::name).collect(Collectors.joining(", ")))
+              .append(')');
+        }
+      }
+      if (relation.partitionKey() != null) {
+        create.append(" PARTITION BY ").append(relation.partitionKey());
+      }
+      if (relation.options() != null && !relation.options().isEmpty()) {
+        create.append(" WITH (").append(relation.options()).append(')');
+      }
+      return create.toString();
     }
 
     // A column as CREATE TABLE writes it; an identity column's value goes into what restores.
@@ -433,14 +488,9 @@ public final class PostgreSqlDump extends DumpDialect {
         line.append(column.identity().equals("a") ? " GENERATED ALWAYS" : " GENERATED BY DEFAULT")
             .append(" AS IDENTITY");
         if (column.sequence() != null) {
-          var options = one(
-              "SELECT " + SEQUENCE_OPTIONS + " FROM pg_catalog.pg_sequence s"
-                  + " WHERE s.seqrelid = pg_catalog.to_regclass(" + literal(column.sequence())
-                  + ")",
-              rows -> options(rows, false));
           line.append(" (SEQUENCE NAME ")
               .append(column.sequence())
-              .append(options)
+              .append(identityOptions(column.sequence()))
               .append(')');
           restore.add(value(column.sequence()));
         }
@@ -453,27 +503,28 @@ public final class PostgreSqlDump extends DumpDialect {
       return line.toString();
     }
 
+    private String identityOptions(String sequence) throws QueryException {
+      return one("""
+          SELECT %s FROM pg_catalog.pg_sequence s
+          WHERE s.seqrelid = pg_catalog.to_regclass(%s)""".formatted(SEQUENCE_OPTIONS, literal(sequence)), rows -> options(rows, false));
+    }
+
     // The sequences that its columns own, where they go too.
     private List<String> owned() throws QueryException {
-      return rows(
-              "SELECT d.objid, a.attname FROM pg_catalog.pg_depend d"
-                  + " JOIN pg_catalog.pg_class s ON s.oid = d.objid AND s.relkind = 'S'"
-                  + " JOIN pg_catalog.pg_attribute a"
-                  + " ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid"
-                  + " WHERE d.classid = " + CLASS + " AND d.refclassid = " + CLASS
-                  + " AND d.refobjid = " + oid + " AND d.deptype = 'a'"
-                  + " ORDER BY a.attnum",
-              rows -> {
-                var sequence = known.relations.get(rows.getLong(1));
-                return sequence != null && chosen.contains(sequence)
-                    ? "ALTER SEQUENCE "
-                        + qualified(provider, sequence.container().name(), sequence.name())
-                        + " OWNED BY " + name + "." + quote(rows.getString(2))
-                    : "";
-              })
-          .stream()
-          .filter(s -> !s.isEmpty())
-          .toList();
+      return Sql.some(connection, provider, """
+          SELECT d.objid, a.attname FROM pg_catalog.pg_depend d
+          JOIN pg_catalog.pg_class s ON s.oid = d.objid AND s.relkind = 'S'
+          JOIN pg_catalog.pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
+          WHERE d.classid = %1$s AND d.refclassid = %1$s AND d.refobjid = %2$s
+          AND d.deptype = 'a'
+          ORDER BY a.attnum""".formatted(CLASS, oid), rows -> {
+        var column = quote(rows.getString(2));
+        return Optional.ofNullable(known.relations.get(rows.getLong(1)))
+            .filter(chosen::contains)
+            .map(sequence -> "ALTER SEQUENCE "
+                + qualified(provider, sequence.container().name(), sequence.name())
+                + " OWNED BY " + name + "." + column);
+      });
     }
 
     private record Column(
@@ -490,23 +541,23 @@ public final class PostgreSqlDump extends DumpDialect {
 
     private List<Column> columns() throws QueryException {
       return rows(
-          "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull,"
-              + " pg_catalog.pg_get_expr(d.adbin, d.adrelid), a.attidentity, a.attgenerated,"
-              + " CASE WHEN a.attcollation <> t.typcollation AND a.attcollation <> 0 THEN"
-              + " (SELECT pg_catalog.quote_ident(cn.nspname) || '.'"
-              + " || pg_catalog.quote_ident(co.collname)"
-              + " FROM pg_catalog.pg_collation co"
-              + " JOIN pg_catalog.pg_namespace cn ON cn.oid = co.collnamespace"
-              + " WHERE co.oid = a.attcollation) END,"
-              + " pg_catalog.col_description(a.attrelid, a.attnum), a.attislocal,"
-              + " CASE WHEN a.attidentity <> '' THEN pg_catalog.pg_get_serial_sequence("
-              + "a.attrelid::pg_catalog.regclass::pg_catalog.text, a.attname) END"
-              + " FROM pg_catalog.pg_attribute a"
-              + " JOIN pg_catalog.pg_type t ON t.oid = a.atttypid"
-              + " LEFT JOIN pg_catalog.pg_attrdef d"
-              + " ON d.adrelid = a.attrelid AND d.adnum = a.attnum"
-              + " WHERE a.attrelid = " + oid + " AND a.attnum > 0 AND NOT a.attisdropped"
-              + " ORDER BY a.attnum",
+          """
+          SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull,
+            pg_catalog.pg_get_expr(d.adbin, d.adrelid), a.attidentity, a.attgenerated,
+            CASE WHEN a.attcollation <> t.typcollation AND a.attcollation <> 0 THEN
+              (SELECT pg_catalog.quote_ident(cn.nspname) || '.'
+                || pg_catalog.quote_ident(co.collname)
+              FROM pg_catalog.pg_collation co
+              JOIN pg_catalog.pg_namespace cn ON cn.oid = co.collnamespace
+              WHERE co.oid = a.attcollation) END,
+            pg_catalog.col_description(a.attrelid, a.attnum), a.attislocal,
+            CASE WHEN a.attidentity <> '' THEN pg_catalog.pg_get_serial_sequence(
+              a.attrelid::pg_catalog.regclass::pg_catalog.text, a.attname) END
+          FROM pg_catalog.pg_attribute a
+          JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+          LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+          WHERE a.attrelid = %s AND a.attnum > 0 AND NOT a.attisdropped
+          ORDER BY a.attnum""".formatted(oid),
           rows -> new Column(
               rows.getString(1),
               rows.getString(2),
@@ -522,24 +573,25 @@ public final class PostgreSqlDump extends DumpDialect {
 
     // The indexes that no constraint makes, nor a partitioned table's for its partition.
     private List<String> indexes() throws QueryException {
-      return rows(
-          "SELECT pg_catalog.pg_get_indexdef(i.indexrelid) FROM pg_catalog.pg_index i"
-              + " JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid"
-              + " WHERE i.indrelid = " + oid + " AND NOT ic.relispartition"
-              + " AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint co"
-              + " WHERE co.conindid = i.indexrelid AND co.conrelid = i.indrelid"
-              + " AND co.contype IN ('p', 'u', 'x'))"
-              + " ORDER BY ic.relname",
-          rows -> rows.getString(1));
+      return rows("""
+          SELECT pg_catalog.pg_get_indexdef(i.indexrelid) FROM pg_catalog.pg_index i
+          JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+          WHERE i.indrelid = %s AND NOT ic.relispartition
+          AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint co
+            WHERE co.conindid = i.indexrelid AND co.conrelid = i.indrelid
+            AND co.contype IN ('p', 'u', 'x'))
+          ORDER BY ic.relname""".formatted(oid), rows -> rows.getString(1));
     }
 
     private record View(String kind, String options, String definition, String comment) {}
 
+    // A materialized view without its rows, which its refresh gives after the tables' rows.
     Definition view() throws QueryException {
       var view = one(
-          "SELECT c.relkind, pg_catalog.array_to_string(c.reloptions, ', '),"
-              + " pg_catalog.pg_get_viewdef(c.oid), pg_catalog.obj_description(c.oid, 'pg_class')"
-              + " FROM pg_catalog.pg_class c WHERE c.oid = " + oid,
+          """
+          SELECT c.relkind, pg_catalog.array_to_string(c.reloptions, ', '),
+            pg_catalog.pg_get_viewdef(c.oid), pg_catalog.obj_description(c.oid, 'pg_class')
+          FROM pg_catalog.pg_class c WHERE c.oid = %s""".formatted(oid),
           rows ->
               new View(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4)));
       var materialized = view.kind().equals("m");
@@ -575,8 +627,9 @@ public final class PostgreSqlDump extends DumpDialect {
 
     Definition sequence() throws QueryException {
       var sequence = one(
-          "SELECT " + SEQUENCE_OPTIONS + ", pg_catalog.obj_description(s.seqrelid, 'pg_class')"
-              + " FROM pg_catalog.pg_sequence s WHERE s.seqrelid = " + oid,
+          """
+          SELECT %s, pg_catalog.obj_description(s.seqrelid, 'pg_class')
+          FROM pg_catalog.pg_sequence s WHERE s.seqrelid = %s""".formatted(SEQUENCE_OPTIONS, oid),
           rows -> new Sequence(options(rows, true), rows.getString(8)));
       var statements = new ArrayList<String>();
       statements.add("CREATE SEQUENCE " + name + sequence.options());
@@ -607,10 +660,10 @@ public final class PostgreSqlDump extends DumpDialect {
     private record Routine(String definition, String comment) {}
 
     Definition routine() throws QueryException {
-      var routine = one(
-          "SELECT pg_catalog.pg_get_functiondef(p.oid), pg_catalog.obj_description(p.oid,"
-              + " 'pg_proc') FROM pg_catalog.pg_proc p WHERE p.oid = " + oid,
-          rows -> new Routine(rows.getString(1), rows.getString(2)));
+      var routine =
+          one("""
+          SELECT pg_catalog.pg_get_functiondef(p.oid), pg_catalog.obj_description(p.oid, 'pg_proc')
+          FROM pg_catalog.pg_proc p WHERE p.oid = %s""".formatted(oid), rows -> new Routine(rows.getString(1), rows.getString(2)));
       var kind = item.kind() == Item.Kind.PROCEDURE ? "PROCEDURE " : "FUNCTION ";
       var signature = name + "(" + item.arguments() + ")";
       var statements = new ArrayList<String>();
@@ -635,8 +688,9 @@ public final class PostgreSqlDump extends DumpDialect {
 
     Definition trigger() throws QueryException {
       var trigger = one(
-          "SELECT pg_catalog.pg_get_triggerdef(t.oid), t.tgenabled, t.tgfoid, t.tgrelid"
-              + " FROM pg_catalog.pg_trigger t WHERE t.oid = " + oid,
+          """
+          SELECT pg_catalog.pg_get_triggerdef(t.oid), t.tgenabled, t.tgfoid, t.tgrelid
+          FROM pg_catalog.pg_trigger t WHERE t.oid = %s""".formatted(oid),
           rows ->
               new Trigger(rows.getString(1), rows.getString(2), rows.getLong(3), rows.getLong(4)));
       var table = qualified(provider, item.container().name(), item.table());
@@ -671,51 +725,45 @@ public final class PostgreSqlDump extends DumpDialect {
     // its columns' defaults and its constraints but foreign keys: relations, routines, and a
     // relation by its row type.
     private Set<Item> needs(String own) throws QueryException {
-      var refs = rows(
-          "SELECT DISTINCT d.refclassid = " + PROC + ","
-              + " CASE WHEN d.refclassid = " + TYPE + " THEN t.typrelid ELSE d.refobjid END"
-              + " FROM pg_catalog.pg_depend d"
-              + " LEFT JOIN pg_catalog.pg_type t"
-              + " ON t.oid = d.refobjid AND d.refclassid = " + TYPE
-              + " WHERE d.deptype = 'n' AND d.refclassid IN (" + CLASS + ", " + PROC + ", " + TYPE
-              + ") AND ((d.classid = " + own + " AND d.objid = " + oid + ")"
-              + " OR (d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid IN"
-              + " (SELECT r.oid FROM pg_catalog.pg_rewrite r WHERE r.ev_class = " + oid + "))"
-              + " OR (d.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass AND d.objid IN"
-              + " (SELECT a.oid FROM pg_catalog.pg_attrdef a WHERE a.adrelid = " + oid + "))"
-              + " OR (d.classid = 'pg_catalog.pg_constraint'::pg_catalog.regclass AND d.objid IN"
-              + " (SELECT c.oid FROM pg_catalog.pg_constraint c WHERE c.conrelid = " + oid
-              + " AND c.contype <> 'f')))",
-          rows -> {
-            var by = rows.getBoolean(1) ? known.routines : known.relations;
-            var ref = by.get(rows.getLong(2));
-            return ref == null ? item : ref;
-          });
+      var refs = rows("""
+          SELECT DISTINCT d.refclassid = %2$s,
+            CASE WHEN d.refclassid = %3$s THEN t.typrelid ELSE d.refobjid END
+          FROM pg_catalog.pg_depend d
+          LEFT JOIN pg_catalog.pg_type t ON t.oid = d.refobjid AND d.refclassid = %3$s
+          WHERE d.deptype = 'n' AND d.refclassid IN (%1$s, %2$s, %3$s)
+          AND ((d.classid = %4$s AND d.objid = %5$s)
+            OR (d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid IN
+              (SELECT r.oid FROM pg_catalog.pg_rewrite r WHERE r.ev_class = %5$s))
+            OR (d.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass AND d.objid IN
+              (SELECT a.oid FROM pg_catalog.pg_attrdef a WHERE a.adrelid = %5$s))
+            OR (d.classid = 'pg_catalog.pg_constraint'::pg_catalog.regclass AND d.objid IN
+              (SELECT c.oid FROM pg_catalog.pg_constraint c WHERE c.conrelid = %5$s
+                AND c.contype <> 'f')))""".formatted(CLASS, PROC, TYPE, own, oid), rows -> {
+        var by = rows.getBoolean(1) ? known.routines : known.relations;
+        var ref = by.get(rows.getLong(2));
+        return ref == null ? item : ref;
+      });
       var needs = new HashSet<>(refs);
       needs.remove(item);
       return needs;
     }
-  }
 
-  private static final String SEQUENCE_OPTIONS =
-      "pg_catalog.format_type(s.seqtypid, NULL), s.seqstart, s.seqincrement, s.seqmin,"
-          + " s.seqmax, s.seqcache, s.seqcycle";
+    // A sequence's options as CREATE SEQUENCE writes them, its type only where asked: an identity
+    // column's sequence has its column's.
+    private static String options(ResultSet rows, boolean type) throws SQLException {
+      return (type ? " AS " + rows.getString(1) : "")
+          + " START WITH " + rows.getString(2)
+          + " INCREMENT BY " + rows.getString(3)
+          + " MINVALUE " + rows.getString(4)
+          + " MAXVALUE " + rows.getString(5)
+          + " CACHE " + rows.getString(6)
+          + (rows.getBoolean(7) ? " CYCLE" : " NO CYCLE");
+    }
 
-  // A sequence's options as CREATE SEQUENCE writes them, its type only where asked: an identity
-  // column's sequence has its column's.
-  private static String options(ResultSet rows, boolean type) throws SQLException {
-    return (type ? " AS " + rows.getString(1) : "")
-        + " START WITH " + rows.getString(2)
-        + " INCREMENT BY " + rows.getString(3)
-        + " MINVALUE " + rows.getString(4)
-        + " MAXVALUE " + rows.getString(5)
-        + " CACHE " + rows.getString(6)
-        + (rows.getBoolean(7) ? " CYCLE" : " NO CYCLE");
-  }
-
-  private static String withoutTerminator(String sql) {
-    var trimmed = sql.strip();
-    return trimmed.endsWith(";") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
+    private static String withoutTerminator(String sql) {
+      var trimmed = sql.strip();
+      return trimmed.endsWith(";") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
+    }
   }
 
   private static String qualified(Provider provider, String schema, String name) {
@@ -727,19 +775,21 @@ public final class PostgreSqlDump extends DumpDialect {
   // The rows of the table itself, not those of its children; of each column that is not
   // generated, a value of a kind the literal writes as such, otherwise the server's text.
   @Override
-  Data data(Connection connection, Provider provider, Item table) throws QueryException {
+  Optional<Data> data(Connection connection, Provider provider, Item table) throws QueryException {
     var name = qualified(provider, table.container().name(), table.name());
     var read = Sql.one(
         connection,
         provider,
         table.shown(),
-        "SELECT c.relkind, pg_catalog.array_agg(pg_catalog.quote_ident(a.attname)"
-            + " ORDER BY a.attnum) FILTER (WHERE a.attgenerated = ''),"
-            + " pg_catalog.bool_or(a.attidentity = 'a')"
-            + " FROM pg_catalog.pg_class c"
-            + " LEFT JOIN pg_catalog.pg_attribute a"
-            + " ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped"
-            + " WHERE c.oid = pg_catalog.to_regclass(?) GROUP BY c.relkind",
+        """
+        SELECT c.relkind,
+          pg_catalog.array_agg(pg_catalog.quote_ident(a.attname) ORDER BY a.attnum)
+            FILTER (WHERE a.attgenerated = ''),
+          pg_catalog.bool_or(a.attidentity = 'a')
+        FROM pg_catalog.pg_class c
+        LEFT JOIN pg_catalog.pg_attribute a
+          ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+        WHERE c.oid = pg_catalog.to_regclass(?) GROUP BY c.relkind""",
         rows -> {
           var array = rows.getArray(2);
           var columns = array == null ? List.<String>of() : List.of((String[]) array.getArray());
@@ -747,10 +797,10 @@ public final class PostgreSqlDump extends DumpDialect {
         },
         name);
     if (read.kind().equals("p") || read.columns().isEmpty()) {
-      return null;
+      return Optional.empty();
     }
     var columns = String.join(", ", read.columns());
-    return new Data(
+    return Optional.of(new Data(
         "SELECT " + columns + " FROM ONLY " + name,
         "INSERT INTO " + name + " (" + columns + ")"
             + (read.always() ? " OVERRIDING SYSTEM VALUE" : "") + " VALUES",
@@ -760,7 +810,7 @@ public final class PostgreSqlDump extends DumpDialect {
             values.add(value(metadata.getColumnTypeName(i)));
           }
           return values;
-        });
+        }));
   }
 
   // NaN and the infinities of numeric and floating point types stay text, as the literal quotes.
@@ -794,9 +844,13 @@ public final class PostgreSqlDump extends DumpDialect {
     return Character.isDigit(number.charAt(number.length() - 1));
   }
 
+  // Each setting the session had is kept under a name of HooriDB's own, which the footer reads.
   @Override
   List<String> header(Dump.Options options) {
     return List.of(
+        "SELECT %s"
+            .formatted(
+                String.join(", ", SETTINGS.stream().map(PostgreSqlDump::kept).toList())),
         "SET statement_timeout = 0",
         "SET lock_timeout = 0",
         "SET client_encoding = 'UTF8'",
@@ -810,6 +864,29 @@ public final class PostgreSqlDump extends DumpDialect {
 
   @Override
   List<String> footer(Dump.Options options) {
+    return List.of("SELECT %s"
+        .formatted(
+            String.join(", ", SETTINGS.stream().map(PostgreSqlDump::putBack).toList())));
+  }
+
+  private static String kept(String setting) {
+    return "pg_catalog.set_config('hooridb.%s', pg_catalog.current_setting('%s'), false)"
+        .formatted(setting.toLowerCase(Locale.ROOT), setting);
+  }
+
+  private static String putBack(String setting) {
+    return "pg_catalog.set_config('%s', pg_catalog.current_setting('hooridb.%s'), false)"
+        .formatted(setting, setting.toLowerCase(Locale.ROOT));
+  }
+
+  // Each table's foreign keys go before it is dropped, as its dropKeys say.
+  @Override
+  List<String> beforeDrops() {
+    return List.of();
+  }
+
+  @Override
+  List<String> afterDrops() {
     return List.of();
   }
 

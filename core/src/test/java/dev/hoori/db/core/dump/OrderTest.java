@@ -39,6 +39,31 @@ class OrderTest {
   }
 
   @Test
+  void aCircleBreaksAtAKeyNeverBeforeWhatAnObjectNeeds() {
+    // The child inherits the parent, whose key refers to the child.
+    var child = definition(
+        Item.Kind.TABLE,
+        "a_child",
+        Set.of(item(Item.Kind.TABLE, "z_parent")),
+        Set.of(item(Item.Kind.TABLE, "z_parent")));
+    var parent =
+        definition(Item.Kind.TABLE, "z_parent", Set.of(), Set.of(item(Item.Kind.TABLE, "a_child")));
+    assertEquals(List.of("z_parent", "a_child"), names(Order.sorted(List.of(child, parent))));
+  }
+
+  @Test
+  void tablesWhoseKeysReferBackToThemselvesAreCircular() {
+    var a = definition(Item.Kind.TABLE, "a", Set.of(), Set.of(item(Item.Kind.TABLE, "b")));
+    var b = definition(Item.Kind.TABLE, "b", Set.of(), Set.of(item(Item.Kind.TABLE, "a")));
+    var c = definition(Item.Kind.TABLE, "c", Set.of(), Set.of(item(Item.Kind.TABLE, "b")));
+    var tree = definition(Item.Kind.TABLE, "tree", Set.of(), Set.of(item(Item.Kind.TABLE, "tree")));
+    assertEquals(
+        Set.of(
+            item(Item.Kind.TABLE, "a"), item(Item.Kind.TABLE, "b"), item(Item.Kind.TABLE, "tree")),
+        Order.circular(List.of(a, b, c, tree)));
+  }
+
+  @Test
   void whatIsNotGivenIsTakenForThere() {
     var view = definition(Item.Kind.VIEW, "v", Set.of(item(Item.Kind.TABLE, "gone")), Set.of());
     var sequence = definition(Item.Kind.SEQUENCE, "s", Set.of(), Set.of());

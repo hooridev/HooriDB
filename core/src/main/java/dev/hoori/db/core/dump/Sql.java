@@ -12,6 +12,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /** What an export sends, each through {@link Journal} as {@link Purpose#EXPORT}. */
 final class Sql {
@@ -58,10 +59,22 @@ final class Sql {
         }));
   }
 
-  /**
-   * The rows of the query, each as the row makes it, with the texts as its parameters; a row it
-   * makes null of is left out.
-   */
+  /** What puts back what a step changed, where the step failed. */
+  interface Undo {
+    void run() throws QueryException;
+  }
+
+  /** The failure, after the undo, whose own failure goes with it. */
+  static QueryException undone(QueryException failure, Undo undo) {
+    try {
+      undo.run();
+    } catch (QueryException e) {
+      failure.addSuppressed(e);
+    }
+    return failure;
+  }
+
+  /** The rows of the query, each as the row makes it, with the texts as its parameters. */
   static <T> List<T> rows(
       Connection connection, Provider provider, String sql, Row<T> row, String... parameters)
       throws QueryException {
@@ -77,14 +90,24 @@ final class Sql {
           try (var rows = statement.executeQuery()) {
             var read = new ArrayList<T>();
             while (rows.next()) {
-              var made = row.read(rows);
-              if (made != null) {
-                read.add(made);
-              }
+              read.add(row.read(rows));
             }
             return List.copyOf(read);
           }
         }));
+  }
+
+  /** The rows of the query that the row makes something of, as {@link #rows} reads them. */
+  static <T> List<T> some(
+      Connection connection,
+      Provider provider,
+      String sql,
+      Row<Optional<T>> row,
+      String... parameters)
+      throws QueryException {
+    return rows(connection, provider, sql, row, parameters).stream()
+        .flatMap(Optional::stream)
+        .toList();
   }
 
   /** The one row of the query, as the row makes it; not found where it gives none. */

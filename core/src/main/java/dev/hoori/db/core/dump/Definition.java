@@ -8,7 +8,7 @@ import java.util.Set;
  * The statements of SQL that create an object as it is now, each without its terminator, and what
  * it needs to be there before it. The parts are apart so that an export can put them where they
  * belong: the indexes and foreign keys of tables after their rows, and what sets a sequence's value
- * or fills a materialized view after all rows.
+ * or refreshes a materialized view after all rows.
  *
  * @param create what creates it, with its comments and what it owns, as a sequence its column
  * @param body whether {@code create} holds statements of their own, ended by semicolons, as a
@@ -20,10 +20,12 @@ import java.util.Set;
  *     in any order
  * @param drop what drops it where it exists
  * @param restore what gives it, after the rows, the state it has besides them: a sequence's value,
- *     that of a table's identity column, a materialized view's rows
+ *     that of a table's identity column; a materialized view's refresh, from its tables' rows as
+ *     they are then
  * @param needs the objects that must be there before it, as a view's tables; a table's foreign keys
  *     are not among them
- * @param refers the tables its foreign keys refer to, whose rows go first where they can
+ * @param refers the tables its foreign keys refer to, itself too where one does, whose rows go
+ *     first where they can
  */
 public record Definition(
     Item item,

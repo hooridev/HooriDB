@@ -44,6 +44,29 @@ class MySqlFamilyDumpTest {
   }
 
   @Test
+  void anIndexOnTheAutoIncrementColumnStaysInItsCreateTable() {
+    var created = MySqlFamilyDump.Created.of("""
+        CREATE TABLE `t` (
+          `id` int NOT NULL AUTO_INCREMENT COMMENT 'counted',
+          `k` int DEFAULT NULL,
+          KEY `by_id` (`id`,`k`),
+          KEY `by_k` (`k`),
+          KEY `by_sum` (((`id` + `k`)))
+        ) ENGINE=InnoDB""", "`t`");
+    assertEquals("""
+        CREATE TABLE `t` (
+          `id` int NOT NULL AUTO_INCREMENT COMMENT 'counted',
+          `k` int DEFAULT NULL,
+          KEY `by_id` (`id`,`k`)
+        ) ENGINE=InnoDB""", created.create());
+    assertEquals(
+        List.of(
+            "ALTER TABLE `t` ADD KEY `by_k` (`k`)",
+            "ALTER TABLE `t` ADD KEY `by_sum` (((`id` + `k`)))"),
+        created.indexes());
+  }
+
+  @Test
   void aDefinitionGoesWithoutItsDefiner() {
     assertEquals(
         "CREATE ALGORITHM=UNDEFINED SQL SECURITY DEFINER VIEW `v` AS select 1",
@@ -54,5 +77,8 @@ class MySqlFamilyDumpTest {
         "CREATE TRIGGER `t` BEFORE INSERT ON `x` FOR EACH ROW SET @a = 1",
         MySqlFamilyDump.withoutDefiner(
             "CREATE DEFINER=`admin` TRIGGER `t` BEFORE INSERT ON `x` FOR EACH ROW SET @a = 1"));
+    assertEquals(
+        "CREATE VIEW `v` AS select 1",
+        MySqlFamilyDump.withoutDefiner("CREATE VIEW `v` AS select 1"));
   }
 }

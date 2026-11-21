@@ -5,6 +5,7 @@ import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -14,18 +15,18 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Exports objects of a database to a file of SQL that creates them anew, with their rows or
@@ -39,8 +40,8 @@ import java.util.Objects;
  * provider's SQL ({@link dev.hoori.db.core.data.RowsDialect#literal}).
  *
  * <p>The file is written beside the one chosen under another name and takes its place only once it
- * is whole: a dump that fails or is cancelled leaves the chosen file as it was, and nothing of its
- * own.
+ * is whole, in one move: a dump that fails or is cancelled leaves the chosen file as it was, and
+ * nothing of its own.
  *
  * <p>Each call blocks, and runs through {@link Query}: an interrupt of the calling thread ends it
  * with {@link QueryException.Failure#CANCELLED}, or {@link QueryException.Failure#ABORTED} where
@@ -86,11 +87,14 @@ public final class Dump {
    * @param create whether the schemas, or the database where the provider has no schemas, are
    *     created where they do not exist, and the database gone to
    * @param rowsPerInsert how many rows each {@code INSERT} holds, at least 1
-   * @param transaction whether the rows go in one transaction, all or none
+   * @param transaction whether the rows go in one transaction, all or none; a table whose engine
+   *     keeps no transactions, as MyISAM, keeps what went into it before a failure all the same
    * @param noForeignKeyChecks whether the session that reads the file back checks no foreign keys,
    *     where {@link DumpDialect#foreignKeyChecks} says its servers let it
    * @param keysAfterData whether the tables' indexes and foreign keys are added after their rows,
-   *     which goes faster, rather than right after all tables
+   *     which goes faster, rather than right after all tables; the foreign keys of tables that
+   *     refer to each other in a circle, or a table to itself, follow the rows either way, as no
+   *     order of the rows suits them
    */
   public record Options(
       boolean drop,
@@ -115,7 +119,8 @@ public final class Dump {
    * What an export writes: objects of one database, what of them, and how.
    *
    * @param items the objects, at least one, each once; a routine or trigger whose objects are not
-   *     among them needs them where the file is read
+   *     among them needs them where the file is read. Of an export of data alone only the tables
+   *     and sequences count.
    */
   public record Choice(Database database, List<Item> items, Content content, Options options) {
 
@@ -133,12 +138,29 @@ public final class Dump {
         }
       }
     }
+
+    // What is defined: of data alone, what has rows or a value.
+    List<Item> defined() {
+      return content.structure()
+          ? items
+          : items.stream()
+              .filter(i -> i.kind() == Item.Kind.TABLE || i.kind() == Item.Kind.SEQUENCE)
+              .toList();
+    }
   }
 
   /** Told as the export goes: the object it writes now, and how many of a table's rows so far. */
   @FunctionalInterface
   public interface Progress {
     void at(Item item, long rows);
+
+    /**
+     * Asked once the file is whole, right before it takes the chosen one's place: false cancels
+     * the export instead, which leaves the chosen file as it was; after true the file is replaced.
+     */
+    default boolean replacing() {
+      return true;
+    }
   }
 
   /** What an export wrote: the file, its size, its objects and the rows of their tables. */
@@ -179,11 +201,12 @@ public final class Dump {
   }
 
   /**
-   * Writes the chosen objects to the file, which it replaces once it is whole.
+   * Writes the chosen objects to the file, which it replaces once it is whole and {@link
+   * Progress#replacing} lets it.
    *
    * @throws QueryException as {@link Query} reports it; {@link QueryException.Failure#NOT_FOUND}
    *     also where an object no longer exists
-   * @throws IOException where the file cannot be written
+   * @throws IOException where the file cannot be written, or not replaced in one move
    * @throws IllegalArgumentException if the connection is to another database
    */
   public static Written write(
@@ -199,21 +222,19 @@ public final class Dump {
       try (var out = Files.newBufferedWriter(part, StandardCharsets.UTF_8)) {
         written = new Writing(connection, provider, choice, out, progress).write(target);
       }
-      move(part, target);
+      var bytes = Files.size(part);
+      // The snapshot's end goes on after a cancel, which must not then find the file replaced.
+      if (Thread.currentThread().isInterrupted() || !progress.replacing()) {
+        throw QueryException.of(QueryException.Failure.CANCELLED, "");
+      }
+      // Beside the file, the move is the folder's own, which never leaves it half replaced.
+      Files.move(part, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
       done = true;
-      return new Written(target, Files.size(target), written.objects(), written.rows());
+      return new Written(target, bytes, written.objects(), written.rows());
     } finally {
       if (!done) {
         Files.deleteIfExists(part);
       }
-    }
-  }
-
-  private static void move(Path part, Path target) throws IOException {
-    try {
-      Files.move(part, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-    } catch (AtomicMoveNotSupportedException _) {
-      Files.move(part, target, StandardCopyOption.REPLACE_EXISTING);
     }
   }
 
@@ -242,6 +263,15 @@ public final class Dump {
       throw new IllegalArgumentException(
           "An export of " + database.name() + " on a connection to " + current);
     }
+  }
+
+  /** The text as lines of comments of SQL, each ended: no line of it is read as a statement. */
+  static String commented(String text) {
+    var lines = new StringBuilder();
+    for (var line : text.split("\\R", -1)) {
+      lines.append("-- ").append(line).append('\n');
+    }
+    return lines.toString();
   }
 
   // One export's writing, from the snapshot's start to its end.
@@ -286,73 +316,95 @@ public final class Dump {
     private Written written(Path target) throws QueryException, IOException {
       var content = choice.content();
       var options = choice.options();
-      var sorted = Order.sorted(dialect.define(connection, provider, choice.items()));
-      comment("Exported by HooriDB from " + provider.displayName() + ", database "
-          + choice.database().name() + ", at "
-          + Instant.now().truncatedTo(ChronoUnit.SECONDS) + ", in one snapshot");
-      comment(
-          switch (content) {
-            case STRUCTURE_AND_DATA -> "Structure and data";
-            case STRUCTURE -> "Structure only";
-            case DATA -> "Data only";
-          });
-      out.write('\n');
+      var sorted = Order.sorted(dialect.define(connection, provider, choice.defined()));
+      heading();
       statements(dialect.header(options));
       if (options.create()) {
-        var containers = new ArrayList<Container>();
-        for (var item : choice.items()) {
-          if (!containers.contains(item.container())) {
-            containers.add(item.container());
-          }
-        }
+        var containers = choice.items().stream().map(Item::container).distinct().toList();
         statements(dialect.create(connection, provider, containers));
       }
-      var triggers =
-          sorted.stream().filter(d -> d.item().kind() == Item.Kind.TRIGGER).toList();
       var created =
           sorted.stream().filter(d -> d.item().kind() != Item.Kind.TRIGGER).toList();
+      // Keys that no order of the rows suits wait for them, whenever the rows go.
+      var late =
+          content.data() && !options.keysAfterData() ? Order.circular(created) : Set.<Item>of();
       if (content.structure()) {
-        if (options.drop()) {
-          section("Drop what exists");
-          for (var definition : sorted) {
-            statements(definition.dropKeys());
-          }
-          for (var definition : sorted.reversed()) {
-            statement(definition.drop());
-          }
-        }
-        for (var definition : created) {
-          section(title(definition.item()));
-          create(definition);
-        }
-        if (!options.keysAfterData()) {
-          keys(created);
-        }
+        structure(sorted, created, late);
       }
       if (content.data()) {
         data(sorted);
       }
       if (content.structure()) {
-        if (options.keysAfterData()) {
-          keys(created);
-        }
-        if (content.data()) {
-          for (var definition : created) {
-            if (definition.item().kind() == Item.Kind.VIEW
-                && !definition.restore().isEmpty()) {
-              section("Rows of " + title(definition.item()));
-              statements(definition.restore());
-            }
-          }
-        }
-        for (var definition : triggers) {
-          section(title(definition.item()));
-          create(definition);
-        }
+        afterData(sorted, created, late);
       }
       out.write('\n');
       statements(dialect.footer(options));
       return new Written(target, 0, objects, rows);
+    }
+
+    private void heading() throws IOException {
+      comment("Exported by HooriDB from " + provider.displayName() + ", database "
+          + choice.database().name() + ", at "
+          + Instant.now().truncatedTo(ChronoUnit.SECONDS) + ", in one snapshot");
+      comment(
+          switch (choice.content()) {
+            case STRUCTURE_AND_DATA -> "Structure and data";
+            case STRUCTURE -> "Structure only";
+            case DATA -> "Data only";
+          });
+      out.write('\n');
+    }
+
+    // What exists goes first; then what creates the objects but triggers, with the indexes and
+    // keys where they do not wait for the rows.
+    private void structure(List<Definition> sorted, List<Definition> created, Set<Item> late)
+        throws IOException {
+      if (choice.options().drop()) {
+        section("Drop what exists");
+        statements(dialect.beforeDrops());
+        for (var definition : sorted) {
+          statements(definition.dropKeys());
+        }
+        for (var definition : sorted.reversed()) {
+          statement(definition.drop());
+        }
+        statements(dialect.afterDrops());
+      }
+      for (var definition : created) {
+        section(title(definition.item()));
+        create(definition);
+      }
+      if (!choice.options().keysAfterData()) {
+        indexes(created);
+        foreignKeys(created.stream().filter(d -> !late.contains(d.item())).toList());
+      }
+    }
+
+    // What waits for the rows: the indexes and keys, a materialized view's refresh, and the
+    // triggers, which would otherwise fire for each row.
+    private void afterData(List<Definition> sorted, List<Definition> created, Set<Item> late)
+        throws IOException {
+      if (choice.options().keysAfterData()) {
+        indexes(created);
+        foreignKeys(created);
+      } else {
+        foreignKeys(created.stream().filter(d -> late.contains(d.item())).toList());
+      }
+      if (choice.content().data()) {
+        for (var definition : created) {
+          if (definition.item().kind() == Item.Kind.VIEW
+              && !definition.restore().isEmpty()) {
+            section("Refresh of " + title(definition.item()) + ", from its tables as they are");
+            statements(definition.restore());
+          }
+        }
+      }
+      for (var definition : sorted) {
+        if (definition.item().kind() == Item.Kind.TRIGGER) {
+          section(title(definition.item()));
+          create(definition);
+        }
+      }
     }
 
     private void create(Definition definition) throws IOException {
@@ -370,13 +422,16 @@ public final class Dump {
       }
     }
 
-    private void keys(List<Definition> created) throws IOException {
+    private void indexes(List<Definition> created) throws IOException {
       for (var definition : created) {
         if (!definition.indexes().isEmpty()) {
           section("Indexes of " + title(definition.item()));
           statements(definition.indexes());
         }
       }
+    }
+
+    private void foreignKeys(List<Definition> created) throws IOException {
       for (var definition : created) {
         if (!definition.keys().isEmpty()) {
           section("Foreign keys of " + title(definition.item()));
@@ -388,26 +443,36 @@ public final class Dump {
     // The tables' rows in the order their keys refer to each other, then the values of what
     // counts with them: sequences and identity columns.
     private void data(List<Definition> sorted) throws QueryException, IOException {
-      var options = choice.options();
-      var transaction = options.transaction();
+      var transaction = choice.options().transaction();
       if (transaction) {
         out.write('\n');
         statement(dialect.beginTransaction());
       }
+      tables(sorted);
+      values(sorted);
+      if (transaction) {
+        out.write('\n');
+        statement("COMMIT");
+      }
+    }
+
+    private void tables(List<Definition> sorted) throws QueryException {
       for (var definition : sorted) {
         var item = definition.item();
-        if (item.kind() != Item.Kind.TABLE) {
-          continue;
-        }
-        if (!choice.content().structure()) {
-          objects++;
-        }
-        progress.at(item, 0);
-        var data = dialect.data(connection, provider, item);
-        if (data != null) {
-          rows(item, data);
+        if (item.kind() == Item.Kind.TABLE) {
+          if (!choice.content().structure()) {
+            objects++;
+          }
+          progress.at(item, 0);
+          var data = dialect.data(connection, provider, item);
+          if (data.isPresent()) {
+            rows(item, data.get());
+          }
         }
       }
+    }
+
+    private void values(List<Definition> sorted) throws IOException {
       for (var definition : sorted) {
         var kind = definition.item().kind();
         if ((kind == Item.Kind.TABLE || kind == Item.Kind.SEQUENCE)
@@ -419,56 +484,64 @@ public final class Dump {
           statements(definition.restore());
         }
       }
-      if (transaction) {
-        out.write('\n');
-        statement("COMMIT");
-      }
     }
 
     // The table's rows as they come, a portion at a time, straight into the file.
     private void rows(Item item, DumpDialect.Data data) throws QueryException {
-      var literals = provider.dialect().rows();
-      var perInsert = choice.options().rowsPerInsert();
       var session = provider.dialect().session();
-      var written = Journal.sql(
+      rows += Journal.sql(
           provider,
           Purpose.EXPORT,
           data.select(),
           n -> Outcome.rows(n),
           () -> Query.run(connection, provider, data.select(), statement -> {
             statement.setFetchSize(session.fetchSize(PORTION));
-            long n = 0;
             try (var result = statement.executeQuery()) {
-              var values = data.reader().values(result.getMetaData());
-              var line = new StringBuilder();
-              while (result.next()) {
-                line.setLength(0);
-                line.append(
-                    n % perInsert == 0 ? (n == 0 ? "" : ";\n") + data.insert() + "\n(" : ",\n(");
-                for (var i = 0; i < values.size(); i++) {
-                  if (i > 0) {
-                    line.append(", ");
-                  }
-                  line.append(literals.literal(values.get(i).read(result, i + 1)));
-                }
-                line.append(')');
-                if (n == 0) {
-                  write("\n-- Rows of " + title(item) + "\n");
-                }
-                write(line);
-                n++;
-                if (n % perInsert == 0) {
-                  progress.at(item, n);
-                }
-              }
+              return copied(item, data, result);
             }
-            if (n > 0) {
-              write(";\n");
-            }
-            progress.at(item, n);
-            return n;
           }));
-      rows += written;
+    }
+
+    // The rows of the result as INSERTs of so many rows each; how many went.
+    private long copied(Item item, DumpDialect.Data data, ResultSet result) throws SQLException {
+      var literals = provider.dialect().rows();
+      var perInsert = choice.options().rowsPerInsert();
+      var values = data.reader().values(result.getMetaData());
+      var line = new StringBuilder();
+      long n = 0;
+      while (result.next()) {
+        line.setLength(0);
+        if (n == 0) {
+          line.append('\n').append(commented("Rows of " + title(item)));
+        }
+        if (n % perInsert != 0) {
+          line.append(",\n(");
+        } else {
+          line.append(n == 0 ? "" : ";\n").append(data.insert()).append("\n(");
+        }
+        literals(line, values, literals, result);
+        write(line.append(')'));
+        n++;
+        if (n % perInsert == 0) {
+          progress.at(item, n);
+        }
+      }
+      if (n > 0) {
+        write(";\n");
+      }
+      progress.at(item, n);
+      return n;
+    }
+
+    private static void literals(
+        StringBuilder line, List<DumpDialect.Value> values, RowsDialect literals, ResultSet result)
+        throws SQLException {
+      for (var i = 0; i < values.size(); i++) {
+        if (i > 0) {
+          line.append(", ");
+        }
+        line.append(literals.literal(values.get(i).read(result, i + 1)));
+      }
     }
 
     // Writes from the query's thread, whose step throws only what a driver throws.
@@ -499,11 +572,7 @@ public final class Dump {
     }
 
     private void comment(String text) throws IOException {
-      for (var line : text.split("\\R", -1)) {
-        out.write("-- ");
-        out.write(line);
-        out.write('\n');
-      }
+      out.write(commented(text));
     }
 
     private void statements(List<String> statements) throws IOException {

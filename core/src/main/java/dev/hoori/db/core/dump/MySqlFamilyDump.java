@@ -8,15 +8,17 @@ import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 /**
  * How MariaDB's and MySQL's objects are exported: their definitions as {@code SHOW CREATE} gives
@@ -27,13 +29,20 @@ import java.util.regex.Pattern;
  *
  * <p>The snapshot reads in UTC, and the file's session writes in it, so that a {@code timestamp}
  * comes back as the same moment; it reads the file with backslashes as escapes and a 0 as a value
- * of an {@code AUTO_INCREMENT} column, as its literals are written.
+ * of an {@code AUTO_INCREMENT} column, as its literals are written. A table's rows are those of
+ * now: of a table versioned by the system, its history stays behind.
  */
 public final class MySqlFamilyDump extends DumpDialect {
 
   private static final String MODE = "NO_AUTO_VALUE_ON_ZERO";
-  private static final Pattern DEFINER =
-      Pattern.compile("DEFINER=`(?:[^`]|``)*`(?:@`(?:[^`]|``)*`)? ");
+  private static final String NO_DEFINITION =
+      "The server does not show this user the definition of ";
+
+  // The session's zone is kept on the server, for end() to put back, also where begin() did not
+  // get to keep it.
+  private static final String ZONE_BACK =
+      "SET SESSION time_zone = COALESCE(@hooridb_time_zone, @@SESSION.time_zone),"
+          + " @hooridb_time_zone = NULL";
 
   private final boolean sequences;
 
@@ -47,18 +56,22 @@ public final class MySqlFamilyDump extends DumpDialect {
     return true;
   }
 
-  // The session's zone is kept on the server, for end() to put back.
+  // Only REPEATABLE READ reads in one snapshot; SET TRANSACTION sets it for this transaction alone.
   @Override
   void begin(Connection connection, Provider provider) throws QueryException {
-    Sql.execute(
-        connection,
-        provider,
-        "SET @hooridb_time_zone = @@SESSION.time_zone, SESSION time_zone = '+00:00'");
     try {
+      Sql.execute(
+          connection,
+          provider,
+          "SET @hooridb_time_zone = @@SESSION.time_zone, SESSION time_zone = '+00:00'");
+    } catch (QueryException e) {
+      throw Sql.undone(e, () -> Sql.ending(connection, provider, ZONE_BACK));
+    }
+    try {
+      Sql.execute(connection, provider, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
       Sql.execute(connection, provider, "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY");
     } catch (QueryException e) {
-      Sql.execute(connection, provider, "SET SESSION time_zone = @hooridb_time_zone");
-      throw e;
+      throw Sql.undone(e, () -> end(connection, provider));
     }
   }
 
@@ -67,7 +80,7 @@ public final class MySqlFamilyDump extends DumpDialect {
     try {
       Sql.ending(connection, provider, "ROLLBACK");
     } finally {
-      Sql.ending(connection, provider, "SET SESSION time_zone = @hooridb_time_zone");
+      Sql.ending(connection, provider, ZONE_BACK);
     }
   }
 
@@ -80,35 +93,19 @@ public final class MySqlFamilyDump extends DumpDialect {
       throws QueryException {
     var database = container.database();
     var listed = new ArrayList<Listed>();
-    var tables = Sql.rows(
+    var tables = Sql.some(
         connection,
         provider,
-        "SELECT t.TABLE_NAME, t.TABLE_TYPE, t.TABLE_ROWS, t.DATA_LENGTH, e.TRANSACTIONS"
-            + " FROM information_schema.TABLES t"
-            + " LEFT JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE"
-            + " WHERE t.TABLE_SCHEMA = ? ORDER BY t.TABLE_NAME",
+        """
+        SELECT t.TABLE_NAME, t.TABLE_TYPE, t.TABLE_ROWS, t.DATA_LENGTH, e.TRANSACTIONS
+        FROM information_schema.TABLES t
+        LEFT JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE
+        WHERE t.TABLE_SCHEMA = ? ORDER BY t.TABLE_NAME""",
         rows -> {
-          var kind = switch (rows.getString(2)) {
-            case "BASE TABLE", "SYSTEM VERSIONED" -> Item.Kind.TABLE;
-            case "VIEW" -> Item.Kind.VIEW;
-            case "SEQUENCE" -> sequences ? Item.Kind.SEQUENCE : null;
-            default -> null;
-          };
-          if (kind == null) {
-            return null; // the server's own, or a temporary table
-          }
-          var item = Item.of(database, kind, rows.getString(1));
-          if (kind != Item.Kind.TABLE) {
-            return Listed.of(item);
-          }
-          var estimate = rows.getLong(3);
-          var unknown = rows.wasNull();
-          var bytes = rows.getLong(4);
-          return new Listed(
-              item,
-              unknown ? OptionalLong.empty() : OptionalLong.of(estimate),
-              rows.wasNull() ? OptionalLong.empty() : OptionalLong.of(bytes),
-              "YES".equalsIgnoreCase(rows.getString(5)));
+          var kind = kind(rows.getString(2));
+          return kind.isPresent()
+              ? Optional.of(listed(database, kind.get(), rows))
+              : Optional.<Listed>empty();
         },
         database.name());
     for (var kind : List.of(Item.Kind.TABLE, Item.Kind.VIEW, Item.Kind.SEQUENCE)) {
@@ -117,8 +114,9 @@ public final class MySqlFamilyDump extends DumpDialect {
     var routines = Sql.rows(
         connection,
         provider,
-        "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES"
-            + " WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_NAME",
+        """
+        SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES
+        WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_NAME""",
         rows -> Listed.of(Item.of(
             database,
             rows.getString(2).equalsIgnoreCase("PROCEDURE")
@@ -133,35 +131,59 @@ public final class MySqlFamilyDump extends DumpDialect {
     listed.addAll(Sql.rows(
         connection,
         provider,
-        "SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE FROM information_schema.TRIGGERS"
-            + " WHERE TRIGGER_SCHEMA = ? ORDER BY EVENT_OBJECT_TABLE, ACTION_TIMING,"
-            + " EVENT_MANIPULATION, ACTION_ORDER",
+        """
+        SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE FROM information_schema.TRIGGERS
+        WHERE TRIGGER_SCHEMA = ?
+        ORDER BY EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION, ACTION_ORDER""",
         rows -> Listed.of(
             new Item(database, Item.Kind.TRIGGER, rows.getString(1), "", rows.getString(2))),
         database.name()));
     return List.copyOf(listed);
   }
 
+  // What a table's type lists as; nothing of the server's own, or of a temporary table.
+  private Optional<Item.Kind> kind(String type) {
+    return switch (type) {
+      case "BASE TABLE", "SYSTEM VERSIONED" -> Optional.of(Item.Kind.TABLE);
+      case "VIEW" -> Optional.of(Item.Kind.VIEW);
+      case "SEQUENCE" -> sequences ? Optional.of(Item.Kind.SEQUENCE) : Optional.empty();
+      default -> Optional.empty();
+    };
+  }
+
+  private static Listed listed(Database database, Item.Kind kind, ResultSet rows)
+      throws SQLException {
+    var item = Item.of(database, kind, rows.getString(1));
+    if (kind != Item.Kind.TABLE) {
+      return Listed.of(item);
+    }
+    var estimate = rows.getLong(3);
+    var unknown = rows.wasNull();
+    var bytes = rows.getLong(4);
+    return new Listed(
+        item,
+        unknown ? OptionalLong.empty() : OptionalLong.of(estimate),
+        rows.wasNull() ? OptionalLong.empty() : OptionalLong.of(bytes),
+        "YES".equalsIgnoreCase(rows.getString(5)));
+  }
+
   @Override
   List<Definition> define(Connection connection, Provider provider, List<Item> items)
       throws QueryException {
-    var databases = new ArrayList<Database>();
-    for (var item : items) {
-      if (!databases.contains(item.container().database())) {
-        databases.add(item.container().database());
-      }
-    }
     var known = new HashSet<Item>();
     var references = new HashMap<String, Set<String>>(); // a table's, by its name
-    for (var database : databases) {
+    for (var database :
+        items.stream().map(i -> i.container().database()).distinct().toList()) {
       for (var listed : list(connection, provider, database)) {
         known.add(listed.item());
       }
       for (var reference : Sql.rows(
           connection,
           provider,
-          "SELECT TABLE_NAME, REFERENCED_TABLE_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS"
-              + " WHERE CONSTRAINT_SCHEMA = ? AND UNIQUE_CONSTRAINT_SCHEMA = ?",
+          """
+          SELECT TABLE_NAME, REFERENCED_TABLE_NAME
+          FROM information_schema.REFERENTIAL_CONSTRAINTS
+          WHERE CONSTRAINT_SCHEMA = ? AND UNIQUE_CONSTRAINT_SCHEMA = ?""",
           rows -> List.of(rows.getString(1), rows.getString(2)),
           database.name(),
           database.name())) {
@@ -190,12 +212,12 @@ public final class MySqlFamilyDump extends DumpDialect {
     var qualified = provider.quote(item.container().name()) + "." + name;
     return switch (item.kind()) {
       case TABLE -> {
-        var created = shown(connection, provider, item, "SHOW CREATE TABLE " + qualified, 2);
+        var created = shown(connection, provider, item, "SHOW CREATE TABLE " + qualified);
         var table = Created.of(created, name);
         var refers = new HashSet<Item>();
         for (var to : references.getOrDefault(item.name(), Set.of())) {
           var other = Item.of(item.container(), Item.Kind.TABLE, to);
-          if (!other.equals(item) && known.contains(other)) {
+          if (known.contains(other)) {
             refers.add(other);
           }
         }
@@ -213,7 +235,7 @@ public final class MySqlFamilyDump extends DumpDialect {
       }
       case VIEW -> {
         var created =
-            withoutDefiner(shown(connection, provider, item, "SHOW CREATE VIEW " + qualified, 2));
+            withoutDefiner(shown(connection, provider, item, "SHOW CREATE VIEW " + qualified));
         yield new Definition(
             item,
             List.of(created),
@@ -227,7 +249,7 @@ public final class MySqlFamilyDump extends DumpDialect {
             Set.of());
       }
       case SEQUENCE -> {
-        var created = shown(connection, provider, item, "SHOW CREATE SEQUENCE " + qualified, 2);
+        var created = shown(connection, provider, item, "SHOW CREATE SEQUENCE " + qualified);
         var next = Sql.one(
             connection,
             provider,
@@ -246,68 +268,96 @@ public final class MySqlFamilyDump extends DumpDialect {
             Set.of(),
             Set.of());
       }
-      case FUNCTION, PROCEDURE, TRIGGER -> {
-        var what = switch (item.kind()) {
-          case FUNCTION -> "FUNCTION ";
-          case PROCEDURE -> "PROCEDURE ";
-          default -> "TRIGGER ";
-        };
-        record Shown(String mode, String created) {}
-        var shown = Sql.one(
-            connection,
-            provider,
-            item.shown(),
-            "SHOW CREATE " + what + qualified,
-            rows -> new Shown(rows.getString(2), rows.getString(3)));
-        if (shown.created() == null) {
-          throw QueryException.of(
-              QueryException.Failure.ACCESS_DENIED,
-              "The server does not show this user the definition of " + item.shown());
-        }
-        var created = withoutDefiner(shown.created());
-        var needs = new HashSet<Item>();
-        if (item.kind() == Item.Kind.TRIGGER) {
-          var table = Item.of(item.container(), Item.Kind.TABLE, item.table());
-          if (known.contains(table)) {
-            needs.add(table);
-          }
-        }
-        // As it was created, in the SQL mode of its own, which reads its body.
-        yield new Definition(
-            item,
-            List.of(
-                "SET SESSION sql_mode = " + literal(provider, shown.mode()),
-                created,
-                "SET SESSION sql_mode = '" + MODE + "'"),
-            true,
-            List.of(),
-            List.of(),
-            List.of(),
-            "DROP " + what + "IF EXISTS " + name,
-            List.of(),
-            needs,
-            Set.of());
-      }
+      case FUNCTION, PROCEDURE, TRIGGER -> routine(connection, provider, item, known);
     };
   }
 
-  private static String shown(
-      Connection connection, Provider provider, Item item, String sql, int column)
+  // A routine or trigger as it was created, in the SQL mode of its own, which reads its body.
+  private static Definition routine(
+      Connection connection, Provider provider, Item item, Set<Item> known) throws QueryException {
+    var what = switch (item.kind()) {
+      case FUNCTION -> "FUNCTION ";
+      case PROCEDURE -> "PROCEDURE ";
+      default -> "TRIGGER ";
+    };
+    var name = provider.quote(item.name());
+    record Shown(String mode, String created) {}
+    var shown = Sql.one(
+        connection,
+        provider,
+        item.shown(),
+        "SHOW CREATE " + what + provider.quote(item.container().name()) + "." + name,
+        rows -> new Shown(rows.getString(2), rows.getString(3)));
+    if (shown.created() == null) {
+      throw QueryException.of(QueryException.Failure.ACCESS_DENIED, NO_DEFINITION + item.shown());
+    }
+    var needs = new HashSet<Item>();
+    if (item.kind() == Item.Kind.TRIGGER) {
+      var table = Item.of(item.container(), Item.Kind.TABLE, item.table());
+      if (known.contains(table)) {
+        needs.add(table);
+      }
+    }
+    return new Definition(
+        item,
+        List.of(
+            "SET SESSION sql_mode = " + literal(provider, shown.mode()),
+            withoutDefiner(shown.created()),
+            "SET SESSION sql_mode = '" + MODE + "'"),
+        true,
+        List.of(),
+        List.of(),
+        List.of(),
+        "DROP " + what + "IF EXISTS " + name,
+        List.of(),
+        needs,
+        Set.of());
+  }
+
+  // The definition in the second column of what SHOW CREATE shows.
+  private static String shown(Connection connection, Provider provider, Item item, String sql)
       throws QueryException {
     var shown = Sql.one(connection, provider, item.shown(), sql, rows -> {
-      var text = rows.getString(column);
+      var text = rows.getString(2);
       return text == null ? "" : text;
     });
     if (shown.isEmpty()) {
-      throw QueryException.of(
-          QueryException.Failure.ACCESS_DENIED,
-          "The server does not show this user the definition of " + item.shown());
+      throw QueryException.of(QueryException.Failure.ACCESS_DENIED, NO_DEFINITION + item.shown());
     }
     return shown;
   }
 
+  /** The definition without its {@code DEFINER=`user`@`host` }, where it has one. */
   static String withoutDefiner(String created) {
-    return DEFINER.matcher(created).replaceFirst("");
+    var at = created.indexOf("DEFINER=`");
+    if (at < 0) {
+      return created;
+    }
+    var end = quotedEnd(created, at + "DEFINER=".length());
+    if (end > 0 && created.startsWith("@`", end)) {
+      end = quotedEnd(created, end + 1);
+    }
+    return end > 0 && created.startsWith(" ", end)
+        ? created.substring(0, at) + created.substring(end + 1)
+        : created;
+  }
+
+  // Where the name quoted in backticks at the index ends, past its closing one; -1 for none.
+  private static int quotedEnd(String text, int at) {
+    if (!text.startsWith("`", at)) {
+      return -1;
+    }
+    var from = at + 1;
+    while (true) {
+      var close = text.indexOf('`', from);
+      if (close < 0) {
+        return -1;
+      }
+      if (!text.startsWith("``", close)) {
+        return close + 1;
+      }
+      from = close + 2;
+    }
   }
 
   // What a view needs: the tables, views and functions of its database whose quoted names it
@@ -334,13 +384,10 @@ public final class MySqlFamilyDump extends DumpDialect {
   /**
    * A {@code CREATE TABLE} as {@code SHOW CREATE TABLE} writes it, each column, key and constraint
    * on a line of its own: without the foreign keys and the indexes that are no keys, which follow
-   * as {@code ALTER TABLE}s.
+   * as {@code ALTER TABLE}s, but an index on the {@code AUTO_INCREMENT} column, which the table
+   * cannot be created without.
    */
   record Created(String create, List<String> indexes, List<String> keys) {
-
-    private static final Pattern INDEX =
-        Pattern.compile("(?:(?:FULLTEXT|SPATIAL|VECTOR) )?(?:KEY|INDEX) .*");
-    private static final Pattern KEY = Pattern.compile("CONSTRAINT `(?:[^`]|``)*` FOREIGN KEY .*");
 
     static Created of(String created, String name) {
       var lines = created.split("\n", -1);
@@ -356,19 +403,21 @@ public final class MySqlFamilyDump extends DumpDialect {
       if (open < 0 || close < open) {
         return new Created(created, List.of(), List.of());
       }
+      var inside = List.of(lines).subList(open + 1, close);
+      var counted = counted(inside);
       var kept = new ArrayList<String>();
       var indexes = new ArrayList<String>();
       var keys = new ArrayList<String>();
-      for (var i = open + 1; i < close; i++) {
-        var line = lines[i].strip();
-        var part = line.endsWith(",") ? line.substring(0, line.length() - 1) : line;
-        if (KEY.matcher(part).matches()) {
+      for (var line : inside) {
+        var part = withoutComma(line.strip());
+        if (foreignKey(part)) {
           keys.add("ALTER TABLE " + name + " ADD " + part);
-        } else if (INDEX.matcher(part).matches()) {
+        } else if (index(part)
+            .filter(first -> counted.isEmpty() || !first.equals(counted))
+            .isPresent()) {
           indexes.add("ALTER TABLE " + name + " ADD " + part);
         } else {
-          kept.add(
-              lines[i].endsWith(",") ? lines[i].substring(0, lines[i].length() - 1) : lines[i]);
+          kept.add(withoutComma(line));
         }
       }
       var create = new StringBuilder();
@@ -376,111 +425,157 @@ public final class MySqlFamilyDump extends DumpDialect {
         create.append(lines[i]).append('\n');
       }
       create.append(String.join(",\n", kept)).append('\n');
-      for (var i = close; i < lines.length; i++) {
-        create.append(lines[i]).append(i < lines.length - 1 ? "\n" : "");
-      }
+      create.append(String.join("\n", List.of(lines).subList(close, lines.length)));
       return new Created(create.toString(), List.copyOf(indexes), List.copyOf(keys));
+    }
+
+    private static String withoutComma(String line) {
+      return line.endsWith(",") ? line.substring(0, line.length() - 1) : line;
+    }
+
+    // The AUTO_INCREMENT column's quoted name, or empty: a column's line, which begins with its
+    // name, says so before its comment.
+    private static String counted(List<String> lines) {
+      for (var line : lines) {
+        var part = line.strip();
+        var end = quotedEnd(part, 0);
+        var comment = part.indexOf(" COMMENT '");
+        var before = comment < 0 ? part : part.substring(0, comment);
+        if (end > 0 && before.contains(" AUTO_INCREMENT")) {
+          return part.substring(0, end);
+        }
+      }
+      return "";
+    }
+
+    private static boolean foreignKey(String part) {
+      if (!part.startsWith("CONSTRAINT `")) {
+        return false;
+      }
+      var end = quotedEnd(part, "CONSTRAINT ".length());
+      return end > 0 && part.startsWith(" FOREIGN KEY ", end);
+    }
+
+    // Of an index that is no key, its first column's quoted name, empty for an expression.
+    private static Optional<String> index(String part) {
+      var rest = part;
+      for (var kind : List.of("FULLTEXT ", "SPATIAL ", "VECTOR ")) {
+        if (rest.startsWith(kind)) {
+          rest = rest.substring(kind.length());
+        }
+      }
+      var word = List.of("KEY ", "INDEX ").stream().filter(rest::startsWith).findFirst();
+      if (word.isEmpty()) {
+        return Optional.empty();
+      }
+      var named = quotedEnd(rest, word.get().length());
+      var column = named > 0 && rest.startsWith(" (", named) ? quotedEnd(rest, named + 2) : -1;
+      return Optional.of(column > 0 ? rest.substring(named + 2, column) : "");
     }
   }
 
   private record Column(String name, String type) {}
 
+  private record Selected(String select, Value value) {}
+
   // Of each column that is not generated, a value of a kind the literal writes as such: whole
   // numbers, decimals, floating point and binary data; dates and times as the server writes them
   // in the snapshot's zone, anything else as its text.
   @Override
-  Data data(Connection connection, Provider provider, Item table) throws QueryException {
-    var columns = Sql.rows(
+  Optional<Data> data(Connection connection, Provider provider, Item table) throws QueryException {
+    var columns = Sql.some(
         connection,
         provider,
-        "SELECT COLUMN_NAME, DATA_TYPE, EXTRA FROM information_schema.COLUMNS"
-            + " WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-        rows -> {
-          var extra = rows.getString(3) == null ? "" : rows.getString(3).toUpperCase(Locale.ROOT);
-          return extra.contains("VIRTUAL GENERATED")
-                  || extra.contains("STORED GENERATED")
-                  || extra.contains("PERSISTENT GENERATED")
-              ? null
-              : new Column(rows.getString(1), rows.getString(2).toLowerCase(Locale.ROOT));
-        },
+        """
+        SELECT COLUMN_NAME, DATA_TYPE, EXTRA FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION""",
+        rows -> generated(rows.getString(3))
+            ? Optional.empty()
+            : Optional.of(
+                new Column(rows.getString(1), rows.getString(2).toLowerCase(Locale.ROOT))),
         table.container().name(),
         table.name());
     if (columns.isEmpty()) {
-      return null;
+      return Optional.empty();
     }
     var selected = new ArrayList<String>();
     var names = new ArrayList<String>();
     var values = new ArrayList<Value>();
     for (var column : columns) {
       var quoted = provider.quote(column.name());
+      var read = selected(quoted, column.type());
       names.add(quoted);
-      switch (column.type()) {
-        case "tinyint", "smallint", "mediumint", "int", "integer", "bigint" -> {
-          selected.add(quoted);
-          values.add((rows, i) -> {
-            var text = rows.getString(i);
-            return text == null ? null : new BigInteger(text);
-          });
-        }
-        case "bit" -> {
-          selected.add("CAST(" + quoted + " AS UNSIGNED)");
-          values.add((rows, i) -> {
-            var text = rows.getString(i);
-            return text == null ? null : new BigInteger(text);
-          });
-        }
-        case "decimal", "numeric" -> {
-          selected.add(quoted);
-          values.add((rows, i) -> {
-            var text = rows.getString(i);
-            return text == null ? null : new BigDecimal(text);
-          });
-        }
-        case "float", "double", "real" -> {
-          selected.add(quoted);
-          values.add((rows, i) -> {
-            var text = rows.getString(i);
-            return text == null ? null : Double.valueOf(text);
-          });
-        }
-        case "binary",
-            "varbinary",
-            "tinyblob",
-            "blob",
-            "mediumblob",
-            "longblob",
-            "geometry",
-            "point",
-            "linestring",
-            "polygon",
-            "multipoint",
-            "multilinestring",
-            "multipolygon",
-            "geometrycollection",
-            "geomcollection" -> {
-          selected.add(quoted);
-          values.add((rows, i) -> {
-            var bytes = rows.getBytes(i);
-            return bytes == null ? null : new Binary(bytes, bytes.length);
-          });
-        }
-        default -> {
-          selected.add("CAST(" + quoted + " AS CHAR)");
-          values.add((rows, i) -> rows.getString(i));
-        }
-      }
+      selected.add(read.select());
+      values.add(read.value());
     }
     var name = provider.quote(table.name());
-    return new Data(
+    return Optional.of(new Data(
         "SELECT " + String.join(", ", selected) + " FROM "
             + provider.quote(table.container().name()) + "." + name,
         "INSERT INTO " + name + " (" + String.join(", ", names) + ") VALUES",
-        metadata -> values);
+        metadata -> values));
   }
 
+  private static boolean generated(String extra) {
+    var upper = extra == null ? "" : extra.toUpperCase(Locale.ROOT);
+    return upper.contains("VIRTUAL GENERATED")
+        || upper.contains("STORED GENERATED")
+        || upper.contains("PERSISTENT GENERATED");
+  }
+
+  private static Selected selected(String quoted, String type) {
+    return switch (type) {
+      case "tinyint", "smallint", "mediumint", "int", "integer", "bigint" ->
+        new Selected(quoted, MySqlFamilyDump::whole);
+      case "bit" -> new Selected("CAST(" + quoted + " AS UNSIGNED)", MySqlFamilyDump::whole);
+      case "decimal", "numeric" -> new Selected(quoted, MySqlFamilyDump::decimal);
+      case "float", "double", "real" -> new Selected(quoted, MySqlFamilyDump::floating);
+      case "binary",
+          "varbinary",
+          "tinyblob",
+          "blob",
+          "mediumblob",
+          "longblob",
+          "geometry",
+          "point",
+          "linestring",
+          "polygon",
+          "multipoint",
+          "multilinestring",
+          "multipolygon",
+          "geometrycollection",
+          "geomcollection" -> new Selected(quoted, MySqlFamilyDump::binary);
+      default -> new Selected("CAST(" + quoted + " AS CHAR)", ResultSet::getString);
+    };
+  }
+
+  private static Object whole(ResultSet rows, int i) throws SQLException {
+    var text = rows.getString(i);
+    return text == null ? null : new BigInteger(text);
+  }
+
+  private static Object decimal(ResultSet rows, int i) throws SQLException {
+    var text = rows.getString(i);
+    return text == null ? null : new BigDecimal(text);
+  }
+
+  private static Object floating(ResultSet rows, int i) throws SQLException {
+    var text = rows.getString(i);
+    return text == null ? null : Double.valueOf(text);
+  }
+
+  private static Object binary(ResultSet rows, int i) throws SQLException {
+    var bytes = rows.getBytes(i);
+    return bytes == null ? null : new Binary(bytes, bytes.length);
+  }
+
+  // The character set and the collation that SET NAMES changes go back too.
   @Override
   List<String> header(Dump.Options options) {
     var header = new ArrayList<>(List.of(
+        "SET @HOORIDB_CHARACTER_SET_CLIENT = @@SESSION.character_set_client,"
+            + " @HOORIDB_CHARACTER_SET_RESULTS = @@SESSION.character_set_results,"
+            + " @HOORIDB_COLLATION_CONNECTION = @@SESSION.collation_connection",
         "SET NAMES utf8mb4",
         "SET @HOORIDB_TIME_ZONE = @@SESSION.time_zone",
         "SET SESSION time_zone = '+00:00'",
@@ -501,7 +596,24 @@ public final class MySqlFamilyDump extends DumpDialect {
     }
     footer.add("SET SESSION sql_mode = @HOORIDB_SQL_MODE");
     footer.add("SET SESSION time_zone = @HOORIDB_TIME_ZONE");
+    footer.add("SET SESSION character_set_client = @HOORIDB_CHARACTER_SET_CLIENT,"
+        + " SESSION character_set_results = @HOORIDB_CHARACTER_SET_RESULTS,"
+        + " SESSION collation_connection = @HOORIDB_COLLATION_CONNECTION");
     return footer;
+  }
+
+  // A table that another refers to drops only without the checks, which these servers have no
+  // way around but turning them off.
+  @Override
+  List<String> beforeDrops() {
+    return List.of(
+        "SET @HOORIDB_DROP_CHECKS = @@SESSION.foreign_key_checks",
+        "SET SESSION foreign_key_checks = 0");
+  }
+
+  @Override
+  List<String> afterDrops() {
+    return List.of("SET SESSION foreign_key_checks = @HOORIDB_DROP_CHECKS");
   }
 
   // As the server shows the database, with its character set and collation.

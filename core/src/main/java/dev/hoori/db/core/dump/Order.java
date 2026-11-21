@@ -1,20 +1,23 @@
 package dev.hoori.db.core.dump;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
 /**
  * The order in which an export creates objects: each after what it needs and after the tables its
  * foreign keys refer to, so that rows go in where the keys are checked; otherwise sequences, then
- * routines, tables, views and triggers, each in the order given. Where objects need each other in a
- * circle, as two tables whose keys refer to each other, the circle is broken at the object that
- * comes first otherwise; a foreign key is added after all tables, so that tables never wait for
- * one.
+ * routines, tables, views and triggers, each in the order given. Where objects wait for each other
+ * in a circle, as two tables whose keys refer to each other, the circle is broken at the object
+ * that comes first otherwise of those that wait in it only for what their keys refer to, as what
+ * an object needs must be there before it; a foreign key is added after all tables, so that tables
+ * never wait for one.
  */
 final class Order {
 
@@ -33,69 +36,130 @@ final class Order {
 
   /** The definitions in the order that creates them; what they need but are not given is there. */
   static List<Definition> sorted(List<Definition> definitions) {
-    var index = new HashMap<Item, Integer>();
-    for (var i = 0; i < definitions.size(); i++) {
-      index.putIfAbsent(definitions.get(i).item(), i);
-    }
-    Comparator<Integer> first = Comparator.<Integer>comparingInt(
-            i -> rank(definitions.get(i).item().kind()))
-        .thenComparingInt(i -> i);
-    // For each object what it waits for, and the objects given that wait for it.
-    var before = new ArrayList<TreeSet<Integer>>();
-    var waiting = new HashMap<Integer, List<Integer>>();
-    for (var i = 0; i < definitions.size(); i++) {
-      var definition = definitions.get(i);
-      var waits = new TreeSet<>(first);
-      for (var item : both(definition.needs(), definition.refers())) {
-        var at = index.get(item);
-        if (at != null && at != i) {
-          waits.add(at);
-        }
-      }
-      before.add(waits);
-      for (var at : waits) {
-        waiting.computeIfAbsent(at, k -> new ArrayList<>()).add(i);
-      }
-    }
-    var ready = new TreeSet<>(first);
-    var left = new TreeSet<>(first);
-    for (var i = 0; i < definitions.size(); i++) {
-      (before.get(i).isEmpty() ? ready : left).add(i);
-    }
-    var sorted = new ArrayList<Definition>(definitions.size());
-    while (!ready.isEmpty() || !left.isEmpty()) {
-      int next = ready.isEmpty() ? broken(left.first(), before, first) : ready.first();
-      ready.remove(next);
-      left.remove(next);
-      sorted.add(definitions.get(next));
-      for (var after : waiting.getOrDefault(next, List.of())) {
-        var waits = before.get(after);
-        if (waits.remove(next) && waits.isEmpty() && left.remove(after)) {
-          ready.add(after);
-        }
-      }
-    }
-    return List.copyOf(sorted);
+    return new Sorting(definitions).sorted();
   }
 
-  // Where a circle breaks: following what the object waits for, first by first, until it comes
-  // round, at the first of the circle.
-  private static int broken(int start, List<TreeSet<Integer>> before, Comparator<Integer> first) {
-    var path = new ArrayList<Integer>();
-    var at = start;
-    while (!path.contains(at)) {
-      path.add(at);
-      at = before.get(at).first();
+  /**
+   * The tables among the definitions whose foreign keys refer back to themselves, straight or
+   * through those of others among them: no order of their rows suits keys that are checked.
+   */
+  static Set<Item> circular(List<Definition> definitions) {
+    var refers = new HashMap<Item, Set<Item>>();
+    for (var definition : definitions) {
+      refers.put(definition.item(), definition.refers());
     }
-    return path.subList(path.indexOf(at), path.size()).stream().min(first).orElseThrow();
+    var circular = new HashSet<Item>();
+    for (var item : refers.keySet()) {
+      if (reaches(item, refers)) {
+        circular.add(item);
+      }
+    }
+    return circular;
   }
 
-  private static Set<Item> both(Set<Item> needs, Set<Item> refers) {
-    if (refers.isEmpty()) {
-      return needs;
+  private static boolean reaches(Item item, Map<Item, Set<Item>> refers) {
+    var seen = new HashSet<Item>();
+    var next = new ArrayDeque<>(refers.get(item));
+    while (!next.isEmpty()) {
+      var at = next.poll();
+      if (at.equals(item)) {
+        return true;
+      }
+      if (seen.add(at)) {
+        next.addAll(refers.getOrDefault(at, Set.of()));
+      }
     }
-    var all = new HashSet<>(needs);
-    all.addAll(refers);
-    return all;
+    return false;
+  }
+
+  // The definitions by their place in the list given, and for each what it still waits for.
+  private static final class Sorting {
+
+    private final List<Definition> definitions;
+    private final Comparator<Integer> first;
+    private final List<TreeSet<Integer>> needs = new ArrayList<>();
+    private final List<TreeSet<Integer>> refers = new ArrayList<>();
+    private final Map<Integer, List<Integer>> waiting = new HashMap<>();
+
+    Sorting(List<Definition> definitions) {
+      this.definitions = definitions;
+      this.first = Comparator.<Integer>comparingInt(
+              i -> rank(definitions.get(i).item().kind()))
+          .thenComparingInt(i -> i);
+      var index = new HashMap<Item, Integer>();
+      for (var i = 0; i < definitions.size(); i++) {
+        index.putIfAbsent(definitions.get(i).item(), i);
+      }
+      for (var i = 0; i < definitions.size(); i++) {
+        var definition = definitions.get(i);
+        needs.add(given(i, definition.needs(), index, Set.of()));
+        refers.add(given(i, definition.refers(), index, needs.get(i)));
+        for (var at : needs.get(i)) {
+          waiting.computeIfAbsent(at, k -> new ArrayList<>()).add(i);
+        }
+        for (var at : refers.get(i)) {
+          waiting.computeIfAbsent(at, k -> new ArrayList<>()).add(i);
+        }
+      }
+    }
+
+    // Of the items, the places of those given but the one at i and those already there.
+    private TreeSet<Integer> given(
+        int i, Set<Item> items, Map<Item, Integer> index, Set<Integer> already) {
+      var at = new TreeSet<>(first);
+      for (var item : items) {
+        var place = index.get(item);
+        if (place != null && place != i && !already.contains(place)) {
+          at.add(place);
+        }
+      }
+      return at;
+    }
+
+    private boolean waits(int i) {
+      return !needs.get(i).isEmpty() || !refers.get(i).isEmpty();
+    }
+
+    List<Definition> sorted() {
+      var ready = new TreeSet<>(first);
+      var left = new TreeSet<>(first);
+      for (var i = 0; i < definitions.size(); i++) {
+        (waits(i) ? left : ready).add(i);
+      }
+      var sorted = new ArrayList<Definition>(definitions.size());
+      while (!ready.isEmpty() || !left.isEmpty()) {
+        int next = ready.isEmpty() ? broken(left.first()) : ready.first();
+        ready.remove(next);
+        left.remove(next);
+        sorted.add(definitions.get(next));
+        for (var after : waiting.getOrDefault(next, List.of())) {
+          needs.get(after).remove(next);
+          refers.get(after).remove(next);
+          if (!waits(after) && left.remove(after)) {
+            ready.add(after);
+          }
+        }
+      }
+      return List.copyOf(sorted);
+    }
+
+    // Where a circle breaks: following what each object waits for, what it needs before what its
+    // keys refer to, first by first, until it comes round; there at the first that waits only for
+    // what its keys refer to, or at the first of all where each needs another.
+    private int broken(int start) {
+      var path = new ArrayList<Integer>();
+      var seen = new HashMap<Integer, Integer>();
+      var at = start;
+      while (!seen.containsKey(at)) {
+        seen.put(at, path.size());
+        path.add(at);
+        at = needs.get(at).isEmpty() ? refers.get(at).first() : needs.get(at).first();
+      }
+      var circle = path.subList(seen.get(at), path.size());
+      return circle.stream()
+          .filter(i -> needs.get(i).isEmpty())
+          .min(first)
+          .orElseGet(() -> circle.stream().min(first).orElseThrow());
+    }
   }
 }

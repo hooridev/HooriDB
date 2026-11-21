@@ -165,7 +165,10 @@ public final class TestServer {
           "sh",
           "-c",
           (provider == Provider.MARIADB ? "mariadb" : "mysql") + " -uroot -p'root-" + PASSWORD
-              + "' --default-character-set=utf8mb4 '" + database + "' < " + in
+              + "' --default-character-set=utf8mb4 \"$1\" < \"$2\"",
+          "client",
+          database,
+          in
         };
       case MONGODB -> throw new IllegalArgumentException("MongoDB has no client of SQL");
     };

@@ -45,7 +45,8 @@ class DumpServerTest {
   void aDumpReadBackGivesTheSameObjectsDefinitionsAndRows(Provider provider) throws Exception {
     try (var databases = new Databases(provider)) {
       var file = folder.resolve("dump.sql");
-      var options = new Dump.Options(true, false, 2, true, true, true);
+      // With the keys checked, which tables that refer to each other drop despite.
+      var options = new Dump.Options(true, false, 2, true, false, true);
       var written = export(databases, Dump.Content.STRUCTURE_AND_DATA, options, file, l -> true);
       assertTrue(written.rows() > 0, written.toString());
       var text = Files.readString(file);
@@ -68,7 +69,9 @@ class DumpServerTest {
   void theServersOwnClientReadsItBackAlike(Provider provider) throws Exception {
     try (var databases = new Databases(provider)) {
       var file = folder.resolve("client.sql");
-      var options = new Dump.Options(false, false, 3, true, true, true);
+      // Keys right after the tables, but those of the circle of parent and child, which follow the
+      // rows, checked.
+      var options = new Dump.Options(false, false, 3, true, false, false);
       export(databases, Dump.Content.STRUCTURE_AND_DATA, options, file, l -> true);
       var ran = TestServer.of(provider).client(file, databases.target);
       assertEquals(0, ran.getExitCode(), ran.getStdout() + ran.getStderr());
@@ -133,6 +136,21 @@ class DumpServerTest {
         } finally {
           Thread.interrupted();
         }
+        // Whole, the file still waits to be let take the chosen one's place.
+        var refused = assertThrows(
+            QueryException.class,
+            () -> Dump.write(connection, provider, all, file, new Dump.Progress() {
+              @Override
+              public void at(Item item, long rows) {
+                // Nothing to show.
+              }
+
+              @Override
+              public boolean replacing() {
+                return false;
+              }
+            }));
+        assertEquals(QueryException.Failure.CANCELLED, refused.failure());
       }
       assertEquals("before", Files.readString(file));
       try (var files = Files.list(folder)) {
@@ -187,14 +205,23 @@ class DumpServerTest {
       var mark = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
       this.source = "dump_" + mark + "_from";
       this.target = "dump_" + mark + "_to";
-      try (var admin = open(TestServer.DATABASE)) {
-        execute(admin, "CREATE DATABASE " + provider.quote(source));
-        execute(admin, "CREATE DATABASE " + provider.quote(target));
-      }
-      try (var connection = open(source)) {
-        for (var sql : provider == Provider.POSTGRESQL ? postgresql() : mysql(provider)) {
-          execute(connection, sql);
+      try {
+        try (var admin = open(TestServer.DATABASE)) {
+          execute(admin, "CREATE DATABASE " + provider.quote(source));
+          execute(admin, "CREATE DATABASE " + provider.quote(target));
         }
+        try (var connection = open(source)) {
+          for (var sql : provider == Provider.POSTGRESQL ? postgresql() : mysql(provider)) {
+            execute(connection, sql);
+          }
+        }
+      } catch (Exception e) {
+        try {
+          close();
+        } catch (Exception dropped) {
+          e.addSuppressed(dropped);
+        }
+        throw e;
       }
     }
 
@@ -341,6 +368,9 @@ class DumpServerTest {
             + " iv interval, j jsonb, arr integer[], u uuid, t text,"
             + " twice integer GENERATED ALWAYS AS (id * 2) STORED, c varchar(10) COLLATE \"C\")",
         "CREATE UNLOGGED TABLE scratch (k text)",
+        // Its name breaks the lines of the comments that name it, which stay comments.
+        "CREATE TABLE \"line\nbreak\" (k text)",
+        "INSERT INTO \"line\nbreak\" VALUES ('x')",
         "CREATE TABLE measure (id integer, at date NOT NULL) PARTITION BY RANGE (at)",
         "CREATE TABLE measure_2024 PARTITION OF measure"
             + " FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')",
