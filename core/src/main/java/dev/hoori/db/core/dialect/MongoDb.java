@@ -239,6 +239,7 @@ public final class MongoDb implements DocumentDialect {
       return new ServerSession(
           String.valueOf(((Number) entry.get("connectionId")).longValue()),
           opid,
+          "",
           own,
           false,
           user(entry),

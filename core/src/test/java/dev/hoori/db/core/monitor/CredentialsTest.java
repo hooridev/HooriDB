@@ -38,11 +38,43 @@ class CredentialsTest {
         Credentials.mask(
             "SELECT 'postgresql://u:Pw-1@db/x', name FROM customer WHERE name = 'Ada'",
             Provider.POSTGRESQL));
-    // A word in a quoted name or a comment is no credential of the code.
+    // A word in a comment is no credential of the code.
     assertEquals(
-        "SELECT \"password\" FROM t WHERE a = 'x' -- password",
+        "SELECT name FROM t WHERE a = 'x' -- password",
+        Credentials.mask("SELECT name FROM t WHERE a = 'x' -- password", Provider.POSTGRESQL));
+  }
+
+  @Test
+  void aQuotedNameCountsAsCode() {
+    assertEquals(
+        "CREATE USER MAPPING FOR ada SERVER films OPTIONS (\"user\" " + M + ", \"password\" " + M
+            + ")",
         Credentials.mask(
-            "SELECT \"password\" FROM t WHERE a = 'x' -- password", Provider.POSTGRESQL));
+            "CREATE USER MAPPING FOR ada SERVER films OPTIONS (\"user\" 'ada', \"password\" 'Pw-1')",
+            Provider.POSTGRESQL));
+    assertEquals(
+        "ALTER USER MAPPING FOR ada SERVER films OPTIONS (SET \"password\" " + M + ")",
+        Credentials.mask(
+            "ALTER USER MAPPING FOR ada SERVER films OPTIONS (SET \"password\" 'Pw-1')",
+            Provider.POSTGRESQL));
+    assertEquals(
+        "SELECT \"password\" FROM t WHERE a = " + M,
+        Credentials.mask("SELECT \"password\" FROM t WHERE a = 'x'", Provider.POSTGRESQL));
+  }
+
+  @Test
+  void aNameWrittenWithUnicodeEscapesLosesAllStrings() {
+    assertEquals(
+        "ALTER USER MAPPING FOR ada SERVER films OPTIONS (SET U&\"\\0070assword\" " + M + ")",
+        Credentials.mask(
+            "ALTER USER MAPPING FOR ada SERVER films OPTIONS (SET U&\"\\0070assword\" 'Pw-1')",
+            Provider.POSTGRESQL));
+    assertEquals(
+        "CREATE USER MAPPING FOR ada SERVER films OPTIONS (u&\"!0070assword\" UESCAPE " + M + " "
+            + M + ")",
+        Credentials.mask(
+            "CREATE USER MAPPING FOR ada SERVER films OPTIONS (u&\"!0070assword\" UESCAPE '!' 'Pw-1')",
+            Provider.POSTGRESQL));
   }
 
   @Test

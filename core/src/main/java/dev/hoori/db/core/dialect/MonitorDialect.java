@@ -17,14 +17,26 @@ public interface MonitorDialect {
   /** The session of the query's current row, its statement as the server tells it. */
   ServerSession session(ResultSet row) throws SQLException;
 
-  /**
-   * The statement that cancels what runs by the operation's id; one that gives a row says in it
-   * whether the server found the session.
-   */
-  String cancel(String operation);
+  /** A statement with the values of its parameters, as text, in order. */
+  record Stop(String sql, List<String> values) {
 
-  /** The statement that ends the session of the id, as {@link #cancel} answers. */
-  String end(String id);
+    public Stop {
+      values = List.copyOf(values);
+    }
+  }
+
+  /**
+   * The statement that cancels what the session runs, by its {@link ServerSession#operation}, in
+   * one with checking, where the server can, that the session still runs what it ran when read;
+   * one that gives a row says in it whether the server found it so, and none says it did not.
+   */
+  Stop cancel(ServerSession session);
+
+  /**
+   * The statement that ends the session, in one with checking, where the server can, that its id
+   * still names it, as {@link #cancel} answers.
+   */
+  Stop end(ServerSession session);
 
   /**
    * The queries of the server's variables, the one that tells most first, each of which gives a

@@ -458,15 +458,17 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           + " FROM information_schema.PROCESSLIST ORDER BY ID";
     }
 
-    // An unknown thread fails as NO_SUCH_SESSION.
+    // An unknown thread fails as NO_SUCH_SESSION. A thread id is not used again while the server
+    // runs, so End reaches the session asked about; KILL QUERY cannot check that the thread still
+    // runs the statement asked about, as the server has no statement id to give it.
     @Override
-    public String cancel(String operation) {
-      return "KILL QUERY " + Long.parseLong(operation);
+    public Stop cancel(ServerSession session) {
+      return new Stop("KILL QUERY " + Long.parseLong(session.operation()), List.of());
     }
 
     @Override
-    public String end(String id) {
-      return "KILL " + Long.parseLong(id);
+    public Stop end(ServerSession session) {
+      return new Stop("KILL " + Long.parseLong(session.id()), List.of());
     }
 
     // A thread's state that waits says what for; any other says what the command does.
@@ -480,6 +482,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return new ServerSession(
           id,
           runs ? id : "",
+          "",
           row.getBoolean(2),
           true,
           MonitorRows.text(row, 3),

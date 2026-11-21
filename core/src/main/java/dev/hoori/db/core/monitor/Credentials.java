@@ -45,16 +45,21 @@ public final class Credentials {
     var openings = provider.keepsDocuments()
         ? List.<String>of()
         : provider.dialect().syntax().executableComments();
-    // The code where it stands, with its white space, and blanks in place of all else.
+    // The code where it stands, with its white space, and blanks in place of all else. A quoted
+    // name counts as code, as an option may be named "password".
     var code = new StringBuilder(sql);
     for (var piece : pieces) {
-      if (piece.kind() != Statements.Piece.Kind.CODE && !executes(sql, piece, openings)) {
+      if (piece.kind() != Statements.Piece.Kind.CODE
+          && piece.kind() != Statements.Piece.Kind.QUOTED
+          && !executes(sql, piece, openings)) {
         for (int i = piece.start(); i < piece.end(); i++) {
           code.setCharAt(i, ' ');
         }
       }
     }
-    boolean all = names(code.toString());
+    // A name written with Unicode escapes (U&"\0070assword") may spell a credential that its
+    // text does not: all strings go.
+    boolean all = names(code.toString()) || escapesAName(sql, pieces);
     var out = new StringBuilder(sql.length());
     int at = 0;
     for (var piece : pieces) {
@@ -70,6 +75,18 @@ public final class Credentials {
       }
     }
     return out.append(sql, at, sql.length()).toString();
+  }
+
+  // Whether a quoted name of the statement is written with Unicode escapes, after U&.
+  private static boolean escapesAName(String sql, List<Statements.Piece> pieces) {
+    for (var piece : pieces) {
+      if (piece.kind() == Statements.Piece.Kind.QUOTED
+          && piece.start() >= 2
+          && sql.regionMatches(true, piece.start() - 2, "U&", 0, 2)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Whether the piece is a comment that the server runs as code.
