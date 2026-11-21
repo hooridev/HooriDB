@@ -6,6 +6,7 @@ import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.log.Sent;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.Serial;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.CharacterCodingException;
@@ -113,6 +114,8 @@ public final class StatementLogStore {
 
   /** The entries an {@link #append} wrote before it failed, the first ones of those it was given. */
   public static final class Unwritten extends IOException {
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     private final int written;
 

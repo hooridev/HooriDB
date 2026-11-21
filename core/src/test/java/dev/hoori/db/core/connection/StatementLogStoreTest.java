@@ -222,16 +222,18 @@ class StatementLogStoreTest {
     // A file restored with wider permissions is the owner's again before it becomes the older one.
     Files.setPosixFilePermissions(
         folder.resolve(StatementLogStore.FILE), PosixFilePermissions.fromString("rw-r--r--"));
-    var big = entry(2, Outcome.DONE).sent();
-    store.append(List.of(new Logged(
+    // Two halves, each below the limit and together past it, so the second rotates the file.
+    var half = entry(2, Outcome.DONE).sent();
+    var large = new Logged(
         ONE,
         new Sent(
-            big.at(),
-            big.purpose(),
-            big.database(),
-            "x".repeat((int) StatementLogStore.LIMIT - 1000),
-            big.took(),
-            big.outcome()))));
+            half.at(),
+            half.purpose(),
+            half.database(),
+            "x".repeat((int) (StatementLogStore.LIMIT / 2)),
+            half.took(),
+            half.outcome()));
+    store.append(List.of(large, large));
     assertEquals(
         "rw-------",
         PosixFilePermissions.toString(
