@@ -69,7 +69,11 @@ class MonitorTabTest {
 
   /** The line of the tree with the text. */
   static String line(String tree, String text) {
-    return tree.lines().filter(l -> l.contains(text)).findFirst().orElse("").strip();
+    return tree.lines()
+        .filter(l -> l.contains(text))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError(text + " in\n" + tree))
+        .strip();
   }
 
   /** The lines of the grid's row, counted from 0. */
@@ -107,8 +111,7 @@ class MonitorTabTest {
     c.run(app, "press role=menuitem label=\"File\"\nframe\nadvance 1\nframe\n");
     c.run(app, "press role=menuitem label=\"Server monitor\"\nframe\n" + SETTLE + "snap once\n");
     var tree = c.tree("once");
-    assertEquals(
-        tree.indexOf("role=tab label=\"" + TAB), tree.lastIndexOf("role=tab label=\"" + TAB));
+    assertEquals(1, tree.split("role=tab label=\"" + TAB, -1).length - 1, tree);
   }
 
   @Test
@@ -195,6 +198,33 @@ class MonitorTabTest {
     long first = reads();
     c.run(app, "press role=button label=\"Connect\"\nframe\n" + SETTLE + SETTLE);
     assertEquals(first + 1, reads());
+  }
+
+  @Test
+  void aHiddenTabConnectedAnewReadsOnlyOnceShown() throws Exception {
+    var app = monitor();
+    c.run(app, "key N control\nframe\nadvance 1\nframe\n" + SETTLE);
+    c.run(app, menu("shop-prod", "Disconnect") + SETTLE);
+    long first = reads();
+    c.run(app, open("shop-prod") + SETTLE + SETTLE + "snap connected\n");
+    assertTrue(c.tree("connected").contains("label=\"shop-prod\""), c.tree("connected"));
+    assertEquals(first, reads());
+    c.run(app, "press role=tab label=\"" + TAB + "\"\nframe\nawait\nframe\n");
+    assertEquals(first + 1, reads());
+  }
+
+  @Test
+  void theVariablesOfTheServerBeforeAreReadAgainOnceConnectedAnew() throws Exception {
+    var key = "variables " + PG;
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Variables\"\n" + SHOWN + SETTLE);
+    c.run(app, "press role=radio label=\"Sessions\"\n" + SHOWN + SETTLE);
+    c.run(app, menu("shop-prod", "Disconnect") + SETTLE);
+    c.run(app, "press role=button label=\"Connect\"\nframe\n" + SETTLE + SETTLE);
+    long first = c.servers.calls.stream().filter(key::equals).count();
+    assertEquals(1, first);
+    c.run(app, "press role=radio label=\"Variables\"\n" + SHOWN + SETTLE);
+    assertEquals(first + 1, c.servers.calls.stream().filter(key::equals).count());
   }
 
   /** Selects the session of the row, counted from 0, the monitor's own first. */

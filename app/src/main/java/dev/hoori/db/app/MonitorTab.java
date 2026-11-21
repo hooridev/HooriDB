@@ -127,7 +127,7 @@ final class MonitorTab implements Tab {
   private int says;
   private Lane lane; // the monitor's own session, or null while it has none
   private char[] password; // a copy, for masking it where a statement holds it; wiped as it ends
-  private boolean due; // a tick came while the tab was hidden: it reads once shown
+  private boolean due; // a tick or a connect came while the tab was hidden: it reads once shown
   private boolean closed;
 
   private final State state; // for close, which its tab groups call without one
@@ -152,13 +152,23 @@ final class MonitorTab implements Tab {
       }
       lane = session.lane();
       password = session.password();
+      // The variables, which are not read again by themselves, may be another server's now.
+      variables = null;
+      took.remove(View.VARIABLES);
     }
     read(s);
   }
 
-  /** The tree's connection connected: the monitor opens its session and reads. */
+  /**
+   * The tree's connection connected: the monitor opens its session and reads, where the tab is
+   * shown, else once it is.
+   */
   void connected(State s) {
-    open(s);
+    if (shown(s)) {
+      open(s);
+    } else if (!closed) {
+      due = true;
+    }
   }
 
   /**
@@ -330,7 +340,7 @@ final class MonitorTab implements Tab {
     return group != null && group.activeTab() == this;
   }
 
-  /** Whether a tick came while the tab was hidden, so that it reads once shown. */
+  /** Whether a tick or a connect came while the tab was hidden, so that it reads once shown. */
   boolean due() {
     return due;
   }
@@ -498,7 +508,7 @@ final class MonitorTab implements Tab {
   El view(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     if (due && shown(s)) {
-      read(s); // shown again after a tick it missed
+      open(s); // shown again after a tick or a connect it missed
     }
     var profile = s.profile(id);
     String where = profile == null ? null : State.name(profile);
