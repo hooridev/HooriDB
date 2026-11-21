@@ -311,7 +311,9 @@ class MonitorTabTest {
     c.run(app, pick(2) + "press #end-session\n" + SHOWN);
     c.servers.sessions(PG, session("101", "ada", "SELECT pg_sleep(60)"));
     c.run(app, "press #question-go\n" + SHOWN + SETTLE + "snap gone\n");
-    assertTrue(c.tree("gone").contains("\"Session 102 had ended already\""), c.tree("gone"));
+    // The read after the answer shows it gone: nothing is sent.
+    assertTrue(c.tree("gone").contains("\"Session 102 has ended\""), c.tree("gone"));
+    assertFalse(c.servers.calls.stream().anyMatch(k -> k.startsWith("end ")));
   }
 
   @Test
@@ -452,6 +454,11 @@ class MonitorTabTest {
     // Its interval does nothing, until a read by hand gets through.
     assertTrue(line(c.tree("later"), "#interval").contains("disabled"), c.tree("later"));
     assertTrue(line(c.tree("later"), "#pause role=button").contains("disabled"), c.tree("later"));
+    // Shown again, it is not read by itself.
+    c.run(app, "press role=radio label=\"Sessions\"\n" + SHOWN + SETTLE);
+    c.run(app, "press role=radio label=\"Status\"\n" + SHOWN + SETTLE + "snap back\n");
+    assertEquals(first, c.servers.calls.stream().filter(key::equals).count());
+    assertTrue(c.tree("back").contains("Access denied"), c.tree("back"));
     c.servers.heal(key);
     c.run(app, "press role=button label=\"Try again\"\n" + SHOWN + SETTLE + "snap read\n");
     assertEquals(first + 1, c.servers.calls.stream().filter(key::equals).count());
@@ -512,7 +519,8 @@ class MonitorTabTest {
     c.servers.sessions(PG, session("101", "ada", "SELECT pg_sleep(60)", "a later start"));
     c.run(app, "press #question-go\n" + SHOWN + SETTLE + "snap other\n");
     var other = c.tree("other");
-    assertTrue(other.contains("\"Session 101 had ended or runs something else now\""), other);
+    assertTrue(other.contains("\"Session 101 has ended\""), other);
+    assertFalse(c.servers.calls.stream().anyMatch(k -> k.startsWith("cancel ")));
     assertTrue(other.contains("SELECT pg_sleep(60)"), other);
   }
 
@@ -879,6 +887,45 @@ class MonitorTabTest {
     assertTrue(line(c.tree("reading"), "#try-again").contains("disabled"), c.tree("reading"));
     held.countDown();
     c.run(app, "await\nframe\n");
+  }
+
+  @Test
+  void anAnswerIsCheckedAgainstAReadOfTheSessionsAfterIt() throws Exception {
+    var app = monitor();
+    c.run(app, pick(1) + "press #cancel-statement\n" + SHOWN);
+    long first = reads();
+    // Since the question opened, 101 runs another statement.
+    c.servers.sessions(PG, session("101", "ada", "SELECT 2"), session("102", "bob", ""));
+    c.run(app, "press #question-go\n" + SHOWN + SETTLE + "snap answered\n");
+    assertTrue(reads() > first);
+    assertFalse(c.servers.calls.stream().anyMatch(k -> k.startsWith("cancel ")));
+    assertTrue(
+        c.tree("answered").contains("\"Session 101 runs something else now\""), c.tree("answered"));
+  }
+
+  @Test
+  void severalSelectedSessionsAreClearedWhereAnyOfThemChanged() throws Exception {
+    var app = monitor();
+    var monitor = app.state().monitors(null).getFirst();
+    c.run(app, pick(1) + "press #cell-2-1 shift\nframe\n");
+    assertEquals(2, monitor.selection.rowCount());
+    c.run(app, after(5));
+    assertEquals(2, monitor.selection.rowCount());
+    // 101 is gone: 102 and 103 move up a row.
+    c.servers.sessions(PG, session("102", "bob", ""), session("103", "eve", "SELECT 1"));
+    c.run(app, after(5));
+    assertTrue(monitor.selection.isEmpty(), monitor.selection.toString());
+  }
+
+  @Test
+  void theStatusSearchFindsTheValueAsShown() throws Exception {
+    c.servers.counters(PG, new Counter("commits", "1284711"), new Counter("rollbacks", "3"));
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Status\"\n" + SHOWN + SETTLE);
+    c.run(app, "press #search\ntype \"1,284\"\nframe\nsnap searched\n");
+    var searched = c.tree("searched");
+    assertTrue(searched.contains("\"1 of 2 counters\""), searched);
+    assertTrue(searched.contains("\"commits\""), searched);
   }
 
   @Test

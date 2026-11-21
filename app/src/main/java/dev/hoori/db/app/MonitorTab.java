@@ -485,7 +485,8 @@ final class MonitorTab implements Tab {
     if (lane == null) {
       return;
     }
-    if (repeats() || !updated.containsKey(next)) {
+    // A view the server refused is read again only by hand.
+    if (!denied.contains(next) && (repeats() || !updated.containsKey(next))) {
       read(s, false);
     }
   }
@@ -602,9 +603,9 @@ final class MonitorTab implements Tab {
   }
 
   /**
-   * The question was answered: the action runs on the monitor's session, the status line says
-   * what came of it, and the list is read again. While the sessions are read, it waits for them,
-   * and goes out only where they show the session as the question named it.
+   * The question was answered: the sessions are read, or the read under way is waited for, and
+   * the action runs on the monitor's session only where they show the session as the question
+   * named it; the status line says what came of it, and the list is read again.
    */
   void proceed(State s) {
     var what = asked;
@@ -613,13 +614,16 @@ final class MonitorTab implements Tab {
       decline();
       return;
     }
-    refused = null;
-    doing = what.action();
-    if (reading != null && view == View.SESSIONS) {
-      answered = what;
+    if (view != View.SESSIONS) {
+      decline();
       return;
     }
-    send(s, what);
+    refused = null;
+    // Sent only once a read of the sessions after the answer shows the session as asked about:
+    // the one under way, or one started for it.
+    doing = what.action();
+    answered = what;
+    read(s, false);
   }
 
   private void send(State s, Asked what) {
@@ -754,7 +758,7 @@ final class MonitorTab implements Tab {
   /** The keys of the items the view shows, in order: a name, or who waits for whom on what. */
   private List<String> keys(View of) {
     return switch (of) {
-      case SESSIONS -> sessions.stream().map(ServerSession::id).toList();
+      case SESSIONS -> sessions.stream().map(x -> x.id() + "\n" + x.started()).toList();
       case VARIABLES ->
         variables == null
             ? List.of()
@@ -788,7 +792,8 @@ final class MonitorTab implements Tab {
   /** The view's selection goes where another item stands at one of its rows now. */
   private void keep(View of) {
     var chosen = selectionOf(of);
-    if (of == View.SESSIONS || chosen.isEmpty()) {
+    // A single session is followed by its id and start, as the sessions are read.
+    if (chosen.isEmpty() || of == View.SESSIONS && selected != null) {
       return;
     }
     var keys = keys(of);
@@ -999,7 +1004,10 @@ final class MonitorTab implements Tab {
   }
 
   private List<Counter> shownCounters() {
-    return MonitorGrids.found(counters, search(View.STATUS), c -> c.name() + " " + c.value());
+    return MonitorGrids.found(
+        counters,
+        search(View.STATUS),
+        c -> c.name() + " " + c.value() + " " + MonitorGrids.grouped(c.value()));
   }
 
   private MonitorGrids.Widths widths(View of) {
@@ -1025,6 +1033,7 @@ final class MonitorTab implements Tab {
               selected = at == null ? null : at.id();
               selectedStart = at == null ? null : at.started();
               went = false;
+              picked(View.SESSIONS);
             },
             menu,
             menuItems(s),

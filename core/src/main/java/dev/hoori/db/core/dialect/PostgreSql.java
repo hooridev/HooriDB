@@ -713,12 +713,16 @@ public final class PostgreSql implements Dialect {
       boolean own = row.getBoolean(2);
       var state = MonitorRows.text(row, 8);
       boolean runs = state.equals("active") || state.startsWith("fastpath");
+      // A fastpath call does not set query_start, so two of them cannot be told apart: only an
+      // active statement can be cancelled. Without backend_start, hidden from a user who may
+      // not see the session, an end cannot check that the id still names it, so it is not offered.
+      var started = MonitorRows.text(row, 13);
       return new ServerSession(
           pid,
-          runs ? MonitorRows.text(row, 14) : "",
-          MonitorRows.text(row, 13),
+          state.equals("active") ? MonitorRows.text(row, 14) : "",
+          started,
           own,
-          true,
+          !started.isEmpty(),
           MonitorRows.text(row, 3),
           ServerSession.client(MonitorRows.text(row, 4), address(row)),
           MonitorRows.text(row, 7),
@@ -739,7 +743,7 @@ public final class PostgreSql implements Dialect {
     public Stop cancel(ServerSession session) {
       return new Stop(
           "SELECT pg_catalog.pg_cancel_backend(a.pid)" + same(session)
-              + " AND (a.state" + EQ + "'active' OR a.state OPERATOR(pg_catalog.~~) 'fastpath%')"
+              + " AND a.state" + EQ + "'active'"
               + " AND a.query_start::pg_catalog.text" + EQ + "?",
           session.started().isEmpty()
               ? List.of(session.operation())
