@@ -79,12 +79,22 @@ class ReadOnlyServerTest {
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aStatementThatTurnsItOffIsNotSent(Provider provider) throws Exception {
     table(provider, "still_empty");
-    var off = provider == Provider.POSTGRESQL
-        ? List.of("SET default_transaction_read_only = off", "RESET ALL", "BEGIN READ WRITE")
-        : List.of(
+    var off = switch (provider) {
+      case POSTGRESQL ->
+        List.of("SET default_transaction_read_only = off", "RESET ALL", "BEGIN READ WRITE");
+      case MARIADB ->
+        List.of(
+            "SET SESSION TRANSACTION READ WRITE",
+            "SET @@session.transaction_read_only = 0",
+            "CREATE TABLE made_anyway (id integer) START TRANSACTION",
+            "RESET CONNECTION");
+      case MYSQL ->
+        List.of(
             "SET SESSION TRANSACTION READ WRITE",
             "SET @@session.transaction_read_only = 0",
             "CREATE TABLE made_anyway (id integer) START TRANSACTION");
+      case MONGODB -> throw new IllegalArgumentException("MongoDB does not speak SQL");
+    };
     try (var connection = readOnly(provider, TestServer.DATABASE)) {
       for (var sql : off) {
         var failure = failure(run(connection, provider, sql).results());
