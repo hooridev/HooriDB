@@ -316,7 +316,7 @@ class ServersServerTest {
   }
 
   /** A statement as the console runs it on its lane, read to its end. */
-  static ConsoleTab.Ran statement(Lane lane, String sql, ConsoleTab.Mode mode) throws Exception {
+  static Session.Ran statement(Lane lane, String sql, ConsoleTab.Mode mode) throws Exception {
     return statement(lane, sql, mode, false);
   }
 
@@ -324,12 +324,14 @@ class ServersServerTest {
    * A statement as the console runs it: the console's own unit on its lane, which gives up what is
    * still open first and reads the status fresh; lazily where asked, as a plain read in Auto.
    */
-  static ConsoleTab.Ran statement(Lane lane, String sql, ConsoleTab.Mode mode, boolean lazy)
+  static Session.Ran statement(Lane lane, String sql, ConsoleTab.Mode mode, boolean lazy)
       throws Exception {
     return lane.submit(link -> unit(
             link,
-            l -> ConsoleTab.start(
-                l, sql, null, mode, lazy, new AtomicReference<>(), ConsoleTab.KEPT, null, null)))
+            l -> Session.start(
+                l,
+                new Session.Send(sql, null, mode, lazy, ConsoleTab.KEPT, null, null),
+                new AtomicReference<>())))
         .get(20, TimeUnit.SECONDS);
   }
 
@@ -361,34 +363,36 @@ class ServersServerTest {
           ExecutionException.class,
           () -> lane.submit(link -> unit(
                   link,
-                  l -> ConsoleTab.start(
+                  l -> Session.start(
                       l,
-                      "SELECT * FROM seam_large a, seam_large b",
-                      null,
-                      ConsoleTab.Mode.MANUAL,
-                      false,
-                      new AtomicReference<>(),
-                      1,
-                      planner,
-                      TestServer.DATABASE)))
+                      new Session.Send(
+                          "SELECT * FROM seam_large a, seam_large b",
+                          null,
+                          ConsoleTab.Mode.MANUAL,
+                          false,
+                          1,
+                          planner,
+                          TestServer.DATABASE),
+                      new AtomicReference<>())))
               .get(20, TimeUnit.SECONDS));
-      var tooMany = assertInstanceOf(ConsoleTab.TooMany.class, asked.getCause());
+      var tooMany = assertInstanceOf(Session.TooMany.class, asked.getCause());
       assertTrue(tooMany.rows > 1, String.valueOf(tooMany.rows));
       assertEquals(Transaction.OPEN, tooMany.status.transaction());
       var counted = statement(lane, "SELECT count(*) FROM seam_large", ConsoleTab.Mode.MANUAL);
       assertEquals(4L, ((Number) rows(counted.portion()).getFirst().getFirst()).longValue());
       var missing = lane.submit(link -> unit(
               link,
-              l -> ConsoleTab.start(
+              l -> Session.start(
                   l,
-                  "SELECT * FROM seam_missing",
-                  null,
-                  ConsoleTab.Mode.MANUAL,
-                  false,
-                  new AtomicReference<>(),
-                  1,
-                  planner,
-                  TestServer.DATABASE)))
+                  new Session.Send(
+                      "SELECT * FROM seam_missing",
+                      null,
+                      ConsoleTab.Mode.MANUAL,
+                      false,
+                      1,
+                      planner,
+                      TestServer.DATABASE),
+                  new AtomicReference<>())))
           .get(20, TimeUnit.SECONDS);
       assertInstanceOf(Failure.class, missing.portion().results().getLast());
     } finally {
@@ -424,16 +428,17 @@ class ServersServerTest {
       long began = System.nanoTime();
       var read = lane.submit(link -> unit(
               link,
-              l -> ConsoleTab.start(
+              l -> Session.start(
                   l,
-                  "SELECT * FROM seam_locked",
-                  null,
-                  ConsoleTab.Mode.MANUAL,
-                  false,
-                  new AtomicReference<>(),
-                  1,
-                  planner,
-                  TestServer.DATABASE)))
+                  new Session.Send(
+                      "SELECT * FROM seam_locked",
+                      null,
+                      ConsoleTab.Mode.MANUAL,
+                      false,
+                      1,
+                      planner,
+                      TestServer.DATABASE),
+                  new AtomicReference<>())))
           .get(30, TimeUnit.SECONDS);
       var took = Duration.ofNanos(System.nanoTime() - began);
       assertTrue(took.compareTo(Plan.LIMIT.plusSeconds(5)) < 0, took.toString());
@@ -476,18 +481,19 @@ class ServersServerTest {
           ExecutionException.class,
           () -> lane.submit(link -> unit(
                   link,
-                  l -> ConsoleTab.start(
+                  l -> Session.start(
                       l,
-                      "SELECT * FROM seam_switch a, seam_switch b",
-                      null,
-                      ConsoleTab.Mode.MANUAL,
-                      false,
-                      new AtomicReference<>(),
-                      1,
-                      planner,
-                      TestServer.DATABASE)))
+                      new Session.Send(
+                          "SELECT * FROM seam_switch a, seam_switch b",
+                          null,
+                          ConsoleTab.Mode.MANUAL,
+                          false,
+                          1,
+                          planner,
+                          TestServer.DATABASE),
+                      new AtomicReference<>())))
               .get(20, TimeUnit.SECONDS));
-      assertInstanceOf(ConsoleTab.TooMany.class, asked.getCause());
+      assertInstanceOf(Session.TooMany.class, asked.getCause());
       assertEquals(
           TestServer.DATABASE,
           planner.submit(l -> value(l, "SELECT DATABASE()")).get(20, TimeUnit.SECONDS));
@@ -499,20 +505,20 @@ class ServersServerTest {
   }
 
   /** A switch of auto-commit as the console's unit does it. */
-  static ConsoleTab.Switched mode(Lane lane, boolean manual, boolean empty) throws Exception {
-    return lane.submit(link -> unit(link, l -> ConsoleTab.setMode(l, manual, empty)))
+  static Session.Switched mode(Lane lane, boolean manual, boolean empty) throws Exception {
+    return lane.submit(link -> unit(link, l -> Session.setMode(l, manual, empty)))
         .get(20, TimeUnit.SECONDS);
   }
 
-  static ConsoleTab.Ended end(Lane lane, String sql) throws Exception {
-    return lane.submit(link -> unit(link, l -> ConsoleTab.finish(l, sql, (a, b, c) -> {})))
+  static Session.Ended end(Lane lane, String sql) throws Exception {
+    return lane.submit(link -> unit(link, l -> Session.finish(l, sql, (a, b, c) -> {})))
         .get(20, TimeUnit.SECONDS);
   }
 
   /** The console's unit around a call, which fails where giving up what was left open fails. */
   static <T> T unit(Servers.Link link, Lane.Call<T> call) throws Exception {
     var told = new ArrayList<String>();
-    var value = ConsoleTab.after(link, (sql, what, failure) -> told.add(what), "", call);
+    var value = Session.after(link, (sql, what, failure) -> told.add(what), "", call);
     assertEquals(List.of(), told, "giving up what was left open");
     return value;
   }
@@ -743,20 +749,21 @@ class ServersServerTest {
       statement(lane, "DROP TABLE IF EXISTS seam_dropped", ConsoleTab.Mode.AUTO);
       statement(lane, "CREATE TABLE seam_dropped (id integer)", ConsoleTab.Mode.AUTO);
       var held = new AtomicReference<Servers.Run>();
-      var update = lane.submit(link -> ConsoleTab.after(
+      var update = lane.submit(link -> Session.after(
           link,
           (sql, what, failure) -> {},
           "",
-          l -> ConsoleTab.start(
+          l -> Session.start(
               l,
-              "INSERT INTO seam_dropped VALUES (1)",
-              null,
-              ConsoleTab.Mode.AUTO,
-              false,
-              held,
-              ConsoleTab.KEPT,
-              null,
-              null)));
+              new Session.Send(
+                  "INSERT INTO seam_dropped VALUES (1)",
+                  null,
+                  ConsoleTab.Mode.AUTO,
+                  false,
+                  ConsoleTab.KEPT,
+                  null,
+                  null),
+              held)));
       eventually(update::isDone);
       update.cancel(true); // too late, as the console's Cancel or close can be: its answer is lost
       var rolledBack = end(lane, ConsoleTab.ROLLBACK);
@@ -1111,7 +1118,7 @@ class ServersServerTest {
       assertEquals(0L, count(watcher, "seam_after"), "not sent after the failed commit");
       assertEquals(0L, count(watcher, "seam_once"), "rolled back");
       assertTrue(
-          ConsoleTransactionTest.noticed(app).contains(ConsoleTab.ENDED),
+          ConsoleTransactionTest.noticed(app).contains(Session.ENDED),
           ConsoleTransactionTest.noticed(app));
       assertTrue(app.state().notices.getFirst().failure());
     } finally {
