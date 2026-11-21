@@ -196,8 +196,11 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   dialect, `provider.dialect()`: `dev.hoori.db.core.dialect`, and beside a package that the code
   needs private members of, as `data/*Rows`. Logic code does not name providers; it asks the dialect
   for a trait named for the behavior. What every provider has is `provider.traits()`; a server of
-  documents has a `DocumentDialect`, `provider.documents()`, in place of a `Dialect`, and code that
-  serves both asks `provider.keepsDocuments()` or switches over the two.
+  documents has a `DocumentDialect`, `provider.documents()`, in place of a `Dialect`, and code of core
+  that serves both asks `provider.keepsDocuments()` or switches over the two. The app chooses once,
+  with `Language.of(provider)`, a sealed `Language`, `Sql` or `Shell`, which the console, its
+  completions (`SqlCompletion`, `ShellCompletion`) and a table's tab ask or switch over; what differs
+  in connecting, as the dialog's fields, switches over `provider.traits()`.
 - Every statement and command that core sends goes through `dev.hoori.db.core.log.Journal`, with
   its purpose, which records it for the recorder a caller bound and masks a password first, as the
   dialect's `passwordWords` and `DocumentDialect.secretFields` say; a new send goes through it too.

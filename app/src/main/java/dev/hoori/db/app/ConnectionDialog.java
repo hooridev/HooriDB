@@ -39,6 +39,8 @@ import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
+import dev.hoori.db.core.dialect.Dialect;
+import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
@@ -561,9 +563,15 @@ final class ConnectionDialog {
     }
     editing.at(PROVIDER).set(provider);
     editing.at(DRIVER_VERSION).set(null); // a version of the other kind's driver
-    if (!provider.keepsDocuments()) {
-      srv(false);
-      editing.at(AUTH_DATABASE).set("");
+    switch (provider.traits()) {
+      case Dialect _ -> {
+        // SRV and the auth database are a server of documents' alone.
+        srv(false);
+        editing.at(AUTH_DATABASE).set("");
+      }
+      case DocumentDialect _ -> {
+        // It keeps both.
+      }
     }
     if (!portByHand && !portTyped()) {
       editing.at(PORT).set(provider.defaultPort());
@@ -784,16 +792,22 @@ final class ConnectionDialog {
         .warning(tlsWarning(p))
         .error(probe.error(Probe.At.TLS));
     var readOnly = readOnlyField(open);
-    if (!p.provider().keepsDocuments()) {
-      return new Form.Entry[] {type, address, database, tls, readOnly};
-    }
-    var srv = field(
+    return switch (p.provider().traits()) {
+      case Dialect _ -> new Form.Entry[] {type, address, database, tls, readOnly};
+      case DocumentDialect _ ->
+        new Form.Entry[] {type, address, srvField(open), database, tls, readOnly};
+    };
+  }
+
+  /** Whether DNS lists the servers, which only a server of documents asks. */
+  private Form.Field srvField(boolean open) {
+    var p = editing.value();
+    return field(
             "SRV",
             checkbox(Prop.of(() -> p.srv(), open ? this::srv : null), "Servers from DNS")
                 .key("srv"))
         .help("The host of a mongodb+srv:// address, such as cluster0.example.net, for which DNS"
             + " lists the servers and their ports.");
-    return new Form.Entry[] {type, address, srv, database, tls, readOnly};
   }
 
   /** The kind of database, with the driver's button beside it. */
@@ -873,11 +887,14 @@ final class ConnectionDialog {
                     "Read-only")
                 .key("read-only"))
         .help(
-            p.provider().keepsDocuments()
-                ? "Only reads are sent: find, aggregate without $out or $merge, counts and the"
-                    + " like. Inserts, updates, deletes and every other change are refused."
-                : "The server keeps the session read-only and refuses what writes to tables or"
-                    + " changes the schema. A statement that would turn that off is not sent.");
+            switch (p.provider().traits()) {
+              case Dialect _ ->
+                "The server keeps the session read-only and refuses what writes to tables or"
+                    + " changes the schema. A statement that would turn that off is not sent.";
+              case DocumentDialect _ ->
+                "Only reads are sent: find, aggregate without $out or $merge, counts and the"
+                    + " like. Inserts, updates, deletes and every other change are refused.";
+            });
   }
 
   /** Who logs in: the auth database only for a server of documents. */
@@ -891,19 +908,19 @@ final class ConnectionDialog {
                 textField(locked(open, editing.at(USER))).key("user").wFull()))
         .error(error(problems, ConnectionProfile.Field.USER));
     var pass = passwordEntry(s, open);
-    if (!p.provider().keepsDocuments()) {
-      return new Form.Entry[] {user, pass};
-    }
-    var authDatabase = field(
-            "Auth database",
-            textField(
-                    locked(open, editing.at(AUTH_DATABASE)),
-                    p.provider().documents().authDatabase())
-                .key("auth-database")
-                .wFull())
-        .help("The database the user is defined in, MongoDB's authSource.")
-        .error(error(problems, ConnectionProfile.Field.AUTH_DATABASE));
-    return new Form.Entry[] {user, authDatabase, pass};
+    return switch (p.provider().traits()) {
+      case Dialect _ -> new Form.Entry[] {user, pass};
+      case DocumentDialect d -> {
+        var authDatabase = field(
+                "Auth database",
+                textField(locked(open, editing.at(AUTH_DATABASE)), d.authDatabase())
+                    .key("auth-database")
+                    .wFull())
+            .help("The database the user is defined in, MongoDB's authSource.")
+            .error(error(problems, ConnectionProfile.Field.AUTH_DATABASE));
+        yield new Form.Entry[] {user, authDatabase, pass};
+      }
+    };
   }
 
   /** The password, and whether the keyring keeps it. */

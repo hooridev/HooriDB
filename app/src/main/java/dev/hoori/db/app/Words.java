@@ -2,6 +2,8 @@ package dev.hoori.db.app;
 
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.dialect.Dialect;
+import dev.hoori.db.core.dialect.DocumentDialect;
 
 /** Why a connection failed, in the same words wherever it shows: in the dialog and in the tree. */
 final class Words {
@@ -23,12 +25,11 @@ final class Words {
   // A server of documents looks the user up in one database, which a wrong one fails as a wrong
   // password does.
   private static String definedIn(ConnectionProfile p) {
-    if (!p.provider().keepsDocuments()) {
-      return "";
-    }
-    var database =
-        p.authDatabase().isEmpty() ? p.provider().documents().authDatabase() : p.authDatabase();
-    return " in the database " + database;
+    return switch (p.provider().traits()) {
+      case Dialect _ -> "";
+      case DocumentDialect d ->
+        " in the database " + (p.authDatabase().isEmpty() ? d.authDatabase() : p.authDatabase());
+    };
   }
 
   /**

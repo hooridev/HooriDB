@@ -404,9 +404,10 @@ final class ConsoleTab implements Tab {
     return profile == null ? null : profile.provider();
   }
 
-  boolean keepsDocuments(State s) {
+  /** Whether its statements reach documents, as texts call them, rather than rows. */
+  boolean documents(State s) {
     var provider = provider(s);
-    return provider != null && provider.keepsDocuments();
+    return provider != null && Language.of(provider).documents();
   }
 
   /** The statements, with offsets from {@code from} in the text, run once the console takes them. */
@@ -539,7 +540,8 @@ final class ConsoleTab implements Tab {
       return;
     }
     var provider = s.profile(id).provider();
-    parsed = provider.keepsDocuments() ? Script.Parsed.of(sql) : null;
+    // The shell's statement is read once, here, as it is taken to run.
+    parsed = Language.of(provider) instanceof Language.Shell ? Script.Parsed.of(sql) : null;
     var every = parsed != null ? parsed.every() : EveryRow.of(sql, provider);
     if (every.isPresent()) {
       running = sql;
@@ -575,21 +577,21 @@ final class ConsoleTab implements Tab {
     leave();
     running = sql;
     var provider = s.profile(id).provider();
-    if (provider.keepsDocuments()) {
-      // A server of documents has no transactions, and no Manual: also where the console was in
-      // Manual on a connection of SQL before its connection changed.
+    var language = Language.of(provider);
+    if (!language.transactions()) {
+      // No Manual either: also where the console was in Manual on a connection of SQL before its
+      // connection changed.
       mode = Mode.AUTO;
     }
     // Only a plain read in Auto with nothing open may stay open between calls; the lane call
     // decides that from the server's word, and all else is read to its end, at stake meanwhile.
-    var statement = provider.keepsDocuments() ? parsed : null;
+    var statement = language instanceof Language.Shell ? parsed : null;
     plain = statement != null ? statement.readsCursor() : reads(sql, provider);
     boolean lazy = plain && mode == Mode.AUTO && transaction == Transaction.NONE;
     writes = !lazy;
     // Not for a read Auto keeps open: no connection is opened for an estimate never asked for.
-    var planner = estimate && plain && !lazy && !provider.keepsDocuments()
-        ? s.catalog.planner(id, database)
-        : null;
+    var planner =
+        estimate && plain && !lazy && language.estimates() ? s.catalog.planner(id, database) : null;
     var on = database;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
@@ -813,7 +815,7 @@ final class ConsoleTab implements Tab {
   private String used(State s, String sql, Portion portion) {
     var profile = s.profile(id);
     if (profile == null
-        || !profile.provider().keepsDocuments()
+        || !(Language.of(profile.provider()) instanceof Language.Shell)
         || failure(portion) != null
         || parsed == null
         || !parsed.statement().equals(sql)) {
@@ -2045,7 +2047,7 @@ final class ConsoleTab implements Tab {
           s.edited();
         })
         .key("sql")
-        .label(provider.keepsDocuments() ? "Statements" : "SQL")
+        .label(Language.of(provider).label())
         .autofocus(this)
         .wFull()
         .grow(1);
@@ -2253,7 +2255,7 @@ final class ConsoleTab implements Tab {
     if (statements == 0 && !cancelled) {
       return NOT_RUN; // the session could not be opened
     }
-    return how() + tally(keepsDocuments(s));
+    return how() + tally(documents(s));
   }
 
   /** How the last run went, and its time on the server. */

@@ -68,8 +68,7 @@ final class ConsoleView {
     actions.add(databases(s));
     // Off where Manual cannot be made sure of, which its tooltip and a note say.
     boolean switchable = !busy && locked == null && tab.unavailable == null;
-    // A server of documents commits each command by itself, and has no Manual to offer.
-    if (!provider.keepsDocuments()) {
+    if (Language.of(provider).transactions()) {
       actions.add(modes(s, switchable));
     }
     if (tab.mode == ConsoleTab.Mode.MANUAL || tab.transaction != Transaction.NONE) {

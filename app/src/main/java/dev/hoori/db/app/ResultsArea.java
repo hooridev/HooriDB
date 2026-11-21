@@ -204,7 +204,7 @@ final class ResultsArea {
         .minSize(0, 0)
         .child(EmptyState.emptyState(
                 Symbol.CHECKMARK_CIRCLE,
-                ConsoleTab.rows(o.count, tab.keepsDocuments(s)) + ConsoleTab.CHANGED,
+                ConsoleTab.rows(o.count, tab.documents(s)) + ConsoleTab.CHANGED,
                 null,
                 null)
             .key("changed"))

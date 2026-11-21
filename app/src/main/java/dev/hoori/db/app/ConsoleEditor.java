@@ -78,8 +78,7 @@ final class ConsoleEditor {
     if (!completion.isOpen()) {
       suggestions.forget();
     }
-    // The shell's operators come after a dollar, which the kit's word leaves out.
-    completion.openAfter(provider != null && provider.keepsDocuments() ? ".$" : ".");
+    completion.openAfter(provider == null ? "." : Language.of(provider).opensCompletion());
     El completing = Completion.complete(
         app, editor, tab.editor.caret(), completion, word -> suggestions.at(s, provider, word));
     // Control+Space asks anew, with what was read since the list was made.
