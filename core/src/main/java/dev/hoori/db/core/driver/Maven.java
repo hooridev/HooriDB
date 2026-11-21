@@ -11,12 +11,14 @@ import java.util.regex.Pattern;
  */
 public final class Maven {
 
-  private static final Pattern NAME = Pattern.compile("[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*");
-  private static final Pattern VERSION = Pattern.compile("[A-Za-z0-9]+([._-][A-Za-z0-9]+)*");
-  private static final Pattern STABLE = Pattern.compile("[0-9]+(\\.[0-9]+)*");
+  // Possessive, as no separator is in a class: nothing to backtrack into, and no recursion that a
+  // long text could overflow the stack with.
+  private static final Pattern NAME = Pattern.compile("[A-Za-z0-9_-]++(\\.[A-Za-z0-9_-]++)*+");
+  private static final Pattern VERSION = Pattern.compile("[A-Za-z0-9]++([._-][A-Za-z0-9]++)*+");
+  private static final Pattern STABLE = Pattern.compile("\\d++(\\.\\d++)*+");
   // Names that Windows reserves for devices, also when followed by an extension.
   private static final Pattern DEVICE =
-      Pattern.compile("(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\\..*)?");
+      Pattern.compile("(?i)(con|prn|aux|nul|com\\d|lpt\\d)(\\..*)?");
   private static final Pattern TOKEN = Pattern.compile("[._-]");
 
   private Maven() {}
@@ -58,19 +60,25 @@ public final class Maven {
       if (i == y.length) {
         return isNumber(x[i]) ? -1 : 1;
       }
-      int c;
-      if (isNumber(x[i]) && isNumber(y[i])) {
-        c = new BigInteger(y[i]).compareTo(new BigInteger(x[i]));
-      } else if (isNumber(x[i]) != isNumber(y[i])) {
-        c = isNumber(x[i]) ? -1 : 1;
-      } else {
-        c = y[i].compareToIgnoreCase(x[i]);
-      }
+      int c = compareTokens(x[i], y[i]);
       if (c != 0) {
         return c;
       }
     }
     return b.compareTo(a);
+  }
+
+  // Newest first, of a token each: numbers as numbers and before words, words without case.
+  private static int compareTokens(String x, String y) {
+    boolean xNumber = isNumber(x);
+    boolean yNumber = isNumber(y);
+    if (xNumber && yNumber) {
+      return new BigInteger(y).compareTo(new BigInteger(x));
+    }
+    if (xNumber != yNumber) {
+      return xNumber ? -1 : 1;
+    }
+    return y.compareToIgnoreCase(x);
   }
 
   private static boolean isNumber(String token) {

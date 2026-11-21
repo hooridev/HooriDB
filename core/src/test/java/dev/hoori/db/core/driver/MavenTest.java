@@ -137,11 +137,11 @@ class MavenTest {
         "https://example.com/maven2/?a=b",
         "https://example.com/maven2/#secret",
         "https:/maven2/")) {
-      var e = assertThrows(
-          IllegalArgumentException.class, () -> new MavenRepository(URI.create(url)), url);
+      var uri = URI.create(url);
+      var e = assertThrows(IllegalArgumentException.class, () -> new MavenRepository(uri), url);
       assertFalse(e.getMessage().contains("secret") || e.getMessage().contains("example"), url);
     }
-    var central = MavenRepository.central();
+    var central = MavenRepository.mavenCentral();
     assertEquals(
         URI.create("https://repo.maven.apache.org/maven2/org/postgresql/postgresql/x.jar"),
         central.uri("org/postgresql/postgresql/x.jar"));

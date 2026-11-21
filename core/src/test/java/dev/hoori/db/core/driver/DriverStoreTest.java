@@ -600,7 +600,7 @@ public class DriverStoreTest {
           if (target.startsWith(below)) {
             open.add(target);
           }
-        } catch (IOException closedMeanwhile) {
+        } catch (IOException _) {
           // Not open any longer.
         }
       }

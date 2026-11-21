@@ -149,7 +149,7 @@ final class Gate implements AutoCloseable {
         accepted.countDown();
         Thread.ofVirtual().start(() -> pass(client));
       }
-    } catch (IOException e) {
+    } catch (IOException _) {
       // The gate is closed.
     }
   }
@@ -170,7 +170,7 @@ final class Gate implements AutoCloseable {
       Thread.ofVirtual().start(() -> {
         try {
           relay.copy(upstream.getInputStream(), client.getOutputStream());
-        } catch (IOException | InterruptedException e) {
+        } catch (IOException | InterruptedException _) {
           // One side went away.
         } finally {
           close(client);
@@ -186,14 +186,14 @@ final class Gate implements AutoCloseable {
           }
           out.write(buffer, 0, n);
         }
-      } catch (IOException e) {
+      } catch (IOException _) {
         // One side went away.
       } finally {
         ended.countDown();
         close(client);
         close(upstream);
       }
-    } catch (IOException | InterruptedException e) {
+    } catch (IOException | InterruptedException _) {
       close(client);
     }
   }
@@ -207,7 +207,7 @@ final class Gate implements AutoCloseable {
   private static void close(Socket socket) {
     try {
       socket.close();
-    } catch (IOException e) {
+    } catch (IOException _) {
       // Closed already.
     }
   }
