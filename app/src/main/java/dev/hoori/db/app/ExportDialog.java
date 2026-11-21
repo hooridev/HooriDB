@@ -247,7 +247,7 @@ final class ExportDialog {
     objectsBefore = 0;
     var app = s.app;
     var progress = new Told(app, new AtomicReference<>(Stage.RUNNING));
-    stage = progress.stage;
+    stage = progress.where;
     exporting = lane.ask(
         app,
         "export to SQL",
@@ -270,14 +270,14 @@ final class ExportDialog {
    */
   private final class Told implements Dump.Progress {
     private final App<?> app;
-    private final AtomicReference<Stage> stage;
+    private final AtomicReference<Stage> where;
     private Item last;
     private long lastRows;
-    private long told;
+    private long toldAt;
 
     Told(App<?> app, AtomicReference<Stage> stage) {
       this.app = app;
-      this.stage = stage;
+      this.where = stage;
     }
 
     @Override
@@ -286,15 +286,15 @@ final class ExportDialog {
       if (!item.equals(last)) {
         var was = last;
         var wasRows = lastRows;
-        told = now;
+        toldAt = now;
         app.post(() -> {
           if (was != null) {
             step(was, wasRows);
           }
           step(item, rows);
         });
-      } else if (now - told >= TOLD_EVERY) {
-        told = now;
+      } else if (now - toldAt >= TOLD_EVERY) {
+        toldAt = now;
         app.post(() -> step(item, rows));
       }
       last = item;
@@ -303,7 +303,7 @@ final class ExportDialog {
 
     @Override
     public boolean replacing() {
-      return stage.compareAndSet(Stage.RUNNING, Stage.REPLACING);
+      return where.compareAndSet(Stage.RUNNING, Stage.REPLACING);
     }
   }
 
