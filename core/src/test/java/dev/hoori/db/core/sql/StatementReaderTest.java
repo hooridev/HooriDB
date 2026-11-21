@@ -263,8 +263,11 @@ class StatementReaderTest {
 
   @Test
   void copyIsOnlyPostgreSqlsAndOnlyFromTheClient() throws IOException {
-    var text = "COPY t FROM '/tmp/x';\nCOPY t TO stdout;\nCOPY (SELECT 'FROM STDIN') TO stdout;\n"
-        + "COPY t FROM '/tmp/x' WHERE id IS DISTINCT FROM stdin;";
+    var text = """
+        COPY t FROM '/tmp/x';
+        COPY t TO stdout;
+        COPY (SELECT 'FROM STDIN') TO stdout;
+        COPY t FROM '/tmp/x' WHERE id IS DISTINCT FROM stdin;""";
     assertRead(
         POSTGRESQL,
         text,
