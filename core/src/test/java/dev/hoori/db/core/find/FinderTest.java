@@ -128,8 +128,13 @@ class FinderTest {
     var collection = new Table(new Database("hoori", false), "my orders", Table.Kind.TABLE);
     assertEquals(
         Optional.of("db.getCollection('my orders').find({ $or: [ { 'address.city': { $regex:"
-            + " '^42$', $options: 'i' } }, { 'address.city': Long('42') } ] })"),
+            + " '\\\\A42\\\\z', $options: 'i' } }, { 'address.city': Long('42') } ] })"),
         DocumentFinder.rows(collection, "address.city", new Search("42", Match.EQUALS, false)));
+    // A decimal as a double and as a Decimal128, which is equal to no double that is not it.
+    assertEquals(
+        Optional.of("db.getCollection('my orders').find({ $or: [ { total: { $regex: '0\\\\.1' } },"
+            + " { total: { $in: [ 0.1, Decimal128('0.1') ] } } ] })"),
+        DocumentFinder.rows(collection, "total", new Search("0.1", Match.CONTAINS, true)));
     assertEquals(
         Optional.of("db.getCollection('my orders').find({ name: { $regex: 'a\\\\.b' } })"),
         DocumentFinder.rows(collection, "name", new Search("a.b", Match.CONTAINS, true)));

@@ -75,7 +75,7 @@ public interface FindDialect {
   String contained(String text);
 
   /** The condition that the column's text equals the value. */
-  String equal(String column, boolean caseSensitive);
+  String equalText(String column, boolean caseSensitive);
 
   /** The condition that the server's regular expression, the value, matches in the column's text. */
   String matches(String column, boolean caseSensitive);

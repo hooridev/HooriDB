@@ -504,50 +504,60 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   // A database holds the tables itself: every query takes its name.
   static final class Find implements FindDialect {
 
-    private static String in(Scope scope, String column) {
+    private static String of(Scope scope, String sql) {
       if (scope != Scope.CONTAINER) {
         throw new UnsupportedOperationException("No schemas");
       }
-      return column + " = ?";
+      return sql;
     }
 
     // MariaDB's sequences are tables to the server, as the catalog leaves them out.
     @Override
     public String tables(Scope scope) {
-      return "SELECT TABLE_SCHEMA, TABLE_NAME,"
-          + " CASE WHEN TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') THEN 'v' ELSE 'r' END,"
-          + " TABLE_ROWS, DATA_LENGTH"
-          + " FROM information_schema.TABLES"
-          + " WHERE " + in(scope, "TABLE_SCHEMA") + " AND TABLE_TYPE <> 'SEQUENCE'"
-          + " ORDER BY TABLE_NAME";
+      return of(scope, """
+          SELECT TABLE_SCHEMA, TABLE_NAME,
+            CASE WHEN TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') THEN 'v' ELSE 'r' END,
+            TABLE_ROWS, DATA_LENGTH
+          FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = ? AND TABLE_TYPE <> 'SEQUENCE'
+          ORDER BY TABLE_NAME""");
     }
 
     @Override
     public String columns(Scope scope) {
-      return "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE"
-          + " FROM information_schema.COLUMNS WHERE " + in(scope, "TABLE_SCHEMA")
-          + " ORDER BY TABLE_NAME, ORDINAL_POSITION";
+      return of(scope, """
+          SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE
+          FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = ?
+          ORDER BY TABLE_NAME, ORDINAL_POSITION""");
     }
 
     @Override
     public String views(Scope scope) {
-      return "SELECT TABLE_SCHEMA, TABLE_NAME, VIEW_DEFINITION FROM information_schema.VIEWS"
-          + " WHERE " + in(scope, "TABLE_SCHEMA") + " ORDER BY TABLE_NAME";
+      return of(scope, """
+          SELECT TABLE_SCHEMA, TABLE_NAME, VIEW_DEFINITION
+          FROM information_schema.VIEWS
+          WHERE TABLE_SCHEMA = ?
+          ORDER BY TABLE_NAME""");
     }
 
     @Override
     public String routines(Scope scope) {
-      return "SELECT ROUTINE_SCHEMA, ROUTINE_NAME,"
-          + " CASE WHEN ROUTINE_TYPE = 'PROCEDURE' THEN 'p' ELSE 'f' END, ROUTINE_DEFINITION"
-          + " FROM information_schema.ROUTINES WHERE " + in(scope, "ROUTINE_SCHEMA")
-          + " AND ROUTINE_TYPE IN ('FUNCTION', 'PROCEDURE') ORDER BY ROUTINE_NAME";
+      return of(scope, """
+          SELECT ROUTINE_SCHEMA, ROUTINE_NAME,
+            CASE WHEN ROUTINE_TYPE = 'PROCEDURE' THEN 'p' ELSE 'f' END, ROUTINE_DEFINITION
+          FROM information_schema.ROUTINES
+          WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE IN ('FUNCTION', 'PROCEDURE')
+          ORDER BY ROUTINE_NAME""");
     }
 
     @Override
     public String triggers(Scope scope) {
-      return "SELECT TRIGGER_SCHEMA, EVENT_OBJECT_TABLE, TRIGGER_NAME, ACTION_STATEMENT"
-          + " FROM information_schema.TRIGGERS WHERE " + in(scope, "TRIGGER_SCHEMA")
-          + " ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME";
+      return of(scope, """
+          SELECT TRIGGER_SCHEMA, EVENT_OBJECT_TABLE, TRIGGER_NAME, ACTION_STATEMENT
+          FROM information_schema.TRIGGERS
+          WHERE TRIGGER_SCHEMA = ?
+          ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME""");
     }
 
     // LIKE and = compare by the column's collation, which says whether case counts.
@@ -602,7 +612,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     }
 
     @Override
-    public String equal(String column, boolean caseSensitive) {
+    public String equalText(String column, boolean caseSensitive) {
       return column + " = ?";
     }
 

@@ -43,6 +43,10 @@ class DocumentFinderServerTest {
       assertEquals(
           List.of("orders", "paid_orders"), orders.stream().map(Found::name).toList(), "" + orders);
       assertEquals(Found.Kind.VIEW, orders.getLast().kind());
+      // A field of dates, which no text or number is found in, has a name all the same.
+      var born = DocumentFinder.objects(session, HOORI, new Search("born", Match.EQUALS, false));
+      assertEquals(
+          List.of(new Found(Found.Kind.COLUMN, HOORI, CUSTOMERS, "born", false, null, 0, 4)), born);
     }
   }
 

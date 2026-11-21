@@ -96,7 +96,8 @@ changed and paused, and not while the tab is hidden; a session's statement is ca
 session ended after a question, never the monitor's own, and credentials in other sessions'
 statements are masked. "Find…", in a database's or schema's menu, the File menu (Control+Shift+F)
 or the palette, opens a tab that searches it on a session of its own, as contains, equals or a
-pattern, case sensitive or not: in its objects, the names of its tables, views and columns, read
+pattern, Java's or, in data of SQL, the server's, case sensitive or not: in its objects, the
+names of its tables, views and columns, read
 anew for the search, and of its routines and triggers, and the texts of its views, routines and
 triggers, of which opening one selects it in the tree or shows its definition, read-only, at the
 match in a console; or in its data, whose tables it lists first with the server's estimates of

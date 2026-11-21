@@ -17,6 +17,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -264,6 +265,35 @@ class FinderServerTest {
         assertTrue(rows.next());
         assertEquals(2, rows.getInt(1));
         assertFalse(rows.next());
+      }
+    }
+  }
+
+  @Test
+  void aSchemaNamedAsItsDatabaseHoldsItsTablesInADatabaseSearch() throws Exception {
+    var server = TestServer.of(Provider.POSTGRESQL);
+    var provider = Provider.POSTGRESQL;
+    var name = "same_" + UUID.randomUUID().toString().substring(0, 8);
+    try (var connection = Connector.open(
+                server.profile().withDatabase(TestServer.DATABASE),
+                TestServer.password(),
+                server.driver(),
+                TIMEOUT)
+            .connection();
+        var statement = connection.createStatement()) {
+      var schema = new Schema(HOORI, TestServer.DATABASE, false);
+      // Named as the user too, so first in the search path: dropped before any other test makes
+      // a table without a schema.
+      statement.execute("CREATE SCHEMA " + schema.name());
+      try {
+        statement.execute("CREATE TABLE " + schema.name() + "." + name + " (id integer)");
+        var found =
+            Finder.objects(connection, provider, HOORI, new Search(name, Match.EQUALS, true));
+        assertEquals(
+            List.of(new Table(schema, name, Table.Kind.TABLE)),
+            found.stream().map(Found::table).toList());
+      } finally {
+        statement.execute("DROP SCHEMA " + schema.name() + " CASCADE");
       }
     }
   }

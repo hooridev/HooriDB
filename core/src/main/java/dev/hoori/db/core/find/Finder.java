@@ -43,8 +43,8 @@ public final class Finder {
 
   private Finder() {}
 
-  private interface Row<T> {
-    T read(ResultSet rows) throws SQLException;
+  private interface Row {
+    void read(ResultSet rows) throws SQLException;
   }
 
   /**
@@ -89,7 +89,7 @@ public final class Finder {
               at.end())));
     }
     query(connection, provider, scope, find.views(scope(provider, scope)), rows -> {
-      var container = container(scope, rows.getString(1));
+      var container = container(provider, scope, rows.getString(1));
       var view = tables.getOrDefault(
           key(container.name(), rows.getString(2)),
           new Table(container, rows.getString(2), Table.Kind.VIEW));
@@ -105,7 +105,6 @@ public final class Finder {
               definition,
               at.start(),
               at.end())));
-      return null;
     });
     query(connection, provider, scope, find.routines(scope(provider, scope)), rows -> {
       var kind = "p".equals(rows.getString(3)) ? Found.Kind.PROCEDURE : Found.Kind.FUNCTION;
@@ -113,14 +112,13 @@ public final class Finder {
           found,
           search,
           kind,
-          container(scope, rows.getString(1)),
+          container(provider, scope, rows.getString(1)),
           null,
           rows.getString(2),
           rows.getString(4));
-      return null;
     });
     query(connection, provider, scope, find.triggers(scope(provider, scope)), rows -> {
-      var container = container(scope, rows.getString(1));
+      var container = container(provider, scope, rows.getString(1));
       var table = tables.getOrDefault(
           key(container.name(), rows.getString(2)),
           new Table(container, rows.getString(2), Table.Kind.TABLE));
@@ -132,7 +130,6 @@ public final class Finder {
           table,
           rows.getString(3),
           rows.getString(4));
-      return null;
     });
     return List.copyOf(found);
   }
@@ -188,12 +185,11 @@ public final class Finder {
     var tables = new LinkedHashMap<String, Listed>();
     var sql = provider.dialect().find().tables(scope(provider, scope));
     query(connection, provider, scope, sql, rows -> {
-      var container = container(scope, rows.getString(1));
+      var container = container(provider, scope, rows.getString(1));
       var table = new Table(container, rows.getString(2), kind(rows.getString(3)));
       tables.put(
           key(container.name(), table.name()),
           new Listed(table, optional(rows, 4), optional(rows, 5)));
-      return null;
     });
     return tables;
   }
@@ -211,11 +207,11 @@ public final class Finder {
     var columns = new ArrayList<Column>();
     var sql = provider.dialect().find().columns(scope(provider, scope));
     query(connection, provider, scope, sql, rows -> {
-      var table = tables.get(key(container(scope, rows.getString(1)).name(), rows.getString(2)));
+      var table =
+          tables.get(key(container(provider, scope, rows.getString(1)).name(), rows.getString(2)));
       if (table != null) {
         columns.add(new Column(table, rows.getString(3), rows.getString(4), true, 0));
       }
-      return null;
     });
     return columns;
   }
@@ -246,19 +242,17 @@ public final class Finder {
       var holds = find.holds(column.type());
       if (holds == Holds.NUMBER && number.isPresent()) {
         conditions.add(new Condition(column, find.equalNumber(name), number.get()));
-        continue;
+      } else if (holds == Holds.TEXT || others) {
+        var text = holds == Holds.TEXT ? name : find.asText(name);
+        conditions.add(
+            switch (search.match()) {
+              case CONTAINS ->
+                new Condition(
+                    column, find.contains(text, sensitive), find.contained(search.text()));
+              case EQUALS -> new Condition(column, find.equalText(text, sensitive), search.text());
+              case PATTERN -> new Condition(column, find.matches(text, sensitive), search.text());
+            });
       }
-      if (holds != Holds.TEXT && !others) {
-        continue;
-      }
-      var text = holds == Holds.TEXT ? name : find.asText(name);
-      conditions.add(
-          switch (search.match()) {
-            case CONTAINS ->
-              new Condition(column, find.contains(text, sensitive), find.contained(search.text()));
-            case EQUALS -> new Condition(column, find.equal(text, sensitive), search.text());
-            case PATTERN -> new Condition(column, find.matches(text, sensitive), search.text());
-          });
     }
     return conditions;
   }
@@ -287,6 +281,7 @@ public final class Finder {
         sql,
         rows -> Outcome.rows(rows),
         () -> Query.run(connection, provider, sql, statement -> {
+          // Each value twice: in the list of what is read, then in the condition.
           int at = 1;
           for (int round = 0; round < 2; round++) {
             for (var condition : conditions) {
@@ -294,33 +289,28 @@ public final class Finder {
             }
           }
           try (var rows = statement.executeQuery()) {
-            int matched = 0;
-            while (rows.next()) {
-              matched++;
-              if (matched > Search.LIMIT) {
-                break;
-              }
-              for (int i = 0; i < counts.length; i++) {
-                if (rows.getBoolean(i + 1)) {
-                  counts[i]++;
-                }
-              }
-            }
-            return matched;
+            return count(rows, counts);
           }
         }));
-    var hits = new ArrayList<Hits.Hit>();
-    for (int i = 0; i < counts.length; i++) {
-      if (counts[i] > 0) {
-        hits.add(new Hits.Hit(conditions.get(i).column().name(), counts[i]));
+    var names = conditions.stream().map(c -> c.column().name()).toList();
+    return Hits.of(table, names, counts, read);
+  }
+
+  // The rows read, up to one more than the limit, with how many of those within it matched in
+  // each column.
+  private static int count(ResultSet rows, int[] counts) throws SQLException {
+    int matched = 0;
+    while (matched <= Search.LIMIT && rows.next()) {
+      matched++;
+      if (matched <= Search.LIMIT) {
+        for (int i = 0; i < counts.length; i++) {
+          if (rows.getBoolean(i + 1)) {
+            counts[i]++;
+          }
+        }
       }
     }
-    return new Hits(
-        table,
-        conditions.stream().map(c -> c.column().name()).toList(),
-        hits,
-        Math.min(read, Search.LIMIT),
-        read > Search.LIMIT);
+    return matched;
   }
 
   /**
@@ -394,15 +384,14 @@ public final class Finder {
 
   // The container of an object a query gave: the scope itself, or the schema it names in the
   // database that stands for its schemas, which is none of the server's own.
-  private static Container container(Container scope, String schema) {
-    return switch (scope) {
-      case Schema s -> s;
-      case Database d -> d.name().equals(schema) ? d : new Schema(d, schema, false);
-    };
+  private static Container container(Provider provider, Container scope, String schema) {
+    return scope instanceof Database d && scope(provider, scope) == Scope.USER_SCHEMAS
+        ? new Schema(d, schema, false)
+        : scope;
   }
 
   private static void query(
-      Connection connection, Provider provider, Container scope, String sql, Row<?> row)
+      Connection connection, Provider provider, Container scope, String sql, Row row)
       throws QueryException {
     requireConnectedTo(connection, provider, scope.database());
     boolean parameter = scope(provider, scope) == Scope.CONTAINER;

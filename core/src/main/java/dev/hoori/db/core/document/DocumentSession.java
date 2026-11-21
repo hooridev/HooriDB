@@ -74,7 +74,7 @@ public final class DocumentSession implements AutoCloseable {
    * As {@link #command(String, Document)}, for the purpose given, which {@link Journal} records
    * with it.
    */
-  public Document command(Purpose purpose, String database, Document command)
+  private Document command(Purpose purpose, String database, Document command)
       throws DocumentException {
     if (retired) {
       throw DocumentException.of(
@@ -492,8 +492,12 @@ public final class DocumentSession implements AutoCloseable {
     return new Cursor(Purpose.STATEMENT, database, reply);
   }
 
-  // All the documents of a command that opens a cursor, which is freed where reading it fails.
-  private List<Document> all(Purpose purpose, String database, Document command)
+  /**
+   * All the documents of a command that opens a cursor, run as {@link #command(String, Document)}
+   * runs it, with its {@code getMore} and {@code killCursors} for the purpose given; the cursor is
+   * freed where reading it fails.
+   */
+  public List<Document> all(Purpose purpose, String database, Document command)
       throws DocumentException {
     var cursor = new Cursor(purpose, database, command(purpose, database, command));
     var documents = new ArrayList<Document>();

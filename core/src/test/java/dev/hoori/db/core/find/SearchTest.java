@@ -1,12 +1,12 @@
 package dev.hoori.db.core.find;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.find.Search.Match;
 import dev.hoori.db.core.find.Search.Place;
+import dev.hoori.db.core.find.Search.Reader;
 import java.math.BigDecimal;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -33,6 +33,7 @@ class SearchTest {
     var search = new Search("customer", Match.EQUALS, false);
     assertEquals(Optional.of(new Place(0, 8)), search.in("Customer"));
     assertEquals(Optional.empty(), search.in("customers"));
+    assertEquals(Optional.empty(), search.in("customer\n"));
   }
 
   @Test
@@ -40,14 +41,23 @@ class SearchTest {
     var search = new Search("cust.m", Match.PATTERN, false);
     assertEquals(Optional.of(new Place(3, 9)), search.in("my_customer"));
     assertEquals(
-        "The pattern is not valid: Unclosed character class.", Search.problem("[a", Match.PATTERN));
-    assertThrows(IllegalArgumentException.class, () -> new Search("[a", Match.PATTERN, false));
+        Optional.of("The pattern is not valid: Unclosed character class."),
+        Search.problem("[a", Match.PATTERN, Reader.HOORIDB));
+  }
+
+  @Test
+  void aPatternTheServerReadsIsLeftToIt() {
+    // PostgreSQL's word boundaries, which Java does not know.
+    assertEquals(Optional.empty(), Search.problem("\\mcat\\M", Match.PATTERN, Reader.SERVER));
+    assertEquals("\\mcat\\M", new Search("\\mcat\\M", Match.PATTERN, false).text());
   }
 
   @Test
   void nothingIsNoSearch() {
-    assertEquals("Enter what to find.", Search.problem("", Match.CONTAINS));
-    assertNull(Search.problem("x", Match.EQUALS));
+    assertEquals(
+        Optional.of("Enter what to find."), Search.problem("", Match.CONTAINS, Reader.SERVER));
+    assertEquals(Optional.empty(), Search.problem("x", Match.EQUALS, Reader.HOORIDB));
+    assertThrows(IllegalArgumentException.class, () -> new Search("", Match.CONTAINS, false));
   }
 
   @Test

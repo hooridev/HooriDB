@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Searches a server of documents, through {@link DocumentSession#command}, so that a read-only
@@ -94,7 +95,7 @@ public final class DocumentFinder {
     };
   }
 
-  /** What the values at a path held in the sample. */
+  /** What the values at a path held in the sample that a text or a number is found in. */
   private enum Held {
     TEXT,
     NUMBER
@@ -115,26 +116,13 @@ public final class DocumentFinder {
     var number = search.number();
     var searched = new ArrayList<String>();
     var any = new ArrayList<Object>();
-    for (var field : fields.entrySet()) {
-      var condition = condition(field.getKey(), field.getValue(), search, number);
-      if (condition != null) {
-        searched.add(field.getKey());
-        any.add(condition);
-      }
-    }
+    fields.forEach((path, held) -> condition(path, held, search, number).ifPresent(condition -> {
+      searched.add(path);
+      any.add(condition);
+    }));
     if (searched.isEmpty()) {
       return Hits.none(collection);
     }
-    // Only the first part of each path, as two paths of one field would collide.
-    var projection = new LinkedHashMap<String, Object>();
-    for (var path : searched) {
-      projection.put(path.split("\\.", 2)[0], 1);
-    }
-    var shown = new ArrayList<Object>();
-    projection.forEach((name, one) -> {
-      shown.add(name);
-      shown.add(one);
-    });
     int limit = Search.LIMIT + 1;
     var command = Document.of(
         "find",
@@ -142,7 +130,7 @@ public final class DocumentFinder {
         "filter",
         Document.of("$or", Document.array(any)),
         "projection",
-        Document.of(shown.toArray()),
+        projection(searched),
         "limit",
         limit,
         "batchSize",
@@ -150,53 +138,64 @@ public final class DocumentFinder {
     var documents = all(session, collection, command);
     var pattern = search.pattern();
     var counts = new int[searched.size()];
-    int matched = 0;
-    for (var document : documents) {
-      if (++matched > Search.LIMIT) {
-        break;
-      }
+    for (var document : documents.subList(0, Math.min(documents.size(), Search.LIMIT))) {
       for (int i = 0; i < counts.length; i++) {
         var path = searched.get(i);
-        for (var value : values(document, path)) {
-          boolean hit = value instanceof String text
-              ? fields.get(path).contains(Held.TEXT) && pattern.matcher(text).find()
-              : number.isPresent()
-                  && number(value).map(n -> n.compareTo(number.get()) == 0).orElse(false);
-          if (hit) {
-            counts[i]++;
-            break;
-          }
+        var held = fields.get(path);
+        if (values(document, path).stream().anyMatch(v -> hit(v, held, pattern, number))) {
+          counts[i]++;
         }
       }
     }
-    var hits = new ArrayList<Hits.Hit>();
-    for (int i = 0; i < counts.length; i++) {
-      if (counts[i] > 0) {
-        hits.add(new Hits.Hit(searched.get(i), counts[i]));
-      }
-    }
-    return new Hits(
-        collection, searched, hits, Math.min(matched, Search.LIMIT), matched > Search.LIMIT);
+    return Hits.of(collection, searched, counts, documents.size());
   }
 
-  // The condition on the field: $regex for text, equality for a number; null where it holds
+  // Only the first part of each path, as two paths of one field would collide.
+  private static Document projection(List<String> paths) {
+    var projection = new LinkedHashMap<String, Object>();
+    for (var path : paths) {
+      projection.put(path.split("\\.", 2)[0], 1);
+    }
+    var shown = new ArrayList<Object>();
+    projection.forEach((name, one) -> {
+      shown.add(name);
+      shown.add(one);
+    });
+    return Document.of(shown.toArray());
+  }
+
+  // Whether the value matches as the condition on its field asks.
+  private static boolean hit(
+      Object value, Set<Held> held, Pattern pattern, Optional<BigDecimal> number) {
+    if (value instanceof String text) {
+      return held.contains(Held.TEXT) && pattern.matcher(text).find();
+    }
+    return held.contains(Held.NUMBER)
+        && number.isPresent()
+        && number(value).map(n -> n.compareTo(number.get()) == 0).orElse(false);
+  }
+
+  // The condition on the field: $regex for text, equality for a number; empty where it holds
   // neither that can match.
-  private static Document condition(
+  private static Optional<Document> condition(
       String path, Set<Held> held, Search search, Optional<BigDecimal> number) {
     var conditions = new ArrayList<Object>();
     if (held.contains(Held.TEXT)) {
-      var regex = Document.of("$regex", regex(search));
-      conditions.add(
-          Document.of(path, search.caseSensitive() ? regex : regex.with("$options", "i")));
+      conditions.add(text(path, search));
     }
     if (held.contains(Held.NUMBER) && number.isPresent()) {
       conditions.add(Document.of(path, value(number.get())));
     }
     return switch (conditions.size()) {
-      case 0 -> null;
-      case 1 -> (Document) conditions.getFirst();
-      default -> Document.of("$or", Document.array(conditions));
+      case 0 -> Optional.empty();
+      case 1 -> Optional.of((Document) conditions.getFirst());
+      default -> Optional.of(Document.of("$or", Document.array(conditions)));
     };
+  }
+
+  private static Document text(String path, Search search) {
+    var regex = Document.of("$regex", regex(search));
+    return Document.of(path, search.caseSensitive() ? regex : regex.with("$options", "i"));
   }
 
   /**
@@ -206,8 +205,7 @@ public final class DocumentFinder {
    */
   public static Optional<String> rows(Table collection, String path, Search search) {
     var conditions = new ArrayList<Object>();
-    var regex = Document.of("$regex", regex(search));
-    conditions.add(Document.of(path, search.caseSensitive() ? regex : regex.with("$options", "i")));
+    conditions.add(text(path, search));
     search.number().ifPresent(n -> conditions.add(Document.of(path, value(n))));
     var filter = conditions.size() == 1
         ? (Document) conditions.getFirst()
@@ -221,7 +219,7 @@ public final class DocumentFinder {
   private static String regex(Search search) {
     return switch (search.match()) {
       case CONTAINS -> literal(search.text());
-      case EQUALS -> "^" + literal(search.text()) + "$";
+      case EQUALS -> "\\A" + literal(search.text()) + "\\z";
       case PATTERN -> search.text();
     };
   }
@@ -238,12 +236,15 @@ public final class DocumentFinder {
     return out.toString();
   }
 
-  // A number as the server compares it: a whole one as a long, else as a double.
+  // A number as the server compares it: a whole one as a long, which every type of number is
+  // equal to; else as a double, for the doubles, or as a decimal of the text, for a Decimal128,
+  // which is equal to no double that is not exactly it, as 0.1 is not.
   private static Object value(BigDecimal number) {
     try {
       return number.longValueExact();
-    } catch (ArithmeticException e) {
-      return number.doubleValue();
+    } catch (ArithmeticException _) {
+      return Document.of(
+          "$in", Document.array(number.doubleValue(), new Bson.Decimal128(number.toString())));
     }
   }
 
@@ -284,7 +285,8 @@ public final class DocumentFinder {
     }
   }
 
-  // The paths of the documents' fields that hold text or numbers, in the order they first came.
+  // The paths of the documents' fields, in the order they first came, with what of their values
+  // a text or a number is found in.
   private static Map<String, Set<Held>> fields(List<Document> documents) {
     var fields = new LinkedHashMap<String, Set<Held>>();
     for (var document : documents) {
@@ -300,10 +302,10 @@ public final class DocumentFinder {
   }
 
   private static void held(String path, Object value, Map<String, Set<Held>> fields) {
+    var held = fields.computeIfAbsent(path, p -> new LinkedHashSet<>());
     switch (value) {
-      case String _ -> fields.computeIfAbsent(path, p -> new LinkedHashSet<>()).add(Held.TEXT);
-      case Integer _, Long _, Double _, Bson.Decimal128 _ ->
-        fields.computeIfAbsent(path, p -> new LinkedHashSet<>()).add(Held.NUMBER);
+      case String _ -> held.add(Held.TEXT);
+      case Integer _, Long _, Double _, Bson.Decimal128 _ -> held.add(Held.NUMBER);
       case Document d -> fields(d, path + ".", fields);
       case List<?> items -> {
         for (var item : items) {
@@ -339,30 +341,11 @@ public final class DocumentFinder {
     }
   }
 
-  // Every document of the command's cursor, which is freed where reading fails.
+  // Every document of the command's cursor.
   private static List<Document> all(DocumentSession session, Table collection, Document command)
       throws QueryException {
-    var database = collection.container().database().name();
     try {
-      var cursor = session.cursor(database, session.command(Purpose.SEARCH, database, command));
-      var documents = new ArrayList<Document>();
-      try {
-        while (cursor.more()) {
-          var next = cursor.next(Integer.MAX_VALUE);
-          if (next.isEmpty()) {
-            break;
-          }
-          documents.addAll(next);
-        }
-      } catch (DocumentException e) {
-        try {
-          cursor.close();
-        } catch (DocumentException left) {
-          e.addSuppressed(left);
-        }
-        throw e;
-      }
-      return documents;
+      return session.all(Purpose.SEARCH, collection.container().database().name(), command);
     } catch (DocumentException e) {
       throw DocumentSession.query(e);
     }

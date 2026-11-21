@@ -871,9 +871,10 @@ public final class PostgreSql implements Dialect {
       };
     }
 
-    // The relation c is one the catalog lists, in the schema n of the scope.
-    private static String relations(Scope scope) {
-      return " FROM pg_catalog.pg_class c" + Catalog.JOIN_SCHEMA + " WHERE c.relkind"
+    // The relation c is one the catalog lists, in the schema n of the scope, with what the joins
+    // add.
+    private static String relations(Scope scope, String joins) {
+      return "FROM pg_catalog.pg_class c" + Catalog.JOIN_SCHEMA + joins + " WHERE c.relkind"
           + Catalog.PG_KINDS + " AND " + in(scope);
     }
 
@@ -881,56 +882,59 @@ public final class PostgreSql implements Dialect {
     // analyzed, as reltuples says with -1 or, before PostgreSQL 14, with 0 pages, none.
     @Override
     public String tables(Scope scope) {
-      return "SELECT n.nspname, c.relname, c.relkind,"
-          + " CASE WHEN c.relkind" + EQ + "ANY ('{r,p,m}'::pg_catalog.\"char\"[])"
-          + " AND c.reltuples OPERATOR(pg_catalog.>=) 0 AND c.relpages OPERATOR(pg_catalog.>) 0"
-          + " THEN CAST(c.reltuples AS pg_catalog.int8) END,"
-          + " CASE WHEN c.relkind" + EQ + "ANY ('{r,m}'::pg_catalog.\"char\"[])"
-          + " THEN pg_catalog.pg_table_size(c.oid) END"
-          + relations(scope)
-          + " ORDER BY n.nspname, c.relname";
+      return """
+          SELECT n.nspname, c.relname, c.relkind,
+            CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{r,p,m}'::pg_catalog."char"[])
+              AND c.reltuples OPERATOR(pg_catalog.>=) 0 AND c.relpages OPERATOR(pg_catalog.>) 0
+              THEN CAST(c.reltuples AS pg_catalog.int8) END,
+            CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{r,m}'::pg_catalog."char"[])
+              THEN pg_catalog.pg_table_size(c.oid) END
+          %s
+          ORDER BY n.nspname, c.relname""".formatted(relations(scope, ""));
     }
 
     @Override
     public String columns(Scope scope) {
-      return "SELECT n.nspname, c.relname, a.attname,"
-          + " pg_catalog.format_type(a.atttypid, a.atttypmod)"
-          + " FROM pg_catalog.pg_class c" + Catalog.JOIN_SCHEMA
-          + " JOIN pg_catalog.pg_attribute a ON a.attrelid" + EQ + "c.oid"
-          + " WHERE c.relkind" + Catalog.PG_KINDS + " AND " + in(scope)
-          + " AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
-          + " ORDER BY n.nspname, c.relname, a.attnum";
+      return """
+          SELECT n.nspname, c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod)
+          %s
+            AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped
+          ORDER BY n.nspname, c.relname, a.attnum""".formatted(relations(
+          scope, " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid"));
     }
 
     @Override
     public String views(Scope scope) {
-      return "SELECT n.nspname, c.relname, pg_catalog.pg_get_viewdef(c.oid)"
-          + " FROM pg_catalog.pg_class c" + Catalog.JOIN_SCHEMA
-          + " WHERE c.relkind" + EQ + "ANY ('{v,m}'::pg_catalog.\"char\"[]) AND " + in(scope)
-          + " ORDER BY n.nspname, c.relname";
+      return """
+          SELECT n.nspname, c.relname, pg_catalog.pg_get_viewdef(c.oid)
+          FROM pg_catalog.pg_class c%s
+          WHERE c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog."char"[]) AND %s
+          ORDER BY n.nspname, c.relname""".formatted(Catalog.JOIN_SCHEMA, in(scope));
     }
 
     // Functions and procedures, not aggregates or window functions, which have no text of their
     // own; those an extension made are the extension's.
     @Override
     public String routines(Scope scope) {
-      return "SELECT n.nspname, p.proname, p.prokind, pg_catalog.pg_get_functiondef(p.oid)"
-          + " FROM pg_catalog.pg_proc p"
-          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "p.pronamespace"
-          + " WHERE p.prokind" + EQ + "ANY ('{f,p}'::pg_catalog.\"char\"[]) AND " + in(scope)
-          + " AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d"
-          + " WHERE d.classid" + EQ + "'pg_catalog.pg_proc'::pg_catalog.regclass"
-          + " AND d.objid" + EQ + "p.oid AND d.deptype" + EQ + "'e')"
-          + " ORDER BY n.nspname, p.proname, p.oid";
+      return """
+          SELECT n.nspname, p.proname, p.prokind, pg_catalog.pg_get_functiondef(p.oid)
+          FROM pg_catalog.pg_proc p
+          JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
+          WHERE p.prokind OPERATOR(pg_catalog.=) ANY ('{f,p}'::pg_catalog."char"[]) AND %s
+            AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d
+              WHERE d.classid OPERATOR(pg_catalog.=) 'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND d.objid OPERATOR(pg_catalog.=) p.oid AND d.deptype OPERATOR(pg_catalog.=) 'e')
+          ORDER BY n.nspname, p.proname, p.oid""".formatted(in(scope));
     }
 
     @Override
     public String triggers(Scope scope) {
-      return "SELECT n.nspname, c.relname, t.tgname, pg_catalog.pg_get_triggerdef(t.oid, true)"
-          + " FROM pg_catalog.pg_trigger t"
-          + " JOIN pg_catalog.pg_class c ON c.oid" + EQ + "t.tgrelid" + Catalog.JOIN_SCHEMA
-          + " WHERE NOT t.tgisinternal AND " + in(scope)
-          + " ORDER BY n.nspname, c.relname, t.tgname";
+      return """
+          SELECT n.nspname, c.relname, t.tgname, pg_catalog.pg_get_triggerdef(t.oid, true)
+          FROM pg_catalog.pg_trigger t
+          JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) t.tgrelid%s
+          WHERE NOT t.tgisinternal AND %s
+          ORDER BY n.nspname, c.relname, t.tgname""".formatted(Catalog.JOIN_SCHEMA, in(scope));
     }
 
     private static final Set<String> TEXTS = Set.of(
@@ -978,7 +982,7 @@ public final class PostgreSql implements Dialect {
     }
 
     @Override
-    public String equal(String column, boolean caseSensitive) {
+    public String equalText(String column, boolean caseSensitive) {
       return caseSensitive
           ? asText(column) + EQ + "?"
           : "pg_catalog.lower(" + asText(column) + ")" + EQ + "pg_catalog.lower(?)";

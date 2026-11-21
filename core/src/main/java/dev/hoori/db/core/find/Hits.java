@@ -1,6 +1,7 @@
 package dev.hoori.db.core.find;
 
 import dev.hoori.db.core.catalog.Table;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -25,5 +26,19 @@ public record Hits(Table table, List<String> searched, List<Hit> columns, int ro
   /** A table that has no column to search, which was not read. */
   public static Hits none(Table table) {
     return new Hits(table, List.of(), List.of(), 0, false);
+  }
+
+  /**
+   * The hits of the columns searched, by the counts of each, in their order, of the rows that
+   * matched, which may be more than {@link Search#LIMIT}; a column without one is left out.
+   */
+  static Hits of(Table table, List<String> searched, int[] counts, int matched) {
+    var hits = new ArrayList<Hit>();
+    for (int i = 0; i < counts.length; i++) {
+      if (counts[i] > 0) {
+        hits.add(new Hit(searched.get(i), counts[i]));
+      }
+    }
+    return new Hits(table, searched, hits, Math.min(matched, Search.LIMIT), matched > Search.LIMIT);
   }
 }

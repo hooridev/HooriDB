@@ -28,45 +28,65 @@ public record Search(String text, Match match, boolean caseSensitive) {
   /** At most this many rows of a table count as hits, before a search there stops. */
   public static final int LIMIT = 1_000;
 
+  /** Who matches a pattern: HooriDB, as Java's regular expressions read it, or the server. */
+  public enum Reader {
+    /** HooriDB, in names and definitions, and in the values a server of documents gave. */
+    HOORIDB,
+    /** The server, in the data of a server of SQL, which reports a pattern it cannot read. */
+    SERVER
+  }
+
   /**
-   * @throws IllegalArgumentException where {@link #problem} says why it cannot be searched for
+   * @throws IllegalArgumentException where the text is empty
    */
   public Search {
     Objects.requireNonNull(text, "text");
     Objects.requireNonNull(match, "match");
-    var problem = problem(text, match);
-    if (problem != null) {
-      throw new IllegalArgumentException(problem);
+    if (text.isEmpty()) {
+      throw new IllegalArgumentException(EMPTY);
     }
   }
 
-  /** Why the text cannot be searched for so, as a sentence; null where it can. */
-  public static String problem(String text, Match match) {
+  private static final String EMPTY = "Enter what to find.";
+
+  /**
+   * Why the text cannot be searched for so where the reader matches it, as a sentence; empty where
+   * it can.
+   */
+  public static Optional<String> problem(String text, Match match, Reader reader) {
     if (text.isEmpty()) {
-      return "Enter what to find.";
+      return Optional.of(EMPTY);
     }
-    if (match == Match.PATTERN) {
+    if (match == Match.PATTERN && reader == Reader.HOORIDB) {
       try {
         Pattern.compile(text);
       } catch (PatternSyntaxException e) {
-        return "The pattern is not valid: " + e.getDescription() + ".";
+        return Optional.of("The pattern is not valid: " + e.getDescription() + ".");
       }
     }
-    return null;
+    return Optional.empty();
   }
 
-  /** The text as a pattern of Java's, which finds where it matches as {@link #match} says. */
+  /**
+   * The text as a pattern of Java's, which finds where it matches as {@link #match} says.
+   *
+   * @throws PatternSyntaxException where the text is a pattern that only a server can read
+   */
   public Pattern pattern() {
     var regex = switch (match) {
       case CONTAINS -> Pattern.quote(text);
-      case EQUALS -> "^" + Pattern.quote(text) + "$";
+      case EQUALS -> "\\A" + Pattern.quote(text) + "\\z";
       case PATTERN -> text;
     };
     return Pattern.compile(
         regex, caseSensitive ? 0 : Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
   }
 
-  /** Where it is found first in the text, or empty where it is not. */
+  /**
+   * Where it is found first in the text, or empty where it is not.
+   *
+   * @throws PatternSyntaxException as {@link #pattern} does
+   */
   public Optional<Place> in(String value) {
     if (value == null) {
       return Optional.empty();
@@ -92,7 +112,7 @@ public record Search(String text, Match match, boolean caseSensitive) {
     }
     try {
       return Optional.of(new BigDecimal(trimmed));
-    } catch (NumberFormatException e) {
+    } catch (NumberFormatException _) {
       return Optional.empty();
     }
   }
