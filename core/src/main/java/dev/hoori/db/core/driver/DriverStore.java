@@ -83,7 +83,7 @@ public final class DriverStore {
   static final int MAX_CANDIDATES = 5;
   private static final int MAX_METADATA_SIZE = 4 << 20;
   private static final int MAX_CHECKSUM_SIZE = 1024;
-  private static final Pattern SPACE = Pattern.compile("\\s");
+  private static final Pattern WHITESPACE = Pattern.compile("\\s");
 
   // What a version's folder is published under, by its path.
   private static final ConcurrentHashMap<Path, Object> PUBLISHING = new ConcurrentHashMap<>();
@@ -833,8 +833,8 @@ public final class DriverStore {
   private String checksum(String path, int length) throws DriverException {
     var text = new String(fetch(path, MAX_CHECKSUM_SIZE), StandardCharsets.US_ASCII).strip();
     // The file holds the hexadecimal digest, sometimes followed by the file's name.
-    var space = SPACE.matcher(text);
-    var digest = (space.find() ? text.substring(0, space.start()) : text).toLowerCase(Locale.ROOT);
+    var blank = WHITESPACE.matcher(text);
+    var digest = (blank.find() ? text.substring(0, blank.start()) : text).toLowerCase(Locale.ROOT);
     if (digest.length() != length || !digest.chars().allMatch(HexFormat::isHexDigit)) {
       throw new DriverException(INVALID_RESPONSE, path);
     }
