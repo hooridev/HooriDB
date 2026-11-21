@@ -144,13 +144,21 @@ class FinderTest {
   @Test
   void aDecimalGoesOnlyAsWhatCanHoldIt() {
     var collection = new Table(new Database("hoori", false), "orders", Table.Kind.TABLE);
-    // More digits than a Decimal128 holds: as a double alone, which the driver takes.
+    // More digits than a Decimal128 or a double holds: as text alone, since no number equals it.
     var digits = "0.12345678901234567890123456789012345";
     assertEquals(
-        Optional.of("db.getCollection('orders').find({ $or: [ { total: { $regex: '"
-            + digits.replace(".", "\\\\.") + "' } }, { total: { $in: [ 0.12345678901234568 ] } }"
-            + " ] })"),
+        Optional.of("db.getCollection('orders').find({ total: { $regex: '"
+            + digits.replace(".", "\\\\.") + "' } })"),
         DocumentFinder.rows(collection, "total", new Search(digits, Match.CONTAINS, true)));
+    // Below a double's range, where it would be 0.0, and beyond a Decimal128's: as text alone.
+    assertEquals(
+        Optional.of("db.getCollection('orders').find({ total: { $regex: '1E\\\\-6177' } })"),
+        DocumentFinder.rows(collection, "total", new Search("1E-6177", Match.CONTAINS, true)));
+    // Below a double's range but within a Decimal128's: as a Decimal128 alone.
+    assertEquals(
+        Optional.of("db.getCollection('orders').find({ $or: [ { total: { $regex: '1E\\\\-400' } },"
+            + " { total: { $in: [ Decimal128('1E-400') ] } } ] })"),
+        DocumentFinder.rows(collection, "total", new Search("1E-400", Match.CONTAINS, true)));
     // Beyond a double's range: as a Decimal128 alone.
     assertEquals(
         Optional.of("db.getCollection('orders').find({ $or: [ { total: { $regex: '1\\\\.5E400' } },"

@@ -188,8 +188,8 @@ public final class DocumentFinder {
     if (held.contains(Held.TEXT)) {
       conditions.add(text(path, search));
     }
-    if (held.contains(Held.NUMBER) && number.isPresent()) {
-      conditions.add(Document.of(path, value(number.get())));
+    if (held.contains(Held.NUMBER)) {
+      number.flatMap(DocumentFinder::value).ifPresent(v -> conditions.add(Document.of(path, v)));
     }
     return switch (conditions.size()) {
       case 0 -> Optional.empty();
@@ -211,7 +211,10 @@ public final class DocumentFinder {
   public static Optional<String> rows(Table collection, String path, Search search) {
     var conditions = new ArrayList<Object>();
     conditions.add(text(path, search));
-    search.number().ifPresent(n -> conditions.add(Document.of(path, value(n))));
+    search
+        .number()
+        .flatMap(DocumentFinder::value)
+        .ifPresent(v -> conditions.add(Document.of(path, v)));
     var filter = conditions.size() == 1
         ? (Document) conditions.getFirst()
         : Document.of("$or", Document.array(conditions));
@@ -243,22 +246,25 @@ public final class DocumentFinder {
 
   // A number as the server compares it: a whole one as a long, which every type of number is
   // equal to; else as a double, for the doubles, or as a decimal of the text, for a Decimal128,
-  // which is equal to no double that is not exactly it, as 0.1 is not. Each only where it can
-  // hold the number: a double where it is finite, a Decimal128 where it is exact, which the
-  // driver refuses otherwise; and nothing of a number neither can hold, which no field equals.
-  private static Object value(BigDecimal number) {
+  // which is equal to no double that is not exactly it, as 0.1 is not. Each only where it holds
+  // the number: a double whose shortest decimal is the number, so that 1E-6177 does not become
+  // 0.0, and a Decimal128 where it is exact, which the driver refuses otherwise; empty for a
+  // number neither holds, which no field equals.
+  private static Optional<Object> value(BigDecimal number) {
     try {
-      return number.longValueExact();
+      return Optional.of(number.longValueExact());
     } catch (ArithmeticException _) {
       var operands = new ArrayList<Object>();
       double asDouble = number.doubleValue();
-      if (Double.isFinite(asDouble)) {
+      if (Double.isFinite(asDouble) && BigDecimal.valueOf(asDouble).compareTo(number) == 0) {
         operands.add(asDouble);
       }
       if (decimal128(number)) {
         operands.add(new Bson.Decimal128(number.toString()));
       }
-      return Document.of("$in", Document.array(operands));
+      return operands.isEmpty()
+          ? Optional.empty()
+          : Optional.of(Document.of("$in", Document.array(operands)));
     }
   }
 
