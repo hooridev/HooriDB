@@ -338,8 +338,22 @@ class DumpServerTest {
     public void close() throws ConnectionException, SQLException {
       try (var admin = open(TestServer.DATABASE)) {
         var force = provider == Provider.POSTGRESQL ? " WITH (FORCE)" : "";
-        execute(admin, "DROP DATABASE IF EXISTS " + provider.quote(source) + force);
-        execute(admin, "DROP DATABASE IF EXISTS " + provider.quote(target) + force);
+        // Each drop is tried, also where the other failed, and the first failure is thrown.
+        SQLException failed = null;
+        for (var name : List.of(source, target)) {
+          try {
+            execute(admin, "DROP DATABASE IF EXISTS " + provider.quote(name) + force);
+          } catch (SQLException e) {
+            if (failed == null) {
+              failed = e;
+            } else {
+              failed.addSuppressed(e);
+            }
+          }
+        }
+        if (failed != null) {
+          throw failed;
+        }
       }
     }
   }
