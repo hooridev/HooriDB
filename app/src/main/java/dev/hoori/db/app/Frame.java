@@ -50,7 +50,8 @@ final class Frame {
     // One dialog at a time: what the catalog asks waits for the others to close.
     El asked = ownDialog(s) ? null : s.catalog.dialog(s, main);
     El question = question(s, main);
-    boolean before = ownDialog(s) || asked != null || s.driverList != null || question != null;
+    boolean before =
+        ownDialog(s) || asked != null || s.dialogs.driverList != null || question != null;
     El confirmation = before ? null : confirmation(s, main);
     boolean modal = before || confirmation != null;
     closePalette(s, main, modal);
@@ -84,23 +85,23 @@ final class Frame {
             s.message == null ? null : StatusBar.text(s.message).key("message"),
             List.of(
                 s.logPanel.toggle(s, modal),
-                StatusBar.item(null, s.version, modal ? null : () -> s.about = true)
+                StatusBar.item(null, s.version, modal ? null : () -> s.dialogs.about = true)
                     .key("version"))));
     closeOnRequest(s);
-    if (s.dialog != null) {
-      root.overlay(s.dialog.view(s))
-          .overlay(s.dialog.driverDialog(s))
-          .overlay(s.dialog.question(s));
+    if (s.dialogs.dialog != null) {
+      root.overlay(s.dialogs.dialog.view(s))
+          .overlay(s.dialogs.dialog.driverDialog(s))
+          .overlay(s.dialogs.dialog.question(s));
     }
-    root.overlay(s.deleting == null ? null : deleteDialog(s));
-    root.overlay(s.folderDialog == null ? null : s.folderDialog.view(s));
-    root.overlay(s.about ? aboutDialog(s) : null);
+    root.overlay(s.dialogs.deleting == null ? null : deleteDialog(s));
+    root.overlay(s.dialogs.folderDialog == null ? null : s.dialogs.folderDialog.view(s));
+    root.overlay(s.dialogs.about ? aboutDialog(s) : null);
     root.overlay(asked);
     root.overlay(question);
     root.overlay(confirmation);
     root.overlay(confirmation == null ? null : historyQuestion(s, main));
-    if (s.driverList != null && !ownDialog(s) && asked == null) {
-      root.overlay(s.driverList.view(s)).overlay(s.driverList.question(s));
+    if (s.dialogs.driverList != null && !ownDialog(s) && asked == null) {
+      root.overlay(s.dialogs.driverList.view(s)).overlay(s.dialogs.driverList.question(s));
     }
     return root.overlay(modal ? null : palette(s, main, menus));
   }
@@ -118,7 +119,10 @@ final class Frame {
    * which what the catalog asks, the drivers and the confirmations wait for.
    */
   private static boolean ownDialog(State s) {
-    return s.dialog != null || s.deleting != null || s.folderDialog != null || s.about;
+    return s.dialogs.dialog != null
+        || s.dialogs.deleting != null
+        || s.dialogs.folderDialog != null
+        || s.dialogs.about;
   }
 
   /**
@@ -504,9 +508,10 @@ final class Frame {
             .state(s.removal.running ? Button.State.BUSY : Button.State.READY));
     El content = col()
         .gap(t.space().m())
-        .child(label("Delete the connection " + State.name(s.deleting) + "?"))
+        .child(label("Delete the connection " + State.name(s.dialogs.deleting) + "?"))
         .child(
-            s.tables(s.deleting.id()).isEmpty() && s.consoles(s.deleting.id()).isEmpty()
+            s.tables(s.dialogs.deleting.id()).isEmpty()
+                    && s.consoles(s.dialogs.deleting.id()).isEmpty()
                 ? null
                 : label(Label.Variant.MUTED, "Its open tabs close."))
         .child(label(
@@ -584,7 +589,7 @@ final class Frame {
     Theme t = Theme.CURRENT.get();
     float side = t.size().icon();
     El mark = AppIcon.appIcon(Math.round(side), HooriDb.COLOR, Symbol.DATABASE).size(side, side);
-    Runnable close = () -> s.about = false;
+    Runnable close = () -> s.dialogs.about = false;
     El ok = button(Button.Variant.PRIMARY, "Close", close);
     El content = Properties.properties(
             List.of(
@@ -648,7 +653,7 @@ final class Frame {
                     "Drivers…",
                     s.drivers == null || !free
                         ? null
-                        : inMain(s, () -> s.driverList = DriversDialog.open(s))),
+                        : inMain(s, () -> s.dialogs.driverList = DriversDialog.open(s))),
                 Menu.separator(),
                 Menu.item("Close tab", close).icon(Symbol.DISMISS).shortcut(Key.CONTROL, "W"),
                 Menu.separator(),
@@ -694,7 +699,8 @@ final class Frame {
                         ? s::restartToUpdate
                         : null),
                 Menu.separator(),
-                Menu.item("About HooriDB", free ? inMain(s, () -> s.about = true) : null))));
+                Menu.item(
+                    "About HooriDB", free ? inMain(s, () -> s.dialogs.about = true) : null))));
   }
 
   /** Opens a dialog of the main window and brings that window forward, as it may lie behind. */
@@ -713,11 +719,11 @@ final class Frame {
    * asks there.
    */
   private static boolean mainDialog(State s) {
-    return s.dialog != null
-        || s.deleting != null
-        || s.folderDialog != null
-        || s.about
-        || s.driverList != null
+    return s.dialogs.dialog != null
+        || s.dialogs.deleting != null
+        || s.dialogs.folderDialog != null
+        || s.dialogs.about
+        || s.dialogs.driverList != null
         || asks(s, s.tabs.main());
   }
 

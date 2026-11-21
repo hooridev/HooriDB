@@ -1143,7 +1143,7 @@ final class CatalogTree {
    * while a console's question waited, which it would replace.
    */
   private static void go(State s, ConnectionProfile profile, Then then) {
-    if (s.dialogOpen()) {
+    if (s.dialogs.anyOpen()) {
       s.tell("Another dialog is open, so " + State.name(profile) + " was not "
           + (then == Then.EDIT ? "opened for editing." : "asked about deleting."));
       return;

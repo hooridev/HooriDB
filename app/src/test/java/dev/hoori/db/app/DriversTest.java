@@ -340,7 +340,7 @@ class DriversTest {
   void aFailureToSayWinsOverTheAgeOfAYoungVersion() throws Exception {
     var app = app();
     run(app, START + NEW_SHOP + choose(YOUNG) + "await\nframe\n");
-    app.state().dialog.versions.failed = new IOException("denied");
+    app.state().dialogs.dialog.versions.failed = new IOException("denied");
     app.invalidate();
     run(app, "frame\nsnap failed\n");
     String failed = tree("failed");
@@ -911,7 +911,7 @@ class DriversTest {
       assertFalse(closed.contains("Discard changes?"), closed);
       assertTrue(closed.contains("role=dialog label=\"New connection\""), closed);
     }
-    assertNotEquals(ConnectionDialog.Over.CHOOSING_DRIVER, app.state().dialog.over);
+    assertNotEquals(ConnectionDialog.Over.CHOOSING_DRIVER, app.state().dialogs.dialog.over);
     String asked = tree("asked");
     assertTrue(line(asked, "role=note").contains("\"Download PostgreSQL JDBC 42.7.14?\""), asked);
   }
@@ -978,7 +978,7 @@ class DriversTest {
     assertFalse(recommended.contains("42.7.16"), recommended);
     assertFalse(block(missing, "role=option label=\"42.7.16\"").contains("recommended"), missing);
     // As while the lookup runs, which a script cannot hold open while the dialog's read comes in.
-    var fetch = app.state().dialog.probe.fetch;
+    var fetch = app.state().dialogs.dialog.probe.fetch;
     var found = fetch.known;
     fetch.known = new Fetch.Looking(Provider.POSTGRESQL);
     app.invalidate();
@@ -1033,10 +1033,10 @@ class DriversTest {
         frame
         """);
     CatalogTreeTest.eventually(() -> repository.listings(Provider.POSTGRESQL) == 2);
-    assertTrue(app.state().dialog.versions.reading(), "held by the repository");
+    assertTrue(app.state().dialogs.dialog.versions.reading(), "held by the repository");
     app.state().requestClose();
     run(app, "frame\n");
-    assertNull(app.state().dialog);
+    assertNull(app.state().dialogs.dialog);
     // Cancelled work counts as ended at once: its thread sees the interrupt a moment later.
     CatalogTreeTest.eventually(() -> repository.interrupted.get() == 2);
     assertEquals(1, repository.opening.getCount(), "the gate stayed shut");
@@ -1047,7 +1047,7 @@ class DriversTest {
   void enterInTheDriversDialogSavesNothing() throws Exception {
     var app = app();
     run(app, START + NEW_SHOP + DRIVER + "key Enter\nframe\nawait\nframe\nsnap entered\n");
-    assertNotNull(app.state().dialog, tree("entered"));
+    assertNotNull(app.state().dialogs.dialog, tree("entered"));
     assertTrue(new WorkspaceStore(dir.resolve("config")).load().connections().isEmpty());
     var empty = app();
     run(empty, START + """
@@ -1058,7 +1058,7 @@ class DriversTest {
         await
         frame
         """ + DRIVER + "key Enter\nframe\n");
-    assertFalse(empty.state().dialog.triedToSave, "the empty host is not shown as missing");
+    assertFalse(empty.state().dialogs.dialog.triedToSave, "the empty host is not shown as missing");
   }
 
   /** A saved young version is warned of under Type, without reading the list of versions. */
@@ -1108,7 +1108,7 @@ class DriversTest {
     run(app, SETTLE + "snap after\n");
     assertTrue(tree("after").contains(connected), "the outcome stays: " + tree("after"));
     assertEquals(before + 1, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
-    assertTrue(app.state().dialog.probe.fetch.known instanceof Fetch.Found f
+    assertTrue(app.state().dialogs.dialog.probe.fetch.known instanceof Fetch.Found f
         && f.version().equals(OLD));
   }
 

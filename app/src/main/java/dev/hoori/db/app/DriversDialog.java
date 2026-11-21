@@ -94,7 +94,7 @@ final class DriversDialog {
         cancel(kind);
       }
     }
-    s.driverList = null;
+    s.dialogs.driverList = null;
   }
 
   /** The version Download would download, or null while it is not known. */

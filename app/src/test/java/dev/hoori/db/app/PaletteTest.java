@@ -504,13 +504,13 @@ class PaletteTest {
             + "press role=textbox label=\"Name\"\ntype \"half done\"\nframe\n"
             + "window \"customers\"\n" + PALETTE + "snap all\ntype \"new connection\"\nframe\n"
             + "snap asked\nkey Enter\n" + SHOWN + "window main\nframe\nsnap main\n");
-    var dialog = app.state().dialog;
+    var dialog = app.state().dialogs.dialog;
     var asked = c.tree("customers-asked");
     assertTrue(line(asked, "label=\"File: New connection…\"").contains("disabled"), asked);
     var all = c.tree("customers-all");
     assertTrue(line(all, "label=\"File: Drivers…\"").contains("disabled"), all);
     assertTrue(c.tree("main").contains("\"half done\""), "the dialog is as it was");
-    assertSame(dialog, app.state().dialog);
+    assertSame(dialog, app.state().dialogs.dialog);
   }
 
   @ParameterizedTest

@@ -267,7 +267,7 @@ class ConnectionsTest {
     }
     assertTrue(line(tree("escaped"), "#port").contains("\"5432\""), tree("escaped"));
     assertTrue(line(tree("end"), "#port").contains("\"3306\""), tree("end"));
-    assertEquals(Provider.MARIADB, app.state().dialog.editing.value().provider());
+    assertEquals(Provider.MARIADB, app.state().dialogs.dialog.editing.value().provider());
     assertEquals(List.of(), stored());
     assertTrue(secrets.stored.isEmpty(), "nothing saved");
   }
@@ -440,7 +440,7 @@ class ConnectionsTest {
     assertEquals(PASSWORD, secrets.stored.get(saved.id()));
     assertEquals(1, secrets.received.size());
     assertEquals("\0".repeat(PASSWORD.length()), new String(secrets.received.getFirst()), "wiped");
-    assertEquals("", app.state().dialog == null ? "" : app.state().dialog.password);
+    assertEquals("", app.state().dialogs.dialog == null ? "" : app.state().dialogs.dialog.password);
     String file = Files.readString(dir.resolve("config").resolve(WorkspaceStore.FILE));
     assertFalse(file.contains(PASSWORD), file);
   }
@@ -880,7 +880,7 @@ class ConnectionsTest {
     assertTrue(line(tree("kept"), "#host").contains("\"db.example.com\""));
     assertFalse(tree("kept").contains("Discard changes?"));
     assertFalse(tree("end").contains("role=dialog"));
-    assertNull(app.state().dialog);
+    assertNull(app.state().dialogs.dialog);
     assertTrue(app.state().profiles.isEmpty());
   }
 

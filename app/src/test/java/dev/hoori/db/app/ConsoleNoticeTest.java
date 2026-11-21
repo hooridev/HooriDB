@@ -138,7 +138,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     String given = c.tree("given");
     assertTrue(given.contains("the save was given up"), given);
     assertEquals(null, app.state().guard.pending, "the lock ended");
-    assertFalse(app.state().dialog.changing());
+    assertFalse(app.state().dialogs.dialog.changing());
     c.secrets.gate.countDown();
     c.run(app, SETTLE);
   }
@@ -497,7 +497,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     c.secrets.fails = false;
     c.run(app, "press role=button label=\"Save\"\nframe\n" + SETTLE);
     assertFalse(c.secrets.stored.containsKey(SHOP.id()), "asked to delete, as chosen");
-    assertEquals(null, app.state().dialog);
+    assertEquals(null, app.state().dialogs.dialog);
   }
 
   /**
@@ -714,7 +714,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     c.secrets.fails = false;
     before = c.secrets.calls.size();
     // Save's handler, as its button or Enter calls it, whether or not it would go.
-    app.state().dialog.save(app.state());
+    app.state().dialogs.dialog.save(app.state());
     c.run(app, "frame\n" + SETTLE);
     assertEquals(
         List.of("read", "delete"), c.secrets.calls.subList(before, c.secrets.calls.size()));

@@ -442,10 +442,10 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     assertTrue(c.tree("asked").contains("before shop-prod disconnects."), c.tree("asked"));
     c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE + "snap stayed\n");
     assertTrue(app.state().catalog.connected(SHOP.id()));
-    assertEquals(null, app.state().dialog, "no edit before the console's answer");
+    assertEquals(null, app.state().dialogs.dialog, "no edit before the console's answer");
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
     c.run(app, edit + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
-    assertTrue(app.state().dialog != null, "the edit goes on");
+    assertTrue(app.state().dialogs.dialog != null, "the edit goes on");
     assertFalse(k.tab(app).connected());
     // A color leaves the console's session as it is.
     var colored = open(SHOP);
@@ -464,7 +464,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
             + "snap asked\n");
     assertTrue(c.tree("asked").contains("before shop-prod disconnects."), c.tree("asked"));
     c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE);
-    assertEquals(null, app.state().deleting);
+    assertEquals(null, app.state().dialogs.deleting);
     assertEquals(1, app.state().profiles.size());
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
   }
@@ -492,7 +492,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
             + "press role=textbox label=\"Password\"\ntype \"hunter2\"\n"
             + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\n");
-    assertTrue(app.state().dialog.changing(), "the keyring works");
+    assertTrue(app.state().dialogs.dialog.changing(), "the keyring works");
     c.run(app, in(window) + type(";\n" + PAY) + "key Enter control\nframe\nframe\nsnap locked\n");
     String locked = c.tree("shop-prod-shop-locked");
     assertTrue(line(locked, "#locked").contains("shop-prod is being saved"), locked);
@@ -501,7 +501,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     c.run(app, SETTLE + in(window) + OPENED + "snap saved\n");
     assertFalse(c.tree("shop-prod-shop-saved").contains("role=dialog"));
     assertEquals(SHOP.user() + "2", app.state().profile(SHOP.id()).user());
-    assertEquals(null, app.state().dialog);
+    assertEquals(null, app.state().dialogs.dialog);
     assertEquals(null, app.state().guard.pending);
     assertFalse(k.tab(app).connected(), "its session, opened with what changed, ended");
     assertFalse(servers.calls.contains("run " + PG + " " + PAY), servers.calls.toString());
@@ -632,7 +632,9 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     assertTrue(line(waiting, "role=textbox label=\"User\"").contains("disabled"), waiting);
     assertFalse(line(waiting, "role=button label=\"Cancel\"").contains("disabled"), waiting);
     assertNotEquals(
-        ConnectionDialog.Over.CHOOSING_DRIVER, app.state().dialog.over, "Driver… opens nothing");
+        ConnectionDialog.Over.CHOOSING_DRIVER,
+        app.state().dialogs.dialog.over,
+        "Driver… opens nothing");
     // Cancel gives the Save up, and the form is open to changes again.
     c.run(app, in(window) + "press #answer-cancel\nframe\n" + OPENED + SETTLE);
     c.run(app, in("main") + "frame\nsnap open\n");
@@ -644,7 +646,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
         app,
         in("main") + "press role=button label=\"Save\"\nframe\n" + OPENED + in(window)
             + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
-    assertEquals(null, app.state().dialog);
+    assertEquals(null, app.state().dialogs.dialog);
     assertEquals(SHOP.user() + "2", app.state().profile(SHOP.id()).user());
     assertEquals(null, app.state().profile(SHOP.id()).driverVersion());
   }
@@ -821,10 +823,10 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
         in("main") + "press role=menuitem label=\"File\"\nframe\nadvance 0.3\nframe\n"
             + "press role=menuitem label=\"New connection…\"\nframe\n" + OPENED
             + "press role=textbox label=\"Name\"\ntype \"kept\"\nframe\n");
-    var newer = app.state().dialog;
+    var newer = app.state().dialogs.dialog;
     assertTrue(newer != null && newer.isNew, "the new connection's dialog");
     c.run(app, in(window) + "press #answer-rollback\nframe\n" + SETTLE + OPENED);
-    assertEquals(newer, app.state().dialog);
+    assertEquals(newer, app.state().dialogs.dialog);
     assertTrue(app.state().message.contains("was not opened for editing"), app.state().message);
   }
 
@@ -845,8 +847,8 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
             + "press role=button label=\"Disconnect\"\nframe\n" + OPENED);
     assertEquals(edit, app.state().guard.pending, "the edit still waits");
     c.run(app, in(window) + "press #answer-rollback\nframe\n" + SETTLE + OPENED);
-    assertTrue(app.state().dialog != null, "the edit goes on");
-    assertEquals(null, app.state().deleting);
+    assertTrue(app.state().dialogs.dialog != null, "the edit goes on");
+    assertEquals(null, app.state().dialogs.deleting);
   }
 
   /**

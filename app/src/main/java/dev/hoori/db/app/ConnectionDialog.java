@@ -518,7 +518,7 @@ final class ConnectionDialog {
     password = "";
     probe.close();
     versions.close();
-    s.dialog = null;
+    s.dialogs.dialog = null;
     s.put(profile);
   }
 
@@ -552,7 +552,7 @@ final class ConnectionDialog {
     versions.close();
     over = Over.NONE;
     password = "";
-    s.dialog = null;
+    s.dialogs.dialog = null;
   }
 
   // Writes that let another field follow, as long as the user has not set that one by hand.

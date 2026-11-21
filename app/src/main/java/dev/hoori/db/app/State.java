@@ -88,12 +88,7 @@ final class State {
   // Passwords typed but not saved, for this session only.
   private final Map<UUID, char[]> passwords = new HashMap<>();
   Node selected; // the selected node of the catalog, or null
-  ConnectionDialog dialog; // null while closed
-  DriversDialog driverList; // the Drivers dialog, null while closed
-  ConnectionProfile deleting; // the connection the delete dialog asks about, or null
-  FolderDialog folderDialog; // a folder's name or the question before its delete; null while closed
-  private UUID placing; // the folder the new connection's dialog puts it in, or null for the top
-  boolean about; // whether the About dialog is open
+  final Dialogs dialogs = new Dialogs(); // the main window's dialogs that are open
   final Guard guard = new Guard(); // the one act that waits
   final Removal removal = new Removal(); // the deletion of connections, out of the keyring first
   // What finishing something on a console's session did, failures and warnings, in the order they
@@ -225,9 +220,9 @@ final class State {
 
   private void keyringFound(Keyring found) {
     keyring = found;
-    if (dialog != null) {
-      dialog.lookUp(this);
-      dialog.probe.keyringFound(this);
+    if (dialogs.dialog != null) {
+      dialogs.dialog.lookUp(this);
+      dialogs.dialog.probe.keyringFound(this);
     }
     catalog.keyringFound(this);
     if (removal.running) {
@@ -250,8 +245,8 @@ final class State {
 
   /** Opens the dialog for a new connection, which goes where {@link #folderFor} the selection. */
   void newConnection() {
-    placing = folderFor(selected);
-    dialog = ConnectionDialog.create(this);
+    dialogs.placing = folderFor(selected);
+    dialogs.dialog = ConnectionDialog.create(this);
   }
 
   /** What is saved: the connections in folders. */
@@ -292,12 +287,12 @@ final class State {
 
   /** Opens the dialog for a new folder, which goes where {@link #folderFor} the selection. */
   void newFolder() {
-    folderDialog = FolderDialog.create(folderFor(selected));
+    dialogs.folderDialog = FolderDialog.create(folderFor(selected));
   }
 
   /** A new folder of the name, open and last in the folder of the id or at the top; selected. */
   void createFolder(UUID in, String name) {
-    folderDialog = null;
+    dialogs.folderDialog = null;
     var folder = new Workspace.Folder(UUID.randomUUID(), name, true, List.of());
     var at = folder(in) == null ? null : in; // gone meanwhile: at the top
     if (!workspace.fits(at, folder)) {
@@ -312,12 +307,12 @@ final class State {
   void askRenameFolder(UUID id) {
     var folder = folder(id);
     if (folder != null) {
-      folderDialog = FolderDialog.rename(id, folder.name());
+      dialogs.folderDialog = FolderDialog.rename(id, folder.name());
     }
   }
 
   void renameFolder(UUID id, String name) {
-    folderDialog = null;
+    dialogs.folderDialog = null;
     if (folder(id) != null) {
       change(workspace.rename(id, name));
       persist();
@@ -382,7 +377,7 @@ final class State {
     } else {
       removal.kept.clear();
       removal.error = null;
-      folderDialog = FolderDialog.delete(id, folder.name());
+      dialogs.folderDialog = FolderDialog.delete(id, folder.name());
     }
   }
 
@@ -391,7 +386,7 @@ final class State {
     if (removal.running) {
       return;
     }
-    folderDialog = null;
+    dialogs.folderDialog = null;
     guard.drop(deleteFolderAct(id)); // and a console's question it asked
     if (folder(id) == null) {
       return;
@@ -404,7 +399,7 @@ final class State {
   }
 
   void edit(ConnectionProfile profile) {
-    dialog = ConnectionDialog.edit(this, profile);
+    dialogs.dialog = ConnectionDialog.edit(this, profile);
   }
 
   /** A copy of the profile under a new id, after it; without its password. */
@@ -444,8 +439,9 @@ final class State {
             || !database(old).equals(database(profile)))) {
       close(tables(profile.id()));
     }
-    if (old == null && workspace.fits(placing, profile)) { // a folder gone meanwhile: the top
-      change(revealing(workspace.into(placing, profile), profile.id()));
+    if (old == null
+        && workspace.fits(dialogs.placing, profile)) { // a folder gone meanwhile: the top
+      change(revealing(workspace.into(dialogs.placing, profile), profile.id()));
     } else {
       change(workspace.put(profile));
     }
@@ -514,15 +510,6 @@ final class State {
   // How long Exit waits for the sessions to say how they closed: longer than their closing takes.
   static final double EXIT_SECONDS = (double) Lane.CLOSES.toSeconds();
 
-  /** Whether a dialog is open, which an act that opens one must not replace. */
-  boolean dialogOpen() {
-    return dialog != null
-        || deleting != null
-        || folderDialog != null
-        || about
-        || driverList != null;
-  }
-
   /** The act of deleting the connection, which its disconnect and its delete share. */
   static Guard.Act deleteAct(ConnectionProfile profile) {
     return new Guard.Act("delete", profile.id());
@@ -530,7 +517,7 @@ final class State {
 
   /** Asks before the connection is deleted. */
   void askDelete(ConnectionProfile profile) {
-    deleting = profile;
+    dialogs.deleting = profile;
     removal.error = null;
   }
 
@@ -539,7 +526,7 @@ final class State {
    * keyring is known. Without a keyring it goes, and the status line says what may be left.
    */
   void delete() {
-    var profile = deleting;
+    var profile = dialogs.deleting;
     if (profile == null
         || removal.running
         || guard.asks(
@@ -616,10 +603,10 @@ final class State {
    */
   void deleted(UUID id) {
     if (id == null) {
-      deleting = null;
+      dialogs.deleting = null;
       return;
     }
-    folderDialog = null;
+    dialogs.folderDialog = null;
     var folder = folder(id);
     if (folder != null && folder.connections().isEmpty()) {
       change(workspace.remove(id));
@@ -639,9 +626,9 @@ final class State {
       removal.giveUp(this);
       return;
     }
-    if (deleting != null && !removal.running) {
-      guard.drop(deleteAct(deleting)); // and the way out it asked for
-      deleting = null;
+    if (dialogs.deleting != null && !removal.running) {
+      guard.drop(deleteAct(dialogs.deleting)); // and the way out it asked for
+      dialogs.deleting = null;
     }
   }
 
@@ -651,9 +638,9 @@ final class State {
       removal.giveUp(this);
       return;
     }
-    if (folderDialog != null && !removal.running) {
-      guard.drop(deleteFolderAct(folderDialog.folder));
-      folderDialog = null;
+    if (dialogs.folderDialog != null && !removal.running) {
+      guard.drop(deleteFolderAct(dialogs.folderDialog.folder));
+      dialogs.folderDialog = null;
     }
   }
 
@@ -731,7 +718,7 @@ final class State {
 
   /** Whether a change of the keyring runs, which no one may leave halfway. */
   private boolean keyringBusy() {
-    return removal.running || dialog != null && dialog.changing();
+    return removal.running || dialogs.dialog != null && dialogs.dialog.changing();
   }
 
   /**
@@ -760,17 +747,17 @@ final class State {
     if (guard.asks(this, Guard.EXIT, "HooriDB closes", consoles(null), this::close)) {
       return;
     }
-    if (dialog != null) {
+    if (dialogs.dialog != null) {
       // A test or a download can always be done again: closing cancels them instead of waiting.
-      dialog.probe.stop();
+      dialogs.dialog.probe.stop();
     }
-    if (driverList != null) {
-      driverList.close(this); // a download can be done again
+    if (dialogs.driverList != null) {
+      dialogs.driverList.close(this); // a download can be done again
     }
     // A keyring that keeps a change waiting is given up, as its Cancel does: the window stays, and
     // says what that left; the next close closes. A slower one is given up once it is slow.
-    if (dialog != null && dialog.slow()) {
-      dialog.giveUp(this);
+    if (dialogs.dialog != null && dialogs.dialog.slow()) {
+      dialogs.dialog.giveUp(this);
       return;
     }
     if (removal.slow) {
@@ -1260,8 +1247,8 @@ final class State {
   }
 
   void closeAll() {
-    if (dialog != null) {
-      dialog.close(this); // and what it reads, its driver's dialog's too
+    if (dialogs.dialog != null) {
+      dialogs.dialog.close(this); // and what it reads, its driver's dialog's too
     }
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
