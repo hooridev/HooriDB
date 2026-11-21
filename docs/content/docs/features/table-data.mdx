@@ -12,7 +12,8 @@ Opening a table or view displays its rows in a read-only data grid. If the same 
 HooriDB reads rows in pages as you scroll. Each page is a separate read, so rows may move if another client changes the table while you browse.
 
 - Press **Refresh** in the toolbar (or right-click the grid and choose **Refresh**) to reload the table and its columns.
-- Drag a column divider in the header to resize a column.
+- Columns open as wide as their header and first rows, within a minimum and maximum width. A refresh keeps every width, also those you set, unless the table's columns changed; then all are fitted again.
+- Drag a column divider in the header to resize a column, or double-click it to fit the column to its rows.
 - Select cells or rows and press `Ctrl+C` (or `Ctrl+Insert`) to copy them, or right-click the grid and choose **Copy** or **Copy with headers**. You can copy up to 100,000 selected cells at once from rows that are already loaded.
 
 The tab toolbar shows the table's path (`database.schema.table` or `database.table`), the connection name, **Count rows**, and **Refresh**.

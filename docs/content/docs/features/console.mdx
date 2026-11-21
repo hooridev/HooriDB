@@ -36,6 +36,7 @@ Each statement that returns rows or changes rows creates a result tab (**Result 
 
 - Statements that modify rows show the count of affected rows (for example, `1 row changed`).
 - In **Auto** mode with no open transaction, plain read queries load rows as you scroll down. Other results, and every result in **Manual** mode or while a transaction is open, are read whole before they appear, keeping the first 100,000 rows, and HooriDB asks first when the server estimates more (see [Transactions](/docs/features/transactions)).
+- A result's columns open as wide as their header and first rows; rows read later as you scroll leave the widths as they are.
 - Press **Pin** (the pin icon in a result tab's footer) to keep that result tab across future runs. Press **Unpin** to allow the next run to replace it.
 - Press `Shift+Enter` or the **Value** button in a result tab's footer to open the [value panel](/docs/features/table-data#inspect-a-cell-in-the-value-panel) for the selected cell. A console result keeps up to 1,024 characters of a value and cannot read more from the server.
 - Select cells and press `Ctrl+C` (or `Ctrl+Insert`) to copy from a result grid.
