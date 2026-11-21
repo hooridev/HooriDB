@@ -112,13 +112,12 @@ final class Cells {
 
   /** The icon of a value that is cut short, which says how long it is; null for any other. */
   static CellIcon icon(Object value) {
-    return value instanceof Cut c
-        ? CellIcon.before(Symbol.MORE_HORIZONTAL, Icon.Variant.WARNING)
-            .tooltip("Cut short: the first " + Rows.LIMIT + " characters"
-                + (c.length().isPresent()
-                    ? " of " + Format.BYTES.text(c.length().getAsLong())
-                    : ""))
-        : null;
+    if (!(value instanceof Cut c)) {
+      return null;
+    }
+    var of = c.length().isPresent() ? " of " + Format.BYTES.text(c.length().getAsLong()) : "";
+    return CellIcon.before(Symbol.MORE_HORIZONTAL, Icon.Variant.WARNING)
+        .tooltip("Cut short: the first " + Rows.LIMIT + " characters" + of);
   }
 
   /** The start in hex, and the size. */

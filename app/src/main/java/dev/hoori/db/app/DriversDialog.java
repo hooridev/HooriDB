@@ -103,7 +103,7 @@ final class DriversDialog {
   }
 
   private static boolean downloaded(Kind kind, String version) {
-    var read = kind.versions.read;
+    var read = kind.versions.last;
     return read != null && read.sizes().containsKey(version);
   }
 
@@ -186,7 +186,7 @@ final class DriversDialog {
             loaded.released(Lane.CLOSES); // past it, what still closes is given up
             try {
               loaded.close(); // Windows deletes no file that is open
-            } catch (IOException e) {
+            } catch (IOException _) {
               // The delete says whether the file can go.
             }
           }
@@ -235,7 +235,7 @@ final class DriversDialog {
   private El kind(State s, Kind kind) {
     Theme t = Theme.CURRENT.get();
     var versions = kind.versions;
-    var read = versions.read;
+    var read = versions.last;
     var rows = new ArrayList<El>();
     if (read == null && versions.failed == null) {
       rows.add(Group.box(row()
@@ -307,7 +307,7 @@ final class DriversDialog {
     var versions = kind.versions;
     var target = target(kind);
     String note;
-    if (versions.read != null && versions.read.error() != null) {
+    if (versions.last != null && versions.last.error() != null) {
       note = versions.problem(s.drivers);
     } else if (target != null && downloaded(kind, target)) {
       note = target + " is downloaded.";

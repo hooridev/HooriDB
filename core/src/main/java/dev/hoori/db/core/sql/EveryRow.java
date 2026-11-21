@@ -4,6 +4,7 @@ import dev.hoori.db.core.connection.Provider;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * An {@code UPDATE} or {@code DELETE} that may change every row of its table: one that is bounded
@@ -39,36 +40,43 @@ public record EveryRow(String verb, String table, boolean certain) {
     boolean certain = true;
     for (var reading : Tokens.readings(provider)) {
       var tokens = Tokens.of(sql, provider, reading);
-      int verb = 0;
-      boolean read = true;
-      if (!tokens.isEmpty() && tokens.getFirst().is("WITH")) {
-        verb = afterWith(tokens);
-        if (verb < 0) {
-          // Of a shape it does not read: an UPDATE or DELETE at its top level may be the statement.
-          read = false;
-          verb = 1;
-          while (verb < tokens.size()
-              && !(tokens.get(verb).depth() == 0 && changes(tokens.get(verb)))) {
-            verb++;
-          }
-        }
+      int verb = start(tokens);
+      boolean read = verb >= 0;
+      if (!read) {
+        // Of a shape it does not read: an UPDATE or DELETE at its top level may be the statement.
+        verb = topLevel(tokens, 1, EveryRow::changes);
       }
       if (verb >= tokens.size() || !changes(tokens.get(verb))) {
         continue; // no such change, as read so
       }
       if (read && bounded(tokens, verb, provider)) {
         certain = false;
-        continue;
-      }
-      certain &= read;
-      if (found == null) {
-        found =
-            new EveryRow(Tokens.keyword(tokens.get(verb).text()), table(sql, tokens, verb), true);
+      } else {
+        certain &= read;
+        if (found == null) {
+          found =
+              new EveryRow(Tokens.keyword(tokens.get(verb).text()), table(sql, tokens, verb), true);
+        }
       }
     }
     return found == null
         ? Optional.empty()
         : Optional.of(new EveryRow(found.verb(), found.table(), certain));
+  }
+
+  // The index of the statement's verb, past a WITH; -1 where the WITH is of a shape it does not
+  // read.
+  private static int start(List<Tokens.Token> tokens) {
+    return !tokens.isEmpty() && tokens.getFirst().is("WITH") ? afterWith(tokens) : 0;
+  }
+
+  // The index of the first token at the top level from the index on that is such, or the size.
+  private static int topLevel(List<Tokens.Token> tokens, int from, Predicate<Tokens.Token> such) {
+    int k = from;
+    while (k < tokens.size() && !(tokens.get(k).depth() == 0 && such.test(tokens.get(k)))) {
+      k++;
+    }
+    return k;
   }
 
   private static boolean changes(Tokens.Token token) {
@@ -124,22 +132,8 @@ public record EveryRow(String verb, String table, boolean certain) {
     int n = tokens.size();
     int k = n > 1 && tokens.get(1).is("RECURSIVE") ? 2 : 1;
     while (true) {
-      while (k < n && !(tokens.get(k).depth() == 0 && tokens.get(k).is("AS"))) {
-        k++;
-      }
-      k++;
-      while (k < n && (tokens.get(k).is("NOT") || tokens.get(k).is("MATERIALIZED"))) {
-        k++;
-      }
-      if (k >= n || !tokens.get(k).is("(")) {
-        return -1;
-      }
-      k++;
-      while (k < n && !(tokens.get(k).depth() == 0 && tokens.get(k).is(")"))) {
-        k++;
-      }
-      k++;
-      if (k >= n) {
+      k = pastBody(tokens, k);
+      if (k < 0 || k >= n) {
         return -1;
       }
       if (verb(tokens.get(k))) {
@@ -150,6 +144,20 @@ public record EveryRow(String verb, String table, boolean certain) {
       }
       k++;
     }
+  }
+
+  // The index after the body of the common table expression from the index on; -1 where no body
+  // in parentheses follows its AS.
+  private static int pastBody(List<Tokens.Token> tokens, int from) {
+    int n = tokens.size();
+    int k = topLevel(tokens, from, token -> token.is("AS")) + 1;
+    while (k < n && (tokens.get(k).is("NOT") || tokens.get(k).is("MATERIALIZED"))) {
+      k++;
+    }
+    if (k >= n || !tokens.get(k).is("(")) {
+      return -1;
+    }
+    return topLevel(tokens, k + 1, token -> token.is(")")) + 1;
   }
 
   private static boolean verb(Tokens.Token token) {

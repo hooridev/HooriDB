@@ -21,7 +21,6 @@ import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.data.PostgreSqlRows;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.data.RowsDialect;
-import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
@@ -135,13 +134,13 @@ public final class PostgreSql implements Dialect {
     // DefaultJavaSSLFactory checks the chain against the JVM's trust store, where the driver's
     // own factory reads a root.crt from the user's PostgreSQL folder; verify-full still has the
     // driver check the host name.
+    private static final String SSL_MODE = "sslmode";
     private static final Map<Tls, Map<String, String>> TLS = Map.of(
-        Tls.OFF, Map.of("sslmode", "disable"),
-        Tls.ENCRYPTED, Map.of("sslmode", "require"),
+        Tls.OFF, Map.of(SSL_MODE, "disable"),
+        Tls.ENCRYPTED, Map.of(SSL_MODE, "require"),
         Tls.VERIFIED,
             Map.of(
-                "sslmode", "verify-full",
-                "sslfactory", "org.postgresql.ssl.DefaultJavaSSLFactory"));
+                SSL_MODE, "verify-full", "sslfactory", "org.postgresql.ssl.DefaultJavaSSLFactory"));
 
     @Override
     public String scheme() {
@@ -199,18 +198,23 @@ public final class PostgreSql implements Dialect {
         SQLException e, String state, String message, boolean tls) {
       return switch (state) {
         case "3D000" -> ConnectionException.Failure.NO_SUCH_DATABASE;
-        // pgjdbc's own refusal of many kinds, with translated messages; where it was raised
-        // tells them apart: the answer to its request for TLS, or the lack of a password when the
-        // server asks for one. An authentication method it does not know is neither.
-        case "08004" ->
-          raisedIn(e, PGJDBC_FACTORY, "enableSSL")
-              ? ConnectionException.Failure.TLS_UNAVAILABLE
-              : raisedIn(e, PGJDBC_FACTORY, "lambda$doAuthentication$")
-                      || raisedIn(e, PGJDBC_PLUGINS, "lambda$withEncodedPassword$")
-                  ? ConnectionException.Failure.LOGIN_REFUSED
-                  : ConnectionException.Failure.OTHER;
+        case "08004" -> pgjdbcRefusal(e);
         default -> ConnectionException.Failure.OTHER;
       };
+    }
+
+    // pgjdbc's own refusal of many kinds, with translated messages; where it was raised tells them
+    // apart: the answer to its request for TLS, or the lack of a password when the server asks for
+    // one. An authentication method it does not know is neither.
+    private static ConnectionException.Failure pgjdbcRefusal(SQLException e) {
+      if (raisedIn(e, PGJDBC_FACTORY, "enableSSL")) {
+        return ConnectionException.Failure.TLS_UNAVAILABLE;
+      }
+      if (raisedIn(e, PGJDBC_FACTORY, "lambda$doAuthentication$")
+          || raisedIn(e, PGJDBC_PLUGINS, "lambda$withEncodedPassword$")) {
+        return ConnectionException.Failure.LOGIN_REFUSED;
+      }
+      return ConnectionException.Failure.OTHER;
     }
 
     // Whether the exception was made in the class, by the method or one whose name starts so.
@@ -238,6 +242,14 @@ public final class PostgreSql implements Dialect {
     // Tables, partitioned and foreign tables, views and materialized views; not indexes,
     // sequences, composite types or TOAST tables.
     private static final String PG_KINDS = EQ + "ANY ('{r,p,f,v,m}'::pg_catalog.\"char\"[])";
+
+    // The schema n of the relation c.
+    private static final String JOIN_SCHEMA =
+        " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace";
+
+    // A table or view of the kinds above by the names of its schema and its own.
+    private static final String NAMED =
+        " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS;
 
     // Whether a domain in the chain of the column's type, a domain over a domain included, says
     // NOT NULL; only of a table, as a view's outer join can give a domain's column NULL all the
@@ -273,7 +285,7 @@ public final class PostgreSql implements Dialect {
     @Override
     public String tables() {
       return "SELECT c.relname, c.relkind FROM pg_catalog.pg_class c"
-          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+          + JOIN_SCHEMA
           + " WHERE n.nspname" + EQ + "? AND c.relkind" + PG_KINDS + " ORDER BY c.relname";
     }
 
@@ -285,7 +297,7 @@ public final class PostgreSql implements Dialect {
     @Override
     public String allTables() {
       return "SELECT n.nspname, c.relname, c.relkind FROM pg_catalog.pg_class c"
-          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+          + JOIN_SCHEMA
           + " WHERE c.relkind" + PG_KINDS
           // The system's schemas, as schemas() tells them: pg_ before the name, or this one.
           + " AND pg_catalog.left(n.nspname, 3) OPERATOR(pg_catalog.<>) 'pg_'"
@@ -305,18 +317,16 @@ public final class PostgreSql implements Dialect {
           + " WHERE i.indrelid" + EQ + "c.oid AND i.indisprimary AND k.attnum" + EQ
           + "a.attnum AND k.n OPERATOR(pg_catalog.<=) i.indnkeyatts)"
           + " FROM pg_catalog.pg_class c"
-          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
+          + JOIN_SCHEMA
           + " JOIN pg_catalog.pg_attribute a ON a.attrelid" + EQ + "c.oid"
-          + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS
+          + NAMED
           + " AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
           + " ORDER BY a.attnum";
     }
 
     @Override
     public String tableExists() {
-      return "SELECT 1 FROM pg_catalog.pg_class c"
-          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "c.relnamespace"
-          + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "? AND c.relkind" + PG_KINDS;
+      return "SELECT 1 FROM pg_catalog.pg_class c" + JOIN_SCHEMA + NAMED;
     }
   }
 
@@ -395,7 +405,7 @@ public final class PostgreSql implements Dialect {
             text(call(server, "getDetail")),
             text(call(server, "getHint")),
             text(call(server, "getWhere")));
-      } catch (ReflectiveOperationException | RuntimeException x) {
+      } catch (ReflectiveOperationException | RuntimeException _) {
         return null;
       }
     }
@@ -581,7 +591,7 @@ public final class PostgreSql implements Dialect {
           case "FAILED" -> Transaction.FAILED;
           default -> Transaction.UNKNOWN;
         };
-      } catch (SQLException | ReflectiveOperationException | RuntimeException e) {
+      } catch (SQLException | ReflectiveOperationException | RuntimeException _) {
         return Transaction.UNKNOWN;
       }
     }
@@ -591,7 +601,7 @@ public final class PostgreSql implements Dialect {
     public Boolean autoCommit(Connection connection, int status) {
       try {
         return connection.isClosed() ? null : connection.getAutoCommit();
-      } catch (SQLException | RuntimeException e) {
+      } catch (SQLException | RuntimeException _) {
         return null;
       }
     }
@@ -602,10 +612,14 @@ public final class PostgreSql implements Dialect {
     }
 
     @Override
-    public void followAutoCommit(Connection connection, int status) {}
+    public void followAutoCommit(Connection connection, int status) {
+      // pgjdbc keeps auto-commit itself: no statement changes it behind its back.
+    }
 
     @Override
-    public void keepWriteTimeout(Connection connection) {}
+    public void keepWriteTimeout(Connection connection) {
+      // pgjdbc changes none of the session's time limits as it reads rows.
+    }
 
     // pgjdbc's Statement.cancel() does nothing once the statement has returned its first rows; its
     // cancelQuery() cancels whatever the connection runs.
@@ -614,7 +628,7 @@ public final class PostgreSql implements Dialect {
       try {
         call(connection, "cancelQuery");
         return;
-      } catch (ReflectiveOperationException | RuntimeException e) {
+      } catch (ReflectiveOperationException | RuntimeException _) {
         // Statement.cancel() is all there is.
       }
       statement.cancel();

@@ -26,6 +26,7 @@ public record Binary(byte[] bytes, long length) {
 
   @Override
   public boolean equals(Object other) {
+    // The fields, not a record pattern, whose accessor would copy the bytes.
     return other instanceof Binary b && b.length == length && Arrays.equals(b.bytes, bytes);
   }
 

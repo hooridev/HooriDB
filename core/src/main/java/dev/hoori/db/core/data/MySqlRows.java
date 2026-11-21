@@ -7,7 +7,9 @@ import java.sql.SQLException;
 /** How MySQL's tables and results are read, with MySQL Connector/J. */
 public final class MySqlRows extends MySqlFamilyRows {
 
-  public MySqlRows() {}
+  public MySqlRows() {
+    // Nothing to set up.
+  }
 
   @Override
   String tabularExplain() {

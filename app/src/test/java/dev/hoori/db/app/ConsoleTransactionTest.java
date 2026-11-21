@@ -1033,7 +1033,7 @@ class ConsoleTransactionTest {
     assertFalse(k.tab(app).atStake());
     c.secrets.gate = new CountDownLatch(1);
     c.run(app, in("main") + "press role=button label=\"Delete\"\nframe\n");
-    assertTrue(app.state().removing, "the keyring works");
+    assertTrue(app.state().removal.running, "the keyring works");
     c.run(app, in(window) + type(";\n" + PAY) + "key Enter control\nframe\nframe\nsnap locked\n");
     assertTrue(
         line(c.tree("shop-prod-shop-locked"), "#locked").contains("shop-prod is being deleted"));
