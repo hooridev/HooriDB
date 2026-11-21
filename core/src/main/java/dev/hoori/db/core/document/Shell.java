@@ -257,8 +257,11 @@ public final class Shell {
   /** Reads the values of a text, one after another. Used by {@link Script}. */
   static final class Reader {
 
+    private static final int MAX_NESTING = 200;
+
     final String text;
     int at;
+    private int nesting;
 
     Reader(String text, int at) {
       this.text = text;
@@ -327,27 +330,38 @@ public final class Shell {
 
     Object value() throws SyntaxException {
       space();
+      if (nesting > MAX_NESTING) {
+        throw new SyntaxException(
+            "A value cannot be nested more than " + MAX_NESTING + " levels deep",
+            Math.min(at, text.length()),
+            true);
+      }
       if (end()) {
         throw error("A value is missing");
       }
-      char c = peek();
-      int start = at;
-      return switch (c) {
-        case '{' -> object();
-        case '[' -> array();
-        case '\'', '"' -> string();
-        case '/' -> regex();
-        default -> {
-          if (c == '-' || c == '+' || c == '.' || c >= '0' && c <= '9') {
-            yield number();
+      nesting++;
+      try {
+        char c = peek();
+        int start = at;
+        return switch (c) {
+          case '{' -> object();
+          case '[' -> array();
+          case '\'', '"' -> string();
+          case '/' -> regex();
+          default -> {
+            if (c == '-' || c == '+' || c == '.' || c >= '0' && c <= '9') {
+              yield number();
+            }
+            var name = identifier();
+            if (name == null) {
+              throw error("A value is needed here: a document, an array, a string or a number");
+            }
+            yield named(name, start);
           }
-          var name = identifier();
-          if (name == null) {
-            throw error("A value is needed here: a document, an array, a string or a number");
-          }
-          yield named(name, start);
-        }
-      };
+        };
+      } finally {
+        nesting--;
+      }
     }
 
     Document object() throws SyntaxException {

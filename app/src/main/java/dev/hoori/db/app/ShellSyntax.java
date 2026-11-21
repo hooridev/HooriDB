@@ -89,10 +89,12 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
     try {
       return new Formatted(Layout.of(text), null);
     } catch (SyntaxException e) {
+      if (e.tooLarge()) {
+        return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
+      }
       return new Formatted(null, problem(text, Math.clamp(e.offset(), 0, text.length())));
     } catch (StackOverflowError _) {
-      // shortcut: the shell's reader recurses, so a statement nested thousands deep ends here;
-      // until it has a limit of its own, as MongoDB's 200 levels (#82).
+      // Defense in depth for recursion outside the reader's 200-level limit (#82).
       return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
     }
   }
