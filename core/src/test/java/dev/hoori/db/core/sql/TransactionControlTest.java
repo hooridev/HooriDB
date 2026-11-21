@@ -57,7 +57,17 @@ class TransactionControlTest {
         "CREATE PROCEDURE p() BEGIN COMMIT; END")) {
       assertFalse(TransactionControl.in(sql, MYSQL), sql);
     }
-    // MariaDB's compound statement is none.
+    // MariaDB's compound statement runs its body at once: one only where the body holds one.
     assertFalse(TransactionControl.in("BEGIN NOT ATOMIC SELECT 1; END", MARIADB));
+    assertFalse(TransactionControl.in(
+        "BEGIN NOT ATOMIC SAVEPOINT s; ROLLBACK TO SAVEPOINT s; END", MARIADB));
+    for (var sql : List.of(
+        "BEGIN NOT ATOMIC COMMIT; END",
+        "BEGIN NOT ATOMIC INSERT INTO t VALUES (1); ROLLBACK; END",
+        "BEGIN NOT ATOMIC START TRANSACTION; END",
+        "BEGIN NOT ATOMIC SET autocommit = 1; END",
+        "BEGIN NOT ATOMIC DECLARE EXIT HANDLER FOR SQLEXCEPTION ROLLBACK; SELECT 1; END")) {
+      assertTrue(TransactionControl.in(sql, MARIADB), sql);
+    }
   }
 }

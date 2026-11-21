@@ -49,8 +49,9 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return Set.of();
     }
 
-    // BEGIN, but MariaDB's compound statement BEGIN NOT ATOMIC, START TRANSACTION, COMMIT,
-    // ROLLBACK, but to a savepoint, XA, and a SET of autocommit, which commits as it turns it on.
+    // BEGIN, START TRANSACTION, COMMIT, ROLLBACK, but to a savepoint, XA, and a SET of
+    // autocommit, which commits as it turns it on; and MariaDB's compound statement BEGIN NOT
+    // ATOMIC where its body holds one of them, which it runs at once, unlike a routine's body.
     @Override
     public boolean controlsTransaction(List<String> words) {
       if (words.isEmpty()) {
@@ -58,13 +59,29 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       }
       var second = words.size() > 1 ? words.get(1) : "";
       return switch (words.getFirst()) {
-        case "begin" -> !second.equals("not");
+        case "begin" -> !second.equals("not") || controlsWithin(words);
         case "start" -> second.equals("transaction");
         case "commit", "xa" -> true;
         case "rollback" -> !words.contains("to");
         case "set" -> words.contains("autocommit");
         default -> false;
       };
+    }
+
+    private static boolean controlsWithin(List<String> words) {
+      for (int i = 0; i < words.size(); i++) {
+        var next = i + 1 < words.size() ? words.get(i + 1) : "";
+        boolean controls = switch (words.get(i)) {
+          case "commit", "xa", "autocommit" -> true;
+          case "rollback" -> !next.equals("to");
+          case "start" -> next.equals("transaction");
+          default -> false;
+        };
+        if (controls) {
+          return true;
+        }
+      }
+      return false;
     }
 
     @Override

@@ -1,5 +1,6 @@
 package dev.hoori.db.core.execution;
 
+import static dev.hoori.db.core.connection.Provider.MARIADB;
 import static dev.hoori.db.core.connection.Provider.MYSQL;
 import static dev.hoori.db.core.connection.Provider.POSTGRESQL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -163,6 +164,18 @@ class FileRunTest {
     var own = new Session(Map.of());
     run(POSTGRESQL, text, new FileRun.Options(false, false), own);
     assertEquals(List.of("INSERT 1", "COMMIT", "INSERT 2"), own.sent);
+
+    // So is MariaDB's compound statement that commits in its body, which it runs at once.
+    var compound = new Session(Map.of());
+    var block = run(
+        MARIADB,
+        "INSERT 1;\nDELIMITER //\nBEGIN NOT ATOMIC COMMIT; END//\nDELIMITER ;\nINSERT 2;",
+        new FileRun.Options(false, true),
+        compound);
+    assertEquals(FileRun.Ending.STOPPED, block.ending());
+    assertEquals(FileRun.Kept.ROLLED_BACK, block.transaction());
+    assertEquals(List.of("begin", "INSERT 1", "rollback", "end"), compound.sent);
+    assertEquals(3, block.failures().getFirst().line());
   }
 
   @Test
