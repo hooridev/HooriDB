@@ -33,14 +33,6 @@ public interface MonitorDialect {
   Stop cancel(ServerSession session);
 
   /**
-   * Whether {@link #cancel} checks that the session still runs what it ran when read; where not,
-   * it cancels whatever runs then.
-   */
-  default boolean guardsCancel() {
-    return false;
-  }
-
-  /**
    * The statement that ends the session, in one with checking, where the server can, that its id
    * still names it, as {@link #cancel} answers.
    */

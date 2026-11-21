@@ -751,11 +751,6 @@ public final class PostgreSql implements Dialect {
     }
 
     @Override
-    public boolean guardsCancel() {
-      return true;
-    }
-
-    @Override
     public Stop end(ServerSession session) {
       return new Stop(
           "SELECT pg_catalog.pg_terminate_backend(a.pid)" + same(session),

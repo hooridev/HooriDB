@@ -18,7 +18,6 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
-import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Path;
@@ -811,9 +810,9 @@ class MonitorTabTest {
   }
 
   @Test
-  void anUnguardedCancelOfAMaskedStatementTakesAnyReadForAChange() throws Exception {
+  void aCancelTellsMaskedStatementsApartByWhatTheyRanNotHowTheyRead() throws Exception {
     var key = "sessions " + MYSQL;
-    c.servers.sessions(MYSQL, session("101", "ada", "SET PASSWORD = '" + Credentials.MASK + "'"));
+    c.servers.sessions(MYSQL, session("101", "ada", "SET PASSWORD = 'one'"));
     var app = c.app(LEGACY);
     c.ready(app, LEGACY);
     c.run(
@@ -822,19 +821,18 @@ class MonitorTabTest {
             + "press role=treeitem label=\"legacy\" level=1 right\nframe\nadvance 1\nframe\n"
             + "press role=menuitem label=\"Server monitor\"\nframe\nadvance 1\nframe\n" + SETTLE);
     c.run(app, pick(1));
+    // Another statement that reads alike once masked comes in while the question is open.
     var held = c.servers.hold(key);
     c.run(app, "advance 5\nframe\nframe\npress #cancel-statement\n" + SHOWN);
+    c.servers.sessions(MYSQL, session("101", "ada", "SET PASSWORD = 'two'"));
     held.countDown();
     c.run(app, "await\nframe\n" + SHOWN + "snap cancel\n");
     var cancel = c.tree("cancel");
     assertFalse(cancel.contains("Cancel the statement?"), cancel);
-    assertTrue(cancel.contains("\"Session 101 may run something else now\""), cancel);
-    // End is not affected.
-    held = c.servers.hold(key);
-    c.run(app, "advance 5\nframe\nframe\npress #end-session\n" + SHOWN);
-    held.countDown();
-    c.run(app, "await\nframe\n" + SHOWN + "snap end\n");
-    assertTrue(c.tree("end").contains("End the session?"), c.tree("end"));
+    assertTrue(cancel.contains("\"Session 101 runs something else now\""), cancel);
+    // The same statement still is: the cancel goes out.
+    c.run(app, "press #cancel-statement\n" + SHOWN + "press #question-go\n" + SHOWN + SETTLE);
+    assertTrue(c.servers.calls.contains("cancel " + MYSQL + " 101"), c.servers.calls.toString());
   }
 
   @Test

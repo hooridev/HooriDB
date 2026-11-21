@@ -29,13 +29,15 @@ import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.connect.ConnectionException;
-import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.LocalTime;
 import java.util.ArrayList;
@@ -43,9 +45,11 @@ import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
@@ -128,7 +132,7 @@ final class MonitorTab implements Tab {
   }
 
   /** The question before an action on a session, as it was when asked. */
-  record Asked(Action action, ServerSession session) {}
+  record Asked(Action action, ServerSession session, String digest) {}
 
   final UUID id;
   final Refresh refresh = new Refresh();
@@ -165,9 +169,9 @@ final class MonitorTab implements Tab {
   private String selected; // the id of the session selected, which a read keeps selected
   private String selectedStart; // and its start, null where not known yet, as from the locks
   private boolean went; // the selection came from the locks, so a read that misses it says so
-  // Whether the server checks on a cancel that the session runs what it ran when read; where not,
-  // a masked statement cannot tell two apart, and the app takes any new read for a change.
-  private boolean guardsCancel;
+  // A digest of each session's statement as read, before masking: two statements that mask alike
+  // still differ here, so a cancel never goes to another statement that reads the same.
+  private Map<String, String> digests = Map.of();
   private boolean listed; // the sessions were read on the session the monitor has now
   private int says;
   private Lane lane; // the monitor's own session, or null while it has none
@@ -204,6 +208,7 @@ final class MonitorTab implements Tab {
       lane = session.lane();
       password = session.password();
       sessions = List.of();
+      digests = Map.of();
       variables = null;
       counters = null;
       blocks = null;
@@ -219,8 +224,6 @@ final class MonitorTab implements Tab {
       problems.clear();
       disconnected = null;
       refused = null;
-      guardsCancel = s.profile(id) instanceof ConnectionProfile p
-          && (p.provider().keepsDocuments() || p.provider().dialect().monitor().guardsCancel());
     }
     read(s, byHand);
   }
@@ -330,10 +333,13 @@ final class MonitorTab implements Tab {
    */
   private void show(State s, List<ServerSession> read) {
     var shown = new ArrayList<ServerSession>(read.size());
+    var digested = new HashMap<String, String>();
     for (var session : read) {
+      digested.put(session.id(), digest(session.statement()));
       shown.add(session.withStatement(Credentials.without(session.statement(), password)));
     }
     sessions = List.copyOf(shown);
+    digests = Map.copyOf(digested);
     listed = true;
     // The same session, by its id and its start, as a server may give the id to another.
     int at = indexOf(selected);
@@ -377,8 +383,7 @@ final class MonitorTab implements Tab {
   /**
    * What makes the action asked about no longer the one the question named, as the sessions read
    * last show it: the session gone, or for a cancel another statement or none; null where none.
-   * Where the server does not check a cancel and the statement holds a mask, two statements may
-   * read alike, so any read counts as a change.
+   * Statements are told apart by their digest too, as two may read alike once masked.
    */
   private String changed(Asked asked) {
     var was = asked.session();
@@ -393,13 +398,22 @@ final class MonitorTab implements Tab {
     if (!now.cancellable()) {
       return "Session " + was.id() + " runs nothing now";
     }
-    if (!now.operation().equals(was.operation()) || !now.statement().equals(was.statement())) {
+    if (!now.operation().equals(was.operation())
+        || !now.statement().equals(was.statement())
+        || !Objects.equals(digests.get(was.id()), asked.digest())) {
       return "Session " + was.id() + " runs something else now";
     }
-    if (!guardsCancel && was.statement().contains(Credentials.MASK)) {
-      return "Session " + was.id() + " may run something else now";
-    }
     return null;
+  }
+
+  private static String digest(String statement) {
+    try {
+      return HexFormat.of()
+          .formatHex(MessageDigest.getInstance("SHA-256")
+              .digest(statement.getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e); // every Java platform has SHA-256
+    }
   }
 
   private int indexOf(String session) {
@@ -582,7 +596,7 @@ final class MonitorTab implements Tab {
    */
   void ask(Action action, ServerSession session) {
     if (session != null && can(action, session) && lane != null && doing == null) {
-      asked = new Asked(action, session);
+      asked = new Asked(action, session, digests.get(session.id()));
       refresh.stop();
     }
   }
