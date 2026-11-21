@@ -9,6 +9,7 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -743,6 +744,9 @@ final class State {
     if (dialogs.driverList != null) {
       dialogs.driverList.close(this); // a download can be done again
     }
+    if (dialogs.export != null) {
+      dialogs.export.close(this); // an export can be done again, and leaves no file
+    }
     // A keyring that keeps a change waiting is given up, as its Cancel does: the window stays, and
     // says what that left; the next close closes. A slower one is given up once it is slow.
     if (dialogs.dialog != null && dialogs.dialog.slow()) {
@@ -920,6 +924,55 @@ final class State {
     };
   }
 
+  /** What Export to SQL is opened on: a connection's database or schema. */
+  record Exported(UUID id, Container container) {}
+
+  /**
+   * What Export to SQL of the File menu exports: in the main window the database or schema of the
+   * node selected in the tree, else that of the window's table tab; null for none, as for a
+   * connection, a server of documents, or one not connected.
+   */
+  Exported exportFor(TabGroups.Group<Tab> group) {
+    var node = group == tabs.main() ? selected : null;
+    if (node instanceof Node.Problem p) {
+      node = p.of();
+    }
+    Exported found = switch (node) {
+      case Node.OfDatabase n -> new Exported(n.id(), n.database());
+      case Node.OfSchema n -> new Exported(n.id(), n.schema());
+      case Node.OfTable n -> new Exported(n.id(), n.table().container());
+      case Node.OfColumn n -> new Exported(n.id(), n.column().table().container());
+      case null, default ->
+        group.activeTab() instanceof TableTab x ? new Exported(x.id, x.table.container()) : null;
+    };
+    if (found == null || !catalog.connected(found.id())) {
+      return null;
+    }
+    var profile = profile(found.id());
+    return profile == null || profile.provider().keepsDocuments() ? null : found;
+  }
+
+  /**
+   * Opens Export to SQL of the connection's database or schema, on a session of its own; not
+   * while another dialog is open, nor for a server of documents or one not connected.
+   */
+  void openExport(UUID id, Container container) {
+    var profile = profile(id);
+    if (profile == null || dialogs.anyOpen()) {
+      return;
+    }
+    if (profile.provider().keepsDocuments()) {
+      tell(profile.provider().displayName() + " has no export to SQL");
+      return;
+    }
+    var dialog = ExportDialog.open(this, id, container);
+    if (dialog == null) {
+      tell("Connect " + name(profile) + " first, to export from it");
+      return;
+    }
+    dialogs.export = dialog;
+  }
+
   /**
    * Opens the server monitor of the connection in the window of these tabs, or goes to the one it
    * has, in whichever window.
@@ -1048,10 +1101,16 @@ final class State {
     }
   }
 
-  /** The connection ended: what its tabs asked of it ends too, and what they read stays. */
+  /**
+   * The connection ended: what its tabs asked of it ends too, and what they read stays; its export
+   * closes with its session.
+   */
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
+    if (dialogs.export != null && dialogs.export.id.equals(id)) {
+      dialogs.export.close(this);
+    }
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -1241,6 +1300,9 @@ final class State {
     }
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    if (dialogs.export != null) {
+      dialogs.export.close(this);
+    }
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();

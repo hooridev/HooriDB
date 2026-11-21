@@ -19,6 +19,8 @@ import dev.hoori.db.core.document.DocumentRun;
 import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.dump.Exporter;
+import dev.hoori.db.core.dump.SqlExporter;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
@@ -144,6 +146,14 @@ interface Servers {
 
     /** What the server does now, read on this connection, as {@link Monitor} says. */
     Monitor monitor() throws QueryException;
+
+    /**
+     * What exports the server's objects to a file of SQL on this connection, as {@link Exporter}
+     * says.
+     *
+     * @throws QueryException {@link QueryException.Failure#OTHER} on a server of documents
+     */
+    Exporter exporter() throws QueryException;
 
     /**
      * Gives up the statement whose rows are not all read, if one is, as {@link Execution#abandon}:
@@ -381,6 +391,12 @@ interface Servers {
     }
 
     @Override
+    public Exporter exporter() throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of documents has no export to SQL");
+    }
+
+    @Override
     public Abandoned giveUp() {
       var left = open.getAndSet(null);
       return left == null ? Abandoned.NOTHING : ended(left.close());
@@ -581,6 +597,12 @@ interface Servers {
     public Monitor monitor() throws QueryException {
       usable();
       return new SqlMonitor(connection, provider);
+    }
+
+    @Override
+    public Exporter exporter() throws QueryException {
+      usable();
+      return new SqlExporter(connection, provider);
     }
 
     @Override

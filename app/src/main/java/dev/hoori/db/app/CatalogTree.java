@@ -1376,8 +1376,32 @@ final class CatalogTree {
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
             refresh,
             copy);
+      case Node.OfDatabase n -> exportable(s, n.id(), n.database(), connected, refresh, copy);
+      case Node.OfSchema n -> exportable(s, n.id(), n.schema(), connected, refresh, copy);
       default -> List.of(refresh, copy);
     };
+  }
+
+  /** The menu of a database or schema: Export to SQL, where its server speaks SQL, and the rest. */
+  private static List<Menu.Item> exportable(
+      State s,
+      UUID id,
+      dev.hoori.db.core.catalog.Container container,
+      boolean connected,
+      Menu.Item refresh,
+      Menu.Item copy) {
+    var profile = s.profile(id);
+    if (profile == null || profile.provider().keepsDocuments()) {
+      return List.of(refresh, copy);
+    }
+    return List.of(
+        Menu.item(
+                "Export to SQL…",
+                connected && !s.dialogs.anyOpen() ? () -> s.openExport(id, container) : null)
+            .icon(Symbol.ARROW_EXPORT_LTR),
+        Menu.separator(),
+        refresh,
+        copy);
   }
 
   /**

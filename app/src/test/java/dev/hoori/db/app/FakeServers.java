@@ -15,6 +15,10 @@ import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.dump.Dump;
+import dev.hoori.db.core.dump.Exporter;
+import dev.hoori.db.core.dump.Item;
+import dev.hoori.db.core.dump.Listed;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
@@ -33,7 +37,10 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -252,6 +259,19 @@ final class FakeServers implements Servers {
   /** The host's server has these status counters. */
   FakeServers counters(String host, Counter... all) {
     counters.put(host, List.of(all));
+    return this;
+  }
+
+  private final Map<String, List<Listed>> objects = new ConcurrentHashMap<>();
+  /** What each export wrote, in order. */
+  final List<Dump.Choice> exported = new CopyOnWriteArrayList<>();
+
+  /**
+   * The host's server has these objects besides the tables and views of its outline, such as
+   * routines and triggers, which an export lists after them in their schema or database.
+   */
+  FakeServers objects(String host, Listed... more) {
+    objects.put(host, List.of(more));
     return this;
   }
 
@@ -1068,6 +1088,99 @@ final class FakeServers implements Servers {
         return new Status(Transaction.OPEN, false); // pgjdbc's, while core reads in its own
       }
       return new Status(transaction, !manual);
+    }
+
+    // An export of the outline: its tables and views, with the rows and estimates the test gave,
+    // and the objects it added; what it writes names them, once the call's gate opens.
+    @Override
+    public Exporter exporter() {
+      return new Exporter() {
+        @Override
+        public List<Listed> list(Container c) throws QueryException {
+          var path = c instanceof Schema s ? s.database().name() + "." + s.name() : c.name();
+          var key = "export list " + host + "/" + path;
+          return Journal.sql(
+              made.provider(), Purpose.EXPORT, key, l -> Outcome.rows(l.size()), () -> {
+                step(key);
+                var containers = new ArrayList<Container>();
+                if (c instanceof Database d && made.provider() == Provider.POSTGRESQL) {
+                  for (var line : find(root(), d.name()).children()) {
+                    if (!line.text().startsWith("~")) {
+                      containers.add(new Schema(d, name(line), false));
+                    }
+                  }
+                } else {
+                  containers.add(c);
+                }
+                var listed = new ArrayList<Listed>();
+                for (var container : containers) {
+                  for (var line : container(container).children()) {
+                    var view = line.text().startsWith("@");
+                    var item =
+                        Item.of(container, view ? Item.Kind.VIEW : Item.Kind.TABLE, name(line));
+                    var at = path(new Table(container, name(line), Table.Kind.TABLE));
+                    listed.add(
+                        view
+                            ? Listed.of(item)
+                            : new Listed(
+                                item,
+                                estimates.getOrDefault(at, OptionalLong.of(3)),
+                                OptionalLong.of(100 * counts.getOrDefault(at, 3L)),
+                                true));
+                  }
+                  for (var more : objects.getOrDefault(host, List.of())) {
+                    if (more.item().container().equals(container)) {
+                      listed.add(more);
+                    }
+                  }
+                }
+                return listed;
+              });
+        }
+
+        @Override
+        public Dump.Written write(Dump.Choice choice, Path file, Dump.Progress progress)
+            throws QueryException, IOException {
+          var key = "export " + host + "/" + choice.database().name();
+          var rows = Journal.sql(made.provider(), Purpose.EXPORT, key, n -> Outcome.DONE, () -> {
+            long n = 0;
+            for (var item : choice.items()) {
+              progress.at(item, 0);
+              if (choice.content().data() && item.kind() == Item.Kind.TABLE) {
+                var at = path(new Table(item.container(), item.name(), Table.Kind.TABLE));
+                var count = counts.getOrDefault(at, 3L);
+                progress.at(item, count);
+                n += count;
+              }
+            }
+            step(key);
+            return n;
+          });
+          var text = new StringBuilder("-- A made-up export\n");
+          for (var item : choice.items()) {
+            text.append("-- ")
+                .append(item.kind())
+                .append(' ')
+                .append(item.shown())
+                .append('\n');
+          }
+          Files.writeString(file, text);
+          exported.add(choice);
+          return new Dump.Written(file, Files.size(file), choice.items().size(), rows);
+        }
+
+        private void step(String key) throws QueryException {
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception e) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          done.add(key);
+        }
+      };
     }
 
     @Override

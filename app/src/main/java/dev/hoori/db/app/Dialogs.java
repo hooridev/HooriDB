@@ -15,6 +15,7 @@ final class Dialogs {
   FolderDialog folderDialog; // a folder's name or the question before its delete; null while closed
   UUID placing; // the folder the new connection's dialog puts it in, or null for the top
   boolean about; // whether the About dialog is open
+  ExportDialog export; // Export to SQL, null while closed
 
   /** Whether a dialog is open, which an act that opens one must not replace. */
   boolean anyOpen() {
@@ -22,6 +23,7 @@ final class Dialogs {
         || deleting != null
         || folderDialog != null
         || about
-        || driverList != null;
+        || driverList != null
+        || export != null;
   }
 }

@@ -94,7 +94,17 @@ connection's menu, the File menu or the palette, opens a tab with the server's s
 status counters and who blocks whom, read on a session of its own at an interval that can be
 changed and paused, and not while the tab is hidden; a session's statement is cancelled and a
 session ended after a question, never the monitor's own, and credentials in other sessions'
-statements are masked. Run from its app image,
+statements are masked. "Export to SQL…", in a database's or schema's menu, the File menu or the
+palette, opens a dialog with the objects of a server of SQL, its tables, views, sequences, routines
+and triggers, all checked, filtered by name, with All and None per schema and each table's
+estimated rows and size, and writes those checked to a file chosen: structure and data, structure
+only or data only, with `DROP … IF EXISTS`, `CREATE SCHEMA` or `DATABASE`, a transaction around the
+rows, rows per `INSERT`, the indexes and foreign keys after the rows, and on MariaDB and MySQL
+`FOREIGN_KEY_CHECKS = 0`. It reads on a session of its own, in one read-only snapshot, the
+definitions as `SHOW CREATE` gives them on MariaDB and MySQL and as built from PostgreSQL's catalog,
+in the order of what each needs, and the rows streamed as `INSERT`s of many rows; it shows how far
+it is and can be cancelled, and writes beside the file until whole, so that a cancelled or failed
+export leaves it as it was. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Help chooses, Stable or
 Nightly (at first that of its own version), downloads it and restarts into it through its own Exit
 when asked; the new version confirms once its window has shown its first frame, and the updater's
@@ -194,7 +204,7 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   record.
 - What a provider does its own way (SQL, driver behavior, error codes, lexical rules) lives in its
   dialect, `provider.dialect()`: `dev.hoori.db.core.dialect`, and beside a package that the code
-  needs private members of, as `data/*Rows`. Logic code does not name providers; it asks the dialect
+  needs private members of, as `data/*Rows` and `dump/*Dump`. Logic code does not name providers; it asks the dialect
   for a trait named for the behavior. What every provider has is `provider.traits()`; a server of
   documents has a `DocumentDialect`, `provider.documents()`, in place of a `Dialect`, and code of core
   that serves both asks `provider.keepsDocuments()` or switches over the two. The app chooses once,
@@ -305,6 +315,15 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `locks` give what a host's server has, besides the monitor's own session, numbered as its link;
   the reads are keyed `sessions <host>`, `variables <host>`, `status <host>` and `locks <host>`,
   a cancel `cancel <host> <operation>` and an end `end <host> <id>`.
+- An export runs against `FakeServers` too: it lists the tables and views of the outline, with the
+  rows and estimates `rows` gives, and what `objects` adds, as routines and triggers; its calls are
+  keyed `export list <host>/<path>` and `export <host>/<database>`, held at its gate before it writes
+  a made-up file that names the objects, and `exported` keeps what each export chose. A script
+  answers the file dialog with `dialog "<path>"` before the press that opens it. Core's
+  `DumpServerTest` reads real exports back into an empty database of each `TestServer`, statement by
+  statement as `Statements.split` splits them, as root on MariaDB and MySQL, and through the
+  server's own client in its container (`TestServer.client`: `psql`, `mariadb`, `mysql`), and
+  compares objects, definitions and rows.
 - Updates run against `FakeUpdater`: releases published by version, the helper's result given,
   downloads and restarts recorded, each failable and the download held at its gate `downloading`.
   `State.shown()`, which `main` hands the window's `onShown`, stands for the first frame shown,

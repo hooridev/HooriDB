@@ -50,8 +50,11 @@ final class Frame {
     // One dialog at a time: what the catalog asks waits for the others to close.
     El asked = ownDialog(s) ? null : s.catalog.dialog(s, main);
     El question = question(s, main);
-    boolean before =
-        ownDialog(s) || asked != null || s.dialogs.driverList != null || question != null;
+    boolean before = ownDialog(s)
+        || asked != null
+        || s.dialogs.driverList != null
+        || s.dialogs.export != null
+        || question != null;
     El confirmation = before ? null : confirmation(s, main);
     boolean modal = before || confirmation != null;
     closePalette(s, main, modal);
@@ -102,6 +105,9 @@ final class Frame {
     root.overlay(confirmation == null ? null : historyQuestion(s, main));
     if (s.dialogs.driverList != null && !ownDialog(s) && asked == null) {
       root.overlay(s.dialogs.driverList.view(s)).overlay(s.dialogs.driverList.question(s));
+    }
+    if (s.dialogs.export != null && !ownDialog(s) && asked == null) {
+      root.overlay(s.dialogs.export.view(s));
     }
     return root.overlay(modal ? null : palette(s, main, menus));
   }
@@ -621,6 +627,7 @@ final class Frame {
   static List<Menu.Item> menus(State s, TabGroups.Group<Tab> group, boolean modal) {
     var palette = s.palette(group);
     var console = s.consoleFor(group);
+    var exported = s.exportFor(group);
     // What opens a dialog of the main window waits for the one open there, from every window.
     boolean free = !mainDialog(s);
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
@@ -645,6 +652,12 @@ final class Frame {
                         "Server monitor",
                         console == null ? null : () -> s.openMonitor(console, group))
                     .icon(Symbol.SERVER),
+                Menu.item(
+                        "Export to SQL…",
+                        free && exported != null
+                            ? inMain(s, () -> s.openExport(exported.id(), exported.container()))
+                            : null)
+                    .icon(Symbol.ARROW_EXPORT_LTR),
                 Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c ? c::openHistory : null)
@@ -724,6 +737,7 @@ final class Frame {
         || s.dialogs.folderDialog != null
         || s.dialogs.about
         || s.dialogs.driverList != null
+        || s.dialogs.export != null
         || asks(s, s.tabs.main());
   }
 
