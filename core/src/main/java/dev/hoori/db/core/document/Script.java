@@ -195,13 +195,13 @@ public final class Script {
       entry("getSiblingDB", c -> database(c.r(), c.string(0))));
 
   /** The collection methods that only read. */
-  public static final Set<String> READING_METHODS = READING.keySet();
+  public static final Set<String> READING_METHODS = Set.copyOf(READING.keySet());
 
   /** The collection methods that write. */
-  public static final Set<String> WRITING_METHODS = WRITING.keySet();
+  public static final Set<String> WRITING_METHODS = Set.copyOf(WRITING.keySet());
 
   /** The methods of {@code db} itself. */
-  public static final Set<String> DATABASE_METHODS = DATABASE.keySet();
+  public static final Set<String> DATABASE_METHODS = Set.copyOf(DATABASE.keySet());
 
   private Script() {}
 
@@ -285,41 +285,41 @@ public final class Script {
       }
       start = -1;
     }
-  }
 
-  // Whether the line after the break goes on with a dot, as in a chain of calls, also after a
-  // block comment: the token at k is the first after the break.
-  private static boolean continues(String text, List<Lexer.Token> tokens, int k, int broken) {
-    int from = broken + 1;
-    for (int j = k; j < tokens.size(); j++) {
-      var token = tokens.get(j);
-      if (lineBreak(text, from, token.start()) >= 0) {
-        return false;
+    // Whether the line after the break goes on with a dot, as in a chain of calls, also after a
+    // block comment: the token at k is the first after the break.
+    private static boolean continues(String text, List<Lexer.Token> tokens, int k, int broken) {
+      int from = broken + 1;
+      for (int j = k; j < tokens.size(); j++) {
+        var token = tokens.get(j);
+        if (lineBreak(text, from, token.start()) >= 0) {
+          return false;
+        }
+        if (token.kind() != Lexer.Kind.COMMENT) {
+          return token.is(text, '.');
+        }
+        if (token.open() || !block(text, token)) {
+          return false;
+        }
+        from = token.end();
       }
-      if (token.kind() != Lexer.Kind.COMMENT) {
-        return token.is(text, '.');
-      }
-      if (token.open() || !block(text, token)) {
-        return false;
-      }
-      from = token.end();
+      return false;
     }
-    return false;
-  }
 
-  // Whether the comment is a block comment, not one to the end of its line.
-  private static boolean block(String text, Lexer.Token comment) {
-    return text.startsWith("/*", comment.start());
-  }
-
-  // The first line break from the one offset to the other, or -1.
-  private static int lineBreak(String text, int from, int to) {
-    for (int i = from; i < to; i++) {
-      if (text.charAt(i) == '\n') {
-        return i;
-      }
+    // Whether the comment is a block comment, not one to the end of its line.
+    private static boolean block(String text, Lexer.Token comment) {
+      return text.startsWith("/*", comment.start());
     }
-    return -1;
+
+    // The first line break from the one offset to the other, or -1.
+    private static int lineBreak(String text, int from, int to) {
+      for (int i = from; i < to; i++) {
+        if (text.charAt(i) == '\n') {
+          return i;
+        }
+      }
+      return -1;
+    }
   }
 
   /** The request of one statement, which may end in a semicolon. */
