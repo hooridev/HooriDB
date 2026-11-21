@@ -95,7 +95,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>A server's monitor lists the sessions {@link #sessions} gives after the monitor's own, whose
  * id is the number of its link; a read of them is keyed {@code sessions <host>}. Cancelling what one
  * runs, keyed {@code cancel <host> <operation>}, leaves it idle, and ending one, keyed {@code end
- * <host> <id>}, takes it out; either says false for a session the server does not have. Its
+ * <host> <id>}, takes it out; either says false for a session the server does not have, or has
+ * with another start ({@link #session(String, String, String, String)}) or, for a cancel, another
+ * operation. Its
  * variables, status counters and locks are those {@link #variables}, {@link #counters} and {@link
  * #locks} give, read keyed {@code variables <host>}, {@code status <host>} and {@code locks
  * <host>}; a server whose locks are {@code null} does not tell them.
@@ -260,13 +262,19 @@ final class FakeServers implements Servers {
 
   /**
    * A session of another client, which runs the statement, cancellable, or is idle where it is
-   * empty.
+   * empty; it started at its first start.
    */
   static ServerSession session(String id, String user, String statement) {
+    return session(id, user, statement, "start of " + id);
+  }
+
+  /** A session as {@link #session(String, String, String)}, with the start the server tells. */
+  static ServerSession session(String id, String user, String statement, String started) {
     boolean runs = !statement.isEmpty();
     return new ServerSession(
         id,
         runs ? id : "",
+        started,
         false,
         true,
         user,
@@ -1080,6 +1088,7 @@ final class FakeServers implements Servers {
           all.add(new ServerSession(
               String.valueOf(number),
               "",
+              "",
               true,
               true,
               "hoori",
@@ -1147,13 +1156,16 @@ final class FakeServers implements Servers {
           var now = new ArrayList<ServerSession>();
           boolean found = false;
           for (var other : FakeServers.this.sessions.getOrDefault(host, List.of())) {
-            if (!other.id().equals(session.id())) {
+            // As a server that checks the session's start, and for a cancel its statement.
+            if (!other.id().equals(session.id())
+                || !other.started().equals(session.started())
+                || idle && !other.operation().equals(session.operation())) {
               now.add(other);
               continue;
             }
             found = true;
             if (idle) {
-              now.add(FakeServers.session(other.id(), other.user(), ""));
+              now.add(FakeServers.session(other.id(), other.user(), "", other.started()));
             }
           }
           FakeServers.this.sessions.put(host, List.copyOf(now));

@@ -145,11 +145,12 @@ class MonitorTabTest {
     var app = monitor();
     c.run(app, "press #pause\nframe\nsnap paused\n");
     var tree = c.tree("paused");
+    // The toggle says what it does now, beside a badge that says it is paused.
     assertTrue(
-        tree.contains("#pause role=button label=\"Pause\" ")
-            && line(tree, "#pause").endsWith(" checked"),
+        tree.contains("#pause role=button label=\"Resume\" ")
+            && line(tree, "#pause role=button").endsWith(" checked"),
         tree);
-    assertTrue(tree.contains("\"Paused\""), tree);
+    assertTrue(tree.contains("#paused") && tree.contains("\"Paused\""), tree);
     long first = reads();
     c.run(app, after(30) + after(30));
     assertEquals(first, reads());
@@ -247,7 +248,7 @@ class MonitorTabTest {
     assertTrue(c.servers.linked.contains("2 cancel " + PG + " 101"), c.servers.linked.toString());
     assertTrue(reads() > first);
     var tree = c.tree("cancelled");
-    assertTrue(tree.contains("\"Cancelled the statement of session 101\""), tree);
+    assertTrue(tree.contains("\"Cancel requested for session 101\""), tree);
     assertFalse(tree.contains("SELECT pg_sleep(60)"), tree);
     // The session stays selected, and runs nothing now.
     assertTrue(line(tree, "#cancel-statement").contains("disabled"), tree);
@@ -268,11 +269,11 @@ class MonitorTabTest {
     c.run(app, pick(2) + "press #end-session\n" + SHOWN + "snap asked\n");
     var asked = c.tree("asked");
     assertTrue(asked.contains("End the session?"), asked);
-    assertTrue(asked.contains("Session 102 of bob, from psql (10.0.0.102:5000)."), asked);
+    assertTrue(asked.contains("Session 102 of bob, from psql (10.0.0.102:5000), idle."), asked);
     c.run(app, "press #question-go\n" + SHOWN + SETTLE + "snap ended\n");
     assertTrue(c.servers.calls.contains("end " + PG + " 102"), c.servers.calls.toString());
     var tree = c.tree("ended");
-    assertTrue(tree.contains("\"Ended session 102\""), tree);
+    assertTrue(tree.contains("\"End requested for session 102\""), tree);
     assertTrue(tree.contains("\"3 sessions\""), tree);
   }
 
@@ -334,7 +335,9 @@ class MonitorTabTest {
     var tree = c.tree("variables");
     assertTrue(tree.contains("\"work_mem\"") && tree.contains("\"4MB\""), tree);
     assertTrue(tree.contains("\"3 variables\""), tree);
-    assertTrue(tree.contains("\"By Refresh\""), tree);
+    // Read by Refresh alone, it has no interval to choose.
+    assertTrue(line(tree, "#interval").contains("disabled"), tree);
+    assertTrue(line(tree, "#pause").contains("disabled"), tree);
     assertTrue(c.servers.linked.contains("2 variables " + PG), c.servers.linked.toString());
     long read = c.servers.calls.stream().filter(("variables " + PG)::equals).count();
     c.run(app, after(30) + after(30));
@@ -389,6 +392,146 @@ class MonitorTabTest {
     c.run(app, "press role=radio label=\"Locks\"\n" + SHOWN + SETTLE + "snap locks\n");
     assertTrue(
         c.tree("locks").contains("The server does not tell who holds a lock."), c.tree("locks"));
+  }
+
+  @Test
+  void aReadAtTheIntervalIsQuietUntilItTakesLong() throws Exception {
+    var app = monitor();
+    var held = c.servers.hold(READ);
+    c.run(app, "advance 5\nframe\nframe\nsnap quiet\n");
+    var quiet = c.tree("quiet");
+    var monitor = app.state().monitors(null).getFirst();
+    assertTrue(monitor.reading != null);
+    assertFalse(monitor.busy());
+    assertFalse(line(quiet, "role=tab label=\"" + TAB).contains("busy"), quiet);
+    assertFalse(line(quiet, "#refresh").contains("busy"), quiet);
+    assertTrue(quiet.contains("\"Updated "), quiet);
+    c.run(app, "advance 1\nframe\nframe\nsnap slow\n");
+    assertTrue(monitor.busy());
+    assertTrue(line(c.tree("slow"), "#refresh").contains("busy"), c.tree("slow"));
+    held.countDown();
+    c.run(app, "await\nframe\n");
+    assertFalse(monitor.busy());
+  }
+
+  @Test
+  void aLostConnectionStaysSaidAcrossViewsAndTryAgainOpensItAnew() throws Exception {
+    var app = monitor();
+    c.servers.fail(READ, FakeServers.queryFailure(QueryException.Failure.CONNECTION_LOST));
+    c.run(app, after(5) + "snap lost\n");
+    assertTrue(c.tree("lost").contains("\"Try again\""), c.tree("lost"));
+    c.run(app, "press role=radio label=\"Status\"\n" + SHOWN + SETTLE + "snap switched\n");
+    var switched = c.tree("switched");
+    assertTrue(switched.contains("\"Try again\""), switched);
+    assertTrue(line(switched, "#interval").contains("disabled"), switched);
+    c.servers.heal(READ);
+    long status = c.servers.calls.stream().filter(("status " + PG)::equals).count();
+    c.run(app, "press role=button label=\"Try again\"\n" + SHOWN + SETTLE + "snap again\n");
+    assertEquals(
+        status + 1, c.servers.calls.stream().filter(("status " + PG)::equals).count());
+    assertFalse(c.tree("again").contains("\"Try again\""), c.tree("again"));
+  }
+
+  @Test
+  void aViewTheServerRefusesIsReadAgainOnlyByHand() throws Exception {
+    var key = "status " + PG;
+    c.servers.fail(key, FakeServers.queryFailure(QueryException.Failure.ACCESS_DENIED));
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Status\"\n" + SHOWN + SETTLE + "snap denied\n");
+    var denied = c.tree("denied");
+    assertTrue(denied.contains("Access denied"), denied);
+    long first = c.servers.calls.stream().filter(key::equals).count();
+    c.run(app, after(5) + after(5) + "snap later\n");
+    assertEquals(first, c.servers.calls.stream().filter(key::equals).count());
+    assertFalse(c.tree("later").contains("Reading the status counters"), c.tree("later"));
+    c.run(app, "press role=button label=\"Try again\"\n" + SHOWN + SETTLE);
+    assertEquals(first + 1, c.servers.calls.stream().filter(key::equals).count());
+  }
+
+  @Test
+  void theLocksOfAServerThatDoesNotTellThemAreReadOnce() throws Exception {
+    c.servers.locks(PG, (Block[]) null);
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Locks\"\n" + SHOWN + SETTLE + "snap locks\n");
+    long first = c.servers.calls.stream().filter(("locks " + PG)::equals).count();
+    c.run(app, after(5) + after(5) + "snap later\n");
+    assertEquals(first, c.servers.calls.stream().filter(("locks " + PG)::equals).count());
+    assertTrue(line(c.tree("later"), "#pause").contains("disabled"), c.tree("later"));
+  }
+
+  @Test
+  void theActionsWaitForTheSessionsOfANewSession() throws Exception {
+    var app = monitor();
+    c.run(app, pick(1));
+    c.servers.fail(READ, FakeServers.queryFailure(QueryException.Failure.CONNECTION_LOST));
+    c.run(app, after(5));
+    c.servers.heal(READ);
+    var held = c.servers.hold(READ);
+    c.run(app, "press role=button label=\"Try again\"\n" + SHOWN + "snap reading\n");
+    var reading = c.tree("reading");
+    assertTrue(line(reading, "#cancel-statement").contains("disabled"), reading);
+    assertTrue(line(reading, "#end-session").contains("disabled"), reading);
+    // What the session before read is gone.
+    assertFalse(reading.contains("SELECT pg_sleep(60)"), reading);
+    held.countDown();
+    c.run(app, SETTLE + pick(1) + "snap read\n");
+    assertFalse(line(c.tree("read"), "#cancel-statement").contains("disabled"), c.tree("read"));
+  }
+
+  @Test
+  void withTwoSessionsSelectedNoActionRuns() throws Exception {
+    var app = monitor();
+    c.run(app, pick(1) + "press #cell-2-1 shift\nframe\nsnap two\n");
+    var two = c.tree("two");
+    assertTrue(row(two, 1).contains("selected") && row(two, 2).contains("selected"), two);
+    assertTrue(line(two, "#cancel-statement").contains("disabled"), two);
+    assertTrue(line(two, "#end-session").contains("disabled"), two);
+    c.run(app, "press #cell-1-1 right\n" + SHOWN + "snap menu\n");
+    var menu = c.tree("menu");
+    assertTrue(line(menu, "label=\"End session…\"").contains("disabled"), menu);
+  }
+
+  @Test
+  void anActionReachesOnlyTheSessionAsAskedAndNothingIsReadMeanwhile() throws Exception {
+    var app = monitor();
+    c.run(app, pick(1) + "press #cancel-statement\n" + SHOWN);
+    long first = reads();
+    c.run(app, after(30));
+    assertEquals(first, reads());
+    // Session 101 ended and another began under its id.
+    c.servers.sessions(PG, session("101", "ada", "SELECT pg_sleep(60)", "a later start"));
+    c.run(app, "press #question-go\n" + SHOWN + SETTLE + "snap other\n");
+    var other = c.tree("other");
+    assertTrue(other.contains("\"Session 101 had ended or runs something else now\""), other);
+    assertTrue(other.contains("SELECT pg_sleep(60)"), other);
+  }
+
+  @Test
+  void theLocksSelectionGoesWhereAnotherWaitTakesItsRow() throws Exception {
+    c.servers.locks(
+        PG,
+        new Block("101", "102", "public.orders", "ShareLock"),
+        new Block("103", "102", "public.items", "ShareLock"));
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Locks\"\n" + SHOWN + SETTLE);
+    c.run(app, "press #cell-1-2\nframe\nsnap picked\n");
+    assertTrue(row(c.tree("picked"), 1).contains("selected"), c.tree("picked"));
+    // The same again keeps it.
+    c.run(app, after(5) + "snap same\n");
+    assertTrue(row(c.tree("same"), 1).contains("selected"), c.tree("same"));
+    c.servers.locks(
+        PG,
+        new Block("101", "102", "public.orders", "ShareLock"),
+        new Block("104", "101", "public.items", "ShareLock"));
+    c.run(app, after(5) + "snap changed\n");
+    assertFalse(row(c.tree("changed"), 1).contains("selected"), c.tree("changed"));
+    // The context menu goes to the session that blocks.
+    c.run(app, "press #cell-0-2\nframe\npress #cell-0-2 right\n" + SHOWN + "snap menu\n");
+    c.run(app, "press role=menuitem label=\"Go to blocking session\"\n" + SHOWN + SETTLE);
+    c.run(app, "snap blocker\n");
+    var blocker = c.tree("blocker");
+    assertTrue(line(blocker, "role=radio label=\"Sessions\"").contains("checked"), blocker);
+    assertTrue(row(blocker, 2).contains("selected"), row(blocker, 2));
   }
 
   @Test
