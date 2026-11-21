@@ -29,6 +29,7 @@ import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Credentials;
@@ -143,7 +144,8 @@ final class MonitorTab implements Tab {
   Lane.Asked reading; // the read under way, or null
   private boolean loud; // whether the read under way shows that it is busy
   private int reads; // counts the reads, so that the timer of one before does nothing
-  Problem problem; // why the last read failed, or null
+  private final Map<View, Problem> problems = new EnumMap<>(View.class); // why a read failed
+  Problem disconnected; // why the monitor's own connection is gone, or null
   String said; // what the tab says for a while in its status line; or null
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.ROWS);
   final DataGrid.Selection variableSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
@@ -162,6 +164,9 @@ final class MonitorTab implements Tab {
   Problem refused; // why the last action failed, until the next or a dismiss; or null
   private String selected; // the id of the session selected, which a read keeps selected
   private String selectedStart; // and its start, null where not known yet, as from the locks
+  // Whether the server checks on a cancel that the session runs what it ran when read; where not,
+  // a masked statement cannot tell two apart, and the app takes any new read for a change.
+  private boolean guardsCancel;
   private boolean listed; // the sessions were read on the session the monitor has now
   private int says;
   private Lane lane; // the monitor's own session, or null while it has none
@@ -210,8 +215,11 @@ final class MonitorTab implements Tab {
       statusSelection.clear();
       lockSelection.clear();
       picked.clear();
-      problem = null;
+      problems.clear();
+      disconnected = null;
       refused = null;
+      guardsCancel = s.profile(id) instanceof ConnectionProfile p
+          && (p.provider().keepsDocuments() || p.provider().dialect().monitor().guardsCancel());
     }
     read(s, byHand);
   }
@@ -250,7 +258,7 @@ final class MonitorTab implements Tab {
     refresh.stop();
     var live = s.catalog.live(id);
     var of = view;
-    loud = byHand || !updated.containsKey(of) && problem == null;
+    loud = byHand || !updated.containsKey(of) && !problems.containsKey(of);
     int at = ++reads;
     if (!loud) {
       s.app.after(SLOW, () -> loud |= reads == at && reading != null);
@@ -270,7 +278,7 @@ final class MonitorTab implements Tab {
         },
         got -> {
           reading = null;
-          problem = null;
+          problems.remove(of);
           denied.remove(of);
           updated.put(of, Instant.now());
           switch ((Got) got) {
@@ -284,7 +292,7 @@ final class MonitorTab implements Tab {
         },
         error -> {
           reading = null;
-          unanswered(s);
+          unanswered(s, "the sessions could not be read");
           if (error instanceof InterruptedException) {
             return; // its session ended under it
           }
@@ -292,13 +300,27 @@ final class MonitorTab implements Tab {
         });
   }
 
-  // An answer that waited for the read is not sent where the read did not come.
-  private void unanswered(State s) {
+  // An answer that waited for the read is not sent where the read did not come, for the reason.
+  private void unanswered(State s, String why) {
     if (answered != null) {
-      say(s, answered.action().requested + " not sent: the sessions could not be read");
+      say(s, answered.action().requested + " not sent: " + why);
       answered = null;
       doing = null;
     }
+  }
+
+  // Gives up the read under way, and an answer that waited for it, for the reason.
+  private void abandon(State s, String why) {
+    if (reading != null) {
+      reading.cancel();
+      reading = null;
+    }
+    unanswered(s, why);
+  }
+
+  /** Why the view cannot be read now: the monitor's connection gone, or its last read failed. */
+  Problem problem() {
+    return disconnected != null ? disconnected : problems.get(view);
   }
 
   /**
@@ -323,6 +345,9 @@ final class MonitorTab implements Tab {
         selection.select(at, Math.max(0, selection.column()));
       }
     } else if (selected != null) {
+      if (selectedStart == null) {
+        say(s, "Session " + selected + " is not among the sessions this user can see");
+      }
       selected = null;
       selectedStart = null;
       selection.clear();
@@ -350,6 +375,8 @@ final class MonitorTab implements Tab {
   /**
    * What makes the action asked about no longer the one the question named, as the sessions read
    * last show it: the session gone, or for a cancel another statement or none; null where none.
+   * Where the server does not check a cancel and the statement holds a mask, two statements may
+   * read alike, so any read counts as a change.
    */
   private String changed(Asked asked) {
     var was = asked.session();
@@ -358,10 +385,15 @@ final class MonitorTab implements Tab {
     if (now == null || !now.started().equals(was.started())) {
       return "Session " + was.id() + " has ended";
     }
-    if (asked.action() == Action.CANCEL
-        && (!now.cancellable()
-            || !now.operation().equals(was.operation())
-            || !now.statement().equals(was.statement()))) {
+    if (asked.action() != Action.CANCEL) {
+      return null;
+    }
+    if (!now.cancellable()) {
+      return "Session " + was.id() + " runs nothing now";
+    }
+    if (!now.operation().equals(was.operation())
+        || !now.statement().equals(was.statement())
+        || !guardsCancel && was.statement().contains(Credentials.MASK)) {
       return "Session " + was.id() + " runs something else now";
     }
     return null;
@@ -388,14 +420,14 @@ final class MonitorTab implements Tab {
     var detail = CatalogTree.words(live, detail(error));
     if (lost(error)) {
       closeSession(s);
-      problem = new Problem(
+      disconnected = new Problem(
           "Disconnected",
           "The monitor's connection was lost or could not be opened."
               + (detail.isEmpty() ? "" : "\n" + detail),
           true);
       return;
     }
-    problem = switch (error) {
+    var problem = switch (error) {
       case QueryException q
       when q.failure() == QueryException.Failure.ACCESS_DENIED -> {
         denied.add(of);
@@ -410,6 +442,7 @@ final class MonitorTab implements Tab {
         new Problem("Cancelled", "The server cancelled the read.");
       default -> new Problem("Could not be read", detail);
     };
+    problems.put(of, problem);
     next(s);
   }
 
@@ -445,14 +478,10 @@ final class MonitorTab implements Tab {
     }
     view = next;
     refresh.stop();
-    if (reading != null) {
-      reading.cancel();
-      reading = null;
-    }
+    abandon(s, "the view changed");
     if (lane == null) {
       return;
     }
-    problem = null;
     if (repeats() || !updated.containsKey(next)) {
       read(s, false);
     }
@@ -530,14 +559,16 @@ final class MonitorTab implements Tab {
   }
 
   /**
-   * The session an action acts on: the one row selected, in a list read on the monitor's session
-   * now; null for none.
+   * The session an action acts on: the one row the selection holds, wherever its cursor is, in a
+   * list read on the monitor's session now; null for none.
    */
   ServerSession chosen() {
-    if (!listed || lane == null || selection.isEmpty() || selection.rowCount() != 1) {
+    var rows = rows(selection, sessions.size());
+    if (!listed || lane == null || rows == null || rows.size() != 1) {
       return null;
     }
-    return selected();
+    var session = sessions.get(rows.iterator().next());
+    return session.id().equals(selected) ? session : null;
   }
 
   /**
@@ -661,10 +692,8 @@ final class MonitorTab implements Tab {
     refresh.stop();
     due = false;
     listed = false;
-    if (reading != null) {
-      reading.cancel();
-      reading = null;
-    }
+    abandon(s, "the monitor's connection closed");
+    problems.clear();
     if (acting != null) {
       acting.cancel();
       acting = null;
@@ -851,7 +880,7 @@ final class MonitorTab implements Tab {
     }
     if (updated.containsKey(view)) {
       content.child(shown(s, app));
-    } else if (reading != null && problem == null) {
+    } else if (reading != null && problem() == null) {
       content.child(col()
           .grow(1)
           .center()
@@ -879,16 +908,21 @@ final class MonitorTab implements Tab {
           .key("paused"));
     }
     var at = updated.get(view);
-    if (problem != null && !problem.lasting() && at != null) {
+    var problem = problem();
+    if (problem != null && !problem.lasting() && at != null && lane != null) {
       // A read that failed where the view shows what it read before: the grid stays in place.
       El failed = row()
           .gap(t.space().s())
           .align(Style.Align.CENTER)
           .child(Icon.icon(Symbol.WARNING, Icon.Variant.WARNING))
           .child(Label.label(problem.title()));
-      end.add(Tooltip.tooltip(failed, problem.text().isEmpty() ? problem.title() : problem.text())
-          .key("read-problem"));
-      end.add(button(SECONDARY, "Try again", () -> open(s)).key("try-again"));
+      var last = "Last read " + TIME.text(LocalTime.ofInstant(at, s.zone));
+      end.add(
+          Tooltip.tooltip(failed, problem.text().isEmpty() ? last : problem.text() + "\n" + last)
+              .key("read-problem"));
+      // Off while a read shows that it runs; a quiet one it makes show.
+      end.add(button(SECONDARY, "Try again", reading != null && loud ? null : () -> open(s))
+          .key("try-again"));
     } else {
       // As wide as the time at its widest, so that what stands beside it stays as it changes.
       end.add(Label.label(
@@ -979,8 +1013,11 @@ final class MonitorTab implements Tab {
             widths(of),
             selection,
             () -> {
-              int row = selection.row();
-              var at = row >= 0 && row < sessions.size() ? sessions.get(row) : null;
+              // The one row the selection holds, which a read keeps by its id and start.
+              var rows = rows(selection, sessions.size());
+              var at = rows != null && rows.size() == 1
+                  ? sessions.get(rows.iterator().next())
+                  : null;
               selected = at == null ? null : at.id();
               selectedStart = at == null ? null : at.started();
             },
@@ -1040,7 +1077,8 @@ final class MonitorTab implements Tab {
               ? new El[0]
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
-    if (problem == null || !problem.lasting() && updated.containsKey(view)) {
+    var problem = problem();
+    if (problem == null || !problem.lasting() && updated.containsKey(view) && lane != null) {
       return null; // a passing failure shows in the status line, where the view has rows
     }
     return Callout.callout(

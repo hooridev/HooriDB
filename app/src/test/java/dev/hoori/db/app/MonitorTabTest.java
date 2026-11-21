@@ -1,5 +1,7 @@
 package dev.hoori.db.app;
 
+import static dev.hoori.db.app.CatalogTreeTest.LEGACY;
+import static dev.hoori.db.app.CatalogTreeTest.MYSQL;
 import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
@@ -16,6 +18,7 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
+import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Path;
@@ -739,6 +742,127 @@ class MonitorTabTest {
     var status = line(c.tree("time"), "#read-status");
     float width = Theme.DARK.size().control() * 5;
     assertTrue(status.contains(" " + Math.round(width) + "x"), status + " " + width);
+  }
+
+  @Test
+  void anAnswerWaitingForAReadThatIsGivenUpIsNotSent() throws Exception {
+    var app = monitor();
+    var monitor = app.state().monitors(null).getFirst();
+    var held = heldRead(app);
+    c.run(app, "press #cancel-statement\n" + SHOWN + "press #question-go\n" + SHOWN);
+    assertTrue(monitor.busy());
+    c.run(app, "press role=radio label=\"Status\"\n" + SHOWN + SETTLE + "snap away\n");
+    assertFalse(monitor.busy());
+    assertTrue(c.tree("away").contains("\"Cancel not sent: the view changed\""), c.tree("away"));
+    held.countDown();
+    c.run(app, "press role=radio label=\"Sessions\"\n" + SHOWN + SETTLE + after(5));
+    assertFalse(c.servers.calls.stream().anyMatch(k -> k.startsWith("cancel ")));
+  }
+
+  @Test
+  void aDisconnectTakesAPassingFailureAndItsTryAgainAway() throws Exception {
+    var app = monitor();
+    c.servers.fail(READ, FakeServers.queryFailure(QueryException.Failure.OTHER));
+    c.run(app, after(5) + "snap failed\n");
+    assertTrue(c.tree("failed").contains("#try-again"), c.tree("failed"));
+    c.run(app, menu("shop-prod", "Disconnect") + SETTLE + "snap disconnected\n");
+    var disconnected = c.tree("disconnected");
+    assertFalse(disconnected.contains("#try-again"), disconnected);
+    assertFalse(disconnected.contains("#read-problem"), disconnected);
+    assertTrue(app.state().monitors(null).getFirst().problem() == null);
+  }
+
+  @Test
+  void theActionsTakeTheOneSelectedRowNotTheCursor() throws Exception {
+    var app = monitor();
+    // 101, then 103 added and taken away again: the cursor stays on 103.
+    c.run(app, pick(1) + "press #cell-3-1 control\nframe\npress #cell-3-1 control\nframe\n");
+    var monitor = app.state().monitors(null).getFirst();
+    assertEquals(1, monitor.selection.rowCount(), monitor.selection.toString());
+    c.run(app, "press #end-session\n" + SHOWN + "snap asked\n");
+    var asked = c.tree("asked");
+    assertTrue(asked.contains("Session 101 of ada"), asked);
+    // It stays the target across a read.
+    c.run(app, "press #question-keep\n" + SHOWN + after(5) + "snap read\n");
+    assertEquals("101", monitor.chosen().id());
+  }
+
+  @Test
+  void anUnguardedCancelOfAMaskedStatementTakesAnyReadForAChange() throws Exception {
+    var key = "sessions " + MYSQL;
+    c.servers.sessions(MYSQL, session("101", "ada", "SET PASSWORD = '" + Credentials.MASK + "'"));
+    var app = c.app(LEGACY);
+    c.ready(app, LEGACY);
+    c.run(
+        app,
+        START + open("legacy") + SETTLE
+            + "press role=treeitem label=\"legacy\" level=1 right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Server monitor\"\nframe\nadvance 1\nframe\n" + SETTLE);
+    c.run(app, pick(1));
+    var held = c.servers.hold(key);
+    c.run(app, "advance 5\nframe\nframe\npress #cancel-statement\n" + SHOWN);
+    held.countDown();
+    c.run(app, "await\nframe\n" + SHOWN + "snap cancel\n");
+    var cancel = c.tree("cancel");
+    assertFalse(cancel.contains("Cancel the statement?"), cancel);
+    assertTrue(cancel.contains("\"Session 101 runs something else now\""), cancel);
+    // End is not affected.
+    held = c.servers.hold(key);
+    c.run(app, "advance 5\nframe\nframe\npress #end-session\n" + SHOWN);
+    held.countDown();
+    c.run(app, "await\nframe\n" + SHOWN + "snap end\n");
+    assertTrue(c.tree("end").contains("End the session?"), c.tree("end"));
+  }
+
+  @Test
+  void aViewKeepsItsFailureWhenShownAgain() throws Exception {
+    var key = "variables " + PG;
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Variables\"\n" + SHOWN + SETTLE);
+    c.servers.fail(key, FakeServers.queryFailure(QueryException.Failure.OTHER));
+    c.run(app, "press #refresh\nframe\nawait\nframe\n");
+    c.run(app, "press role=radio label=\"Sessions\"\n" + SHOWN + SETTLE);
+    c.run(app, "press role=radio label=\"Variables\"\n" + SHOWN + SETTLE + "snap back\n");
+    var back = c.tree("back");
+    assertTrue(back.contains("#read-problem") && back.contains("#try-again"), back);
+    c.servers.heal(key);
+    c.run(app, "press #refresh\nframe\nawait\nframe\n" + SHOWN + "snap read\n");
+    assertFalse(c.tree("read").contains("#read-problem"), c.tree("read"));
+  }
+
+  @Test
+  void aCancelWhoseSessionWentIdleSaysItRunsNothing() throws Exception {
+    var app = monitor();
+    var held = heldRead(app);
+    c.run(app, "press #cancel-statement\n" + SHOWN);
+    c.servers.sessions(PG, session("101", "ada", ""), session("102", "bob", ""));
+    held.countDown();
+    c.run(app, "await\nframe\n" + SHOWN + "snap idle\n");
+    assertTrue(c.tree("idle").contains("\"Session 101 runs nothing now\""), c.tree("idle"));
+  }
+
+  @Test
+  void aBlockerTheUserCannotSeeIsSaidSo() throws Exception {
+    c.servers.locks(PG, new Block("101", "93", "public.orders", "ShareLock"));
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Locks\"\n" + SHOWN + SETTLE);
+    c.run(app, "press #cell-0-1 clicks 2\n" + SHOWN + SETTLE + "snap blocker\n");
+    var blocker = c.tree("blocker");
+    assertTrue(
+        blocker.contains("\"Session 93 is not among the sessions this user can see\""), blocker);
+  }
+
+  @Test
+  void tryAgainInTheStatusLineIsOffWhileAReadShows() throws Exception {
+    var app = monitor();
+    c.servers.fail(READ, FakeServers.queryFailure(QueryException.Failure.OTHER));
+    c.run(app, after(5));
+    c.servers.heal(READ);
+    var held = c.servers.hold(READ);
+    c.run(app, "advance 1\nframe\npress #refresh\nframe\nframe\nsnap reading\n");
+    assertTrue(line(c.tree("reading"), "#try-again").contains("disabled"), c.tree("reading"));
+    held.countDown();
+    c.run(app, "await\nframe\n");
   }
 
   @Test

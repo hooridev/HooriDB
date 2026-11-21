@@ -747,6 +747,11 @@ public final class PostgreSql implements Dialect {
     }
 
     @Override
+    public boolean guardsCancel() {
+      return true;
+    }
+
+    @Override
     public Stop end(ServerSession session) {
       return new Stop(
           "SELECT pg_catalog.pg_terminate_backend(a.pid)" + same(session),
@@ -802,10 +807,9 @@ public final class PostgreSql implements Dialect {
 
     // Each session that waits for a lock, beside each that blocks it, with the lock it waits for;
     // pg_blocking_pids() is costly, so only those that wait for a lock ask it, as pg_locks tells
-    // any user, where pg_stat_activity hides other users' waits without pg_read_all_stats. A
-    // relation
-    // has its name only in its own database, or where it is shared; in another, its database and
-    // number. An advisory lock is told by its keys.
+    // any user, where pg_stat_activity hides other users' waits without pg_read_all_stats.
+    // A relation has its name only in its own database, or where it is shared; in another, its
+    // database and number. An advisory lock is told by its keys.
     @Override
     public String locks() {
       return "SELECT a.pid, b.pid,"
