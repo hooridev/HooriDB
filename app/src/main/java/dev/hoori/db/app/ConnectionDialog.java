@@ -93,27 +93,75 @@ final class ConnectionDialog {
   int passwordEdits; // tells a test's outcome that the password changed since
   boolean revealed;
   boolean savePassword;
-  Boolean stored; // whether the keyring holds a password for the profile; null while unknown
-  String keyringError; // what the keyring answered when it failed, or null
-  Work asking; // the keyring's answer whether it holds a password, or null
-  private int lookups; // counted, so that a late patience is dropped
-  // Asked and not answered: whether the keyring holds a password for the profile is not known.
-  private boolean unknown;
-  // A change of the keyring runs: the dialog stays, unchanged, until its answer has come.
-  boolean changing;
-  boolean slow; // the keyring has not answered for a while: Cancel gives up waiting for it
-  private Work moving; // the change of the keyring, while it runs
-  private int moves; // counted, so that a late patience is dropped
-  private char[] held; // the typed password the change keeps for this session, wiped if given up
+  private Lookup lookup = new Lookup.NotAsked();
+  // What the keyring answered when it failed, or null: of a lookup or of a change, so it stays
+  // apart from both, shown while the keyring is asked again after a change given up.
+  String keyringError;
+  private Change change = new Change.None();
   private final State.Act act = new State.Act("save", this);
-  boolean discarding; // the question whether to throw the changes away is open
+  Over over = Over.NONE;
   final Menu.State tlsMenu = new Menu.State();
   final Popover.State colorPopover = new Popover.State();
   final ComboBox.State providerBox = new ComboBox.State();
   final ComboBox.State versionBox = new ComboBox.State();
   Versions versions; // of the driver of the kind of database chosen
-  boolean choosingDriver; // the dialog of the driver's version is open over this one
   final Probe probe = new Probe(this);
+
+  /** Whether the keyring holds a password for the profile edited. */
+  sealed interface Lookup {
+
+    /** Not asked yet, as while the keyring is looked for. */
+    record NotAsked() implements Lookup {}
+
+    /**
+     * @param unknown whether it was asked before and did not answer, which keeps the choice one to
+     *     carry out meanwhile
+     */
+    record Asking(Work work, boolean unknown) implements Lookup {}
+
+    /** Asked, and it failed or did not answer in time, or a change of it was given up. */
+    record Unknown() implements Lookup {}
+
+    record Known(boolean stored) implements Lookup {}
+  }
+
+  /** A change of the keyring: while it runs, the dialog stays, unchanged, until it has answered. */
+  sealed interface Change {
+
+    record None() implements Change {}
+
+    /**
+     * @param slow the keyring has not answered for a while: Cancel gives up waiting for it
+     * @param held the typed password the change keeps for this session, wiped if given up; or null
+     */
+    record Changing(Work work, boolean slow, char[] held) implements Change {
+
+      @Override
+      public boolean equals(Object o) {
+        return o instanceof Changing c
+            && work.equals(c.work)
+            && slow == c.slow
+            && Arrays.equals(held, c.held);
+      }
+
+      @Override
+      public int hashCode() {
+        return Objects.hash(work, slow, Arrays.hashCode(held));
+      }
+
+      @Override
+      public String toString() {
+        return "Changing[slow=" + slow + "]"; // never the password
+      }
+    }
+  }
+
+  /** What is open over the dialog. */
+  enum Over {
+    NONE,
+    DISCARDING, // the question whether to throw the changes away
+    CHOOSING_DRIVER // the dialog of the driver's version
+  }
 
   private ConnectionDialog(ConnectionProfile profile, boolean isNew) {
     this.isNew = isNew;
@@ -121,7 +169,7 @@ final class ConnectionDialog {
     portByHand = profile.port() != profile.provider().defaultPort();
     tlsByHand = profile.tls() != tlsByDefault(profile);
     if (isNew) {
-      stored = false;
+      lookup = new Lookup.Known(false);
       savePassword = true;
     }
   }
@@ -165,7 +213,7 @@ final class ConnectionDialog {
    * where the lookup has none: that read changes nothing of the lookup's.
    */
   private void chooseDriver(State s) {
-    choosingDriver = true;
+    over = Over.CHOOSING_DRIVER;
     if ((versions.last == null || versions.choices() == null) && !versions.reading()) {
       versions.read(s);
     }
@@ -173,7 +221,7 @@ final class ConnectionDialog {
 
   /** Close and Escape of the driver's dialog: what it reads is cancelled. */
   private void closeDriver() {
-    choosingDriver = false;
+    over = Over.NONE;
     versions.stop();
   }
 
@@ -189,20 +237,20 @@ final class ConnectionDialog {
 
   /** Asks the keyring whether it holds a password for the profile edited, once there is one. */
   void lookUp(State s) {
+    boolean unknown;
+    switch (lookup) {
+      case Lookup.NotAsked _ -> unknown = false;
+      case Lookup.Unknown _ -> unknown = true;
+      case Lookup.Asking _, Lookup.Known _ -> {
+        return;
+      }
+    }
     var secrets = s.secrets();
-    if (stored != null || asking != null || secrets == null) {
+    if (secrets == null) {
       return;
     }
     var id = editing.original().id();
-    int at = ++lookups;
-    s.app.after(State.KEYRING_SECONDS, () -> {
-      if (asking != null && lookups == at) {
-        asking.cancel(); // stops waiting: the keyring does not answer, and it stays unknown
-        asking = null;
-        unknown = true;
-      }
-    });
-    asking = s.app.background(
+    var work = s.app.background(
         "look for a password",
         () -> {
           var secret = secrets.read(id);
@@ -210,16 +258,61 @@ final class ConnectionDialog {
           return secret.isPresent();
         },
         found -> {
-          asking = null;
-          stored = found;
+          lookup = new Lookup.Known(found);
           savePassword = found;
-          unknown = false;
         },
         error -> {
-          asking = null;
+          lookup = new Lookup.Unknown();
           keyringError = State.message(error);
-          unknown = true;
         });
+    var asking = new Lookup.Asking(work, unknown);
+    lookup = asking;
+    s.app.after(State.KEYRING_SECONDS, () -> {
+      if (lookup == asking) { // a late patience of an earlier lookup is dropped
+        work.cancel(); // stops waiting: the keyring does not answer, and it stays unknown
+        lookup = new Lookup.Unknown();
+      }
+    });
+  }
+
+  /** Whether the keyring is being asked whether it holds a password. */
+  private boolean asking() {
+    return switch (lookup) {
+      case Lookup.Asking _ -> true;
+      case Lookup.NotAsked _, Lookup.Unknown _, Lookup.Known _ -> false;
+    };
+  }
+
+  /** Whether the keyring holds a password for the profile, as far as is known. */
+  private boolean holds() {
+    return switch (lookup) {
+      case Lookup.Known(var stored) -> stored;
+      case Lookup.NotAsked _, Lookup.Asking _, Lookup.Unknown _ -> false;
+    };
+  }
+
+  /** Whether the keyring may hold a password for the profile: unknown is not absent. */
+  boolean mayHold() {
+    return switch (lookup) {
+      case Lookup.Known(var stored) -> stored;
+      case Lookup.NotAsked _, Lookup.Asking _, Lookup.Unknown _ -> true;
+    };
+  }
+
+  /** Whether a change of the keyring runs. */
+  boolean changing() {
+    return switch (change) {
+      case Change.None _ -> false;
+      case Change.Changing _ -> true;
+    };
+  }
+
+  /** Whether a change of the keyring has not answered for a while. */
+  boolean slow() {
+    return switch (change) {
+      case Change.None _ -> false;
+      case Change.Changing c -> c.slow();
+    };
   }
 
   /** Whether the user changed anything, the password or whether it is saved included. */
@@ -227,9 +320,14 @@ final class ConnectionDialog {
     return editing.changed()
         || portTyped()
         || !password.isEmpty()
-        || !isNew && stored != null && savePassword != stored
-        // Not known to match: the choice is one to carry out.
-        || !isNew && stored == null && unknown;
+        || !isNew
+            && switch (lookup) {
+              case Lookup.Known(var stored) -> savePassword != stored;
+              // Not known to match: the choice is one to carry out.
+              case Lookup.Unknown _ -> true;
+              case Lookup.Asking a -> a.unknown();
+              case Lookup.NotAsked _ -> false;
+            };
   }
 
   /** Whether Save can go: the profile can connect, and something changed. */
@@ -237,8 +335,8 @@ final class ConnectionDialog {
     return editing.valid()
         && editing.value().problems().isEmpty()
         && changed()
-        && asking == null
-        && !changing;
+        && !asking()
+        && !changing();
   }
 
   /** Whether the form, the port's text included, holds a profile that can connect. */
@@ -275,7 +373,7 @@ final class ConnectionDialog {
     char[] typed = password.isEmpty() ? null : password.toCharArray();
     char[] put = keep ? toKeyring(s, id, typed) : null;
     // Unknown is not absent: where the keyring may hold one, it is asked to delete it.
-    boolean takeOut = !keep && secrets != null && !Boolean.FALSE.equals(stored);
+    boolean takeOut = !keep && secrets != null && mayHold();
     keyringError = null;
     if (put == null && !takeOut) {
       saved(s, profile, keep ? null : typed, false);
@@ -292,7 +390,7 @@ final class ConnectionDialog {
     if (typed != null) {
       return typed;
     }
-    return Boolean.TRUE.equals(stored) ? null : s.rememberedCopy(id);
+    return holds() ? null : s.rememberedCopy(id);
   }
 
   /**
@@ -302,18 +400,8 @@ final class ConnectionDialog {
   private void move(
       State s, ConnectionProfile profile, SecretStore secrets, char[] put, char[] typed) {
     var id = profile.id();
-    changing = true;
-    held = put == null ? typed : null;
-    int move = ++moves;
-    s.app.after(State.KEYRING_SECONDS, () -> {
-      if (changing && moves == move) {
-        slow = true;
-        if (s.quitting()) {
-          giveUp(s); // closing never waits for a keyring that does not answer
-        }
-      }
-    });
-    moving = s.app.background(
+    char[] held = put == null ? typed : null;
+    var work = s.app.background(
         "move a password",
         () -> {
           if (put != null) {
@@ -328,6 +416,16 @@ final class ConnectionDialog {
         },
         old -> moved(s, profile, put, typed, old),
         error -> notMoved(s, put, typed, error));
+    var changing = new Change.Changing(work, false, held);
+    change = changing;
+    s.app.after(State.KEYRING_SECONDS, () -> {
+      if (change == changing) { // a late patience of an earlier change is dropped
+        change = new Change.Changing(work, true, held);
+        if (s.quitting()) {
+          giveUp(s); // closing never waits for a keyring that does not answer
+        }
+      }
+    });
   }
 
   /**
@@ -349,11 +447,7 @@ final class ConnectionDialog {
 
   /** The keyring did as asked: the profile is saved, with the password this session keeps. */
   private void moved(State s, ConnectionProfile profile, char[] put, char[] typed, char[] old) {
-    moving = null;
-    held = null;
-    slow = false;
-    stored = put != null; // where the password is now, as was done
-    unknown = false;
+    lookup = new Lookup.Known(put != null); // where the password is now, as was done
     char[] session = null;
     if (put == null) {
       session = typed != null ? typed : old;
@@ -363,10 +457,7 @@ final class ConnectionDialog {
 
   /** The keyring failed: nothing is saved, and the dialog says what it answered. */
   private void notMoved(State s, char[] put, char[] typed, Exception error) {
-    moving = null;
-    held = null;
-    slow = false;
-    changing = false;
+    change = new Change.None();
     s.drop(act);
     keyringError = State.message(error);
     if (put == null && typed != null) {
@@ -380,7 +471,7 @@ final class ConnectionDialog {
    * @param inKeyring whether the keyring has the password now
    */
   private void saved(State s, ConnectionProfile profile, char[] session, boolean inKeyring) {
-    changing = false;
+    change = new Change.None();
     if (session != null) {
       s.rememberPassword(profile.id(), session);
     } else if (inKeyring) {
@@ -402,19 +493,14 @@ final class ConnectionDialog {
    * whatever it did, and so is the save; the dialog stays and says what that leaves.
    */
   void giveUp(State s) {
-    if (!changing || !slow) {
+    if (!(change instanceof Change.Changing(var work, var slow, var held)) || !slow) {
       return;
     }
-    moving.cancel();
-    moving = null;
-    moves++;
-    changing = false;
-    slow = false;
-    stored = null; // not known now, and asked again before it counts
-    unknown = true;
+    work.cancel();
+    change = new Change.None();
+    lookup = new Lookup.Unknown(); // not known now, and asked again before it counts
     if (held != null) {
       Arrays.fill(held, '\0');
-      held = null;
     }
     keyringError = GAVE_UP;
     s.drop(act);
@@ -442,26 +528,27 @@ final class ConnectionDialog {
 
   /** Cancel and Escape: closes, after asking when there are changes. */
   void cancel(State s) {
-    if (changing) {
-      giveUp(s); // only once the keyring has kept it waiting
-      return;
-    }
-    if (changed()) {
-      discarding = true;
-    } else {
-      close(s);
+    switch (change) {
+      case Change.Changing _ -> giveUp(s); // only once the keyring has kept it waiting
+      case Change.None _ -> {
+        if (changed()) {
+          over = Over.DISCARDING;
+        } else {
+          close(s);
+        }
+      }
     }
   }
 
   void close(State s) {
     s.drop(act); // the way out a Save asked for goes with the dialog
     colorPopover.close();
-    if (asking != null) {
-      asking.cancel();
+    if (lookup instanceof Lookup.Asking a) {
+      a.work().cancel();
     }
     probe.close();
     versions.close();
-    choosingDriver = false;
+    over = Over.NONE;
     password = "";
     s.dialog = null;
   }
@@ -582,21 +669,21 @@ final class ConnectionDialog {
           }
           + " The password is kept until HooriDB closes.";
     }
-    if (stored == null) {
-      return asking != null
-          ? "Looking for a saved password…"
-          : "Whether the system keyring holds a password for this connection is not known.";
-    }
-    return savePassword ? null : "The password is kept until HooriDB closes.";
+    return switch (lookup) {
+      case Lookup.Asking _ -> "Looking for a saved password…";
+      case Lookup.NotAsked _, Lookup.Unknown _ ->
+        "Whether the system keyring holds a password for this connection is not known.";
+      case Lookup.Known _ -> savePassword ? null : "The password is kept until HooriDB closes.";
+    };
   }
 
   El view(State s) {
     Theme t = Theme.CURRENT.get();
     var p = editing.value();
     // Nothing changes while a Save waits for a console's answer or the keyring: it saves the form.
-    boolean open = !changing && !s.pends(act);
+    boolean open = !changing() && !s.pends(act);
     El save = button(
-        PRIMARY, "Save", () -> save(s), Button.options().state(buttonState(changing, ready())));
+        PRIMARY, "Save", () -> save(s), Button.options().state(buttonState(changing(), ready())));
     El cancel = button(SECONDARY, "Cancel", cancelAction(s));
     // What it is, where it connects, and who logs in: groups without headings.
     El form = Form.form(
@@ -644,10 +731,10 @@ final class ConnectionDialog {
 
   /** What Cancel does: closes, or gives up a keyring that keeps the save waiting; null for none. */
   private Runnable cancelAction(State s) {
-    if (!changing) {
-      return () -> cancel(s);
-    }
-    return slow ? () -> giveUp(s) : null;
+    return switch (change) {
+      case Change.None _ -> () -> cancel(s);
+      case Change.Changing c -> c.slow() ? () -> giveUp(s) : null;
+    };
   }
 
   /** The name and the color. */
@@ -823,7 +910,7 @@ final class ConnectionDialog {
   private Form.Field passwordEntry(State s, boolean open) {
     Theme t = Theme.CURRENT.get();
     // Also where it is not known whether the keyring holds one: the choice is the user's.
-    boolean canSave = s.secrets() != null && (stored != null || asking == null);
+    boolean canSave = s.secrets() != null && !asking();
     var keyring =
         Prop.of(() -> canSave && savePassword, canSave && open ? v -> savePassword = v : null);
     return field(
@@ -847,7 +934,7 @@ final class ConnectionDialog {
 
   /** Where the password is kept while none is typed; null where none is kept. */
   private String passwordPlaceholder(State s) {
-    if (Boolean.TRUE.equals(stored)) {
+    if (holds()) {
       return "Unchanged, saved in the keyring";
     }
     boolean inSession = !isNew && s.remembers(editing.original().id());
@@ -856,7 +943,7 @@ final class ConnectionDialog {
 
   /** What the keyring and a test have to say, under the form. */
   private void notes(State s, El content) {
-    if (slow) {
+    if (slow()) {
       content.child(Callout.callout(
           Callout.Kind.WARNING,
           "The system keyring does not answer",
@@ -999,12 +1086,14 @@ final class ConnectionDialog {
 
   /** The dialog of the driver's version, over this one, or null while it is closed. */
   El driverDialog(State s) {
-    if (!choosingDriver) {
+    if (over != Over.CHOOSING_DRIVER) {
       return null;
     }
     El form = Form.form(
         Form.Labels.BESIDE,
-        field("Version", driverVersion(s, !changing)).help(driverHelp(s)).warning(youngWarning(s)));
+        field("Version", driverVersion(s, !changing()))
+            .help(driverHelp(s))
+            .warning(youngWarning(s)));
     return Dialog.dialog(
             editing.value().provider().displayName() + " driver",
             col().w(formWidth()).child(form),
@@ -1015,17 +1104,17 @@ final class ConnectionDialog {
 
   /** The question whether to throw the changes away, or null while it is not asked. */
   El question(State s) {
-    if (!discarding) {
+    if (over != Over.DISCARDING) {
       return null;
     }
     return Dialog.dialog(
             "Discard changes?",
             label("The changes to this connection have not been saved."),
             List.of(
-                button(SECONDARY, "Keep editing", () -> discarding = false),
+                button(SECONDARY, "Keep editing", () -> over = Over.NONE),
                 button(
                     PRIMARY, "Discard", () -> close(s), Button.options().tone(Button.Tone.DANGER))),
-            () -> discarding = false)
+            () -> over = Over.NONE)
         .key("discard");
   }
 }
