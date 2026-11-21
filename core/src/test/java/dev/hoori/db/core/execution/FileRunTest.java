@@ -179,6 +179,36 @@ class FileRunTest {
   }
 
   @Test
+  void oneTransactionTellsWhereTheServerCommittedByItself() {
+    var text = "INSERT 1;\nLOCK TABLES t WRITE;\nINSERT 2;\nUNLOCK TABLES;\n"
+        + "LOCK TABLES u WRITE;\nSELEC 3;";
+    var session = new Session(Map.of("SELEC 3", WRONG));
+    var report = run(MARIADB, text, new FileRun.Options(false, true), session);
+    assertEquals(FileRun.Ending.STOPPED, report.ending());
+    assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
+    assertEquals(5, report.committedAt());
+    assertEquals(
+        List.of(
+            "begin",
+            "INSERT 1",
+            "LOCK TABLES t WRITE",
+            "INSERT 2",
+            "UNLOCK TABLES",
+            "LOCK TABLES u WRITE",
+            "SELEC 3",
+            "rollback",
+            "end"),
+        session.sent);
+
+    // Not without one transaction, and not where the server does not.
+    var own = run(MARIADB, text, new FileRun.Options(false, false), new Session(Map.of()));
+    assertEquals(0, own.committedAt());
+    var pg =
+        run(POSTGRESQL, "LOCK TABLE t;", new FileRun.Options(false, true), new Session(Map.of()));
+    assertEquals(0, pg.committedAt());
+  }
+
+  @Test
   void theRowsOfACopyGoWithIt() {
     var text = "COPY t FROM stdin;\n1\ta\n2\tb\n\\.\nSELECT 1;";
     var session = new Session(Map.of());

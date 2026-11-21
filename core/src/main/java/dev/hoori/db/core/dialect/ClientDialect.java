@@ -35,6 +35,15 @@ public interface ClientDialect {
   boolean controlsTransaction(List<String> words);
 
   /**
+   * Whether the server commits the open transaction by itself as it runs a statement, by its words
+   * as for {@link #controlsTransaction}, other than as it commits DDL, which {@link
+   * dev.hoori.db.core.connection.Capability#TRANSACTIONAL_DDL} tells: as MySQL's {@code LOCK
+   * TABLES}, which its dumps write around each table's rows. A run of a file in one transaction
+   * runs it, and says that what ran up to it stays.
+   */
+  boolean commitsImplicitly(List<String> words);
+
+  /**
    * Whether a statement copies rows from the client, as PostgreSQL's {@code COPY … FROM STDIN}, by
    * its first word and, where that may begin one, its words outside parentheses, each in lower
    * case and in order, a name as an empty word: the rows follow it in the file, from its next line

@@ -70,4 +70,46 @@ class TransactionControlTest {
       assertTrue(TransactionControl.in(sql, MARIADB), sql);
     }
   }
+
+  @Test
+  void mySqlsStatementsThatCommitByThemselvesBesidesDdl() {
+    for (var provider : List.of(MYSQL, MARIADB)) {
+      for (var sql : List.of(
+          "LOCK TABLES `t` WRITE",
+          "lock table t read, u write",
+          "UNLOCK TABLES",
+          "GRANT SELECT ON db.* TO 'u'@'%'",
+          "REVOKE ALL ON db.* FROM u",
+          "CREATE USER u IDENTIFIED BY 'x'",
+          "CREATE OR REPLACE USER u",
+          "DROP USER IF EXISTS u",
+          "ALTER USER u ACCOUNT LOCK",
+          "RENAME USER a TO b",
+          "CREATE ROLE r",
+          "SET PASSWORD FOR u = 'x'",
+          "SET DEFAULT ROLE ALL TO u",
+          "ANALYZE TABLE t",
+          "ANALYZE NO_WRITE_TO_BINLOG TABLE t",
+          "OPTIMIZE LOCAL TABLE t",
+          "REPAIR TABLE t",
+          "CHECK TABLE t",
+          "FLUSH PRIVILEGES",
+          "CACHE INDEX t IN c",
+          "LOAD INDEX INTO CACHE t")) {
+        assertTrue(TransactionControl.commits(sql, provider), provider + ": " + sql);
+      }
+      for (var sql : List.of(
+          "INSERT INTO t VALUES (1)",
+          "SELECT 'LOCK TABLES'",
+          "ANALYZE SELECT * FROM t",
+          "CREATE TABLE user (id int)",
+          "SET ROLE r",
+          "LOAD DATA INFILE 'x' INTO TABLE t")) {
+        assertFalse(TransactionControl.commits(sql, provider), provider + ": " + sql);
+      }
+    }
+    // PostgreSQL commits only where the transaction ends.
+    assertFalse(TransactionControl.commits("LOCK TABLE t", POSTGRESQL));
+    assertFalse(TransactionControl.commits("GRANT SELECT ON t TO u", POSTGRESQL));
+  }
 }

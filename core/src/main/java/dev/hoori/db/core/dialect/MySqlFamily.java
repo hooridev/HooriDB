@@ -85,6 +85,38 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return false;
     }
 
+    // Of the statements that MySQL's manual lists as causing an implicit commit, those that are
+    // not DDL and that a file may well hold: locking tables, granting, users and roles, and the
+    // maintenance of tables and caches. UNLOCK TABLES commits only where LOCK TABLES locked any,
+    // as one before it in a dump has.
+    @Override
+    public boolean commitsImplicitly(List<String> words) {
+      if (words.isEmpty()) {
+        return false;
+      }
+      var second = words.size() > 1 ? words.get(1) : "";
+      return switch (words.getFirst()) {
+        case "lock", "unlock" -> second.equals("table") || second.equals("tables");
+        case "grant", "revoke", "flush" -> true;
+        // Not MariaDB's ANALYZE SELECT, which runs and explains a query.
+        case "analyze", "optimize", "repair" ->
+          second.equals("table")
+              || (second.equals("local") || second.equals("no_write_to_binlog"))
+                  && words.size() > 2
+                  && words.get(2).equals("table");
+        case "check" -> second.equals("table");
+        case "cache", "load" -> second.equals("index");
+        case "create", "alter", "drop", "rename" -> {
+          // CREATE OR REPLACE USER, as MariaDB has it
+          var what = second.equals("or") && words.size() > 3 ? words.get(3) : second;
+          yield what.equals("user") || what.equals("role");
+        }
+        case "set" ->
+          second.equals("password") || words.contains("default") && words.contains("role");
+        default -> false;
+      };
+    }
+
     @Override
     public boolean copiesFromClient(String first, Supplier<List<String>> words) {
       return false;

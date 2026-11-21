@@ -1,5 +1,6 @@
 package dev.hoori.db.app;
 
+import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
 import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
@@ -12,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.log.Purpose;
 import java.nio.file.Files;
@@ -52,9 +54,15 @@ class FileRunDialogTest {
 
   /** The app with shop-prod connected and Run SQL file open from its menu, the file chosen. */
   private App<State> chosen(Path file) throws Exception {
-    var app = c.app(SHOP);
-    c.ready(app, SHOP);
-    c.run(app, START + open("shop-prod") + SETTLE + menu("shop-prod", CatalogTree.FILE_RUN));
+    return chosen(SHOP, file);
+  }
+
+  /** The app with the connection connected and Run SQL file open from its menu, the file chosen. */
+  private App<State> chosen(ConnectionProfile profile, Path file) throws Exception {
+    var app = c.app(profile);
+    c.ready(app, profile);
+    var name = profile.name();
+    c.run(app, START + open(name) + SETTLE + menu(name, CatalogTree.FILE_RUN));
     c.run(
         app,
         "dialog \"" + file.toString().replace("\\", "\\\\") + "\"\n"
@@ -141,6 +149,28 @@ class FileRunDialogTest {
         rolled.contains("The transaction was rolled back: nothing of the file was kept."), rolled);
     assertTrue(c.servers.calls.contains("run " + PG + " ROLLBACK"), c.servers.calls.toString());
     assertTrue(c.servers.calls.contains("autocommit " + PG + " off"), c.servers.calls.toString());
+  }
+
+  @Test
+  void aRollbackSaysWhatTheServerCommittedByItself() throws Exception {
+    for (var sql : List.of("LOCK TABLES t WRITE", "UNLOCK TABLES")) {
+      c.servers.statement(sql, List.of(new Result.Count(0)));
+    }
+    // Named apart from its database inventory, which the tree shows below it.
+    var app = chosen(
+        INVENTORY.withName("stock"),
+        file(
+            "dump.sql",
+            "LOCK TABLES t WRITE;\nINSERT INTO t VALUES (1);\nUNLOCK TABLES;\nSELEC 1;\n"));
+    c.run(app, "press label=\"In one transaction\"\n" + OPENS + "snap transaction\n");
+    var transaction = c.tree("transaction");
+    assertTrue(transaction.contains("LOCK TABLES, UNLOCK TABLES and GRANT"), transaction);
+    c.run(app, "press role=button label=\"Run\"\n" + SETTLE + "snap rolled\n");
+    var rolled = c.tree("rolled");
+    assertTrue(
+        rolled.contains("The transaction was rolled back, but what ran up to line 3 stays, as the"
+            + " server committed it by itself there, and so does DDL that ran after it."),
+        rolled);
   }
 
   @Test

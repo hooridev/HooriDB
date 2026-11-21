@@ -414,8 +414,9 @@ final class FileRunDialog {
     if (transactionalDdl(s, profile)) {
       return "Commits at the end of the file, and rolls back on an error or a cancel.";
     }
-    return provider.displayName() + " commits DDL, such as CREATE, ALTER and DROP, by itself"
-        + " and with what ran before it: one transaction does not cover it.";
+    return provider.displayName() + " commits DDL, such as CREATE, ALTER and DROP, and statements"
+        + " such as LOCK TABLES, UNLOCK TABLES and GRANT by itself, with what ran before them: one"
+        + " transaction does not cover them.";
   }
 
   private El running(State s) {
@@ -551,17 +552,27 @@ final class FileRunDialog {
         text.append(
             stopped ? " What ran before stays, as each statement committed by itself." : "");
       case COMMITTED -> text.append(" The transaction was committed.");
-      case ROLLED_BACK ->
-        text.append(
-            ddlCommits
-                ? " The transaction was rolled back, but DDL that ran stays, as the server"
-                    + " committed it by itself."
-                : " The transaction was rolled back: nothing of the file was kept.");
+      case ROLLED_BACK -> text.append(rolledBack());
       case IN_DOUBT ->
         text.append(" The transaction's end failed: what is still open is rolled back as the"
             + " session closes, and a commit whose connection was lost may have taken effect.");
     }
     return text.toString();
+  }
+
+  // What a rollback of the run's transaction left of the file: what the server committed by
+  // itself stays.
+  private String rolledBack() {
+    long line = report.committedAt();
+    if (line > 0) {
+      return " The transaction was rolled back, but what ran up to line " + Format.LONG.text(line)
+          + " stays, as the server committed it by itself there"
+          + (ddlCommits ? ", and so does DDL that ran after it." : ".");
+    }
+    return ddlCommits
+        ? " The transaction was rolled back, but DDL that ran stays, as the server committed it by"
+            + " itself."
+        : " The transaction was rolled back: nothing of the file was kept.";
   }
 
   // Whether the connected server rolls back DDL with the transaction, as far as it is known.

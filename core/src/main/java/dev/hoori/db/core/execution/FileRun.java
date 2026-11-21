@@ -32,7 +32,10 @@ import java.util.function.Consumer;
  *
  * <p>In {@link Options#transaction one transaction} a statement of the file that begins or ends a
  * transaction, as {@link TransactionControl} finds one, fails unsent, as a {@code COMMIT} would
- * commit what ran before, which the run's rollback could then not undo.
+ * commit what ran before, which the run's rollback could then not undo. A statement at which the
+ * server commits by itself, as {@link TransactionControl#commits} finds one, as MySQL's {@code LOCK
+ * TABLES}, which its dumps write around each table's rows, runs, and the report says where the
+ * last one was.
  *
  * <p>On a failure the run stops, or goes on where {@link Options#goOn} says so; in {@link
  * Options#transaction one transaction} it always stops, and what ran is rolled back, also on a
@@ -112,9 +115,18 @@ public final class FileRun {
   /**
    * How a run went: its end, how far it came, the first {@link #LISTED} failures, and its
    * transaction.
+   *
+   * @param committedAt in one transaction, the line of the last statement that ran at which the
+   *     server committed by itself, as {@link TransactionControl#commits} finds one, so that what
+   *     ran up to it stays whatever became of the transaction; 0 where none ran
    */
   public record Report(
-      Ending ending, Progress progress, List<Failed> failures, Kept transaction, Duration took) {
+      Ending ending,
+      Progress progress,
+      List<Failed> failures,
+      Kept transaction,
+      long committedAt,
+      Duration took) {
 
     public Report {
       failures = List.copyOf(failures);
@@ -164,6 +176,7 @@ public final class FileRun {
   private final List<Failed> listed = new ArrayList<>(); // the first LISTED failures
   private long statements; // as Progress counts them
   private long failed;
+  private long committedAt; // as Report says it
 
   /**
    * A run of the file, with the provider's lexical rules, which tells {@code progress} how far it
@@ -268,7 +281,7 @@ public final class FileRun {
       }
       var step = next.get();
       var failure = switch (step) {
-        case StatementReader.Sql sql -> statement(target, sql.sql());
+        case StatementReader.Sql sql -> statement(target, sql);
         case StatementReader.Copy copy
         when copy.followed() ->
           Optional.of(Failure.of(
@@ -303,16 +316,22 @@ public final class FileRun {
         || failure.kind() == Failure.Kind.CONNECTION_LOST;
   }
 
-  // A statement of the file: run, or refused where it would end the run's own transaction.
-  private Optional<Failure> statement(Target target, String sql) {
-    if (options.transaction() && TransactionControl.in(sql, provider)) {
+  // A statement of the file: run, or refused where it would end the run's own transaction. One
+  // at which the server commits by itself is noted, failed or not, as the server commits before
+  // it runs the statement.
+  private Optional<Failure> statement(Target target, StatementReader.Sql sql) {
+    if (options.transaction() && TransactionControl.in(sql.sql(), provider)) {
       return Optional.of(Failure.of(
           Failure.Kind.INVALID,
           "The file begins or ends a transaction here, while it runs in one of its own, which this"
               + " would end: the run stops, and what ran is rolled back. Run the file without one"
               + " transaction to have it keep its own."));
     }
-    return target.run(sql);
+    var failure = target.run(sql.sql());
+    if (options.transaction() && TransactionControl.commits(sql.sql(), provider)) {
+      committedAt = sql.line();
+    }
+    return failure;
   }
 
   private Optional<Failure> copy(Target target, String sql, StatementReader file) {
@@ -387,7 +406,8 @@ public final class FileRun {
 
   private Report report(Ending ending, Kept kept, Progress last, long started) {
     var at = new Progress(last.bytes(), last.size(), statements, failed);
-    return new Report(ending, at, listed, kept, Duration.ofNanos(System.nanoTime() - started));
+    return new Report(
+        ending, at, listed, kept, committedAt, Duration.ofNanos(System.nanoTime() - started));
   }
 
   // Lists the failure of a step. A command of the client shows by its name alone, as its line,

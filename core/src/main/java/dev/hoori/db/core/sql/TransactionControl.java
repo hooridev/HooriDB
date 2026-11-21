@@ -4,6 +4,7 @@ import dev.hoori.db.core.connection.Provider;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Predicate;
 
 /**
  * Whether a statement begins or ends a transaction, or turns auto-commit on or off, as the
@@ -18,9 +19,22 @@ public final class TransactionControl {
 
   /** Whether the statement begins or ends a transaction, or turns auto-commit on or off. */
   public static boolean in(String sql, Provider provider) {
-    var client = provider.dialect().client();
+    return any(sql, provider, provider.dialect().client()::controlsTransaction);
+  }
+
+  /**
+   * Whether the server may commit the open transaction by itself as it runs the statement, other
+   * than as it runs DDL, as the dialect's {@link
+   * dev.hoori.db.core.dialect.ClientDialect#commitsImplicitly} tells, by any way it may read it.
+   */
+  public static boolean commits(String sql, Provider provider) {
+    return any(sql, provider, provider.dialect().client()::commitsImplicitly);
+  }
+
+  // Whether the words of any reading of the code are such.
+  private static boolean any(String sql, Provider provider, Predicate<List<String>> such) {
     for (var reading : Tokens.readings(provider)) {
-      if (client.controlsTransaction(words(sql, provider, reading))) {
+      if (such.test(words(sql, provider, reading))) {
         return true;
       }
     }

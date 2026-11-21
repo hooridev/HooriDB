@@ -29,7 +29,7 @@ The file runs on a session of its own, so it does not hold up the Workspace tree
 
 ## Transactions and DDL
 
-PostgreSQL rolls back everything a transaction ran, including `CREATE`, `ALTER`, and `DROP`. MySQL and MariaDB commit such statements (DDL) on their own, together with what ran before them, so **In one transaction** does not undo them; the dialog says so for these connections.
+PostgreSQL rolls back everything a transaction ran, including `CREATE`, `ALTER`, and `DROP`. MySQL and MariaDB commit such statements (DDL) on their own, together with what ran before them, so **In one transaction** does not undo them; the dialog says so for these connections. They also commit what ran before at `LOCK TABLES` and `UNLOCK TABLES`, which `mysqldump` and `mariadb-dump` write around each table's rows, at `GRANT`, `REVOKE`, and the statements that create, change, or drop users and roles, and at `ANALYZE TABLE`, `OPTIMIZE TABLE`, `REPAIR TABLE`, `CHECK TABLE`, and `FLUSH`. Such statements run in one transaction too; when the run then stops or is cancelled, the dialog says up to which line what ran stays.
 
 In one transaction, a statement of the file that begins or ends a transaction, such as `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`, or MySQL's `SET autocommit`, stops the run with an error at its line, and what ran is rolled back: it would have committed what ran before it. So does MariaDB's `BEGIN NOT ATOMIC … END` where its body holds such a statement. Run such a file without **In one transaction**, so that it keeps its own.
 
