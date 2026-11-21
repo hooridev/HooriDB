@@ -44,6 +44,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -56,6 +57,9 @@ import java.util.function.Consumer;
  * it.
  */
 final class CatalogTree {
+
+  private static final String TRY_AGAIN = "Try again";
+  private static final String CANCEL = "Cancel";
 
   /** Where a connection the user opened is. */
   sealed interface Phase {}
@@ -186,8 +190,8 @@ final class CatalogTree {
 
   /** The user opens or closes a node: opening a connection connects, opening a level reads it. */
   void toggle(State s, Node node, boolean opens) {
-    if (node instanceof Node.Folder f) {
-      s.openFolder(f.id(), opens);
+    if (node instanceof Node.Folder(var id)) {
+      s.openFolder(id, opens);
       return;
     }
     if (!opens) {
@@ -213,15 +217,17 @@ final class CatalogTree {
   /** A double press or Enter: a connection that is not open connects, a table opens its rows. */
   void activate(State s, Node node) {
     switch (node) {
-      case Node.Connection c -> {
-        var live = lives.get(c.id());
+      case Node.Connection(var id) -> {
+        var live = lives.get(id);
         if (live == null || ended(live.phase)) {
           open.add(node);
-          connect(s, c.id());
+          connect(s, id);
         }
       }
-      case Node.OfTable n -> s.openTable(n.id(), n.table());
-      default -> {}
+      case Node.OfTable(var id, var table) -> s.openTable(id, table);
+      default -> {
+        // The rest only open and close, which the tree does.
+      }
     }
   }
 
@@ -499,8 +505,43 @@ final class CatalogTree {
     if (live.lane == null || c == null && !(node instanceof Node.Connection)) {
       return;
     }
-    var id = live.id();
-    Lane.Call<List<Node>> call = switch (node) {
+    var call = children(live.id(), node, c);
+    if (call == null) {
+      return;
+    }
+    // The columns are read once at a time: a read of them in the background gives way.
+    if (node instanceof Node.OfTable
+        && live.scans.remove(node) instanceof Scan x
+        && x.asked != null) {
+      x.asked.cancel();
+    }
+    var lane = lane(s, live, database(node));
+    var reading = new Reading();
+    live.levels.put(node, reading);
+    reading.asked = lane.ask(
+        s.app,
+        "read " + label(s, node),
+        Lane.Priority.VIEW,
+        call,
+        children -> {
+          if (live.levels.get(node) == reading) {
+            live.levels.put(node, new Read(children));
+            databasesRead(s, node);
+          }
+        },
+        error -> {
+          if (live.levels.get(node) == reading) {
+            readFailed(s, live, node, lane, error);
+          }
+        });
+  }
+
+  /**
+   * The call that reads the node's children, or null for a node that has none to read; the
+   * connection is connected for any node but a connection's own.
+   */
+  private static Lane.Call<List<Node>> children(UUID id, Node node, Connected c) {
+    return switch (node) {
       case Node.Connection n ->
         link -> link.databases().stream()
             .map(d -> (Node) new Node.OfDatabase(id, d))
@@ -520,49 +561,29 @@ final class CatalogTree {
       case Node.Problem n -> null;
       case Node.Folder n -> null;
     };
-    if (call == null) {
-      return;
-    }
-    // The columns are read once at a time: a read of them in the background gives way.
-    if (node instanceof Node.OfTable && live.scans.remove(node) instanceof Scan x) {
-      if (x.asked != null) {
-        x.asked.cancel();
+  }
+
+  /** A read of the node's children failed: the node says why, unless the connection was lost. */
+  private void readFailed(State s, Live live, Node node, Lane lane, Exception error) {
+    switch (checked(live, error)) {
+      case ConnectionException e -> {
+        // The next read opens it again.
+        if (live.lanes.remove(database(node), lane)) {
+          lane.close();
+        }
+        live.levels.put(node, new NotOpened(e.failure(), e.detail()));
       }
+      case CatalogException e
+      when readAlone(e) -> live.levels.put(node, new NotRead(e.failure(), e.detail()));
+      case Exception e -> lose(s, live, detail(e), discarded(e));
     }
-    var lane = lane(s, live, database(node));
-    var reading = new Reading();
-    live.levels.put(node, reading);
-    reading.asked = lane.ask(
-        s.app,
-        "read " + label(s, node),
-        Lane.Priority.VIEW,
-        call,
-        children -> {
-          if (live.levels.get(node) == reading) {
-            live.levels.put(node, new Read(children));
-            databasesRead(s, node);
-          }
-        },
-        error -> {
-          if (live.levels.get(node) != reading) {
-            return;
-          }
-          var checked = checked(live, error);
-          if (checked instanceof ConnectionException e) {
-            // The next read opens it again.
-            if (live.lanes.remove(database(node), lane)) {
-              lane.close();
-            }
-            live.levels.put(node, new NotOpened(e.failure(), e.detail()));
-          } else if (checked instanceof CatalogException e
-              && e.failure() != CatalogException.Failure.CONNECTION_LOST
-              && e.failure() != CatalogException.Failure.ABORTED) {
-            live.levels.put(node, new NotRead(e.failure(), e.detail()));
-          } else {
-            lose(s, live, detail(checked), discarded(checked));
-          }
-          databasesRead(s, node);
-        });
+    databasesRead(s, node);
+  }
+
+  /** Whether the failure is the read's alone, and leaves the connection as it was. */
+  private static boolean readAlone(CatalogException e) {
+    return e.failure() != CatalogException.Failure.CONNECTION_LOST
+        && e.failure() != CatalogException.Failure.ABORTED;
   }
 
   /** A read in the background: under way while it has work, else why it failed. */
@@ -649,19 +670,18 @@ final class CatalogTree {
             return;
           }
           scan.asked = null;
-          var checked = checked(live, error);
-          if (checked instanceof ConnectionException) {
-            if (live.lanes.remove(database, lane)) {
-              lane.close(); // the next read opens it again
+          switch (checked(live, error)) {
+            case ConnectionException _ -> {
+              if (live.lanes.remove(database, lane)) {
+                lane.close(); // the next read opens it again
+              }
+              scan.failed = "The database could not be opened";
             }
-            scan.failed = "The database could not be opened";
-          } else if (checked instanceof CatalogException e
-              && e.failure() != CatalogException.Failure.CONNECTION_LOST
-              && e.failure() != CatalogException.Failure.ABORTED) {
-            scan.failed = title(e.failure());
-          } else {
-            live.scans.remove(node);
-            lose(s, live, detail(checked), discarded(checked));
+            case CatalogException e when readAlone(e) -> scan.failed = title(e.failure());
+            case Exception e -> {
+              live.scans.remove(node);
+              lose(s, live, detail(e), discarded(e));
+            }
           }
         });
     return scan;
@@ -690,7 +710,7 @@ final class CatalogTree {
                   ? tables.stream().map(t -> (Node) new Node.OfTable(id, t)).toList()
                   : schemas.stream().map(x -> (Node) new Node.OfSchema(id, x)).toList()));
     }
-    if (schemas == null || !(live.levels.get(node) instanceof Read r)) {
+    if (schemas == null || !(live.levels.get(node) instanceof Read(var children))) {
       return;
     }
     var bySchema = new HashMap<Schema, List<Node>>();
@@ -699,7 +719,7 @@ final class CatalogTree {
           .computeIfAbsent((Schema) table.container(), x -> new ArrayList<>())
           .add(new Node.OfTable(id, table));
     }
-    for (var child : r.children()) {
+    for (var child : children) {
       if (child instanceof Node.OfSchema x
           && !x.schema().system()
           && unread(live.levels.get(child))) {
@@ -796,7 +816,27 @@ final class CatalogTree {
    * A console's session: its own connection, the driver it uses, and a copy of the password, which
    * it wipes.
    */
-  record Session(Lane lane, LoadedDriver driver, char[] password) {}
+  record Session(Lane lane, LoadedDriver driver, char[] password) {
+
+    // The password's content counts, as for any record; its text never shows.
+    @Override
+    public boolean equals(Object o) {
+      return o instanceof Session(var l, var d, var p)
+          && Objects.equals(lane, l)
+          && Objects.equals(driver, d)
+          && Arrays.equals(password, p);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(lane, driver, Arrays.hashCode(password));
+    }
+
+    @Override
+    public String toString() {
+      return "Session[lane=" + lane + ", driver=" + driver + ", password=(withheld)]";
+    }
+  }
 
   /**
    * Opens a connection of the console's own to the database, with the password and driver the
@@ -818,10 +858,8 @@ final class CatalogTree {
   /** The names of the connection's databases as the tree read them, or none where it has not. */
   List<String> databases(UUID id) {
     var live = lives.get(id);
-    if (live != null && live.levels.get(new Node.Connection(id)) instanceof Read r) {
-      return r.children().stream()
-          .map(n -> ((Node.OfDatabase) n).database().name())
-          .toList();
+    if (live != null && live.levels.get(new Node.Connection(id)) instanceof Read(var children)) {
+      return children.stream().map(n -> ((Node.OfDatabase) n).database().name()).toList();
     }
     return List.of();
   }
@@ -832,8 +870,8 @@ final class CatalogTree {
    */
   String onlyDatabase(UUID id) {
     var live = lives.get(id);
-    if (live != null && live.levels.get(new Node.Connection(id)) instanceof Read r) {
-      var names = r.children().stream()
+    if (live != null && live.levels.get(new Node.Connection(id)) instanceof Read(var children)) {
+      var names = children.stream()
           .map(n -> ((Node.OfDatabase) n).database())
           .filter(d -> !d.system())
           .map(Database::name)
@@ -851,8 +889,8 @@ final class CatalogTree {
 
   // The consoles that waited for the databases, to take the one there is, go on, read or not.
   private static void databasesRead(State s, Node node) {
-    if (node instanceof Node.Connection n) {
-      s.consoles(n.id()).forEach(c -> c.databasesRead(s));
+    if (node instanceof Node.Connection(var id)) {
+      s.consoles(id).forEach(c -> c.databasesRead(s));
     }
   }
 
@@ -865,10 +903,11 @@ final class CatalogTree {
   /** The table's columns as the tree read them, or null where it has not. */
   List<Column> columns(UUID id, Table table) {
     var live = lives.get(id);
-    if (live != null && live.levels.get(new Node.OfTable(id, table)) instanceof Read r) {
-      return r.children().stream().map(n -> ((Node.OfColumn) n).column()).toList();
+    if (live != null
+        && live.levels.get(new Node.OfTable(id, table)) instanceof Read(var children)) {
+      return children.stream().map(n -> ((Node.OfColumn) n).column()).toList();
     }
-    return null;
+    return null; // not read, which differs from a table without columns
   }
 
   /** The table's columns as read anew elsewhere, which the tree shows where it showed them. */
@@ -992,7 +1031,7 @@ final class CatalogTree {
       case Node.OfSchema n -> n.schema().database().name();
       case Node.OfTable n -> n.table().container().database().name();
       case Node.OfColumn n -> n.column().table().container().database().name();
-      case Node.Problem n -> database(n.of());
+      case Node.Problem(var of) -> database(of);
     };
   }
 
@@ -1010,8 +1049,8 @@ final class CatalogTree {
   /** Refresh: reads the node's children again, and forgets what was below them. */
   void refresh(State s, Node node) {
     var live = lives.get(node.id());
-    if (node instanceof Node.Problem p) {
-      retry(s, p.of());
+    if (node instanceof Node.Problem(var of)) {
+      retry(s, of);
       return;
     }
     if (live == null || ended(live.phase)) {
@@ -1243,13 +1282,13 @@ final class CatalogTree {
 
   private static String name(State s, Node node) {
     return switch (node) {
-      case Node.Folder n -> s.folder(n.id()).name();
-      case Node.Connection n -> State.name(s.profile(n.id()));
-      case Node.OfDatabase n -> n.database().name();
-      case Node.OfSchema n -> n.schema().name();
-      case Node.OfTable n -> n.table().name();
-      case Node.OfColumn n -> n.column().name();
-      case Node.Problem n -> name(s, n.of());
+      case Node.Folder(var id) -> s.folder(id).name();
+      case Node.Connection(var id) -> State.name(s.profile(id));
+      case Node.OfDatabase(var _, var database) -> database.name();
+      case Node.OfSchema(var _, var schema) -> schema.name();
+      case Node.OfTable(var _, var table) -> table.name();
+      case Node.OfColumn(var _, var column) -> column.name();
+      case Node.Problem(var of) -> name(s, of);
     };
   }
 
@@ -1258,7 +1297,7 @@ final class CatalogTree {
   /** The text of a node's row. */
   String label(State s, Node node) {
     return switch (node) {
-      case Node.Problem n -> problem(s, n.of()).title();
+      case Node.Problem(var of) -> problem(s, of).title();
       default -> name(s, node);
     };
   }
@@ -1266,14 +1305,17 @@ final class CatalogTree {
   /** The muted text after a node's name: a column's type, a connection's kind of server. */
   String detail(State s, Node node) {
     return switch (node) {
-      case Node.OfColumn n -> n.column().type();
-      case Node.Connection n -> s.profile(n.id()).provider().displayName();
+      case Node.OfColumn(var _, var column) -> column.type();
+      case Node.Connection(var id) -> s.profile(id).provider().displayName();
       default -> null;
     };
   }
 
-  /** Why a node could not be opened or read, and what the user can do. */
-  /** @param password whether the user can enter the password again */
+  /**
+   * Why a node could not be opened or read, and what the user can do.
+   *
+   * @param password whether the user can enter the password again
+   */
   record Trouble(String title, String text, boolean password) {}
 
   /** What went wrong at the node, or null. */
@@ -1285,17 +1327,17 @@ final class CatalogTree {
     if (failedWhole(live, node)) {
       var p = live.profile;
       return switch (live.phase) {
-        case Failed f -> {
-          var note = f.failure() == ConnectionException.Failure.UNFIT
+        case Failed(var failure, var detail, var withPassword) -> {
+          var note = failure == ConnectionException.Failure.UNFIT
               ? "Its settings cannot connect as they are. Edit the connection to complete them."
-              : Words.note(f.failure(), p, f.withPassword());
+              : Words.note(failure, p, withPassword);
           yield new Trouble(
-              Words.title(f.failure()),
-              join(note, f.detail()),
-              f.failure() == ConnectionException.Failure.LOGIN_REFUSED);
+              Words.title(failure),
+              join(note, detail),
+              failure == ConnectionException.Failure.LOGIN_REFUSED);
         }
         case Lost l -> new Trouble("Disconnected", join(why(l), l.detail()), false);
-        case WithoutDrivers w ->
+        case WithoutDrivers _ ->
           new Trouble(
               "No driver",
               "A script run downloads no drivers, so connections cannot be opened.",
@@ -1304,19 +1346,19 @@ final class CatalogTree {
       };
     }
     return switch (live.levels.get(node)) {
-      case NotRead r ->
-        new Trouble(title(r.failure()), join(text(r.failure(), s, node), r.detail()), false);
-      case NotOpened o ->
+      case NotRead(var failure, var detail) ->
+        new Trouble(title(failure), join(text(failure, s, node), detail), false);
+      case NotOpened(var failure, var detail) ->
         new Trouble(
             "The database could not be opened",
             join(
                 Words.note(
-                    o.failure(),
+                    failure,
                     database(node) == null
                         ? live.profile
                         : live.profile.withDatabase(database(node)),
                     true),
-                o.detail()),
+                detail),
             false);
       case null, default -> null;
     };
@@ -1331,7 +1373,8 @@ final class CatalogTree {
     return node instanceof Node.Connection && !(live.phase instanceof Connected);
   }
 
-  private static String join(String note, String detail) {
+  /** A note and the server's words below it, either of which may be missing. */
+  static String join(String note, String detail) {
     if (note == null) {
       return detail;
     }
@@ -1365,7 +1408,7 @@ final class CatalogTree {
 
   /** The callout under the tree for the selected node or its failure row, or null. */
   El callout(State s) {
-    var node = s.selected instanceof Node.Problem p ? p.of() : s.selected;
+    var node = s.selected instanceof Node.Problem(var of) ? of : s.selected;
     if (node == null) {
       return null;
     }
@@ -1389,7 +1432,7 @@ final class CatalogTree {
     }
     // The tree's row of a node's failed read has Try again itself.
     if (failedWhole(live, node)) {
-      actions.add(button(SECONDARY, "Try again", () -> retry(s, node)));
+      actions.add(button(SECONDARY, TRY_AGAIN, () -> retry(s, node)));
     }
     return Callout.callout(
         Callout.Kind.DANGER, trouble.title(), trouble.text(), actions.toArray(El[]::new));
@@ -1405,8 +1448,8 @@ final class CatalogTree {
 
     @Override
     public Tree.Children<Node> children(Node node) {
-      if (node instanceof Node.Folder f) {
-        var folder = s.folder(f.id());
+      if (node instanceof Node.Folder(var id)) {
+        var folder = s.folder(id);
         return Tree.ready(
             folder == null ? List.of() : folder.entries().stream().map(Node::of).toList());
       }
@@ -1421,11 +1464,11 @@ final class CatalogTree {
             : Tree.loading(loading(node));
       }
       var level = live.levels.get(node);
-      if (level instanceof Read r) {
-        return Tree.ready(r.children());
+      if (level instanceof Read(var children)) {
+        return Tree.ready(children);
       }
       if (level instanceof NotRead || level instanceof NotOpened) {
-        return Tree.failed(c.problem(s, node).title(), "Try again", () -> c.retry(s, node));
+        return Tree.failed(c.problem(s, node).title(), TRY_AGAIN, () -> c.retry(s, node));
       }
       return Tree.loading(loading(node));
     }
@@ -1462,11 +1505,11 @@ final class CatalogTree {
         return "Loading…";
       }
       return switch (live.phase) {
-        case ForDriver f -> "Waiting for the driver…";
-        case ForKeyring k -> "Looking for the system keyring…";
-        case ReadingPassword r -> "Reading the password…";
-        case ForPassword p -> "Waiting for the password…";
-        case Connecting c -> "Connecting…";
+        case ForDriver _ -> "Waiting for the driver…";
+        case ForKeyring _ -> "Looking for the system keyring…";
+        case ReadingPassword _ -> "Reading the password…";
+        case ForPassword _ -> "Waiting for the password…";
+        case Connecting _ -> "Connecting…";
         default -> "Loading…";
       };
     }
@@ -1474,8 +1517,8 @@ final class CatalogTree {
     @Override
     public El icon(Node node) {
       return switch (node) {
-        case Node.Folder n ->
-          icon(s.folderOpen(n.id()) ? Symbol.FOLDER_OPEN : Symbol.FOLDER, false);
+        case Node.Folder(var id) ->
+          icon(s.folderOpen(id) ? Symbol.FOLDER_OPEN : Symbol.FOLDER, false);
         case Node.Connection n -> connection(n);
         case Node.OfDatabase n -> icon(Symbol.DATABASE, n.database().system());
         case Node.OfSchema n -> icon(Symbol.FOLDER, n.schema().system());
@@ -1506,9 +1549,8 @@ final class CatalogTree {
       var live = s.catalog.lives.get(n.id());
       Phase phase = live == null ? null : live.phase;
       El icon = switch (phase) {
-        case Connected c -> Icon.icon(Symbol.SERVER, Icon.Variant.SUCCESS);
-        case Failed f -> Icon.icon(Symbol.SERVER, Icon.Variant.DANGER);
-        case Lost l -> Icon.icon(Symbol.SERVER, Icon.Variant.DANGER);
+        case Connected _ -> Icon.icon(Symbol.SERVER, Icon.Variant.SUCCESS);
+        case Failed _, Lost _ -> Icon.icon(Symbol.SERVER, Icon.Variant.DANGER);
         case null, default -> Icon.icon(Symbol.SERVER, Icon.Variant.MUTED);
       };
       El mark = row()
@@ -1566,7 +1608,7 @@ final class CatalogTree {
             Menu.item("Delete…", () -> change(s, p, Then.DELETE)).icon(Symbol.DELETE));
       }
       case Node.Problem n ->
-        List.of(Menu.item("Try again", () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));
+        List.of(Menu.item(TRY_AGAIN, () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));
       case Node.OfTable n ->
         List.of(
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
@@ -1661,9 +1703,8 @@ final class CatalogTree {
     if (fetch != null) {
       var want = want(fetch);
       Runnable stop = () -> stopFetch(s, want);
-      List<El> buttons = fetch.step instanceof Fetch.Failed
-          ? List.of(button(SECONDARY, "Cancel", stop))
-          : List.of();
+      List<El> buttons =
+          fetch.step instanceof Fetch.Failed ? List.of(button(SECONDARY, CANCEL, stop)) : List.of();
       // As wide as the connection dialog, so that the question wraps.
       El content = col().w(ConnectionDialog.width()).child(fetch.view(s, stop));
       return Dialog.dialog("Driver needed", content, buttons, stop);
@@ -1703,7 +1744,7 @@ final class CatalogTree {
     return Dialog.dialog(
         "Disconnect " + name + "?",
         Label.label(name + " is connected. " + what).wrapText(),
-        List.of(button(SECONDARY, "Cancel", () -> disconnecting = null), disconnect),
+        List.of(button(SECONDARY, CANCEL, () -> disconnecting = null), disconnect),
         disconnect,
         () -> disconnecting = null);
   }
@@ -1737,7 +1778,7 @@ final class CatalogTree {
     return Dialog.dialog(
         "Password for " + State.name(p),
         content,
-        List.of(button(SECONDARY, "Cancel", () -> drop(s, live.id())), connect),
+        List.of(button(SECONDARY, CANCEL, () -> drop(s, live.id())), connect),
         connect,
         () -> drop(s, live.id()));
   }
