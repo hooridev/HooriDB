@@ -245,7 +245,8 @@ public record Workspace(List<Workspace.Entry> entries) {
     return all(entries).filter(e -> e.id().equals(id)).findFirst().orElse(null);
   }
 
-  // The folders above the entry of the id, after those above the entries; null where none has it.
+  // The folders above the entry of the id, after those above the entries; null where none has it,
+  // as an empty list is the path of an entry at the top.
   private static List<Folder> path(List<Entry> entries, UUID id, List<Folder> above) {
     for (var entry : entries) {
       if (entry.id().equals(id)) {
@@ -289,8 +290,8 @@ public record Workspace(List<Workspace.Entry> entries) {
     for (var entry : entries) {
       if (entry.id().equals(id)) {
         list.addAll(with.apply(entry));
-      } else if (entry instanceof Folder f) {
-        list.add(new Folder(f.id(), f.name(), f.open(), replace(f.entries(), id, with)));
+      } else if (entry instanceof Folder(var folder, var name, var open, var inner)) {
+        list.add(new Folder(folder, name, open, replace(inner, id, with)));
       } else {
         list.add(entry);
       }

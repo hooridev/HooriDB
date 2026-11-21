@@ -25,13 +25,13 @@ class CatalogTest {
   @Test
   void onlyPostgresqlHasSchemasAndHoldsItsTablesInThem() {
     var database = new Database("hoori", false);
+    var schema = new Schema(database, "public", false);
     assertThrows(
         IllegalArgumentException.class, () -> Catalog.schemas(null, Provider.MYSQL, database));
     assertThrows(
         IllegalArgumentException.class, () -> Catalog.tables(null, Provider.POSTGRESQL, database));
     assertThrows(
-        IllegalArgumentException.class,
-        () -> Catalog.tables(null, Provider.MARIADB, new Schema(database, "public", false)));
+        IllegalArgumentException.class, () -> Catalog.tables(null, Provider.MARIADB, schema));
   }
 
   @Test
@@ -47,7 +47,7 @@ class CatalogTest {
         executing.countDown();
         try {
           closed.await();
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
           closed.countDown();
         }
         ended.countDown();

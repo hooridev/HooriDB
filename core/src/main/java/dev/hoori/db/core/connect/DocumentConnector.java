@@ -92,38 +92,63 @@ public final class DocumentConnector {
     var result = new CompletableFuture<Opened>();
     var worker = Thread.ofVirtual()
         .name("connect " + profile.provider().displayName())
-        .start(() -> {
-          DocumentClient client = null;
-          try {
-            client = driver.open(target, secret);
-            client.command("admin", Document.of("ping", 1));
-            var build = client.command("admin", Document.of("buildInfo", 1));
-            var version = build.get("version") instanceof String v ? v : "";
-            var opened = new Opened(client, new Server("MongoDB", version), database);
-            if (close) {
-              client.close();
-              client = null;
-              result.complete(opened);
-            } else if (result.complete(opened)) {
-              client = null;
-            }
-          } catch (Throwable e) {
-            result.completeExceptionally(e);
-          } finally {
-            Arrays.fill(secret, '\0');
-            if (client != null) {
-              client.close();
-            }
-          }
-        });
-    Opened opened;
+        .start(() -> open(driver, target, secret, database, close, result));
+    var opened = await(result, worker, timeout.plus(GRACE), password);
+    if (Thread.currentThread().isInterrupted()) {
+      if (!close) {
+        closeAside(opened.client());
+      }
+      throw cancelled();
+    }
+    return opened;
+  }
+
+  // On the worker: opens the client, reads the server's version and completes the result, closing
+  // the client where it is a test or the caller has given up. The secret is wiped either way.
+  private static void open(
+      LoadedDriver driver,
+      Target target,
+      char[] secret,
+      String database,
+      boolean close,
+      CompletableFuture<Opened> result) {
+    DocumentClient client = null;
     try {
-      opened = result.get(timeout.plus(GRACE).toMillis(), TimeUnit.MILLISECONDS);
-    } catch (InterruptedException e) {
+      client = driver.open(target, secret);
+      client.command("admin", Document.of("ping", 1));
+      var build = client.command("admin", Document.of("buildInfo", 1));
+      var version = build.get("version") instanceof String v ? v : "";
+      var opened = new Opened(client, new Server("MongoDB", version), database);
+      if (close) {
+        client.close();
+        client = null;
+        result.complete(opened);
+      } else if (result.complete(opened)) {
+        client = null;
+      }
+    } catch (Throwable e) {
+      // Throwable, not Exception: an Error of the driver, such as a LinkageError of its classes,
+      // would end the worker silently and leave the caller waiting out the time limit.
+      result.completeExceptionally(e);
+    } finally {
+      Arrays.fill(secret, '\0');
+      if (client != null) {
+        client.close();
+      }
+    }
+  }
+
+  // The worker's result, or the failure it ended with, in words without the password.
+  private static Opened await(
+      CompletableFuture<Opened> result, Thread worker, Duration limit, char[] password)
+      throws ConnectionException {
+    try {
+      return result.get(limit.toMillis(), TimeUnit.MILLISECONDS);
+    } catch (InterruptedException _) {
       abandon(result, worker);
       Thread.currentThread().interrupt();
       throw cancelled();
-    } catch (TimeoutException e) {
+    } catch (TimeoutException _) {
       abandon(result, worker);
       throw new ConnectionException(Failure.TIMED_OUT, "", null);
     } catch (ExecutionException e) {
@@ -132,13 +157,6 @@ public final class DocumentConnector {
       }
       throw failure(e.getCause(), password);
     }
-    if (Thread.currentThread().isInterrupted()) {
-      if (!close) {
-        closeAside(opened.client());
-      }
-      throw cancelled();
-    }
-    return opened;
   }
 
   // What arrives from now on is closed by the worker, and what arrived just before here, on a
