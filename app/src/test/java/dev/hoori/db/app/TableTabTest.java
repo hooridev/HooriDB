@@ -29,6 +29,7 @@ import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
 import java.util.OptionalLong;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,6 +39,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** A table's rows in a tab: read in pages, late, on the lane of its connection. */
 class TableTabTest {
+
+  private static final Pattern LABEL = Pattern.compile("label=\"([^\"]*)\"");
+  private static final Pattern READ = Pattern.compile("\"Read 200 rows in \\d+ ms\"");
 
   static final String OUTLINE = """
       shop
@@ -148,7 +152,8 @@ class TableTabTest {
         ",",
         tree.lines()
             .filter(l -> l.contains("role=tab "))
-            .map(l -> l.replaceAll(".*label=\"([^\"]*)\".*", "$1"))
+            .map(
+                l -> LABEL.matcher(l).results().map(r -> r.group(1)).findFirst().orElse(l))
             .toList());
   }
 
@@ -187,7 +192,7 @@ class TableTabTest {
     // NULL, every seventh row of a column that may hold it.
     assertTrue(cell(opened, 6, 3).contains("\"NULL\""), opened);
     assertTrue(status(opened).contains("\"1,000 rows\""), opened);
-    assertTrue(line(opened, "#read-status").matches(".*\"Read 200 rows in \\d+ ms\".*"), opened);
+    assertTrue(READ.matcher(line(opened, "#read-status")).find(), opened);
     // A second open goes to the same tab.
     c.run(app, table("kinds") + SETTLE + table("orders") + SETTLE + "snap again\n");
     String again = c.tree("again");
@@ -395,6 +400,39 @@ class TableTabTest {
   }
 
   @Test
+  void theColumnsFitTheirRowsOnceAndAgainWhenARefreshChangesThem() throws Exception {
+    servers.rows(ORDERS, 1000, OptionalLong.of(1000));
+    var app = shop();
+    var held = servers.hold("read " + ORDERS + " 0-200");
+    c.run(app, open("orders") + SETTLE + table("orders") + "frame\n");
+    var tab = tab(app);
+    float[] guessed = tab.widths.clone();
+    assertTrue(tab.fit.isPending());
+    held.countDown();
+    c.run(app, SETTLE);
+    assertFalse(tab.fit.isPending());
+    var grid = app.state().theme.grid();
+    for (float width : tab.widths) {
+      assertTrue(
+          width >= grid.minColumn() && width <= grid.maxColumn(), Arrays.toString(tab.widths));
+    }
+    assertFalse(Arrays.equals(guessed, tab.widths), Arrays.toString(tab.widths));
+    // The same columns keep every width, also one set by hand.
+    tab.widths[3] = 333.5f;
+    float[] kept = tab.widths.clone();
+    c.run(app, "press #refresh\nframe\n" + SETTLE);
+    assertTrue(Arrays.equals(kept, tab.widths), Arrays.toString(tab.widths));
+    // A column gone: all of them fit again.
+    servers.serve(
+        PG, Provider.POSTGRESQL, "16.4", OUTLINE.replace("      customer_id: integer\n", ""));
+    c.run(app, "press #refresh\nframe\n" + SETTLE);
+    assertFalse(tab.fit.isPending());
+    assertEquals(3, tab.widths.length, Arrays.toString(tab.widths));
+    assertTrue(tab.widths[2] != 333.5f, Arrays.toString(tab.widths));
+    assertEquals(kept[0], tab.widths[0], Arrays.toString(tab.widths));
+  }
+
+  @Test
   void columnsChangedUnderneathAreReadAnew() throws Exception {
     servers.rows(ORDERS, 1000, OptionalLong.of(1000));
     var app = shop();
@@ -568,11 +606,17 @@ class TableTabTest {
     servers.hold(key);
     c.run(app, scroll(800));
     eventually(() -> servers.calls.contains(key));
-    c.run(
-        app,
-        "press #tab-1 right\nframe\nadvance 1\nframe\n"
-            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
-            + "snap torn\n");
+    c.run(app, """
+            press #tab-1 right
+            frame
+            advance 1
+            frame
+            press role=menuitem label="Move to new window"
+            frame
+            advance 1
+            frame
+            snap torn
+            """);
     assertEquals("orders", tabs(c.tree("torn")));
     String window = c.tree("big-torn");
     assertEquals("big", tabs(window));
@@ -583,11 +627,19 @@ class TableTabTest {
     window = c.tree("big-arrived");
     assertTrue(cell(window, 800, 0).contains("\"801\""), window);
     assertTrue(line(window, "#rows-status").contains("\"1,000 rows\""), window);
-    c.run(
-        app,
-        "window \"big\"\npress #tab-0 right\nframe\nadvance 1\nframe\n"
-            + "press role=menuitem label=\"Move back to main window\"\nframe\nadvance 1\nframe\n"
-            + "frame\nsnap back\n");
+    c.run(app, """
+            window "big"
+            press #tab-0 right
+            frame
+            advance 1
+            frame
+            press role=menuitem label="Move back to main window"
+            frame
+            advance 1
+            frame
+            frame
+            snap back
+            """);
     String back = c.tree("back");
     assertEquals("orders,big", tabs(back));
     assertTrue(cell(back, 800, 0).contains("\"801\""), back);

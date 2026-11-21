@@ -128,7 +128,7 @@ class UpdatesTest {
     var app = app(updater, "0.2.0");
     run(app, START + "snap start\n");
     assertFalse(tree("start").contains("#update"), tree("start"));
-    assertEquals(null, app.state().update);
+    assertEquals(null, app.state().updates.notice);
   }
 
   /** A download that fails says so. */
@@ -161,7 +161,7 @@ class UpdatesTest {
       k.c.run(
           app, ConsoleTransactionTest.MANUAL + ConsoleTest.type(ConsoleTest.PAY) + ConsoleTest.RUN);
       assertEquals(Transaction.OPEN, k.tab(app).transaction);
-      assertTrue(app.state().ready != null, "the update was downloaded meanwhile");
+      assertTrue(app.state().updates.ready != null, "the update was downloaded meanwhile");
       k.c.run(app, "press #update-act\nframe\n" + OPENED + "snap asked\n");
       assertTrue(k.c.tree("asked").contains("role=dialog"), k.c.tree("asked"));
       k.c.run(app, "press #answer-cancel\nframe\n" + OPENED + CatalogTreeTest.SETTLE);
@@ -310,7 +310,7 @@ class UpdatesTest {
     run(app, START + "snap start\n");
     assertFalse(Files.exists(dir.resolve("config").resolve(UpdateStore.FILE)));
     assertEquals(List.of(), updater.downloaded);
-    assertEquals(Channel.STABLE, app.state().channel());
+    assertEquals(Channel.STABLE, app.state().updates.channel());
   }
 
   /** A nightly without a stored channel takes Nightly, saves it, and the Help menu checks it. */
@@ -437,8 +437,8 @@ class UpdatesTest {
     var updater = updater();
     var app = app(updater, "0.2.0");
     run(app, START);
-    app.state().shown();
-    app.state().shown();
+    app.state().updates.shown(app.state());
+    app.state().updates.shown(app.state());
     run(app, "await\nframe\n");
     assertEquals(1, updater.confirms);
   }

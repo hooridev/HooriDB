@@ -54,6 +54,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.jar.Attributes;
 import java.util.jar.JarFile;
+import java.util.regex.Pattern;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
@@ -82,6 +83,7 @@ public final class DriverStore {
   static final int MAX_CANDIDATES = 5;
   private static final int MAX_METADATA_SIZE = 4 << 20;
   private static final int MAX_CHECKSUM_SIZE = 1024;
+  private static final Pattern WHITESPACE = Pattern.compile("\\s");
 
   // What a version's folder is published under, by its path.
   private static final ConcurrentHashMap<Path, Object> PUBLISHING = new ConcurrentHashMap<>();
@@ -271,13 +273,7 @@ public final class DriverStore {
     if (complete(driver, version)) {
       return;
     }
-    var wanted = new ArrayList<Wanted>();
-    for (var artifact : artifacts(driver)) {
-      var expected = expected(driver, artifact, version);
-      if (expected != null) {
-        wanted.add(expected);
-      }
-    }
+    var wanted = wanted(driver, version);
     var dir = jar.getParent();
     Path temporary = null;
     long needed = 1 << 20; // a megabyte, and the files' length once it is known
@@ -317,6 +313,18 @@ public final class DriverStore {
     }
   }
 
+  // The version's files to download, without the optional parts that the repository does not have.
+  private List<Wanted> wanted(Driver driver, String version) throws DriverException {
+    var wanted = new ArrayList<Wanted>();
+    for (var artifact : artifacts(driver)) {
+      var expected = expected(driver, artifact, version);
+      if (expected != null) {
+        wanted.add(expected);
+      }
+    }
+    return wanted;
+  }
+
   // The files' length in all as the repository gives it, or -1 where it does not say one's.
   private long lengths(List<Wanted> wanted) throws DriverException {
     long total = 0;
@@ -354,14 +362,14 @@ public final class DriverStore {
       throw new DriverException(CHECKSUM_MISMATCH, file.path());
     }
     checkManifest(part, file.path());
-    Files.writeString(record(part), recorded, StandardCharsets.US_ASCII);
+    Files.writeString(recordOf(part), recorded, StandardCharsets.US_ASCII);
     return Files.size(part);
   }
 
   private static void closeQuietly(Repository.Response response) {
     try {
       response.close();
-    } catch (IOException ignored) {
+    } catch (IOException _) {
       // Read to its end or given up; nothing more comes of it.
     }
   }
@@ -378,36 +386,10 @@ public final class DriverStore {
       throws DriverException {
     var path = file(driver, artifact.artifact(), version);
     var name = artifact.artifact() + "-" + version + ".jar";
-    Wanted wanted = null;
-    try {
-      wanted = new Wanted(path, name, checksum(path + ".sha256", 64), true);
-    } catch (DriverException e) {
-      if (e.failure() != NOT_FOUND) {
-        throw e;
-      }
-    }
-    if (wanted == null) {
-      try {
-        wanted = new Wanted(path, name, checksum(path + ".sha1", 40), false);
-      } catch (DriverException e) {
-        if (e.failure() != NOT_FOUND) {
-          throw e;
-        }
-      }
-    }
-    // A checksum does not show that an optional part is there: the repository may lack its file.
-    if (wanted != null && artifact.optional()) {
-      try {
-        remote(path, () -> repository.published(path));
-      } catch (DriverException e) {
-        if (e.failure() == NOT_FOUND) {
-          return null;
-        }
-        throw e;
-      }
-    }
+    var wanted = checksummed(path, name);
     if (wanted != null) {
-      return wanted;
+      // A checksum does not show that an optional part is there: the repository may lack its file.
+      return artifact.optional() && !published(path) ? null : wanted;
     }
     // Without either checksum the file itself may be missing, which is NOT_FOUND.
     try {
@@ -419,6 +401,41 @@ public final class DriverStore {
       throw e;
     }
     throw new DriverException(NO_CHECKSUM, path);
+  }
+
+  // The file with the checksum published beside it, of SHA-256 or else of SHA-1; null where the
+  // repository has neither.
+  private Wanted checksummed(String path, String name) throws DriverException {
+    var sha256 = checksumIfFound(path + ".sha256", 64);
+    if (sha256 != null) {
+      return new Wanted(path, name, sha256, true);
+    }
+    var sha1 = checksumIfFound(path + ".sha1", 40);
+    return sha1 == null ? null : new Wanted(path, name, sha1, false);
+  }
+
+  private String checksumIfFound(String path, int length) throws DriverException {
+    try {
+      return checksum(path, length);
+    } catch (DriverException e) {
+      if (e.failure() != NOT_FOUND) {
+        throw e;
+      }
+      return null;
+    }
+  }
+
+  // Whether the repository has the file.
+  private boolean published(String path) throws DriverException {
+    try {
+      remote(path, () -> repository.published(path));
+      return true;
+    } catch (DriverException e) {
+      if (e.failure() == NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
   }
 
   // Renaming a folder is atomic on Linux and Windows. Linux replaces an empty target and refuses
@@ -512,7 +529,7 @@ public final class DriverStore {
       // of the version replaces it.
       try {
         discard(jar.getParent());
-      } catch (IOException leftOver) {
+      } catch (IOException _) {
         // The record beside the file stays, in a folder that holds no version.
       }
     }
@@ -533,26 +550,7 @@ public final class DriverStore {
     if (!Files.isRegularFile(jar)) {
       throw new DriverException(NOT_DOWNLOADED, path);
     }
-    // A check against damage and accidental change since the download: whoever can write the
-    // files can write their records as well.
-    var urls = new ArrayList<URL>();
-    for (var artifact : artifacts(driver)) {
-      var file = jar(driver, artifact.artifact(), version);
-      var at = file(driver, artifact.artifact(), version);
-      if (absent(artifact, file)) {
-        continue;
-      }
-      if (!matchesRecord(file)) {
-        throw new DriverException(
-            Files.isRegularFile(file) ? CHECKSUM_MISMATCH : NOT_DOWNLOADED, at);
-      }
-      checkManifest(file, at);
-      try {
-        urls.add(file.toUri().toURL());
-      } catch (MalformedURLException e) {
-        throw new IllegalStateException(e);
-      }
-    }
+    var urls = checkedUrls(driver, version);
     checkCancelled(path);
     // shortcut: the files are hashed and then opened again by the class loader, so a file replaced
     // in between loads unchecked; load from a snapshot in memory if that ever matters, though it
@@ -578,6 +576,30 @@ public final class DriverStore {
       }
       throw new DriverException(NOT_A_DRIVER, driver.driverClass(), e);
     }
+  }
+
+  // The version's files, each checked against damage and accidental change since the download:
+  // whoever can write the files can write their records as well.
+  private List<URL> checkedUrls(Driver driver, String version) throws DriverException {
+    var urls = new ArrayList<URL>();
+    for (var artifact : artifacts(driver)) {
+      var file = jar(driver, artifact.artifact(), version);
+      var at = file(driver, artifact.artifact(), version);
+      if (absent(artifact, file)) {
+        continue;
+      }
+      if (!matchesRecord(file)) {
+        throw new DriverException(
+            Files.isRegularFile(file) ? CHECKSUM_MISMATCH : NOT_DOWNLOADED, at);
+      }
+      checkManifest(file, at);
+      try {
+        urls.add(file.toUri().toURL());
+      } catch (MalformedURLException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+    return urls;
   }
 
   /**
@@ -672,7 +694,7 @@ public final class DriverStore {
     }
     try {
       return URL.of(url.toURI(), UNCACHED);
-    } catch (URISyntaxException | MalformedURLException e) {
+    } catch (URISyntaxException | MalformedURLException _) {
       return url; // read through the cache, as Java reads it
     }
   }
@@ -731,10 +753,10 @@ public final class DriverStore {
   // An optional part that the version never had: neither its file nor its record is there. One of
   // them alone is a download damaged since.
   private static boolean absent(Driver.Part artifact, Path file) {
-    return artifact.optional() && !Files.exists(file) && !Files.exists(record(file));
+    return artifact.optional() && !Files.exists(file) && !Files.exists(recordOf(file));
   }
 
-  private static Path record(Path jar) {
+  private static Path recordOf(Path jar) {
     return jar.resolveSibling(jar.getFileName() + ".sha256");
   }
 
@@ -773,7 +795,7 @@ public final class DriverStore {
       return false;
     }
     try {
-      var recorded = Files.readString(record(jar), StandardCharsets.US_ASCII).strip();
+      var recorded = Files.readString(recordOf(jar), StandardCharsets.US_ASCII).strip();
       var sha256 = digest("SHA-256");
       try (var in = Files.newInputStream(jar)) {
         var buffer = new byte[64 * 1024];
@@ -783,7 +805,7 @@ public final class DriverStore {
         }
       }
       return recorded.equals(HexFormat.of().formatHex(sha256.digest()));
-    } catch (NoSuchFileException | CharacterCodingException e) {
+    } catch (NoSuchFileException | CharacterCodingException _) {
       return false; // a record that is not one, which a download replaces
     } catch (IOException e) {
       throw storage(e);
@@ -811,7 +833,8 @@ public final class DriverStore {
   private String checksum(String path, int length) throws DriverException {
     var text = new String(fetch(path, MAX_CHECKSUM_SIZE), StandardCharsets.US_ASCII).strip();
     // The file holds the hexadecimal digest, sometimes followed by the file's name.
-    var digest = text.split("\\s+", 2)[0].toLowerCase(Locale.ROOT);
+    var blank = WHITESPACE.matcher(text);
+    var digest = (blank.find() ? text.substring(0, blank.start()) : text).toLowerCase(Locale.ROOT);
     if (digest.length() != length || !digest.chars().allMatch(HexFormat::isHexDigit)) {
       throw new DriverException(INVALID_RESPONSE, path);
     }
@@ -892,7 +915,7 @@ public final class DriverStore {
     if (e instanceof ProtocolException) {
       return new DriverException(INVALID_RESPONSE, path, e);
     }
-    boolean answeredBadly = e instanceof Repository.Refused
+    boolean answeredBadly = e instanceof Refused
         || e instanceof HttpTimeoutException && !(e instanceof HttpConnectTimeoutException);
     return new DriverException(answeredBadly ? UNAVAILABLE : NO_NETWORK, path, e);
   }
@@ -903,9 +926,8 @@ public final class DriverStore {
     if (Thread.currentThread().isInterrupted()) {
       return new DriverException(CANCELLED, path, e);
     }
-    return e instanceof ProtocolException
-        ? new DriverException(INVALID_RESPONSE, path, e)
-        : new DriverException(UNAVAILABLE, path, e);
+    return new DriverException(
+        e instanceof ProtocolException ? INVALID_RESPONSE : UNAVAILABLE, path, e);
   }
 
   // Java does not say why a write failed, so a disk with less room than the file is taken as why.
@@ -916,7 +938,7 @@ public final class DriverStore {
     }
     try {
       return existing != null && space.usable(existing) < needed;
-    } catch (IOException unknown) {
+    } catch (IOException _) {
       return false;
     }
   }
@@ -969,7 +991,7 @@ public final class DriverStore {
     var trash = dir.resolveSibling("." + dir.getFileName() + "." + UUID.randomUUID() + ".deleted");
     try {
       Files.move(dir, trash, StandardCopyOption.ATOMIC_MOVE);
-    } catch (NoSuchFileException e) {
+    } catch (NoSuchFileException _) {
       return;
     }
     deleteTree(trash);
@@ -983,7 +1005,7 @@ public final class DriverStore {
       for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
         Files.deleteIfExists(path);
       }
-    } catch (IOException | UncheckedIOException e) {
+    } catch (IOException | UncheckedIOException _) {
       // What is left keeps a name that starts with a dot and is never listed or loaded.
     }
   }

@@ -140,9 +140,10 @@ class ShellTest {
     inner.add(2);
     outer.add(3);
     assertEquals(Document.of("a", List.of(List.of(1))), document);
-    assertThrows(UnsupportedOperationException.class, () -> ((List<?>) document.get("a")).clear());
-    assertThrows(
-        IllegalArgumentException.class, () -> Document.array(List.of(List.of(new Object()))));
+    var array = (List<?>) document.get("a");
+    assertThrows(UnsupportedOperationException.class, array::clear);
+    var notAValue = List.of(List.of(new Object()));
+    assertThrows(IllegalArgumentException.class, () -> Document.array(notAValue));
     assertEquals(Arrays.asList(1, null), Document.array(Arrays.asList(1, null)));
   }
 

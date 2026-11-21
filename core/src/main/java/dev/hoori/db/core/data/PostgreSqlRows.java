@@ -25,7 +25,6 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Objects;
 import java.util.OptionalLong;
 
 /** How PostgreSQL's tables and results are read, with pgjdbc. */
@@ -54,7 +53,9 @@ public final class PostgreSqlRows extends RowsDialect {
   private static final int NUMERIC = 1700;
   private static final int JSONB = 3802;
 
-  public PostgreSqlRows() {}
+  public PostgreSqlRows() {
+    // Nothing to set up.
+  }
 
   // The first line of the plan is its top: "Seq Scan on t  (cost=0.00..19.00 rows=900 ...".
   @Override
@@ -160,20 +161,25 @@ public final class PostgreSqlRows extends RowsDialect {
   // not give; where they cannot be read, 0 makes every column text, and a table one with children.
   private static int field(ResultSetMetaData metadata, int column, String getter) {
     try {
-      Method field = null;
-      for (Class<?> type = metadata.getClass(); field == null && type != null; ) {
-        try {
-          field = type.getDeclaredMethod("getField", int.class);
-        } catch (NoSuchMethodException e) {
-          type = type.getSuperclass();
-        }
-      }
-      Objects.requireNonNull(field).setAccessible(true);
+      var field = getField(metadata.getClass());
+      field.setAccessible(true);
       var value = field.invoke(metadata, column);
       return (int) value.getClass().getMethod(getter).invoke(value);
-    } catch (ReflectiveOperationException | RuntimeException e) {
+    } catch (ReflectiveOperationException | RuntimeException _) {
       return 0;
     }
+  }
+
+  // The getField(int) of the type or of the nearest superclass that declares it.
+  private static Method getField(Class<?> type) throws NoSuchMethodException {
+    for (Class<?> declaring = type; declaring != null; declaring = declaring.getSuperclass()) {
+      try {
+        return declaring.getDeclaredMethod("getField", int.class);
+      } catch (NoSuchMethodException _) {
+        // Declared further up, if at all.
+      }
+    }
+    throw new NoSuchMethodException("getField(int)");
   }
 
   private static Rows.Read read(Rows.Source source, int oid, int jdbcType) {
@@ -245,7 +251,7 @@ public final class PostgreSqlRows extends RowsDialect {
   String literal(Object value) {
     return switch (value) {
       case null -> "NULL";
-      case Boolean truth -> truth ? "TRUE" : "FALSE";
+      case Boolean truth -> truth.booleanValue() ? "TRUE" : "FALSE";
       case Long number -> text(number);
       case BigInteger number -> text(number);
       case BigDecimal number -> text(number);
@@ -311,13 +317,14 @@ public final class PostgreSqlRows extends RowsDialect {
 
   // A moment in UTC, or with the offset it was written in.
   private static Object utc(String text) {
-    return Rows.parsed(
-        text,
-        Rows.MOMENT,
-        m -> m.group(4) == null
-            ? null
-            : LocalDateTime.of(Rows.localDate(m), Rows.localTime(m, 4))
-                .atOffset(m.group(8) == null ? ZoneOffset.UTC : ZoneOffset.of(m.group(8)))
-                .withOffsetSameInstant(ZoneOffset.UTC));
+    return Rows.parsed(text, Rows.MOMENT, m -> {
+      if (m.group(4) == null) {
+        return null;
+      }
+      var offset = m.group(8) == null ? ZoneOffset.UTC : ZoneOffset.of(m.group(8));
+      return LocalDateTime.of(Rows.localDate(m), Rows.localTime(m, 4))
+          .atOffset(offset)
+          .withOffsetSameInstant(ZoneOffset.UTC);
+    });
   }
 }

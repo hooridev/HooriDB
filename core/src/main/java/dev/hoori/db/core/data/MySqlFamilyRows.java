@@ -169,6 +169,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
     Rows.Text raw = raw();
     Rows.Text dateTime = dateTime();
     UnaryOperator<String> start = name -> "SUBSTRING(" + name;
+    var length = "LENGTH(";
     return switch (type.split("[( ]", 2)[0]) {
       case "tinyint", "smallint", "mediumint", "int", "integer" ->
         Rows.plain(source, Kind.INTEGER, Long::valueOf);
@@ -202,29 +203,10 @@ abstract class MySqlFamilyRows extends RowsDialect {
                 Rows.field(source, Kind.DATE_TIME_ZONED),
                 source.sql(),
                 List.of(asText.apply(source.sql()), "UNIX_TIMESTAMP(" + source.sql() + ")"),
-                (rows, index) -> {
-                  var text = rows.getString(index);
-                  if (text == null) {
-                    return null;
-                  }
-                  try {
-                    var seconds = new BigDecimal(rows.getString(index + 1));
-                    return seconds.signum() == 0
-                        ? text
-                        : Instant.ofEpochSecond(
-                                seconds.longValue(),
-                                seconds
-                                    .remainder(BigDecimal.ONE)
-                                    .movePointRight(9)
-                                    .longValue())
-                            .atOffset(ZoneOffset.UTC);
-                  } catch (RuntimeException e) {
-                    return text;
-                  }
-                });
-      case "json" -> Rows.text(source, Kind.JSON, start, "LENGTH(");
+                MySqlFamilyRows::timestamp);
+      case "json" -> Rows.text(source, Kind.JSON, start, length);
       case "char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set" ->
-        Rows.text(source, Kind.TEXT, start, "LENGTH(")
+        Rows.text(source, Kind.TEXT, start, length)
             .withBytes(Rows.bytes(source, name -> "CAST(" + name + " AS BINARY)"));
       // The spatial types are sent as the server stores them: an SRID and the geometry's WKB.
       case "binary",
@@ -243,7 +225,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
           "geometrycollection",
           "geomcollection" ->
         Rows.binary(source, name -> "SUBSTRING(" + name + ", 1, " + LIMIT + ")", "LENGTH");
-      default -> Rows.text(source, Kind.OTHER, start, "LENGTH(");
+      default -> Rows.text(source, Kind.OTHER, start, length);
     };
   }
 
@@ -276,7 +258,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
   String literal(Object value) {
     return switch (value) {
       case null -> "NULL";
-      case Boolean truth -> truth ? "TRUE" : "FALSE";
+      case Boolean truth -> truth.booleanValue() ? "TRUE" : "FALSE";
       case Long number -> Rows.text(number, false);
       case BigInteger number -> Rows.text(number, false);
       case BigDecimal number -> Rows.text(number, false);
@@ -335,6 +317,27 @@ abstract class MySqlFamilyRows extends RowsDialect {
 
   private static String bit(ResultSet rows, int index) throws SQLException {
     var bytes = rows.getBytes(index);
-    return bytes == null ? null : bytes.length == 1 && bytes[0] == 1 ? "1" : "0";
+    if (bytes == null) {
+      return null;
+    }
+    return bytes.length == 1 && bytes[0] == 1 ? "1" : "0";
+  }
+
+  // The moment of a timestamp's seconds since 1970, its text where they are 0, a zero date.
+  private static Object timestamp(ResultSet rows, int index) throws SQLException {
+    var text = rows.getString(index);
+    if (text == null) {
+      return null;
+    }
+    try {
+      var seconds = new BigDecimal(rows.getString(index + 1));
+      if (seconds.signum() == 0) {
+        return text;
+      }
+      var nanos = seconds.remainder(BigDecimal.ONE).movePointRight(9).longValue();
+      return Instant.ofEpochSecond(seconds.longValue(), nanos).atOffset(ZoneOffset.UTC);
+    } catch (RuntimeException _) {
+      return text;
+    }
   }
 }

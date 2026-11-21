@@ -73,7 +73,7 @@ public final class MySql extends MySqlFamily {
   private final ConnectDialect connecting = new Connect();
   private final SyntaxDialect syntax = new MySqlFamily.Syntax(
       RESERVED, Words.union(RESERVED, Words.TYPED, Syntax.TYPED), List.of("/*!"));
-  private final PlanDialect plan = new Plan();
+  private final PlanDialect planning = new Plan();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MySqlRows();
 
@@ -116,7 +116,7 @@ public final class MySql extends MySqlFamily {
 
   @Override
   public PlanDialect plan() {
-    return plan;
+    return planning;
   }
 
   @Override
@@ -145,14 +145,15 @@ public final class MySql extends MySqlFamily {
 
   static final class Connect extends MySqlFamily.Connect {
 
+    private static final String SSL_MODE = "sslMode";
     private static final Map<Tls, Map<String, String>> TLS = Map.of(
         // Without TLS, a first login with caching_sha2_password fails unless the client may ask
         // for the server's public key. Whoever can alter the traffic can hand it a key of their
         // own and read the password; OFF already accepts an unprotected link, and does not work
         // at all against a current MySQL without it.
-        Tls.OFF, Map.of("sslMode", "DISABLED", "allowPublicKeyRetrieval", "true"),
-        Tls.ENCRYPTED, Map.of("sslMode", "REQUIRED"),
-        Tls.VERIFIED, Map.of("sslMode", "VERIFY_IDENTITY"));
+        Tls.OFF, Map.of(SSL_MODE, "DISABLED", "allowPublicKeyRetrieval", "true"),
+        Tls.ENCRYPTED, Map.of(SSL_MODE, "REQUIRED"),
+        Tls.VERIFIED, Map.of(SSL_MODE, "VERIFY_IDENTITY"));
 
     @Override
     public String scheme() {
@@ -206,7 +207,7 @@ public final class MySql extends MySqlFamily {
       try {
         return (int)
             call(call(call(connection, "getSession"), "getServerSession"), "getStatusFlags");
-      } catch (ReflectiveOperationException | RuntimeException e) {
+      } catch (ReflectiveOperationException | RuntimeException _) {
         return -1;
       }
     }
@@ -244,7 +245,7 @@ public final class MySql extends MySqlFamily {
             .getMethod("getIntegerProperty", String.class)
             .invoke(properties, "netTimeoutForStreamingResults");
         timeout.getClass().getMethod("setValue", Object.class).invoke(timeout, 0);
-      } catch (ReflectiveOperationException | RuntimeException e) {
+      } catch (ReflectiveOperationException | RuntimeException _) {
         // The driver changes it, and sets it back as it closes the rows.
       }
     }
@@ -256,7 +257,7 @@ public final class MySql extends MySqlFamily {
       try {
         var executing = call(call(statement, "getQuery"), "getStatementExecuting");
         ((AtomicBoolean) executing).set(true);
-      } catch (ReflectiveOperationException | RuntimeException e) {
+      } catch (ReflectiveOperationException | RuntimeException _) {
         // Statement.cancel() is all there is.
       }
       statement.cancel();

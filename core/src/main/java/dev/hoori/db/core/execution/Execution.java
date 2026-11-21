@@ -191,12 +191,7 @@ public final class Execution implements AutoCloseable {
               && portion.results().getLast() instanceof Failure f
               && Query.byServer(provider, f.state(), f.code()));
     } catch (QueryException e) {
-      // Interrupted, or a failure the read did not catch.
-      var failure = e.failure() == QueryException.Failure.ABORTED
-          ? Failure.connectionLost()
-          : e.getCause() == null
-              ? Failure.cancelled()
-              : Failure.of(connection, provider, e.getCause());
+      var failure = failure(e);
       var results = new ArrayList<Result>(List.of(failure));
       var lost = over ? null : withoutInterrupt(() -> end(Ending.FAILED));
       if (lost != null && failure.kind() != Failure.Kind.CONNECTION_LOST) {
@@ -212,6 +207,16 @@ public final class Execution implements AutoCloseable {
     }
   }
 
+  // Interrupted, or a failure the read did not catch.
+  private Failure failure(QueryException e) {
+    if (e.failure() == QueryException.Failure.ABORTED) {
+      return Failure.connectionLost();
+    }
+    return e.getCause() == null
+        ? Failure.cancelled()
+        : Failure.of(connection, provider, e.getCause());
+  }
+
   // On a read-only session, the first portion of a statement that may turn that off, not sent;
   // null for any other.
   private Portion refused() {
@@ -219,20 +224,10 @@ public final class Execution implements AutoCloseable {
       return null;
     }
     over = true;
-    var refused = new Failure(
+    var refused = Failure.of(
         Failure.Kind.ACCESS_DENIED,
         "The connection is read-only, and this statement may turn that off for the session, so"
-            + " it was not sent. SHOW reads a setting.",
-        "",
-        0,
-        0,
-        "",
-        0,
-        0,
-        "",
-        "",
-        "",
-        "");
+            + " it was not sent. SHOW reads a setting.");
     return new Portion(
         List.of(refused), List.of(), false, Duration.ZERO, transaction(-1), autoCommit(-1));
   }
@@ -260,20 +255,10 @@ public final class Execution implements AutoCloseable {
           connection, provider, ENDING, () -> end(Ending.GAVE_UP, -1, said), () -> aborted = true);
     } catch (QueryException e) {
       over = true;
-      failure = new Failure(
+      failure = Failure.of(
           Failure.Kind.CONNECTION_LOST,
           e.getMessage() + " as the statement was ended: the connection was closed, and whether"
-              + " its end took effect is not known.",
-          "",
-          0,
-          0,
-          "",
-          0,
-          0,
-          "",
-          "",
-          "",
-          "");
+              + " its end took effect is not known.");
     }
     return new Abandoned(Optional.ofNullable(failure), said);
   }
@@ -291,61 +276,11 @@ public final class Execution implements AutoCloseable {
     var more = false;
     // The server status when the last result ended; -1 where it is not known to be current.
     var status = -1;
-    // The rows of a portion that is being read, which a failure keeps.
-    List<List<Object>> read = null;
-    long from = 0;
     try {
       // A later call goes on with the rows of the result it is on.
-      var resultSet = statement == null ? execute(count) : true;
-      while (true) {
-        if (rows == null) {
-          if (!resultSet) {
-            var changed = statement.getLargeUpdateCount();
-            if (changed == -1) {
-              break;
-            }
-            results.add(new Result.Count(changed));
-            status = session.status(connection);
-            resultSet = moreResults();
-            continue;
-          }
-          rows = statement.getResultSet();
-          reader = RowReader.of(provider, rows.getMetaData());
-          position = 0;
-          ahead = rows.next();
-        }
-        from = position;
-        read = new ArrayList<>();
-        while (ahead && read.size() < count) {
-          read.add(reader.read(rows));
-          position++;
-          ahead = rows.next();
-        }
-        results.add(new Result.Rows(reader.fields(), from, List.copyOf(read)));
-        read = null;
-        if (ahead) {
-          more = true;
-          break;
-        }
-        if (session.warningsKeptByDriver()) {
-          collect(rows.getWarnings(), messages);
-        }
-        status = session.status(connection);
-        resultSet = moreResults();
-      }
-      // Warnings the driver does not keep must be asked for, which they cannot be while rows are
-      // on their way.
-      // shortcut: the SHOW WARNINGS that MariaDB's and MySQL's drivers send for that resets what a
-      // following SELECT ROW_COUNT() gives; read the count first if the console ever offers it.
-      if (!more || session.warningsKeptByDriver()) {
-        collect(statement.getWarnings(), messages);
-        statement.clearWarnings();
-      }
-      // What comes while rows are fetched is the result set's.
-      if (more && session.warningsKeptByDriver()) {
-        collect(rows.getWarnings(), messages);
-        rows.clearWarnings();
-      }
+      status = readResults(statement != null || execute(count), count, results, messages);
+      more = ahead; // the rows of the last result read are still on their way
+      collectWarnings(more, messages);
       if (!more) {
         var failure = end(Ending.RAN, status);
         if (failure != null) {
@@ -354,19 +289,7 @@ public final class Execution implements AutoCloseable {
         }
       }
     } catch (SQLException | RuntimeException e) {
-      if (read != null) {
-        results.add(new Result.Rows(reader.fields(), from, List.copyOf(read)));
-      }
-      if (session.warningsKeptByDriver() && statement != null) {
-        try {
-          collect(statement.getWarnings(), messages);
-          if (rows != null) {
-            collect(rows.getWarnings(), messages);
-          }
-        } catch (SQLException x) {
-          // The connection is gone, and what it said with it.
-        }
-      }
+      collectWarningsOfFailure(messages);
       // The server's error ends what it sends; nothing else would.
       if (e instanceof SQLException) {
         ahead = false;
@@ -387,6 +310,100 @@ public final class Execution implements AutoCloseable {
         Duration.ofNanos(System.nanoTime() - started),
         transaction(more ? -1 : status),
         autoCommit(more ? -1 : status));
+  }
+
+  // Reads the results from the one it is on, given whether that is one of rows, until a result of
+  // rows has more than the given number of rows, which leaves it ahead, or until the last; the
+  // server status when the last result read ended, -1 where none did.
+  private int readResults(boolean onRows, int count, List<Result> results, List<Message> messages)
+      throws SQLException {
+    var resultSet = onRows;
+    var status = -1;
+    while (true) {
+      if (rows == null && !resultSet) {
+        var changed = statement.getLargeUpdateCount();
+        if (changed == -1) {
+          return status;
+        }
+        results.add(new Result.Count(changed));
+      } else if (readResultOfRows(count, results, messages)) {
+        return status;
+      }
+      status = session.status(connection);
+      resultSet = moreResults();
+    }
+  }
+
+  // Reads at most the given number of rows of the result of rows it is on, or goes on to the
+  // statement's current one; whether rows of it are still ahead.
+  private boolean readResultOfRows(int count, List<Result> results, List<Message> messages)
+      throws SQLException {
+    if (rows == null) {
+      open();
+    }
+    readRows(count, results);
+    if (ahead) {
+      return true;
+    }
+    if (session.warningsKeptByDriver()) {
+      collect(rows.getWarnings(), messages);
+    }
+    return false;
+  }
+
+  // Goes on to the statement's current result, of rows, before its first row.
+  private void open() throws SQLException {
+    rows = statement.getResultSet();
+    reader = RowReader.of(provider, rows.getMetaData());
+    position = 0;
+    ahead = rows.next();
+  }
+
+  // Reads at most the given number of rows of the result it is on, as a result of its own; where
+  // that fails, the rows read before.
+  private void readRows(int count, List<Result> results) throws SQLException {
+    var from = position;
+    var read = new ArrayList<List<Object>>();
+    try {
+      while (ahead && read.size() < count) {
+        read.add(reader.read(rows));
+        position++;
+        ahead = rows.next();
+      }
+    } finally {
+      results.add(new Result.Rows(reader.fields(), from, List.copyOf(read)));
+    }
+  }
+
+  // Warnings the driver does not keep must be asked for, which they cannot be while rows are on
+  // their way.
+  // shortcut: the SHOW WARNINGS that MariaDB's and MySQL's drivers send for that resets what a
+  // following SELECT ROW_COUNT() gives; read the count first if the console ever offers it.
+  private void collectWarnings(boolean more, List<Message> messages) throws SQLException {
+    if (!more || session.warningsKeptByDriver()) {
+      collect(statement.getWarnings(), messages);
+      statement.clearWarnings();
+    }
+    // What comes while rows are fetched is the result set's.
+    if (more && session.warningsKeptByDriver()) {
+      collect(rows.getWarnings(), messages);
+      rows.clearWarnings();
+    }
+  }
+
+  // What the driver kept of the warnings of a statement that failed.
+  private void collectWarningsOfFailure(List<Message> messages) {
+    if (!session.warningsKeptByDriver() || statement == null) {
+      return;
+    }
+    try {
+      collect(statement.getWarnings(), messages);
+      if (rows != null) {
+        collect(rows.getWarnings(), messages);
+      }
+    } catch (SQLException _) {
+      // The connection is gone, and what it said with it.
+    }
   }
 
   // As the driver keeps it current, or from the status when the statement's last result ended
@@ -472,29 +489,14 @@ public final class Execution implements AutoCloseable {
     if (ending != Ending.RAN && session.pendingRowsHoldConnection() && statement != null) {
       lost = !drain();
     }
-    if (said != null && statement != null && !lost) {
-      try {
-        collect(statement.getWarnings(), said);
-      } catch (SQLException e) {
-        // What it said is gone with what failed, which the ending says.
-      }
+    if (said != null && !lost) {
+      collectWarningsOfEnd(said);
     }
     if (aborted) {
       return Failure.connectionLost();
     }
-    var closeables = new ArrayList<AutoCloseable>(ended);
-    closeables.add(rows);
-    closeables.add(statement);
-    ended.clear();
-    rows = null;
-    for (var closeable : closeables) {
-      if (closeable != null) {
-        try {
-          closeable.close();
-        } catch (Exception e) {
-          lost = true;
-        }
-      }
+    if (!closeAll()) {
+      lost = true;
     }
     Failure failure = null;
     if (aborted) {
@@ -545,21 +547,62 @@ public final class Execution implements AutoCloseable {
       }
     }
     if (!lost && ending == Ending.RAN && failure == null) {
-      try {
-        session.followAutoCommit(connection, status);
-      } catch (SQLException e) {
-        lost = true;
-      }
+      lost = !followAutoCommit(status);
     }
     if (lost) {
-      try {
-        connection.abort(Runnable::run);
-      } catch (SQLException | RuntimeException e) {
-        // Not even an abort is possible; the connection is given up all the same.
-      }
+      abort();
       return failure != null ? failure : Failure.connectionLost();
     }
     return failure;
+  }
+
+  private void collectWarningsOfEnd(List<Message> said) {
+    if (statement == null) {
+      return;
+    }
+    try {
+      collect(statement.getWarnings(), said);
+    } catch (SQLException _) {
+      // What it said is gone with what failed, which the ending says.
+    }
+  }
+
+  // Closes the results that ended, the one it is on and the statement; false where one failed.
+  private boolean closeAll() {
+    var closeables = new ArrayList<AutoCloseable>(ended);
+    closeables.add(rows);
+    closeables.add(statement);
+    ended.clear();
+    rows = null;
+    var closed = true;
+    for (var closeable : closeables) {
+      if (closeable != null) {
+        try {
+          closeable.close();
+        } catch (Exception _) {
+          closed = false;
+        }
+      }
+    }
+    return closed;
+  }
+
+  // False where the connection is left in a state that cannot be known.
+  private boolean followAutoCommit(int status) {
+    try {
+      session.followAutoCommit(connection, status);
+      return true;
+    } catch (SQLException _) {
+      return false;
+    }
+  }
+
+  private void abort() {
+    try {
+      connection.abort(Runnable::run);
+    } catch (SQLException | RuntimeException _) {
+      // Not even an abort is possible; the connection is given up all the same.
+    }
   }
 
   // Cancels what the server still sends for the statement and reads it to its end; false where the
@@ -571,7 +614,7 @@ public final class Execution implements AutoCloseable {
           session.cancel(connection, statement);
           return null;
         });
-      } catch (SQLException e) {
+      } catch (SQLException _) {
         // Then the rows are read to their end.
       }
     }

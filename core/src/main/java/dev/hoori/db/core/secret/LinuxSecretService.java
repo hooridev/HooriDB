@@ -32,7 +32,7 @@ import java.util.UUID;
 final class LinuxSecretService implements SecretStore {
 
   static final String LIBRARY = "libsecret-1.so.0";
-  static final String SCHEMA = "dev.hoori.db.Secret";
+  static final String SCHEMA_NAME = "dev.hoori.db.Secret";
   static final String ATTRIBUTE = "key";
 
   /** SecretSchema: a name, flags, up to 32 attributes ended by a null name, and reserved fields. */
@@ -121,7 +121,7 @@ final class LinuxSecretService implements SecretStore {
     // Lives as long as this object; the attribute after the first is null and ends the list.
     Arena arena = Arena.ofAuto();
     schema = arena.allocate(SCHEMA_LAYOUT);
-    schema.set(ADDRESS, 0, arena.allocateFrom(SCHEMA));
+    schema.set(ADDRESS, 0, arena.allocateFrom(SCHEMA_NAME));
     schema.set(
         ADDRESS,
         SCHEMA_LAYOUT.byteOffset(groupElement("attributes")),

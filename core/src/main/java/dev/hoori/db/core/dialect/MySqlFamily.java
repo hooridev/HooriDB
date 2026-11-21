@@ -2,7 +2,6 @@ package dev.hoori.db.core.dialect;
 
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connect.ConnectionException;
-import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
 import java.sql.Connection;
@@ -41,11 +40,11 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
 
   static final class Errors implements ErrorDialect {
 
-    // MariaDB's and MySQL's syntax error, whose English message says where; a line beyond an int
-    // is none they write.
+    // MariaDB's and MySQL's syntax error, whose English message ends "... to use near '<text>' at
+    // line <n>"; a line beyond an int is none they write.
     private static final int MYSQL_SYNTAX = 1064;
-    private static final Pattern MYSQL_NEAR =
-        Pattern.compile(".*? to use near '(.*)' at line (\\d{1,9})", Pattern.DOTALL);
+    private static final String USE_NEAR = " to use near '";
+    private static final Pattern AT_LINE = Pattern.compile("' at line (\\d{1,9})\\z");
     private static final Pattern MARIADB_CONNECTION = Pattern.compile("^\\(conn=\\d+\\) ");
 
     @Override
@@ -84,21 +83,25 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     public Failure failure(
         Failure.Kind kind, SQLException e, String message, String state, int code) {
       message = MARIADB_CONNECTION.matcher(message).replaceFirst("");
-      var near = MYSQL_NEAR.matcher(message);
-      var syntax = code == MYSQL_SYNTAX && near.matches();
+      var near = code == MYSQL_SYNTAX ? Near.in(message) : Near.NONE;
       return new Failure(
-          kind,
-          message,
-          state,
-          code,
-          0,
-          "",
-          0,
-          syntax ? Integer.parseInt(near.group(2)) : 0,
-          syntax ? near.group(1) : "",
-          "",
-          "",
-          "");
+          kind, message, state, code, 0, "", 0, near.line(), near.text(), "", "", "");
+    }
+
+    // Where a syntax error is, as its message says: the text from there, cut short, and the line.
+    private record Near(String text, int line) {
+
+      static final Near NONE = new Near("", 0);
+
+      static Near in(String message) {
+        var from = message.indexOf(USE_NEAR);
+        var at = AT_LINE.matcher(message);
+        if (from < 0 || !at.find() || at.start() < from + USE_NEAR.length()) {
+          return NONE;
+        }
+        return new Near(
+            message.substring(from + USE_NEAR.length(), at.start()), Integer.parseInt(at.group(1)));
+      }
     }
   }
 
@@ -357,20 +360,16 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     // MariaDB's and MySQL's statement that does nothing, whose answer carries the server's status.
     private static final Optional<String> NOTHING = Optional.of("DO 0");
 
-    /**
-     * The server status that MariaDB's and MySQL's drivers last read, or -1. It is current only
-     * right after a result ended well: an error carries none, and MySQL Connector/J clears it while
-     * it streams rows and once it closes them.
-     */
-    @Override
-    public abstract int status(Connection connection);
+    // The server status that their drivers read is current only right after a result ended well:
+    // an error carries none, and MySQL Connector/J clears it while it streams rows and once it
+    // closes them.
 
     @Override
     public Transaction transaction(Connection connection, int status) {
       if (status < 0) {
         return Transaction.UNKNOWN;
       }
-      return (status & SERVER_STATUS_IN_TRANS) != 0 ? Transaction.OPEN : Transaction.NONE;
+      return (status & SERVER_STATUS_IN_TRANS) == 0 ? Transaction.NONE : Transaction.OPEN;
     }
 
     /** Whether auto-commit is on as the status says, or null where it is not known. */

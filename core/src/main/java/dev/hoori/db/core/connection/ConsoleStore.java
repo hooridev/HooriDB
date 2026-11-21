@@ -25,10 +25,12 @@ public final class ConsoleStore {
   /** A larger file is refused unread, and a save of more refused. */
   static final long MAX_SIZE = 64L << 20;
 
-  private final JsonFile file;
+  private static final String CONSOLES = "consoles";
+
+  private final JsonFile json;
 
   public ConsoleStore(Path folder) {
-    this.file = new JsonFile(folder, FILE, "consoles", MAX_SIZE);
+    this.json = new JsonFile(folder, FILE, CONSOLES, MAX_SIZE);
   }
 
   /**
@@ -39,20 +41,20 @@ public final class ConsoleStore {
    * @throws IOException if it could not be read, with a message as {@link WorkspaceStore#load} gives
    */
   public List<StoredConsole> load() throws IOException {
-    var bytes = file.load();
+    var bytes = json.load();
     return bytes == null ? List.of() : parse(bytes);
   }
 
   private List<StoredConsole> parse(byte[] bytes) throws WorkspaceStore.UnreadableException {
-    var list = file.objects(file.root(bytes, VERSION), "consoles", "console");
+    var list = json.objects(json.root(bytes, VERSION), CONSOLES, "console");
     var consoles = new ArrayList<StoredConsole>();
     for (int i = 0; i < list.size(); i++) {
       var where = "console " + (i + 1);
       var node = list.get(i);
       consoles.add(new StoredConsole(
-          file.uuid(node, where, "connection"),
-          file.text(node, where, "database"),
-          file.text(node, where, "text")));
+          json.uuid(node, where, "connection"),
+          json.text(node, where, "database"),
+          json.text(node, where, "text")));
     }
     return consoles;
   }
@@ -63,9 +65,8 @@ public final class ConsoleStore {
    * @throws IOException if it could not be written, or would be larger than {@link #load} reads
    */
   public void save(List<StoredConsole> consoles) throws IOException {
-    var root = JsonFile.Json.MAPPER.createObjectNode();
-    root.put("version", VERSION);
-    var list = root.putArray("consoles");
+    var root = JsonFile.newRoot(VERSION);
+    var list = root.putArray(CONSOLES);
     for (var console : consoles) {
       list.addObject()
           .put("connection", console.connection().toString())
@@ -74,9 +75,9 @@ public final class ConsoleStore {
     }
     var bytes = JsonFile.bytes(root);
     if (bytes.capacity() > MAX_SIZE) {
-      throw new IOException("Cannot save the consoles in " + file.file + ": their texts are"
+      throw new IOException("Cannot save the consoles in " + json.file + ": their texts are"
           + " larger than " + (MAX_SIZE >> 20) + " MB together.");
     }
-    file.save(bytes, this::parse);
+    json.save(bytes, this::parse);
   }
 }

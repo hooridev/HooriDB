@@ -88,7 +88,7 @@ class SavedQueriesTest {
     CatalogTreeTest.eventually(() -> {
       try {
         return new QueryStore(dir.resolve("config")).load().size() == 1;
-      } catch (Exception e) {
+      } catch (Exception _) {
         return false;
       }
     });
@@ -120,7 +120,7 @@ class SavedQueriesTest {
     CatalogTreeTest.eventually(() -> {
       try {
         return new QueryStore(dir.resolve("config")).load().equals(List.of(KEPT));
-      } catch (Exception e) {
+      } catch (Exception _) {
         return false;
       }
     });

@@ -104,25 +104,34 @@ public final class DocumentRun {
       throw parsed.error();
     }
     var request = parsed.request();
-    if (request.shape() == Request.Shape.USE) {
-      over = true;
-      use.accept(request.use());
-      messages.add(new Message("Switched to the database " + request.use(), "", 0));
-      return;
+    switch (request.shape()) {
+      case USE -> {
+        over = true;
+        use.accept(request.use());
+        messages.add(new Message("Switched to the database " + request.use(), "", 0));
+      }
+      case NAME -> {
+        over = true;
+        results.add(rows(List.of(Document.of("name", on(request))), 0));
+      }
+      default -> send(request, count, results, messages);
     }
-    if (request.shape() == Request.Shape.NAME) {
-      over = true;
-      var name = request.database() != null ? request.database() : database;
-      results.add(rows(List.of(Document.of("name", name)), 0));
-      return;
-    }
+  }
+
+  // The database it runs on: the one it names, or the console's.
+  private String on(Request request) {
+    return request.database() != null ? request.database() : database;
+  }
+
+  private void send(Request request, int count, List<Result> results, List<Message> messages)
+      throws DocumentException {
     if (session.readOnly() && !request.reads()) {
       throw DocumentException.of(
           DocumentException.Kind.READ_ONLY,
           "The connection is read-only: " + Script.method(statement) + " may change data and was"
               + " not sent.");
     }
-    var on = request.database() != null ? request.database() : database;
+    var on = on(request);
     var reply = session.command(on, request.command());
     switch (request.shape()) {
       case CURSOR, ONE -> {
@@ -131,10 +140,8 @@ public final class DocumentRun {
         more(count, results);
       }
       case COUNT -> {
-        var documents = documents(((Document) or(reply.get("cursor"))).get("firstBatch"));
-        long n = documents.isEmpty() ? 0 : number(documents.getFirst().get("n"));
         over = true;
-        results.add(single("count", n));
+        results.add(single("count", counted(reply)));
       }
       case ESTIMATE -> {
         over = true;
@@ -142,13 +149,7 @@ public final class DocumentRun {
       }
       case VALUES -> {
         over = true;
-        var documents = new ArrayList<Document>();
-        if (reply.get("values") instanceof List<?> values) {
-          for (var value : values) {
-            documents.add(Document.of("value", value));
-          }
-        }
-        results.add(rows(documents, 0));
+        results.add(rows(values(reply), 0));
       }
       case DATABASES -> {
         over = true;
@@ -160,29 +161,36 @@ public final class DocumentRun {
       }
       case REPLY -> {
         over = true;
-        var entries = reply.entries().stream()
-            .filter(e -> !SESSION_FIELDS.contains(e.name()))
-            .toList();
-        results.add(rows(List.of(new Document(entries)), 0));
-        // A write sent as a command, which may have written some of its documents.
-        var errors = documents(reply.get("writeErrors"));
-        if (!errors.isEmpty()) {
-          var error = errors.getFirst();
-          var more = errors.size() > 1 ? " (and " + (errors.size() - 1) + " more)" : "";
-          results.add(failure(DocumentException.server(
-              (int) number(error.get("code")),
-              error.get("codeName") instanceof String s ? s : "",
-              (error.get("errmsg") instanceof String s ? s : "The write failed") + more)));
-        }
-        if (reply.get("writeConcernError") instanceof Document concern) {
-          results.add(failure(DocumentException.server(
-              (int) number(concern.get("code")),
-              concern.get("codeName") instanceof String s ? s : "",
-              concern.get("errmsg") instanceof String s ? s : "The write concern failed")));
-        }
+        replied(reply, results);
       }
       case USE, NAME -> throw new IllegalStateException("It sends nothing");
     }
+  }
+
+  // The n of the first document of the cursor's first batch, as the stage $group gives it.
+  private static long counted(Document reply) {
+    var documents = documents(((Document) or(reply.get("cursor"))).get("firstBatch"));
+    return documents.isEmpty() ? 0 : number(documents.getFirst().get("n"));
+  }
+
+  // The values of a distinct, each as a document of its own.
+  private static List<Document> values(Document reply) {
+    var documents = new ArrayList<Document>();
+    if (reply.get("values") instanceof List<?> values) {
+      for (var value : values) {
+        documents.add(Document.of("value", value));
+      }
+    }
+    return documents;
+  }
+
+  // The reply of a command, without the fields about the session.
+  private void replied(Document reply, List<Result> results) {
+    var entries =
+        reply.entries().stream().filter(e -> !SESSION_FIELDS.contains(e.name())).toList();
+    results.add(rows(List.of(new Document(entries)), 0));
+    // A write sent as a command, which may have written some of its documents.
+    failures(reply, "The write failed", results);
   }
 
   private void more(int count, List<Result> results) throws DocumentException {
@@ -201,9 +209,6 @@ public final class DocumentRun {
   // What a write changed, or why it failed for some of its documents.
   private void written(Document reply, List<Result> results, List<Message> messages) {
     long n = number(reply.get("n"));
-    var errors = documents(reply.get("writeErrors"));
-    var concern = reply.get("writeConcernError") instanceof Document d ? d : null;
-    var command = Script.method(statement);
     if (reply.has("nModified")) {
       long modified = number(reply.get("nModified"));
       long upserted = documents(reply.get("upserted")).size();
@@ -215,20 +220,28 @@ public final class DocumentRun {
       n = modified + upserted;
     }
     results.add(new Result.Count(n));
+    failures(reply, Script.method(statement) + " failed", results);
+  }
+
+  // The first of a write's errors, with how many more it had, and the failure of its write
+  // concern.
+  private static void failures(Document reply, String failed, List<Result> results) {
+    var errors = documents(reply.get("writeErrors"));
     if (!errors.isEmpty()) {
-      var error = errors.getFirst();
       var more = errors.size() > 1 ? " (and " + (errors.size() - 1) + " more)" : "";
-      results.add(failure(DocumentException.server(
-          (int) number(error.get("code")),
-          error.get("codeName") instanceof String s ? s : "",
-          (error.get("errmsg") instanceof String s ? s : command + " failed") + more)));
+      results.add(failure(server(errors.getFirst(), failed, more)));
     }
-    if (concern != null) {
-      results.add(failure(DocumentException.server(
-          (int) number(concern.get("code")),
-          concern.get("codeName") instanceof String s ? s : "",
-          concern.get("errmsg") instanceof String s ? s : "The write concern failed")));
+    if (reply.get("writeConcernError") instanceof Document concern) {
+      results.add(failure(server(concern, "The write concern failed", "")));
     }
+  }
+
+  // The server's error, as a reply's document of it gives it.
+  private static DocumentException server(Document error, String failed, String more) {
+    return DocumentException.server(
+        (int) number(error.get("code")),
+        error.get("codeName") instanceof String s ? s : "",
+        (error.get("errmsg") instanceof String s ? s : failed) + more);
   }
 
   /** Gives up the documents not read: the server's cursor is freed. */
