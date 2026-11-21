@@ -3,7 +3,12 @@ package dev.hoori.db.app;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.hoori.db.core.execution.Failure;
+import dev.hoori.db.core.execution.Portion;
+import dev.hoori.db.core.execution.Result;
+import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Semaphore;
@@ -152,5 +157,21 @@ class DeliveryTest {
     assertEquals(false, unmade.deliver());
     unmade.giveUp();
     assertEquals(0, posted.get());
+  }
+
+  /** A connection lost as a cancelled read ended is told; the cancel alone is not. */
+  @Test
+  void aLostConnectionAfterTheCancelMatters() {
+    var cancelled = FakeServers.serverError(Failure.Kind.CANCELLED, "canceling statement");
+    var lost = FakeServers.serverError(Failure.Kind.CONNECTION_LOST, ""); // as core's own
+    assertEquals(
+        List.of(new Delivery.Matter("It failed: The connection was lost.", true)),
+        Delivery.matters(portion(cancelled, lost), true));
+    assertEquals(List.of(), Delivery.matters(portion(cancelled), true));
+  }
+
+  private static Portion portion(Result... results) {
+    return new Portion(
+        List.of(results), List.of(), false, Duration.ZERO, Transaction.UNKNOWN, null);
   }
 }
