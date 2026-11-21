@@ -397,6 +397,7 @@ final class LogPanel {
       case ROWS -> "Grid";
       case ESTIMATE -> "Estimate";
       case STATEMENT -> "Console";
+      case FILE -> "File";
       case TRANSACTION -> "Transaction";
       case SESSION -> "Session";
     };

@@ -10,6 +10,8 @@ public enum Purpose {
   ESTIMATE,
   /** A statement the user ran, and its cancel. */
   STATEMENT,
+  /** A statement of an SQL file that runs, its rows copied in, and its cancel. */
+  FILE,
   /** A transaction's end, auto-commit, and asking for their status. */
   TRANSACTION,
   /** The database the session is on. */

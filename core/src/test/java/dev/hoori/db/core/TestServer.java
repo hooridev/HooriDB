@@ -225,8 +225,13 @@ public final class TestServer {
             .withEnv("MYSQL_ROOT_PASSWORD", "root-" + PASSWORD)
             .withTmpFs(Map.of("/var/lib/mysql", "rw"))
             .waitingFor(mysqlReady());
-        if (!tls) {
-          container.withCommand("--tls-version=");
+        // The user creates triggers and routines, as a dump holds them, which binary logging
+        // keeps to SUPER otherwise.
+        var trust = "--log-bin-trust-function-creators=1";
+        if (tls) {
+          container.withCommand(trust);
+        } else {
+          container.withCommand("--tls-version=", trust);
         }
         yield withScript(container, provider);
       }
