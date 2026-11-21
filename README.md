@@ -69,6 +69,8 @@ The website and documentation live in `docs/` (requires [Bun](https://bun.com) 1
 cd docs && bun install && bun run dev
 ```
 
+`bun install` also puts the Bun that the website's scripts run into `docs/node_modules`: the canary `1.4.5-canary.20261120.1`, pinned in `package.json` and `bun.lock`, as the first Bun with a linter. In `docs/`, `bun lint` (rules in `.oxlintrc.json`), `bun fmt` (settings in `bunfig.toml`) and `bun check` (types) run it, as the website's workflow does.
+
 ## Contributing
 
 Bug reports and pull requests are welcome on [GitHub](https://github.com/hooridev/HooriDB). Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages and run `mvn spotless:apply` before committing (`mvn verify` checks formatting). See [AGENTS.md](AGENTS.md) for code, testing, and release conventions.
