@@ -184,7 +184,7 @@ class ConsoleEditorTest {
   void anErrorInManualIsUnderlinedToo() throws Exception {
     var app = console.console(SHOP);
     int at = WRONG.indexOf("WHERE id");
-    console.c.run(app, ConsoleTransactionTest.MANUAL + type(WRONG) + RUN);
+    console.c.run(app, ConsoleTransactions.MANUAL + type(WRONG) + RUN);
     assertEquals(new Failure.Place(at, at + 5), underlined(app));
   }
 

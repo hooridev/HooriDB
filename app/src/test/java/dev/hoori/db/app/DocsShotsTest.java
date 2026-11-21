@@ -10,7 +10,7 @@ import static dev.hoori.db.app.ConsoleHistoryTest.HISTORY;
 import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.RUN_ALL;
 import static dev.hoori.db.app.ConsoleTest.type;
-import static dev.hoori.db.app.ConsoleTransactionTest.MANUAL;
+import static dev.hoori.db.app.ConsoleTransactions.MANUAL;
 import static dev.hoori.db.app.DriversTest.OPEN_DRIVERS;
 import static dev.hoori.db.app.FoldersTest.SHOWN;
 import static dev.hoori.db.app.FoldersTest.folder;
