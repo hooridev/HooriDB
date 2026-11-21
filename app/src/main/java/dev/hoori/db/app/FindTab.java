@@ -409,7 +409,7 @@ final class FindTab implements Tab {
     }
     var provider = profile.provider();
     var statement = provider.keepsDocuments()
-        ? DocumentFinder.rows(hit.table().table(), hit.column(), searched)
+        ? Optional.of(DocumentFinder.rows(hit.table().table(), hit.column(), searched))
         : Finder.rows(provider, hit.table(), hit.column(), searched, searchedOthers);
     statement.ifPresent(sql -> s.openRows(id, scope.database().name(), sql));
   }

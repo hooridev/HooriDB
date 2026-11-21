@@ -16,30 +16,32 @@ class SearchTest {
   @Test
   void containsFindsTheTextAnywhereAndTakesItAsItIs() {
     var search = new Search("a.c", Match.CONTAINS, false);
-    assertEquals(Optional.of(new Place(2, 5)), search.in("xxA.Cyy"));
-    assertEquals(Optional.empty(), search.in("abc"));
-    assertEquals(Optional.empty(), search.in(null));
+    assertEquals(Optional.of(new Place(2, 5)), search.compiled().in("xxA.Cyy"));
+    assertEquals(Optional.empty(), search.compiled().in("abc"));
+    assertEquals(Optional.empty(), search.compiled().in(null));
   }
 
   @Test
   void caseCountsWhereAskedTo() {
     var search = new Search("Ä", Match.CONTAINS, true);
-    assertEquals(Optional.empty(), search.in("ä"));
-    assertEquals(Optional.of(new Place(0, 1)), new Search("Ä", Match.CONTAINS, false).in("ä"));
+    assertEquals(Optional.empty(), search.compiled().in("ä"));
+    assertEquals(
+        Optional.of(new Place(0, 1)),
+        new Search("Ä", Match.CONTAINS, false).compiled().in("ä"));
   }
 
   @Test
   void equalsMatchesTheWholeValue() {
     var search = new Search("customer", Match.EQUALS, false);
-    assertEquals(Optional.of(new Place(0, 8)), search.in("Customer"));
-    assertEquals(Optional.empty(), search.in("customers"));
-    assertEquals(Optional.empty(), search.in("customer\n"));
+    assertEquals(Optional.of(new Place(0, 8)), search.compiled().in("Customer"));
+    assertEquals(Optional.empty(), search.compiled().in("customers"));
+    assertEquals(Optional.empty(), search.compiled().in("customer\n"));
   }
 
   @Test
   void aPatternIsARegularExpression() {
     var search = new Search("cust.m", Match.PATTERN, false);
-    assertEquals(Optional.of(new Place(3, 9)), search.in("my_customer"));
+    assertEquals(Optional.of(new Place(3, 9)), search.compiled().in("my_customer"));
     assertEquals(
         Optional.of("The pattern is not valid: Unclosed character class."),
         Search.problem("[a", Match.PATTERN, Reader.HOORIDB));

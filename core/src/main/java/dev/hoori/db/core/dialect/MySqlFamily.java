@@ -9,6 +9,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -517,7 +518,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return of(scope, """
           SELECT TABLE_SCHEMA, TABLE_NAME,
             CASE WHEN TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') THEN 'v' ELSE 'r' END,
-            TABLE_ROWS, DATA_LENGTH
+            TABLE_ROWS, DATA_LENGTH, FALSE
           FROM information_schema.TABLES
           WHERE TABLE_SCHEMA = ? AND TABLE_TYPE <> 'SEQUENCE'
           ORDER BY TABLE_NAME""");
@@ -569,17 +570,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     private static final Set<String> TEXTS =
         Set.of("char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set");
     private static final Set<String> NUMBERS = Set.of(
-        "tinyint",
-        "smallint",
-        "mediumint",
-        "int",
-        "integer",
-        "bigint",
-        "decimal",
-        "numeric",
-        "float",
-        "double",
-        "real");
+        "tinyint", "smallint", "mediumint", "int", "integer", "bigint", "decimal", "numeric");
+    private static final String FLOAT = "float";
 
     // As COLUMN_TYPE writes it, with a length, the values of an enum or unsigned after the name.
     @Override
@@ -588,11 +580,18 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       while (end < type.length() && Character.isLetter(type.charAt(end))) {
         end++;
       }
-      var base = type.substring(0, end).toLowerCase(java.util.Locale.ROOT);
+      var base = type.substring(0, end).toLowerCase(Locale.ROOT);
       if (TEXTS.contains(base)) {
         return Holds.TEXT;
       }
-      return NUMBERS.contains(base) ? Holds.NUMBER : Holds.OTHER;
+      if (NUMBERS.contains(base)) {
+        return Holds.NUMBER;
+      }
+      return switch (base) {
+        case "double", "real" -> Holds.DOUBLE;
+        case FLOAT -> Holds.FLOAT;
+        default -> Holds.OTHER;
+      };
     }
 
     @Override
@@ -621,9 +620,11 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return column + " REGEXP ?";
     }
 
+    // A float as one, which the number would be compared as a double with: MariaDB 10.4.5 and
+    // MySQL 8.0.17 cast to it.
     @Override
-    public String equalNumber(String column) {
-      return column + " = ?";
+    public String equalNumber(String column, String type) {
+      return holds(type) == Holds.FLOAT ? column + " = CAST(? AS FLOAT)" : column + " = ?";
     }
   }
 }

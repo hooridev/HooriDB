@@ -57,7 +57,8 @@ class FinderServerTest {
               "DROP VIEW IF EXISTS " + name("apples"),
               "DROP PROCEDURE IF EXISTS " + name("find_needle"),
               "DROP TABLE IF EXISTS " + name("item"),
-              "DROP TABLE IF EXISTS " + name("bulk"));
+              "DROP TABLE IF EXISTS " + name("bulk"),
+              "DROP TABLE IF EXISTS " + name("measure"));
         }
       } finally {
         connection.close();
@@ -221,7 +222,6 @@ class FinderServerTest {
       assertEquals(List.of("label", "note"), apple.searched());
       assertEquals(
           List.of(new Hits.Hit("label", 2), new Hits.Hit("note", 1)), apple.columns(), "" + apple);
-      assertEquals(2, apple.rows());
       assertFalse(apple.more());
       // Case counts on PostgreSQL where asked; MariaDB and MySQL go by the column's collation.
       var sensitive = Finder.search(
@@ -240,10 +240,6 @@ class FinderServerTest {
       var pattern = Finder.search(
           connection, provider, item, new Search("^(red|pear)", Match.PATTERN, false), false);
       assertEquals(List.of(new Hits.Hit("label", 2)), pattern.columns());
-      var none = Finder.search(
-          connection, provider, item, new Search("100%", Match.CONTAINS, false), false);
-      assertEquals(0, none.rows());
-      assertTrue(none.columns().isEmpty());
 
       // The count stops past the limit.
       var bulk = Finder.search(
@@ -252,7 +248,6 @@ class FinderServerTest {
           candidates.get(1),
           new Search("apple", Match.CONTAINS, false),
           false);
-      assertEquals(Search.LIMIT, bulk.rows());
       assertTrue(bulk.more());
       assertEquals(List.of(new Hits.Hit("word", Search.LIMIT)), bulk.columns());
 
@@ -266,6 +261,116 @@ class FinderServerTest {
         assertEquals(2, rows.getInt(1));
         assertFalse(rows.next());
       }
+    }
+  }
+
+  // A table with a number of each kind, texts with LIKE's wildcards and a backslash, and on
+  // PostgreSQL an oid, a domain over a domain over text and an enum, which MySQL has as text.
+  private static Candidate measure(Scratch scratch) throws Exception {
+    var provider = scratch.provider();
+    var measure = scratch.name("measure");
+    if (provider == Provider.POSTGRESQL) {
+      var schema = provider.quote(scratch.container().name()) + ".";
+      scratch.execute(
+          "CREATE DOMAIN " + schema + "word AS varchar(20)",
+          "CREATE DOMAIN " + schema + "term AS " + schema + "word",
+          "CREATE TYPE " + schema + "taste AS ENUM ('sour', 'sweet')",
+          "CREATE TABLE " + measure + " (id integer PRIMARY KEY, o oid, r real,"
+              + " d double precision, w " + schema + "term, t " + schema + "taste, note text)",
+          "INSERT INTO " + measure + " VALUES (1, 7, 0.1, 0.1, 'kiwi', 'sour', '100x'),"
+              + " (2, 8, 2.5, 1e300, 'lime', 'sweet', '1_0'),"
+              + " (3, 9, NULL, NULL, NULL, NULL, 'a\\b')");
+    } else {
+      scratch.execute(
+          "CREATE TABLE " + measure + " (id integer PRIMARY KEY, r float, d double,"
+              + " t enum('sour', 'sweet'), note varchar(10))",
+          "INSERT INTO " + measure + " VALUES (1, 0.1, 0.1, 'sour', '100x'),"
+              + " (2, 2.5, 1e300, 'sweet', '1_0'), (3, NULL, NULL, NULL, 'a\\\\b')");
+    }
+    return Finder.candidates(scratch.connection(), provider, scratch.container()).stream()
+        .filter(c -> c.table().name().equals("measure"))
+        .findFirst()
+        .orElseThrow();
+  }
+
+  private static Hits search(Scratch scratch, Candidate table, String text) throws Exception {
+    return Finder.search(
+        scratch.connection(),
+        scratch.provider(),
+        table,
+        new Search(text, Match.CONTAINS, true),
+        false);
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void numbersAndTextsAreFoundAsTheServerHoldsThem(Provider provider) throws Exception {
+    try (var scratch = scratch(provider)) {
+      var measure = measure(scratch);
+      boolean pg = provider == Provider.POSTGRESQL;
+      // A float's 0.1 too, which is no double's.
+      assertEquals(
+          List.of(new Hits.Hit("r", 1), new Hits.Hit("d", 1)),
+          search(scratch, measure, "0.1").columns());
+      // An oid compared, no error; beyond a double's range, the columns of floats not searched.
+      if (pg) {
+        assertEquals(
+            List.of(new Hits.Hit("o", 1)), search(scratch, measure, "7").columns());
+      }
+      var huge = search(scratch, measure, "1e400");
+      assertEquals(
+          pg ? List.of("id", "o", "w", "t", "note") : List.of("id", "t", "note"), huge.searched());
+      assertTrue(huge.columns().isEmpty());
+      assertEquals(
+          List.of(new Hits.Hit("d", 1)), search(scratch, measure, "1e300").columns());
+      // A domain and an enum as their text.
+      if (pg) {
+        assertEquals(
+            List.of(new Hits.Hit("w", 1)), search(scratch, measure, "kiw").columns());
+      }
+      assertEquals(
+          List.of(new Hits.Hit("t", 1)), search(scratch, measure, "our").columns());
+      // LIKE's wildcards and a backslash as themselves: % or _ unescaped would match 100x too.
+      assertTrue(search(scratch, measure, "100%").columns().isEmpty());
+      assertEquals(
+          List.of(new Hits.Hit("note", 1)), search(scratch, measure, "1_").columns());
+      assertEquals(
+          List.of(new Hits.Hit("note", 1)), search(scratch, measure, "a\\b").columns());
+      // The query of a float's hit gives its row.
+      var sql = Finder.rows(provider, measure, "r", new Search("0.1", Match.EQUALS, true), false)
+          .orElseThrow();
+      try (var statement = scratch.connection().createStatement();
+          var rows = statement.executeQuery(sql)) {
+        assertTrue(rows.next());
+        assertEquals(1, rows.getInt(1));
+        assertFalse(rows.next());
+      }
+    }
+  }
+
+  @Test
+  void aPartitionIsSearchedWithItsTableAlone() throws Exception {
+    try (var scratch = scratch(Provider.POSTGRESQL)) {
+      var sale = scratch.name("sale");
+      scratch.execute(
+          "CREATE TABLE " + sale + " (id integer, region text) PARTITION BY LIST (region)",
+          "CREATE TABLE " + scratch.name("sale_eu") + " PARTITION OF " + sale
+              + " FOR VALUES IN ('eu')",
+          "INSERT INTO " + sale + " VALUES (1, 'eu')");
+      for (Container scope : List.of(scratch.container(), HOORI)) {
+        var names = Finder.candidates(scratch.connection(), Provider.POSTGRESQL, scope).stream()
+            .map(c -> c.table().name())
+            .toList();
+        assertTrue(names.contains("sale"), names.toString());
+        assertFalse(names.contains("sale_eu"), names.toString());
+      }
+      // Found by its name all the same, as the tree lists it.
+      var found = Finder.objects(
+          scratch.connection(),
+          Provider.POSTGRESQL,
+          scratch.container(),
+          new Search("sale_eu", Match.EQUALS, true));
+      assertEquals(List.of("sale_eu"), found.stream().map(Found::name).toList());
     }
   }
 

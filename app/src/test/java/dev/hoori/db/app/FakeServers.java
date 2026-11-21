@@ -1161,10 +1161,11 @@ final class FakeServers implements Servers {
     @Override
     public List<Found> objects(Container scope, Search search) throws QueryException {
       return searching("objects " + place(scope), scope.database(), () -> {
+        var matching = search.compiled();
         var found = new ArrayList<Found>();
         var tables = scoped(scope);
         for (var table : tables.keySet()) {
-          search
+          matching
               .in(table.name())
               .ifPresent(at -> found.add(new Found(
                   table.kind() == Table.Kind.VIEW ? Found.Kind.VIEW : Found.Kind.TABLE,
@@ -1178,7 +1179,7 @@ final class FakeServers implements Servers {
         }
         for (var columns : tables.values()) {
           for (var column : columns) {
-            search
+            matching
                 .in(column.name())
                 .ifPresent(at -> found.add(new Found(
                     Found.Kind.COLUMN,
@@ -1200,7 +1201,7 @@ final class FakeServers implements Servers {
             continue;
           }
           var byName =
-              d.kind() == Found.Kind.VIEW ? Optional.<Search.Place>empty() : search.in(d.name());
+              d.kind() == Found.Kind.VIEW ? Optional.<Search.Place>empty() : matching.in(d.name());
           if (byName.isPresent()) {
             found.add(new Found(
                 d.kind(),
@@ -1212,7 +1213,7 @@ final class FakeServers implements Servers {
                 byName.get().start(),
                 byName.get().end()));
           } else {
-            search
+            matching
                 .in(d.text())
                 .ifPresent(at -> found.add(new Found(
                     d.kind(),
@@ -1306,11 +1307,7 @@ final class FakeServers implements Servers {
           }
         }
         return new Hits(
-            table.table(),
-            searched.stream().map(c -> columns.get(c).name()).toList(),
-            list,
-            matched,
-            more);
+            table.table(), searched.stream().map(c -> columns.get(c).name()).toList(), list, more);
       });
     }
 

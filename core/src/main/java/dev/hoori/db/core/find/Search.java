@@ -83,16 +83,25 @@ public record Search(String text, Match match, boolean caseSensitive) {
   }
 
   /**
-   * Where it is found first in the text, or empty where it is not.
+   * The search with its pattern compiled once, for the many texts of one search.
    *
    * @throws PatternSyntaxException as {@link #pattern} does
    */
-  public Optional<Place> in(String value) {
-    if (value == null) {
-      return Optional.empty();
+  public Compiled compiled() {
+    return new Compiled(pattern());
+  }
+
+  /** A search's pattern, which finds where it is in a text. */
+  public record Compiled(Pattern pattern) {
+
+    /** Where it is found first in the text, or empty where it is not or there is none. */
+    public Optional<Place> in(String value) {
+      if (value == null) {
+        return Optional.empty();
+      }
+      Matcher m = pattern.matcher(value);
+      return m.find() ? Optional.of(new Place(m.start(), m.end())) : Optional.empty();
     }
-    Matcher m = pattern().matcher(value);
-    return m.find() ? Optional.of(new Place(m.start(), m.end())) : Optional.empty();
   }
 
   /** A part of a text, from its start up to its end. */
@@ -115,5 +124,20 @@ public record Search(String text, Match match, boolean caseSensitive) {
     } catch (NumberFormatException _) {
       return Optional.empty();
     }
+  }
+
+  /**
+   * Whether a double is the number: one whose shortest decimal it is, as of 0.1, so that a number
+   * such as 1E400 or 1E-400 is none, and neither is one that only rounds to a double.
+   */
+  static boolean isDouble(BigDecimal number) {
+    double d = number.doubleValue();
+    return Double.isFinite(d) && BigDecimal.valueOf(d).compareTo(number) == 0;
+  }
+
+  /** Whether a float is the number, as {@link #isDouble} says of a double. */
+  static boolean isFloat(BigDecimal number) {
+    float f = number.floatValue();
+    return Float.isFinite(f) && new BigDecimal(Float.toString(f)).compareTo(number) == 0;
   }
 }

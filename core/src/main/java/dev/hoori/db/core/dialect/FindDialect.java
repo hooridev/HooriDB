@@ -25,8 +25,19 @@ public interface FindDialect {
   enum Holds {
     /** Text, which a text is found in. */
     TEXT,
-    /** Numbers, which a number is found in. */
+    /** Numbers held exactly, integers and decimals, which a number is found in as it is. */
     NUMBER,
+    /**
+     * Binary floating-point numbers of double precision, which a number is found in only where it
+     * is the shortest decimal of a double, as 0.1 is, since no other one equals it, and which is
+     * given to the condition as that double.
+     */
+    DOUBLE,
+    /**
+     * Binary floating-point numbers of single precision, which a number is found in only where it
+     * is the shortest decimal of a float, compared as one, as a stored 0.1 is no double's 0.1.
+     */
+    FLOAT,
     /** Anything else, searched only as its text where the user chooses so. */
     OTHER
   }
@@ -39,11 +50,17 @@ public interface FindDialect {
 
   /**
    * The tables and views: the schema, the name, the kind as {@link CatalogDialect} gives it, the
-   * server's estimate of the rows and the bytes of the data, each NULL where it has none.
+   * server's estimate of the rows and the bytes of the data, each NULL where it has none, and
+   * whether its rows are read with those of another the query lists, as a partition's are with its
+   * partitioned table's.
    */
   String tables(Scope scope);
 
-  /** The columns of the tables and views: the schema, the table, the column and its type. */
+  /**
+   * The columns of the tables and views: the schema, the table, the column and its type as its
+   * values are held, which {@link #holds} reads: a domain's as the type it is over, an enum's as
+   * text where the provider compares it so.
+   */
   String columns(Scope scope);
 
   /** The views' definitions: the schema, the view and the text of its query. */
@@ -80,6 +97,9 @@ public interface FindDialect {
   /** The condition that the server's regular expression, the value, matches in the column's text. */
   String matches(String column, boolean caseSensitive);
 
-  /** The condition that the number in the column equals the value, a number. */
-  String equalNumber(String column);
+  /**
+   * The condition that the number in the column, of the type that {@link #holds} reads, equals the
+   * value, a number: in the column's own type where it holds {@link Holds#FLOAT}.
+   */
+  String equalNumber(String column, String type);
 }

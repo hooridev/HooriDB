@@ -879,28 +879,58 @@ public final class PostgreSql implements Dialect {
     }
 
     // A size of what holds rows: a table, also a partition, and a materialized view; never
-    // analyzed, as reltuples says with -1 or, before PostgreSQL 14, with 0 pages, none.
+    // analyzed, as reltuples says with -1 or, before PostgreSQL 14, with 0 pages, none. A
+    // partition's rows are read with its table's where that is in the scope too: in a database
+    // always, as both are in schemas of the user's, in a schema where the table is in the same one.
     @Override
     public String tables(Scope scope) {
+      var parent = switch (scope) {
+        case CONTAINER ->
+          " AND EXISTS (SELECT FROM pg_catalog.pg_inherits i"
+              + " JOIN pg_catalog.pg_class t ON t.oid" + EQ + "i.inhparent"
+              + " WHERE i.inhrelid" + EQ + "c.oid AND t.relnamespace" + EQ + "c.relnamespace)";
+        case USER_SCHEMAS -> "";
+      };
       return """
           SELECT n.nspname, c.relname, c.relkind,
             CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{r,p,m}'::pg_catalog."char"[])
               AND c.reltuples OPERATOR(pg_catalog.>=) 0 AND c.relpages OPERATOR(pg_catalog.>) 0
               THEN CAST(c.reltuples AS pg_catalog.int8) END,
             CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{r,m}'::pg_catalog."char"[])
-              THEN pg_catalog.pg_table_size(c.oid) END
+              THEN pg_catalog.pg_table_size(c.oid) END,
+            c.relispartition%s
           %s
-          ORDER BY n.nspname, c.relname""".formatted(relations(scope, ""));
+          ORDER BY n.nspname, c.relname""".formatted(parent, relations(scope, ""));
     }
+
+    // The type a domain is over, through a domain over a domain: the end of its chain, with the
+    // modifier the last domain gave it; an enum's as text, which is how it is compared.
+    private static final String DOMAIN_BASE = """
+        WITH RECURSIVE d (base, typmod) AS (
+          SELECT t.typbasetype, t.typtypmod
+          UNION ALL SELECT b.typbasetype, b.typtypmod FROM pg_catalog.pg_type b
+            JOIN d ON b.oid OPERATOR(pg_catalog.=) d.base
+            WHERE b.typtype OPERATOR(pg_catalog.=) 'd')
+        SELECT CASE WHEN b.typtype OPERATOR(pg_catalog.=) 'e' THEN 'text'
+            ELSE pg_catalog.format_type(d.base, d.typmod) END
+          FROM d JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) d.base
+          WHERE b.typtype OPERATOR(pg_catalog.<>) 'd'""";
 
     @Override
     public String columns(Scope scope) {
       return """
-          SELECT n.nspname, c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod)
+          SELECT n.nspname, c.relname, a.attname,
+            CASE WHEN t.typtype OPERATOR(pg_catalog.=) 'e' THEN 'text'
+              WHEN t.typtype OPERATOR(pg_catalog.=) 'd' THEN (%s)
+              ELSE pg_catalog.format_type(a.atttypid, a.atttypmod) END
           %s
             AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped
-          ORDER BY n.nspname, c.relname, a.attnum""".formatted(relations(
-          scope, " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid"));
+          ORDER BY n.nspname, c.relname, a.attnum""".formatted(
+              DOMAIN_BASE,
+              relations(
+                  scope,
+                  " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid"
+                      + " JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid"));
     }
 
     @Override
@@ -946,8 +976,10 @@ public final class PostgreSql implements Dialect {
         "citext",
         "bpchar",
         "varchar");
+    private static final String OID = "oid";
+    private static final String REAL = "real";
     private static final Set<String> NUMBERS =
-        Set.of("smallint", "integer", "bigint", "numeric", "real", "double precision", "oid");
+        Set.of("smallint", "integer", "bigint", "numeric", OID);
 
     // As format_type writes it, with a length or precision in parentheses; an array is other.
     @Override
@@ -955,12 +987,23 @@ public final class PostgreSql implements Dialect {
       if (type.endsWith("]")) {
         return Holds.OTHER;
       }
-      int at = type.indexOf('(');
-      var base = (at < 0 ? type : type.substring(0, at)).strip();
+      var base = base(type);
       if (TEXTS.contains(base)) {
         return Holds.TEXT;
       }
-      return NUMBERS.contains(base) ? Holds.NUMBER : Holds.OTHER;
+      if (NUMBERS.contains(base)) {
+        return Holds.NUMBER;
+      }
+      return switch (base) {
+        case "double precision" -> Holds.DOUBLE;
+        case REAL -> Holds.FLOAT;
+        default -> Holds.OTHER;
+      };
+    }
+
+    private static String base(String type) {
+      int at = type.indexOf('(');
+      return (at < 0 ? type : type.substring(0, at)).strip();
     }
 
     @Override
@@ -994,9 +1037,15 @@ public final class PostgreSql implements Dialect {
           + (caseSensitive ? " OPERATOR(pg_catalog.~) ?" : " OPERATOR(pg_catalog.~*) ?");
     }
 
+    // An oid as a bigint, as no operator compares it with a numeric; a real as one, which the
+    // numeric would be compared as a double with.
     @Override
-    public String equalNumber(String column) {
-      return column + EQ + "?";
+    public String equalNumber(String column, String type) {
+      return switch (base(type)) {
+        case OID -> "CAST(" + column + " AS pg_catalog.int8)" + EQ + "?";
+        case REAL -> column + EQ + "CAST(? AS pg_catalog.float4)";
+        default -> column + EQ + "?";
+      };
     }
   }
 }

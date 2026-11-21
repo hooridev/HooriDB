@@ -59,17 +59,14 @@ class DocumentFinderServerTest {
           .findFirst()
           .orElseThrow();
       assertEquals(OptionalLong.of(3), customers.rows());
-      var london = DocumentFinder.search(
-          session, customers, new Search("LONDON", Match.EQUALS, false), false);
+      var london =
+          DocumentFinder.search(session, customers, new Search("LONDON", Match.EQUALS, false));
       assertEquals(List.of(new Hits.Hit("address.city", 1)), london.columns(), "" + london);
-      var tags =
-          DocumentFinder.search(session, customers, new Search("av", Match.CONTAINS, true), false);
+      var tags = DocumentFinder.search(session, customers, new Search("av", Match.CONTAINS, true));
       assertEquals(List.of(new Hits.Hit("tags", 1)), tags.columns());
-      var a =
-          DocumentFinder.search(session, customers, new Search("^a", Match.PATTERN, false), false);
+      var a = DocumentFinder.search(session, customers, new Search("^a", Match.PATTERN, false));
       assertEquals(List.of(new Hits.Hit("name", 1), new Hits.Hit("email", 1)), a.columns());
-      var number =
-          DocumentFinder.search(session, customers, new Search("42", Match.EQUALS, false), false);
+      var number = DocumentFinder.search(session, customers, new Search("42", Match.EQUALS, false));
       assertEquals(List.of(new Hits.Hit("score", 1)), number.columns());
       assertFalse(number.more());
       assertTrue(number.searched().contains("_id"));

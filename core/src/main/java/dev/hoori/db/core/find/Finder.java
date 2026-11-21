@@ -57,13 +57,14 @@ public final class Finder {
       Connection connection, Provider provider, Container scope, Search search)
       throws QueryException {
     var find = provider.dialect().find();
+    var matching = search.compiled();
     var found = new ArrayList<Found>();
     var listed = tables(connection, provider, scope);
     var tables = new HashMap<String, Table>();
     listed.forEach((key, each) -> tables.put(key, each.table()));
     for (var each : listed.values()) {
       var table = each.table();
-      search
+      matching
           .in(table.name())
           .ifPresent(at -> found.add(new Found(
               table.kind() == Table.Kind.VIEW ? Found.Kind.VIEW : Found.Kind.TABLE,
@@ -76,7 +77,7 @@ public final class Finder {
               at.end())));
     }
     for (var column : columns(connection, provider, scope, tables)) {
-      search
+      matching
           .in(column.name())
           .ifPresent(at -> found.add(new Found(
               Found.Kind.COLUMN,
@@ -94,7 +95,7 @@ public final class Finder {
           key(container.name(), rows.getString(2)),
           new Table(container, rows.getString(2), Table.Kind.VIEW));
       var definition = rows.getString(3);
-      search
+      matching
           .in(definition)
           .ifPresent(at -> found.add(new Found(
               Found.Kind.VIEW,
@@ -110,7 +111,7 @@ public final class Finder {
       var kind = "p".equals(rows.getString(3)) ? Found.Kind.PROCEDURE : Found.Kind.FUNCTION;
       definition(
           found,
-          search,
+          matching,
           kind,
           container(provider, scope, rows.getString(1)),
           null,
@@ -124,7 +125,7 @@ public final class Finder {
           new Table(container, rows.getString(2), Table.Kind.TABLE));
       definition(
           found,
-          search,
+          matching,
           Found.Kind.TRIGGER,
           container,
           table,
@@ -137,7 +138,7 @@ public final class Finder {
   // A routine or trigger: by its name where that matches, else by its definition.
   private static void definition(
       List<Found> found,
-      Search search,
+      Search.Compiled search,
       Found.Kind kind,
       Container container,
       Table table,
@@ -157,7 +158,8 @@ public final class Finder {
 
   /**
    * The tables and views of the container with the server's estimates of their size and their
-   * columns, in the order the server gives them, for a search of their data.
+   * columns, in the order the server gives them, for a search of their data; without the
+   * partitions whose tables they are part of are listed too, which read their rows.
    */
   public static List<Candidate> candidates(
       Connection connection, Provider provider, Container scope) throws QueryException {
@@ -170,14 +172,17 @@ public final class Finder {
     }
     var candidates = new ArrayList<Candidate>();
     for (var each : listed.values()) {
+      if (each.part()) {
+        continue;
+      }
       candidates.add(new Candidate(
           each.table(), each.rows(), each.bytes(), columns.getOrDefault(each.table(), List.of())));
     }
     return List.copyOf(candidates);
   }
 
-  // A table as the server lists it, with its estimates.
-  private record Listed(Table table, OptionalLong rows, OptionalLong bytes) {}
+  // A table as the server lists it, with its estimates and whether another listed reads its rows.
+  private record Listed(Table table, OptionalLong rows, OptionalLong bytes, boolean part) {}
 
   // The tables of the container, by schema and name, in the server's order.
   private static Map<String, Listed> tables(
@@ -189,7 +194,7 @@ public final class Finder {
       var table = new Table(container, rows.getString(2), kind(rows.getString(3)));
       tables.put(
           key(container.name(), table.name()),
-          new Listed(table, optional(rows, 4), optional(rows, 5)));
+          new Listed(table, optional(rows, 4), optional(rows, 5), rows.getBoolean(6)));
     });
     return tables;
   }
@@ -221,8 +226,8 @@ public final class Finder {
 
   /**
    * The columns of the table that a search for the value reads, as {@link #search} does: those of
-   * text, those of numbers where the text is one, and the others as their text where {@code
-   * others} says so.
+   * text, those of numbers where the text is a number they can hold, and the others as their text
+   * where {@code others} says so; a column of numbers is not searched as text for a number.
    */
   public static List<Column> searched(
       Provider provider, Candidate table, Search search, boolean others) {
@@ -240,8 +245,13 @@ public final class Finder {
     for (var column : columns) {
       var name = provider.quote(column.name());
       var holds = find.holds(column.type());
-      if (holds == Holds.NUMBER && number.isPresent()) {
-        conditions.add(new Condition(column, find.equalNumber(name), number.get()));
+      boolean numbers = holds == Holds.NUMBER || holds == Holds.DOUBLE || holds == Holds.FLOAT;
+      if (numbers && number.isPresent()) {
+        // A double as one, as a server may read a long decimal as none, as MySQL does 1E300's.
+        if (canHold(holds, number.get())) {
+          Object value = holds == Holds.DOUBLE ? number.get().doubleValue() : number.get();
+          conditions.add(new Condition(column, find.equalNumber(name, column.type()), value));
+        }
       } else if (holds == Holds.TEXT || others) {
         var text = holds == Holds.TEXT ? name : find.asText(name);
         conditions.add(
@@ -255,6 +265,16 @@ public final class Finder {
       }
     }
     return conditions;
+  }
+
+  // Whether a value of the column can be the number: any exact one, a binary one only where it is
+  // the number, so that no other is compared, nor one that the server cannot convert.
+  private static boolean canHold(Holds holds, BigDecimal number) {
+    return switch (holds) {
+      case DOUBLE -> Search.isDouble(number);
+      case FLOAT -> Search.isFloat(number);
+      case NUMBER, TEXT, OTHER -> true;
+    };
   }
 
   /**
@@ -316,7 +336,7 @@ public final class Finder {
   /**
    * The query of the table's rows whose value in the column matches, as a statement to run, its
    * value written into it as the server reads it; empty where the search would not read the
-   * column.
+   * column, as one whose values cannot be the number searched for.
    */
   public static Optional<String> rows(
       Provider provider, Candidate candidate, String column, Search search, boolean others) {
@@ -340,6 +360,9 @@ public final class Finder {
     if (value instanceof BigDecimal number) {
       return number.toPlainString();
     }
+    if (value instanceof Double number) {
+      return number.toString();
+    }
     var text = value.toString().replace("'", "''");
     if (provider.dialect().syntax().backslashEscapes()) {
       text = text.replace("\\", "\\\\");
@@ -350,6 +373,8 @@ public final class Finder {
   private static void bind(PreparedStatement statement, int at, Object value) throws SQLException {
     if (value instanceof BigDecimal number) {
       statement.setBigDecimal(at, number);
+    } else if (value instanceof Double number) {
+      statement.setDouble(at, number);
     } else {
       statement.setString(at, (String) value);
     }

@@ -422,7 +422,7 @@ interface Servers {
     public Hits search(Candidate table, Search search, boolean others) throws QueryException {
       usable();
       try {
-        return DocumentFinder.search(session, table, search, others);
+        return DocumentFinder.search(session, table, search);
       } catch (QueryException e) {
         throw saw(e);
       }

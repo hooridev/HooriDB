@@ -43,10 +43,11 @@ public final class DocumentFinder {
    */
   public static List<Found> objects(DocumentSession session, Database database, Search search)
       throws QueryException {
+    var matching = search.compiled();
     var found = new ArrayList<Found>();
     var collections = collections(session, database);
     for (var collection : collections) {
-      search
+      matching
           .in(collection.name())
           .ifPresent(at -> found.add(new Found(
               collection.kind() == Table.Kind.VIEW ? Found.Kind.VIEW : Found.Kind.TABLE,
@@ -60,7 +61,7 @@ public final class DocumentFinder {
     }
     for (var collection : collections) {
       for (var path : fields(sample(session, collection)).keySet()) {
-        search
+        matching
             .in(path)
             .ifPresent(at -> found.add(new Found(
                 Found.Kind.COLUMN, database, collection, path, false, null, at.start(), at.end())));
@@ -110,11 +111,9 @@ public final class DocumentFinder {
    * Searches the collection: a sample of its documents names the fields, by their paths, that hold
    * text, or numbers where the text is one; then one find of the documents where any of them
    * matches, at most one more than {@link Search#LIMIT}, says how many did, and in which fields,
-   * by the values it gave. {@code others} says nothing here: a field is searched by what its
-   * values are.
+   * by the values it gave. A field is searched by what its values are, never as text.
    */
-  public static Hits search(
-      DocumentSession session, Candidate candidate, Search search, boolean others)
+  public static Hits search(DocumentSession session, Candidate candidate, Search search)
       throws QueryException {
     var collection = candidate.table();
     var fields = fields(sample(session, collection));
@@ -205,10 +204,10 @@ public final class DocumentFinder {
 
   /**
    * The statement of the shell that finds the collection's documents whose value in the field
-   * matches, for a console; empty where the search would not read the field, as its value could
-   * not match.
+   * matches, for a console: as text, and as a number where the text is one that a number of the
+   * server's can be.
    */
-  public static Optional<String> rows(Table collection, String path, Search search) {
+  public static String rows(Table collection, String path, Search search) {
     var conditions = new ArrayList<Object>();
     conditions.add(text(path, search));
     search
@@ -218,8 +217,8 @@ public final class DocumentFinder {
     var filter = conditions.size() == 1
         ? (Document) conditions.getFirst()
         : Document.of("$or", Document.array(conditions));
-    return Optional.of("db.getCollection(" + Shell.quote(collection.name()) + ").find("
-        + Shell.compact(filter) + ")");
+    return "db.getCollection(" + Shell.quote(collection.name()) + ").find(" + Shell.compact(filter)
+        + ")";
   }
 
   // The search as a pattern of the server's: a text as itself, each sign that means something
@@ -255,9 +254,8 @@ public final class DocumentFinder {
       return Optional.of(number.longValueExact());
     } catch (ArithmeticException _) {
       var operands = new ArrayList<Object>();
-      double asDouble = number.doubleValue();
-      if (Double.isFinite(asDouble) && BigDecimal.valueOf(asDouble).compareTo(number) == 0) {
-        operands.add(asDouble);
+      if (Search.isDouble(number)) {
+        operands.add(number.doubleValue());
       }
       if (decimal128(number)) {
         operands.add(new Bson.Decimal128(number.toString()));
