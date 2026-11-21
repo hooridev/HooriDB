@@ -29,8 +29,16 @@ import java.util.Set;
  *
  * <p>The snapshot reads in UTC, and the file's session writes in it, so that a {@code timestamp}
  * comes back as the same moment; it reads the file with backslashes as escapes and a 0 as a value
- * of an {@code AUTO_INCREMENT} column, as its literals are written. A table's rows are those of
- * now: of a table versioned by the system, its history stays behind.
+ * of an {@code AUTO_INCREMENT} column, as its literals are written. The snapshot reads in the SQL
+ * mode the file's session reads it back in, so that {@code SHOW CREATE} quotes names in backticks
+ * whatever the session's own mode, as {@code ANSI_QUOTES} would otherwise change. A table's rows
+ * are those of now: of a table versioned by the system, its history stays behind.
+ *
+ * <p>The snapshot keeps the rows of one moment, but not the definitions of the tables, which these
+ * servers change apart from any snapshot: a statement of DDL or a {@code TRUNCATE} of another
+ * session waits for the export to end only on a table that it has read already; on one it has not
+ * read yet it goes through, and the export then fails as the table's definition changed, or writes
+ * the definition it read before, as {@code mysqldump --single-transaction} does.
  */
 public final class MySqlFamilyDump extends DumpDialect {
 
@@ -38,11 +46,12 @@ public final class MySqlFamilyDump extends DumpDialect {
   private static final String NO_DEFINITION =
       "The server does not show this user the definition of ";
 
-  // The session's zone is kept on the server, for end() to put back, also where begin() did not
-  // get to keep it.
-  private static final String ZONE_BACK =
+  // The session's zone and SQL mode are kept on the server, for end() to put back, also where
+  // begin() did not get to keep them.
+  private static final String SESSION_BACK =
       "SET SESSION time_zone = COALESCE(@hooridb_time_zone, @@SESSION.time_zone),"
-          + " @hooridb_time_zone = NULL";
+          + " SESSION sql_mode = COALESCE(@hooridb_sql_mode, @@SESSION.sql_mode),"
+          + " @hooridb_time_zone = NULL, @hooridb_sql_mode = NULL";
 
   private final boolean sequences;
 
@@ -63,9 +72,10 @@ public final class MySqlFamilyDump extends DumpDialect {
       Sql.execute(
           connection,
           provider,
-          "SET @hooridb_time_zone = @@SESSION.time_zone, SESSION time_zone = '+00:00'");
+          "SET @hooridb_time_zone = @@SESSION.time_zone, @hooridb_sql_mode = @@SESSION.sql_mode,"
+              + " SESSION time_zone = '+00:00', SESSION sql_mode = '" + MODE + "'");
     } catch (QueryException e) {
-      throw Sql.undone(e, () -> Sql.ending(connection, provider, ZONE_BACK));
+      throw Sql.undone(e, () -> Sql.ending(connection, provider, SESSION_BACK));
     }
     try {
       Sql.execute(connection, provider, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
@@ -212,7 +222,9 @@ public final class MySqlFamilyDump extends DumpDialect {
     var qualified = provider.quote(item.container().name()) + "." + name;
     return switch (item.kind()) {
       case TABLE -> {
-        var created = shown(connection, provider, item, "SHOW CREATE TABLE " + qualified);
+        var created = withoutDatabase(
+            shown(connection, provider, item, "SHOW CREATE TABLE " + qualified),
+            provider.quote(item.container().name()));
         var table = Created.of(created, name);
         var refers = new HashSet<Item>();
         for (var to : references.getOrDefault(item.name(), Set.of())) {
@@ -325,6 +337,15 @@ public final class MySqlFamilyDump extends DumpDialect {
       throw QueryException.of(QueryException.Failure.ACCESS_DENIED, NO_DEFINITION + item.shown());
     }
     return shown;
+  }
+
+  /**
+   * The table's definition without the name of its database where it names a sequence's next
+   * value, as a column's default of MariaDB {@code nextval(`db`.`seq`)}, so that the table takes
+   * that of the database it is read into.
+   */
+  static String withoutDatabase(String created, String database) {
+    return created.replace("nextval(" + database + ".", "nextval(");
   }
 
   /** The definition without its {@code DEFINER=`user`@`host` }, where it has one. */
@@ -480,7 +501,8 @@ public final class MySqlFamilyDump extends DumpDialect {
 
   // Of each column that is not generated, a value of a kind the literal writes as such: whole
   // numbers, decimals, floating point and binary data; dates and times as the server writes them
-  // in the snapshot's zone, anything else as its text.
+  // in the snapshot's zone, anything else as its text. A float is read as a double, which these
+  // servers write with all its digits, where they write a float rounded to six.
   @Override
   Optional<Data> data(Connection connection, Provider provider, Item table) throws QueryException {
     var columns = Sql.some(
@@ -529,7 +551,8 @@ public final class MySqlFamilyDump extends DumpDialect {
         new Selected(quoted, MySqlFamilyDump::whole);
       case "bit" -> new Selected("CAST(" + quoted + " AS UNSIGNED)", MySqlFamilyDump::whole);
       case "decimal", "numeric" -> new Selected(quoted, MySqlFamilyDump::decimal);
-      case "float", "double", "real" -> new Selected(quoted, MySqlFamilyDump::floating);
+      case "float" -> new Selected(quoted + " + 0E0", MySqlFamilyDump::floating);
+      case "double", "real" -> new Selected(quoted, MySqlFamilyDump::floating);
       case "binary",
           "varbinary",
           "tinyblob",
