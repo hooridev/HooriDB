@@ -23,6 +23,10 @@ import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.find.Candidate;
+import dev.hoori.db.core.find.Found;
+import dev.hoori.db.core.find.Hits;
+import dev.hoori.db.core.find.Search;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -102,6 +106,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * variables, status counters and locks are those {@link #variables}, {@link #counters} and {@link
  * #locks} give, read keyed {@code variables <host>}, {@code status <host>} and {@code locks
  * <host>}; a server whose locks are {@code null} does not tell them.
+ *
+ * <p>A search of objects, keyed {@code objects <host>/<path>} with the path of its schema or
+ * database, finds the outline's tables, views and columns by name and what {@link #defined} gives;
+ * the tables to search are keyed {@code candidates <host>/<path>}, and a table's search {@code
+ * search <host>/<path>}, over its rows as a read makes them up.
  */
 final class FakeServers implements Servers {
 
@@ -379,6 +388,20 @@ final class FakeServers implements Servers {
    */
   FakeServers whole(String path, String column, String key, String text) {
     wholes.put(path + " " + column + " " + key, text);
+    return this;
+  }
+
+  /** A routine, trigger or view's text that a search of objects finds, beside the outline. */
+  record Defined(Found.Kind kind, Container container, Table table, String name, String text) {}
+
+  private final Map<String, List<Defined>> defined = new ConcurrentHashMap<>();
+
+  /**
+   * The host's server has these routines, triggers and texts of views, which a search of objects
+   * finds by their names or definitions, a view by its definition alone, as core's does.
+   */
+  FakeServers defined(String host, Defined... all) {
+    defined.put(host, List.of(all));
     return this;
   }
 
@@ -1068,6 +1091,223 @@ final class FakeServers implements Servers {
         return new Status(Transaction.OPEN, false); // pgjdbc's, while core reads in its own
       }
       return new Status(transaction, !manual);
+    }
+
+    // A search's call: on the link's database, one at a time, held and failed by its key.
+    private <T> T searching(String key, Database of, java.util.function.Supplier<T> read)
+        throws QueryException {
+      return Journal.sql(made.provider(), Purpose.SEARCH, key, x -> Outcome.DONE, () -> {
+        if (busy.incrementAndGet() > 1) {
+          overlapped = true;
+        }
+        try {
+          if (database != null && !of.name().equals(database)) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          var result = read.get();
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception _) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          done.add(key);
+          return result;
+        } finally {
+          busy.decrementAndGet();
+        }
+      });
+    }
+
+    private String place(Container c) {
+      return host + "/" + (c instanceof Schema x ? x.database().name() + "." + x.name() : c.name());
+    }
+
+    // The tables of the scope with their columns: a database of PostgreSQL stands for its schemas
+    // that are not the system's.
+    private Map<Table, List<Column>> scoped(Container scope) {
+      var tables = new java.util.LinkedHashMap<Table, List<Column>>();
+      var containers = new ArrayList<Container>();
+      if (scope instanceof Database d && made.provider() == Provider.POSTGRESQL) {
+        for (var line : find(root(), d.name()).children()) {
+          if (!line.text().startsWith("~")) {
+            containers.add(new Schema(d, name(line), false));
+          }
+        }
+      } else {
+        containers.add(scope);
+      }
+      for (var c : containers) {
+        var outline = container(c);
+        if (outline == null) {
+          continue;
+        }
+        for (var line : outline.children()) {
+          var kind = line.text().startsWith("@") ? Table.Kind.VIEW : Table.Kind.TABLE;
+          var table = new Table(c, name(line), kind);
+          var columns = new ArrayList<Column>();
+          for (var column : line.children()) {
+            var parts = column.text().replaceFirst("^\\*", "").split(": ", 2);
+            columns.add(new Column(table, parts[0], parts[1], true, 0));
+          }
+          tables.put(table, columns);
+        }
+      }
+      return tables;
+    }
+
+    @Override
+    public List<Found> objects(Container scope, Search search) throws QueryException {
+      return searching("objects " + place(scope), scope.database(), () -> {
+        var found = new ArrayList<Found>();
+        var tables = scoped(scope);
+        for (var table : tables.keySet()) {
+          search
+              .in(table.name())
+              .ifPresent(at -> found.add(new Found(
+                  table.kind() == Table.Kind.VIEW ? Found.Kind.VIEW : Found.Kind.TABLE,
+                  table.container(),
+                  table,
+                  table.name(),
+                  false,
+                  null,
+                  at.start(),
+                  at.end())));
+        }
+        for (var columns : tables.values()) {
+          for (var column : columns) {
+            search
+                .in(column.name())
+                .ifPresent(at -> found.add(new Found(
+                    Found.Kind.COLUMN,
+                    column.table().container(),
+                    column.table(),
+                    column.name(),
+                    false,
+                    null,
+                    at.start(),
+                    at.end())));
+          }
+        }
+        for (var d : defined.getOrDefault(host, List.of())) {
+          if (!d.container().database().equals(scope.database())) {
+            continue;
+          }
+          var byName =
+              d.kind() == Found.Kind.VIEW ? Optional.<Search.Place>empty() : search.in(d.name());
+          if (byName.isPresent()) {
+            found.add(new Found(
+                d.kind(),
+                d.container(),
+                d.table(),
+                d.name(),
+                false,
+                d.text(),
+                byName.get().start(),
+                byName.get().end()));
+          } else {
+            search
+                .in(d.text())
+                .ifPresent(at -> found.add(new Found(
+                    d.kind(),
+                    d.container(),
+                    d.table(),
+                    d.name(),
+                    true,
+                    d.text(),
+                    at.start(),
+                    at.end())));
+          }
+        }
+        return List.copyOf(found);
+      });
+    }
+
+    @Override
+    public List<Candidate> candidates(Container scope) throws QueryException {
+      return searching("candidates " + place(scope), scope.database(), () -> {
+        var candidates = new ArrayList<Candidate>();
+        scoped(scope).forEach((table, columns) -> {
+          var path = path(table);
+          var rows = estimates.getOrDefault(path, OptionalLong.of(counts.getOrDefault(path, 3L)));
+          candidates.add(new Candidate(
+              table,
+              table.kind() == Table.Kind.VIEW ? OptionalLong.empty() : rows,
+              table.kind() == Table.Kind.VIEW ? OptionalLong.empty() : OptionalLong.of(8192),
+              columns));
+        });
+        return List.copyOf(candidates);
+      });
+    }
+
+    /**
+     * Over the table's rows as {@link #read} makes them up: text for a text, numbers for a number,
+     * and the others as their text where asked.
+     */
+    @Override
+    public Hits search(Candidate table, Search search, boolean others) throws QueryException {
+      var path = path(table.table());
+      return searching("search " + path, table.table().container().database(), () -> {
+        var number = search.number();
+        var pattern = search.pattern();
+        var columns = table.columns();
+        var searched = new ArrayList<Integer>();
+        for (int c = 0; c < columns.size(); c++) {
+          var kind = kind(columns.get(c).type());
+          boolean numeric = kind == Kind.INTEGER || kind == Kind.DECIMAL;
+          if (kind == Kind.TEXT || numeric && number.isPresent() || others) {
+            searched.add(c);
+          }
+        }
+        if (searched.isEmpty()) {
+          return Hits.none(table.table());
+        }
+        var given = values.get(path);
+        long count = given != null ? given.size() : counts.getOrDefault(path, 3L);
+        var hits = new int[columns.size()];
+        int matched = 0;
+        boolean more = false;
+        for (long i = 0; i < count; i++) {
+          boolean any = false;
+          var hit = new boolean[columns.size()];
+          for (int c : searched) {
+            var column = columns.get(c);
+            var field = new Field(column.name(), column.type(), kind(column.type()));
+            var value = given != null ? given.get((int) i).get(c) : value(field, i);
+            boolean numeric = field.kind() == Kind.INTEGER || field.kind() == Kind.DECIMAL;
+            boolean is = value != null
+                && (numeric && number.isPresent()
+                    ? new BigDecimal(value.toString()).compareTo(number.get()) == 0
+                    : pattern.matcher(value.toString()).find());
+            hit[c] = is;
+            any |= is;
+          }
+          if (any) {
+            if (++matched > Search.LIMIT) {
+              matched = Search.LIMIT;
+              more = true;
+              break;
+            }
+            for (int c = 0; c < hit.length; c++) {
+              hits[c] += hit[c] ? 1 : 0;
+            }
+          }
+        }
+        var list = new ArrayList<Hits.Hit>();
+        for (int c : searched) {
+          if (hits[c] > 0) {
+            list.add(new Hits.Hit(columns.get(c).name(), hits[c]));
+          }
+        }
+        return new Hits(
+            table.table(),
+            searched.stream().map(c -> columns.get(c).name()).toList(),
+            list,
+            matched,
+            more);
+      });
     }
 
     @Override

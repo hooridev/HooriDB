@@ -70,7 +70,7 @@ from and clears; Save query keeps the selection, or else the whole text, under a
 (`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. The
 statement log, a panel below the tabs that starts collapsed and that the status line, the View menu
 and the palette open, lists what every connection sent, from the tree, a table's grid, the
-estimates, the transactions and the consoles, with its time, connection, part, duration and
+estimates, the transactions, the consoles and the searches, with its time, connection, part, duration and
 outcome, and the chosen statement whole in its dialect's colors; it filters by connection, part
 and outcome, searches, copies a statement, clears, and can be turned off. A password in a statement
 or a MongoDB command is masked before it is logged, and the log is kept beside the workspace
@@ -94,7 +94,20 @@ connection's menu, the File menu or the palette, opens a tab with the server's s
 status counters and who blocks whom, read on a session of its own at an interval that can be
 changed and paused, and not while the tab is hidden; a session's statement is cancelled and a
 session ended after a question, never the monitor's own, and credentials in other sessions'
-statements are masked. Run from its app image,
+statements are masked. "Find…", in a database's or schema's menu, the File menu (Control+Shift+F)
+or the palette, opens a tab that searches it on a session of its own, as contains, equals or a
+pattern, case sensitive or not: in its objects, the names of its tables, views and columns, read
+anew for the search, and of its routines and triggers, and the texts of its views, routines and
+triggers, of which opening one selects it in the tree or shows its definition, read-only, at the
+match in a console; or in its data, whose tables it lists first with the server's estimates of
+their rows and size, the views not chosen, and then searches one after another, in one query each
+over the columns that can hold the value, text for a text, numbers for a number and the others as
+their text where chosen, with its progress and a cancel, counting at most 1,000 matching rows of a
+table, which shows as "1,000+"; opening a column's hits opens a console with the query of its rows,
+which runs. On MariaDB and MySQL each column's collation decides the case of a text; on MongoDB it
+finds the collections and the fields of a sample of their documents by name, and their values by
+`$regex` over the string fields, nested ones included, or equality for a number, also on a
+read-only connection. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Help chooses, Stable or
 Nightly (at first that of its own version), downloads it and restarts into it through its own Exit
 when asked; the new version confirms once its window has shown its first frame, and the updater's
@@ -305,6 +318,15 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `locks` give what a host's server has, besides the monitor's own session, numbered as its link;
   the reads are keyed `sessions <host>`, `variables <host>`, `status <host>` and `locks <host>`,
   a cancel `cancel <host> <operation>` and an end `end <host> <id>`.
+- So do Find's: a search of objects, keyed `objects <host>/<path>` with the path of its schema or
+  database, finds the outline's tables, views and columns by name, and the routines, triggers and
+  views' texts that `defined` gives, a view by its text alone; the tables to search are keyed
+  `candidates <host>/<path>`, with the estimates of `rows`, and a table's search
+  `search <host>/<path>`, over its rows as `read` makes them up or `values` gives them. Core's
+  `FinderServerTest` searches the servers of SQL in a schema or database of its own, where MariaDB
+  and MySQL have root make the trigger, which the binary log asks SUPER for, and the user the
+  routine, whose text the server shows its definer alone; `DocumentFinderServerTest` searches
+  MongoDB's sample on a read-only session.
 - Updates run against `FakeUpdater`: releases published by version, the helper's result given,
   downloads and restarts recorded, each failable and the download held at its gate `downloading`.
   `State.shown()`, which `main` hands the window's `onShown`, stands for the first frame shown,

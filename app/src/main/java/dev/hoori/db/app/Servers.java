@@ -26,6 +26,12 @@ import dev.hoori.db.core.execution.Plan;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.find.Candidate;
+import dev.hoori.db.core.find.DocumentFinder;
+import dev.hoori.db.core.find.Finder;
+import dev.hoori.db.core.find.Found;
+import dev.hoori.db.core.find.Hits;
+import dev.hoori.db.core.find.Search;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.monitor.DocumentMonitor;
@@ -144,6 +150,18 @@ interface Servers {
 
     /** What the server does now, read on this connection, as {@link Monitor} says. */
     Monitor monitor() throws QueryException;
+
+    /**
+     * The objects of the schema or database whose names or definitions match, read anew for the
+     * search, as {@link Finder#objects} and {@link DocumentFinder#objects} say.
+     */
+    List<Found> objects(Container scope, Search search) throws QueryException;
+
+    /** The tables and views of the schema or database with their estimated sizes, for a search. */
+    List<Candidate> candidates(Container scope) throws QueryException;
+
+    /** What a search finds in the table's data, as {@link Finder#search} says. */
+    Hits search(Candidate table, Search search, boolean others) throws QueryException;
 
     /**
      * Gives up the statement whose rows are not all read, if one is, as {@link Execution#abandon}:
@@ -381,6 +399,36 @@ interface Servers {
     }
 
     @Override
+    public List<Found> objects(Container scope, Search search) throws QueryException {
+      usable();
+      try {
+        return DocumentFinder.objects(session, scope.database(), search);
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public List<Candidate> candidates(Container scope) throws QueryException {
+      usable();
+      try {
+        return DocumentFinder.candidates(session, scope.database());
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public Hits search(Candidate table, Search search, boolean others) throws QueryException {
+      usable();
+      try {
+        return DocumentFinder.search(session, table, search, others);
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
     public Abandoned giveUp() {
       var left = open.getAndSet(null);
       return left == null ? Abandoned.NOTHING : ended(left.close());
@@ -581,6 +629,24 @@ interface Servers {
     public Monitor monitor() throws QueryException {
       usable();
       return new SqlMonitor(connection, provider);
+    }
+
+    @Override
+    public List<Found> objects(Container scope, Search search) throws QueryException {
+      usable();
+      return Finder.objects(connection, provider, scope, search);
+    }
+
+    @Override
+    public List<Candidate> candidates(Container scope) throws QueryException {
+      usable();
+      return Finder.candidates(connection, provider, scope);
+    }
+
+    @Override
+    public Hits search(Candidate table, Search search, boolean others) throws QueryException {
+      usable();
+      return Finder.search(connection, provider, table, search, others);
     }
 
     @Override

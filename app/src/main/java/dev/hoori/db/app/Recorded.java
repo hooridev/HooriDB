@@ -15,6 +15,10 @@ import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
+import dev.hoori.db.core.find.Candidate;
+import dev.hoori.db.core.find.Found;
+import dev.hoori.db.core.find.Hits;
+import dev.hoori.db.core.find.Search;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
@@ -245,6 +249,21 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     @Override
     public Monitor monitor() throws QueryException {
       return link.monitor();
+    }
+
+    @Override
+    public List<Found> objects(Container scope, Search search) throws QueryException {
+      return recorded(of(scope), () -> link.objects(scope, search));
+    }
+
+    @Override
+    public List<Candidate> candidates(Container scope) throws QueryException {
+      return recorded(of(scope), () -> link.candidates(scope));
+    }
+
+    @Override
+    public Hits search(Candidate table, Search search, boolean others) throws QueryException {
+      return recorded(of(table.table()), () -> link.search(table, search, others));
     }
 
     @Override

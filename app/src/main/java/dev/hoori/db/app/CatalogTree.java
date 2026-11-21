@@ -12,6 +12,7 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
@@ -411,6 +412,7 @@ final class CatalogTree {
           if (live.levels.get(node) == reading) {
             live.levels.put(node, new Read(children));
             databasesRead(s, node);
+            revealed(s, node);
           }
         },
         error -> {
@@ -1376,8 +1378,70 @@ final class CatalogTree {
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
             refresh,
             copy);
+      case Node.OfDatabase n -> List.of(find(s, n.id(), n.database()), refresh, copy);
+      case Node.OfSchema n -> List.of(find(s, n.id(), n.schema()), refresh, copy);
       default -> List.of(refresh, copy);
     };
+  }
+
+  /** Find…: a search of the schema or database, in the main window. */
+  private static Menu.Item find(State s, UUID id, Container scope) {
+    return Menu.item("Find…", () -> s.openFind(id, scope, s.tabs.main())).icon(Symbol.SEARCH);
+  }
+
+  /**
+   * Selects the table or view in the tree, opening the nodes above it and reading what they hold
+   * where it is not read yet; with a column, the column once the table's columns are read.
+   */
+  void reveal(State s, Node.OfTable node, String column) {
+    var live = lives.get(node.id());
+    if (live == null || !(live.phase instanceof Live.Connected)) {
+      return;
+    }
+    var above = new ArrayList<Node>();
+    for (Node n = node.parent(); n != null; n = n.parent()) {
+      above.addFirst(n);
+    }
+    for (var n : above) {
+      if (!open.contains(n)) {
+        toggle(s, n, true);
+      }
+    }
+    s.selected = node;
+    revealing = column == null ? null : new Revealing(node, column);
+    if (column != null) {
+      if (!open.contains(node)) {
+        toggle(s, node, true);
+      }
+      revealed(s, node);
+    }
+  }
+
+  // The column to select once its table's columns are read, or null.
+  private Revealing revealing;
+
+  private record Revealing(Node.OfTable table, String column) {}
+
+  // The columns of the table were read: the column waited for is selected, if the table still is.
+  private void revealed(State s, Node node) {
+    if (revealing == null || !revealing.table().equals(node)) {
+      return;
+    }
+    var live = lives.get(node.id());
+    if (live == null || !(live.levels.get(node) instanceof Read(var children))) {
+      return;
+    }
+    var wanted = revealing;
+    revealing = null;
+    if (!node.equals(s.selected)) {
+      return; // the user went elsewhere meanwhile
+    }
+    for (var child : children) {
+      if (child instanceof Node.OfColumn c && c.column().name().equals(wanted.column())) {
+        s.selected = c;
+        return;
+      }
+    }
   }
 
   /**
