@@ -114,9 +114,7 @@ final class ConsoleTab implements Tab {
     final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
     // Of a server of documents, the documents of the rows, whole, and how they show.
     final List<Document> documents = new ArrayList<>();
-    TableTab.Shown shown = TableTab.Shown.GRID;
-    int page; // of the documents shown whole, as many as a portion
-    final DocumentTree whole = new DocumentTree();
+    final DocumentPresentation presentation = new DocumentPresentation();
 
     Output(int number, String statement, List<Field> fields, long count) {
       this.number = number;

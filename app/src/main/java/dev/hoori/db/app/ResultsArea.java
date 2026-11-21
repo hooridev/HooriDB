@@ -16,12 +16,10 @@ import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Progress;
-import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.data.Cut;
-import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.execution.Transaction;
 import java.util.ArrayList;
 import java.util.List;
@@ -175,7 +173,7 @@ final class ResultsArea {
         .key("failed");
   }
 
-  /** A result: its rows in the grid, or the number of rows it changed; whether it is pinned. */
+  /** A result: its rows in the grid, documents whole, or the number of rows it changed. */
   private El output(State s, App<State> app, ConsoleTab.Output o) {
     El pin = Button.toggleIcon(
             Symbol.PIN, o.pinned ? "Unpin" : "Pin", o.pinned, on -> o.pinned = on)
@@ -184,17 +182,22 @@ final class ResultsArea {
       return changed(s, o, pin);
     }
     String about = about(o);
-    if (o.documents.isEmpty()) {
-      return col()
-          .grow(1)
-          .minSize(0, 0)
-          .child(withValue(s, app, o, grid(s, app, o)))
-          .child(Card.footer(
-              Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
-              tab.value.button(),
-              pin));
+    boolean ofDocuments = !o.documents.isEmpty();
+    var presented = o.presentation.view(
+        app, s.zone, ofDocuments, () -> gridView(s, app, o), () -> documentPage(s, o));
+    var footer = new ArrayList<El>();
+    if (ofDocuments) {
+      footer.add(o.presentation.switcher("result-shown", o.presentation::mode));
     }
-    return documents(s, app, o, about, pin);
+    footer.addAll(presented.footer());
+    footer.add(pin);
+    return col()
+        .grow(1)
+        .minSize(0, 0)
+        .child(presented.body().grow(1))
+        .child(Card.footer(
+            Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
+            footer.toArray(El[]::new)));
   }
 
   /** A count: the number of rows, or documents, the statement changed. */
@@ -230,56 +233,33 @@ final class ResultsArea {
     return ConsoleTab.brief(o.statement) + " · " + held;
   }
 
-  /** Documents: as a grid, or whole, a page of those read so far, with the table's pager. */
-  private El documents(State s, App<State> app, ConsoleTab.Output o, String about, El pin) {
-    var footer = new ArrayList<El>();
-    footer.add(Segmented.segmented(
-            List.of(TableTab.Shown.values()), o.shown, v -> v.title, v -> o.shown = v)
-        .key("result-shown")
-        .label("Show documents as"));
-    El body;
-    if (o.shown == TableTab.Shown.GRID) {
-      footer.add(tab.value.button());
-      body = withValue(s, app, o, grid(s, app, o));
-    } else {
-      body = page(s, app, o, footer);
-    }
-    footer.add(pin);
-    return col()
-        .grow(1)
-        .minSize(0, 0)
-        .child(body.grow(1))
-        .child(Card.footer(
-            Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
-            footer.toArray(El[]::new)));
-  }
-
-  /** The page of the documents shown whole; its range and pager go into the footer. */
-  private El page(State s, App<State> app, ConsoleTab.Output o, List<El> footer) {
+  /** The page of the result's documents for the JSON and Tree strategies. */
+  private DocumentPresentation.DocumentPage documentPage(State s, ConsoleTab.Output o) {
     int last = Math.max(0, (o.documents.size() - 1) / ConsoleTab.PORTION);
-    if (o.page > last && !tab.readsOn(o)) {
-      o.page = last; // the next page did not come: nothing was left, or the read stopped
+    if (o.presentation.page() > last && !tab.readsOn(o)) {
+      o.presentation.page(
+          last); // the next page did not come: nothing was left, or the read stopped
     }
-    int from = o.page * ConsoleTab.PORTION;
+    int page = (int) o.presentation.page();
+    int from = page * ConsoleTab.PORTION;
     int to = Math.min(from + ConsoleTab.PORTION, o.documents.size());
-    footer.add(Label.label(
-            Label.Variant.MUTED, to <= from ? "No documents" : TableTab.range(from + 1L, to, true))
-        .key("rows-in-view"));
-    footer.add(TableTab.paging(
-        o.page > 0,
-        (o.page + 1) * ConsoleTab.PORTION < o.documents.size() || o.more,
+    var paging = new DocumentPresentation.Paging(
+        page > 0,
+        (page + 1) * ConsoleTab.PORTION < o.documents.size() || o.more,
         () -> turn(s, o, 0),
-        () -> turn(s, o, o.page - 1),
-        () -> turn(s, o, o.page + 1),
-        o.more ? null : () -> turn(s, o, last))); // the last is known once all is read
-    if (to <= from) {
-      return col()
-          .center()
-          .child(Label.label(Label.Variant.MUTED, o.more ? "Reading documents…" : "No documents")
-              .key("no-documents"));
-    }
-    o.whole.show("p" + o.page, o.documents, from, to);
-    return o.whole.view(app, o.shown, s.zone, "Documents of result " + o.number);
+        () -> turn(s, o, page - 1),
+        () -> turn(s, o, page + 1),
+        o.more ? null : () -> turn(s, o, last)); // the last is known once all is read
+    return new DocumentPresentation.DocumentPage(
+        "p" + page,
+        o.documents,
+        from,
+        to,
+        from,
+        to,
+        to <= from && o.more,
+        "Documents of result " + o.number,
+        paging);
   }
 
   /**
@@ -288,17 +268,18 @@ final class ResultsArea {
    */
   private void turn(State s, ConsoleTab.Output o, int page) {
     int at = o.documents.size();
-    o.page = Math.clamp(page, 0, at / ConsoleTab.PORTION);
-    if ((o.page + 1) * ConsoleTab.PORTION > at) {
+    int clamped = Math.clamp(page, 0, at / ConsoleTab.PORTION);
+    o.presentation.page(clamped);
+    if ((clamped + 1) * ConsoleTab.PORTION > at) {
       tab.want(s, o, at + ConsoleTab.PORTION - 1);
     }
   }
 
   /**
-   * The result's grid with the value panel, which shows the current cell's value as the result
-   * holds it: a text cut short stays so, as the statement may not name a row to read it by.
+   * The result's grid and value panel input: a text cut short stays so, as the statement may not
+   * name a row to read it by.
    */
-  private El withValue(State s, App<State> app, ConsoleTab.Output o, El grid) {
+  private DocumentPresentation.GridView gridView(State s, App<State> app, ConsoleTab.Output o) {
     int row = o.selection.row();
     int column = o.selection.column();
     ValuePanel.Cell cell = null;
@@ -316,32 +297,24 @@ final class ResultsArea {
         note = Cells.icon(v).tooltip() + "; a result keeps no more";
       }
     }
-    return tab.value.around(app, s.zone, grid, cell, note, cell != null && row >= o.rows.size());
+    return new DocumentPresentation.GridView(
+        () -> grid(s, app, o),
+        tab.value,
+        cell,
+        note,
+        cell != null && row >= o.rows.size(),
+        null,
+        null);
   }
 
   /** The result's rows, read-only, with the table tab's cells. */
   private El grid(State s, App<State> app, ConsoleTab.Output o) {
-    Theme t = Theme.CURRENT.get();
     var zone = s.zone;
     var columns = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < o.fields.size(); c++) {
-      var field = o.fields.get(c);
-      var kind = field.kind();
       int at = c;
-      if (o.widths[c] < 0) {
-        o.widths[c] = Cells.width(kind) * t.size().control();
-      }
-      var column = new DataGrid.Column(
-              field.name(),
-              o.widths[c],
-              Cells.type(kind),
-              row -> Cells.text(o.rows.get(row).get(at), zone))
-          .typeName(field.type())
-          .sortable(false);
-      if (kind == Kind.TEXT || kind == Kind.JSON || kind == Kind.OTHER) {
-        column = column.cellIcon(row -> Cells.icon(o.rows.get(row).get(at)));
-      }
-      columns.add(column);
+      columns.add(
+          Cells.column(o.fields.get(c), o.widths, c, row -> o.rows.get(row).get(at), zone));
     }
     var options = DataGrid.options()
         .select(o.selection)
@@ -350,7 +323,7 @@ final class ResultsArea {
         .rowNumbers()
         .copy(app.clipboard())
         .loading(row -> row < o.rows.size(), (_, last) -> tab.want(s, o, last));
-    int count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), TableTab.GRID_ROWS);
+    int count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), DocumentPresentation.GRID_ROWS);
     return DataGrid.dataGrid(columns, count, options)
         .key("grid")
         .label("Rows of result " + o.number);

@@ -1,12 +1,16 @@
 package dev.hoori.db.app;
 
+import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.DataGrid.CellIcon;
 import com.rethinkj.ui.kit.DataGrid.DataType;
 import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Rows;
@@ -22,6 +26,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.HexFormat;
+import java.util.function.IntFunction;
 
 /**
  * How the values of a table show in its grid: as a database writes them, not as a locale would.
@@ -81,6 +86,58 @@ final class Cells {
       case DATE_TIME, DATE_TIME_ZONED, BINARY -> 9;
       case TEXT, JSON, OTHER -> 10;
     };
+  }
+
+  private record Header(String name, String type, Kind kind, boolean key) {}
+
+  /**
+   * A grid column for a table column, initializing its width from the kind when not yet set by the
+   * user.
+   */
+  static DataGrid.Column column(
+      Column column,
+      Kind kind,
+      float[] widths,
+      int index,
+      IntFunction<Object> valueAt,
+      ZoneId zone) {
+    return column(
+        new Header(column.name(), column.type(), kind, column.keyPosition() > 0),
+        widths,
+        index,
+        valueAt,
+        zone);
+  }
+
+  /**
+   * A grid column for a query field, initializing its width from the kind when not yet set by the
+   * user.
+   */
+  static DataGrid.Column column(
+      Field field, float[] widths, int index, IntFunction<Object> valueAt, ZoneId zone) {
+    return column(
+        new Header(field.name(), field.type(), field.kind(), false), widths, index, valueAt, zone);
+  }
+
+  private static DataGrid.Column column(
+      Header header, float[] widths, int index, IntFunction<Object> valueAt, ZoneId zone) {
+    Theme t = Theme.CURRENT.get();
+    var kind = header.kind();
+    var type = kind == null ? DataType.OTHER : type(kind);
+    if (widths[index] < 0 && kind != null) {
+      widths[index] = width(kind) * t.size().control();
+    }
+    float w = widths[index] < 0 ? width(Kind.DECIMAL) * t.size().control() : widths[index];
+    var column = new DataGrid.Column(header.name(), w, type, row -> text(valueAt.apply(row), zone))
+        .typeName(header.type())
+        .sortable(false);
+    if (header.key()) {
+      column = column.icon(Symbol.KEY, Icon.Variant.WARNING);
+    }
+    if (kind == Kind.TEXT || kind == Kind.JSON || kind == Kind.OTHER) {
+      column = column.cellIcon(row -> icon(valueAt.apply(row)));
+    }
+    return column;
   }
 
   /**
