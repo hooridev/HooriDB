@@ -19,6 +19,7 @@ import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Sent;
+import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.query.QueryException;
 import java.util.Arrays;
 import java.util.List;
@@ -238,6 +239,12 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
         link.manual(manual);
         return null;
       });
+    }
+
+    // Not logged yet: what the monitor sends runs outside the link's calls.
+    @Override
+    public Monitor monitor() throws QueryException {
+      return link.monitor();
     }
 
     @Override

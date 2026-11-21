@@ -91,7 +91,7 @@ final class Probe {
 
   /** Whether Test connection can go: there are drivers, and the form holds a profile to test. */
   boolean canTest(State s) {
-    return s.drivers != null && dialog.formValid() && !dialog.changing;
+    return s.drivers != null && dialog.formValid() && !dialog.changing();
   }
 
   /** Whether a test runs: Test connection is busy. */
@@ -138,9 +138,7 @@ final class Probe {
     }
     char[] typed = d.password.isEmpty() ? null : d.password.toCharArray();
     char[] kept = typed == null && !d.isNew ? s.rememberedCopy(id) : null;
-    var secrets = typed == null && kept == null && !d.isNew && !Boolean.FALSE.equals(d.stored)
-        ? s.secrets()
-        : null;
+    var secrets = typed == null && kept == null && !d.isNew && d.mayHold() ? s.secrets() : null;
     var tester = s.tester;
     var tried = new Tried(profile, d.passwordEdits);
     step = new Testing(profile.host());

@@ -33,4 +33,7 @@ public non-sealed interface DocumentDialect extends Traits {
    * as the statement log shows it.
    */
   String shown(Document command);
+
+  /** How its servers tell what their sessions do. */
+  DocumentMonitorDialect monitor();
 }

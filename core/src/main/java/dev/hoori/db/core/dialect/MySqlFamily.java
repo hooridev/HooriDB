@@ -4,6 +4,7 @@ import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.monitor.ServerSession;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -56,7 +57,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
         case COLUMN_GONE -> Set.of("42S22");
         // MariaDB's and MySQL's "Query execution was interrupted".
         case CANCELLED -> Set.of("70100");
-        case ACCESS_DENIED, ROUTINE_DENIED, TIME_LIMIT, TIMEOUT, CONSTRAINT -> Set.of();
+        case ACCESS_DENIED, ROUTINE_DENIED, TIME_LIMIT, TIMEOUT, CONSTRAINT, NO_SUCH_SESSION ->
+          Set.of();
       };
     }
 
@@ -75,6 +77,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
         case TIMEOUT -> Set.of(1969, 3024, 1205);
         // MySQL's check constraint, whose state is the general HY000.
         case CONSTRAINT -> Set.of(3819);
+        // MariaDB's and MySQL's unknown thread id, of a KILL.
+        case NO_SUCH_SESSION -> Set.of(1094);
         case COLUMN_GONE, CANCELLED -> Set.of();
       };
     }
@@ -413,6 +417,78 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     @Override
     public boolean pendingRowsHoldConnection() {
       return true;
+    }
+  }
+
+  /**
+   * Their process lists, alike but for how long a thread has been in its state: MariaDB tells it
+   * to the millisecond, MySQL in whole seconds.
+   */
+  static final class Monitor implements MonitorDialect {
+
+    private final String elapsed; // the seconds in its state, as a column of the list
+    private final String variables; // the query that tells their sources
+    private final String locks;
+
+    Monitor(String elapsed, String variables, String locks) {
+      this.elapsed = elapsed;
+      this.variables = variables;
+      this.locks = locks;
+    }
+
+    @Override
+    public List<String> variables() {
+      return List.of(variables, "SHOW GLOBAL VARIABLES");
+    }
+
+    @Override
+    public String status() {
+      return "SHOW GLOBAL STATUS";
+    }
+
+    @Override
+    public String locks() {
+      return locks;
+    }
+
+    // Without the PROCESS privilege the server lists the user's own threads alone.
+    @Override
+    public String sessions() {
+      return "SELECT ID, ID = CONNECTION_ID(), USER, HOST, DB, COMMAND, STATE, INFO, " + elapsed
+          + " FROM information_schema.PROCESSLIST ORDER BY ID";
+    }
+
+    // An unknown thread fails as NO_SUCH_SESSION.
+    @Override
+    public String cancel(String operation) {
+      return "KILL QUERY " + Long.parseLong(operation);
+    }
+
+    @Override
+    public String end(String id) {
+      return "KILL " + Long.parseLong(id);
+    }
+
+    // A thread's state that waits says what for; any other says what the command does.
+    @Override
+    public ServerSession session(ResultSet row) throws SQLException {
+      var id = row.getString(1);
+      var command = MonitorRows.text(row, 6);
+      var stage = MonitorRows.text(row, 7);
+      boolean waits = stage.startsWith("Waiting") || stage.equals("Locked");
+      boolean runs = command.equals("Query") || command.equals("Execute");
+      return new ServerSession(
+          id,
+          runs ? id : "",
+          row.getBoolean(2),
+          true,
+          MonitorRows.text(row, 3),
+          MonitorRows.text(row, 4),
+          MonitorRows.text(row, 5),
+          waits || command.equals("Sleep") ? command : MonitorRows.joined(": ", command, stage),
+          MonitorRows.text(row, 8),
+          MonitorRows.seconds(row, 9),
+          waits ? stage : "");
     }
   }
 }

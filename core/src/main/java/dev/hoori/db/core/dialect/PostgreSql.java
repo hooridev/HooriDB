@@ -24,6 +24,7 @@ import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.monitor.ServerSession;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -56,6 +57,7 @@ public final class PostgreSql implements Dialect {
   private final SyntaxDialect syntax = new Syntax();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new PostgreSqlRows();
+  private final MonitorDialect monitor = new Monitor();
 
   private PostgreSql() {}
 
@@ -122,6 +124,11 @@ public final class PostgreSql implements Dialect {
   @Override
   public RowsDialect rows() {
     return rows;
+  }
+
+  @Override
+  public MonitorDialect monitor() {
+    return monitor;
   }
 
   // pgjdbc.
@@ -345,7 +352,7 @@ public final class PostgreSql implements Dialect {
         // PostgreSQL's statement timeout, which a cancel from another session shares, and
         // lock_not_available, of lock_timeout and NOWAIT.
         case TIMEOUT -> Set.of("57014", "55P03");
-        case ROUTINE_DENIED, TIME_LIMIT, CONSTRAINT -> Set.of();
+        case ROUTINE_DENIED, TIME_LIMIT, CONSTRAINT, NO_SUCH_SESSION -> Set.of();
       };
     }
 
@@ -676,6 +683,135 @@ public final class PostgreSql implements Dialect {
     @Override
     public boolean streamedRowsClosedLast() {
       return false;
+    }
+  }
+
+  static final class Monitor implements MonitorDialect {
+
+    private static final String EQ = " OPERATOR(pg_catalog.=) ";
+
+    // The backends of clients, not the server's own workers; the time in the state measured on
+    // the server, whose clock the computer's may not match.
+    @Override
+    public String sessions() {
+      return "SELECT a.pid, a.pid" + EQ + "pg_catalog.pg_backend_pid(), a.usename,"
+          + " a.application_name, pg_catalog.host(a.client_addr), a.client_port, a.datname,"
+          + " a.state, a.query,"
+          + " EXTRACT(EPOCH FROM pg_catalog.clock_timestamp() OPERATOR(pg_catalog.-)"
+          + " a.state_change),"
+          + " a.wait_event_type, a.wait_event"
+          + " FROM pg_catalog.pg_stat_activity a"
+          + " WHERE a.backend_type" + EQ + "'client backend' ORDER BY a.pid";
+    }
+
+    // A session of another user, without the privilege to see it, has no state and a query that
+    // says so.
+    @Override
+    public ServerSession session(ResultSet row) throws SQLException {
+      var pid = row.getString(1);
+      boolean own = row.getBoolean(2);
+      var state = MonitorRows.text(row, 8);
+      boolean runs = state.equals("active") || state.startsWith("fastpath");
+      return new ServerSession(
+          pid,
+          runs ? pid : "",
+          own,
+          true,
+          MonitorRows.text(row, 3),
+          ServerSession.client(MonitorRows.text(row, 4), address(row)),
+          MonitorRows.text(row, 7),
+          state,
+          MonitorRows.text(row, 9),
+          MonitorRows.seconds(row, 10),
+          MonitorRows.joined(": ", MonitorRows.text(row, 11), MonitorRows.text(row, 12)));
+    }
+
+    // A process id that is gone gives false, with a warning.
+    @Override
+    public String cancel(String operation) {
+      return "SELECT pg_catalog.pg_cancel_backend(" + Integer.parseInt(operation) + ")";
+    }
+
+    @Override
+    public String end(String id) {
+      return "SELECT pg_catalog.pg_terminate_backend(" + Integer.parseInt(id) + ")";
+    }
+
+    // The value as SHOW writes it, with its unit.
+    @Override
+    public List<String> variables() {
+      return List.of("SELECT s.name, pg_catalog.current_setting(s.name), s.source"
+          + " FROM pg_catalog.pg_settings s ORDER BY s.name");
+    }
+
+    // pg_stat_database's counters, by the names they show under, summed over the databases.
+    private static final String[][] COUNTERS = {
+      {"backends", "numbackends"},
+      {"commits", "xact_commit"},
+      {"rollbacks", "xact_rollback"},
+      {"blocks read", "blks_read"},
+      {"blocks hit", "blks_hit"},
+      {"rows returned", "tup_returned"},
+      {"rows fetched", "tup_fetched"},
+      {"rows inserted", "tup_inserted"},
+      {"rows updated", "tup_updated"},
+      {"rows deleted", "tup_deleted"},
+      {"conflicts", "conflicts"},
+      {"deadlocks", "deadlocks"},
+      {"temporary files", "temp_files"},
+      {"temporary bytes", "temp_bytes"}
+    };
+
+    @Override
+    public String status() {
+      var sums = new StringBuilder();
+      var rows = new StringBuilder();
+      for (int i = 0; i < COUNTERS.length; i++) {
+        var separator = i == 0 ? "" : ", ";
+        sums.append(separator).append("pg_catalog.sum(d.").append(COUNTERS[i][1]);
+        sums.append(") AS c").append(i);
+        rows.append(separator).append("('").append(COUNTERS[i][0]).append("', ").append(i);
+        rows.append(", s.c").append(i).append("::pg_catalog.text)");
+      }
+      return "SELECT v.name, v.value FROM (SELECT " + sums
+          + " FROM pg_catalog.pg_stat_database d) s"
+          + " CROSS JOIN LATERAL (VALUES " + rows + ") v (name, n, value) ORDER BY v.n";
+    }
+
+    // Each session that waits, beside each that blocks it, with the lock it waits for. A relation
+    // has its name only in its own database, or where it is shared; in another, its database and
+    // number. An advisory lock is told by its keys.
+    @Override
+    public String locks() {
+      return "SELECT a.pid, b.pid,"
+          + " CASE WHEN l.relation IS NOT NULL AND (l.database" + EQ + "0 OR o.datname" + EQ
+          + "pg_catalog.current_database())"
+          + " THEN l.relation::pg_catalog.regclass::pg_catalog.text"
+          + " WHEN l.relation IS NOT NULL"
+          + " THEN pg_catalog.concat(COALESCE(o.datname::pg_catalog.text,"
+          + " l.database::pg_catalog.text), '.', l.relation::pg_catalog.text)"
+          + " WHEN l.locktype" + EQ + "'advisory'"
+          + " THEN pg_catalog.concat_ws(' ', l.locktype, l.classid::pg_catalog.text,"
+          + " l.objid::pg_catalog.text, l.objsubid::pg_catalog.text)"
+          + " ELSE pg_catalog.concat_ws(' ', l.locktype, l.transactionid::pg_catalog.text) END,"
+          + " l.mode"
+          + " FROM pg_catalog.pg_stat_activity a"
+          + " CROSS JOIN LATERAL pg_catalog.unnest(pg_catalog.pg_blocking_pids(a.pid)) b (pid)"
+          + " LEFT JOIN pg_catalog.pg_locks l ON l.pid" + EQ + "a.pid AND NOT l.granted"
+          + " LEFT JOIN pg_catalog.pg_database o ON o.oid" + EQ + "l.database"
+          + " ORDER BY a.pid, b.pid";
+    }
+
+    // The client's address and port; a port of -1 is a Unix socket, which has no address.
+    private static String address(ResultSet row) throws SQLException {
+      var host = MonitorRows.text(row, 5);
+      int port = row.getInt(6);
+      boolean none = row.wasNull();
+      if (host.isEmpty()) {
+        return !none && port == -1 ? "local socket" : "";
+      }
+      var shown = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
+      return none ? shown : shown + ":" + port;
     }
   }
 }

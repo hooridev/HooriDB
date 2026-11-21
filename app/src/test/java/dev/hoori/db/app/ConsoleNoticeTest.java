@@ -138,7 +138,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     String given = c.tree("given");
     assertTrue(given.contains("the save was given up"), given);
     assertEquals(null, app.state().pending, "the lock ended");
-    assertFalse(app.state().dialog.changing);
+    assertFalse(app.state().dialog.changing());
     c.secrets.gate.countDown();
     c.run(app, SETTLE);
   }

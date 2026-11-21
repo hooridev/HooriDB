@@ -26,6 +26,11 @@ import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.monitor.Block;
+import dev.hoori.db.core.monitor.Counter;
+import dev.hoori.db.core.monitor.Monitor;
+import dev.hoori.db.core.monitor.ServerSession;
+import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -86,6 +91,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * commits what is open, which notes {@code commit by auto-commit <host>} among the calls; a change
  * notes {@code autocommit <host> on} or {@code off}. Asking for it is keyed {@code transaction
  * <host>}.
+ *
+ * <p>A server's monitor lists the sessions {@link #sessions} gives after the monitor's own, whose
+ * id is the number of its link; a read of them is keyed {@code sessions <host>}. Cancelling what one
+ * runs, keyed {@code cancel <host> <operation>}, leaves it idle, and ending one, keyed {@code end
+ * <host> <id>}, takes it out; either says false for a session the server does not have. Its
+ * variables, status counters and locks are those {@link #variables}, {@link #counters} and {@link
+ * #locks} give, read keyed {@code variables <host>}, {@code status <host>} and {@code locks
+ * <host>}; a server whose locks are {@code null} does not tell them.
  */
 final class FakeServers implements Servers {
 
@@ -213,6 +226,56 @@ final class FakeServers implements Servers {
         link.transaction = Transaction.NONE;
       }
     }
+  }
+
+  private final Map<String, List<ServerSession>> sessions = new ConcurrentHashMap<>();
+
+  /** The host's server has these sessions besides the monitor's own, as a test may change. */
+  FakeServers sessions(String host, ServerSession... others) {
+    sessions.put(host, List.of(others));
+    return this;
+  }
+
+  private final Map<String, List<ServerVariable>> variables = new ConcurrentHashMap<>();
+  private final Map<String, List<Counter>> counters = new ConcurrentHashMap<>();
+  private final Map<String, Optional<List<Block>>> locks = new ConcurrentHashMap<>();
+
+  /** The host's server has these variables. */
+  FakeServers variables(String host, ServerVariable... all) {
+    variables.put(host, List.of(all));
+    return this;
+  }
+
+  /** The host's server has these status counters. */
+  FakeServers counters(String host, Counter... all) {
+    counters.put(host, List.of(all));
+    return this;
+  }
+
+  /** These sessions of the host's server wait for locks; null for a server that does not tell. */
+  FakeServers locks(String host, Block... all) {
+    locks.put(host, all == null ? Optional.empty() : Optional.of(List.of(all)));
+    return this;
+  }
+
+  /**
+   * A session of another client, which runs the statement, cancellable, or is idle where it is
+   * empty.
+   */
+  static ServerSession session(String id, String user, String statement) {
+    boolean runs = !statement.isEmpty();
+    return new ServerSession(
+        id,
+        runs ? id : "",
+        false,
+        true,
+        user,
+        "psql (10.0.0." + id + ":5000)",
+        "shop",
+        runs ? "active" : "idle",
+        statement,
+        Duration.ofSeconds(Integer.parseInt(id)),
+        "");
   }
 
   /** Rows of the columns, given as {@code name: type}, made up from their position. */
@@ -996,6 +1059,107 @@ final class FakeServers implements Servers {
         return new Status(Transaction.OPEN, false); // pgjdbc's, while core reads in its own
       }
       return new Status(transaction, !manual);
+    }
+
+    @Override
+    public Monitor monitor() {
+      return new Monitor() {
+        @Override
+        public List<ServerSession> sessions() throws QueryException {
+          var key = "sessions " + host;
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception e) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          done.add(key);
+          var all = new ArrayList<ServerSession>();
+          all.add(new ServerSession(
+              String.valueOf(number),
+              "",
+              true,
+              true,
+              "hoori",
+              "HooriDB (10.0.0.1:5000)",
+              "shop",
+              "active",
+              "SELECT the sessions",
+              Duration.ZERO,
+              ""));
+          all.addAll(FakeServers.this.sessions.getOrDefault(host, List.of()));
+          return all;
+        }
+
+        @Override
+        public List<ServerVariable> variables() throws QueryException {
+          read("variables " + host);
+          return FakeServers.this.variables.getOrDefault(host, List.of());
+        }
+
+        @Override
+        public List<Counter> status() throws QueryException {
+          read("status " + host);
+          return FakeServers.this.counters.getOrDefault(host, List.of());
+        }
+
+        @Override
+        public Optional<List<Block>> locks() throws QueryException {
+          read("locks " + host);
+          return FakeServers.this.locks.getOrDefault(host, Optional.of(List.of()));
+        }
+
+        private void read(String key) throws QueryException {
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception e) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          done.add(key);
+        }
+
+        @Override
+        public boolean cancel(ServerSession session) throws QueryException {
+          return stop("cancel " + host + " " + session.operation(), session, true);
+        }
+
+        @Override
+        public boolean end(ServerSession session) throws QueryException {
+          return stop("end " + host + " " + session.id(), session, false);
+        }
+
+        private boolean stop(String key, ServerSession session, boolean idle)
+            throws QueryException {
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception e) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          done.add(key);
+          var now = new ArrayList<ServerSession>();
+          boolean found = false;
+          for (var other : FakeServers.this.sessions.getOrDefault(host, List.of())) {
+            if (!other.id().equals(session.id())) {
+              now.add(other);
+              continue;
+            }
+            found = true;
+            if (idle) {
+              now.add(FakeServers.session(other.id(), other.user(), ""));
+            }
+          }
+          FakeServers.this.sessions.put(host, List.copyOf(now));
+          return found;
+        }
+      };
     }
 
     @Override

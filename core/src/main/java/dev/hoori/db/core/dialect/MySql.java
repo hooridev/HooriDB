@@ -76,6 +76,21 @@ public final class MySql extends MySqlFamily {
   private final PlanDialect planning = new Plan();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MySqlRows();
+  private final MonitorDialect monitor = new MySqlFamily.Monitor(
+      "TIME",
+      "SELECT g.VARIABLE_NAME, g.VARIABLE_VALUE, i.VARIABLE_SOURCE"
+          + " FROM performance_schema.global_variables g"
+          + " LEFT JOIN performance_schema.variables_info i"
+          + " ON i.VARIABLE_NAME = g.VARIABLE_NAME ORDER BY g.VARIABLE_NAME",
+      // InnoDB's row locks, of MySQL 8 on; a metadata lock is not among them.
+      "SELECT r.PROCESSLIST_ID, b.PROCESSLIST_ID,"
+          + " CONCAT_WS('.', l.OBJECT_SCHEMA, l.OBJECT_NAME), l.LOCK_MODE"
+          + " FROM performance_schema.data_lock_waits w"
+          + " JOIN performance_schema.threads r ON r.THREAD_ID = w.REQUESTING_THREAD_ID"
+          + " JOIN performance_schema.threads b ON b.THREAD_ID = w.BLOCKING_THREAD_ID"
+          + " LEFT JOIN performance_schema.data_locks l"
+          + " ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID"
+          + " ORDER BY 1, 2");
 
   private MySql() {}
 
@@ -127,6 +142,11 @@ public final class MySql extends MySqlFamily {
   @Override
   public RowsDialect rows() {
     return rows;
+  }
+
+  @Override
+  public MonitorDialect monitor() {
+    return monitor;
   }
 
   static final class Plan extends MySqlFamily.Plan {
