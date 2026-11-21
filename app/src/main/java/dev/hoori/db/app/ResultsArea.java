@@ -312,17 +312,9 @@ final class ResultsArea {
     var zone = s.zone;
     var columns = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < o.fields.size(); c++) {
-      var field = o.fields.get(c);
       int at = c;
-      columns.add(Cells.column(
-          field.name(),
-          field.type(),
-          field.kind(),
-          false,
-          o.widths,
-          c,
-          row -> o.rows.get(row).get(at),
-          zone));
+      columns.add(
+          Cells.column(o.fields.get(c), o.widths, c, row -> o.rows.get(row).get(at), zone));
     }
     var options = DataGrid.options()
         .select(o.selection)

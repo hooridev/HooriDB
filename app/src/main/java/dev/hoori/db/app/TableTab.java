@@ -1026,18 +1026,9 @@ final class TableTab implements Tab {
     var zone = s.zone;
     var shown = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < columns.size(); c++) {
-      var column = columns.get(c);
       var kind = fields == null ? null : fields.get(c).kind();
       int at = c;
-      shown.add(Cells.column(
-          column.name(),
-          column.type(),
-          kind,
-          column.keyPosition() > 0,
-          widths,
-          c,
-          row -> value(row, at),
-          zone));
+      shown.add(Cells.column(columns.get(c), kind, widths, c, row -> value(row, at), zone));
     }
     var options = DataGrid.options()
         .select(selection)

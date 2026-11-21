@@ -213,7 +213,7 @@ final class DocumentPresentation {
   /** Tree strategy: a page of documents, each a tree of its fields and array items. */
   static final class Tree implements Strategy {
 
-    private final DocumentTree tree = new DocumentTree();
+    private final DocumentTree documentTree = new DocumentTree();
 
     @Override
     public Mode mode() {
@@ -231,8 +231,11 @@ final class DocumentPresentation {
       if (page.empty()) {
         return new View(emptyOrLoading(page), footer);
       }
-      tree.show(page.scope(), page.source(), page.sliceFrom(), page.sliceTo());
-      El body = col().grow(1).minSize(0, 0).child(tree.view(zone, page.label()).grow(1));
+      documentTree.show(page.scope(), page.source(), page.sliceFrom(), page.sliceTo());
+      El body = col()
+          .grow(1)
+          .minSize(0, 0)
+          .child(documentTree.view(zone, page.label()).grow(1));
       return new View(body, footer);
     }
   }

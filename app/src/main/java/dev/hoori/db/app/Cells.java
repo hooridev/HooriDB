@@ -7,8 +7,10 @@ import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Rows;
@@ -86,29 +88,50 @@ final class Cells {
     };
   }
 
+  private record Header(String name, String type, Kind kind, boolean key) {}
+
   /**
-   * A grid column for a table column or query field, initializing its width from the kind when not
-   * yet set by the user.
+   * A grid column for a table column, initializing its width from the kind when not yet set by the
+   * user.
    */
   static DataGrid.Column column(
-      String name,
-      String typeName,
+      Column column,
       Kind kind,
-      boolean key,
       float[] widths,
       int index,
       IntFunction<Object> valueAt,
       ZoneId zone) {
+    return column(
+        new Header(column.name(), column.type(), kind, column.keyPosition() > 0),
+        widths,
+        index,
+        valueAt,
+        zone);
+  }
+
+  /**
+   * A grid column for a query field, initializing its width from the kind when not yet set by the
+   * user.
+   */
+  static DataGrid.Column column(
+      Field field, float[] widths, int index, IntFunction<Object> valueAt, ZoneId zone) {
+    return column(
+        new Header(field.name(), field.type(), field.kind(), false), widths, index, valueAt, zone);
+  }
+
+  private static DataGrid.Column column(
+      Header header, float[] widths, int index, IntFunction<Object> valueAt, ZoneId zone) {
     Theme t = Theme.CURRENT.get();
+    var kind = header.kind();
     var type = kind == null ? DataType.OTHER : type(kind);
     if (widths[index] < 0 && kind != null) {
       widths[index] = width(kind) * t.size().control();
     }
     float w = widths[index] < 0 ? width(Kind.DECIMAL) * t.size().control() : widths[index];
-    var column = new DataGrid.Column(name, w, type, row -> text(valueAt.apply(row), zone))
-        .typeName(typeName)
+    var column = new DataGrid.Column(header.name(), w, type, row -> text(valueAt.apply(row), zone))
+        .typeName(header.type())
         .sortable(false);
-    if (key) {
+    if (header.key()) {
       column = column.icon(Symbol.KEY, Icon.Variant.WARNING);
     }
     if (kind == Kind.TEXT || kind == Kind.JSON || kind == Kind.OTHER) {
