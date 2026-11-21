@@ -116,7 +116,9 @@ final class Suggestions {
     private final State s;
     private final boolean exact;
     private final CatalogTree.Live live; // null while not connected
-    private final Node.OfDatabase database; // the console's, or null
+    private final String named; // the console's database, or null
+    private Node.OfDatabase database; // the node of that name, or null, once looked up
+    private boolean looked;
 
     private Known(State s, Provider provider, boolean exact) {
       this.s = s;
@@ -126,8 +128,7 @@ final class Suggestions {
       var connected = opened != null && opened.phase instanceof CatalogTree.Connected c ? c : null;
       this.live = connected == null ? null : opened;
       schemas = connected != null && connected.schemas();
-      var name = !tab.database.isEmpty() || connected == null ? tab.database : connected.database();
-      database = name == null ? null : database(name);
+      named = !tab.database.isEmpty() || connected == null ? tab.database : connected.database();
       var profile = s.profile(tab.id);
       path = profile == null ? List.of("public") : List.of(profile.user(), "public");
     }
@@ -169,6 +170,15 @@ final class Suggestions {
       return null;
     }
 
+    // The console's database, looked up once and only where a candidate needs it.
+    private Node.OfDatabase database() {
+      if (!looked) {
+        looked = true;
+        database = named == null ? null : database(named);
+      }
+      return database;
+    }
+
     /**
      * The schemas of its database, or where there are none within databases, the databases, as
      * the tree has read them.
@@ -177,11 +187,13 @@ final class Suggestions {
       if (!schemas) {
         return read(new Node.Connection(tab.id));
       }
+      var database = database();
       return database == null ? List.of() : read(database);
     }
 
     /** The tables and views of its database, of all schemas but the system's; read if need be. */
     List<Table> tables() {
+      var database = database();
       if (database == null) {
         return List.of();
       }
@@ -214,6 +226,7 @@ final class Suggestions {
     // them out; read them here once completions in pg_catalog are asked for.
     Optional<List<Table>> tablesIn(String name) {
       Node container = null;
+      var database = database();
       if (!schemas) {
         container = database(name);
       } else if (database != null) {
