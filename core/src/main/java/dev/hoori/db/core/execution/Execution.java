@@ -511,47 +511,12 @@ public final class Execution implements AutoCloseable {
     }
     if (ownTransaction) {
       ownTransaction = false;
-      var commit = ending != Ending.FAILED;
-      if (commit && !aborted) {
-        try {
-          connection.clearWarnings();
-          Journal.call(Purpose.TRANSACTION, Journal.COMMIT, () -> {
-            connection.commit();
-            return null;
-          });
-          if (said != null) {
-            collect(connection.getWarnings(), said); // pgjdbc's notices of the commit
-            connection.clearWarnings();
-          }
-        } catch (SQLException e) {
-          failure = Failure.of(connection, provider, e);
-          commit = false;
-        }
-      }
-      if (aborted) {
+      var own = endOwnTransaction(ending != Ending.FAILED, said, lost);
+      if (own.aborted()) {
         return Failure.connectionLost();
       }
-      if (!commit) {
-        try {
-          Journal.call(Purpose.TRANSACTION, Journal.ROLLBACK, () -> {
-            connection.rollback();
-            return null;
-          });
-        } catch (SQLException e) {
-          lost = true;
-        }
-      }
-      // pgjdbc commits as it turns auto-commit on, which after a failed rollback it must not.
-      if (!lost && !aborted) {
-        try {
-          Journal.call(Purpose.TRANSACTION, Journal.autoCommit(true), () -> {
-            connection.setAutoCommit(true);
-            return null;
-          });
-        } catch (SQLException e) {
-          lost = true;
-        }
-      }
+      failure = own.failure();
+      lost = own.lost();
     }
     if (!lost && ending == Ending.RAN && failure == null) {
       lost = !followAutoCommit(status);
@@ -561,6 +526,61 @@ public final class Execution implements AutoCloseable {
       return failure != null ? failure : Failure.connectionLost();
     }
     return failure;
+  }
+
+  // How the end of its own transaction went: the failure of its commit, if any; whether the
+  // connection is left in a state that cannot be known; and whether it was aborted after the
+  // commit.
+  private record OwnEnd(Failure failure, boolean lost, boolean aborted) {}
+
+  // Ends the statement's own transaction: commits it where toCommit says so and the commit
+  // succeeds,
+  // else rolls it back, and turns auto-commit on again unless the connection is already lost.
+  private OwnEnd endOwnTransaction(boolean toCommit, List<Message> said, boolean lostBefore) {
+    var commit = toCommit;
+    var lost = lostBefore;
+    Failure failure = null;
+    if (commit && !aborted) {
+      try {
+        connection.clearWarnings();
+        Journal.call(Purpose.TRANSACTION, Journal.COMMIT, () -> {
+          connection.commit();
+          return null;
+        });
+        if (said != null) {
+          collect(connection.getWarnings(), said); // pgjdbc's notices of the commit
+          connection.clearWarnings();
+        }
+      } catch (SQLException e) {
+        failure = Failure.of(connection, provider, e);
+        commit = false;
+      }
+    }
+    if (aborted) {
+      return new OwnEnd(failure, lost, true);
+    }
+    if (!commit) {
+      try {
+        Journal.call(Purpose.TRANSACTION, Journal.ROLLBACK, () -> {
+          connection.rollback();
+          return null;
+        });
+      } catch (SQLException _) {
+        lost = true;
+      }
+    }
+    // pgjdbc commits as it turns auto-commit on, which after a failed rollback it must not.
+    if (!lost && !aborted) {
+      try {
+        Journal.call(Purpose.TRANSACTION, Journal.autoCommit(true), () -> {
+          connection.setAutoCommit(true);
+          return null;
+        });
+      } catch (SQLException _) {
+        lost = true;
+      }
+    }
+    return new OwnEnd(failure, lost, false);
   }
 
   private void collectWarningsOfEnd(List<Message> said) {

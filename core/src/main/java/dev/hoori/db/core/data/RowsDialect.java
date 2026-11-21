@@ -70,7 +70,7 @@ public abstract class RowsDialect {
       throws SQLException;
 
   /** The operator that compares a column of a key with its value, as the reads name theirs. */
-  abstract String equal();
+  abstract String keyEquality();
 
   /**
    * Binds the value, of the Java type of its kind or null, to the parameter, so that the server
