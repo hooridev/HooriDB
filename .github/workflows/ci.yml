@@ -94,6 +94,8 @@ jobs:
     env:
       # The test classes to run, all of them or a comma list, split over the shards.
       TESTS: all
+      # The JVMs that a shard's tests run in at once (Surefire's forkCount, test.forks).
+      FORKS: 1
       # Each shard's servers are its own and end with its runner.
       TESTCONTAINERS_RYUK_DISABLED: 'true'
     steps:
@@ -132,7 +134,7 @@ jobs:
         run: |
           python3 .github/ci.py self-test
           python3 .github/ci.py plan --shards ${{ strategy.job-total }} --shard ${{ matrix.shard }} \
-            --tests "$TESTS" ${{ steps.times.outputs.key != '' && '--times test-times.json' || '' }} \
+            --forks "$FORKS" --tests "$TESTS" ${{ steps.times.outputs.key != '' && '--times test-times.json' || '' }} \
             >> "$GITHUB_OUTPUT"
       # The images of core's TestServer, pulled while Maven builds.
       - if: steps.plan.outputs.servers == 'true'
@@ -154,13 +156,16 @@ jobs:
           restore-keys: |
             maven-test-${{ hashFiles('**/pom.xml') }}-
             maven-test-
-      # -U: as in verify. One run of Maven: on its own, surefire:test would not find core's classes.
+      # -U: as in verify. A shard builds its module alone, app with core, whose tests it does not
+      # run. One run of Maven: on its own, surefire:test would not find core's classes.
       - name: Build and test
         env:
           SLICE: ${{ steps.plan.outputs.tests }}
+          MODULE: ${{ steps.plan.outputs.module }}
         run: |
           if [ -n "$SLICE" ]; then
-            mvn -B -U test -Dtest="$SLICE" -Dsurefire.failIfNoSpecifiedTests=false
+            mvn -B -U test -pl "$MODULE" -am -Dtest="$SLICE" -Dsurefire.failIfNoSpecifiedTests=false \
+              -Dtest.forks="$FORKS"
           else
             mvn -B -U test-compile
           fi
