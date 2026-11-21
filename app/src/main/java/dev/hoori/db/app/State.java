@@ -983,7 +983,7 @@ final class State {
   Map.Entry<UUID, Container> findScope(TabGroups.Group<Tab> group) {
     if (group == tabs.main() && selected != null) {
       var scope = switch (selected) {
-        case Node.OfSchema n -> (Container) n.schema();
+        case Node.OfSchema n -> n.schema();
         case Node.OfDatabase n -> n.database();
         case Node.OfTable n -> n.table().container();
         case Node.OfColumn n -> n.column().table().container();

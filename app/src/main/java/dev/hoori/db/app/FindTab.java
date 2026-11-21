@@ -70,6 +70,8 @@ final class FindTab implements Tab {
   static final List<In> INS = List.of(In.values());
   static final List<Search.Match> MATCHES = List.of(Search.Match.values());
 
+  private static final String TABLE = "Table";
+
   /** Why a call failed: a title and what the server said. */
   record Problem(String title, String text) {}
 
@@ -86,7 +88,7 @@ final class FindTab implements Tab {
   final Menu.State matchMenu = new Menu.State();
 
   List<Found> found; // of the last search of objects, or null before one
-  Search searched; // the last search that ran or runs, or null
+  Search searched; // the last search in data that ran or runs, or null
   boolean searchedOthers;
   List<Candidate> candidates; // the tables to choose from, null until read
   boolean[] chosen = new boolean[0]; // by candidate
@@ -130,7 +132,7 @@ final class FindTab implements Tab {
         && profile != null
         && switch (profile.provider().traits()) {
           case Dialect d -> d.find().caseByCollation();
-          case DocumentDialect d -> false;
+          case DocumentDialect _ -> false;
         };
   }
 
@@ -151,20 +153,20 @@ final class FindTab implements Tab {
 
   // The session
 
-  /** The tab's session, opened where it has none; null while the tree's connection is closed. */
-  private Lane lane(State s) {
+  /** The tab's session, opened where it has none; empty while the tree's connection is closed. */
+  private Optional<Lane> lane(State s) {
     if (lane != null && lane.broken()) {
       closeSession(s);
     }
     if (lane == null && !closed) {
       var session = s.catalog.session(id, scope.database().name());
       if (session == null) {
-        return null;
+        return Optional.empty();
       }
       Arrays.fill(session.password(), '\0'); // nothing here masks it
       lane = session.lane();
     }
-    return lane;
+    return Optional.ofNullable(lane);
   }
 
   /** Whether it has a session of its own. */
@@ -193,27 +195,26 @@ final class FindTab implements Tab {
     if (asked != null) {
       return;
     }
-    var lane = lane(s);
-    if (lane == null) {
-      return; // the note says that it is not connected
-    }
-    problem = null;
-    asking = "Reading the tables of " + place() + "…";
-    asked = lane.ask(
-        s.app,
-        "read the tables to search",
-        Lane.Priority.VIEW,
-        link -> link.candidates(scope),
-        read -> {
-          asked = null;
-          candidates = read;
-          chosen = new boolean[read.size()];
-          for (int i = 0; i < chosen.length; i++) {
-            chosen[i] = read.get(i).table().kind() == Table.Kind.TABLE;
-          }
-          tables.reset();
-        },
-        error -> failed(s, error, "The tables could not be read"));
+    // Where it has no session, the note says that it is not connected.
+    lane(s).ifPresent(session -> {
+      problem = null;
+      asking = "Reading the tables of " + place() + "…";
+      asked = session.ask(
+          s.app,
+          "read the tables to search",
+          Lane.Priority.VIEW,
+          link -> link.candidates(scope),
+          read -> {
+            asked = null;
+            candidates = read;
+            chosen = new boolean[read.size()];
+            for (int i = 0; i < chosen.length; i++) {
+              chosen[i] = read.get(i).table().kind() == Table.Kind.TABLE;
+            }
+            tables.reset();
+          },
+          error -> failed(s, error, "The tables could not be read"));
+    });
   }
 
   /** Chooses all tables to search, or none. */
@@ -221,16 +222,17 @@ final class FindTab implements Tab {
     Arrays.fill(chosen, all);
   }
 
-  /** Why the search cannot start, as a sentence; null where it can. */
-  String why(State s) {
-    var problem = Search.problem(text, match);
-    if (problem != null) {
-      return problem;
+  /**
+   * Why the search cannot start, as a sentence; empty where it can. A pattern in the data of a
+   * server of SQL is the server's to read.
+   */
+  Optional<String> why(State s) {
+    var reader = in == In.DATA && !documents(s) ? Search.Reader.SERVER : Search.Reader.HOORIDB;
+    var invalid = Search.problem(text, match, reader);
+    if (invalid.isEmpty() && in == In.DATA && candidates != null && chosen().isEmpty()) {
+      return Optional.of("Choose a table to search.");
     }
-    if (in == In.DATA && candidates != null && chosen().isEmpty()) {
-      return "Choose a table to search.";
-    }
-    return null;
+    return invalid;
   }
 
   private List<Candidate> chosen() {
@@ -248,7 +250,7 @@ final class FindTab implements Tab {
     if (asked != null) {
       return;
     }
-    if (why(s) != null) {
+    if (why(s).isPresent()) {
       tried = true;
       return;
     }
@@ -257,17 +259,16 @@ final class FindTab implements Tab {
       readTables(s);
       return;
     }
-    var lane = lane(s);
-    if (lane == null) {
-      return;
-    }
+    lane(s).ifPresent(session -> find(s, session));
+  }
+
+  private void find(State s, Lane session) {
     problem = null;
     var search = new Search(text, match, caseSensitive && !caseByCollation(s));
-    searched = search;
     results.reset();
     if (in == In.OBJECTS) {
       asking = "Searching the objects of " + place() + "…";
-      asked = lane.ask(
+      asked = session.ask(
           s.app,
           "find in the objects",
           Lane.Priority.VIEW,
@@ -280,16 +281,18 @@ final class FindTab implements Tab {
           error -> failed(s, error, "The objects could not be searched"));
       return;
     }
+    // Set apart from a search of objects, which leaves the hits and how they were found.
+    searched = search;
     searchedOthers = others && !documents(s);
     queue = chosen();
     done = 0;
     cancelled = false;
     hits.clear();
-    next(s, lane);
+    next(s, session);
   }
 
   // Searches the next table of the queue, or ends.
-  private void next(State s, Lane lane) {
+  private void next(State s, Lane session) {
     if (done >= queue.size()) {
       asked = null;
       int with = (int) hits.stream()
@@ -297,14 +300,14 @@ final class FindTab implements Tab {
           .map(Hit::table)
           .distinct()
           .count();
-      say(s, "Hits in " + count(with, "table", "tables") + " of " + queue.size());
+      say(s, "Hits in " + tableCount(with) + " of " + queue.size());
       return;
     }
     var table = queue.get(done);
     var search = searched;
     boolean as = searchedOthers;
     asking = "Searching " + name(table.table());
-    asked = lane.ask(
+    asked = session.ask(
         s.app,
         "search " + table.table().name(),
         Lane.Priority.VIEW,
@@ -314,7 +317,7 @@ final class FindTab implements Tab {
             hits.add(new Hit(table, hit.column(), hit.rows(), got.more(), null));
           }
           done++;
-          next(s, lane);
+          next(s, session);
         },
         error -> {
           if (error instanceof InterruptedException) {
@@ -327,7 +330,7 @@ final class FindTab implements Tab {
                   || q.failure() == QueryException.Failure.NOT_FOUND)) {
             hits.add(new Hit(table, "", 0, false, detail(q)));
             done++;
-            next(s, lane);
+            next(s, session);
             return;
           }
           failed(s, error, "The search stopped at " + name(table.table()));
@@ -343,7 +346,7 @@ final class FindTab implements Tab {
     asked = null;
     if (searched != null && in == In.DATA && done < queue.size()) {
       cancelled = true;
-      say(s, "Cancelled after " + done + " of " + count(queue.size(), "table", "tables"));
+      say(s, "Cancelled after " + done + " of " + tableCount(queue.size()));
     }
   }
 
@@ -400,15 +403,14 @@ final class FindTab implements Tab {
   }
 
   private void open(State s, Hit hit) {
-    if (hit.failure() != null || searched == null) {
+    var profile = s.profile(id);
+    if (hit.failure() != null || searched == null || profile == null) {
       return;
     }
-    var statement = documents(s)
+    var provider = profile.provider();
+    var statement = provider.keepsDocuments()
         ? DocumentFinder.rows(hit.table().table(), hit.column(), searched)
-        : s.profile(id) == null
-            ? Optional.<String>empty()
-            : Finder.rows(
-                s.profile(id).provider(), hit.table(), hit.column(), searched, searchedOthers);
+        : Finder.rows(provider, hit.table(), hit.column(), searched, searchedOthers);
     statement.ifPresent(sql -> s.openRows(id, scope.database().name(), sql));
   }
 
@@ -441,15 +443,15 @@ final class FindTab implements Tab {
   private void closeSession(State s) {
     if (lane != null) {
       s.closing();
-      var closing = lane.close(ended -> {});
+      var closing = lane.close(_ -> {});
       s.app.background(
           "close the search's session",
           () -> {
             closing.join();
             return null;
           },
-          done -> s.closed(),
-          e -> s.closed());
+          _ -> s.closed(),
+          _ -> s.closed());
       lane = null;
     }
   }
@@ -467,9 +469,26 @@ final class FindTab implements Tab {
     Theme t = Theme.CURRENT.get();
     var profile = s.profile(id);
     String where = profile == null ? place() : State.name(profile) + ": " + place();
-    boolean running = asked != null;
+    El top = Card.toolbar(where, null, actions(s, t).toArray(El[]::new));
+    El line = ConnectionColors.line(s.color(id));
+    El content =
+        col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
+    El note = note(s);
+    if (note != null) {
+      content.child(col().padding(t.space().m()).shrink(0).child(note).key("note"));
+    }
+    if (in == In.OBJECTS) {
+      content.child(objects(s, app));
+    } else {
+      content.child(data(s, app, t));
+    }
+    El count = Label.label(Label.Variant.MUTED, summary()).key("count").ellipsis();
+    return content.child(Card.footer(count, footer(t)).key("footer"));
+  }
+
+  // The toolbar's controls: what to find and how, where, and Find or Cancel.
+  private List<El> actions(State s, Theme t) {
     var actions = new ArrayList<El>();
-    var problem = why(s);
     El field = TextField.textField(text, "Find", v -> {
           text = v;
           tried = false;
@@ -477,7 +496,7 @@ final class FindTab implements Tab {
         .key("find-text")
         .label("Find")
         .w(8 * t.size().control());
-    if (tried && problem != null) {
+    if (tried && why(s).isPresent()) {
       field = TextField.invalid(field);
     }
     actions.add(row().child(TextField.withIcon(field, Symbol.SEARCH)).onKey(k -> {
@@ -511,26 +530,12 @@ final class FindTab implements Tab {
     actions.add(
         Segmented.segmented(INS, in, x -> x.title, x -> show(s, x)).key("in").label("Find in"));
     actions.add(
-        running
+        asked != null
             ? button(SECONDARY, "Cancel", () -> cancel(s), Button.options().icon(Symbol.DISMISS))
                 .key("cancel")
             : button(PRIMARY, "Find", () -> find(s), Button.options().icon(Symbol.SEARCH))
                 .key("find"));
-    El top = Card.toolbar(where, null, actions.toArray(El[]::new));
-    El line = ConnectionColors.line(s.color(id));
-    El content =
-        col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
-    El note = note(s);
-    if (note != null) {
-      content.child(col().padding(t.space().m()).shrink(0).child(note).key("note"));
-    }
-    if (in == In.OBJECTS) {
-      content.child(objects(s, app));
-    } else {
-      content.child(data(s, app, t));
-    }
-    El count = Label.label(Label.Variant.MUTED, count(s)).key("count").ellipsis();
-    return content.child(Card.footer(count, footer(s, t)).key("footer"));
+    return actions;
   }
 
   static String title(Search.Match match) {
@@ -554,8 +559,9 @@ final class FindTab implements Tab {
               ? new El[0]
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
-    if (tried && why(s) != null) {
-      return Callout.callout(Callout.Kind.WARNING, why(s), "").key("invalid");
+    var invalid = why(s);
+    if (tried && invalid.isPresent()) {
+      return Callout.callout(Callout.Kind.WARNING, invalid.get(), "").key("invalid");
     }
     if (problem != null) {
       return Callout.callout(
@@ -589,7 +595,7 @@ final class FindTab implements Tab {
         .cellIcon(i -> DataGrid.CellIcon.before(icon(shown.get(i).kind()), Icon.Variant.MUTED)));
     columns.add(column(w, 1, 4, "Kind", 5, i -> kind(shown.get(i).kind())));
     columns.add(column(w, 2, 4, "In", 8, i -> in(shown.get(i))));
-    columns.add(column(w, 3, 4, "Match", 18, i -> match(shown.get(i))));
+    columns.add(column(w, 3, 4, "Match", 18, i -> matchText(shown.get(i))));
     return DataGrid.dataGrid(
             columns, shown.size(), options(w, results, app).onActivate(r -> open(s, r)))
         .key("results")
@@ -605,7 +611,7 @@ final class FindTab implements Tab {
   }
 
   /** Where it matched: its name, or the line of its definition around the match. */
-  static String match(Found f) {
+  static String matchText(Found f) {
     if (!f.inDefinition()) {
       return "Name";
     }
@@ -618,7 +624,7 @@ final class FindTab implements Tab {
 
   static String kind(Found.Kind kind) {
     return switch (kind) {
-      case TABLE -> "Table";
+      case TABLE -> TABLE;
       case VIEW -> "View";
       case COLUMN -> "Column";
       case FUNCTION -> "Function";
@@ -648,19 +654,28 @@ final class FindTab implements Tab {
                   button(SECONDARY, "Read tables", () -> readTables(s)).key("read-tables"))
               .key("no-tables"));
     }
+    return col()
+        .grow(1)
+        .minSize(0, 0)
+        .child(chooser(s, app, t))
+        .child(Divider.divider())
+        .child(col().grow(1).minSize(0, 0).child(dataFound(s, app)));
+  }
+
+  // What a table is called: a collection on a server of documents.
+  private String tableTitle(State s) {
+    return documents(s) ? "Collection" : TABLE;
+  }
+
+  // The tables, each with whether it is searched and its size, and the buttons that choose them.
+  private El chooser(State s, App<State> app, Theme t) {
     var shown = List.copyOf(candidates);
     var w = tableWidths;
     var columns = new ArrayList<DataGrid.Column>();
     columns.add(new DataGrid.Column(
             "Search", width(w, 0, 4, 4), DataGrid.DataType.BOOLEAN, i -> String.valueOf(chosen[i]))
         .editable());
-    columns.add(column(
-            w,
-            1,
-            4,
-            documents(s) ? "Collection" : "Table",
-            12,
-            i -> name(shown.get(i).table()))
+    columns.add(column(w, 1, 4, tableTitle(s), 12, i -> name(shown.get(i).table()))
         .cellIcon(i -> DataGrid.CellIcon.before(
             shown.get(i).table().kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE,
             Icon.Variant.MUTED)));
@@ -687,7 +702,7 @@ final class FindTab implements Tab {
       }
       return null;
     });
-    El chooser = col()
+    return col()
         .grow(1)
         .minSize(0, 0)
         .child(row()
@@ -710,64 +725,51 @@ final class FindTab implements Tab {
             .key("tables")
             .label("Tables")
             .grow(1));
-    El found;
+  }
+
+  // What the search in data found, or that it found nothing.
+  private El dataFound(State s, App<State> app) {
     if (searched == null || queue.isEmpty()) {
-      found = EmptyState.emptyState(
+      return EmptyState.emptyState(
               Symbol.SEARCH,
               "Find values in the data",
               "Each table chosen is searched in the columns that can hold the value: text for a"
                   + " text, numbers for a number, and the others as text where chosen.",
               null)
           .key("no-hits");
-    } else if (hits.isEmpty()) {
-      found = col()
+    }
+    if (hits.isEmpty()) {
+      return col()
           .grow(1)
           .center()
           .key("no-hits")
           .child(Label.label(
               Label.Variant.MUTED,
-              asked != null ? "Nothing found yet" : "Nothing found in " + done + " tables"));
-    } else {
-      var shownHits = List.copyOf(hits);
-      var h = hitWidths;
-      var hitColumns = new ArrayList<DataGrid.Column>();
-      hitColumns.add(column(
-          h,
-          0,
-          3,
-          documents(s) ? "Collection" : "Table",
-          12,
-          i -> name(shownHits.get(i).table().table())));
-      hitColumns.add(column(h, 1, 3, documents(s) ? "Field" : "Column", 10, i -> {
-            var hit = shownHits.get(i);
-            return hit.failure() != null ? "Not searched: " + hit.failure() : hit.column();
-          })
-          .cellIcon(i -> shownHits.get(i).failure() != null
-              ? DataGrid.CellIcon.before(Symbol.WARNING, Icon.Variant.WARNING)
-              : null));
-      hitColumns.add(new DataGrid.Column(
-          "Hits",
-          width(h, 2, 3, 4),
-          DataGrid.Align.RIGHT,
-          false,
-          false,
-          i -> hits(shownHits.get(i))));
-      found = DataGrid.dataGrid(
-              hitColumns, shownHits.size(), options(h, results, app).onActivate(r -> open(s, r)))
-          .key("results")
-          .label("Results")
-          .grow(1);
+              asked != null ? "Nothing found yet" : "Nothing found in " + tableCount(done)));
     }
-    return col()
-        .grow(1)
-        .minSize(0, 0)
-        .child(chooser)
-        .child(Divider.divider())
-        .child(col().grow(1).minSize(0, 0).child(found));
+    var shown = List.copyOf(hits);
+    var h = hitWidths;
+    var columns = new ArrayList<DataGrid.Column>();
+    columns.add(
+        column(h, 0, 3, tableTitle(s), 12, i -> name(shown.get(i).table().table())));
+    columns.add(column(h, 1, 3, documents(s) ? "Field" : "Column", 10, i -> {
+          var hit = shown.get(i);
+          return hit.failure() != null ? "Not searched: " + hit.failure() : hit.column();
+        })
+        .cellIcon(i -> shown.get(i).failure() != null
+            ? DataGrid.CellIcon.before(Symbol.WARNING, Icon.Variant.WARNING)
+            : null));
+    columns.add(new DataGrid.Column(
+        "Hits", width(h, 2, 3, 4), DataGrid.Align.RIGHT, false, false, i -> hitText(shown.get(i))));
+    return DataGrid.dataGrid(
+            columns, shown.size(), options(h, results, app).onActivate(r -> open(s, r)))
+        .key("results")
+        .label("Results")
+        .grow(1);
   }
 
   /** A column's hits, with a + where the table had more matching rows than were counted. */
-  static String hits(Hit hit) {
+  static String hitText(Hit hit) {
     if (hit.failure() != null) {
       return "";
     }
@@ -793,20 +795,19 @@ final class FindTab implements Tab {
         unknownBytes = true;
       }
     }
-    var text = new StringBuilder(
-        list.size() + " of " + count(candidates.size(), "table", "tables") + " chosen");
+    var out = new StringBuilder(list.size() + " of " + tableCount(candidates.size()) + " chosen");
     if (!list.isEmpty()) {
-      text.append(", about ")
+      out.append(", about ")
           .append(String.format(Locale.ROOT, "%,d", rows))
           .append(rows == 1 ? " row" : " rows");
       if (bytes > 0) {
-        text.append(" in ").append(Fetch.size(bytes));
+        out.append(" in ").append(Fetch.size(bytes));
       }
       if (unknownRows || unknownBytes) {
-        text.append(" and more not estimated");
+        out.append(" and more not estimated");
       }
     }
-    return text.toString();
+    return out.toString();
   }
 
   // While a call runs and nothing was found yet: what it does.
@@ -826,7 +827,7 @@ final class FindTab implements Tab {
   }
 
   /** How many it found, or of a search in data how far it is. */
-  private String count(State s) {
+  private String summary() {
     if (in == In.OBJECTS) {
       return found == null ? "" : count(found.size(), "object", "objects");
     }
@@ -834,15 +835,15 @@ final class FindTab implements Tab {
       return "";
     }
     if (searched == null || queue.isEmpty()) {
-      return count(candidates.size(), "table", "tables");
+      return tableCount(candidates.size());
     }
     long columns = hits.stream().filter(h -> h.failure() == null).count();
     return count((int) columns, "column", "columns") + " with hits, " + done + " of "
-        + count(queue.size(), "table", "tables") + " searched"
+        + tableCount(queue.size()) + " searched"
         + (cancelled ? ", cancelled" : "");
   }
 
-  private El[] footer(State s, Theme t) {
+  private El[] footer(Theme t) {
     var end = new ArrayList<El>();
     if (said != null) {
       end.add(Label.label(Label.Variant.MUTED, said).key("said"));
@@ -860,6 +861,10 @@ final class FindTab implements Tab {
 
   static String count(int n, String one, String many) {
     return String.format(Locale.ROOT, "%,d", n) + " " + (n == 1 ? one : many);
+  }
+
+  private static String tableCount(int n) {
+    return count(n, "table", "tables");
   }
 
   private static DataGrid.Options options(

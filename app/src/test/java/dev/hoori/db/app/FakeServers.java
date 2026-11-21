@@ -1192,7 +1192,11 @@ final class FakeServers implements Servers {
           }
         }
         for (var d : defined.getOrDefault(host, List.of())) {
-          if (!d.container().database().equals(scope.database())) {
+          // A database of PostgreSQL stands for its schemas, as scoped says.
+          boolean in = scope instanceof Schema
+              ? d.container().equals(scope)
+              : d.container().database().equals(scope.database());
+          if (!in) {
             continue;
           }
           var byName =
@@ -1250,14 +1254,14 @@ final class FakeServers implements Servers {
     public Hits search(Candidate table, Search search, boolean others) throws QueryException {
       var path = path(table.table());
       return searching("search " + path, table.table().container().database(), () -> {
-        var number = search.number();
+        var sought = search.number();
         var pattern = search.pattern();
         var columns = table.columns();
         var searched = new ArrayList<Integer>();
         for (int c = 0; c < columns.size(); c++) {
           var kind = kind(columns.get(c).type());
           boolean numeric = kind == Kind.INTEGER || kind == Kind.DECIMAL;
-          if (kind == Kind.TEXT || numeric && number.isPresent() || others) {
+          if (kind == Kind.TEXT || numeric && sought.isPresent() || others) {
             searched.add(c);
           }
         }
@@ -1278,8 +1282,8 @@ final class FakeServers implements Servers {
             var value = given != null ? given.get((int) i).get(c) : value(field, i);
             boolean numeric = field.kind() == Kind.INTEGER || field.kind() == Kind.DECIMAL;
             boolean is = value != null
-                && (numeric && number.isPresent()
-                    ? new BigDecimal(value.toString()).compareTo(number.get()) == 0
+                && (numeric && sought.isPresent()
+                    ? new BigDecimal(value.toString()).compareTo(sought.get()) == 0
                     : pattern.matcher(value.toString()).find());
             hit[c] = is;
             any |= is;

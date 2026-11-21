@@ -1378,8 +1378,8 @@ final class CatalogTree {
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
             refresh,
             copy);
-      case Node.OfDatabase n -> List.of(find(s, n.id(), n.database()), refresh, copy);
-      case Node.OfSchema n -> List.of(find(s, n.id(), n.schema()), refresh, copy);
+      case Node.OfDatabase(var id, var database) -> List.of(find(s, id, database), refresh, copy);
+      case Node.OfSchema(var id, var schema) -> List.of(find(s, id, schema), refresh, copy);
       default -> List.of(refresh, copy);
     };
   }

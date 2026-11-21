@@ -20,6 +20,7 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.find.Found;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -162,15 +163,25 @@ class FindTabTest {
     assertTrue(c.servers.linked.contains("2 search " + PG + "/shop.public.customers"));
     assertTrue(c.servers.linked.contains("2 search " + PG + "/shop.public.orders"));
     assertFalse(c.servers.calls.contains("search " + PG + "/shop.public.order_totals"));
-    // Opening a hit opens a console with the query of its rows, which runs.
-    // The first row of the results, below the tables.
+    // A search of objects meanwhile leaves the hits with the search that found them.
+    c.run(
+        app,
+        "press role=radio label=\"Objects\"\nframe\nadvance 1\nframe\n"
+            + "press #find-text\nkey A control\ntype \"orders\"\nkey Enter\nframe\n" + SETTLE
+            + "press role=radio label=\"Data\"\nframe\nadvance 1\nframe\n");
+    // Opening a hit, the first row of the results below the tables, opens a console with the
+    // query of its rows, which runs.
+    c.servers.statement(
+        "SELECT * FROM \"public\".\"customers\" WHERE CAST(\"name\" AS pg_catalog.text)"
+            + " OPERATOR(pg_catalog.~~*) '%name 2%'",
+        List.of(FakeServers.made(1, "id: integer", "name: text")));
     c.run(app, "press text=\"name\" clicks 2\nframe\n" + SETTLE + "snap rows\n");
     var console = c.tree("rows");
     assertTrue(
         console.contains("SELECT * FROM \\\"public\\\".\\\"customers\\\" WHERE CAST(\\\"name\\\" AS"
             + " pg_catalog.text) OPERATOR(pg_catalog.~~*) '%name 2%'"),
         console);
-    assertTrue(c.servers.calls.stream().anyMatch(x -> x.startsWith("run " + PG + " SELECT")));
+    assertTrue(console.contains("\"Ran in 4 ms · 1 row\""), console);
   }
 
   @Test
