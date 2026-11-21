@@ -1,12 +1,14 @@
 package dev.hoori.db.app;
 
 import static com.rethinkj.ui.El.col;
+import static com.rethinkj.ui.El.row;
 import static com.rethinkj.ui.kit.Button.Variant.PRIMARY;
 import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.Style;
 import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
@@ -16,6 +18,7 @@ import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.EmptyState;
 import com.rethinkj.ui.kit.Format;
+import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
@@ -38,11 +41,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 
 /**
@@ -58,8 +63,18 @@ import java.util.UUID;
  */
 final class MonitorTab implements Tab {
 
-  /** Why the view could not be read, in words for the user. */
-  record Problem(String title, String text) {}
+  /**
+   * Why the view could not be read, in words for the user.
+   *
+   * @param lasting whether it stays until the user acts, as a lost connection or a refusal, which
+   *     a callout says; a passing one, where the view shows what it read before, its status line
+   */
+  record Problem(String title, String text, boolean lasting) {
+
+    Problem(String title, String text) {
+      this(title, text, false);
+    }
+  }
 
   /** What the tab shows of the server. */
   enum View {
@@ -134,16 +149,19 @@ final class MonitorTab implements Tab {
   final DataGrid.Selection variableSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   final DataGrid.Selection statusSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   final DataGrid.Selection lockSelection = new DataGrid.Selection(DataGrid.Mode.ROWS);
-  // The item at the selection's row in Variables, Status and Locks, by its key, which a read or a
-  // search that puts another there clears.
-  private final Map<View, String> picked = new EnumMap<>(View.class);
+  // The items of the selection's rows in Variables, Status and Locks, by row and key, which a read
+  // or a search that puts another at one of the rows clears.
+  private final Map<View, Map<Integer, String>> picked = new EnumMap<>(View.class);
   final Menu.State intervals = new Menu.State();
   final Menu.State menu = new Menu.State(); // the sessions' context menu
   final Menu.State lockMenu = new Menu.State(); // the locks' context menu
   Asked asked; // the question before an action, or null
   Lane.Asked acting; // the action under way, or null
+  Action doing; // the action under way or waiting for the read under way, or null
+  private Asked answered; // an answer that waits for the read under way, checked against it
   Problem refused; // why the last action failed, until the next or a dismiss; or null
   private String selected; // the id of the session selected, which a read keeps selected
+  private String selectedStart; // and its start, null where not known yet, as from the locks
   private boolean listed; // the sessions were read on the session the monitor has now
   private int says;
   private Lane lane; // the monitor's own session, or null while it has none
@@ -164,6 +182,11 @@ final class MonitorTab implements Tab {
    * before, which may be another server's, goes.
    */
   void open(State s) {
+    open(s, true);
+  }
+
+  /** As {@link #open(State)}, quiet where the user did not ask, as when the tab is shown again. */
+  private void open(State s, boolean byHand) {
     if (closed) {
       return;
     }
@@ -181,10 +204,16 @@ final class MonitorTab implements Tab {
       updated.clear();
       denied.clear();
       selected = null;
+      selectedStart = null;
       selection.clear();
+      variableSelection.clear();
+      statusSelection.clear();
+      lockSelection.clear();
+      picked.clear();
       problem = null;
+      refused = null;
     }
-    read(s);
+    read(s, byHand);
   }
 
   /**
@@ -206,18 +235,22 @@ final class MonitorTab implements Tab {
 
   /**
    * Reads the view shown now, unless a read is under way; the next comes at the interval, where
-   * the view repeats. One the user did not ask for, of a view read before, is quiet until it takes
-   * {@link #SLOW}.
+   * the view repeats. One the user did not ask for, of a view read before or whose first read
+   * failed, is quiet until it takes {@link #SLOW}; asked for by hand while one runs, that one shows.
    */
   private void read(State s, boolean byHand) {
-    if (closed || lane == null || reading != null) {
+    if (closed || lane == null) {
+      return;
+    }
+    if (reading != null) {
+      loud |= byHand;
       return;
     }
     due = false;
     refresh.stop();
     var live = s.catalog.live(id);
     var of = view;
-    loud = byHand || !updated.containsKey(of);
+    loud = byHand || !updated.containsKey(of) && problem == null;
     int at = ++reads;
     if (!loud) {
       s.app.after(SLOW, () -> loud |= reads == at && reading != null);
@@ -251,11 +284,21 @@ final class MonitorTab implements Tab {
         },
         error -> {
           reading = null;
+          unanswered(s);
           if (error instanceof InterruptedException) {
             return; // its session ended under it
           }
           failed(s, error, live, of);
         });
+  }
+
+  // An answer that waited for the read is not sent where the read did not come.
+  private void unanswered(State s) {
+    if (answered != null) {
+      say(s, answered.action().requested + " not sent: the sessions could not be read");
+      answered = null;
+      doing = null;
+    }
   }
 
   /**
@@ -269,25 +312,59 @@ final class MonitorTab implements Tab {
     }
     sessions = List.copyOf(shown);
     listed = true;
+    // The same session, by its id and its start, as a server may give the id to another.
     int at = indexOf(selected);
+    if (at >= 0 && selectedStart != null && !sessions.get(at).started().equals(selectedStart)) {
+      at = -1;
+    }
     if (at >= 0) {
+      selectedStart = sessions.get(at).started();
       if (selection.row() != at) {
         selection.select(at, Math.max(0, selection.column()));
       }
     } else if (selected != null) {
       selected = null;
+      selectedStart = null;
       selection.clear();
     }
-    if (asked != null && !has(asked.session())) {
-      say(s, "Session " + asked.session().id() + " has ended");
-      asked = null;
+    if (asked != null) {
+      var why = changed(asked);
+      if (why != null) {
+        say(s, why);
+        asked = null;
+      }
+    }
+    if (answered != null) {
+      var what = answered;
+      answered = null;
+      var why = changed(what);
+      if (why == null) {
+        send(s, what);
+      } else {
+        doing = null;
+        say(s, why);
+      }
     }
   }
 
-  // Whether the sessions read last hold this one, by its id and start.
-  private boolean has(ServerSession session) {
-    int at = indexOf(session.id());
-    return at >= 0 && sessions.get(at).started().equals(session.started());
+  /**
+   * What makes the action asked about no longer the one the question named, as the sessions read
+   * last show it: the session gone, or for a cancel another statement or none; null where none.
+   */
+  private String changed(Asked asked) {
+    var was = asked.session();
+    int at = indexOf(was.id());
+    var now = at < 0 ? null : sessions.get(at);
+    if (now == null || !now.started().equals(was.started())) {
+      return "Session " + was.id() + " has ended";
+    }
+    if (asked.action() == Action.CANCEL
+        && (!now.cancellable()
+            || !now.operation().equals(was.operation())
+            || !now.statement().equals(was.statement()))) {
+      return "Session " + was.id() + " runs something else now";
+    }
+    return null;
   }
 
   private int indexOf(String session) {
@@ -314,7 +391,8 @@ final class MonitorTab implements Tab {
       problem = new Problem(
           "Disconnected",
           "The monitor's connection was lost or could not be opened."
-              + (detail.isEmpty() ? "" : "\n" + detail));
+              + (detail.isEmpty() ? "" : "\n" + detail),
+          true);
       return;
     }
     problem = switch (error) {
@@ -324,7 +402,8 @@ final class MonitorTab implements Tab {
         yield new Problem(
             "Access denied",
             "The server does not let this user see its " + of.what + "."
-                + (detail.isEmpty() ? "" : "\n" + detail));
+                + (detail.isEmpty() ? "" : "\n" + detail),
+            true);
       }
       case QueryException q
       when q.failure() == QueryException.Failure.CANCELLED ->
@@ -383,6 +462,7 @@ final class MonitorTab implements Tab {
   void goTo(State s, String session) {
     selected = session;
     int at = indexOf(session);
+    selectedStart = at < 0 ? null : sessions.get(at).started();
     if (at >= 0) {
       selection.select(at, 0);
     } else {
@@ -465,7 +545,7 @@ final class MonitorTab implements Tab {
    * where it cannot be done to it.
    */
   void ask(Action action, ServerSession session) {
-    if (session != null && can(action, session) && lane != null && acting == null) {
+    if (session != null && can(action, session) && lane != null && doing == null) {
       asked = new Asked(action, session);
       refresh.stop();
     }
@@ -488,16 +568,26 @@ final class MonitorTab implements Tab {
 
   /**
    * The question was answered: the action runs on the monitor's session, the status line says
-   * what came of it, and the list is read again.
+   * what came of it, and the list is read again. While the sessions are read, it waits for them,
+   * and goes out only where they show the session as the question named it.
    */
   void proceed(State s) {
     var what = asked;
     asked = null;
-    if (what == null || lane == null || acting != null) {
+    if (what == null || lane == null || doing != null) {
       decline();
       return;
     }
     refused = null;
+    doing = what.action();
+    if (reading != null && view == View.SESSIONS) {
+      answered = what;
+      return;
+    }
+    send(s, what);
+  }
+
+  private void send(State s, Asked what) {
     var live = s.catalog.live(id);
     var session = what.session();
     acting = lane.ask(
@@ -510,6 +600,7 @@ final class MonitorTab implements Tab {
         },
         found -> {
           acting = null;
+          doing = null;
           // The servers answer once they have passed the request on, before the work stops.
           say(
               s,
@@ -522,6 +613,7 @@ final class MonitorTab implements Tab {
         },
         error -> {
           acting = null;
+          doing = null;
           if (error instanceof InterruptedException) {
             return;
           }
@@ -543,7 +635,7 @@ final class MonitorTab implements Tab {
 
   /** Whether anything of the tab is read or done now that shows: not a quiet read. */
   boolean busy() {
-    return reading != null && loud || acting != null;
+    return reading != null && loud || doing != null;
   }
 
   /** Says something in the tab's status line for a while. */
@@ -577,6 +669,8 @@ final class MonitorTab implements Tab {
       acting.cancel();
       acting = null;
     }
+    doing = null;
+    answered = null;
     asked = null;
     if (lane != null) {
       s.closing();
@@ -624,7 +718,7 @@ final class MonitorTab implements Tab {
     };
   }
 
-  /** The keys of the items the view shows, in order: a name, or who waits for whom. */
+  /** The keys of the items the view shows, in order: a name, or who waits for whom on what. */
   private List<String> keys(View of) {
     return switch (of) {
       case SESSIONS -> sessions.stream().map(ServerSession::id).toList();
@@ -640,34 +734,54 @@ final class MonitorTab implements Tab {
         blocks == null
             ? List.of()
             : blocks.orElse(List.of()).stream()
-                .map(b -> b.waiting() + " " + b.blocking())
+                .map(b -> b.waiting() + "\n" + b.blocking() + "\n" + b.object() + "\n" + b.mode())
                 .toList();
     };
   }
 
-  /** The user selected in the view: its item is kept by its key. */
+  /** The user selected in the view: its items are kept by their keys. */
   private void picked(View of) {
-    int row = selectionOf(of).row();
     var keys = keys(of);
-    if (row >= 0 && row < keys.size()) {
-      picked.put(of, keys.get(row));
-    } else {
+    var rows = rows(selectionOf(of), keys.size());
+    if (rows == null) {
       picked.remove(of);
+      return;
     }
+    var at = new HashMap<Integer, String>();
+    rows.forEach(row -> at.put(row, keys.get(row)));
+    picked.put(of, at);
   }
 
-  /** The view's selection goes where another item stands at its row now. */
+  /** The view's selection goes where another item stands at one of its rows now. */
   private void keep(View of) {
     var chosen = selectionOf(of);
     if (of == View.SESSIONS || chosen.isEmpty()) {
       return;
     }
-    int row = chosen.row();
     var keys = keys(of);
-    if (row < 0 || row >= keys.size() || !keys.get(row).equals(picked.get(of))) {
+    var rows = rows(chosen, keys.size());
+    var was = picked.get(of);
+    if (rows == null
+        || was == null
+        || !rows.equals(was.keySet())
+        || rows.stream().anyMatch(row -> !keys.get(row).equals(was.get(row)))) {
       chosen.clear();
       picked.remove(of);
     }
+  }
+
+  // The rows that the selection holds, each once; null where one is not among the items.
+  private static Set<Integer> rows(DataGrid.Selection chosen, int items) {
+    var rows = new TreeSet<Integer>();
+    for (var range : chosen.ranges()) {
+      if (range.top() < 0 || range.bottom() >= items) {
+        return null;
+      }
+      for (int row = range.top(); row <= range.bottom(); row++) {
+        rows.add(row);
+      }
+    }
+    return rows;
   }
 
   // The view
@@ -676,7 +790,7 @@ final class MonitorTab implements Tab {
   El view(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     if (due && shown(s)) {
-      open(s); // shown again after a tick or a connect it missed
+      open(s, false); // shown again after a tick or a connect it missed
     }
     var profile = s.profile(id);
     String where = profile == null ? null : State.name(profile);
@@ -765,10 +879,24 @@ final class MonitorTab implements Tab {
           .key("paused"));
     }
     var at = updated.get(view);
-    end.add(Label.label(
-            Label.Variant.MUTED,
-            at == null ? "" : "Updated " + TIME.text(LocalTime.ofInstant(at, s.zone)))
-        .key("read-status"));
+    if (problem != null && !problem.lasting() && at != null) {
+      // A read that failed where the view shows what it read before: the grid stays in place.
+      El failed = row()
+          .gap(t.space().s())
+          .align(Style.Align.CENTER)
+          .child(Icon.icon(Symbol.WARNING, Icon.Variant.WARNING))
+          .child(Label.label(problem.title()));
+      end.add(Tooltip.tooltip(failed, problem.text().isEmpty() ? problem.title() : problem.text())
+          .key("read-problem"));
+      end.add(button(SECONDARY, "Try again", () -> open(s)).key("try-again"));
+    } else {
+      // As wide as the time at its widest, so that what stands beside it stays as it changes.
+      end.add(Label.label(
+              Label.Variant.MUTED,
+              at == null ? "" : "Updated " + TIME.text(LocalTime.ofInstant(at, s.zone)))
+          .minSize(5 * t.size().control(), 0)
+          .key("read-status"));
+    }
     var off = scheduleOff();
     El interval = Select.select(
             Refresh.INTERVALS,
@@ -798,6 +926,9 @@ final class MonitorTab implements Tab {
     }
     if (view == View.VARIABLES) {
       return "The variables are read when shown first and by Refresh";
+    }
+    if (denied.contains(view)) {
+      return "The server refused the " + view.what + ": they are read again by Refresh";
     }
     if (view == View.LOCKS && blocks != null && blocks.isEmpty()) {
       return "The server does not tell who holds a lock";
@@ -849,7 +980,9 @@ final class MonitorTab implements Tab {
             selection,
             () -> {
               int row = selection.row();
-              selected = row >= 0 && row < sessions.size() ? sessions.get(row).id() : null;
+              var at = row >= 0 && row < sessions.size() ? sessions.get(row) : null;
+              selected = at == null ? null : at.id();
+              selectedStart = at == null ? null : at.started();
             },
             menu,
             menuItems(s),
@@ -907,8 +1040,8 @@ final class MonitorTab implements Tab {
               ? new El[0]
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
-    if (problem == null) {
-      return null;
+    if (problem == null || !problem.lasting() && updated.containsKey(view)) {
+      return null; // a passing failure shows in the status line, where the view has rows
     }
     return Callout.callout(
         Callout.Kind.DANGER,
@@ -923,12 +1056,14 @@ final class MonitorTab implements Tab {
    */
   private El action(Action action, Symbol icon) {
     var session = chosen();
-    boolean can = session != null && can(action, session) && acting == null;
+    boolean can = session != null && can(action, session) && doing == null;
     El button = button(
         SECONDARY,
         action.title,
         can ? () -> ask(action, session) : null,
-        Button.options().icon(icon).state(acting != null ? Button.State.BUSY : Button.State.READY));
+        Button.options()
+            .icon(icon)
+            .state(doing == action ? Button.State.BUSY : Button.State.READY));
     var why = selection.rowCount() > 1 ? "Select one session" : why(action, session);
     return why == null ? button : Tooltip.tooltip(button, why);
   }
@@ -1000,7 +1135,7 @@ final class MonitorTab implements Tab {
 
   /** The sessions' context menu, of the one session chosen. */
   private List<Menu.Item> menuItems(State s) {
-    var session = acting != null ? null : chosen();
+    var session = doing != null ? null : chosen();
     return List.of(
         Menu.item(
                 Action.CANCEL.title + "…",
