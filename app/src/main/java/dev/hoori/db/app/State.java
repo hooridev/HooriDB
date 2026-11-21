@@ -1058,7 +1058,7 @@ final class State {
 
   /** Whether a change of the keyring runs, which no one may leave halfway. */
   private boolean keyringBusy() {
-    return removal.running || dialog != null && dialog.changing;
+    return removal.running || dialog != null && dialog.changing();
   }
 
   /**
@@ -1096,7 +1096,7 @@ final class State {
     }
     // A keyring that keeps a change waiting is given up, as its Cancel does: the window stays, and
     // says what that left; the next close closes. A slower one is given up once it is slow.
-    if (dialog != null && dialog.slow) {
+    if (dialog != null && dialog.slow()) {
       dialog.giveUp(this);
       return;
     }

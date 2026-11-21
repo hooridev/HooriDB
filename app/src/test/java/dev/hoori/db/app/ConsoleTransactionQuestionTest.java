@@ -16,6 +16,7 @@ import static dev.hoori.db.app.ConsoleTest.type;
 import static dev.hoori.db.app.TableTabTest.tabs;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.catalog.CatalogException;
@@ -491,7 +492,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
             + "press role=textbox label=\"Password\"\ntype \"hunter2\"\n"
             + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\n");
-    assertTrue(app.state().dialog.changing, "the keyring works");
+    assertTrue(app.state().dialog.changing(), "the keyring works");
     c.run(app, in(window) + type(";\n" + PAY) + "key Enter control\nframe\nframe\nsnap locked\n");
     String locked = c.tree("shop-prod-shop-locked");
     assertTrue(line(locked, "#locked").contains("shop-prod is being saved"), locked);
@@ -630,7 +631,8 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     assertTrue(line(waiting, "role=button label=\"Driver\"").endsWith("disabled"), waiting);
     assertTrue(line(waiting, "role=textbox label=\"User\"").contains("disabled"), waiting);
     assertFalse(line(waiting, "role=button label=\"Cancel\"").contains("disabled"), waiting);
-    assertFalse(app.state().dialog.choosingDriver, "Driver… opens nothing");
+    assertNotEquals(
+        ConnectionDialog.Over.CHOOSING_DRIVER, app.state().dialog.over, "Driver… opens nothing");
     // Cancel gives the Save up, and the form is open to changes again.
     c.run(app, in(window) + "press #answer-cancel\nframe\n" + OPENED + SETTLE);
     c.run(app, in("main") + "frame\nsnap open\n");
