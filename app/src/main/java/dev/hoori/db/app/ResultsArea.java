@@ -52,7 +52,9 @@ final class ResultsArea {
           .gap(t.space().m())
           .label("Results")
           .child(Progress.spinner())
-          .child(Label.label(Label.Variant.MUTED, tab.waiting ? "Connecting…" : "Running…"));
+          .child(Label.label(
+              Label.Variant.MUTED,
+              tab.activity instanceof ConsoleTab.Waiting ? "Connecting…" : "Running…"));
     }
     El body = none
         ? EmptyState.emptyState(
@@ -100,7 +102,7 @@ final class ResultsArea {
   /** Why nothing runs or what failed, with what the user can do; null for nothing. */
   private El note(State s) {
     Theme t = Theme.CURRENT.get();
-    if (tab.stranded) {
+    if (tab.activity instanceof ConsoleTab.Stranded) {
       return strandedNote(s);
     }
     // An outcome in doubt stays said, also over later runs, until the user has read it.

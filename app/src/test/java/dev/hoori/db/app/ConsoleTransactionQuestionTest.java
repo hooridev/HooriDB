@@ -752,7 +752,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     c.run(app, menu("shop-prod", "Disconnect") + OPENED + SETTLE + MANUAL);
     var opening = servers.hold("open " + PG + "/shop");
     c.run(app, type(PAY) + "key Enter control\nframe\nframe\n");
-    assertTrue(k.tab(app).waiting);
+    assertTrue(k.tab(app).activity instanceof ConsoleTab.Waiting);
     // As a Save of the connection does, once nothing of its consoles was at stake.
     var save = new Object();
     assertTrue(app.state().lock(save, "shop-prod is being saved", Set.of(SHOP.id())));

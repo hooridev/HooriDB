@@ -1408,7 +1408,7 @@ final class CatalogTree {
     for (var group : s.tabs.groups()) {
       if (failedWhole(live, node)
           && group.activeTab() instanceof ConsoleTab x
-          && x.stranded
+          && x.activity instanceof ConsoleTab.Stranded
           && x.id.equals(node.id())) {
         return null;
       }
