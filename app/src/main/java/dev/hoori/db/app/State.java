@@ -417,8 +417,8 @@ final class State {
   /**
    * Puts the profile in place of the one with its id, and selects it; a new one goes last into the
    * folder its dialog was opened for, which opens, else at the top. Where it reaches another
-   * server or database now, the tabs of its tables close: their records name tables of the old
-   * one. Its consoles stay, with their texts and databases.
+   * server or database now, the tabs of its tables and its searches close: their records name
+   * tables of the old one. Its consoles stay, with their texts and databases.
    */
   void put(ConnectionProfile profile) {
     var old = profile(profile.id());
@@ -429,6 +429,7 @@ final class State {
             || old.srv() != profile.srv()
             || !database(old).equals(database(profile)))) {
       close(tables(profile.id()));
+      close(finds(profile.id()));
     }
     if (old == null
         && workspace.fits(dialogs.placing, profile)) { // a folder gone meanwhile: the top

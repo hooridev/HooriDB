@@ -125,6 +125,14 @@ class FindTabTest {
   }
 
   @Test
+  void anEndpointChangedClosesItsSearches() throws Exception {
+    var app = find();
+    app.state().put(SHOP.withHost(PG + "-replica"));
+    c.run(app, "frame\n" + SETTLE);
+    assertEquals(List.of(), app.state().finds(SHOP.id()));
+  }
+
+  @Test
   void aDefinitionOpensReadOnlyInAConsoleAtTheMatch() throws Exception {
     var app = find();
     c.run(app, search("needle") + "snap found\n");
