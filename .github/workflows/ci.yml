@@ -92,12 +92,12 @@ jobs:
       fail-fast: false
       matrix:
         # Shards are bought after cores: fewer, fuller ones, as long as they fit the budget.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     env:
       # The test classes to run, all of them or a comma list, split over the shards.
       TESTS: all
       # The JVMs that a shard's tests run in at once (Surefire's forkCount, test.forks).
-      FORKS: 4
+      FORKS: 2
       # Each shard's servers are its own and end with its runner.
       TESTCONTAINERS_RYUK_DISABLED: 'true'
     steps:
