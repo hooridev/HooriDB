@@ -142,10 +142,10 @@ final class Delivery {
     return switch (outcome) {
       case Session.Ran r -> matters(r.portion(), plain);
       case Portion p -> matters(p, plain);
-      case InterruptedException e -> List.of();
-      case Session.NotRun e -> List.of();
-      case Session.TooMany e -> List.of();
-      case Session.GaveUp e -> List.of();
+      case InterruptedException _ -> List.of();
+      case Session.NotRun _ -> List.of();
+      case Session.TooMany _ -> List.of();
+      case Session.GaveUp _ -> List.of();
       case QueryException e when e.failure() == QueryException.Failure.CANCELLED -> List.of();
       case ConnectionException e
       when e.failure() == ConnectionException.Failure.CANCELLED -> List.of();

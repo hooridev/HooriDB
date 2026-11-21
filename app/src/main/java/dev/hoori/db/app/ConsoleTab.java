@@ -1509,9 +1509,9 @@ final class ConsoleTab implements Tab {
       switch (work.delivery().untaken()) {
         case Session.Ran r -> // it ran to its end before the cancel
           remember(teller.state(), outcomeOf(r.portion()), r.portion().elapsed());
-        case Session.TooMany e -> recording = null; // not sent, as in run's own outcome
-        case Session.NotRun e -> recording = null;
-        case Session.GaveUp e -> recording = null;
+        case Session.TooMany _ -> recording = null; // not sent, as in run's own outcome
+        case Session.NotRun _ -> recording = null;
+        case Session.GaveUp _ -> recording = null;
         case null, default -> remember(teller.state(), new Outcome.Cancelled(), null);
       }
     }
