@@ -629,7 +629,7 @@ class MonitorTabTest {
   }
 
   @Test
-  void theVariablesSelectionGoesWhereAnyOfItsRowsHoldsAnotherNow() throws Exception {
+  void theVariablesSelectionFollowsItsItemsWhereAReadMovesOrDropsThem() throws Exception {
     c.servers.variables(
         PG,
         new ServerVariable("a_setting", "1", "default"),
@@ -645,11 +645,14 @@ class MonitorTabTest {
     assertEquals(2, monitor.variableSelection.rowCount());
     c.servers.variables(
         PG,
-        new ServerVariable("a_other", "1", "default"),
+        new ServerVariable("0_new", "0", "default"),
+        new ServerVariable("1_new", "1", "default"),
         new ServerVariable("b_setting", "2", "default"),
         new ServerVariable("c_setting", "3", "default"));
+    // a_setting is gone and b_setting moved down a row: the selection stays on b_setting.
     c.run(app, "press #refresh\nframe\nawait\nframe\n");
-    assertTrue(monitor.variableSelection.isEmpty(), monitor.variableSelection.toString());
+    assertEquals(1, monitor.variableSelection.rowCount(), monitor.variableSelection.toString());
+    assertEquals(2, monitor.variableSelection.row());
   }
 
   @Test
