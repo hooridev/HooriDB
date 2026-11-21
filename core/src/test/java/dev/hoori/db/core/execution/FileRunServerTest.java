@@ -69,7 +69,8 @@ class FileRunServerTest {
   @Test
   void aPlainDumpOfPgDumpRunsWithItsCopies() throws Exception {
     var dump = resource("postgresql-dump.sql");
-    try (var connection = open(POSTGRESQL)) {
+    try (var connection = open(POSTGRESQL);
+        var check = open(POSTGRESQL)) {
       var report = run(connection, POSTGRESQL, dump, STOP);
       ran(report);
       assertEquals(Files.size(dump), report.progress().bytes());
@@ -78,8 +79,7 @@ class FileRunServerTest {
       var again = run(connection, POSTGRESQL, dump, new FileRun.Options(false, true));
       ran(again);
       assertEquals(FileRun.Kept.COMMITTED, again.transaction());
-    }
-    try (var check = open(POSTGRESQL)) {
+      // What the file committed, as another session sees it.
       assertEquals(3, selectLong(check, "SELECT count(*) FROM file_run.item"));
       assertEquals("Grüße; 'quoted'", text(check, "SELECT name FROM file_run.item WHERE id = 1"));
       assertEquals(
@@ -95,6 +95,11 @@ class FileRunServerTest {
           "touched; by trigger", text(check, "SELECT note FROM file_run.item WHERE id = 4"));
       assertEquals(
           "Rows; of a dump", text(check, "SELECT obj_description('file_run.item'::regclass)"));
+    } finally {
+      // The catalog's tests see the database's schemas, the sample's first.
+      try (var cleaning = open(POSTGRESQL)) {
+        execute(cleaning, "DROP SCHEMA IF EXISTS file_run CASCADE");
+      }
     }
   }
 

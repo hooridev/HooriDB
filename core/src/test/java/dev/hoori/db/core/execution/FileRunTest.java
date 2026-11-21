@@ -15,6 +15,7 @@ import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -33,13 +34,13 @@ class FileRunTest {
     }
 
     @Override
-    public Failure run(String sql) {
+    public Optional<Failure> run(String sql) {
       sent.add(sql);
-      return failing.get(sql);
+      return Optional.ofNullable(failing.get(sql));
     }
 
     @Override
-    public Failure copy(String sql, Reader rows) {
+    public Optional<Failure> copy(String sql, Reader rows) {
       try {
         var text = new StringBuilder();
         var into = new char[64];
@@ -50,31 +51,31 @@ class FileRunTest {
       } catch (IOException e) {
         sent.add(sql + " <- " + e.getMessage());
       }
-      return failing.get(sql);
+      return Optional.ofNullable(failing.get(sql));
     }
 
     @Override
-    public Failure begin() {
+    public Optional<Failure> begin() {
       sent.add("begin");
-      return null;
+      return Optional.empty();
     }
 
     @Override
-    public Failure commit() {
+    public Optional<Failure> commit() {
       sent.add("commit");
-      return failing.get("commit");
+      return Optional.ofNullable(failing.get("commit"));
     }
 
     @Override
-    public Failure rollback() {
+    public Optional<Failure> rollback() {
       sent.add("rollback");
-      return null;
+      return Optional.empty();
     }
 
     @Override
-    public Failure end() {
+    public Optional<Failure> end() {
       sent.add("end");
-      return null;
+      return Optional.empty();
     }
   }
 
@@ -148,6 +149,23 @@ class FileRunTest {
   }
 
   @Test
+  void oneTransactionRefusesAStatementThatWouldEndIt() {
+    var text = "INSERT 1;\nCOMMIT;\nINSERT 2;";
+    var session = new Session(Map.of());
+    var report = run(POSTGRESQL, text, new FileRun.Options(false, true), session);
+    assertEquals(FileRun.Ending.STOPPED, report.ending());
+    assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
+    assertEquals(List.of("begin", "INSERT 1", "rollback", "end"), session.sent);
+    assertEquals(2, report.failures().getFirst().line());
+    assertEquals(1, report.progress().statements());
+
+    // Without one transaction the file keeps its own.
+    var own = new Session(Map.of());
+    run(POSTGRESQL, text, new FileRun.Options(false, false), own);
+    assertEquals(List.of("INSERT 1", "COMMIT", "INSERT 2"), own.sent);
+  }
+
+  @Test
   void theRowsOfACopyGoWithIt() {
     var text = "COPY t FROM stdin;\n1\ta\n2\tb\n\\.\nSELECT 1;";
     var session = new Session(Map.of());
@@ -166,7 +184,8 @@ class FileRunTest {
     assertEquals(List.of("SELECT 1"), session.sent);
     var failed = report.failures().getFirst();
     assertEquals(3, failed.line());
-    assertEquals("\\connect other", failed.statement());
+    // By its name alone, as the rest of its line may hold a password.
+    assertEquals("\\connect", failed.statement());
     assertTrue(failed.message().startsWith("\\connect is a command of PostgreSQL's client"));
     assertEquals(new FileRun.Progress(37, text.length(), 1, 1), report.progress());
   }
@@ -215,14 +234,14 @@ class FileRunTest {
     var started = new CountDownLatch(1);
     var session = new Session(Map.of()) {
       @Override
-      public Failure run(String sql) {
+      public Optional<Failure> run(String sql) {
         sent.add(sql);
         started.countDown();
         try {
-          Thread.sleep(60_000);
-          return null;
-        } catch (InterruptedException e) {
-          return Failure.cancelled(); // as Execution says an interrupt
+          new CountDownLatch(1).await(); // until the cancel interrupts it
+          return Optional.empty();
+        } catch (InterruptedException _) {
+          return Optional.of(Failure.cancelled()); // as Execution says an interrupt
         }
       }
     };

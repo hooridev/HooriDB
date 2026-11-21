@@ -8,6 +8,7 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Secrets;
 import dev.hoori.db.core.sql.StatementReader;
+import dev.hoori.db.core.sql.TransactionControl;
 import java.io.FilterReader;
 import java.io.IOException;
 import java.io.InterruptedIOException;
@@ -18,6 +19,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -27,6 +29,10 @@ import java.util.function.Consumer;
  * FROM STDIN} are copied in as the file holds them; a command of the client that is not skipped
  * stops the run, as what follows may depend on it. Nothing of the file is held but the step that
  * runs.
+ *
+ * <p>In {@link Options#transaction one transaction} a statement of the file that begins or ends a
+ * transaction, as {@link TransactionControl} finds one, fails unsent, as a {@code COMMIT} would
+ * commit what ran before, which the run's rollback could then not undo.
  *
  * <p>On a failure the run stops, or goes on where {@link Options#goOn} says so; in {@link
  * Options#transaction one transaction} it always stops, and what ran is rolled back, also on a
@@ -121,27 +127,27 @@ public final class FileRun {
 
   /**
    * The session a file runs on. Each call blocks, and an interrupt of the calling thread cancels
-   * it, as {@link Execution} is cancelled; the failure of each, or null where it went well.
+   * it, as {@link Execution} is cancelled; the failure of each, or empty where it went well.
    */
   public interface Target {
 
     /** Runs the statement to its end, its rows read and dropped. */
-    Failure run(String sql);
+    Optional<Failure> run(String sql);
 
     /** Copies the rows into what the statement, a {@code COPY … FROM STDIN}, names. */
-    Failure copy(String sql, Reader rows);
+    Optional<Failure> copy(String sql, Reader rows);
 
     /** Turns auto-commit off, for one transaction. */
-    Failure begin();
+    Optional<Failure> begin();
 
     /** Commits the transaction; within a bound, an interrupt or not. */
-    Failure commit();
+    Optional<Failure> commit();
 
     /** Rolls the transaction back; within a bound, an interrupt or not. */
-    Failure rollback();
+    Optional<Failure> rollback();
 
     /** Turns auto-commit on again; within a bound, an interrupt or not. */
-    Failure end();
+    Optional<Failure> end();
   }
 
   private final Source source;
@@ -211,8 +217,8 @@ public final class FileRun {
       progress.accept(last);
       if (options.transaction()) {
         var failure = target.begin();
-        if (failure != null) {
-          fail(0, "", failure.message());
+        if (failure.isPresent()) {
+          fail(0, "", failure.get().message());
           return report(Ending.STOPPED, Kept.NONE, last, started);
         }
         kept = Kept.ROLLED_BACK;
@@ -244,9 +250,9 @@ public final class FileRun {
   // Runs the file's steps until its end, a failure that stops it, or a cancel.
   private Ending steps(Target target, StatementReader file) {
     while (!cancelled) {
-      StatementReader.Step step;
+      Optional<StatementReader.Step> next;
       try {
-        step = file.next();
+        next = file.next();
       } catch (IOException e) {
         if (cancelled) {
           return Ending.CANCELLED;
@@ -254,32 +260,55 @@ public final class FileRun {
         fail(file.line(), "", "The file could not be read: " + e.getMessage());
         return Ending.STOPPED;
       }
-      if (step == null) {
+      if (next.isEmpty()) {
         return Ending.RAN;
       }
+      var step = next.get();
       var failure = switch (step) {
-        case StatementReader.Sql sql -> ran(target.run(sql.sql()));
-        case StatementReader.Copy copy -> ran(target.copy(copy.sql(), told(file)));
+        case StatementReader.Sql sql -> statement(target, sql.sql());
+        case StatementReader.Copy copy -> copy(target, copy.sql(), file);
         case StatementReader.Command command -> command(command);
       };
-      if (failure == null) {
-        progress.accept(progress(file));
-        continue;
-      }
-      if (cancelled) {
-        return Ending.CANCELLED;
-      }
-      failed++;
-      fail(step, failure);
+      var stops = failure.isPresent() && failed(step, failure.get());
       progress.accept(progress(file));
-      if (step instanceof StatementReader.Command
-          || options.transaction()
-          || !options.goOn()
-          || failure.kind() == Failure.Kind.CONNECTION_LOST) {
-        return Ending.STOPPED;
+      if (stops) {
+        return cancelled ? Ending.CANCELLED : Ending.STOPPED;
       }
     }
     return Ending.CANCELLED;
+  }
+
+  // Counts the step's failure, unless a cancel ended it; whether the run stops at it.
+  private boolean failed(StatementReader.Step step, Failure failure) {
+    if (cancelled) {
+      return true;
+    }
+    failed++;
+    fail(step, failure);
+    return step instanceof StatementReader.Command
+        || options.transaction()
+        || !options.goOn()
+        || failure.kind() == Failure.Kind.CONNECTION_LOST;
+  }
+
+  // A statement of the file: run, or refused where it would end the run's own transaction.
+  private Optional<Failure> statement(Target target, String sql) {
+    if (options.transaction() && TransactionControl.in(sql, provider)) {
+      return Optional.of(Failure.of(
+          Failure.Kind.INVALID,
+          "The file begins or ends a transaction here, while it runs in one of its own, which this"
+              + " would end: the run stops, and what ran is rolled back. Run the file without one"
+              + " transaction to have it keep its own."));
+    }
+    var failure = target.run(sql);
+    statements++;
+    return failure;
+  }
+
+  private Optional<Failure> copy(Target target, String sql, StatementReader file) {
+    var failure = target.copy(sql, told(file));
+    statements++;
+    return failure;
   }
 
   // The rows of the copy the file is on, which tell how far they came as they are read.
@@ -300,20 +329,15 @@ public final class FileRun {
     };
   }
 
-  private Failure ran(Failure failure) {
-    statements++;
-    return failure;
-  }
-
   // A command of the client: skipped, or refused.
-  private Failure command(StatementReader.Command command) {
+  private Optional<Failure> command(StatementReader.Command command) {
     if (provider.dialect().client().skippedCommands().contains(command.name())) {
-      return null;
+      return Optional.empty();
     }
-    return Failure.of(
+    return Optional.of(Failure.of(
         Failure.Kind.INVALID,
         "\\" + command.name() + " is a command of " + provider.displayName() + "'s client, which"
-            + " HooriDB does not run: the run stops here, as what follows may depend on it.");
+            + " HooriDB does not run: the run stops here, as what follows may depend on it."));
   }
 
   // Ends the transaction: commits it where the run ran to its end, else rolls it back; auto-commit
@@ -322,14 +346,15 @@ public final class FileRun {
     var kept = Kept.ROLLED_BACK;
     if (commit) {
       var failure = target.commit();
-      if (failure == null) {
+      if (failure.isEmpty()) {
         kept = Kept.COMMITTED;
       } else {
-        fail(0, "COMMIT", failure.message());
-        kept = failure.kind() == Failure.Kind.CONNECTION_LOST ? Kept.IN_DOUBT : Kept.ROLLED_BACK;
+        fail(0, "COMMIT", failure.get().message());
+        kept =
+            failure.get().kind() == Failure.Kind.CONNECTION_LOST ? Kept.IN_DOUBT : Kept.ROLLED_BACK;
       }
     }
-    if (kept == Kept.ROLLED_BACK && target.rollback() != null) {
+    if (kept == Kept.ROLLED_BACK && target.rollback().isPresent()) {
       kept = Kept.IN_DOUBT;
     }
     if (kept != Kept.IN_DOUBT) {
@@ -353,31 +378,33 @@ public final class FileRun {
   }
 
   private Report report(Ending ending, Kept kept, Progress last, long started) {
-    var progress = new Progress(last.bytes(), last.size(), statements, failed);
-    return new Report(
-        ending, progress, failures, kept, Duration.ofNanos(System.nanoTime() - started));
+    var at = new Progress(last.bytes(), last.size(), statements, failed);
+    return new Report(ending, at, failures, kept, Duration.ofNanos(System.nanoTime() - started));
   }
 
-  // The failure of a step, at the line the server names where it does.
+  // The failure of a step. A command of the client shows by its name alone, as its line, which
+  // no server read, may give another's password.
   private void fail(StatementReader.Step step, Failure failure) {
-    var text = switch (step) {
-      case StatementReader.Sql s -> s.sql();
-      case StatementReader.Copy c -> c.sql();
-      case StatementReader.Command c -> c.text();
-    };
-    long line = step.line();
-    if (!(step instanceof StatementReader.Command)) {
-      var place = failure.place(text, provider);
-      if (place.isPresent()) {
-        line += text.substring(0, place.get().start())
-            .chars()
-            .filter(c -> c == '\n')
-            .count();
-      }
+    switch (step) {
+      case StatementReader.Sql sql -> fail(sql.sql(), sql.line(), failure);
+      case StatementReader.Copy copy -> fail(copy.sql(), copy.line(), failure);
+      case StatementReader.Command command ->
+        fail(command.line(), "\\" + command.name(), message(failure));
     }
-    var masked = step instanceof StatementReader.Command ? text : Secrets.masked(text, provider);
-    var message = masked.equals(text) ? message(failure) : Outcome.WITHHELD;
-    fail(line, masked.length() > SHOWN ? masked.substring(0, SHOWN) : masked, message);
+  }
+
+  // The failure of a statement that begins on the line, at the line the server names where it
+  // does, its passwords masked.
+  private void fail(String sql, long line, Failure failure) {
+    long at = line
+        + failure
+            .place(sql, provider)
+            .map(place ->
+                sql.substring(0, place.start()).chars().filter(c -> c == '\n').count())
+            .orElse(0L);
+    var masked = Secrets.masked(sql, provider);
+    var message = masked.equals(sql) ? message(failure) : Outcome.WITHHELD;
+    fail(at, masked.length() > SHOWN ? masked.substring(0, SHOWN) : masked, message);
   }
 
   private void fail(long line, String statement, String message) {
@@ -404,104 +431,115 @@ public final class FileRun {
    * copies through the dialect's {@link dev.hoori.db.core.dialect.ClientDialect#copyIn}.
    */
   public static Target target(Connection connection, Provider provider, boolean readOnly) {
-    return new Target() {
-      @Override
-      public Failure run(String sql) {
-        try (var execution = new Execution(connection, provider, sql, readOnly, Purpose.FILE)) {
-          while (true) {
-            var portion = execution.next(ROWS);
-            for (var result : portion.results()) {
-              if (result instanceof Failure failure) {
-                return failure;
-              }
-            }
-            if (!portion.more()) {
-              return null;
-            }
+    return new Session(connection, provider, readOnly);
+  }
+
+  private record Session(Connection connection, Provider provider, boolean readOnly)
+      implements Target {
+
+    @Override
+    public Optional<Failure> run(String sql) {
+      try (var execution = new Execution(connection, provider, sql, readOnly, Purpose.FILE)) {
+        while (true) {
+          var portion = execution.next(ROWS);
+          var failure = portion.results().stream()
+              .filter(Failure.class::isInstance)
+              .map(Failure.class::cast)
+              .findFirst();
+          if (failure.isPresent() || !portion.more()) {
+            return failure;
           }
         }
       }
+    }
 
-      @Override
-      public Failure copy(String sql, Reader rows) {
-        var client = provider.dialect().client();
-        var thrown = new AtomicReference<IOException>();
-        try {
-          // The reader stops a copy that is cancelled, as the run cancels it, so that the driver
-          // ends the copy on the server; past Query's grace the connection is given up.
-          Journal.sql(
-              provider,
-              Purpose.FILE,
-              sql,
-              copied -> thrown.get() == null
-                  ? new Outcome.Changed(copied)
-                  : thrown.get() instanceof InterruptedIOException
-                      ? new Outcome.Cancelled()
-                      : new Outcome.Failed(thrown.get().getMessage()),
-              () -> Query.run(connection, provider, () -> {
-                try {
-                  return client.copyIn(connection, sql, rows);
-                } catch (IOException e) {
-                  thrown.set(e);
-                  return -1L;
-                }
-              }));
-        } catch (QueryException e) {
-          return failure(e);
-        }
-        var problem = thrown.get();
-        if (problem == null) {
-          return null;
-        }
-        return problem instanceof InterruptedIOException
-            ? Failure.cancelled()
-            : Failure.of(Failure.Kind.OTHER, "The file could not be read: " + problem.getMessage());
+    @Override
+    public Optional<Failure> copy(String sql, Reader rows) {
+      var client = provider.dialect().client();
+      var thrown = new AtomicReference<IOException>();
+      try {
+        // The reader stops a copy that is cancelled, as the run cancels it, so that the driver
+        // ends the copy on the server; past Query's grace the connection is given up.
+        Journal.sql(
+            provider,
+            Purpose.FILE,
+            sql,
+            copied -> outcome(copied, thrown.get()),
+            () -> Query.run(connection, provider, () -> {
+              try {
+                return client.copyIn(connection, sql, rows);
+              } catch (IOException e) {
+                thrown.set(e);
+                return -1L;
+              }
+            }));
+      } catch (QueryException e) {
+        return Optional.of(failure(e));
       }
+      var problem = thrown.get();
+      if (problem == null) {
+        return Optional.empty();
+      }
+      return Optional.of(
+          problem instanceof InterruptedIOException
+              ? Failure.cancelled()
+              : Failure.of(
+                  Failure.Kind.OTHER, "The file could not be read: " + problem.getMessage()));
+    }
 
-      @Override
-      public Failure begin() {
-        return step(Journal.autoCommit(false), () -> connection.setAutoCommit(false));
+    // What the log says of a copy: the rows it took, or why the file stopped it.
+    private static Outcome outcome(long copied, IOException thrown) {
+      if (thrown == null) {
+        return new Outcome.Changed(copied);
       }
+      return thrown instanceof InterruptedIOException
+          ? new Outcome.Cancelled()
+          : new Outcome.Failed(thrown.getMessage());
+    }
 
-      @Override
-      public Failure commit() {
-        return step(Journal.COMMIT, connection::commit);
-      }
+    @Override
+    public Optional<Failure> begin() {
+      return step(Journal.autoCommit(false), () -> connection.setAutoCommit(false));
+    }
 
-      @Override
-      public Failure rollback() {
-        return step(Journal.ROLLBACK, connection::rollback);
-      }
+    @Override
+    public Optional<Failure> commit() {
+      return step(Journal.COMMIT, connection::commit);
+    }
 
-      @Override
-      public Failure end() {
-        return step(Journal.autoCommit(true), () -> connection.setAutoCommit(true));
-      }
+    @Override
+    public Optional<Failure> rollback() {
+      return step(Journal.ROLLBACK, connection::rollback);
+    }
 
-      private Failure step(String called, Action action) {
-        try {
-          Journal.call(
-              Purpose.TRANSACTION,
-              called,
-              () -> Query.within(connection, provider, Execution.ENDING, () -> {
-                action.run();
-                return null;
-              }));
-          return null;
-        } catch (QueryException e) {
-          return failure(e);
-        }
-      }
+    @Override
+    public Optional<Failure> end() {
+      return step(Journal.autoCommit(true), () -> connection.setAutoCommit(true));
+    }
 
-      private Failure failure(QueryException e) {
-        if (e.failure() == QueryException.Failure.ABORTED) {
-          return Failure.connectionLost();
-        }
-        return e.getCause() == null
-            ? Failure.cancelled()
-            : Failure.of(connection, provider, e.getCause());
+    private Optional<Failure> step(String called, Action action) {
+      try {
+        Journal.call(
+            Purpose.TRANSACTION,
+            called,
+            () -> Query.within(connection, provider, Execution.ENDING, () -> {
+              action.run();
+              return null;
+            }));
+        return Optional.empty();
+      } catch (QueryException e) {
+        return Optional.of(failure(e));
       }
-    };
+    }
+
+    private Failure failure(QueryException e) {
+      if (e.failure() == QueryException.Failure.ABORTED) {
+        return Failure.connectionLost();
+      }
+      return e.getCause() == null
+          ? Failure.cancelled()
+          : Failure.of(connection, provider, e.getCause());
+    }
   }
 
   private interface Action {

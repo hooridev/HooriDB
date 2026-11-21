@@ -1034,18 +1034,17 @@ final class FakeServers implements Servers {
     public FileRun.Report runFile(FileRun file) {
       return file.run(new FileRun.Target() {
         @Override
-        public Failure run(String sql) {
+        public Optional<Failure> run(String sql) {
           var running = FakeLink.this.run(sql);
           try {
             while (true) {
               var portion = running.next(1_000);
-              for (var result : portion.results()) {
-                if (result instanceof Failure failure) {
-                  return failure;
-                }
-              }
-              if (!portion.more()) {
-                return null;
+              var failure = portion.results().stream()
+                  .filter(Failure.class::isInstance)
+                  .map(Failure.class::cast)
+                  .findFirst();
+              if (failure.isPresent() || !portion.more()) {
+                return failure;
               }
             }
           } finally {
@@ -1054,53 +1053,43 @@ final class FakeServers implements Servers {
         }
 
         @Override
-        public Failure copy(String sql, java.io.Reader rows) {
-          var text = new StringBuilder();
+        public Optional<Failure> copy(String sql, java.io.Reader rows) {
+          var text = new java.io.StringWriter();
           try {
-            rows.transferTo(new java.io.Writer() {
-              @Override
-              public void write(char[] chars, int from, int length) {
-                text.append(chars, from, length);
-              }
-
-              @Override
-              public void flush() {}
-
-              @Override
-              public void close() {}
-            });
-          } catch (java.io.IOException e) {
-            return new Failure(Failure.Kind.CANCELLED, "", "57014", 0, 0, "", 0, 0, "", "", "", "");
+            rows.transferTo(text);
+          } catch (java.io.IOException _) {
+            return Optional.of(
+                new Failure(Failure.Kind.CANCELLED, "", "57014", 0, 0, "", 0, 0, "", "", "", ""));
           }
           noted("copy " + host + " " + sql + " " + text);
           var answer = statements.get(sql);
           return answer != null
                   && !answer.results().isEmpty()
                   && answer.results().getLast() instanceof Failure f
-              ? f
-              : null;
+              ? Optional.of(f)
+              : Optional.empty();
         }
 
         @Override
-        public Failure begin() {
+        public Optional<Failure> begin() {
           manual(true);
-          return null;
+          return Optional.empty();
         }
 
         @Override
-        public Failure commit() {
+        public Optional<Failure> commit() {
           return run("COMMIT");
         }
 
         @Override
-        public Failure rollback() {
+        public Optional<Failure> rollback() {
           return run("ROLLBACK");
         }
 
         @Override
-        public Failure end() {
+        public Optional<Failure> end() {
           manual(false);
-          return null;
+          return Optional.empty();
         }
       });
     }

@@ -4,8 +4,8 @@ import static dev.hoori.db.core.connection.Provider.MARIADB;
 import static dev.hoori.db.core.connection.Provider.MYSQL;
 import static dev.hoori.db.core.connection.Provider.POSTGRESQL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,9 +46,9 @@ class StatementReaderTest {
 
   private static List<Seen> read(StatementReader reader) throws IOException {
     var seen = new ArrayList<Seen>();
-    for (var step = reader.next(); step != null; step = reader.next()) {
+    for (var next = reader.next(); next.isPresent(); next = reader.next()) {
       seen.add(
-          switch (step) {
+          switch (next.get()) {
             case StatementReader.Sql s -> new Seen("sql", s.sql(), s.line(), s.offset(), null);
             case StatementReader.Copy c ->
               new Seen("copy", c.sql(), c.line(), c.offset(), all(reader.rows()));
@@ -231,9 +231,9 @@ class StatementReaderTest {
     var text = "COPY t FROM stdin;\n1\n2\n\\.\nSELECT 1;";
     for (int chunk : CHUNKS) {
       var reader = new StatementReader(new StringReader(text), POSTGRESQL, -1, chunk);
-      assertInstanceOf(StatementReader.Copy.class, reader.next());
-      assertEquals(new StatementReader.Sql("SELECT 1", 5, 26), reader.next());
-      assertNull(reader.next());
+      assertInstanceOf(StatementReader.Copy.class, reader.next().orElseThrow());
+      assertEquals(new StatementReader.Sql("SELECT 1", 5, 26), reader.next().orElseThrow());
+      assertTrue(reader.next().isEmpty());
     }
   }
 
@@ -283,9 +283,9 @@ class StatementReaderTest {
     var file = folder.resolve("bom.sql");
     Files.write(file, "\uFEFFSELECT 1;\nSELECT 2;".getBytes(StandardCharsets.UTF_8));
     try (var reader = StatementReader.open(file, POSTGRESQL)) {
-      assertEquals(new StatementReader.Sql("SELECT 1", 1, 3), reader.next());
-      assertEquals(new StatementReader.Sql("SELECT 2", 2, 13), reader.next());
-      assertNull(reader.next());
+      assertEquals(new StatementReader.Sql("SELECT 1", 1, 3), reader.next().orElseThrow());
+      assertEquals(new StatementReader.Sql("SELECT 2", 2, 13), reader.next().orElseThrow());
+      assertTrue(reader.next().isEmpty());
       assertEquals(22, reader.size());
       assertEquals(22, reader.offset());
     }
@@ -304,7 +304,7 @@ class StatementReaderTest {
         new ByteArrayInputStream("SELECT 1;\n-- a comment, of some length\nSELECT '\u00fc';"
             .getBytes(StandardCharsets.ISO_8859_1)));
     var reader = new StatementReader(in, POSTGRESQL, -1, 1);
-    assertEquals(new StatementReader.Sql("SELECT 1", 1, 0), reader.next());
+    assertEquals(new StatementReader.Sql("SELECT 1", 1, 0), reader.next().orElseThrow());
     assertEquals(
         "The file is not UTF-8 on line 3",
         assertThrows(IOException.class, reader::next).getMessage());
@@ -321,12 +321,34 @@ class StatementReaderTest {
   }
 
   @Test
+  void aReadOfRowsEndsBeforeASurrogatePairItCannotHoldWhole() throws IOException {
+    // pgjdbc encodes each read by itself, which would turn half a pair into a replacement.
+    var row = "xxxxxx\uD83D\uDE00y\n";
+    var text = "COPY t FROM stdin;\n" + row + "\\.\n";
+    for (int chunk : CHUNKS) {
+      for (int length = 2; length <= 9; length++) {
+        var reader = new StatementReader(new StringReader(text), POSTGRESQL, -1, chunk);
+        reader.next();
+        var rows = reader.rows();
+        var into = new char[length];
+        var read = new StringBuilder();
+        for (int n = rows.read(into); n >= 0; n = rows.read(into)) {
+          assertFalse(Character.isHighSurrogate(into[n - 1]), chunk + " " + length);
+          read.append(into, 0, n);
+        }
+        assertEquals(row, read.toString());
+      }
+    }
+  }
+
+  @Test
   void aStatementLongerThanAWindowIsReadWhole() throws IOException {
     var text = "INSERT INTO t VALUES " + "(1,'x;y'),".repeat(30_000) + "(2,'z');\nSELECT 1;";
     var reader = new StatementReader(new StringReader(text), MARIADB, -1);
-    var first = (StatementReader.Sql) reader.next();
+    var first = (StatementReader.Sql) reader.next().orElseThrow();
     assertEquals(text.indexOf(";\nSELECT"), first.sql().length());
-    assertEquals(new StatementReader.Sql("SELECT 1", 2, text.length() - 9), reader.next());
-    assertNull(reader.next());
+    assertEquals(
+        new StatementReader.Sql("SELECT 1", 2, text.length() - 9), reader.next().orElseThrow());
+    assertTrue(reader.next().isEmpty());
   }
 }

@@ -358,32 +358,39 @@ public final class Statements {
     int end = -1;
     while (i < n) {
       int from = i;
-      if (start < 0 && syntax.clientDelimiter() && delimiterCommand()) {
-        if (parts != null) {
-          parts.add(new Part(Part.Kind.DELIMITER, from, i, i, delimiter));
-        }
-        continue;
-      }
-      if (start < 0 && backslashCommands && text.charAt(i) == '\\') {
-        command();
-        continue;
-      }
-      if (text.startsWith(delimiter, i)) {
+      if (start < 0 && clientLine()) {
+        // A line of the client's own, where a statement could begin, is none.
+      } else if (text.startsWith(delimiter, i)) {
         i += delimiter.length();
         finish(start, end, i);
         start = -1;
       } else if (whitespace(text.charAt(i))) {
         i++;
-      } else {
-        if (token()) {
-          if (start < 0) {
-            start = from;
-          }
-          end = i;
+      } else if (token()) {
+        if (start < 0) {
+          start = from;
         }
+        end = i;
       }
     }
     finish(start, end, end);
+  }
+
+  // Takes a line that the client reads as its own at i, where a statement could begin: a
+  // DELIMITER, or a command that begins with a backslash; whether there was one.
+  private boolean clientLine() {
+    int from = i;
+    if (syntax.clientDelimiter() && delimiterCommand()) {
+      if (parts != null) {
+        parts.add(new Part(Part.Kind.DELIMITER, from, i, i, delimiter));
+      }
+      return true;
+    }
+    if (backslashCommands && text.charAt(i) == '\\') {
+      command();
+      return true;
+    }
+    return false;
   }
 
   private void finish(int start, int end, int after) {

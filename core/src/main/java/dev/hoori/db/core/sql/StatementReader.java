@@ -16,7 +16,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 /**
  * The statements of a file of SQL, read as the file is: split as {@link Statements} splits a text,
@@ -68,7 +70,7 @@ public final class StatementReader implements Closeable {
   private final Reader in;
   private final Provider provider;
   private final long size;
-  private final int chunk;
+  private final int windowSize;
   private final StringBuilder buffer = new StringBuilder();
   // What was taken of the buffer, and the line and offset there.
   private int at;
@@ -96,12 +98,12 @@ public final class StatementReader implements Closeable {
   }
 
   // Reading the given chars at a time, as a test cuts the file into windows.
-  StatementReader(Reader in, Provider provider, long size, int chunk) {
+  StatementReader(Reader in, Provider provider, long size, int windowSize) {
     this.in = in;
     this.provider = provider;
     this.size = size;
-    this.chunk = chunk;
-    this.wanted = chunk;
+    this.windowSize = windowSize;
+    this.wanted = windowSize;
   }
 
   /** Opens the file, UTF-8. */
@@ -138,35 +140,47 @@ public final class StatementReader implements Closeable {
         return 0;
       }
       var out = CharBuffer.wrap(into, from, length);
-      while (out.position() == from) {
-        var result = decoder.decode(bytes, out, end);
-        if (result.isError()) {
-          failed = new MalformedInputException(result.length());
-          if (out.position() > from) {
-            break;
-          }
-          throw failed;
-        }
-        if (result.isOverflow()) {
-          break;
-        }
+      while (out.position() == from && decoded(out, from)) {
         if (end) {
-          if (!flushed) {
-            flushed = true;
-            decoder.flush(out);
-          }
-          return out.position() > from ? out.position() - from : -1;
+          return last(out, from);
         }
-        bytes.compact();
-        int read = in.read(bytes.array(), bytes.position(), bytes.remaining());
-        if (read < 0) {
-          end = true;
-        } else {
-          bytes.position(bytes.position() + read);
-        }
-        bytes.flip();
+        refill();
       }
       return out.position() - from;
+    }
+
+    // Decodes what the bytes hold into what is read; false where that is full, or where the bytes
+    // stop being UTF-8 after chars that are given first.
+    private boolean decoded(CharBuffer out, int from) throws CharacterCodingException {
+      var result = decoder.decode(bytes, out, end);
+      if (result.isError()) {
+        failed = new MalformedInputException(result.length());
+        if (out.position() == from) {
+          throw failed;
+        }
+        return false;
+      }
+      return !result.isOverflow();
+    }
+
+    // The last chars of the file, or -1 where none is left.
+    private int last(CharBuffer out, int from) {
+      if (!flushed) {
+        flushed = true;
+        decoder.flush(out);
+      }
+      return out.position() > from ? out.position() - from : -1;
+    }
+
+    private void refill() throws IOException {
+      bytes.compact();
+      int read = in.read(bytes.array(), bytes.position(), bytes.remaining());
+      if (read < 0) {
+        end = true;
+      } else {
+        bytes.position(bytes.position() + read);
+      }
+      bytes.flip();
     }
 
     @Override
@@ -191,12 +205,12 @@ public final class StatementReader implements Closeable {
   }
 
   /**
-   * The next step, or null at the end of the file. The rows of a copy that were not read are
+   * The next step, or empty at the end of the file. The rows of a copy that were not read are
    * skipped first.
    *
    * @throws IOException where the file cannot be read, or is not UTF-8
    */
-  public Step next() throws IOException {
+  public Optional<Step> next() throws IOException {
     if (rows != null) {
       rows.skip();
       rows = null;
@@ -204,7 +218,7 @@ public final class StatementReader implements Closeable {
     while (true) {
       while (ready.isEmpty()) {
         if (!scan()) {
-          return null;
+          return Optional.empty();
         }
       }
       var taken = ready.poll();
@@ -216,7 +230,7 @@ public final class StatementReader implements Closeable {
         rows = new Rows();
       }
       if (taken.step() != null) {
-        return taken.step();
+        return Optional.of(taken.step());
       }
     }
   }
@@ -249,41 +263,9 @@ public final class StatementReader implements Closeable {
     int n = buffer.length();
     int context = Math.max(at - 1, 0); // what a token at the reader follows
     var window = buffer.substring(context);
-    var parts = Statements.parts(window, at - context, provider, delimiter);
-    int position = at;
-    long lineAt = line;
-    long offsetAt = offset;
-    for (var part : parts) {
-      int after = part.after() + context;
-      boolean whole = ended && broken == null
-          || after + MARGIN <= n
-              && (part.kind() != Statements.Part.Kind.STATEMENT || part.after() > part.end());
-      if (!whole) {
-        break;
-      }
-      int start = part.start() + context;
-      lineAt += lines(position, start);
-      offsetAt += bytes(position, start);
-      position = start;
-      long lineOf = lineAt;
-      long offsetOf = offsetAt;
-      lineAt += lines(position, after);
-      offsetAt += bytes(position, after);
-      position = after;
-      var text = window.substring(part.start(), part.end());
-      Step step = switch (part.kind()) {
-        case STATEMENT ->
-          copies(text) ? new Copy(text, lineOf, offsetOf) : new Sql(text, lineOf, offsetOf);
-        case COMMAND -> new Command(text, name(text), lineOf, offsetOf);
-        case DELIMITER -> null;
-      };
-      ready.add(new Taken(step, after, lineAt, offsetAt, part.delimiter()));
-      if (step instanceof Copy) {
-        break; // what follows is rows, which the scan took for statements
-      }
-    }
+    queue(Statements.parts(window, at - context, provider, delimiter), window, context);
     if (!ready.isEmpty()) {
-      wanted = chunk;
+      wanted = windowSize;
       return true;
     }
     if (broken != null) {
@@ -293,8 +275,55 @@ public final class StatementReader implements Closeable {
       advance(n); // nothing but white space and comments is left
       return false;
     }
-    wanted = Math.max(chunk, 2 * (n - at)); // a part goes on beyond the window
+    wanted = Math.max(windowSize, 2 * (n - at)); // a part goes on beyond the window
     return true;
+  }
+
+  // Queues the parts of the window that what follows in the file cannot change, each with the line
+  // and offset where it begins and where the reader is after it, up to the first copy, as what
+  // follows that is rows, which the scan took for statements.
+  private void queue(List<Statements.Part> parts, String window, int context) {
+    int position = at;
+    long lineAt = line;
+    long offsetAt = offset;
+    for (var part : parts) {
+      int after = part.after() + context;
+      if (!whole(part, after)) {
+        return;
+      }
+      int start = part.start() + context;
+      lineAt += lines(position, start);
+      offsetAt += bytes(position, start);
+      var step = step(part, window.substring(part.start(), part.end()), lineAt, offsetAt);
+      lineAt += lines(start, after);
+      offsetAt += bytes(start, after);
+      position = after;
+      ready.add(new Taken(step, after, lineAt, offsetAt, part.delimiter()));
+      if (step instanceof Copy) {
+        return;
+      }
+    }
+  }
+
+  // Whether what follows the part in the file cannot change it: the file ended, or the scan
+  // looked far enough beyond it, past the terminator of a statement.
+  private boolean whole(Statements.Part part, int after) {
+    if (ended && broken == null) {
+      return true;
+    }
+    return after + MARGIN <= buffer.length()
+        && (part.kind() != Statements.Part.Kind.STATEMENT || part.after() > part.end());
+  }
+
+  // The step of the part that begins at the line and offset, or null for a DELIMITER line, which
+  // is none.
+  private Step step(Statements.Part part, String text, long lineOf, long offsetOf) {
+    return switch (part.kind()) {
+      case STATEMENT ->
+        copies(text) ? new Copy(text, lineOf, offsetOf) : new Sql(text, lineOf, offsetOf);
+      case COMMAND -> new Command(text, name(text), lineOf, offsetOf);
+      case DELIMITER -> null;
+    };
   }
 
   // Whether the statement copies rows from the client: COPY … FROM STDIN.
@@ -331,47 +360,47 @@ public final class StatementReader implements Closeable {
   // Reads until the buffer holds at least the given chars past the reader, or the file ends;
   // drops what was taken before, but the one char a token may follow.
   private void fill(int chars) throws IOException {
-    if (at > chunk && at > buffer.length() / 2) {
+    if (at > windowSize && at > buffer.length() / 2) {
       buffer.delete(0, at - 1);
       at = 1;
     }
-    var read = new char[Math.max(chunk, 4)];
+    var read = new char[Math.max(windowSize, 4)];
     while (!ended && buffer.length() - at < chars) {
       if (cancelled) {
         throw new InterruptedIOException("Cancelled");
       }
-      int count;
-      try {
-        count = in.read(read);
-      } catch (CharacterCodingException e) {
-        // What came before it is read first.
-        broken = new IOException(
-            "The file is not UTF-8 on line " + (line + lines(at, buffer.length())), e);
-        ended = true;
-        break;
-      }
-      if (count < 0) {
-        ended = true;
-      } else {
-        buffer.append(read, 0, count);
-      }
+      append(read);
       if (!started && !buffer.isEmpty()) {
         started = true;
-        if (buffer.charAt(0) == BYTE_ORDER_MARK) {
-          buffer.deleteCharAt(0);
-          offset += 3;
-        }
+        skipByteOrderMark();
       }
     }
   }
 
-  // Reads more, at least a char, where the buffer holds nothing past the reader; false at the end.
-  private boolean more() throws IOException {
-    if (at < buffer.length()) {
-      return true;
+  // Appends what one read of the file gives; marks the file ended at its end, and where it stops
+  // being UTF-8, after what came before that.
+  private void append(char[] read) throws IOException {
+    int count;
+    try {
+      count = in.read(read);
+    } catch (CharacterCodingException e) {
+      broken = new IOException(
+          "The file is not UTF-8 on line " + (line + lines(at, buffer.length())), e);
+      ended = true;
+      return;
     }
-    fill(1);
-    return at < buffer.length();
+    if (count < 0) {
+      ended = true;
+    } else {
+      buffer.append(read, 0, count);
+    }
+  }
+
+  private void skipByteOrderMark() {
+    if (buffer.charAt(0) == BYTE_ORDER_MARK) {
+      buffer.deleteCharAt(0);
+      offset += 3;
+    }
   }
 
   private int lines(int from, int to) {
@@ -384,14 +413,21 @@ public final class StatementReader implements Closeable {
     return count;
   }
 
-  // The bytes of UTF-8 the chars take; a surrogate pair takes four.
+  // The bytes of UTF-8 the chars take.
   private long bytes(int from, int to) {
     long count = 0;
     for (int k = from; k < to; k++) {
-      char c = buffer.charAt(k);
-      count += c < 0x80 ? 1 : c < 0x800 || Character.isSurrogate(c) ? 2 : 3;
+      count += bytes(buffer.charAt(k));
     }
     return count;
+  }
+
+  // The bytes of UTF-8 a char takes; each of a surrogate pair two, four for the pair.
+  private static int bytes(char c) {
+    if (c < 0x80) {
+      return 1;
+    }
+    return c < 0x800 || Character.isSurrogate(c) ? 2 : 3;
   }
 
   // Takes the buffer up to the offset.
@@ -401,7 +437,8 @@ public final class StatementReader implements Closeable {
     at = to;
   }
 
-  // The rows of a copy, taken from the file as they are read.
+  // The rows of a copy, taken from the file as they are read. A read never ends between the two
+  // chars of a surrogate pair where it has room for both, as pgjdbc encodes each read by itself.
   private final class Rows extends Reader {
     private boolean statementLine = true; // the rest of the statement's line is still ahead
     private boolean lineStart;
@@ -416,46 +453,77 @@ public final class StatementReader implements Closeable {
         if (cancelled) {
           throw new InterruptedIOException("Cancelled");
         }
-        if (!more()) {
-          if (broken != null) {
-            throw broken;
-          }
-          over = true;
-          break;
+        int count = take(into, from, length);
+        if (count > 0) {
+          return count;
         }
-        int n = buffer.length();
-        if (statementLine) {
-          int end = buffer.indexOf("\n", at);
-          advance(end < 0 ? n : end + 1);
-          statementLine = end < 0;
-          lineStart = end >= 0;
-          continue;
-        }
-        if (lineStart && buffer.charAt(at) == '\\') {
-          if (n - at < 4 && !ended) {
-            fill(4);
-            continue;
-          }
-          int end = endOfData();
-          if (end >= 0) {
-            advance(end);
-            over = true;
-            break;
-          }
-        }
-        lineStart = false;
-        int end = Math.min(n, at + length);
-        int lineEnd = buffer.indexOf("\n", at);
-        if (lineEnd >= 0 && lineEnd < end) {
-          end = lineEnd + 1;
-          lineStart = true;
-        }
-        buffer.getChars(at, end, into, from);
-        int count = end - at;
-        advance(end);
-        return count;
       }
       return -1;
+    }
+
+    // Gives the next chars of the rows, at most up to a line's end; 0 where it only took what is
+    // not rows, read more, or found their end.
+    private int take(char[] into, int from, int length) throws IOException {
+      if (!more()) {
+        if (broken != null) {
+          throw broken;
+        }
+        over = true;
+        return 0;
+      }
+      if (statementLine) {
+        int end = buffer.indexOf("\n", at);
+        advance(end < 0 ? buffer.length() : end + 1);
+        statementLine = end < 0;
+        lineStart = end >= 0;
+        return 0;
+      }
+      if (lineStart && buffer.charAt(at) == '\\' && ending()) {
+        return 0;
+      }
+      return copy(into, from, length);
+    }
+
+    // Reads more, where the buffer holds less than a pair of surrogates past the reader; false at
+    // the end of the file.
+    private boolean more() throws IOException {
+      if (buffer.length() - at < 2) {
+        fill(2);
+      }
+      return at < buffer.length();
+    }
+
+    // At a backslash that begins a line: whether it ends the rows, which are then over, or more
+    // must be read to tell.
+    private boolean ending() throws IOException {
+      if (buffer.length() - at < 4 && !ended) {
+        fill(4);
+        return true;
+      }
+      int end = endOfData();
+      if (end < 0) {
+        return false;
+      }
+      advance(end);
+      over = true;
+      return true;
+    }
+
+    // Gives the chars from the reader on, at most to the end of the line.
+    private int copy(char[] into, int from, int length) {
+      lineStart = false;
+      int end = Math.min(buffer.length(), at + length);
+      int lineEnd = buffer.indexOf("\n", at);
+      if (lineEnd >= 0 && lineEnd < end) {
+        end = lineEnd + 1;
+        lineStart = true;
+      } else if (end - at > 1 && Character.isHighSurrogate(buffer.charAt(end - 1))) {
+        end--;
+      }
+      buffer.getChars(at, end, into, from);
+      int count = end - at;
+      advance(end);
+      return count;
     }
 
     // Where a line \. alone that the reader is at ends, after its line's end; -1 for other lines.
