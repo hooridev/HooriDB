@@ -386,7 +386,7 @@ final class Frame {
     return Card.flush(
         Card.toolbar("Workspace", null, add),
         problem == null ? null : col().padding(t.space().s()).child(problem),
-        s.update == null ? null : update(s, modal),
+        s.updates.notice == null ? null : update(s, modal),
         s.notices.isEmpty() ? null : notices(s),
         body);
   }
@@ -432,7 +432,7 @@ final class Frame {
    */
   private static El update(State s, boolean modal) {
     Theme t = Theme.CURRENT.get();
-    var notice = s.update;
+    var notice = s.updates.notice;
     El act = notice.act() == null
         ? null
         : button(
@@ -440,7 +440,8 @@ final class Frame {
                 notice.act(),
                 modal ? null : notice.action())
             .key("update-act");
-    El dismiss = button(Button.Variant.SECONDARY, notice.dismiss(), modal ? null : s::dismissUpdate)
+    El dismiss = button(
+            Button.Variant.SECONDARY, notice.dismiss(), modal ? null : s.updates::dismiss)
         .key("update-dismiss");
     return col()
         .padding(t.space().s())
@@ -454,10 +455,12 @@ final class Frame {
 
   /** The download of an update, busy while it runs; null while none does. */
   private static El downloading(State s) {
-    return s.downloading == null
+    return s.updates.downloading == null
         ? null
         : StatusBar.status(
-                StatusBar.State.BUSY, "Downloading HooriDB " + s.downloading.version() + "…", null)
+                StatusBar.State.BUSY,
+                "Downloading HooriDB " + s.updates.downloading.version() + "…",
+                null)
             .key("downloading");
   }
 
@@ -562,7 +565,7 @@ final class Frame {
             List.of(
                 Properties.property("Version", s.version),
                 Properties.property(
-                    "Updates", s.channel() == Channel.NIGHTLY ? "Nightly" : "Stable"),
+                    "Updates", s.updates.channel() == Channel.NIGHTLY ? "Nightly" : "Stable"),
                 Properties.property("Authors", "HooriDB contributors"),
                 Properties.property("License", "MIT"),
                 Properties.property("Website", "https://db.hoori.dev")),
@@ -655,7 +658,7 @@ final class Frame {
                 channelItem(s, Channel.NIGHTLY, "Nightly updates"),
                 Menu.item(
                     "Restart to update",
-                    free && s.ready != null && !s.exiting() ? s::restartToUpdate : null),
+                    free && s.updates.ready != null && !s.exiting() ? s::restartToUpdate : null),
                 Menu.separator(),
                 Menu.item("About HooriDB", free ? inMain(s, () -> s.about = true) : null))));
   }
@@ -730,8 +733,8 @@ final class Frame {
 
   /** Where updates come from; not while HooriDB closes. */
   private static Menu.Item channelItem(State s, Channel channel, String name) {
-    return Menu.item(name, s.exiting() ? null : () -> s.channel(channel))
-        .checked(s.channel() == channel);
+    return Menu.item(name, s.exiting() ? null : () -> s.updates.channel(s, channel))
+        .checked(s.updates.channel() == channel);
   }
 
   private static Menu.Item themeItem(State s, Theme theme, String name) {
