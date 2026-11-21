@@ -572,11 +572,12 @@ public class DriverStoreTest {
     var jar = Files.readAllBytes(copied.resolve(driver.artifact() + "-" + version + ".jar"));
     repository.publish(driver, version, jar, Sum.SHA256, NOW);
     store.download(driver, version, DriverStore.Progress.NONE);
-    // Bound and not listening, so that no other process can listen there meanwhile.
+    // Bound and not listening, on the address it connects to, so that nothing listens there.
+    var host = "127.0.0.1";
     try (var free = new Socket();
         var loaded = store.load(driver, version)) {
-      free.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
-      var url = "jdbc:mysql://127.0.0.1:" + free.getLocalPort() + "/x";
+      free.bind(new InetSocketAddress(InetAddress.getByName(host), 0));
+      var url = "jdbc:mysql://" + host + ":" + free.getLocalPort() + "/x";
       assertThrows(SQLException.class, () -> loaded.connect(url, new Properties()));
     }
     assertEquals(List.of(), openBelow(temp));

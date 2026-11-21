@@ -95,10 +95,11 @@ class DocumentConnectorServerTest {
   @Test
   void aPortWhereNothingListensIsUnreachable() throws Exception {
     var server = TestServer.of(Provider.MONGODB);
-    // Bound and not listening, so that no other process can listen there meanwhile.
+    // Bound and not listening, on the address it connects to, so that nothing listens there.
+    var host = "127.0.0.1";
     try (var free = new Socket()) {
-      free.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
-      var profile = server.profile().withHost("127.0.0.1").withPort(free.getLocalPort());
+      free.bind(new InetSocketAddress(InetAddress.getByName(host), 0));
+      var profile = server.profile().withHost(host).withPort(free.getLocalPort());
       var e = assertThrows(
           ConnectionException.class,
           () -> DocumentConnector.test(

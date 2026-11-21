@@ -500,7 +500,10 @@ class AbandonedServerTest {
                   ShortEnding.BOUND.plus(dev.hoori.db.core.query.Query.GRACE.multipliedBy(2)))
               < 0,
           took.toString());
-      assertEquals(Failure.Kind.CONNECTION_LOST, ended.failure().orElseThrow().kind());
+      assertTrue(took.compareTo(ShortEnding.BOUND) >= 0, "not before its bound: " + took);
+      var failure = ended.failure().orElseThrow();
+      assertEquals(Failure.Kind.CONNECTION_LOST, failure.kind());
+      assertTrue(failure.message().contains(ShortEnding.CUT_OFF), failure.message());
       assertTrue(connection.isClosed());
     }
   }

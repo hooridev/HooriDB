@@ -12,14 +12,12 @@ import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Abandoned;
-import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Plan;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
-import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.sql.Statements;
@@ -1239,10 +1237,13 @@ class ServersServerTest {
       relay.freeze();
       var ended = new java.util.concurrent.CompletableFuture<Abandoned>();
       var closing = lane.close(ended::complete);
-      var bound = Lane.ENDS.plus(Execution.ENDING).plus(Query.GRACE.multipliedBy(4));
+      var bound = dev.hoori.db.core.execution.ShortEnding.CLOSES;
       assertTrue(closing.join(bound), "the closing thread ended within " + bound);
       var failure = ended.getNow(null).failure().orElseThrow();
       assertEquals(Failure.Kind.CONNECTION_LOST, failure.kind());
+      assertTrue(
+          failure.message().contains(dev.hoori.db.core.execution.ShortEnding.CUT_OFF),
+          failure.message());
     }
   }
 

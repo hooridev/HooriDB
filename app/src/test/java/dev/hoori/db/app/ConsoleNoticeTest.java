@@ -24,6 +24,7 @@ import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Result;
+import dev.hoori.db.core.execution.ShortEnding;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Files;
@@ -232,39 +233,42 @@ class ConsoleNoticeTest extends ConsoleTransactions {
   @Test
   void aKeyringNeverFoundStrandsNeitherDeleteNorExit() throws Exception {
     var finding = new CountDownLatch(1);
-    var app = c.app(
-        servers,
-        () -> {
-          finding.await();
-          return new Keyring.Available(c.secrets);
-        },
-        SHOP);
-    c.ready(app, SHOP);
-    // The load comes in; the keyring is looked for from then on, and not found.
-    c.run(app, "size 1200 760\nframe\nawait\nframe\nframe\nadvance 1\nframe\n");
-    c.run(
-        app,
-        menu("shop-prod", "Delete…") + OPENED + "press role=button label=\"Delete\"\nframe\n"
-            + "advance " + State.KEYRING_SECONDS + "\nframe\nadvance 1\nframe\nsnap slow\n");
-    String slow = c.tree("slow");
-    assertTrue(slow.contains("The system keyring does not answer"), slow);
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + OPENED + "snap given\n");
-    assertTrue(c.tree("given").contains("the deletion was given up"), c.tree("given"));
-    assertEquals(null, app.state().pending);
-    // Delete again, and Exit: the first gives the delete up once it is slow, the next goes.
-    c.run(
-        app,
-        "press role=button label=\"Delete\"\nframe\nadvance " + State.KEYRING_SECONDS
-            + "\nframe\nadvance 1\nframe\n");
-    app.state().requestClose(); // the window's close button, under the dialog
-    c.run(app, "frame\n");
-    assertFalse(app.windows().all().isEmpty(), "the first close gave up the delete");
-    assertEquals(1, app.state().profiles.size());
-    assertEquals(null, app.state().pending);
-    app.state().requestClose();
-    c.run(app, "frame\n");
-    assertTrue(app.windows().all().isEmpty());
-    finding.countDown();
+    try {
+      var app = c.app(
+          servers,
+          () -> {
+            finding.await();
+            return new Keyring.Available(c.secrets);
+          },
+          SHOP);
+      c.ready(app, SHOP);
+      // The load comes in; the keyring is looked for from then on, and not found.
+      c.run(app, "size 1200 760\nframe\nawait\nframe\nframe\nadvance 1\nframe\n");
+      c.run(
+          app,
+          menu("shop-prod", "Delete…") + OPENED + "press role=button label=\"Delete\"\nframe\n"
+              + "advance " + State.KEYRING_SECONDS + "\nframe\nadvance 1\nframe\nsnap slow\n");
+      String slow = c.tree("slow");
+      assertTrue(slow.contains("The system keyring does not answer"), slow);
+      c.run(app, "press role=button label=\"Cancel\"\nframe\n" + OPENED + "snap given\n");
+      assertTrue(c.tree("given").contains("the deletion was given up"), c.tree("given"));
+      assertEquals(null, app.state().pending);
+      // Delete again, and Exit: the first gives the delete up once it is slow, the next goes.
+      c.run(
+          app,
+          "press role=button label=\"Delete\"\nframe\nadvance " + State.KEYRING_SECONDS
+              + "\nframe\nadvance 1\nframe\n");
+      app.state().requestClose(); // the window's close button, under the dialog
+      c.run(app, "frame\n");
+      assertFalse(app.windows().all().isEmpty(), "the first close gave up the delete");
+      assertEquals(1, app.state().profiles.size());
+      assertEquals(null, app.state().pending);
+      app.state().requestClose();
+      c.run(app, "frame\n");
+      assertTrue(app.windows().all().isEmpty());
+    } finally {
+      finding.countDown(); // the keyring is found at last, also where an assertion failed
+    }
   }
 
   /** 6: two sessions whose closing commits fail leave two notices, each readable. */
@@ -548,7 +552,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
   @Test
   void aClosingWhoseDriverCallNeverReturnsEnds() throws Exception {
     var stuck = new dev.hoori.db.core.execution.Stuck();
-    try (var _ = new dev.hoori.db.core.execution.ShortEnding()) {
+    try (var _ = new ShortEnding()) {
       var connection = stuck.connection();
       var lane = new Lane(e -> {});
       lane.open(
@@ -568,13 +572,12 @@ class ConsoleNoticeTest extends ConsoleTransactions {
       var ended =
           new java.util.concurrent.CompletableFuture<dev.hoori.db.core.execution.Abandoned>();
       var closing = lane.close(ended::complete);
-      var bound = Lane.ENDS
-          .plus(dev.hoori.db.core.execution.Execution.ENDING)
-          .plus(dev.hoori.db.core.query.Query.GRACE.multipliedBy(4));
+      var bound = ShortEnding.CLOSES;
       assertTrue(closing.join(bound), "the closing thread ended within " + bound);
-      assertEquals(
-          Failure.Kind.CONNECTION_LOST,
-          ended.getNow(null).failure().orElseThrow().kind());
+      assertTrue(stuck.stuck() != null, "the give-up reached the hung call");
+      var failure = ended.getNow(null).failure().orElseThrow();
+      assertEquals(Failure.Kind.CONNECTION_LOST, failure.kind());
+      assertTrue(failure.message().contains(ShortEnding.CUT_OFF), failure.message());
     } finally {
       stuck.release();
     }
@@ -598,7 +601,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
             "shop",
             false)
         : servers.open(profile, password, driver);
-    try (var _ = new dev.hoori.db.core.execution.ShortEnding()) {
+    try (var _ = new ShortEnding()) {
       var app = c.app(mixed, () -> new Keyring.Available(c.secrets), SHOP);
       c.ready(app, SHOP);
       c.run(app, CatalogTreeTest.START + menu("shop-prod", "New console") + SETTLE);
@@ -606,10 +609,11 @@ class ConsoleNoticeTest extends ConsoleTransactions {
       c.run(app, type("SELECT a FROM t") + RUN);
       assertTrue(tab.outputs.getFirst().more, "a read left open on the stuck connection");
       stuck.arm();
-      // Its give-up runs to its deadline, longer than an await waits by default.
+      // Its give-up runs to its short deadline, which the shipped one would overrun.
       c.run(
           app,
-          type(";\n" + COUNT) + "key Enter control\nframe\nawait 30\nframe\n" + SETTLE
+          type(";\n" + COUNT) + "key Enter control\nframe\nawait "
+              + ShortEnding.CLOSES.toSeconds() + "\nframe\n" + SETTLE
               + "snap ended\n");
       String ended = c.tree("ended");
       assertFalse(tab.connected(), "the session is over");
@@ -675,8 +679,9 @@ class ConsoleNoticeTest extends ConsoleTransactions {
   }
 
   /**
-   * 4: Password empty, saving unchecked, the delete given up, and it and the refresh failed: what
-   * the keyring holds is not known, so the choice still counts, and Save asks again to delete.
+   * 4: Password empty, saving unchecked, the delete given up while the read before it was held,
+   * and the refresh behind it failed: what the keyring holds is not known, so the choice still
+   * counts, and Save asks again to delete.
    */
   @Test
   void anUnknownKeyringWithNothingElseChangedCanStillBeAskedToDelete() throws Exception {
@@ -691,13 +696,28 @@ class ConsoleNoticeTest extends ConsoleTransactions {
         "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
             + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED);
-    c.secrets.fails = true;
+    eventually(() -> c.secrets.late == null); // the delete's read took it
+    int before = c.secrets.calls.size() - 1;
+    // The read answers; the refresh behind it is held, and fails.
+    var refreshing = new CountDownLatch(1);
+    c.secrets.late = refreshing;
     late.countDown();
+    eventually(() -> c.secrets.late == null);
+    c.secrets.fails = true;
+    refreshing.countDown();
     c.run(app, SETTLE);
+    assertEquals(
+        List.of("read", "read"),
+        c.secrets.calls.subList(before, c.secrets.calls.size()),
+        "the read given up answered, its delete was not asked, and the refresh failed");
+    assertTrue(c.secrets.stored.containsKey(SHOP.id()), "still there");
     c.secrets.fails = false;
+    before = c.secrets.calls.size();
     // Save's handler, as its button or Enter calls it, whether or not it would go.
     app.state().dialog.save(app.state());
     c.run(app, "frame\n" + SETTLE);
+    assertEquals(
+        List.of("read", "delete"), c.secrets.calls.subList(before, c.secrets.calls.size()));
     assertFalse(c.secrets.stored.containsKey(SHOP.id()), "asked to delete, as chosen");
   }
 
