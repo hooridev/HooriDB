@@ -90,7 +90,7 @@ final class FolderDialog {
     Theme t = Theme.CURRENT.get();
     var held = s.folder(folder);
     int n = held == null ? 0 : held.connections().size();
-    boolean busy = s.removing;
+    boolean busy = s.removal.running;
     El up = button(PRIMARY, "Move contents up", busy ? null : () -> s.dissolveFolder(folder));
     El contents = button(
         SECONDARY,
@@ -99,7 +99,7 @@ final class FolderDialog {
         Button.options()
             .tone(Button.Tone.DANGER)
             .state(busy ? Button.State.BUSY : Button.State.READY));
-    El cancel = button(SECONDARY, "Cancel", busy && !s.removingSlow ? null : s::cancelFolderDialog);
+    El cancel = button(SECONDARY, "Cancel", busy && !s.removal.slow ? null : s::cancelFolderDialog);
     // As wide as the connection dialog, as its questions are, so that the text wraps below.
     El content = col()
         .w(ConnectionDialog.width())
@@ -112,7 +112,7 @@ final class FolderDialog {
                     + " connected. Delete contents deletes them with their passwords in the system"
                     + " keyring, their consoles and their history.")
             .wrapText());
-    if (s.removingSlow) {
+    if (s.removal.slow) {
       content.child(Callout.callout(
           Callout.Kind.WARNING,
           "The system keyring does not answer",
@@ -120,12 +120,12 @@ final class FolderDialog {
               + " not, and the connections not deleted yet stay."
               + (s.keyringWorker.behind() ? ConnectionDialog.BEHIND : "")));
     }
-    if (!s.kept.isEmpty()) {
-      var names = String.join(", ", s.kept.stream().map(State::name).toList());
+    if (!s.removal.kept.isEmpty()) {
+      var names = String.join(", ", s.removal.kept.stream().map(State::name).toList());
       content.child(Callout.callout(
           Callout.Kind.DANGER,
           "Not all connections were deleted",
-          "These stayed, and the folder with them: " + names + ".\n" + s.removeError));
+          "These stayed, and the folder with them: " + names + ".\n" + s.removal.error));
     }
     return Dialog.dialog(
         "Delete folder", content, List.of(cancel, contents, up), up, s::cancelFolderDialog);
