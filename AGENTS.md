@@ -360,7 +360,7 @@ the user may write, such as `~/.local/opt/HooriDB`.
 - A version with a SemVer pre-release part, such as `X.Y.Z-rc.1`, is a pre-release: `release.yml`
   marks its GitHub release as one, and nightlies and update channels treat it as one too, never
   offering it as stable.
-- Nightlies: each night at 03:00 UTC, and by hand, `nightly.yml` builds main when it changed since
+- Nightlies: each night at 06:07 UTC, and by hand, `nightly.yml` builds main when it changed since
   the last nightly as `X.Y.Z-nightly.YYYYMMDDHHMM`, main's version without `-SNAPSHOT` and the UTC
   minute, set for the build alone, and publishes it as a pre-release of the tag
   `vX.Y.Z-nightly.YYYYMMDDHHMM` with the same assets, never marked Latest, which stays on the stable

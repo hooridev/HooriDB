@@ -1,11 +1,12 @@
 # Publishes the default branch each night as the pre-release vX.Y.Z-nightly.<UTC minute>, when
 # it changed since the last nightly, and keeps the newest 14 (see "Releasing" in AGENTS.md).
+# Off the full hour, where GitHub drops scheduled runs under load.
 # GitHub turns the schedule off after 60 days without activity in a public repository.
 name: Nightly
 
 on:
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '7 6 * * *'
   workflow_dispatch:
 
 concurrency:
