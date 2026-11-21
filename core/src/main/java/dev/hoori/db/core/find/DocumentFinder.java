@@ -140,7 +140,9 @@ public final class DocumentFinder {
         "batchSize",
         limit);
     var documents = all(session, collection, command);
-    var pattern = search.pattern();
+    // As the server's PCRE2 reads it, where only \n ends a line: . matches \r there too.
+    var java = search.pattern();
+    var pattern = Pattern.compile(java.pattern(), java.flags() | Pattern.UNIX_LINES);
     var counts = new int[searched.size()];
     for (var document : documents.subList(0, Math.min(documents.size(), Search.LIMIT))) {
       for (int i = 0; i < counts.length; i++) {

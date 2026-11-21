@@ -9,6 +9,7 @@ import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.DocumentConnector;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.find.Search.Match;
 import java.time.Duration;
@@ -70,6 +71,33 @@ class DocumentFinderServerTest {
       assertEquals(List.of(new Hits.Hit("score", 1)), number.columns());
       assertFalse(number.more());
       assertTrue(number.searched().contains("_id"));
+    }
+  }
+
+  @Test
+  void aPatternEndsALineAtALineFeedAloneAsTheServerDoes() throws Exception {
+    var lines = new Table(HOORI, "find_lines", Table.Kind.TABLE);
+    var opened = TestServer.of(Provider.MONGODB);
+    try (var session = new DocumentSession(
+        DocumentConnector.open(opened.profile(), TestServer.password(), opened.driver(), TIMEOUT)
+            .client(),
+        Provider.MONGODB.documents(),
+        false)) {
+      try {
+        session.command(
+            HOORI.name(),
+            Document.of(
+                "insert",
+                lines.name(),
+                "documents",
+                Document.array(Document.of("_id", 1, "note", "a\rb"))));
+        var candidate = new Candidate(lines, OptionalLong.empty(), OptionalLong.empty(), List.of());
+        var hits =
+            DocumentFinder.search(session, candidate, new Search("^a.b$", Match.PATTERN, true));
+        assertEquals(List.of(new Hits.Hit("note", 1)), hits.columns(), "" + hits);
+      } finally {
+        session.command(HOORI.name(), Document.of("drop", lines.name()));
+      }
     }
   }
 }
