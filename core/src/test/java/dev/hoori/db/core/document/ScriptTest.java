@@ -267,7 +267,7 @@ class ScriptTest {
   }
 
   @Test
-  void anUnclosedCommentStaysInItsStatement() throws Exception {
+  void anUnclosedCommentStaysInItsStatement() {
     var text = "db.a.insertOne({ x: 1 }) /* not closed";
     var pieces = Script.split(text);
     assertEquals(text, pieces.getFirst().text());
