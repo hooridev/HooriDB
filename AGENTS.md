@@ -323,7 +323,8 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `DumpServerTest` reads real exports back into an empty database of each `TestServer`, statement by
   statement as `Statements.split` splits them, as root on MariaDB and MySQL, and through the
   server's own client in its container (`TestServer.client`: `psql`, `mariadb`, `mysql`), and
-  compares objects, definitions and rows.
+  compares what each server's catalog tells of the objects (`pg_catalog`, `information_schema`),
+  their definitions and their rows, each value exactly.
 - Updates run against `FakeUpdater`: releases published by version, the helper's result given,
   downloads and restarts recorded, each failable and the download held at its gate `downloading`.
   `State.shown()`, which `main` hands the window's `onShown`, stands for the first frame shown,
