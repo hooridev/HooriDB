@@ -13,5 +13,7 @@ public enum Purpose {
   /** A transaction's end, auto-commit, and asking for their status. */
   TRANSACTION,
   /** The database the session is on. */
-  SESSION
+  SESSION,
+  /** An export to a file of SQL: the snapshot it reads in, its objects' definitions and rows. */
+  EXPORT
 }

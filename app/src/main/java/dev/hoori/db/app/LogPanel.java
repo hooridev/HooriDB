@@ -399,6 +399,7 @@ final class LogPanel {
       case STATEMENT -> "Console";
       case TRANSACTION -> "Transaction";
       case SESSION -> "Session";
+      case EXPORT -> "Export";
     };
   }
 

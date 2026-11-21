@@ -252,10 +252,11 @@ abstract class MySqlFamilyRows extends RowsDialect {
     }
   }
 
-  // A text as the servers read it unless their SQL mode says NO_BACKSLASH_ESCAPES, and a moment
-  // with its offset, as MySQL reads it, which tells that it is in UTC.
+  // A text as the servers read it unless their SQL mode says NO_BACKSLASH_ESCAPES, a NUL as an
+  // escape that clients read in any text, and a moment with its offset, as MySQL reads it, which
+  // tells that it is in UTC.
   @Override
-  String literal(Object value) {
+  public String literal(Object value) {
     return switch (value) {
       case null -> "NULL";
       case Boolean truth -> truth.booleanValue() ? "TRUE" : "FALSE";
@@ -265,7 +266,10 @@ abstract class MySqlFamilyRows extends RowsDialect {
       case Float number -> Rows.text(number, false);
       case Double number -> Rows.text(number, false);
       case Binary binary -> "X'" + HexFormat.of().formatHex(binary.bytes()) + "'";
-      default -> "'" + Rows.text(value, false).replace("\\", "\\\\").replace("'", "''") + "'";
+      default ->
+        "'"
+            + Rows.text(value, false).replace("\\", "\\\\").replace("'", "''").replace("\0", "\\0")
+            + "'";
     };
   }
 
