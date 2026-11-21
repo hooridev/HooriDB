@@ -120,6 +120,7 @@ final class FindTab implements Tab {
   private final MonitorGrids.Widths tableWidths = new MonitorGrids.Widths();
 
   private Lane lane; // the search's own session, or null while it has none
+  private char[] password; // a copy, for masking it in what the server says; wiped as it ends
   private boolean closed;
   private final State state; // for close, which is called without one
 
@@ -173,7 +174,7 @@ final class FindTab implements Tab {
       if (session == null) {
         return Optional.empty();
       }
-      Arrays.fill(session.password(), '\0'); // nothing here masks it
+      password = session.password();
       lane = session.lane();
     }
     return Optional.ofNullable(lane);
@@ -372,12 +373,15 @@ final class FindTab implements Tab {
     }
   }
 
-  private static String detail(Exception error) {
-    return switch (error) {
-      case QueryException q -> q.detail().isEmpty() ? q.failure().toString() : q.detail();
-      case ConnectionException c -> c.detail().isEmpty() ? c.failure().toString() : c.detail();
-      default -> error.getMessage() == null ? error.toString() : error.getMessage();
-    };
+  // The server's words, withheld where they hold the password.
+  private String detail(Exception error) {
+    return ConsoleTab.words(
+        password,
+        switch (error) {
+          case QueryException q -> q.detail().isEmpty() ? q.failure().toString() : q.detail();
+          case ConnectionException c -> c.detail().isEmpty() ? c.failure().toString() : c.detail();
+          default -> error.getMessage() == null ? error.toString() : error.getMessage();
+        });
   }
 
   /** Opens a result: a table, view or column in the tree, a definition or a hit's rows. */
@@ -462,6 +466,8 @@ final class FindTab implements Tab {
           _ -> s.closed(),
           _ -> s.closed());
       lane = null;
+      Arrays.fill(password, '\0');
+      password = null;
     }
   }
 

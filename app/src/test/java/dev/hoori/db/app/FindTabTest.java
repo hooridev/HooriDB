@@ -8,6 +8,7 @@ import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
 import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.CatalogTreeTest.open;
+import static dev.hoori.db.app.ConnectionsTest.PASSWORD;
 import static dev.hoori.db.app.MonitorTabTest.line;
 import static dev.hoori.db.app.MonitorTabTest.row;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -18,9 +19,11 @@ import com.rethinkj.ui.App;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.find.Found;
+import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
@@ -244,6 +247,19 @@ class FindTabTest {
     assertFalse(c.servers.calls.contains("search " + PG + "/shop.public.orders"));
     assertTrue(cancelled.contains("0 of 2 tables searched, cancelled"), cancelled);
     assertTrue(cancelled.contains("role=button label=\"Find\""), cancelled);
+  }
+
+  @Test
+  void aTablePassedOverDoesNotShowThePasswordTheServerSaid() throws Exception {
+    var app = find();
+    c.run(app, "press role=radio label=\"Data\"\nframe\n" + SETTLE);
+    c.servers.fail(
+        "search " + PG + "/shop.public.customers",
+        QueryException.of(QueryException.Failure.ACCESS_DENIED, "denied: " + PASSWORD));
+    c.run(app, search("name 2") + "snap skipped\n");
+    var skipped = c.tree("skipped");
+    assertTrue(skipped.contains("Not searched: " + ConnectionException.WITHHELD), skipped);
+    assertFalse(skipped.contains(PASSWORD), skipped);
   }
 
   @Test
