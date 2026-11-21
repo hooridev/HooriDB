@@ -1,23 +1,15 @@
 package dev.hoori.db.app;
 
-import static com.rethinkj.ui.El.col;
-import static com.rethinkj.ui.kit.Button.Variant.PRIMARY;
 import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Callout;
-import com.rethinkj.ui.kit.Checkbox;
-import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.HuePicker;
-import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
-import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TabGroups;
-import com.rethinkj.ui.kit.TextField;
-import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
@@ -55,7 +47,6 @@ import java.util.function.Consumer;
 final class CatalogTree {
 
   static final String TRY_AGAIN = "Try again";
-  private static final String CANCEL = "Cancel";
 
   /** Where a connection the user opened is. */
   sealed interface Phase {}
@@ -303,7 +294,7 @@ final class CatalogTree {
     return null;
   }
 
-  private Want want(Fetch fetch) {
+  Want want(Fetch fetch) {
     for (var entry : fetches.entrySet()) {
       if (entry.getValue() == fetch) {
         return entry.getKey();
@@ -1566,20 +1557,14 @@ final class CatalogTree {
   El dialog(State s, TabGroups.Group<Tab> group) {
     boolean main = group == s.tabs.main();
     if (main && disconnecting != null) {
-      return disconnectDialog(s);
+      return CatalogDialogs.disconnect(s, disconnecting);
     }
     var fetch = main ? asking() : null;
     if (fetch != null) {
-      var want = want(fetch);
-      Runnable stop = () -> stopFetch(s, want);
-      List<El> buttons =
-          fetch.step instanceof Fetch.Failed ? List.of(button(SECONDARY, CANCEL, stop)) : List.of();
-      // As wide as the connection dialog, so that the question wraps.
-      El content = col().w(ConnectionDialog.width()).child(fetch.view(s, stop));
-      return Dialog.dialog("Driver needed", content, buttons, stop);
+      return CatalogDialogs.driver(s, fetch, want(fetch));
     }
     var live = forPassword(s, group);
-    return live == null ? null : passwordDialog(s, live);
+    return live == null ? null : CatalogDialogs.password(s, live);
   }
 
   /** Whether {@link #dialog} shows one in the window of these tabs, without making it. */
@@ -1598,57 +1583,5 @@ final class CatalogTree {
       }
     }
     return null;
-  }
-
-  private El disconnectDialog(State s) {
-    var d = disconnecting;
-    String name = State.name(d.profile());
-    String what = switch (d.then()) {
-      case EDIT ->
-        "To edit it, HooriDB disconnects it first. If its server or database changes, the"
-            + " tabs of its tables close.";
-      case DELETE -> "To delete it, HooriDB disconnects it first.";
-    };
-    El disconnect = button(PRIMARY, "Disconnect", () -> disconnectAndGo(s));
-    return Dialog.dialog(
-        "Disconnect " + name + "?",
-        Label.label(name + " is connected. " + what).wrapText(),
-        List.of(button(SECONDARY, CANCEL, () -> disconnecting = null), disconnect),
-        disconnect,
-        () -> disconnecting = null);
-  }
-
-  private El passwordDialog(State s, Live live) {
-    Theme t = Theme.CURRENT.get();
-    var p = live.profile;
-    String who = p.user().isBlank() ? p.host() : p.user() + " on " + p.host();
-    El connect = button(PRIMARY, "Connect", () -> connectWith(s, live));
-    El content = col()
-        .w(t.size().field())
-        .gap(t.space().m())
-        .child(Label.label("Enter the password of " + who + ".").wrapText())
-        .child(TextField.revealable(
-                TextField.passwordField(Prop.of(() -> live.typed, v -> live.typed = v), null)
-                    .key("password")
-                    .label("Password")
-                    .wFull(),
-                live.revealed,
-                () -> live.revealed = !live.revealed)
-            .wFull())
-        .child(Checkbox.checkbox(
-            Prop.of(() -> live.keep, v -> live.keep = v), "Keep it until HooriDB closes"))
-        .child(Label.label(
-                Label.Variant.MUTED,
-                live.phase instanceof ForPassword(var silent) && silent
-                    ? "The system keyring did not answer, so the password typed here is used for"
-                        + " this session only."
-                    : "It is not saved in the system keyring.")
-            .wrapText());
-    return Dialog.dialog(
-        "Password for " + State.name(p),
-        content,
-        List.of(button(SECONDARY, CANCEL, () -> drop(s, live.id())), connect),
-        connect,
-        () -> drop(s, live.id()));
   }
 }
