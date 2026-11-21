@@ -8,6 +8,7 @@ import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 import static com.rethinkj.ui.kit.Label.label;
 
+import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.FileDialog;
 import com.rethinkj.ui.Style;
@@ -41,9 +42,10 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Export to SQL: the objects of a database or schema, as a list to check, with what of them goes
@@ -59,6 +61,16 @@ final class ExportDialog {
 
   // How often an export's progress reaches the view.
   private static final long TOLD_EVERY = 100_000_000; // nanoseconds
+
+  private static final String EXPORT = "Export";
+
+  // Where an export is: Cancel wins until the file is whole, and once that replaces the chosen
+  // one, nothing stops it.
+  private enum Stage {
+    RUNNING,
+    CANCELLED,
+    REPLACING
+  }
 
   final UUID id;
   final Container on;
@@ -85,7 +97,7 @@ final class ExportDialog {
   long atRows; // and how many of its rows so far
   long rowsBefore; // the rows of the tables before it
   int objectsBefore; // and how many objects
-  private final AtomicLong told = new AtomicLong();
+  private AtomicReference<Stage> stage = new AtomicReference<>(Stage.CANCELLED); // the last one's
   Dump.Written written; // what the last export wrote, or null
   String failed; // why it failed, or null
   boolean cancelled; // the last export was cancelled
@@ -234,31 +246,8 @@ final class ExportDialog {
     rowsBefore = 0;
     objectsBefore = 0;
     var app = s.app;
-    // Told one call at a time; an object's last count goes before the next object, the counts
-    // between at most every TOLD_EVERY.
-    var last = new Object() {
-      Item item;
-      long rows;
-    };
-    Dump.Progress progress = (item, rows) -> {
-      var now = System.nanoTime();
-      if (!item.equals(last.item)) {
-        var was = last.item;
-        var wasRows = last.rows;
-        told.set(now);
-        app.post(() -> {
-          if (was != null) {
-            step(was, wasRows);
-          }
-          step(item, rows);
-        });
-      } else if (now - told.get() >= TOLD_EVERY) {
-        told.set(now);
-        app.post(() -> step(item, rows));
-      }
-      last.item = item;
-      last.rows = rows;
-    };
+    var progress = new Told(app, new AtomicReference<>(Stage.RUNNING));
+    stage = progress.stage;
     exporting = lane.ask(
         app,
         "export to SQL",
@@ -273,6 +262,49 @@ final class ExportDialog {
           exporting = null;
           failed = words(e);
         });
+  }
+
+  /**
+   * An export's progress, told one call at a time from the lane's thread: an object's last count
+   * goes before the next object, the counts between at most every {@link #TOLD_EVERY}.
+   */
+  private final class Told implements Dump.Progress {
+    private final App<?> app;
+    private final AtomicReference<Stage> stage;
+    private Item last;
+    private long lastRows;
+    private long told;
+
+    Told(App<?> app, AtomicReference<Stage> stage) {
+      this.app = app;
+      this.stage = stage;
+    }
+
+    @Override
+    public void at(Item item, long rows) {
+      var now = System.nanoTime();
+      if (!item.equals(last)) {
+        var was = last;
+        var wasRows = lastRows;
+        told = now;
+        app.post(() -> {
+          if (was != null) {
+            step(was, wasRows);
+          }
+          step(item, rows);
+        });
+      } else if (now - told >= TOLD_EVERY) {
+        told = now;
+        app.post(() -> step(item, rows));
+      }
+      last = item;
+      lastRows = rows;
+    }
+
+    @Override
+    public boolean replacing() {
+      return stage.compareAndSet(Stage.RUNNING, Stage.REPLACING);
+    }
   }
 
   // The export writes this object now, with so many of its rows.
@@ -290,9 +322,12 @@ final class ExportDialog {
     atRows = rows;
   }
 
-  /** Cancels the export under way: the chosen file stays as it was. */
+  /**
+   * Cancels the export under way: the chosen file stays as it was. Once the file is whole and
+   * replaces it, the export ends as it would have.
+   */
   void cancel(State s) {
-    if (exporting != null) {
+    if (exporting != null && stage.compareAndSet(Stage.RUNNING, Stage.CANCELLED)) {
       exporting.cancel();
       exporting = null;
       cancelled = true;
@@ -307,6 +342,7 @@ final class ExportDialog {
       listing = null;
     }
     if (exporting != null) {
+      stage.compareAndSet(Stage.RUNNING, Stage.CANCELLED);
       exporting.cancel();
       exporting = null;
     }
@@ -386,17 +422,17 @@ final class ExportDialog {
     Theme t = Theme.CURRENT.get();
     float unit = t.size().control();
     boolean running = exporting != null;
-    El content = col().gap(t.space().m());
+    El body = col().gap(t.space().m());
     if (objects == null) {
-      content.w(36 * unit);
+      body.w(36 * unit);
       if (unread != null) {
-        content.child(Callout.callout(
+        body.child(Callout.callout(
             Callout.Kind.DANGER,
             "The objects could not be read",
             unread,
             button(SECONDARY, "Try again", () -> list(s)).key("export-retry")));
       } else {
-        content.child(row()
+        body.child(row()
             .gap(t.space().s())
             .align(Style.Align.CENTER)
             .role("status")
@@ -405,30 +441,30 @@ final class ExportDialog {
             .child(label(Label.Variant.MUTED, "Reading what " + name() + " holds…")));
       }
     } else {
-      content.child(row()
+      body.child(row()
           .gap(t.space().l())
-          .child(objectsView(s, unit, running))
+          .child(objectsView(objects, unit, running))
           .child(optionsView(s, unit, running)));
-      content.w(41 * unit).child(statusView());
+      body.w(41 * unit).child(statusView(objects));
     }
     El export = button(
             PRIMARY,
-            "Export",
+            EXPORT,
             ready() ? () -> export(s) : null,
             Button.options().state(running ? Button.State.BUSY : Button.State.READY))
         .key("export-go");
     Runnable dismiss = running ? () -> cancel(s) : () -> close(s);
     El close = button(SECONDARY, running ? "Cancel" : "Close", dismiss).key("export-close");
     return Dialog.dialog(
-            "Export " + name() + " to SQL",
-            content,
+            EXPORT + " " + name() + " to SQL",
+            body,
             List.of(close, export),
             dismiss,
             Dialog.options().defaultButton(export))
         .key("export-dialog");
   }
 
-  private El objectsView(State s, float unit, boolean running) {
+  private El objectsView(List<Listed> all, float unit, boolean running) {
     Theme t = Theme.CURRENT.get();
     var lines = lines();
     float height = t.size().control();
@@ -438,7 +474,7 @@ final class ExportDialog {
           .padding(t.space().m())
           .child(label(
                   Label.Variant.MUTED,
-                  objects.isEmpty()
+                  all.isEmpty()
                       ? name() + " holds nothing to export."
                       : "No object's name holds “" + filter + "”.")
               .wrapText());
@@ -453,14 +489,14 @@ final class ExportDialog {
           .rows(lines.size(), height, i -> line(lines.get(i), i, height, running));
     }
     var checked = Set.copyOf(checked());
-    var tables = objects.stream()
+    var tables = all.stream()
         .filter(l -> l.item().kind() == Item.Kind.TABLE && checked.contains(l.item()))
         .toList();
     var summary = new StringBuilder(String.format(
         Locale.ROOT,
         "%,d of %s checked, %,d %s",
         checked.size(),
-        objects(objects.size()),
+        objects(all.size()),
         tables.size(),
         tables.size() == 1 ? "table" : "tables"));
     if (content.data() && !tables.isEmpty()) {
@@ -502,55 +538,70 @@ final class ExportDialog {
         .gap(t.space().s())
         .padding(0, t.space().s());
     return switch (line) {
-      case Heading h -> {
-        var name = h.container().name();
+      case Heading(var container) -> {
+        var name = container.name();
         yield row.child(Label.label(Label.Variant.STRONG, name).ellipsis().grow(1))
-            .child(button(GHOST, "All", running ? null : () -> checkAll(h.container(), true))
+            .child(button(GHOST, "All", running ? null : () -> checkAll(container, true))
                 .label("Check all of " + name))
-            .child(button(GHOST, "None", running ? null : () -> checkAll(h.container(), false))
+            .child(button(GHOST, "None", running ? null : () -> checkAll(container, false))
                 .label("Check none of " + name));
       }
-      case Kind k ->
-        row.padding(0, t.space().l()).child(label(Label.Variant.MUTED, plural(k.kind())));
-      case Entry o -> {
-        var item = o.listed().item();
+      case Kind(var kind) ->
+        row.padding(0, t.space().l()).child(label(Label.Variant.MUTED, plural(kind)));
+      case Entry(var listed) -> {
+        var item = listed.item();
         var box = Checkbox.checkbox(
                 !unchecked.contains(item), item.shown(), running ? null : () -> toggle(item))
             .grow(1);
         row.padding(0, t.space().l()).child(box);
-        var detail = detail(o.listed());
-        if (detail != null) {
-          row.child(label(Label.Variant.MUTED, detail));
-        }
+        detail(listed).ifPresent(detail -> row.child(label(Label.Variant.MUTED, detail)));
         yield row;
       }
     };
   }
 
   // A table's estimates, as the list shows them beside it.
-  private static String detail(Listed listed) {
+  private static Optional<String> detail(Listed listed) {
+    var bytes = listed.bytes().stream().mapToObj(Format.BYTES::text).findFirst();
     if (listed.rows().isEmpty()) {
-      return listed.bytes().isPresent() ? Format.BYTES.text(listed.bytes().getAsLong()) : null;
+      return bytes;
     }
     var rows = "~" + ConsoleTab.rows(listed.rows().getAsLong());
-    return listed.bytes().isPresent()
-        ? rows + ", " + Format.BYTES.text(listed.bytes().getAsLong())
-        : rows;
+    return Optional.of(bytes.map(b -> rows + ", " + b).orElse(rows));
   }
 
   private El optionsView(State s, float unit, boolean running) {
-    Theme t = Theme.CURRENT.get();
-    boolean structure = content.structure();
-    boolean data = content.data();
     var what = Form.field(
-        "Export",
+        EXPORT,
         Radio.radioGroup(
                 List.of(Dump.Content.values()),
                 content,
                 ExportDialog::title,
                 running ? null : v -> content = v)
             .key("export-content")
-            .label("Export"));
+            .label(EXPORT));
+    var rows = Form.field(
+        "Rows per INSERT",
+        NumberField.numberField(
+                rowsPerInsert,
+                1,
+                MOST_ROWS_PER_INSERT,
+                10,
+                running || !content.data() ? null : v -> rowsPerInsert = v)
+            .key("export-rows-per-insert")
+            .label("Rows per INSERT"));
+    return col()
+        .w(18 * unit)
+        .child(Form.form(
+            Form.Labels.ABOVE,
+            Form.group(null, what, howField(running), rows, fileField(s, running))));
+  }
+
+  // The options, each of them disabled where what goes has no use for it.
+  private Form.Field howField(boolean running) {
+    Theme t = Theme.CURRENT.get();
+    boolean structure = content.structure();
+    boolean data = content.data();
     var options = new ArrayList<El>();
     options.add(Checkbox.checkbox(
             drop && structure,
@@ -579,18 +630,12 @@ final class ExportDialog {
               running ? null : () -> noForeignKeyChecks = !noForeignKeyChecks)
           .key("export-no-checks"));
     }
-    var how = Form.field("Options", col().gap(t.space().s()).children(options.toArray(El[]::new)));
-    var rows = Form.field(
-        "Rows per INSERT",
-        NumberField.numberField(
-                rowsPerInsert,
-                1,
-                MOST_ROWS_PER_INSERT,
-                10,
-                running || !data ? null : v -> rowsPerInsert = v)
-            .key("export-rows-per-insert")
-            .label("Rows per INSERT"));
-    // The file's name, and its folder below, each cut short where it is long.
+    return Form.field("Options", col().gap(t.space().s()).children(options.toArray(El[]::new)));
+  }
+
+  // The file's name, and its folder below, each cut short where it is long.
+  private Form.Field fileField(State s, boolean running) {
+    Theme t = Theme.CURRENT.get();
     El chosen = col().grow(1).minSize(0, 0);
     if (file == null) {
       chosen.child(label(Label.Variant.MUTED, "No file chosen"));
@@ -603,7 +648,7 @@ final class ExportDialog {
               .ellipsis()
               .wFull());
     }
-    var where = Form.field(
+    return Form.field(
             "File",
             row()
                 .wFull()
@@ -614,9 +659,6 @@ final class ExportDialog {
                     .key("export-choose")
                     .label("Choose the file")))
         .required();
-    return col()
-        .w(18 * unit)
-        .child(Form.form(Form.Labels.ABOVE, Form.group(null, what, how, rows, where)));
   }
 
   private static String title(Dump.Content content) {
@@ -628,58 +670,74 @@ final class ExportDialog {
   }
 
   // How far the export is, or how it ended; and what of the snapshot an engine cannot keep.
-  private El statusView() {
+  private El statusView(List<Listed> all) {
     Theme t = Theme.CURRENT.get();
     El status = col().wFull().gap(t.space().s());
     var checked = Set.copyOf(checked());
-    long outside = objects.stream()
-        .filter(l ->
-            l.item().kind() == Item.Kind.TABLE && !l.consistent() && checked.contains(l.item()))
-        .count();
+    var tables = all.stream()
+        .filter(l -> l.item().kind() == Item.Kind.TABLE && checked.contains(l.item()))
+        .toList();
+    long outside = tables.stream().filter(l -> !l.consistent()).count();
     if (content.data() && outside > 0) {
-      status.child(Callout.callout(
-              Callout.Kind.WARNING,
-              outside == 1
-                  ? "A table is read outside the snapshot"
-                  : outside + " tables are read outside the snapshot",
-              "Their engine keeps no transactions, as MyISAM: their rows are read as they are"
-                  + " at that moment, not as of the export's start.")
-          .key("export-inconsistent"));
+      status.child(outsideView(outside));
     }
     if (exporting != null) {
-      var total = objects.stream()
-          .filter(l -> checked.contains(l.item()) && l.item().kind() == Item.Kind.TABLE)
-          .mapToLong(l -> l.rows().orElse(0))
-          .sum();
-      long rows = rowsBefore + atRows;
-      double fraction = content.data() && total > 0
-          ? (double) rows / total
-          : (double) objectsBefore / Math.max(1, checked.size());
-      var what = at == null ? "Starting the snapshot" : "Exporting " + at.shown();
-      var detail = content.data() && total > 0
-          ? ConsoleTab.rows(rows) + " of about " + ConsoleTab.rows(total)
-          : objects(objectsBefore) + " of " + objects(checked.size());
-      status.child(
-          Progress.labeled(what, Math.min(1, fraction), detail).wFull().key("export-progress"));
-    } else if (written != null) {
-      status.child(Callout.callout(
+      status.child(progressView(tables, checked.size()));
+    } else {
+      status.child(endedView());
+    }
+    return status;
+  }
+
+  // Tables of an engine without transactions, as MyISAM.
+  private El outsideView(long outside) {
+    var text = "Their engine keeps no transactions, as MyISAM: their rows are read as they are at"
+        + " that moment, not as of the export's start";
+    return Callout.callout(
+            Callout.Kind.WARNING,
+            outside == 1
+                ? "A table is read outside the snapshot"
+                : outside + " tables are read outside the snapshot",
+            transaction
+                ? text + ", and where the file is read, a failure does not undo their rows."
+                : text + ".")
+        .key("export-inconsistent");
+  }
+
+  private El progressView(List<Listed> tables, int checked) {
+    var total = tables.stream().mapToLong(l -> l.rows().orElse(0)).sum();
+    long rows = rowsBefore + atRows;
+    var counted = content.data() && total > 0;
+    double fraction =
+        counted ? (double) rows / total : (double) objectsBefore / Math.max(1, checked);
+    var what = at == null ? "Starting the snapshot" : "Exporting " + at.shown();
+    var detail = counted
+        ? ConsoleTab.rows(rows) + " of about " + ConsoleTab.rows(total)
+        : objects(objectsBefore) + " of " + objects(checked);
+    return Progress.labeled(what, Math.min(1, fraction), detail).wFull().key("export-progress");
+  }
+
+  // How the last export ended; null before one.
+  private El endedView() {
+    if (written != null) {
+      return Callout.callout(
               Callout.Kind.SUCCESS,
               "Exported",
               objects(written.objects())
                   + (content.data() ? " and " + ConsoleTab.rows(written.rows()) : "")
                   + " to " + written.file() + ", " + Format.BYTES.text(written.bytes()) + ".")
-          .key("export-done"));
-    } else if (failed != null) {
-      status.child(Callout.callout(
+          .key("export-done");
+    }
+    if (failed != null) {
+      return Callout.callout(
               Callout.Kind.DANGER,
               "The export failed",
               failed + "\nThe chosen file was left as it was.")
-          .key("export-failed"));
-    } else if (cancelled) {
-      status.child(
-          Callout.callout(Callout.Kind.INFO, "Cancelled", "The chosen file was left as it was.")
-              .key("export-cancelled"));
+          .key("export-failed");
     }
-    return status;
+    return cancelled
+        ? Callout.callout(Callout.Kind.INFO, "Cancelled", "The chosen file was left as it was.")
+            .key("export-cancelled")
+        : null;
   }
 }

@@ -129,11 +129,14 @@ class ExportDialogTest {
     var none = c.tree("none");
     assertTrue(line(none, "#export-summary").contains("0 of 5 objects checked"), none);
     assertTrue(line(none, "role=button label=\"Export\"").contains("disabled"), none);
-    c.run(
-        app,
-        "press #export-filter\ntype \"ord\"\nframe\n"
-            + "press role=button label=\"Check all of public\"\nframe\n"
-            + "snap filtered\n");
+    c.run(app, """
+        press #export-filter
+        type "ord"
+        frame
+        press role=button label="Check all of public"
+        frame
+        snap filtered
+        """);
     var filtered = c.tree("filtered");
     assertFalse(filtered.contains("role=checkbox label=\"customers\""), filtered);
     assertTrue(line(filtered, "#export-summary").contains("2 of 5 objects checked, 1 table"));
@@ -148,6 +151,8 @@ class ExportDialogTest {
     var running = c.tree("running");
     assertTrue(line(running, "role=button label=\"Cancel\"").contains("button"), running);
     assertTrue(line(running, "role=button label=\"Export\"").contains("busy"), running);
+    // Cancelled where it reached the server, not while it waits for the lane.
+    CatalogTreeTest.eventually(() -> c.servers.calls.contains(EXPORT));
     c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap cancelled\n");
     CatalogTreeTest.eventually(() -> c.servers.interrupted.contains(EXPORT));
     gate.countDown();

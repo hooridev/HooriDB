@@ -1156,6 +1156,9 @@ final class FakeServers implements Servers {
             step(key);
             return n;
           });
+          if (!progress.replacing()) {
+            throw queryFailure(QueryException.Failure.CANCELLED);
+          }
           var text = new StringBuilder("-- A made-up export\n");
           for (var item : choice.items()) {
             text.append("-- ")
@@ -1175,7 +1178,7 @@ final class FakeServers implements Servers {
             call(key, queryFailure(QueryException.Failure.CANCELLED));
           } catch (QueryException e) {
             throw e;
-          } catch (Exception e) {
+          } catch (Exception _) {
             throw queryFailure(QueryException.Failure.OTHER);
           }
           done.add(key);
@@ -1194,7 +1197,7 @@ final class FakeServers implements Servers {
             call(key, queryFailure(QueryException.Failure.CANCELLED));
           } catch (QueryException e) {
             throw e;
-          } catch (Exception e) {
+          } catch (Exception _) {
             throw queryFailure(QueryException.Failure.OTHER);
           }
           done.add(key);
@@ -1244,7 +1247,7 @@ final class FakeServers implements Servers {
             call(key, queryFailure(QueryException.Failure.CANCELLED));
           } catch (QueryException e) {
             throw e;
-          } catch (Exception e) {
+          } catch (Exception _) {
             throw queryFailure(QueryException.Failure.OTHER);
           }
           done.add(key);
@@ -1267,7 +1270,7 @@ final class FakeServers implements Servers {
             call(key, queryFailure(QueryException.Failure.CANCELLED));
           } catch (QueryException e) {
             throw e;
-          } catch (Exception e) {
+          } catch (Exception _) {
             throw queryFailure(QueryException.Failure.OTHER);
           }
           done.add(key);
