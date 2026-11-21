@@ -37,7 +37,7 @@ final class FakePostgres implements AutoCloseable {
     Thread.ofVirtual().start(() -> {
       try (var socket = server.accept()) {
         serve(socket, tls, script);
-      } catch (IOException e) {
+      } catch (IOException _) {
         // The client went away, or the server was closed.
       }
     });

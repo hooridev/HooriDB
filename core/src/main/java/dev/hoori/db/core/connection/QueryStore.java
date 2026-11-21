@@ -2,12 +2,9 @@ package dev.hoori.db.core.connection;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.time.Instant;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import tools.jackson.databind.JsonNode;
 
 /**
  * The queries the user saved, of every connection, kept in {@value #FILE} in a folder beside the
@@ -96,17 +93,9 @@ public final class QueryStore {
           json.uuid(node, where, "connection"),
           json.text(node, where, "name"),
           json.text(node, where, "text"),
-          saved(node, where)));
+          json.time(node, where, "saved")));
     }
     return queries;
-  }
-
-  private Instant saved(JsonNode node, String where) throws WorkspaceStore.UnreadableException {
-    try {
-      return Instant.parse(json.text(node, where, "saved"));
-    } catch (DateTimeParseException notATime) {
-      throw json.unreadable("in " + where + ", \"saved\" is not a time");
-    }
   }
 
   /**
@@ -116,8 +105,7 @@ public final class QueryStore {
    *     gives
    */
   public void save(List<SavedQuery> queries) throws IOException {
-    var root = JsonFile.Json.MAPPER.createObjectNode();
-    root.put("version", VERSION);
+    var root = JsonFile.newRoot(VERSION);
     var array = root.putArray("queries");
     for (var query : queries) {
       array

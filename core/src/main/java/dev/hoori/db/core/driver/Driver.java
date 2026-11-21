@@ -17,7 +17,8 @@ public record Driver(
     String group, String artifact, String driverClass, List<Part> parts, String oldest) {
 
   private static final Pattern CLASS_NAME =
-      Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
+      // Possessive, as Maven's patterns are: no dot is in a class, so nothing to backtrack into.
+      Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*+(\\.[A-Za-z_$][A-Za-z0-9_$]*+)*+");
 
   /**
    * An artifact of the driver's group that is downloaded and loaded beside it, of the same version.

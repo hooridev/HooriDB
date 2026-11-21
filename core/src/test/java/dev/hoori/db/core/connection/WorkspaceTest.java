@@ -43,13 +43,17 @@ class WorkspaceTest {
 
   @Test
   void anIdIsUniqueInTheWholeTree() {
-    assertThrows(IllegalArgumentException.class, () -> new Workspace(List.of(A, A)));
-    assertThrows(IllegalArgumentException.class, () -> new Workspace(List.of(A, folder("f", A))));
-    var shared = new Workspace.Folder(A.id(), "f", true, List.of());
-    assertThrows(IllegalArgumentException.class, () -> new Workspace(List.of(A, shared)));
+    var twice = List.<Workspace.Entry>of(A, A);
+    assertThrows(IllegalArgumentException.class, () -> new Workspace(twice));
+    var inFolder = List.<Workspace.Entry>of(A, folder("f", A));
+    assertThrows(IllegalArgumentException.class, () -> new Workspace(inFolder));
+    var shared = List.<Workspace.Entry>of(A, new Workspace.Folder(A.id(), "f", true, List.of()));
+    assertThrows(IllegalArgumentException.class, () -> new Workspace(shared));
     var self = new Workspace.Folder(UUID.randomUUID(), "f", true, List.of());
-    assertThrows(IllegalArgumentException.class, () -> new Workspace(List.of(with(self, self))));
-    assertThrows(IllegalArgumentException.class, () -> TREE.after(B.id(), C), "C is there");
+    var inItself = List.<Workspace.Entry>of(with(self, self));
+    assertThrows(IllegalArgumentException.class, () -> new Workspace(inItself));
+    var b = B.id();
+    assertThrows(IllegalArgumentException.class, () -> TREE.after(b, C), "C is there");
   }
 
   @Test
@@ -68,7 +72,8 @@ class WorkspaceTest {
     assertEquals(
         new Workspace(List.of(with(OUTER, with(INNER, B, d), C), A, EMPTY)), TREE.after(B.id(), d));
     assertEquals(new Workspace(List.of(OUTER, A, d, EMPTY)), TREE.after(A.id(), d));
-    assertThrows(IllegalArgumentException.class, () -> TREE.after(UUID.randomUUID(), d));
+    var nowhere = UUID.randomUUID();
+    assertThrows(IllegalArgumentException.class, () -> TREE.after(nowhere, d));
   }
 
   @Test
@@ -96,8 +101,10 @@ class WorkspaceTest {
         new Workspace(List.of(with(OUTER, INNER, C, d), A, EMPTY)), TREE.into(OUTER.id(), d));
     assertEquals(new Workspace(List.of(OUTER, A, with(EMPTY, d))), TREE.into(EMPTY.id(), d));
     assertEquals(new Workspace(List.of(OUTER, A, EMPTY, d)), TREE.into(null, d));
-    assertThrows(IllegalArgumentException.class, () -> TREE.into(A.id(), d), "not a folder");
-    assertThrows(IllegalArgumentException.class, () -> TREE.into(UUID.randomUUID(), d));
+    var a = A.id();
+    assertThrows(IllegalArgumentException.class, () -> TREE.into(a, d), "not a folder");
+    var nowhere = UUID.randomUUID();
+    assertThrows(IllegalArgumentException.class, () -> TREE.into(nowhere, d));
   }
 
   @Test
@@ -138,8 +145,9 @@ class WorkspaceTest {
     assertFalse(TREE.canMove(A.id(), UUID.randomUUID(), Place.INTO));
     assertFalse(TREE.canMove(UUID.randomUUID(), OUTER.id(), Place.INTO));
     assertTrue(TREE.canMove(INNER.id(), OUTER.id(), Place.BEFORE));
-    assertThrows(
-        IllegalArgumentException.class, () -> TREE.move(OUTER.id(), INNER.id(), Place.INTO));
+    var outer = OUTER.id();
+    var inner = INNER.id();
+    assertThrows(IllegalArgumentException.class, () -> TREE.move(outer, inner, Place.INTO));
   }
 
   /** A change never nests folders deeper than a save takes, and one at the limit fits. */
@@ -162,7 +170,9 @@ class WorkspaceTest {
     assertTrue(shallow.canMove(two.id(), below, Place.BEFORE), "as deep as its neighbor");
     assertFalse(shallow.canMove(two.id(), below, Place.INTO));
     assertFalse(shallow.canMove(two.id(), A.id(), Place.AFTER));
-    assertThrows(IllegalArgumentException.class, () -> deep.into(deepest.id(), folder("new")));
+    var lowest = deepest.id();
+    var added = folder("new");
+    assertThrows(IllegalArgumentException.class, () -> deep.into(lowest, added));
   }
 
   @Test
@@ -174,7 +184,9 @@ class WorkspaceTest {
     assertEquals(new Workspace(List.of(with(OUTER, B, C), A, EMPTY)), TREE.dissolve(INNER.id()));
     assertEquals(new Workspace(List.of(INNER, C, A, EMPTY)), TREE.dissolve(OUTER.id()));
     assertEquals(new Workspace(List.of(OUTER, A)), TREE.dissolve(EMPTY.id()));
-    assertThrows(IllegalArgumentException.class, () -> TREE.open(A.id(), true), "a connection");
-    assertThrows(IllegalArgumentException.class, () -> TREE.dissolve(UUID.randomUUID()));
+    var a = A.id();
+    assertThrows(IllegalArgumentException.class, () -> TREE.open(a, true), "a connection");
+    var nowhere = UUID.randomUUID();
+    assertThrows(IllegalArgumentException.class, () -> TREE.dissolve(nowhere));
   }
 }

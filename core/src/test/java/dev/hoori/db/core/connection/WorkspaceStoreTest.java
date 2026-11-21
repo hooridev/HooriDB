@@ -329,7 +329,7 @@ class WorkspaceStoreTest {
       var workspace = nested(depth);
       try {
         store.save(workspace);
-      } catch (RuntimeException tooDeep) {
+      } catch (RuntimeException _) {
         assertArrayEquals(before, Files.readAllBytes(folder.resolve(WorkspaceStore.FILE)));
         continue;
       }

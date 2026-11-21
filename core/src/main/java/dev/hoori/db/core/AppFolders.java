@@ -2,7 +2,7 @@ package dev.hoori.db.core;
 
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
 /**
  * Where HooriDB keeps its files: the configuration, such as the connections, and data that can be
@@ -21,7 +21,7 @@ public record AppFolders(Path config, Path data) {
    * and the home folder given. Every system but Windows follows the XDG Base Directory
    * specification.
    */
-  public static AppFolders find(String osName, Function<String, String> env, Path home) {
+  public static AppFolders find(String osName, UnaryOperator<String> env, Path home) {
     if (osName.startsWith("Windows")) {
       var appData = home.resolve("AppData");
       return new AppFolders(
@@ -35,7 +35,7 @@ public record AppFolders(Path config, Path data) {
 
   // The XDG specification has a relative path ignored. On Windows too, a relative one would follow
   // the working folder, which is no place for settings.
-  private static Path base(Function<String, String> env, String variable, Path fallback) {
+  private static Path base(UnaryOperator<String> env, String variable, Path fallback) {
     var value = env.apply(variable);
     if (value == null || value.isEmpty()) {
       return fallback;
@@ -43,7 +43,7 @@ public record AppFolders(Path config, Path data) {
     try {
       var path = Path.of(value);
       return path.isAbsolute() ? path : fallback;
-    } catch (InvalidPathException notAPath) {
+    } catch (InvalidPathException _) {
       return fallback;
     }
   }
