@@ -632,7 +632,7 @@ final class Frame {
                 Menu.item("Command palette…", modal ? null : palette::open)
                     .icon(Symbol.SEARCH)
                     .shortcut(Key.CONTROL | Key.SHIFT, "P"),
-                Menu.item("Statement log", s.logPanel::toggle)
+                Menu.item("Statement log", inMain(s, s.logPanel::toggle))
                     .icon(Symbol.TEXT_BULLET_LIST_LTR)
                     .checked(s.logPanel.open),
                 Menu.separator(),

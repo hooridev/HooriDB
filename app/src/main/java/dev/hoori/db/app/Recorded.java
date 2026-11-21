@@ -39,8 +39,35 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
   @Override
   public Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
       throws ConnectionException {
-    var link = servers.open(profile, password, driver);
-    return new RecordedLink(link, profile.id(), password.clone(), log);
+    // What opening sends, as a read-only profile's statement, is logged as the link's calls are.
+    var id = profile.id();
+    var kept = password.clone();
+    try {
+      var link = log.on()
+          ? Journal.recording(
+              sent -> log.add(new Logged(id, checked(sent, null, kept))),
+              () -> servers.open(profile, password, driver))
+          : servers.open(profile, password, driver);
+      return new RecordedLink(link, id, kept, log);
+    } catch (ConnectionException | RuntimeException e) {
+      Arrays.fill(kept, '\0');
+      throw e;
+    }
+  }
+
+  // The entry as it is logged: on the database it was sent to, and without what holds the
+  // password, in its text, its database or its failure's message.
+  private static Sent checked(Sent sent, String database, char[] password) {
+    var on = sent.database() != null ? sent.database() : database;
+    if (on != null && Probe.contains(on, password)) {
+      on = null;
+    }
+    var text = Probe.contains(sent.text(), password) ? WITHHELD : sent.text();
+    var outcome =
+        sent.outcome() instanceof Outcome.Failed f && Probe.contains(f.message(), password)
+            ? new Outcome.Failed(ConnectionException.WITHHELD)
+            : sent.outcome();
+    return new Sent(sent.at(), sent.purpose(), on, text, sent.took(), outcome);
   }
 
   /** A link that logs each of its calls; its copy of the password goes when it closes. */
@@ -66,17 +93,9 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
         return call.call();
       }
       return Journal.recording(
-          sent -> log.add(new Logged(connection, checked(sent, database))), call);
-    }
-
-    private Sent checked(Sent sent, String database) {
-      var on = sent.database() != null ? sent.database() : database != null ? database : current;
-      var text = Probe.contains(sent.text(), password) ? WITHHELD : sent.text();
-      var outcome =
-          sent.outcome() instanceof Outcome.Failed f && Probe.contains(f.message(), password)
-              ? new Outcome.Failed(ConnectionException.WITHHELD)
-              : sent.outcome();
-      return new Sent(sent.at(), sent.purpose(), on, text, sent.took(), outcome);
+          sent -> log.add(new Logged(
+              connection, checked(sent, database != null ? database : current, password))),
+          call);
     }
 
     private static String of(Container container) {

@@ -203,6 +203,14 @@ class StatementLogTest {
   }
 
   @Test
+  void theSearchComparesCharactersInAnyCase() {
+    assertTrue(LogFilter.holds("SELECT * FROM t", "from"));
+    // The final sigma's upper case is the other sigma's.
+    assertTrue(LogFilter.holds("SELECT '\u039f\u03a3\u0391'", "\u03bf\u03c2"));
+    assertFalse(LogFilter.holds("SELECT 1", "SELECT 12"));
+  }
+
+  @Test
   void copyPutsTheChosenStatementWholeOnTheClipboard() throws Exception {
     var app = ran();
     c.run(

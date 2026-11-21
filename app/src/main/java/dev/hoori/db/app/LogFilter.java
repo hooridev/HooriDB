@@ -3,7 +3,6 @@ package dev.hoori.db.app;
 import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
-import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -63,7 +62,17 @@ record LogFilter(UUID connection, Purpose part, Ended ended, String search) {
     return (connection == null || connection.equals(entry.connection()))
         && (part == null || part == sent.purpose())
         && (ended == null || ended == Ended.of(sent.outcome()))
-        && (search.isEmpty()
-            || sent.text().toLowerCase(Locale.ROOT).contains(search.toLowerCase(Locale.ROOT)));
+        && (search.isEmpty() || holds(sent.text(), search));
+  }
+
+  // Whether the text holds the search in any case, as a character's upper and lower case compare,
+  // so that the final and the other sigma are one.
+  static boolean holds(String text, String search) {
+    for (int i = 0; i + search.length() <= text.length(); i++) {
+      if (text.regionMatches(true, i, search, 0, search.length())) {
+        return true;
+      }
+    }
+    return false;
   }
 }

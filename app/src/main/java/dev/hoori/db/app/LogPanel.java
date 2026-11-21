@@ -111,7 +111,8 @@ final class LogPanel {
                 SECONDARY,
                 Symbol.DELETE,
                 "Clear…",
-                all.isEmpty() || clearing ? null : () -> clearing = true)
+                // With a problem, the file may hold what does not show, or what a clear left.
+                (all.isEmpty() && log.problem() == null) || clearing ? null : () -> clearing = true)
             .key("statement-log-clear"),
         button(SECONDARY, Symbol.DISMISS, "Close", this::toggle).key("statement-log-close"));
     El body;
@@ -171,7 +172,11 @@ final class LogPanel {
   private El filters(State s, List<Logged> all) {
     Theme t = Theme.CURRENT.get();
     float unit = t.size().control();
-    var ids = all.stream().map(Logged::connection).distinct().toList();
+    var ids = new ArrayList<>(all.stream().map(Logged::connection).distinct().toList());
+    // The chosen connection stays to choose while its entries have gone, as the filter holds it.
+    if (filter.connection() != null && !ids.contains(filter.connection())) {
+      ids.add(filter.connection());
+    }
     var names = new ArrayList<String>(List.of("All connections"));
     ids.forEach(id -> names.add(connection(s, id)));
     var partNames = new ArrayList<String>(List.of("All parts"));
@@ -221,8 +226,10 @@ final class LogPanel {
       callout = Callout.callout(
               Callout.Kind.WARNING,
               "Clear the statement log?",
-              (n == 1 ? "Its entry is" : "Its " + n + " entries are")
-                  + " deleted, here and from this computer.",
+              n == 0
+                  ? "What it kept is deleted from this computer."
+                  : (n == 1 ? "Its entry is" : "Its " + n + " entries are")
+                      + " deleted, here and from this computer.",
               button(SECONDARY, "Cancel", () -> clearing = false).key("statement-log-keep"),
               button(
                       SECONDARY,
@@ -234,15 +241,20 @@ final class LogPanel {
                       Button.options().tone(Button.Tone.DANGER))
                   .key("statement-log-confirm"))
           .key("statement-log-question");
-    } else if (!log.on()) {
-      callout = Callout.callout(
-              Callout.Kind.INFO, "Logging is off", "Nothing that is sent now is logged.")
-          .key("statement-log-off");
-    } else if (log.problem() != null) {
-      callout = Callout.callout(
-          Callout.Kind.WARNING, "The statement log is not kept on the disk", log.problem());
     } else {
-      return null;
+      // That logging is off, and also why the file could not be written, as the choice itself.
+      var said = col().padding(t.space().s()).gap(t.space().s());
+      if (!log.on()) {
+        said.child(Callout.callout(
+                Callout.Kind.INFO, "Logging is off", "Nothing that is sent now is logged.")
+            .key("statement-log-off"));
+      }
+      if (log.problem() != null) {
+        said.child(Callout.callout(
+                Callout.Kind.WARNING, "The statement log is not kept on the disk", log.problem())
+            .key("statement-log-problem"));
+      }
+      return log.on() && log.problem() == null ? null : said;
     }
     return col().padding(t.space().s()).child(callout);
   }

@@ -6,6 +6,7 @@ import dev.hoori.db.core.connection.StatementLogStore;
 import dev.hoori.db.core.log.Logged;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -22,21 +23,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>An entry comes from the thread that sent it, which never waits: it goes into a queue of at most
  * {@value #WAITING}, which drops what does not fit, and the app's thread takes what has come in a
  * task posted once for all that came meanwhile. What it takes it writes to the file in the
- * background, a batch at a time, one call on the file after the other. Turned off, it takes
- * nothing.
+ * background, a batch at a time, one call on the file after the other; while one is written, at
+ * most {@value #WAITING} more wait for it, the newest. Turned off, it takes nothing, also not
+ * what was sent before it was turned on again; before the setting is read, what comes is kept
+ * until the setting says whether to.
  */
 final class StatementLog {
 
   /** The most entries kept in memory, which the panel shows. */
   static final int KEPT = 2_000;
 
-  /** The most entries that wait for the app's thread; more are dropped. */
+  /** The most entries that wait for the app's thread, or for the file; more are dropped. */
   static final int WAITING = 10_000;
 
   private final StatementLogStore store;
   private final BlockingQueue<Logged> arriving = new ArrayBlockingQueue<>(WAITING);
   private final AtomicBoolean posted = new AtomicBoolean(); // a task will take what has come
   private volatile boolean on = true;
+  private volatile Instant since = Instant.MIN; // what was sent before was sent while it was off
   private volatile App<?> app; // from the start on
 
   // On the app's thread.
@@ -45,19 +49,24 @@ final class StatementLog {
   private List<Logged> unsaved = new ArrayList<>();
   private final ArrayDeque<Call> calls = new ArrayDeque<>();
   private Work calling; // the call on the file that runs, or null
+  private boolean writing; // a batch waits for the file or is written
   private boolean loaded; // the file was read, or could not be: from then on it is written
   private boolean chosen; // turned on or off before the setting was read
+  private boolean cleared; // cleared before the file was read, whose entries then stay out
   private String problem; // why the file could not be read or written, or null
 
-  /** A call on the file, by what it does. */
-  private record Call(String name, Step step) {}
+  /** A call on the file, by what it does; whether it writes a batch. */
+  private record Call(String name, Step step, boolean writes) {}
 
   private interface Step {
     void run() throws IOException;
   }
 
-  /** The last entries of the file and whether logging is on, as the start reads them. */
-  private record Loaded(boolean enabled, List<Logged> recent) {}
+  /**
+   * Whether logging is on and the last entries of the file, as the start reads them, or why they
+   * could not be read: the setting counts either way.
+   */
+  private record Loaded(boolean enabled, List<Logged> recent, String problem) {}
 
   StatementLog(Path folder) {
     this.store = new StatementLogStore(folder);
@@ -73,7 +82,7 @@ final class StatementLog {
    * no room for is dropped.
    */
   void add(Logged entry) {
-    if (!on || !arriving.offer(entry)) {
+    if (!on || entry.sent().at().isBefore(since) || !arriving.offer(entry)) {
       return;
     }
     var app = this.app;
@@ -88,13 +97,29 @@ final class StatementLog {
     var store = this.store;
     app.background(
         "read the statement log",
-        () -> new Loaded(store.enabled(), store.recent(KEPT)),
-        loaded -> {
-          if (!chosen) {
-            on = loaded.enabled();
+        () -> {
+          boolean enabled = store.enabled();
+          try {
+            return new Loaded(enabled, store.recent(KEPT), null);
+          } catch (IOException e) {
+            return new Loaded(enabled, List.of(), e.getMessage());
           }
-          entries.addAll(0, loaded.recent());
-          trim();
+        },
+        loaded -> {
+          if (!chosen && !loaded.enabled()) {
+            // Off since the last time: what came before the setting was read is not logged.
+            on = false;
+            arriving.clear();
+            entries.clear();
+            unsaved = new ArrayList<>();
+          }
+          if (!cleared) {
+            entries.addAll(0, loaded.recent());
+            trim();
+          }
+          if (loaded.problem() != null) {
+            problem = loaded.problem();
+          }
           changes++;
           read();
         },
@@ -129,6 +154,9 @@ final class StatementLog {
 
   /** Turns logging on or off, and keeps the choice; off, what waits is dropped. */
   void turn(boolean on) {
+    if (on && !this.on) {
+      since = Instant.now();
+    }
     this.on = on;
     chosen = true;
     if (!on) {
@@ -136,17 +164,18 @@ final class StatementLog {
     }
     changes++;
     var store = this.store;
-    call("keep whether the statement log is on", () -> store.enable(on));
+    call("keep whether the statement log is on", () -> store.enable(on), false);
   }
 
   /** Empties the log, here and on the disk. */
   void clear() {
+    cleared |= !loaded;
     arriving.clear();
     entries.clear();
     unsaved = new ArrayList<>();
     problem = null;
     changes++;
-    call("clear the statement log", store::clear);
+    call("clear the statement log", store::clear, false);
   }
 
   // Takes what has come, in the order it was sent, and has it written.
@@ -154,6 +183,9 @@ final class StatementLog {
     posted.set(false);
     var batch = new ArrayList<Logged>();
     arriving.drainTo(batch);
+    var since = this.since;
+    // Off, or of a statement sent before it was last turned on: in the queue as it was turned off.
+    batch.removeIf(e -> !on || e.sent().at().isBefore(since));
     if (batch.isEmpty()) {
       return;
     }
@@ -168,6 +200,9 @@ final class StatementLog {
     }
     trim();
     unsaved.addAll(batch);
+    if (unsaved.size() > WAITING) {
+      unsaved.subList(0, unsaved.size() - WAITING).clear();
+    }
     changes++;
     write();
   }
@@ -178,19 +213,31 @@ final class StatementLog {
     }
   }
 
+  // One batch at a time: what comes while it is written waits in unsaved, bounded, for the next.
   private void write() {
-    if (!loaded || unsaved.isEmpty()) {
+    if (!loaded || writing || unsaved.isEmpty()) {
       return;
     }
     var batch = List.copyOf(unsaved);
     unsaved = new ArrayList<>();
     var store = this.store;
-    call("write the statement log", () -> store.append(batch));
+    writing = true;
+    call("write the statement log", () -> store.append(batch), true);
   }
 
   // The call runs once those asked for before it have ended, each in the background.
-  private void call(String name, Step step) {
-    calls.add(new Call(name, step));
+  private void call(String name, Step step, boolean writes) {
+    calls.add(new Call(name, step, writes));
+    next();
+  }
+
+  // A call has ended: the next one runs, and a batch that waited for a write is written.
+  private void ended(Call call) {
+    calling = null;
+    if (call.writes()) {
+      writing = false;
+      write();
+    }
     next();
   }
 
@@ -206,15 +253,11 @@ final class StatementLog {
           call.step().run();
           return null;
         },
-        done -> {
-          calling = null;
-          next();
-        },
+        done -> ended(call),
         error -> {
-          calling = null;
           problem = error.getMessage();
           changes++;
-          next();
+          ended(call);
         });
   }
 }
