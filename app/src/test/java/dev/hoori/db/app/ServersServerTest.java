@@ -602,8 +602,11 @@ class ServersServerTest {
       mode(lane, true, false);
       statement(lane, "INSERT INTO seam_cancel VALUES (1)", ConsoleTab.Mode.MANUAL);
       var slow = lane.submit(link -> link.run(sleep(provider, 30)).next(10));
-      sleeping(watcher, provider, id);
-      slow.cancel(true); // as the console's Cancel does
+      try {
+        sleeping(watcher, provider, id);
+      } finally {
+        slow.cancel(true); // as the console's Cancel does; else the cleanup waits behind it
+      }
       var ended = end(lane, ConsoleTab.COMMIT);
       if (pg) {
         // PostgreSQL would have answered the COMMIT by rolling back, without an error.
