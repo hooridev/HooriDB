@@ -504,7 +504,7 @@ final class FileRunDialog {
         content.child(label(
                 Label.Variant.MUTED,
                 "And " + Format.LONG.text(more) + " more, which are not listed: the first "
-                    + Format.LONG.text((long) FileRun.KEPT) + " are.")
+                    + Format.LONG.text((long) FileRun.LISTED) + " are.")
             .wrapText());
       }
     }

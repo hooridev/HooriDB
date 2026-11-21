@@ -158,7 +158,7 @@ class FileRunTest {
     assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
     assertEquals(List.of("begin", "INSERT 1", "rollback", "end"), session.sent);
     assertEquals(2, report.failures().getFirst().line());
-    assertEquals(1, report.progress().statements());
+    assertEquals(2, report.progress().statements()); // the COMMIT, refused, among them
 
     // Without one transaction the file keeps its own.
     var own = new Session(Map.of());
@@ -212,7 +212,7 @@ class FileRunTest {
     // By its name alone, as the rest of its line may hold a password.
     assertEquals("\\connect", failed.statement());
     assertTrue(failed.message().startsWith("\\connect is a command of PostgreSQL's client"));
-    assertEquals(new FileRun.Progress(37, text.length(), 1, 1), report.progress());
+    assertEquals(new FileRun.Progress(37, text.length(), 2, 1), report.progress());
   }
 
   @Test
@@ -227,6 +227,14 @@ class FileRunTest {
     var failed = report.failures().getFirst();
     assertFalse(failed.statement().contains("hunter2"), failed.statement());
     assertEquals(Outcome.WITHHELD, failed.message());
+  }
+
+  @Test
+  void aLongFailedStatementIsListedByItsStartWholeCharacters() {
+    var sql = "X".repeat(FileRun.SHOWN - 1) + Character.toString(0x1F600) + " tail";
+    var report = run(
+        POSTGRESQL, sql + ";", new FileRun.Options(false, false), new Session(Map.of(sql, WRONG)));
+    assertEquals("X".repeat(FileRun.SHOWN - 1), report.failures().getFirst().statement());
   }
 
   @Test
@@ -246,12 +254,12 @@ class FileRunTest {
   }
 
   @Test
-  void onlyTheFirstFailuresAreKept() {
-    var text = "X;\n".repeat(FileRun.KEPT + 5);
+  void onlyTheFirstFailuresAreListed() {
+    var text = "X;\n".repeat(FileRun.LISTED + 5);
     var report =
         run(POSTGRESQL, text, new FileRun.Options(true, false), new Session(Map.of("X", WRONG)));
-    assertEquals(FileRun.KEPT, report.failures().size());
-    assertEquals(FileRun.KEPT + 5, report.progress().failed());
+    assertEquals(FileRun.LISTED, report.failures().size());
+    assertEquals(FileRun.LISTED + 5, report.progress().failed());
   }
 
   @Test

@@ -103,7 +103,8 @@ class FileRunDialogTest {
     // A dump's extended INSERT, which may run to megabytes, ending in a pair of surrogates cut
     // where the log cuts it.
     var head = "INSERT INTO t VALUES " + "(1),".repeat(Recorded.SHOWN);
-    var sql = head.substring(0, Recorded.SHOWN - 1) + "😀" + "(2)".repeat(100_000);
+    var sql =
+        head.substring(0, Recorded.SHOWN - 1) + Character.toString(0x1F600) + "(2)".repeat(100_000);
     c.servers.statement(sql, List.of(new Result.Count(1)));
     var app = chosen(file("long.sql", sql + ";\n"));
     c.run(app, "press role=button label=\"Run\"\n" + SETTLE + "snap ran\n");

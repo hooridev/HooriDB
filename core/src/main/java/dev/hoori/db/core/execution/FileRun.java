@@ -45,8 +45,8 @@ import java.util.function.Consumer;
  */
 public final class FileRun {
 
-  /** How many failures a report keeps, in the order they came; it counts all. */
-  public static final int KEPT = 1_000;
+  /** How many failures a report lists, in the order they came; it counts all. */
+  public static final int LISTED = 1_000;
 
   /** How much of a failed statement's text a report keeps. */
   public static final int SHOWN = 500;
@@ -70,7 +70,9 @@ public final class FileRun {
    *
    * @param bytes the offset in the file up to which it ran
    * @param size the file's size in bytes, or -1 where it is not known
-   * @param statements the statements that ran, those that failed among them
+   * @param statements the statements of the file it went to, sent or refused unsent, and the
+   *     commands of the client it refused
+   * @param failed those of them that failed or were refused
    */
   public record Progress(long bytes, long size, long statements, long failed) {}
 
@@ -108,7 +110,7 @@ public final class FileRun {
   }
 
   /**
-   * How a run went: its end, how far it came, the first {@link #KEPT} failures, and its
+   * How a run went: its end, how far it came, the first {@link #LISTED} failures, and its
    * transaction.
    */
   public record Report(
@@ -159,13 +161,14 @@ public final class FileRun {
   private StatementReader reader; // under the lock
   private volatile boolean cancelled;
   private boolean interrupted; // the cancel interrupted the run, under the lock
-  private final List<Failed> failures = new ArrayList<>();
-  private long statements;
+  private final List<Failed> listed = new ArrayList<>(); // the first LISTED failures
+  private long statements; // as Progress counts them
   private long failed;
 
   /**
-   * A run of the file, with the provider's lexical rules, which tells each step that ran to {@code
-   * progress} on the thread that runs it.
+   * A run of the file, with the provider's lexical rules, which tells {@code progress} how far it
+   * is after each step, on the thread that runs it, and while it copies rows, on the thread that
+   * the copy reads them on, which may be another.
    */
   public FileRun(Source source, Provider provider, Options options, Consumer<Progress> progress) {
     this.source = source;
@@ -218,7 +221,7 @@ public final class FileRun {
       if (options.transaction()) {
         var failure = target.begin();
         if (failure.isPresent()) {
-          fail(0, "", failure.get().message());
+          list(0, "", failure.get().message());
           return report(Ending.STOPPED, Kept.NONE, last, started);
         }
         kept = Kept.ROLLED_BACK;
@@ -235,7 +238,7 @@ public final class FileRun {
     } catch (IOException e) {
       // The file could not be opened, or closed, which no step needs.
       if (statements == 0) {
-        fail(0, "", "The file cannot be read: " + e.getMessage());
+        list(0, "", "The file cannot be read: " + e.getMessage());
       }
     } finally {
       calm();
@@ -257,7 +260,7 @@ public final class FileRun {
         if (cancelled) {
           return Ending.CANCELLED;
         }
-        fail(file.line(), "", "The file could not be read: " + e.getMessage());
+        list(file.line(), "", "The file could not be read: " + e.getMessage());
         return Ending.STOPPED;
       }
       if (next.isEmpty()) {
@@ -275,7 +278,10 @@ public final class FileRun {
         case StatementReader.Copy copy -> copy(target, copy.sql(), file);
         case StatementReader.Command command -> command(command);
       };
-      var stops = failure.isPresent() && failed(step, failure.get());
+      if (!(step instanceof StatementReader.Command) || failure.isPresent()) {
+        statements++; // a command that was skipped is none
+      }
+      var stops = failure.isPresent() && stops(step, failure.get());
       progress.accept(progress(file));
       if (stops) {
         return cancelled ? Ending.CANCELLED : Ending.STOPPED;
@@ -284,13 +290,13 @@ public final class FileRun {
     return Ending.CANCELLED;
   }
 
-  // Counts the step's failure, unless a cancel ended it; whether the run stops at it.
-  private boolean failed(StatementReader.Step step, Failure failure) {
+  // Counts and lists the step's failure, unless a cancel ended it; whether the run stops at it.
+  private boolean stops(StatementReader.Step step, Failure failure) {
     if (cancelled) {
       return true;
     }
     failed++;
-    fail(step, failure);
+    listStep(step, failure);
     return step instanceof StatementReader.Command
         || options.transaction()
         || !options.goOn()
@@ -306,15 +312,11 @@ public final class FileRun {
               + " would end: the run stops, and what ran is rolled back. Run the file without one"
               + " transaction to have it keep its own."));
     }
-    var failure = target.run(sql);
-    statements++;
-    return failure;
+    return target.run(sql);
   }
 
   private Optional<Failure> copy(Target target, String sql, StatementReader file) {
-    var failure = target.copy(sql, told(file));
-    statements++;
-    return failure;
+    return target.copy(sql, told(file));
   }
 
   // The rows of the copy the file is on, which tell how far they came as they are read.
@@ -355,7 +357,7 @@ public final class FileRun {
       if (failure.isEmpty()) {
         kept = Kept.COMMITTED;
       } else {
-        fail(0, "COMMIT", failure.get().message());
+        list(0, "COMMIT", failure.get().message());
         kept =
             failure.get().kind() == Failure.Kind.CONNECTION_LOST ? Kept.IN_DOUBT : Kept.ROLLED_BACK;
       }
@@ -385,23 +387,23 @@ public final class FileRun {
 
   private Report report(Ending ending, Kept kept, Progress last, long started) {
     var at = new Progress(last.bytes(), last.size(), statements, failed);
-    return new Report(ending, at, failures, kept, Duration.ofNanos(System.nanoTime() - started));
+    return new Report(ending, at, listed, kept, Duration.ofNanos(System.nanoTime() - started));
   }
 
-  // The failure of a step. A command of the client shows by its name alone, as its line, which
-  // no server read, may give another's password.
-  private void fail(StatementReader.Step step, Failure failure) {
+  // Lists the failure of a step. A command of the client shows by its name alone, as its line,
+  // which no server read, may give another's password.
+  private void listStep(StatementReader.Step step, Failure failure) {
     switch (step) {
-      case StatementReader.Sql sql -> fail(sql.sql(), sql.line(), failure);
-      case StatementReader.Copy copy -> fail(copy.sql(), copy.line(), failure);
+      case StatementReader.Sql sql -> listStatement(sql.sql(), sql.line(), failure);
+      case StatementReader.Copy copy -> listStatement(copy.sql(), copy.line(), failure);
       case StatementReader.Command command ->
-        fail(command.line(), "\\" + command.name(), message(failure));
+        list(command.line(), "\\" + command.name(), message(failure));
     }
   }
 
-  // The failure of a statement that begins on the line, at the line the server names where it
-  // does, its passwords masked.
-  private void fail(String sql, long line, Failure failure) {
+  // Lists the failure of a statement that begins on the line, at the line the server names where
+  // it does, its passwords masked.
+  private void listStatement(String sql, long line, Failure failure) {
     long at = line
         + failure
             .place(sql, provider)
@@ -410,13 +412,22 @@ public final class FileRun {
             .orElse(0L);
     var masked = Secrets.masked(sql, provider);
     var message = masked.equals(sql) ? message(failure) : Outcome.WITHHELD;
-    fail(at, masked.length() > SHOWN ? masked.substring(0, SHOWN) : masked, message);
+    list(at, start(masked), message);
   }
 
-  private void fail(long line, String statement, String message) {
-    if (failures.size() < KEPT) {
-      failures.add(new Failed(line, statement, message));
+  // Lists a failure, where the report has room for it.
+  private void list(long line, String statement, String message) {
+    if (listed.size() < LISTED) {
+      listed.add(new Failed(line, statement, message));
     }
+  }
+
+  // The first SHOWN chars of the text, without the first of a surrogate pair alone.
+  private static String start(String text) {
+    if (text.length() <= SHOWN) {
+      return text;
+    }
+    return text.substring(0, Character.isHighSurrogate(text.charAt(SHOWN - 1)) ? SHOWN - 1 : SHOWN);
   }
 
   // The server's words, with its detail where it gives one; what HooriDB says where it gives none.
