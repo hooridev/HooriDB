@@ -363,13 +363,22 @@ final class Session {
     }
   }
 
-  /** The portion's failure, or null where it has none. */
+  /**
+   * The portion's failure, or null where it has none: its first that is not a cancel, as a
+   * connection lost while a cancelled read ended, else the cancel.
+   */
   static Failure failure(Portion portion) {
+    Failure cancel = null;
     for (var result : portion.results()) {
       if (result instanceof Failure f) {
-        return f;
+        if (f.kind() != Failure.Kind.CANCELLED) {
+          return f;
+        }
+        if (cancel == null) {
+          cancel = f;
+        }
       }
     }
-    return null;
+    return cancel;
   }
 }

@@ -56,6 +56,8 @@ class ConsoleTransactionTest {
   // A change that fails: not a plain read, so that what it left is asked of the server.
   static final String BROKEN = "UPDATE missing SET x = 1 WHERE id = 1";
   static final String KILL = "SELECT pg_terminate_backend(pg_backend_pid())";
+  // The server cancels it, and ending what it read then loses the connection.
+  static final String CUT = "SELECT pg_sleep(60)";
   // On an open session the switch asks the server first.
   static final String MANUAL = "press role=radio label=\"Manual\"\nframe\n" + SETTLE;
   static final String CALL = "CALL report()"; // begins a transaction, and gives 250 rows
@@ -98,7 +100,12 @@ class ConsoleTransactionTest {
         .statement(
             KILL,
             List.of(FakeServers.serverError(
-                Failure.Kind.CONNECTION_LOST, "terminating connection due to administrator")));
+                Failure.Kind.CONNECTION_LOST, "terminating connection due to administrator")))
+        .statement(
+            CUT,
+            List.of(
+                FakeServers.serverError(Failure.Kind.CANCELLED, "canceling statement"),
+                FakeServers.serverError(Failure.Kind.CONNECTION_LOST, ""))); // as core's own
   }
 
   @AfterEach
@@ -488,6 +495,17 @@ class ConsoleTransactionTest {
     var auto = k.console(SHOP);
     c.run(auto, type(KILL) + RUN + "snap autoLost\n");
     assertFalse(c.tree("autoLost").contains("open transaction"), c.tree("autoLost"));
+  }
+
+  /** A connection lost after the server's cancel is lost, not the cancel alone. */
+  @Test
+  void aConnectionLostAfterTheServersCancelIsLost() throws Exception {
+    var app = open(SHOP);
+    c.run(app, type(";\n" + CUT) + RUN + "snap cut\n");
+    String cut = c.tree("cut");
+    assertTrue(line(cut, "#problem").contains("Disconnected"), cut);
+    assertTrue(cut.contains("The open transaction is gone with the connection"), cut);
+    assertFalse(k.tab(app).connected());
   }
 
   // The review's findings, each as it was met, and what goes with them.

@@ -156,13 +156,10 @@ final class Delivery {
 
   private static List<Matter> matters(Portion portion, boolean plain) {
     var all = new ArrayList<Matter>();
-    // The first failure that is not the cancel, as a connection lost while a cancelled read ended.
-    portion.results().stream()
-        .filter(Failure.class::isInstance)
-        .map(Failure.class::cast)
-        .filter(f -> f.kind() != Failure.Kind.CANCELLED)
-        .findFirst()
-        .ifPresent(f -> all.add(new Matter("It failed: " + said(f), true)));
+    var failure = Session.failure(portion);
+    if (failure != null && failure.kind() != Failure.Kind.CANCELLED) {
+      all.add(new Matter("It failed: " + said(failure), true));
+    }
     if (!plain) {
       for (var m : portion.messages()) {
         all.add(matter(m));
