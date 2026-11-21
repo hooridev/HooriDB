@@ -238,7 +238,8 @@ class FileRunServerTest {
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aCancelStopsAStatementThatRuns(Provider provider) throws Exception {
-    var sleep = provider == POSTGRESQL ? "SELECT pg_sleep(30)" : "SELECT SLEEP(30)";
+    var sleep = (provider == POSTGRESQL ? "SELECT pg_sleep(30)" : "SELECT SLEEP(30)")
+        + " AS file_run_sleep";
     var file = file("sleep.sql", sleep + ";\nSELECT 2;\n");
     try (var connection = open(provider)) {
       var run = FileRun.of(file, provider, STOP, progress -> {});
@@ -246,7 +247,7 @@ class FileRunServerTest {
       var started = System.nanoTime();
       var runner = Thread.ofVirtual()
           .start(() -> report[0] = run.run(FileRun.target(connection, provider, false)));
-      Thread.sleep(1_000);
+      ExecutionServerTest.awaitRunning(provider, "file_run_sleep");
       run.cancel();
       runner.join(20_000);
       assertTrue(Duration.ofNanos(System.nanoTime() - started).toSeconds() < 20);
