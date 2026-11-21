@@ -6,10 +6,10 @@
     "docs:prepare": "node scripts/docs.mjs prepare",
     "dev": "node scripts/docs.mjs prepare && next dev",
     "build": "node scripts/docs.mjs prepare && next build && node scripts/docs.mjs check",
-    "fmt": "bun fmt",
-    "lint": "next typegen && bun lint --type-aware",
+    "fmt": "./node_modules/bun/bin/bun.exe fmt",
+    "lint": "next typegen && ./node_modules/bun/bin/bun.exe lint --type-aware",
     "shots": "node scripts/shots.mjs",
-    "check": "next typegen && bun check"
+    "check": "next typegen && ./node_modules/bun/bin/bun.exe check"
   },
   "dependencies": {
     "fumadocs-core": "16.19.0",

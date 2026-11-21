@@ -49,13 +49,13 @@ jobs:
       - id: install
         run: bun install --frozen-lockfile
       # Each check runs whatever the others found, so that a run lists every failure.
-      # They run the Bun that bun install put into node_modules, as the scripts of package.json do.
+      # The scripts run the Bun that bun install put into node_modules, by its path.
       - if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: bun lint
+        run: bun run lint
       - if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: bun fmt --check
+        run: bun run fmt --check
       - if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: bun check
+        run: bun run check
       - if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run build
       - if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
