@@ -862,7 +862,7 @@ final class MonitorTab implements Tab {
         if (blocks.isEmpty()) {
           yield EmptyState.emptyState(
                   Symbol.INFO,
-                  "Locks are not told",
+                  "No lock information",
                   "The server does not tell who holds a lock.",
                   null)
               .key("no-locks");
