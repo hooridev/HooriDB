@@ -83,4 +83,41 @@ class CredentialsTest {
     assertEquals("nothing", Credentials.without("nothing", "Pw-1".toCharArray()));
     assertEquals("empty", Credentials.without("empty", new char[0]));
   }
+
+  @Test
+  void theConnectionsOwnPasswordIsMaskedAsAStringOfSqlOrJsonWritesItToo() {
+    var password = "ab'c\"d\\e".toCharArray();
+    assertEquals("SELECT '" + MASK + "'", Credentials.without("SELECT 'ab''c\"d\\e'", password));
+    assertEquals("SELECT '" + MASK + "'", Credentials.without("SELECT 'ab\\'c\"d\\\\e'", password));
+    assertEquals(
+        "{\"x\": \"" + MASK + "\"}", Credentials.without("{\"x\": \"ab'c\\\"d\\\\e\"}", password));
+    assertEquals("a " + MASK, Credentials.without("a ab'c\"d\\e", password));
+  }
+
+  @Test
+  void anExecutableCommentIsCode() {
+    assertEquals(
+        "SELECT /*" + MASK + "*/ SLEEP(30)",
+        Credentials.mask("SELECT /*! 'postgresql://u:Pw-1@db/x', */ SLEEP(30)", Provider.MYSQL));
+    assertEquals(
+        "SELECT /*" + MASK + "*/ " + M,
+        Credentials.mask("SELECT /*! PASSWORD */ 'Pw-1'", Provider.MARIADB));
+    // An ordinary one stays.
+    assertEquals(
+        "SELECT 1 /* postgresql://u:x@db */",
+        Credentials.mask("SELECT 1 /* postgresql://u:x@db */", Provider.MYSQL));
+  }
+
+  @Test
+  void aVariableLosesItsValueWhereItsNameOrValueNamesACredential() {
+    assertEquals(
+        new ServerVariable("primary_conninfo", MASK, "configuration file"),
+        Credentials.mask(new ServerVariable(
+            "primary_conninfo", "host=db user=repl password=Pw-1", "configuration file")));
+    assertEquals(
+        new ServerVariable("ssl_key_password", MASK, ""),
+        Credentials.mask(new ServerVariable("ssl_key_password", "x", "")));
+    var plain = new ServerVariable("work_mem", "4MB", "default");
+    assertEquals(plain, Credentials.mask(plain));
+  }
 }

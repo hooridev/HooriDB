@@ -741,17 +741,27 @@ public final class PostgreSql implements Dialect {
           + " CROSS JOIN LATERAL (VALUES " + rows + ") v (name, n, value) ORDER BY v.n";
     }
 
-    // Each session that waits, beside each that blocks it, with the lock it waits for.
+    // Each session that waits, beside each that blocks it, with the lock it waits for. A relation
+    // has its name only in its own database, or where it is shared; in another, its database and
+    // number. An advisory lock is told by its keys.
     @Override
     public String locks() {
       return "SELECT a.pid, b.pid,"
-          + " CASE WHEN l.relation IS NOT NULL"
+          + " CASE WHEN l.relation IS NOT NULL AND (l.database" + EQ + "0 OR o.datname" + EQ
+          + "pg_catalog.current_database())"
           + " THEN l.relation::pg_catalog.regclass::pg_catalog.text"
+          + " WHEN l.relation IS NOT NULL"
+          + " THEN pg_catalog.concat(COALESCE(o.datname::pg_catalog.text,"
+          + " l.database::pg_catalog.text), '.', l.relation::pg_catalog.text)"
+          + " WHEN l.locktype" + EQ + "'advisory'"
+          + " THEN pg_catalog.concat_ws(' ', l.locktype, l.classid::pg_catalog.text,"
+          + " l.objid::pg_catalog.text, l.objsubid::pg_catalog.text)"
           + " ELSE pg_catalog.concat_ws(' ', l.locktype, l.transactionid::pg_catalog.text) END,"
           + " l.mode"
           + " FROM pg_catalog.pg_stat_activity a"
           + " CROSS JOIN LATERAL pg_catalog.unnest(pg_catalog.pg_blocking_pids(a.pid)) b (pid)"
           + " LEFT JOIN pg_catalog.pg_locks l ON l.pid" + EQ + "a.pid AND NOT l.granted"
+          + " LEFT JOIN pg_catalog.pg_database o ON o.oid" + EQ + "l.database"
           + " ORDER BY a.pid, b.pid";
     }
 

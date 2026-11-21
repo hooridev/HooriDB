@@ -4,6 +4,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
@@ -32,17 +33,22 @@ public final class Credentials {
   /**
    * The statement of SQL with its strings masked: all of them where a word of its code names a
    * credential, else those that hold one. A string left open, as at the end of a statement the
-   * server cut short, is masked as well.
+   * server cut short, is masked as well. An executable comment is code for the server, whose
+   * strings the pieces do not tell apart: its words count as code, and it is masked whole where
+   * the strings are or it holds a credential.
    */
   public static String mask(String sql, Provider provider) {
     if (sql.isEmpty()) {
       return sql;
     }
     var pieces = Statements.pieces(sql, provider);
+    var openings = provider.keepsDocuments()
+        ? List.<String>of()
+        : provider.dialect().syntax().executableComments();
     // The code where it stands, with its white space, and blanks in place of all else.
     var code = new StringBuilder(sql);
     for (var piece : pieces) {
-      if (piece.kind() != Statements.Piece.Kind.CODE) {
+      if (piece.kind() != Statements.Piece.Kind.CODE && !executes(sql, piece, openings)) {
         for (int i = piece.start(); i < piece.end(); i++) {
           code.setCharAt(i, ' ');
         }
@@ -52,16 +58,31 @@ public final class Credentials {
     var out = new StringBuilder(sql.length());
     int at = 0;
     for (var piece : pieces) {
-      if (piece.kind() != Statements.Piece.Kind.STRING) {
+      boolean string = piece.kind() == Statements.Piece.Kind.STRING;
+      if (!string && !executes(sql, piece, openings)) {
         continue;
       }
       var text = sql.substring(piece.start(), piece.end());
       if (all || HOLDS.matcher(text).find()) {
-        out.append(sql, at, piece.start()).append('\'').append(MASK).append('\'');
+        out.append(sql, at, piece.start());
+        out.append(string ? "'" + MASK + "'" : "/*" + MASK + "*/");
         at = piece.end();
       }
     }
     return out.append(sql, at, sql.length()).toString();
+  }
+
+  // Whether the piece is a comment that the server runs as code.
+  private static boolean executes(String sql, Statements.Piece piece, List<String> openings) {
+    if (piece.kind() != Statements.Piece.Kind.COMMENT) {
+      return false;
+    }
+    for (var opening : openings) {
+      if (sql.startsWith(opening, piece.start())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -86,21 +107,65 @@ public final class Credentials {
     };
   }
 
-  /** The variable with its value masked where its name names a credential. */
+  /**
+   * The variable with its value masked where its name names a credential or its value holds one,
+   * as a connection string with a password.
+   */
   public static ServerVariable mask(ServerVariable variable) {
+    var value = variable.value();
     return WORD.matcher(variable.name()).find()
+            || value != null && HOLDS.matcher(value).find()
         ? new ServerVariable(variable.name(), MASK, variable.source())
         : variable;
   }
 
+  // How a string writes a character of the password: in SQL with its quote doubled, or with a
+  // backslash before its quote and backslash where a backslash escapes; in JSON with a backslash
+  // before its quote and backslash.
+  private static final List<Escape> ESCAPES =
+      List.of(new Escape("'", '\''), new Escape("'\\", '\\'), new Escape("\"\\", '\\'));
+
+  // The characters that a string writes with the escape before them.
+  private record Escape(String characters, char escape) {}
+
   /**
-   * The text with each place where it holds the password masked; the password is compared where
-   * it is, without a copy as a string, which could not be wiped.
+   * The text with each place where it holds the password masked, also as a string of SQL or JSON
+   * writes it; the password is compared where it is, without a copy as a string, which could not
+   * be wiped.
    */
   public static String without(String text, char[] password) {
     if (password == null || password.length == 0) {
       return text;
     }
+    // The escaped forms first, as they may hold the password as it is.
+    for (var escape : ESCAPES) {
+      var escaped = escaped(password, escape);
+      if (escaped.length > password.length) {
+        text = exactly(text, escaped);
+      }
+      Arrays.fill(escaped, '\0');
+    }
+    return exactly(text, password);
+  }
+
+  // The password with the escape before each of its characters.
+  private static char[] escaped(char[] password, Escape escape) {
+    int more = 0;
+    for (char c : password) {
+      more += escape.characters().indexOf(c) >= 0 ? 1 : 0;
+    }
+    var out = new char[password.length + more];
+    int at = 0;
+    for (char c : password) {
+      if (escape.characters().indexOf(c) >= 0) {
+        out[at++] = escape.escape();
+      }
+      out[at++] = c;
+    }
+    return out;
+  }
+
+  private static String exactly(String text, char[] password) {
     StringBuilder out = null;
     int at = 0;
     for (int i = 0; i + password.length <= text.length(); i++) {

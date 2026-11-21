@@ -117,7 +117,16 @@ public final class MongoDb implements DocumentDialect {
           "pipeline",
           Document.array(Document.of(
               "$currentOp",
-              Document.of("allUsers", allUsers, "idleConnections", true, "idleSessions", false))),
+              // Through mongos, the router's own connections, which have their clients.
+              Document.of(
+                  "allUsers",
+                  allUsers,
+                  "idleConnections",
+                  true,
+                  "idleSessions",
+                  false,
+                  "localOps",
+                  true))),
           "cursor",
           Document.EMPTY,
           "comment",
@@ -147,8 +156,12 @@ public final class MongoDb implements DocumentDialect {
     // An operation's id is a number, but through mongos, which names its shard before it.
     @Override
     public Document cancel(String operation) {
-      Object op =
-          operation.matches("-?\\d{1,9}") ? (Object) Integer.parseInt(operation) : operation;
+      Object op = operation;
+      try {
+        op = Integer.parseInt(operation);
+      } catch (NumberFormatException e) {
+        // A shard's name and the operation's number on it.
+      }
       return Document.of("killOp", 1, "op", op);
     }
 
