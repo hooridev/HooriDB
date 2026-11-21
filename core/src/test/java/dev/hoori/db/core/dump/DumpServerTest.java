@@ -4,9 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import dev.hoori.db.core.TestServer;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connect.Connector;
 import dev.hoori.db.core.connection.Provider;
@@ -36,6 +39,72 @@ import org.junit.jupiter.params.provider.MethodSource;
 class DumpServerTest {
 
   private static final Duration TIMEOUT = Duration.ofSeconds(10);
+
+  // What PostgreSQL's catalog tells of the objects of public: relations, columns, indexes with
+  // whether they are valid, constraints, views, routines, triggers and sequences.
+  private static final List<String> POSTGRESQL_FACTS =
+      List.of("""
+      SELECT c.relname, c.relkind, c.relpersistence, c.relispartition,
+        pg_catalog.pg_get_expr(c.relpartbound, c.oid), c.reloptions::text,
+        pg_catalog.obj_description(c.oid, 'pg_class')
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S') ORDER BY 1""", """
+      SELECT c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull,
+        pg_catalog.pg_get_expr(d.adbin, d.adrelid), a.attidentity, a.attgenerated, a.attislocal,
+        a.attcollation, pg_catalog.col_description(c.oid, a.attnum)
+      FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+      WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm') AND a.attnum > 0
+      AND NOT a.attisdropped ORDER BY c.relname, a.attnum""", """
+      SELECT t.relname, (SELECT pg_catalog.count(*) FROM pg_catalog.pg_index o
+        WHERE o.indrelid = t.oid), ic.relname, i.indisvalid, i.indisunique, i.indisprimary,
+        pg_catalog.pg_get_indexdef(i.indexrelid)
+      FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+      JOIN pg_catalog.pg_class t ON t.oid = i.indrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' ORDER BY 1, 3""", """
+      SELECT t.relname, co.conname, co.contype, co.conislocal, co.coninhcount,
+        pg_catalog.pg_get_constraintdef(co.oid)
+      FROM pg_catalog.pg_constraint co JOIN pg_catalog.pg_class t ON t.oid = co.conrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' AND co.contype <> 'n' ORDER BY 1, 2""", """
+      SELECT c.relname, pg_catalog.pg_get_viewdef(c.oid)
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm') ORDER BY 1""", """
+      SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid),
+        pg_catalog.pg_get_functiondef(p.oid), pg_catalog.obj_description(p.oid, 'pg_proc')
+      FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' ORDER BY 1, 2""", """
+      SELECT c.relname, t.tgname, pg_catalog.pg_get_triggerdef(t.oid), t.tgenabled
+      FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY 1, 2""", """
+      SELECT sequencename, data_type, start_value, min_value, max_value, increment_by, cycle,
+        cache_size, last_value
+      FROM pg_catalog.pg_sequences WHERE schemaname = 'public' ORDER BY 1""");
+
+  // What information_schema of MariaDB and MySQL tells of the objects of the database.
+  private static final List<String> MYSQL_FACTS = List.of("""
+      SELECT TABLE_NAME, TABLE_TYPE, ENGINE, TABLE_COLLATION, TABLE_COMMENT
+      FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY 1""", """
+      SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_DEFAULT, IS_NULLABLE, COLUMN_TYPE,
+        CHARACTER_SET_NAME, COLLATION_NAME, COLUMN_KEY, EXTRA, COLUMN_COMMENT,
+        GENERATION_EXPRESSION
+      FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY 1, 3""", """
+      SELECT TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, NON_UNIQUE, INDEX_TYPE, SUB_PART,
+        COLLATION, NULLABLE
+      FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? ORDER BY 1, 2, 3""", """
+      SELECT CONSTRAINT_NAME, TABLE_NAME, REFERENCED_TABLE_NAME, UPDATE_RULE, DELETE_RULE
+      FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = ? ORDER BY 1""", """
+      SELECT TABLE_NAME, VIEW_DEFINITION, CHECK_OPTION, IS_UPDATABLE, SECURITY_TYPE
+      FROM information_schema.VIEWS WHERE TABLE_SCHEMA = ? ORDER BY 1""", """
+      SELECT ROUTINE_NAME, ROUTINE_TYPE, DTD_IDENTIFIER, ROUTINE_DEFINITION, IS_DETERMINISTIC,
+        SQL_DATA_ACCESS, SECURITY_TYPE, SQL_MODE, ROUTINE_COMMENT
+      FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? ORDER BY 1""", """
+      SELECT TRIGGER_NAME, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_ORDER, ACTION_STATEMENT,
+        ACTION_TIMING, SQL_MODE
+      FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY 1""");
 
   @TempDir
   Path folder;
@@ -159,6 +228,138 @@ class DumpServerTest {
     }
   }
 
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aSessionWithAnsiQuotesExportsAlikeAndKeepsItsMode(Provider provider) throws Exception {
+    assumeTrue(provider != Provider.POSTGRESQL, "Only MariaDB and MySQL have ANSI_QUOTES");
+    try (var databases = new Databases(provider)) {
+      var file = folder.resolve("ansi.sql");
+      var mode = new String[1];
+      export(
+          databases,
+          Dump.Content.STRUCTURE_AND_DATA,
+          Dump.Options.DEFAULT,
+          file,
+          l -> true,
+          connection -> {
+            execute(
+                connection, "SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',ANSI_QUOTES')");
+            mode[0] = sqlMode(connection);
+          },
+          connection -> assertEquals(mode[0], sqlMode(connection)));
+      assertTrue(mode[0].contains("ANSI_QUOTES"), mode[0]);
+      databases.run(Files.readString(file));
+      databases.assertSame();
+    }
+  }
+
+  private static String sqlMode(Connection connection) throws SQLException {
+    try (var statement = connection.createStatement();
+        var result = statement.executeQuery("SELECT @@SESSION.sql_mode")) {
+      result.next();
+      return result.getString(1);
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void largeRowsGoInInsertsOfABoundedSize(Provider provider) throws Exception {
+    try (var databases = new Databases(provider)) {
+      try (var connection = databases.open(databases.source)) {
+        var binary = provider == Provider.POSTGRESQL ? "bytea" : "longblob";
+        execute(connection, "CREATE TABLE big (id integer PRIMARY KEY, b " + binary + ")");
+        for (var id = 1; id <= 5; id++) {
+          // 400 KB a row, written as twice as many hexadecimal digits.
+          var bytes = "'00ff" + id + "00a'";
+          execute(
+              connection,
+              provider == Provider.POSTGRESQL
+                  ? "INSERT INTO big SELECT " + id + ", pg_catalog.decode(pg_catalog.repeat("
+                      + bytes + ", 100000), 'hex')"
+                  : "INSERT INTO big VALUES (" + id + ", REPEAT(UNHEX(" + bytes + "), 100000))");
+        }
+      }
+      var file = folder.resolve("big.sql");
+      export(
+          databases,
+          Dump.Content.STRUCTURE_AND_DATA,
+          Dump.Options.DEFAULT,
+          file,
+          l -> l.item().name().equals("big"));
+      var text = Files.readString(file);
+      var inserts = Statements.split(text, provider).stream()
+          .map(st -> text.substring(st.start(), st.end()))
+          .filter(sql -> sql.startsWith("INSERT INTO"))
+          .toList();
+      // Each past the bound by its last row at most: two rows each, the last alone.
+      assertEquals(
+          3, inserts.size(), inserts.stream().map(String::length).toList().toString());
+      for (var insert : inserts) {
+        assertTrue(insert.length() < Dump.INSERT_SIZE + 900_000, String.valueOf(insert.length()));
+      }
+      databases.run(text);
+      assertEquals(
+          databases.rows(databases.source, "big"), databases.rows(databases.target, "big"));
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void theTablesExportedCannotBeChangedByOthersUntilTheExportEnds(Provider provider)
+      throws Exception {
+    assumeTrue(provider == Provider.POSTGRESQL, "Only PostgreSQL's snapshot keeps DDL out");
+    try (var databases = new Databases(provider);
+        var other = databases.open(databases.source)) {
+      execute(other, "SET lock_timeout = '200ms'");
+      var refused = new ArrayList<String>();
+      var file = folder.resolve("locked.sql");
+      try (var connection = databases.open(databases.source)) {
+        var listed = Dump.list(connection, provider, databases.container());
+        var choice = new Dump.Choice(
+            new Database(databases.source, false),
+            listed.stream().map(Listed::item).toList(),
+            Dump.Content.STRUCTURE_AND_DATA,
+            Dump.Options.DEFAULT);
+        Dump.write(connection, provider, choice, file, (item, rows) -> {
+          if (refused.isEmpty()) {
+            for (var sql :
+                List.of("TRUNCATE child, parent", "ALTER TABLE typed ADD late integer")) {
+              try {
+                execute(other, sql);
+              } catch (SQLException e) {
+                refused.add(e.getSQLState());
+              }
+            }
+          }
+        });
+      }
+      assertEquals(List.of("55P03", "55P03"), refused);
+      databases.run(Files.readString(file));
+      databases.assertSame();
+      // One that holds a table already makes the export fail, and says why.
+      execute(other, "BEGIN");
+      execute(other, "LOCK TABLE parent IN ACCESS EXCLUSIVE MODE");
+      try (var connection = databases.open(databases.source)) {
+        var choice = new Dump.Choice(
+            new Database(databases.source, false),
+            List.of(Item.of(databases.container(), Item.Kind.TABLE, "parent")),
+            Dump.Content.STRUCTURE_AND_DATA,
+            Dump.Options.DEFAULT);
+        var failed = assertThrows(
+            QueryException.class,
+            () -> Dump.write(connection, provider, choice, file, (item, rows) -> {}));
+        assertTrue(failed.detail().contains("Another session"), failed.detail());
+      } finally {
+        execute(other, "ROLLBACK");
+      }
+    }
+  }
+
+  /** What a test does with the connection that exports, before and after the export. */
+  interface Session {
+    void on(Connection connection) throws Exception;
+  }
+
   private static Dump.Written export(
       Databases databases,
       Dump.Content content,
@@ -166,7 +367,20 @@ class DumpServerTest {
       Path file,
       Predicate<Listed> chosen)
       throws Exception {
+    return export(databases, content, options, file, chosen, c -> {}, c -> {});
+  }
+
+  private static Dump.Written export(
+      Databases databases,
+      Dump.Content content,
+      Dump.Options options,
+      Path file,
+      Predicate<Listed> chosen,
+      Session before,
+      Session after)
+      throws Exception {
     try (var connection = databases.open(databases.source)) {
+      before.on(connection);
       var listed = Dump.list(connection, databases.provider, databases.container());
       var kinds = listed.stream().map(l -> l.item().kind()).distinct().toList();
       assertTrue(
@@ -186,6 +400,7 @@ class DumpServerTest {
         }
       });
       assertFalse(steps.isEmpty());
+      after.on(connection);
       return written;
     }
   }
@@ -226,18 +441,13 @@ class DumpServerTest {
     }
 
     // What holds the objects: PostgreSQL's schema public, the database itself elsewhere.
-    dev.hoori.db.core.catalog.Container container() {
-      var database = new Database(source, false);
-      return provider == Provider.POSTGRESQL
-          ? new dev.hoori.db.core.catalog.Schema(database, "public", false)
-          : database;
+    Container container() {
+      return container(source);
     }
 
-    private dev.hoori.db.core.catalog.Container targetContainer() {
-      var database = new Database(target, false);
-      return provider == Provider.POSTGRESQL
-          ? new dev.hoori.db.core.catalog.Schema(database, "public", false)
-          : database;
+    private Container container(String name) {
+      var database = new Database(name, false);
+      return provider == Provider.POSTGRESQL ? new Schema(database, "public", false) : database;
     }
 
     Connection open(String database) throws ConnectionException {
@@ -264,14 +474,15 @@ class DumpServerTest {
       }
     }
 
+    // The same as the catalog of each server tells it, which the export does not read alike, then
+    // as the export defines it, and the same rows, their values read exactly.
     void assertSame() throws Exception {
       try (var from = open(source);
           var to = open(target)) {
+        assertEquals(facts(from, source), facts(to, target));
         var objects = objects(from, container());
-        assertEquals(objects.keySet(), objects(to, targetContainer()).keySet());
-        var was = definitions(from, container());
-        var now = definitions(to, targetContainer());
-        assertEquals(was, now);
+        assertEquals(objects.keySet(), objects(to, container(target)).keySet());
+        assertEquals(definitions(from, container()), definitions(to, container(target)));
         for (var name : objects.keySet()) {
           if (objects.get(name).kind() == Item.Kind.TABLE) {
             assertEquals(rows(source, objects.get(name).name()), rows(target, name), name);
@@ -280,8 +491,32 @@ class DumpServerTest {
       }
     }
 
-    private Map<String, Item> objects(Connection connection, dev.hoori.db.core.catalog.Container c)
-        throws Exception {
+    // What the server's catalog tells of the objects, a line each, with the database's own name
+    // as <database>, so that the two databases' compare.
+    private String facts(Connection connection, String database) throws SQLException {
+      var lines = new ArrayList<String>();
+      var postgresql = provider == Provider.POSTGRESQL;
+      for (var sql : postgresql ? POSTGRESQL_FACTS : MYSQL_FACTS) {
+        try (var statement = connection.prepareStatement(sql)) {
+          if (!postgresql) {
+            statement.setString(1, database);
+          }
+          try (var result = statement.executeQuery()) {
+            var columns = result.getMetaData().getColumnCount();
+            while (result.next()) {
+              var line = new StringBuilder(sql.substring(0, sql.indexOf('\n')));
+              for (var i = 1; i <= columns; i++) {
+                line.append(" | ").append(result.getString(i));
+              }
+              lines.add(line.toString().replace(database, "<database>"));
+            }
+          }
+        }
+      }
+      return String.join("\n", lines);
+    }
+
+    private Map<String, Item> objects(Connection connection, Container c) throws Exception {
       var objects = new TreeMap<String, Item>();
       for (var listed : Dump.list(connection, provider, c)) {
         objects.put(listed.item().shown(), listed.item());
@@ -290,8 +525,8 @@ class DumpServerTest {
     }
 
     // What creates each object, by its name.
-    private Map<String, List<String>> definitions(
-        Connection connection, dev.hoori.db.core.catalog.Container c) throws Exception {
+    private Map<String, List<String>> definitions(Connection connection, Container c)
+        throws Exception {
       var items = Dump.list(connection, provider, c).stream().map(Listed::item).toList();
       var definitions = new TreeMap<String, List<String>>();
       for (var definition : Dump.definitions(connection, provider, items)) {
@@ -302,24 +537,46 @@ class DumpServerTest {
       return definitions;
     }
 
-    // The table's rows as the server writes them, by their first column.
+    // The table's rows as the server writes them, by their first column; on MariaDB and MySQL a
+    // float as a double, which these servers write rounded otherwise.
     List<List<String>> rows(String database, String table) throws Exception {
-      var qualified = provider == Provider.POSTGRESQL
-          ? "public." + provider.quote(table)
-          : provider.quote(table);
       try (var connection = open(database);
-          var statement = connection.createStatement();
-          var result = statement.executeQuery("SELECT * FROM " + qualified + " ORDER BY 1")) {
-        var rows = new ArrayList<List<String>>();
-        var columns = result.getMetaData().getColumnCount();
-        while (result.next()) {
-          var row = new ArrayList<String>();
-          for (var i = 1; i <= columns; i++) {
-            row.add(text(result, i));
+          var statement = connection.createStatement()) {
+        var qualified = provider == Provider.POSTGRESQL
+            ? "public." + provider.quote(table)
+            : provider.quote(table);
+        var select = provider == Provider.POSTGRESQL ? "*" : exactly(connection, database, table);
+        try (var result =
+            statement.executeQuery("SELECT " + select + " FROM " + qualified + " ORDER BY 1")) {
+          var rows = new ArrayList<List<String>>();
+          var columns = result.getMetaData().getColumnCount();
+          while (result.next()) {
+            var row = new ArrayList<String>();
+            for (var i = 1; i <= columns; i++) {
+              row.add(text(result, i));
+            }
+            rows.add(row);
           }
-          rows.add(row);
+          return rows;
         }
-        return rows;
+      }
+    }
+
+    private String exactly(Connection connection, String database, String table)
+        throws SQLException {
+      try (var statement = connection.prepareStatement("""
+          SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION""")) {
+        statement.setString(1, database);
+        statement.setString(2, table);
+        var columns = new ArrayList<String>();
+        try (var result = statement.executeQuery()) {
+          while (result.next()) {
+            var name = provider.quote(result.getString(1));
+            columns.add(result.getString(2).equalsIgnoreCase("float") ? name + " + 0E0" : name);
+          }
+        }
+        return String.join(", ", columns);
       }
     }
 
@@ -388,6 +645,19 @@ class DumpServerTest {
         "CREATE TABLE measure (id integer, at date NOT NULL) PARTITION BY RANGE (at)",
         "CREATE TABLE measure_2024 PARTITION OF measure"
             + " FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')",
+        // An index of the partitioned table, which its partition's attaches to, and a default and
+        // NOT NULL of the partition's own.
+        "CREATE INDEX measure_id ON measure (id)",
+        "ALTER TABLE measure_2024 ALTER COLUMN id SET DEFAULT 7",
+        "ALTER TABLE measure_2024 ALTER COLUMN id SET NOT NULL",
+        // A child with defaults and NOT NULL of its own on the columns it inherits.
+        "CREATE TABLE base (id integer DEFAULT 0, note text DEFAULT 'b')",
+        "CREATE TABLE derived (extra integer) INHERITS (base)",
+        "ALTER TABLE ONLY derived ALTER COLUMN id DROP DEFAULT",
+        "ALTER TABLE ONLY derived ALTER COLUMN note SET DEFAULT 'd'",
+        "ALTER TABLE derived ALTER COLUMN id SET NOT NULL",
+        "INSERT INTO base VALUES (1, 'in base')",
+        "INSERT INTO derived (id, extra) VALUES (2, 5)",
         "CREATE FUNCTION twice(x integer) RETURNS integer LANGUAGE sql IMMUTABLE"
             + " AS $$ SELECT x * 2 $$",
         "CREATE FUNCTION twice(x text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT x || x $$",
@@ -448,10 +718,16 @@ class DumpServerTest {
             + " 'tab\\there ''q'' \\\\ end', ST_GeomFromText('POINT(1 2)')),"
             + " (2, NULL, X'', NULL, NULL, NULL, NULL, NULL, NULL, NULL, '', NULL, NULL, NULL,"
             + " 0, '', NULL)",
+        // A float of more digits than these servers write of one.
+        "INSERT INTO typed (id, f) VALUES (3, 1.23456789)",
         "INSERT INTO plain VALUES ('kept')"));
     if (provider == Provider.MARIADB) {
       statements.add("CREATE SEQUENCE counter START WITH 5");
       statements.add("SELECT NEXTVAL(counter), NEXTVAL(counter)");
+      // A default of the sequence, which the server names with its database.
+      statements.add("CREATE TABLE numbered (id integer NOT NULL DEFAULT nextval(counter),"
+          + " k varchar(5))");
+      statements.add("INSERT INTO numbered (k) VALUES ('a')");
     }
     return statements;
   }
