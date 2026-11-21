@@ -11,14 +11,14 @@ public final class ShortEnding implements AutoCloseable {
 
   public static final Duration BOUND = Duration.ofSeconds(1);
 
-  private final Duration before = Execution.ending;
+  private final Duration before = Execution.giveUpBound;
 
   public ShortEnding() {
-    Execution.ending = BOUND;
+    Execution.giveUpBound = BOUND;
   }
 
   @Override
   public void close() {
-    Execution.ending = before;
+    Execution.giveUpBound = before;
   }
 }
