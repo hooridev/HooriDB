@@ -28,7 +28,9 @@ public interface ErrorDialect {
     /** A time limit of the server ended the statement, or a wait for a lock. */
     TIMEOUT,
     /** A row broke a constraint, beyond the SQLSTATEs of class 23. */
-    CONSTRAINT;
+    CONSTRAINT,
+    /** A session that a statement names to cancel or end is not there, or no longer. */
+    NO_SUCH_SESSION;
 
     /**
      * Whether a failure with the SQLSTATE and error code, on a server of the provider, means this:

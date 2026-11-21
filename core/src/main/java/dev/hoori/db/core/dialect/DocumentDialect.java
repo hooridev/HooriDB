@@ -20,4 +20,7 @@ public non-sealed interface DocumentDialect extends Traits {
 
   /** Whether its servers take the text as the name of a database; an empty one is none. */
   boolean isDatabaseName(String name);
+
+  /** How its servers tell what their sessions do. */
+  DocumentMonitorDialect monitor();
 }

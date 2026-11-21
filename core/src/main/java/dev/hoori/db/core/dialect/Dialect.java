@@ -28,4 +28,7 @@ public non-sealed interface Dialect extends Traits {
 
   /** How its tables' rows and its results are read. */
   RowsDialect rows();
+
+  /** How its servers tell what their sessions do. */
+  MonitorDialect monitor();
 }

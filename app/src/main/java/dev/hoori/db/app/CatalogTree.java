@@ -1454,6 +1454,8 @@ final class CatalogTree {
         var p = s.profile(n.id());
         yield List.of(
             Menu.item("New console", () -> s.openConsole(n.id())).icon(Symbol.CODE),
+            Menu.item("Server monitor", () -> s.openMonitor(n.id(), s.tabs.main()))
+                .icon(Symbol.SERVER),
             Menu.separator(),
             Menu.item("Disconnect", active(n.id()) ? () -> disconnect(s, n.id()) : null)
                 .icon(Symbol.PLUG_DISCONNECTED),

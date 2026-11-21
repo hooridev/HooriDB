@@ -26,6 +26,9 @@ import dev.hoori.db.core.execution.Plan;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.monitor.DocumentMonitor;
+import dev.hoori.db.core.monitor.Monitor;
+import dev.hoori.db.core.monitor.SqlMonitor;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -136,6 +139,9 @@ interface Servers {
 
     /** The connection's transaction and auto-commit as they are now, as {@link Status#of}. */
     Status status() throws QueryException;
+
+    /** What the server does now, read on this connection, as {@link Monitor} says. */
+    Monitor monitor() throws QueryException;
 
     /**
      * Gives up the statement whose rows are not all read, if one is, as {@link Execution#abandon}:
@@ -367,6 +373,12 @@ interface Servers {
     }
 
     @Override
+    public Monitor monitor() throws QueryException {
+      usable();
+      return new DocumentMonitor(session);
+    }
+
+    @Override
     public Abandoned giveUp() {
       var left = open.getAndSet(null);
       return left == null ? Abandoned.NOTHING : ended(left.close());
@@ -555,6 +567,12 @@ interface Servers {
     public Status status() throws QueryException {
       usable();
       return Status.of(connection, provider);
+    }
+
+    @Override
+    public Monitor monitor() throws QueryException {
+      usable();
+      return new SqlMonitor(connection, provider);
     }
 
     @Override

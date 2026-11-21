@@ -7,6 +7,7 @@ import static dev.hoori.db.app.TestConnectionTest.START;
 import static dev.hoori.db.app.TestConnectionTest.TEST;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -910,7 +911,7 @@ class DriversTest {
       assertFalse(closed.contains("Discard changes?"), closed);
       assertTrue(closed.contains("role=dialog label=\"New connection\""), closed);
     }
-    assertFalse(app.state().dialog.choosingDriver);
+    assertNotEquals(ConnectionDialog.Over.CHOOSING_DRIVER, app.state().dialog.over);
     String asked = tree("asked");
     assertTrue(line(asked, "role=note").contains("\"Download PostgreSQL JDBC 42.7.14?\""), asked);
   }

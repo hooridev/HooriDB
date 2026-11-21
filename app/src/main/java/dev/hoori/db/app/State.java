@@ -1058,7 +1058,7 @@ final class State {
 
   /** Whether a change of the keyring runs, which no one may leave halfway. */
   private boolean keyringBusy() {
-    return removal.running || dialog != null && dialog.changing;
+    return removal.running || dialog != null && dialog.changing();
   }
 
   /**
@@ -1096,7 +1096,7 @@ final class State {
     }
     // A keyring that keeps a change waiting is given up, as its Cancel does: the window stays, and
     // says what that left; the next close closes. A slower one is given up once it is slow.
-    if (dialog != null && dialog.slow) {
+    if (dialog != null && dialog.slow()) {
       dialog.giveUp(this);
       return;
     }
@@ -1129,6 +1129,7 @@ final class State {
     if (exitAt < 0) {
       exitAt = noticed;
       consoles(null).forEach(ConsoleTab::end);
+      monitors(null).forEach(m -> m.end(this));
       int at = ++exits;
       app.after(EXIT_SECONDS, () -> {
         if (exits == at && quitting() && closing > waived) {
@@ -1287,7 +1288,42 @@ final class State {
       case null -> null;
       case TableTab x -> x.id;
       case ConsoleTab x -> x.id;
+      case MonitorTab x -> x.id;
     };
+  }
+
+  /**
+   * Opens the server monitor of the connection in the window of these tabs, or goes to the one it
+   * has, in whichever window.
+   */
+  void openMonitor(UUID id, TabGroups.Group<Tab> group) {
+    if (profile(id) == null) {
+      return;
+    }
+    for (var each : tabs.groups()) {
+      for (int i = 0; i < each.tabs().size(); i++) {
+        if (each.tabs().get(i) instanceof MonitorTab x && x.id.equals(id)) {
+          tabs.select(each, i);
+          return;
+        }
+      }
+    }
+    var monitor = new MonitorTab(this, id);
+    tabs.add(group, group.tabs().size(), monitor);
+    monitor.open(this);
+  }
+
+  /** The server monitors of every window, of the connection or of all where it is null. */
+  List<MonitorTab> monitors(UUID id) {
+    var all = new ArrayList<MonitorTab>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof MonitorTab x && (id == null || x.id.equals(id))) {
+          all.add(x);
+        }
+      }
+    }
+    return all;
   }
 
   /** The command palette of the window of these tabs. */
@@ -1479,6 +1515,7 @@ final class State {
   private void closeTabs(UUID id) {
     var all = new ArrayList<Tab>(tables(id));
     all.addAll(consoles(id));
+    all.addAll(monitors(id));
     close(all);
   }
 
@@ -1493,6 +1530,7 @@ final class State {
   /** The connection ended: what its tabs asked of it ends too, and what they read stays. */
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
+    monitors(id).forEach(m -> m.end(this));
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -1507,6 +1545,9 @@ final class State {
     }
     for (var console : consoles(id)) {
       console.connected(this);
+    }
+    for (var monitor : monitors(id)) {
+      monitor.connected(this);
     }
   }
 
@@ -1526,6 +1567,12 @@ final class State {
     }
     var profile = profile(tab.id);
     return (profile == null ? "" : name(profile) + ": ") + tab.path();
+  }
+
+  /** A server monitor's title: its connection's name. */
+  String title(MonitorTab tab) {
+    var profile = profile(tab.id);
+    return (profile == null ? "" : name(profile) + ": ") + "Server monitor";
   }
 
   /**
@@ -1672,6 +1719,7 @@ final class State {
       dialog.close(this); // and what it reads, its driver's dialog's too
     }
     consoles(null).forEach(ConsoleTab::close);
+    monitors(null).forEach(MonitorTab::close);
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();
