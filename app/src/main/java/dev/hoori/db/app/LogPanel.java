@@ -381,9 +381,13 @@ final class LogPanel {
     return connection(s, entry.connection());
   }
 
+  // Its name, told apart from another of the same name as the palette does; a deleted one by the
+  // start of its id.
   private static String connection(State s, UUID id) {
     var profile = s.profile(id);
-    return profile == null ? "Deleted connection" : State.name(profile);
+    return profile == null
+        ? "Deleted connection (" + id.toString().substring(0, 8) + ")"
+        : GoTo.label(profile, s.profiles);
   }
 
   /** The part of the app that sends for the purpose, as the log names it. */

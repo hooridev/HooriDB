@@ -41,17 +41,49 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
       throws ConnectionException {
     // What opening sends, as a read-only profile's statement, is logged as the link's calls are.
     var id = profile.id();
-    var kept = password.clone();
+    var secret = new Secret(password.clone());
     try {
       var link = log.on()
           ? Journal.recording(
-              sent -> log.add(new Logged(id, checked(sent, null, kept))),
+              sent -> secret.log(log, id, sent, null),
               () -> servers.open(profile, password, driver))
           : servers.open(profile, password, driver);
-      return new RecordedLink(link, id, kept, log);
+      return new RecordedLink(link, id, secret, log);
     } catch (ConnectionException | RuntimeException e) {
-      Arrays.fill(kept, '\0');
+      secret.wipe();
       throw e;
+    }
+  }
+
+  /**
+   * The connection's password, as long as what its link sends is logged: work that outlives the
+   * link, as a give-up whose worker the server keeps waiting, logs nothing once it is wiped, as the
+   * password could no longer be found in what it sent.
+   */
+  static final class Secret {
+
+    private final char[] password;
+    private boolean wiped;
+
+    Secret(char[] password) {
+      this.password = password;
+    }
+
+    // Logs the entry without the password, unless the password went.
+    void log(StatementLog log, UUID connection, Sent sent, String database) {
+      Sent checked;
+      synchronized (this) {
+        if (wiped) {
+          return;
+        }
+        checked = checked(sent, database, password);
+      }
+      log.add(new Logged(connection, checked));
+    }
+
+    synchronized void wipe() {
+      wiped = true;
+      Arrays.fill(password, '\0');
     }
   }
 
@@ -75,14 +107,14 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
 
     private final Link link;
     private final UUID connection;
-    private final char[] password;
+    private final Secret secret;
     private final StatementLog log;
     private volatile String current; // the database the session is on, as far as is known
 
-    RecordedLink(Link link, UUID connection, char[] password, StatementLog log) {
+    RecordedLink(Link link, UUID connection, Secret secret, StatementLog log) {
       this.link = link;
       this.connection = connection;
-      this.password = password;
+      this.secret = secret;
       this.log = log;
       this.current = link.database();
     }
@@ -93,9 +125,7 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
         return call.call();
       }
       return Journal.recording(
-          sent -> log.add(new Logged(
-              connection, checked(sent, database != null ? database : current, password))),
-          call);
+          sent -> secret.log(log, connection, sent, database != null ? database : current), call);
     }
 
     private static String of(Container container) {
@@ -225,7 +255,7 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
       try {
         return recorded(null, link::close);
       } finally {
-        Arrays.fill(password, '\0');
+        secret.wipe();
       }
     }
 

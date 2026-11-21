@@ -53,10 +53,14 @@ final class StatementLog {
   private boolean loaded; // the file was read, or could not be: from then on it is written
   private boolean chosen; // turned on or off before the setting was read
   private boolean cleared; // cleared before the file was read, whose entries then stay out
+  private int dropped; // counts each clear and each turning off: a failed write from before stays
   private String problem; // why the file could not be read or written, or null
 
-  /** A call on the file, by what it does; whether it writes a batch. */
-  private record Call(String name, Step step, boolean writes) {}
+  /**
+   * A call on the file, by what it does; the batch it writes, or null, and the count of {@link
+   * #dropped} as it was asked for.
+   */
+  private record Call(String name, Step step, List<Logged> batch, int dropped) {}
 
   private interface Step {
     void run() throws IOException;
@@ -108,10 +112,7 @@ final class StatementLog {
         loaded -> {
           if (!chosen && !loaded.enabled()) {
             // Off since the last time: what came before the setting was read is not logged.
-            on = false;
-            arriving.clear();
-            entries.clear();
-            unsaved = new ArrayList<>();
+            suspend();
           }
           if (!cleared) {
             entries.addAll(0, loaded.recent());
@@ -124,11 +125,25 @@ final class StatementLog {
           read();
         },
         error -> {
+          // Whether it is off cannot be known: it is, until it is turned on.
+          if (!chosen) {
+            suspend();
+          }
           problem = error.getMessage();
+          changes++;
           read();
         });
     take();
     next(); // what was asked before
+  }
+
+  // Off before the setting was read: what came meanwhile is not logged.
+  private void suspend() {
+    on = false;
+    arriving.clear();
+    entries.clear();
+    unsaved = new ArrayList<>();
+    dropped++;
   }
 
   private void read() {
@@ -160,11 +175,14 @@ final class StatementLog {
     this.on = on;
     chosen = true;
     if (!on) {
+      // What waits goes, also for the file; a batch the file is given already is written.
       arriving.clear();
+      unsaved = new ArrayList<>();
+      dropped++;
     }
     changes++;
     var store = this.store;
-    call("keep whether the statement log is on", () -> store.enable(on), false);
+    call("keep whether the statement log is on", () -> store.enable(on), null);
   }
 
   /** Empties the log, here and on the disk. */
@@ -173,9 +191,10 @@ final class StatementLog {
     arriving.clear();
     entries.clear();
     unsaved = new ArrayList<>();
+    dropped++;
     problem = null;
     changes++;
-    call("clear the statement log", store::clear, false);
+    call("clear the statement log", store::clear, null);
   }
 
   // Takes what has come, in the order it was sent, and has it written.
@@ -215,28 +234,40 @@ final class StatementLog {
 
   // One batch at a time: what comes while it is written waits in unsaved, bounded, for the next.
   private void write() {
-    if (!loaded || writing || unsaved.isEmpty()) {
+    if (!loaded || !on || writing || unsaved.isEmpty()) {
       return;
     }
     var batch = List.copyOf(unsaved);
     unsaved = new ArrayList<>();
     var store = this.store;
     writing = true;
-    call("write the statement log", () -> store.append(batch), true);
+    call("write the statement log", () -> store.append(batch), batch);
   }
 
   // The call runs once those asked for before it have ended, each in the background.
-  private void call(String name, Step step, boolean writes) {
-    calls.add(new Call(name, step, writes));
+  private void call(String name, Step step, List<Logged> batch) {
+    calls.add(new Call(name, step, batch, dropped));
     next();
   }
 
-  // A call has ended: the next one runs, and a batch that waited for a write is written.
-  private void ended(Call call) {
+  // A call has ended: the next one runs, and a batch that waited for a write is written. Of a
+  // batch that failed, what was not written waits for the next, unless it was dropped meanwhile:
+  // tried again as more comes, not at once, so that a disk that keeps failing is not kept busy.
+  private void ended(Call call, Exception error) {
     calling = null;
-    if (call.writes()) {
+    if (call.batch() != null) {
       writing = false;
-      write();
+      if (error == null) {
+        write();
+      } else if (call.dropped() == dropped) {
+        int written = error instanceof StatementLogStore.Unwritten u ? u.written() : 0;
+        var rest = new ArrayList<>(call.batch().subList(written, call.batch().size()));
+        rest.addAll(unsaved);
+        if (rest.size() > WAITING) {
+          rest.subList(0, rest.size() - WAITING).clear();
+        }
+        unsaved = rest;
+      }
     }
     next();
   }
@@ -253,11 +284,11 @@ final class StatementLog {
           call.step().run();
           return null;
         },
-        done -> ended(call),
+        done -> ended(call, null),
         error -> {
           problem = error.getMessage();
           changes++;
-          ended(call);
+          ended(call, error);
         });
   }
 }
