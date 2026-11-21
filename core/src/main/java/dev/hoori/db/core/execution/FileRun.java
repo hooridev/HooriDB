@@ -266,6 +266,12 @@ public final class FileRun {
       var step = next.get();
       var failure = switch (step) {
         case StatementReader.Sql sql -> statement(target, sql.sql());
+        case StatementReader.Copy copy
+        when copy.followed() ->
+          Optional.of(Failure.of(
+              Failure.Kind.INVALID,
+              "More follows COPY … FROM STDIN on its line, where its rows begin on the next line:"
+                  + " it does not run."));
         case StatementReader.Copy copy -> copy(target, copy.sql(), file);
         case StatementReader.Command command -> command(command);
       };

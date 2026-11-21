@@ -189,6 +189,18 @@ class FileRunTest {
   }
 
   @Test
+  void aCopyWithMoreOnItsLineFailsUnsent() {
+    var text = "COPY t FROM stdin; SELECT 1;\n1\ta\n\\.\nSELECT 2;";
+    var session = new Session(Map.of());
+    var report = run(POSTGRESQL, text, new FileRun.Options(true, false), session);
+    assertEquals(FileRun.Ending.RAN, report.ending());
+    assertEquals(List.of("SELECT 2"), session.sent);
+    var failed = report.failures().getFirst();
+    assertEquals(1, failed.line());
+    assertTrue(failed.message().startsWith("More follows COPY … FROM STDIN"), failed.message());
+  }
+
+  @Test
   void psqlsRestrictIsSkippedAndItsOtherCommandsStopTheRun() {
     var text = "\\restrict k\nSELECT 1;\n\\connect other\nSELECT 2;\n\\unrestrict k\n";
     var session = new Session(Map.of());

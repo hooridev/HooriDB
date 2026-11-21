@@ -6,6 +6,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * What the server's own command-line client does with a file of statements beyond the server's
@@ -34,10 +35,19 @@ public interface ClientDialect {
   boolean controlsTransaction(List<String> words);
 
   /**
-   * Whether a statement can copy rows from the client, as PostgreSQL's {@code COPY … FROM STDIN}:
-   * the rows follow it in the file, from its next line up to a line {@code \.} alone.
+   * Whether a statement copies rows from the client, as PostgreSQL's {@code COPY … FROM STDIN}, by
+   * its first word and, where that may begin one, its words outside parentheses, each in lower
+   * case and in order, a name as an empty word: the rows follow it in the file, from its next line
+   * up to the line {@link #endOfRows} alone.
    */
-  boolean copiesFromClient();
+  boolean copiesFromClient(String first, Supplier<List<String>> words);
+
+  /**
+   * What ends the rows a statement copies from the client, alone on a line, as psql's {@code \.}.
+   *
+   * @throws UnsupportedOperationException where the server copies nothing from the client
+   */
+  String endOfRows();
 
   /**
    * Copies the rows that the reader gives, as the file has them, into what the statement names,

@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /** PostgreSQL, with pgjdbc. */
 public final class PostgreSql implements Dialect {
@@ -172,9 +173,24 @@ public final class PostgreSql implements Dialect {
       };
     }
 
+    // COPY … FROM STDIN, as psql reads it.
     @Override
-    public boolean copiesFromClient() {
-      return true;
+    public boolean copiesFromClient(String first, Supplier<List<String>> words) {
+      if (!first.equals("copy")) {
+        return false;
+      }
+      var all = words.get();
+      for (int k = 0; k + 1 < all.size(); k++) {
+        if (all.get(k).equals("from") && all.get(k + 1).equals("stdin")) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    @Override
+    public String endOfRows() {
+      return "\\.";
     }
 
     @Override

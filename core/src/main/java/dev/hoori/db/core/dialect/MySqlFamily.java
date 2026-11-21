@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /** What MariaDB and MySQL do alike; their drivers differ. */
@@ -85,8 +86,13 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     }
 
     @Override
-    public boolean copiesFromClient() {
+    public boolean copiesFromClient(String first, Supplier<List<String>> words) {
       return false;
+    }
+
+    @Override
+    public String endOfRows() {
+      throw new UnsupportedOperationException("The server copies nothing from the client");
     }
 
     @Override

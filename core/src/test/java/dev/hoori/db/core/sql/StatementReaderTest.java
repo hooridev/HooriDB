@@ -51,7 +51,12 @@ class StatementReaderTest {
           switch (next.get()) {
             case StatementReader.Sql s -> new Seen("sql", s.sql(), s.line(), s.offset(), null);
             case StatementReader.Copy c ->
-              new Seen("copy", c.sql(), c.line(), c.offset(), all(reader.rows()));
+              new Seen(
+                  c.followed() ? "copy followed" : "copy",
+                  c.sql(),
+                  c.line(),
+                  c.offset(),
+                  all(reader.rows()));
             case StatementReader.Command c ->
               new Seen(c.name(), c.text(), c.line(), c.offset(), null);
           });
@@ -224,6 +229,19 @@ class StatementReaderTest {
         POSTGRESQL,
         "COPY t FROM stdin;",
         List.of(at("COPY t FROM stdin;", "copy", "COPY t FROM stdin", 0, "")));
+  }
+
+  @Test
+  void whatFollowsACopyOnItsLineIsTold() throws IOException {
+    var text = "COPY a FROM stdin; -- the rows /* follow */\n1\n\\.\n"
+        + "COPY b FROM stdin; SELECT 1;\n2\n\\.\nSELECT 3;";
+    assertRead(
+        POSTGRESQL,
+        text,
+        List.of(
+            at(text, "copy", "COPY a FROM stdin", 0, "1\n"),
+            at(text, "copy followed", "COPY b FROM stdin", 0, "2\n"),
+            at(text, "sql", "SELECT 3", 0, null)));
   }
 
   @Test

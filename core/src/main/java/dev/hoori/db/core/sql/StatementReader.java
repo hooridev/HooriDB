@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -57,9 +58,12 @@ public final class StatementReader implements Closeable {
 
   /**
    * A statement that copies rows from the client, without its terminator; its rows are those that
-   * {@link #rows} gives.
+   * {@link #rows} gives, from the line after its own.
+   *
+   * @param followed whether its line holds more after it than white space and comments, which
+   *     would not run
    */
-  public record Copy(String sql, long line, long offset) implements Step {}
+  public record Copy(String sql, long line, long offset, boolean followed) implements Step {}
 
   /**
    * A command of the provider's client, as psql's {@code \connect db}: its line without the line's
@@ -86,9 +90,9 @@ public final class StatementReader implements Closeable {
   private Rows rows; // the rows of the last copy, while the file is on them
   private volatile boolean cancelled;
 
-  // A part that the last scan found, its step or null for a DELIMITER line, and where the reader
+  // A part that the last scan found, its step or none for a DELIMITER line, and where the reader
   // is after it, with the terminator from there on.
-  private record Taken(Step step, int after, long line, long offset, String delimiter) {}
+  private record Taken(Optional<Step> step, int after, long line, long offset, String delimiter) {}
 
   /**
    * Reads the text, whose size in bytes is given for {@link #size}, or -1 where it is not known.
@@ -226,18 +230,40 @@ public final class StatementReader implements Closeable {
       line = taken.line();
       offset = taken.offset();
       delimiter = taken.delimiter();
-      if (taken.step() instanceof Copy) {
+      if (taken.step().orElse(null) instanceof Copy copy) {
+        boolean followed = restOfLine();
         rows = new Rows();
+        return Optional.of(new Copy(copy.sql(), copy.line(), copy.offset(), followed));
       }
-      if (taken.step() != null) {
-        return Optional.of(taken.step());
+      if (taken.step().isPresent()) {
+        return taken.step();
       }
     }
   }
 
+  // Takes the rest of the line that a copy's statement ends on, which its rows follow: whether it
+  // holds more than white space and comments.
+  private boolean restOfLine() throws IOException {
+    int end = buffer.indexOf("\n", at);
+    while (end < 0 && !ended) {
+      fill(buffer.length() - at + windowSize);
+      end = buffer.indexOf("\n", at);
+    }
+    int to = end < 0 ? buffer.length() : end + 1;
+    var rest = buffer.substring(at, to);
+    advance(to);
+    for (var piece : Statements.pieces(rest, provider)) {
+      if (piece.kind() != Statements.Piece.Kind.COMMENT) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * The rows of the {@link Copy} that {@link #next} gave last, as the file has them, from the line
-   * after the statement's up to the line {@code \.} alone, or the end of the file; empty for any
+   * after the statement's up to the line alone that the dialect's {@link
+   * dev.hoori.db.core.dialect.ClientDialect#endOfRows} names, or the end of the file; empty for any
    * other step.
    */
   public Reader rows() {
@@ -299,7 +325,7 @@ public final class StatementReader implements Closeable {
       offsetAt += bytes(start, after);
       position = after;
       ready.add(new Taken(step, after, lineAt, offsetAt, part.delimiter()));
-      if (step instanceof Copy) {
+      if (step.orElse(null) instanceof Copy) {
         return;
       }
     }
@@ -315,34 +341,34 @@ public final class StatementReader implements Closeable {
         && (part.kind() != Statements.Part.Kind.STATEMENT || part.after() > part.end());
   }
 
-  // The step of the part that begins at the line and offset, or null for a DELIMITER line, which
-  // is none.
-  private Step step(Statements.Part part, String text, long lineOf, long offsetOf) {
+  // The step of the part that begins at the line and offset; none for a DELIMITER line.
+  private Optional<Step> step(Statements.Part part, String text, long lineOf, long offsetOf) {
     return switch (part.kind()) {
       case STATEMENT ->
-        copies(text) ? new Copy(text, lineOf, offsetOf) : new Sql(text, lineOf, offsetOf);
-      case COMMAND -> new Command(text, name(text), lineOf, offsetOf);
-      case DELIMITER -> null;
+        Optional.of(
+            copies(text)
+                ? new Copy(text, lineOf, offsetOf, false)
+                : new Sql(text, lineOf, offsetOf));
+      case COMMAND -> Optional.of(new Command(text, name(text), lineOf, offsetOf));
+      case DELIMITER -> Optional.empty();
     };
   }
 
-  // Whether the statement copies rows from the client: COPY … FROM STDIN.
+  // Whether the statement copies rows from the client, as the dialect tells by its first word
+  // and, where that may begin such a statement, by its words outside parentheses.
   private boolean copies(String sql) {
-    var client = provider.dialect().client();
-    if (!client.copiesFromClient()
-        || !Statements.firstWord(sql, provider).equalsIgnoreCase("COPY")) {
-      return false;
-    }
-    var tokens = Tokens.of(
-        sql, provider, new Tokens.Reading(provider.dialect().syntax().backslashEscapes(), false));
-    for (int k = 0; k + 1 < tokens.size(); k++) {
-      if (tokens.get(k).depth() == 0
-          && tokens.get(k).is("FROM")
-          && tokens.get(k + 1).is("STDIN")) {
-        return true;
+    var first = Statements.firstWord(sql, provider).toLowerCase(Locale.ROOT);
+    return provider.dialect().client().copiesFromClient(first, () -> {
+      var reading = new Tokens.Reading(provider.dialect().syntax().backslashEscapes(), false);
+      var words = new ArrayList<String>();
+      for (var token : Tokens.of(sql, provider, reading)) {
+        if (token.depth() == 0) {
+          // A name, quoted or after a period, equals no word.
+          words.add(token.ident() ? "" : Tokens.keyword(token.text()).toLowerCase(Locale.ROOT));
+        }
       }
-    }
-    return false;
+      return words;
+    });
   }
 
   // A command's name: its word after the backslash, or the one character there.
@@ -437,11 +463,12 @@ public final class StatementReader implements Closeable {
     at = to;
   }
 
-  // The rows of a copy, taken from the file as they are read. A read never ends between the two
-  // chars of a surrogate pair where it has room for both, as pgjdbc encodes each read by itself.
+  // The rows of a copy, taken from the file as they are read, from the start of a line. A read
+  // never ends between the two chars of a surrogate pair where it has room for both, as pgjdbc
+  // encodes each read by itself.
   private final class Rows extends Reader {
-    private boolean statementLine = true; // the rest of the statement's line is still ahead
-    private boolean lineStart;
+    private final String closing = provider.dialect().client().endOfRows();
+    private boolean lineStart = true;
     private boolean over;
 
     @Override
@@ -471,14 +498,7 @@ public final class StatementReader implements Closeable {
         over = true;
         return 0;
       }
-      if (statementLine) {
-        int end = buffer.indexOf("\n", at);
-        advance(end < 0 ? buffer.length() : end + 1);
-        statementLine = end < 0;
-        lineStart = end >= 0;
-        return 0;
-      }
-      if (lineStart && buffer.charAt(at) == '\\' && ending()) {
+      if (lineStart && buffer.charAt(at) == closing.charAt(0) && ending()) {
         return 0;
       }
       return copy(into, from, length);
@@ -493,18 +513,19 @@ public final class StatementReader implements Closeable {
       return at < buffer.length();
     }
 
-    // At a backslash that begins a line: whether it ends the rows, which are then over, or more
-    // must be read to tell.
+    // At a line that begins as the end of the rows does: whether it ends them, which are then
+    // over, or more must be read to tell.
     private boolean ending() throws IOException {
-      if (buffer.length() - at < 4 && !ended) {
-        fill(4);
+      int needed = closing.length() + 2; // and the line's end, \r\n
+      if (buffer.length() - at < needed && !ended) {
+        fill(needed);
         return true;
       }
-      int end = endOfData();
-      if (end < 0) {
+      int after = endOfRows();
+      if (after < 0) {
         return false;
       }
-      advance(end);
+      advance(after);
       over = true;
       return true;
     }
@@ -526,13 +547,19 @@ public final class StatementReader implements Closeable {
       return count;
     }
 
-    // Where a line \. alone that the reader is at ends, after its line's end; -1 for other lines.
-    private int endOfData() {
+    // Where the line the reader is at ends, after its line's end, where it holds the end of the
+    // rows alone; -1 for other lines.
+    private int endOfRows() {
       int n = buffer.length();
-      if (at + 1 >= n || buffer.charAt(at + 1) != '.') {
+      int k = at + closing.length();
+      if (k > n) {
         return -1;
       }
-      int k = at + 2;
+      for (int j = 0; j < closing.length(); j++) {
+        if (buffer.charAt(at + j) != closing.charAt(j)) {
+          return -1;
+        }
+      }
       if (k < n && buffer.charAt(k) == '\r') {
         k++;
       }
