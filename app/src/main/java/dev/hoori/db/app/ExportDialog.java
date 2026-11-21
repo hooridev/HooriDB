@@ -12,6 +12,7 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.FileDialog;
 import com.rethinkj.ui.Style;
+import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
@@ -36,6 +37,7 @@ import dev.hoori.db.core.dump.Dump;
 import dev.hoori.db.core.dump.Item;
 import dev.hoori.db.core.dump.Listed;
 import dev.hoori.db.core.query.QueryException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,7 +54,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * (structure and data, structure or data), how, and the file it goes to. It reads and exports on a
  * session of its own, which it opens as it opens and closes as it closes, so that neither the tree
  * nor a tab waits for it; an export shows how far it is and can be cancelled, and a cancelled or
- * failed one leaves the chosen file as it was, as core writes it.
+ * failed one leaves the chosen file as it was, as core writes it. A session that a cancel may have
+ * given up, or that is gone, gives way to a new one for what is asked next.
  */
 final class ExportDialog {
 
@@ -75,8 +78,9 @@ final class ExportDialog {
   final UUID id;
   final Container on;
   final Provider provider;
-  private final Lane lane;
-  private final char[] password; // a copy, for keeping it out of what is shown; wiped at the close
+  private Lane lane;
+  private boolean stale; // whether a cancel may have given up the lane's connection
+  private char[] password; // a copy, for keeping it out of what is shown; wiped with its lane
 
   Lane.Asked listing; // the objects being read, or null
   List<Listed> objects; // as read, or null before
@@ -91,6 +95,8 @@ final class ExportDialog {
   boolean noForeignKeyChecks;
   int rowsPerInsert = Dump.ROWS_PER_INSERT;
   Path file; // the file chosen, or null
+  Replacing replacing; // the file chosen whose replacement the system's dialog did not ask, or null
+  private Work looking; // the look for it, or null
 
   Lane.Asked exporting; // the export under way, or null
   Item at; // what it writes now
@@ -98,9 +104,21 @@ final class ExportDialog {
   long rowsBefore; // the rows of the tables before it
   int objectsBefore; // and how many objects
   private AtomicReference<Stage> stage = new AtomicReference<>(Stage.CANCELLED); // the last one's
-  Dump.Written written; // what the last export wrote, or null
+  Exported exported; // what the last export wrote, or null
   String failed; // why it failed, or null
   boolean cancelled; // the last export was cancelled
+
+  /**
+   * A file whose name the system's dialog gave without an extension, which {@code .sql} was added
+   * to: the dialog asked about replacing the file of the name given, not this one.
+   *
+   * @param found whether it exists, which is asked before it is replaced; false while it is looked
+   *     for
+   */
+  record Replacing(Path file, boolean found) {}
+
+  /** What an export wrote, and of what it wrote, which the options may since have changed. */
+  record Exported(Dump.Written written, Dump.Content content) {}
 
   private ExportDialog(UUID id, Container on, Provider provider, Lane lane, char[] password) {
     this.id = id;
@@ -131,6 +149,10 @@ final class ExportDialog {
       return;
     }
     unread = null;
+    if (!renewed(s)) {
+      unread = NOT_CONNECTED;
+      return;
+    }
     listing = lane.ask(
         s.app,
         "read the objects to export",
@@ -144,6 +166,43 @@ final class ExportDialog {
           listing = null;
           unread = words(e);
         });
+  }
+
+  private static final String NOT_CONNECTED = "The connection is no longer connected.";
+
+  /**
+   * Whether the lane can take a call: where a cancel may have given up its connection, or it is
+   * gone, it is closed and a new session opened in its place; false where the connection is no
+   * longer connected, and none can be.
+   */
+  private boolean renewed(State s) {
+    if (!stale && !lane.broken()) {
+      return true;
+    }
+    var session = s.catalog.session(id, on.database().name());
+    if (session == null) {
+      return false;
+    }
+    closeLane(s);
+    lane = session.lane();
+    password = session.password();
+    stale = false;
+    return true;
+  }
+
+  // Closes the lane without waiting for it, which Exit waits for, and wipes its password.
+  private void closeLane(State s) {
+    s.closing();
+    var closing = lane.close(ended -> {});
+    s.app.background(
+        "close the export's session",
+        () -> {
+          closing.join();
+          return null;
+        },
+        done -> s.closed(),
+        e -> s.closed());
+    Arrays.fill(password, '\0');
   }
 
   /** The name of what it exports, as the title says it. */
@@ -212,18 +271,64 @@ final class ExportDialog {
         dialog,
         choice -> {
           if (!choice.cancelled()) {
-            var path = choice.path();
-            var name = path.getFileName().toString();
-            file = name.contains(".") ? path : path.resolveSibling(name + ".sql");
-            written = null;
+            chosen(s, choice.path());
           }
         },
         error -> s.tell("The system's file dialog did not open: " + error));
   }
 
+  // The file chosen, with .sql where its name has none: where that file exists, which the
+  // system's dialog did not ask about, Export waits until it is let replace it.
+  private void chosen(State s, Path path) {
+    exported = null;
+    if (looking != null) {
+      looking.cancel();
+      looking = null;
+    }
+    var name = path.getFileName().toString();
+    if (name.contains(".")) {
+      file = path;
+      replacing = null;
+      return;
+    }
+    var named = path.resolveSibling(name + ".sql");
+    file = named;
+    replacing = new Replacing(named, false);
+    looking = s.app.background(
+        "look for the file to export to",
+        () -> Files.exists(named),
+        exists -> {
+          looking = null;
+          replacing = exists ? new Replacing(named, true) : null;
+        },
+        e -> {
+          looking = null;
+          replacing = new Replacing(named, true); // asked, as it may exist
+        });
+  }
+
+  /** Lets the export replace the file chosen, which the system's dialog did not ask about. */
+  void replace() {
+    if (replacing != null && replacing.found()) {
+      replacing = null;
+    }
+  }
+
   /** Whether Export can go: something is checked, a file is chosen, and nothing runs. */
   boolean ready() {
-    return objects != null && !checked().isEmpty() && file != null && exporting == null;
+    return objects != null
+        && !checked().isEmpty()
+        && !noData()
+        && file != null
+        && replacing == null
+        && exporting == null;
+  }
+
+  // Of data alone, only tables and sequences have any, and none is checked.
+  private boolean noData() {
+    return !content.structure()
+        && checked().stream()
+            .noneMatch(i -> i.kind() == Item.Kind.TABLE || i.kind() == Item.Kind.SEQUENCE);
   }
 
   /** Writes what is checked to the file chosen. */
@@ -238,9 +343,13 @@ final class ExportDialog {
         new Dump.Options(
             drop, create, rowsPerInsert, transaction, noForeignKeyChecks, keysAfterData));
     var target = file;
-    written = null;
+    exported = null;
     failed = null;
     cancelled = false;
+    if (!renewed(s)) {
+      failed = NOT_CONNECTED;
+      return;
+    }
     at = null;
     atRows = 0;
     rowsBefore = 0;
@@ -255,7 +364,7 @@ final class ExportDialog {
         link -> link.exporter().write(choice, target, progress),
         done -> {
           exporting = null;
-          written = done;
+          exported = new Exported(done, choice.content());
           s.tell("Exported " + objects(done.objects()) + " to " + target.getFileName());
         },
         e -> {
@@ -289,13 +398,13 @@ final class ExportDialog {
         toldAt = now;
         app.post(() -> {
           if (was != null) {
-            step(was, wasRows);
+            step(where, was, wasRows);
           }
-          step(item, rows);
+          step(where, item, rows);
         });
       } else if (now - toldAt >= TOLD_EVERY) {
         toldAt = now;
-        app.post(() -> step(item, rows));
+        app.post(() -> step(where, item, rows));
       }
       last = item;
       lastRows = rows;
@@ -307,9 +416,10 @@ final class ExportDialog {
     }
   }
 
-  // The export writes this object now, with so many of its rows.
-  private void step(Item item, long rows) {
-    if (exporting == null) {
+  // The export writes this object now, with so many of its rows; what an export told that was
+  // cancelled, or ended, is not this one's.
+  private void step(AtomicReference<Stage> of, Item item, long rows) {
+    if (of != stage || exporting == null) {
       return;
     }
     if (!item.equals(at)) {
@@ -331,6 +441,7 @@ final class ExportDialog {
       exporting.cancel();
       exporting = null;
       cancelled = true;
+      stale = true;
       s.tell("Export cancelled: " + file.getFileName() + " was not written");
     }
   }
@@ -346,17 +457,11 @@ final class ExportDialog {
       exporting.cancel();
       exporting = null;
     }
-    s.closing();
-    var closing = lane.close(ended -> {});
-    s.app.background(
-        "close the export's session",
-        () -> {
-          closing.join();
-          return null;
-        },
-        done -> s.closed(),
-        e -> s.closed());
-    Arrays.fill(password, '\0');
+    if (looking != null) {
+      looking.cancel();
+      looking = null;
+    }
+    closeLane(s);
     if (s.dialogs.export == this) {
       s.dialogs.export = null;
     }
@@ -445,7 +550,7 @@ final class ExportDialog {
           .gap(t.space().l())
           .child(objectsView(objects, unit, running))
           .child(optionsView(s, unit, running)));
-      body.w(41 * unit).child(statusView(objects));
+      body.w(41 * unit).child(statusView(s, objects));
     }
     El export = button(
             PRIMARY,
@@ -670,7 +775,7 @@ final class ExportDialog {
   }
 
   // How far the export is, or how it ended; and what of the snapshot an engine cannot keep.
-  private El statusView(List<Listed> all) {
+  private El statusView(State s, List<Listed> all) {
     Theme t = Theme.CURRENT.get();
     El status = col().wFull().gap(t.space().s());
     var checked = Set.copyOf(checked());
@@ -681,12 +786,40 @@ final class ExportDialog {
     if (content.data() && outside > 0) {
       status.child(outsideView(outside));
     }
+    if (!checked.isEmpty() && noData()) {
+      status.child(label(
+              Label.Variant.MUTED,
+              "Data only writes the rows of tables and the values of sequences, and none of them"
+                  + " is checked.")
+          .wrapText()
+          .key("export-no-data"));
+    }
+    if (replacing != null && replacing.found()) {
+      status.child(replacingView(s));
+    }
     if (exporting != null) {
       status.child(progressView(tables, checked.size()));
     } else {
       status.child(endedView());
     }
     return status;
+  }
+
+  // The file .sql was added to exists, and the system's dialog asked about another.
+  private El replacingView(State s) {
+    Theme t = Theme.CURRENT.get();
+    var name = String.valueOf(replacing.file().getFileName());
+    return Callout.callout(
+            Callout.Kind.WARNING,
+            name + " exists already",
+            "The name chosen had no extension, so .sql was added to it. Export replaces " + name
+                + ".",
+            row()
+                .gap(t.space().s())
+                .child(button(SECONDARY, "Replace it", this::replace).key("export-replace"))
+                .child(button(SECONDARY, "Choose another…", () -> choose(s))
+                    .key("export-choose-another")))
+        .key("export-replacing");
   }
 
   // Tables of an engine without transactions, as MyISAM.
@@ -719,12 +852,13 @@ final class ExportDialog {
 
   // How the last export ended; null before one.
   private El endedView() {
-    if (written != null) {
+    if (exported != null) {
+      var written = exported.written();
       return Callout.callout(
               Callout.Kind.SUCCESS,
               "Exported",
               objects(written.objects())
-                  + (content.data() ? " and " + ConsoleTab.rows(written.rows()) : "")
+                  + (exported.content().data() ? " and " + ConsoleTab.rows(written.rows()) : "")
                   + " to " + written.file() + ", " + Format.BYTES.text(written.bytes()) + ".")
           .key("export-done");
     }

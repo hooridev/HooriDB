@@ -12,6 +12,7 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
@@ -1385,12 +1386,7 @@ final class CatalogTree {
 
   /** The menu of a database or schema: Export to SQL, where its server speaks SQL, and the rest. */
   private static List<Menu.Item> exportable(
-      State s,
-      UUID id,
-      dev.hoori.db.core.catalog.Container container,
-      boolean connected,
-      Menu.Item refresh,
-      Menu.Item copy) {
+      State s, UUID id, Container container, boolean connected, Menu.Item refresh, Menu.Item copy) {
     var profile = s.profile(id);
     if (profile == null || profile.provider().keepsDocuments()) {
       return List.of(refresh, copy);

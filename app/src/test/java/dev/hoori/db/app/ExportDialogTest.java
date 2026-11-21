@@ -19,6 +19,7 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.dump.Dump;
 import dev.hoori.db.core.dump.Item;
 import dev.hoori.db.core.dump.Listed;
+import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -163,6 +164,73 @@ class ExportDialogTest {
     assertFalse(c.tree("closed").contains("export-dialog"), c.tree("closed"));
     CatalogTreeTest.eventually(
         () -> c.servers.closed.stream().filter((PG + "/shop")::equals).count() >= 1);
+  }
+
+  @Test
+  void aCancelThatGivesUpTheSessionLeavesTheNextExportANewOne() throws Exception {
+    var app = opened();
+    var file = dir.resolve("again.sql");
+    // The cancel ends as core's does where it had to give up the connection.
+    c.servers.fail(EXPORT, FakeServers.queryFailure(QueryException.Failure.ABORTED));
+    var gate = c.servers.hold(EXPORT);
+    c.run(app, choose(file) + EXPORT_IT + "frame\n");
+    CatalogTreeTest.eventually(() -> c.servers.calls.contains(EXPORT));
+    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE);
+    CatalogTreeTest.eventually(() -> c.servers.interrupted.contains(EXPORT));
+    gate.countDown();
+    c.servers.heal(EXPORT);
+    c.run(app, "frame\n" + EXPORT_IT + SETTLE + "snap again\n");
+    var again = c.tree("again");
+    assertTrue(line(again, "#export-done").contains("Exported"), again);
+    assertTrue(Files.exists(file));
+    // On a session of its own again, the third connection, as the second was given up.
+    assertTrue(c.servers.linked.contains("3 " + EXPORT), c.servers.linked.toString());
+    CatalogTreeTest.eventually(() -> c.servers.closed.contains(PG + "/shop"));
+  }
+
+  @Test
+  void aNameWithoutExtensionAsksBeforeTheFileOfItWithSqlIsReplaced() throws Exception {
+    var app = opened();
+    Files.writeString(dir.resolve("backup.sql"), "before");
+    // The look for the file runs once the system's dialog has answered.
+    c.run(app, choose(dir.resolve("backup")) + "await\nframe\nadvance 1\nframe\nsnap asked\n");
+    var asked = c.tree("asked");
+    assertTrue(asked.contains("backup.sql exists already"), asked);
+    assertTrue(line(asked, "role=button label=\"Export\"").contains("disabled"), asked);
+    c.run(app, "press role=button label=\"Replace it\"\nframe\nadvance 1\nframe\nsnap let\n");
+    var let = c.tree("let");
+    assertFalse(let.contains("exists already"), let);
+    assertFalse(line(let, "role=button label=\"Export\"").contains("disabled"), let);
+    c.run(app, EXPORT_IT + SETTLE);
+    assertTrue(Files.readString(dir.resolve("backup.sql")).startsWith("-- A made-up export"));
+    // One that does not exist goes without a question.
+    c.run(app, choose(dir.resolve("fresh")) + "await\nframe\nadvance 1\nframe\nsnap fresh\n");
+    var fresh = c.tree("fresh");
+    assertFalse(fresh.contains("exists already"), fresh);
+    assertTrue(line(fresh, "#export-file").contains("fresh.sql"), fresh);
+    assertFalse(line(fresh, "role=button label=\"Export\"").contains("disabled"), fresh);
+  }
+
+  @Test
+  void dataOnlyWaitsForATableAndTheCalloutTellsWhatTheExportWrote() throws Exception {
+    var app = opened();
+    c.run(
+        app,
+        choose(dir.resolve("data.sql")) + EXPORT_IT + SETTLE
+            + "press role=radio label=\"Data only, of the tables\"\nframe\n"
+            + "press role=button label=\"Check none of public\"\nframe\n"
+            + "press role=checkbox label=\"total_of(integer)\"\nframe\nadvance 1\nframe\n"
+            + "snap none\n");
+    var none = c.tree("none");
+    assertTrue(line(none, "role=button label=\"Export\"").contains("disabled"), none);
+    assertTrue(none.contains("none of them is checked"), none);
+    c.run(
+        app,
+        "press role=radio label=\"Structure only\"\nframe\nadvance 1\nframe\nsnap structure\n");
+    var structure = c.tree("structure");
+    assertFalse(structure.contains("none of them is checked"), structure);
+    // The export that ran wrote rows, whatever is chosen since.
+    assertTrue(structure.contains(" rows to "), structure);
   }
 
   @Test
