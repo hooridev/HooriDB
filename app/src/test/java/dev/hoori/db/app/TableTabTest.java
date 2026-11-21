@@ -420,7 +420,7 @@ class TableTabTest {
     // A column gone: all of them fit again.
     servers.serve(
         PG, Provider.POSTGRESQL, "16.4", OUTLINE.replace("      customer_id: integer\n", ""));
-    c.run(app, "press #refresh\nframe\n" + SETTLE + "snap refit\n");
+    c.run(app, "press #refresh\nframe\n" + SETTLE);
     assertFalse(tab.fit.isPending());
     assertEquals(3, tab.widths.length, Arrays.toString(tab.widths));
     assertTrue(tab.widths[2] != 333.5f, Arrays.toString(tab.widths));
