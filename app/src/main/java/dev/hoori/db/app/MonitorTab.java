@@ -164,6 +164,7 @@ final class MonitorTab implements Tab {
   Problem refused; // why the last action failed, until the next or a dismiss; or null
   private String selected; // the id of the session selected, which a read keeps selected
   private String selectedStart; // and its start, null where not known yet, as from the locks
+  private boolean went; // the selection came from the locks, so a read that misses it says so
   // Whether the server checks on a cancel that the session runs what it ran when read; where not,
   // a masked statement cannot tell two apart, and the app takes any new read for a change.
   private boolean guardsCancel;
@@ -341,17 +342,18 @@ final class MonitorTab implements Tab {
     }
     if (at >= 0) {
       selectedStart = sessions.get(at).started();
-      if (selection.row() != at) {
+      if (selection.row() != at || !Set.of(at).equals(rows(selection, sessions.size()))) {
         selection.select(at, Math.max(0, selection.column()));
       }
     } else if (selected != null) {
-      if (selectedStart == null) {
-        say(s, "Session " + selected + " is not among the sessions this user can see");
+      if (went) {
+        say(s, "Session " + selected + " has ended or is not among the sessions this user can see");
       }
       selected = null;
       selectedStart = null;
       selection.clear();
     }
+    went = false;
     if (asked != null) {
       var why = changed(asked);
       if (why != null) {
@@ -391,10 +393,11 @@ final class MonitorTab implements Tab {
     if (!now.cancellable()) {
       return "Session " + was.id() + " runs nothing now";
     }
-    if (!now.operation().equals(was.operation())
-        || !now.statement().equals(was.statement())
-        || !guardsCancel && was.statement().contains(Credentials.MASK)) {
+    if (!now.operation().equals(was.operation()) || !now.statement().equals(was.statement())) {
       return "Session " + was.id() + " runs something else now";
+    }
+    if (!guardsCancel && was.statement().contains(Credentials.MASK)) {
+      return "Session " + was.id() + " may run something else now";
     }
     return null;
   }
@@ -490,6 +493,7 @@ final class MonitorTab implements Tab {
   /** Goes to the session in the sessions view, selected, as from the locks. */
   void goTo(State s, String session) {
     selected = session;
+    went = true;
     int at = indexOf(session);
     selectedStart = at < 0 ? null : sessions.get(at).started();
     if (at >= 0) {
@@ -1085,7 +1089,7 @@ final class MonitorTab implements Tab {
         Callout.Kind.DANGER,
         problem.title(),
         problem.text(),
-        button(SECONDARY, "Try again", () -> open(s)));
+        button(SECONDARY, "Try again", reading != null && loud ? null : () -> open(s)));
   }
 
   /**
@@ -1189,9 +1193,8 @@ final class MonitorTab implements Tab {
 
   /** The locks' context menu, of the one wait selected. */
   private List<Menu.Item> lockItems(State s, List<Block> shown) {
-    int row = lockSelection.row();
-    var block =
-        lockSelection.rowCount() == 1 && row >= 0 && row < shown.size() ? shown.get(row) : null;
+    var rows = rows(lockSelection, shown.size());
+    var block = rows != null && rows.size() == 1 ? shown.get(rows.iterator().next()) : null;
     return List.of(
         Menu.item("Go to blocking session", block == null ? null : () -> goTo(s, block.blocking()))
             .icon(Symbol.ARROW_RIGHT),

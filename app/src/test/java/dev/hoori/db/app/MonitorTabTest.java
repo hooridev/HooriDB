@@ -788,6 +788,21 @@ class MonitorTabTest {
   }
 
   @Test
+  void theSelectedSessionStaysHighlightedWhenItMovesOntoTheCursor() throws Exception {
+    var app = monitor();
+    // 103, then 102 added and taken away again: the cursor stays on 102's row.
+    c.run(app, pick(3) + "press #cell-2-1 control\nframe\npress #cell-2-1 control\nframe\n");
+    var monitor = app.state().monitors(null).getFirst();
+    // 102 ends, so 103 moves onto the cursor's row.
+    c.servers.sessions(
+        PG, session("101", "ada", "SELECT pg_sleep(60)"), session("103", "eve", "SELECT 1"));
+    c.run(app, after(5));
+    assertEquals("103", monitor.chosen().id());
+    assertEquals(1, monitor.selection.rowCount(), monitor.selection.toString());
+    assertTrue(monitor.selection.isRowSelected(2), monitor.selection.toString());
+  }
+
+  @Test
   void anUnguardedCancelOfAMaskedStatementTakesAnyReadForAChange() throws Exception {
     var key = "sessions " + MYSQL;
     c.servers.sessions(MYSQL, session("101", "ada", "SET PASSWORD = '" + Credentials.MASK + "'"));
@@ -805,7 +820,7 @@ class MonitorTabTest {
     c.run(app, "await\nframe\n" + SHOWN + "snap cancel\n");
     var cancel = c.tree("cancel");
     assertFalse(cancel.contains("Cancel the statement?"), cancel);
-    assertTrue(cancel.contains("\"Session 101 runs something else now\""), cancel);
+    assertTrue(cancel.contains("\"Session 101 may run something else now\""), cancel);
     // End is not affected.
     held = c.servers.hold(key);
     c.run(app, "advance 5\nframe\nframe\npress #end-session\n" + SHOWN);
@@ -849,7 +864,8 @@ class MonitorTabTest {
     c.run(app, "press #cell-0-1 clicks 2\n" + SHOWN + SETTLE + "snap blocker\n");
     var blocker = c.tree("blocker");
     assertTrue(
-        blocker.contains("\"Session 93 is not among the sessions this user can see\""), blocker);
+        blocker.contains("\"Session 93 has ended or is not among the sessions this user can see\""),
+        blocker);
   }
 
   @Test
