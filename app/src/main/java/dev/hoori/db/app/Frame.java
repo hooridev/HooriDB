@@ -106,13 +106,14 @@ final class Frame {
     if (s.dialogs.driverList != null && !ownDialog(s) && asked == null) {
       root.overlay(s.dialogs.driverList.view(s)).overlay(s.dialogs.driverList.question(s));
     }
-    root.overlay(exportDialog(s, asked));
+    root.overlay(exportDialog(s, asked, question));
     return root.overlay(modal ? null : palette(s, main, menus));
   }
 
-  // Export to SQL, while neither the window's own dialog nor what the catalog asks is open.
-  private static El exportDialog(State s, El asked) {
-    return s.dialogs.export != null && !ownDialog(s) && asked == null
+  // Export to SQL, while neither the window's own dialog, what the catalog asks nor what a console
+  // asks, as before HooriDB closes, is open.
+  private static El exportDialog(State s, El asked, El question) {
+    return s.dialogs.export != null && !ownDialog(s) && asked == null && question == null
         ? s.dialogs.export.view(s)
         : null;
   }
