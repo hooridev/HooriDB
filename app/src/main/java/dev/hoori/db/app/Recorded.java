@@ -242,11 +242,15 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
       });
     }
 
-    // Not logged yet: what the monitor sends runs outside the link's calls.
+    // Recorded whether the log is on or not, as a file runs long and the log may be turned on
+    // meanwhile: the log drops what comes while it is off.
     @Override
     public FileRun.Report runFile(FileRun file) throws QueryException {
-      return recorded(null, () -> link.runFile(file));
+      return Journal.recording(
+          sent -> secret.log(log, connection, sent, current), () -> link.runFile(file));
     }
+
+    // Not logged yet: what the monitor sends runs outside the link's calls.
 
     @Override
     public Monitor monitor() throws QueryException {

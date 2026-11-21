@@ -87,7 +87,9 @@ final class FileRunDialog {
   private boolean cancelling;
   private String endedBy; // what ended the run, where the app did, or null
   private Lane lane; // the run's own session, or null
-  private char[] password; // a copy, to mask it in what failed; wiped as it ends
+  private char[] password; // a copy, to mask it in what failed; wiped once that is masked
+  // Whether the server committed DDL by itself, as it was when the run began.
+  private boolean ddlCommits;
   FileRun.Progress progress; // the last told, or null before the first
   FileRun.Report report; // once it ended
   String failure; // once it ended without a report, why
@@ -182,6 +184,7 @@ final class FileRunDialog {
     problem = null;
     lane = session.lane();
     password = session.password();
+    ddlCommits = !transactionalDdl(s, profile);
     var app = s.app;
     var told = new AtomicLong(System.nanoTime() - TOLD);
     var options = new FileRun.Options(onError == OnError.GO_ON && !transaction, transaction);
@@ -224,10 +227,11 @@ final class FileRunDialog {
     finish(s);
   }
 
-  // The run is over: its session closes, and the dialog shows how it went, unless another
-  // dialog is open now, in which case the status line says so.
+  // The run is over, and what it said masked: its session closes, and the dialog shows how it
+  // went, unless another dialog is open now, in which case the status line says so.
   private void finish(State s) {
     closeSession(s);
+    wipe();
     cancelling = false;
     if (hidden && !s.dialogs.anyOpen()) {
       hidden = false;
@@ -244,7 +248,7 @@ final class FileRunDialog {
 
   /**
    * The app ends the run, as its connection ended or HooriDB closes: it is cancelled and its
-   * session closed, which Exit waits for.
+   * session closed, which Exit waits for. The password stays until what the run said is masked.
    */
   void end(State s, String why) {
     if (busy()) {
@@ -260,6 +264,7 @@ final class FileRunDialog {
       return;
     }
     closeSession(s);
+    wipe();
     s.dialogs.fileRun = null;
   }
 
@@ -283,6 +288,9 @@ final class FileRunDialog {
           e -> s.closed());
       lane = null;
     }
+  }
+
+  private void wipe() {
     if (password != null) {
       Arrays.fill(password, '\0');
       password = null;
@@ -290,6 +298,16 @@ final class FileRunDialog {
   }
 
   // The view
+
+  /** The dialog, where one is open and not hidden. */
+  static El overlay(State s) {
+    return s.dialogs.fileRun == null ? null : s.dialogs.fileRun.view(s);
+  }
+
+  /** The status line's item of a run that is hidden, where there is one. */
+  static El statusItem(State s, boolean modal) {
+    return s.dialogs.fileRun == null ? null : s.dialogs.fileRun.status(modal);
+  }
 
   El view(State s) {
     if (hidden) {
@@ -303,7 +321,7 @@ final class FileRunDialog {
   }
 
   /** The status line's item while the run is hidden: how far it is, or that it ended. */
-  El status(State s, boolean modal) {
+  El status(boolean modal) {
     if (!hidden) {
       return null;
     }
@@ -454,7 +472,7 @@ final class FileRunDialog {
         case STOPPED -> Callout.Kind.DANGER;
         case CANCELLED -> Callout.Kind.WARNING;
       };
-      content.child(Callout.callout(kind, outcome(), summary(s)).key("outcome"));
+      content.child(Callout.callout(kind, outcome(), summary()).key("outcome"));
     }
     if (!failed.isEmpty()) {
       var columns = List.of(
@@ -511,7 +529,7 @@ final class FileRunDialog {
   }
 
   // What ran, where it stopped, and what became of the transaction.
-  private String summary(State s) {
+  private String summary() {
     var p = report.progress();
     var text = new StringBuilder(
         switch (report.ending()) {
@@ -527,21 +545,18 @@ final class FileRunDialog {
             (endedBy != null ? "Cancelled as " + endedBy + ", after " : "Cancelled after ")
                 + statements(p.statements()) + ".";
         });
-    var profile = s.profile(id);
+    boolean stopped = report.ending() != FileRun.Ending.RAN && p.statements() > 0;
     switch (report.transaction()) {
-      case NONE -> {
-        if (report.ending() != FileRun.Ending.RAN && p.statements() > 0) {
-          text.append(" What ran before stays, as each statement committed by itself.");
-        }
-      }
-      case COMMITTED -> text.append(" The transaction was committed.");
-      case ROLLED_BACK -> {
-        text.append(" The transaction was rolled back");
+      case NONE ->
         text.append(
-            profile == null || transactionalDdl(s, profile)
-                ? ": nothing of the file was kept."
-                : ", but DDL that ran stays, as the server committed it by itself.");
-      }
+            stopped ? " What ran before stays, as each statement committed by itself." : "");
+      case COMMITTED -> text.append(" The transaction was committed.");
+      case ROLLED_BACK ->
+        text.append(
+            ddlCommits
+                ? " The transaction was rolled back, but DDL that ran stays, as the server"
+                    + " committed it by itself."
+                : " The transaction was rolled back: nothing of the file was kept.");
       case IN_DOUBT ->
         text.append(" The transaction's end failed: what is still open is rolled back as the"
             + " session closes, and a commit whose connection was lost may have taken effect.");

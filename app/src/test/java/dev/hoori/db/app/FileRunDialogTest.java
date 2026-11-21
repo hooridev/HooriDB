@@ -149,13 +149,20 @@ class FileRunDialogTest {
   @Test
   void disconnectingCancelsTheRun() throws Exception {
     var held = c.servers.hold("run " + PG + " SELECT pg_sleep(60)");
-    var app = chosen(file("sleep.sql", "SELECT pg_sleep(60);\n"));
+    var app = chosen(file("sleep.sql", "SELECT '" + PASSWORD + "';\nSELECT pg_sleep(60);\n"));
     c.run(
         app,
-        "press role=button label=\"Run\"\n" + OPENS + "press role=button label=\"Hide\"\n" + OPENS
-            + menu("shop-prod", "Disconnect") + SETTLE + "snap disconnected\n");
+        "press label=\"Go on\"\n" + OPENS + "press role=button label=\"Run\"\n" + OPENS
+            + "press role=button label=\"Hide\"\n" + OPENS);
+    // The statement before has failed once the run holds at the next.
+    CatalogTreeTest.eventually(
+        () -> c.servers.calls.contains("run " + PG + " SELECT pg_sleep(60)"));
+    c.run(app, menu("shop-prod", "Disconnect") + SETTLE + "snap disconnected\n");
     var disconnected = c.tree("disconnected");
     assertTrue(disconnected.contains("Cancelled as its connection ended"), disconnected);
+    // What failed is masked, though the session closed before the run said so.
+    assertTrue(disconnected.contains("label=\"Failed statements\""), disconnected);
+    c.noPassword();
     held.countDown();
   }
 

@@ -85,7 +85,7 @@ final class Frame {
                 connections(s),
                 uncommitted(s, modal),
                 downloading(s),
-                s.dialogs.fileRun == null ? null : s.dialogs.fileRun.status(s, modal)),
+                FileRunDialog.statusItem(s, modal)),
             s.message == null ? null : StatusBar.text(s.message).key("message"),
             List.of(
                 s.logPanel.toggle(s, modal),
@@ -100,7 +100,7 @@ final class Frame {
     root.overlay(s.dialogs.deleting == null ? null : deleteDialog(s));
     root.overlay(s.dialogs.folderDialog == null ? null : s.dialogs.folderDialog.view(s));
     root.overlay(s.dialogs.about ? aboutDialog(s) : null);
-    root.overlay(s.dialogs.fileRun == null ? null : s.dialogs.fileRun.view(s));
+    root.overlay(FileRunDialog.overlay(s));
     root.overlay(asked);
     root.overlay(question);
     root.overlay(confirmation);
