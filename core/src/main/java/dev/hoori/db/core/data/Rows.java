@@ -6,6 +6,9 @@ import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.dialect.ErrorDialect.Condition;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
@@ -146,10 +149,15 @@ public final class Rows {
       throws QueryException {
     requireConnectedTo(connection, provider, table);
     var sql = "SELECT " + provider.dialect().rows().count() + " FROM " + qualified(provider, table);
-    return Query.query(connection, provider, sql, rows -> {
-      rows.next();
-      return rows.getLong(1);
-    });
+    return Journal.sql(
+        provider,
+        Purpose.ROWS,
+        sql,
+        n -> Outcome.rows(1),
+        () -> Query.query(connection, provider, sql, rows -> {
+          rows.next();
+          return rows.getLong(1);
+        }));
   }
 
   /**
@@ -217,12 +225,17 @@ public final class Rows {
     var fields = reads.stream().map(Read::field).toList();
     Page page;
     try {
-      page = Query.query(connection, provider, sql, result -> {
-        var shown = witness
-            ? dialect.witnessed(columns, reads, result.getMetaData(), selected.size())
-            : fields;
-        return shown == null ? null : new Page(shown, List.copyOf(rows(result, reads)));
-      });
+      page = Journal.sql(
+          provider,
+          Purpose.ROWS,
+          sql,
+          read -> read == null ? Outcome.DONE : Outcome.rows(read.rows().size()),
+          () -> Query.query(connection, provider, sql, result -> {
+            var shown = witness
+                ? dialect.witnessed(columns, reads, result.getMetaData(), selected.size())
+                : fields;
+            return shown == null ? null : new Page(shown, List.copyOf(rows(result, reads)));
+          }));
     } catch (QueryException e) {
       throw columnGone(provider, e) ? changed(table) : e;
     }
@@ -267,18 +280,23 @@ public final class Rows {
     var sql = "SELECT " + provider.quote(columns.get(column).name()) + " FROM "
         + qualified(provider, table)
         + keyed.where(provider, row, dialect.equal(), Changes.parameters(dialect, values));
-    var texts = Query.run(connection, provider, sql, statement -> {
-      for (var i = 0; i < values.size(); i++) {
-        dialect.bind(statement, i + 1, values.get(i));
-      }
-      var read = new ArrayList<String>();
-      try (var rows = statement.executeQuery()) {
-        while (read.size() < 2 && rows.next()) {
-          read.add(rows.getString(1));
-        }
-      }
-      return read;
-    });
+    var texts = Journal.sql(
+        provider,
+        Purpose.ROWS,
+        sql,
+        read -> Outcome.rows(read.size()),
+        () -> Query.run(connection, provider, sql, statement -> {
+          for (var i = 0; i < values.size(); i++) {
+            dialect.bind(statement, i + 1, values.get(i));
+          }
+          var read = new ArrayList<String>();
+          try (var rows = statement.executeQuery()) {
+            while (read.size() < 2 && rows.next()) {
+              read.add(rows.getString(1));
+            }
+          }
+          return read;
+        }));
     if (texts.size() != 1) {
       throw QueryException.of(
           QueryException.Failure.NOT_FOUND,

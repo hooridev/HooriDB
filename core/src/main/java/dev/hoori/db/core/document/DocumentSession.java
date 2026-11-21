@@ -10,6 +10,9 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.dialect.DocumentDialect;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -59,10 +62,20 @@ public final class DocumentSession implements AutoCloseable {
   }
 
   /**
-   * Runs the command on the database, unless the session is read-only and the command would change
-   * something: then nothing is sent, and it fails with {@link DocumentException.Kind#READ_ONLY}.
+   * Runs the command on the database, as a statement the user ran, unless the session is read-only
+   * and the command would change something: then nothing is sent, and it fails with {@link
+   * DocumentException.Kind#READ_ONLY}.
    */
   public Document command(String database, Document command) throws DocumentException {
+    return command(Purpose.STATEMENT, database, command);
+  }
+
+  /**
+   * As {@link #command(String, Document)}, for the purpose given, which {@link Journal} records
+   * with it.
+   */
+  private Document command(Purpose purpose, String database, Document command)
+      throws DocumentException {
     if (retired) {
       throw DocumentException.of(
           DocumentException.Kind.CONNECTION_LOST,
@@ -74,7 +87,17 @@ public final class DocumentSession implements AutoCloseable {
           "The connection is read-only: " + command.first() + " was not sent, as it may change"
               + " data");
     }
-    var reply = client.command(database, command);
+    return Journal.command(
+        dialect,
+        purpose,
+        database,
+        command,
+        reply -> outcome(command, reply),
+        () -> answer(client.command(database, command)));
+  }
+
+  // The reply, unless it says the command failed.
+  private static Document answer(Document reply) throws DocumentException {
     var ok = reply.get("ok");
     if (ok instanceof Number n && n.doubleValue() == 0) {
       var code = reply.get("code") instanceof Number c ? c.intValue() : 0;
@@ -85,13 +108,42 @@ public final class DocumentSession implements AutoCloseable {
     return reply;
   }
 
+  private static final Set<String> WRITES = Set.of("insert", "update", "delete");
+
+  // What a reply says the command came to: the documents of its cursor's batch, those a write
+  // changed, or nothing more.
+  private static Outcome outcome(Document command, Document reply) {
+    if (reply.get("cursor") instanceof Document cursor) {
+      var batch = cursor.get("firstBatch") instanceof List<?> first
+          ? first
+          : cursor.get("nextBatch") instanceof List<?> next ? next : List.of();
+      boolean more = cursor.get("id") instanceof Number id && id.longValue() != 0;
+      return new Outcome.Rows(batch.size(), more);
+    }
+    if (WRITES.contains(command.first())) {
+      // A write the server took may still have failed, in part or whole: ok, with its errors.
+      var failed = reply.get("writeErrors") instanceof List<?> errors && !errors.isEmpty()
+          ? errors.getFirst()
+          : reply.get("writeConcernError");
+      if (failed instanceof Document error) {
+        var message = error.get("errmsg") instanceof String s && !s.isBlank() ? s : "Write error";
+        return new Outcome.Failed(message);
+      }
+      var changed = reply.get("nModified") instanceof Number m ? m : reply.get("n");
+      return changed instanceof Number n ? new Outcome.Changed(n.longValue()) : Outcome.DONE;
+    }
+    return Outcome.DONE;
+  }
+
   // The catalog
 
   /** The databases the user may see, those of the server itself among them. */
   public List<Database> databases() throws CatalogException {
     try {
       var reply = command(
-          "admin", Document.of("listDatabases", 1, "nameOnly", true, "authorizedDatabases", true));
+          Purpose.CATALOG,
+          "admin",
+          Document.of("listDatabases", 1, "nameOnly", true, "authorizedDatabases", true));
       var databases = new ArrayList<Database>();
       for (var item : list(reply.get("databases"))) {
         if (item instanceof Document d && d.get("name") instanceof String name) {
@@ -109,6 +161,7 @@ public final class DocumentSession implements AutoCloseable {
   public List<Table> collections(Database database) throws CatalogException {
     try {
       var documents = all(
+          Purpose.CATALOG,
           database.name(),
           Document.of(
               "listCollections",
@@ -168,6 +221,7 @@ public final class DocumentSession implements AutoCloseable {
 
   private List<Document> first(Table collection, List<Object> pipeline) throws DocumentException {
     return all(
+        Purpose.CATALOG,
         database(collection),
         Document.of(
             "aggregate",
@@ -225,7 +279,8 @@ public final class DocumentSession implements AutoCloseable {
       return OptionalLong.empty();
     }
     try {
-      var reply = command(database(collection), Document.of("count", collection.name()));
+      var reply =
+          command(Purpose.ROWS, database(collection), Document.of("count", collection.name()));
       return reply.get("n") instanceof Number n
           ? OptionalLong.of(n.longValue())
           : OptionalLong.empty();
@@ -238,6 +293,7 @@ public final class DocumentSession implements AutoCloseable {
   public long count(Table collection) throws QueryException {
     try {
       var documents = all(
+          Purpose.ROWS,
           database(collection),
           Document.of(
               "aggregate",
@@ -270,7 +326,7 @@ public final class DocumentSession implements AutoCloseable {
     command = command.with("limit", to - from).with(BATCH_SIZE, (int)
         Math.min(to - from, Integer.MAX_VALUE));
     try {
-      var documents = all(database(collection), command);
+      var documents = all(Purpose.ROWS, database(collection), command);
       return Values.page(fields, documents);
     } catch (DocumentException e) {
       throw query(e);
@@ -310,7 +366,7 @@ public final class DocumentSession implements AutoCloseable {
     }
     command = command.with("limit", 2).with("singleBatch", true);
     try {
-      var documents = all(database(collection), command);
+      var documents = all(Purpose.ROWS, database(collection), command);
       if (documents.size() != 1) {
         throw QueryException.of(
             QueryException.Failure.NOT_FOUND,
@@ -358,12 +414,14 @@ public final class DocumentSession implements AutoCloseable {
    */
   public final class Cursor {
 
+    private final Purpose purpose;
     private final String database;
     private final String collection;
     private long id;
     private List<Document> batch;
 
-    Cursor(String database, Document reply) throws DocumentException {
+    Cursor(Purpose purpose, String database, Document reply) throws DocumentException {
+      this.purpose = purpose;
       this.database = database;
       var cursor = reply.get(CURSOR) instanceof Document c ? c : Document.EMPTY;
       this.id = cursor.get("id") instanceof Number n ? n.longValue() : 0;
@@ -387,6 +445,7 @@ public final class DocumentSession implements AutoCloseable {
             break;
           }
           var reply = command(
+              purpose,
               database,
               Document.of("getMore", id, "collection", collection, BATCH_SIZE, count - got.size()));
           var cursor = reply.get(CURSOR) instanceof Document c ? c : Document.EMPTY;
@@ -418,19 +477,25 @@ public final class DocumentSession implements AutoCloseable {
         bounded(
             "end a cursor",
             () -> command(
-                database, Document.of("killCursors", collection, "cursors", Document.array(open))));
+                purpose,
+                database,
+                Document.of("killCursors", collection, "cursors", Document.array(open))));
       }
     }
   }
 
-  /** A cursor of the reply of a command that opens one, such as find or aggregate. */
+  /**
+   * A cursor of the reply of a command that opens one, such as find or aggregate, which a statement
+   * the user ran sent.
+   */
   public Cursor cursor(String database, Document reply) throws DocumentException {
-    return new Cursor(database, reply);
+    return new Cursor(Purpose.STATEMENT, database, reply);
   }
 
   // All the documents of a command that opens a cursor, which is freed where reading it fails.
-  private List<Document> all(String database, Document command) throws DocumentException {
-    var cursor = new Cursor(database, command(database, command));
+  private List<Document> all(Purpose purpose, String database, Document command)
+      throws DocumentException {
+    var cursor = new Cursor(purpose, database, command(purpose, database, command));
     var documents = new ArrayList<Document>();
     try {
       while (cursor.more()) {
@@ -467,13 +532,13 @@ public final class DocumentSession implements AutoCloseable {
   // fails as timed out; where it has not ended even so, the session is retired.
   private void bounded(String what, Call call) throws DocumentException {
     var failure = new AtomicReference<Throwable>();
-    var worker = Thread.ofVirtual().name(what).start(() -> {
+    var worker = Thread.ofVirtual().name(what).start(Journal.carried(() -> {
       try {
         call.run();
       } catch (DocumentException | RuntimeException e) {
         failure.set(e);
       }
-    });
+    }));
     boolean interrupted = Thread.interrupted();
     try {
       if (!worker.join(GRACE)) {

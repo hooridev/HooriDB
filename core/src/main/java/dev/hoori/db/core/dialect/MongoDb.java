@@ -20,6 +20,9 @@ public final class MongoDb implements DocumentDialect {
 
   public static final MongoDb INSTANCE = new MongoDb();
 
+  /** What a secret becomes where a command is shown. */
+  public static final String MASK = "***";
+
   // The synchronous driver needs its core and BSON beside it, and the record codec, which the core
   // looks for at run time, from version 4.6 on. The bridge is built and tested against 5.15.0,
   // whose API older versions lack in part, as SocketSettings' connectTimeout of a long.
@@ -91,6 +94,18 @@ public final class MongoDb implements DocumentDialect {
     return name.isEmpty()
         || name.getBytes(StandardCharsets.UTF_8).length < 64
             && name.chars().noneMatch(c -> "/\\. \"$\0".indexOf(c) >= 0);
+  }
+
+  /** The password of {@code createUser} and {@code updateUser}. */
+  @Override
+  public Set<String> secretFields() {
+    return Set.of("pwd");
+  }
+
+  /** As {@code db.runCommand({…})}, which the console runs as it is. */
+  @Override
+  public String shown(Document command) {
+    return "db.runCommand(" + command.masked(secretFields(), MASK) + ")";
   }
 
   @Override

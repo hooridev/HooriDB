@@ -1,6 +1,9 @@
 package dev.hoori.db.core.execution;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -30,12 +33,17 @@ public record Status(Transaction transaction, Boolean autoCommit) {
     if (nothing.isEmpty()) {
       return new Status(session.transaction(connection, -1), session.autoCommit(connection, -1));
     }
-    return Query.run(connection, provider, nothing.get(), statement -> {
-      statement.execute();
-      int status = session.status(connection);
-      session.followAutoCommit(connection, status);
-      return new Status(
-          session.transaction(connection, status), session.autoCommit(connection, status));
-    });
+    return Journal.sql(
+        provider,
+        Purpose.TRANSACTION,
+        nothing.get(),
+        status -> Outcome.DONE,
+        () -> Query.run(connection, provider, nothing.get(), statement -> {
+          statement.execute();
+          int status = session.status(connection);
+          session.followAutoCommit(connection, status);
+          return new Status(
+              session.transaction(connection, status), session.autoCommit(connection, status));
+        }));
   }
 }

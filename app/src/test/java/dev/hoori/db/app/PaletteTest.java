@@ -123,11 +123,12 @@ class PaletteTest {
             "File: Server monitor",
             "File: Close tab",
             "View: Command palette…",
+            "View: Statement log",
             "View: Light theme",
             "Go: Go to table…",
             "Go: Next tab",
             // The rows that fit: the rest of Go's and Help's come after.
-            "Go: Workspace")),
+            "Go: Previous tab")),
         all.toString());
     assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
@@ -466,12 +467,16 @@ class PaletteTest {
     c.run(app, "key W control\nframe\n" + SETTLE + "snap closed\n");
     assertEquals("orders", tabs(c.tree("closed")));
     assertEquals("customers", tabs(c.tree("customers-closed")));
-    c.run(app, PALETTE + "snap palette\n");
+    // Go's Workspace comes after the rows that fit, so it is searched for.
+    c.run(app, PALETTE + "type \"workspace\"\nframe\nsnap palette\n");
     var palette = c.tree("customers-palette");
     assertTrue(line(palette, "role=dialog").contains("label=\"Command palette\""), palette);
     assertTrue(line(palette, "label=\"Go: Workspace\"").contains("disabled"), palette);
     assertFalse(c.tree("palette").contains("label=\"Command palette\""), "not in the main window");
-    c.run(app, "type \"close tab\"\nframe\nkey Enter\n" + SHOWN + SETTLE);
+    c.run(
+        app,
+        "key Escape\n" + SHOWN + PALETTE + "type \"close tab\"\nframe\nkey Enter\n" + SHOWN
+            + SETTLE);
     assertEquals(1, app.windows().all().size(), "its window closed with its last tab");
     assertEquals(
         List.of("orders"),

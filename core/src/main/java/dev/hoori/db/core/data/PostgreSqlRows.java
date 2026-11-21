@@ -6,6 +6,9 @@ import static dev.hoori.db.core.data.Rows.LIMIT;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.lang.reflect.Method;
@@ -58,11 +61,14 @@ public final class PostgreSqlRows extends RowsDialect {
   @Override
   OptionalLong estimate(Connection connection, Provider provider, Table table, String select)
       throws QueryException {
-    return Query.query(
-        connection,
+    var sql = "EXPLAIN " + select;
+    return Journal.sql(
         provider,
-        "EXPLAIN " + select,
-        rows -> Rows.planned(rows.next() ? rows.getString(1) : ""));
+        Purpose.ROWS,
+        sql,
+        estimate -> Outcome.rows(1),
+        () -> Query.query(
+            connection, provider, sql, rows -> Rows.planned(rows.next() ? rows.getString(1) : "")));
   }
 
   @Override
@@ -79,25 +85,31 @@ public final class PostgreSqlRows extends RowsDialect {
     // All the table's columns, so that the given ones can be told to be them still.
     var sql = "SELECT " + ALIAS + ".* FROM " + Rows.qualified(provider, table) + " AS " + ALIAS
         + " WHERE false";
-    var described = Query.query(connection, provider, sql, rows -> {
-      var metadata = rows.getMetaData();
-      if (metadata.getColumnCount() != columns.size()) {
-        return null;
-      }
-      for (var i = 0; i < columns.size(); i++) {
-        if (!metadata.getColumnLabel(i + 1).equals(columns.get(i).name())) {
-          return null;
-        }
-      }
-      if (columns.isEmpty()) {
-        return new Rows.Described(List.of(), 0);
-      }
-      var reads = new ArrayList<Rows.Read>();
-      for (var i = 0; i < columns.size(); i++) {
-        reads.add(read(Rows.source(provider, columns.get(i)), metadata, i + 1));
-      }
-      return new Rows.Described(reads, Integer.toUnsignedLong(field(metadata, 1, "getTableOid")));
-    });
+    var described = Journal.sql(
+        provider,
+        Purpose.ROWS,
+        sql,
+        d -> Outcome.rows(0),
+        () -> Query.query(connection, provider, sql, rows -> {
+          var metadata = rows.getMetaData();
+          if (metadata.getColumnCount() != columns.size()) {
+            return null;
+          }
+          for (var i = 0; i < columns.size(); i++) {
+            if (!metadata.getColumnLabel(i + 1).equals(columns.get(i).name())) {
+              return null;
+            }
+          }
+          if (columns.isEmpty()) {
+            return new Rows.Described(List.of(), 0);
+          }
+          var reads = new ArrayList<Rows.Read>();
+          for (var i = 0; i < columns.size(); i++) {
+            reads.add(read(Rows.source(provider, columns.get(i)), metadata, i + 1));
+          }
+          return new Rows.Described(
+              reads, Integer.toUnsignedLong(field(metadata, 1, "getTableOid")));
+        }));
     if (described == null) {
       throw Rows.changed(table);
     }
@@ -132,7 +144,12 @@ public final class PostgreSqlRows extends RowsDialect {
     }
     var sql = "SELECT c.relhassubclass AND c.relkind OPERATOR(pg_catalog.=) 'r'"
         + " FROM pg_catalog.pg_class c WHERE c.oid OPERATOR(pg_catalog.=) " + table;
-    return Query.query(connection, provider, sql, rows -> !rows.next() || rows.getBoolean(1));
+    return Journal.sql(
+        provider,
+        Purpose.ROWS,
+        sql,
+        has -> Outcome.rows(1),
+        () -> Query.query(connection, provider, sql, rows -> !rows.next() || rows.getBoolean(1)));
   }
 
   @Override

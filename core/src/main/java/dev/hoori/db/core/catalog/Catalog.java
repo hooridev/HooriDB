@@ -4,6 +4,9 @@ import dev.hoori.db.core.catalog.CatalogException.Failure;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -188,18 +191,23 @@ public final class Catalog {
       Connection connection, Provider provider, String sql, Row<T> row, String... parameters)
       throws CatalogException {
     try {
-      return Query.run(connection, provider, sql, statement -> {
-        for (var i = 0; i < parameters.length; i++) {
-          statement.setString(i + 1, parameters[i]);
-        }
-        try (var rows = statement.executeQuery()) {
-          var read = new ArrayList<T>();
-          while (rows.next()) {
-            read.add(row.read(rows));
-          }
-          return read;
-        }
-      });
+      return Journal.sql(
+          provider,
+          Purpose.CATALOG,
+          sql,
+          read -> Outcome.rows(read.size()),
+          () -> Query.run(connection, provider, sql, statement -> {
+            for (var i = 0; i < parameters.length; i++) {
+              statement.setString(i + 1, parameters[i]);
+            }
+            try (var rows = statement.executeQuery()) {
+              var read = new ArrayList<T>();
+              while (rows.next()) {
+                read.add(row.read(rows));
+              }
+              return read;
+            }
+          }));
     } catch (QueryException e) {
       throw failure(e);
     }
