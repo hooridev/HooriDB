@@ -39,33 +39,20 @@ import java.util.function.Predicate;
 /** The main window: menus in the title bar, the catalog beside the tabs, the status line. */
 final class Frame {
 
+  /** The sidebar's title, the tree's label, and the item that focuses it. */
+  private static final String WORKSPACE = "Workspace";
+
   private Frame() {}
 
   static El view(State s) {
     Theme t = Theme.CURRENT.get();
     var main = s.tabs.main();
     // One dialog at a time: what the catalog asks waits for the others to close.
-    El asked = s.dialog == null && s.deleting == null && s.folderDialog == null && !s.about
-        ? s.catalog.dialog(s, main)
-        : null;
+    El asked = ownDialog(s) ? null : s.catalog.dialog(s, main);
     El question = question(s, main);
-    El confirmation = s.dialog == null
-            && s.deleting == null
-            && s.folderDialog == null
-            && !s.about
-            && asked == null
-            && s.driverList == null
-            && question == null
-        ? confirmation(s, main)
-        : null;
-    boolean modal = s.dialog != null
-        || s.deleting != null
-        || s.folderDialog != null
-        || s.about
-        || asked != null
-        || s.driverList != null
-        || question != null
-        || confirmation != null;
+    boolean before = ownDialog(s) || asked != null || s.driverList != null || question != null;
+    El confirmation = before ? null : confirmation(s, main);
+    boolean modal = before || confirmation != null;
     closePalette(s, main, modal);
     List<Menu.Item> menus = menus(s, main, modal);
     El catalog = catalog(s, modal).key("catalog").label("Catalog");
@@ -111,15 +98,18 @@ final class Frame {
     root.overlay(question);
     root.overlay(confirmation);
     root.overlay(confirmation == null ? null : historyQuestion(s, main));
-    if (s.driverList != null
-        && s.dialog == null
-        && s.deleting == null
-        && s.folderDialog == null
-        && !s.about
-        && asked == null) {
+    if (s.driverList != null && !ownDialog(s) && asked == null) {
       root.overlay(s.driverList.view(s)).overlay(s.driverList.question(s));
     }
     return root.overlay(modal ? null : palette(s, main, menus));
+  }
+
+  /**
+   * Whether a dialog of the window's own is open: a connection's, a delete's, a folder's or About,
+   * which what the catalog asks, the drivers and the confirmations wait for.
+   */
+  private static boolean ownDialog(State s) {
+    return s.dialog != null || s.deleting != null || s.folderDialog != null || s.about;
   }
 
   /**
@@ -317,18 +307,7 @@ final class Frame {
     Theme t = Theme.CURRENT.get();
     Runnable create = s.canChange() ? s::newConnection : null;
     var c = s.catalog;
-    El problem = null;
-    if (s.loadError != null) {
-      // A file that could not be read for another reason is still there: nothing may replace it.
-      problem = Callout.callout(
-          Callout.Kind.DANGER,
-          "Connections could not be read",
-          s.loadError,
-          s.canChange() ? new El[0] : new El[] {tryAgain(s::reload)});
-    } else if (s.saveError != null) {
-      problem = Callout.callout(
-          Callout.Kind.DANGER, "Connections could not be saved", s.saveError, tryAgain(s::persist));
-    }
+    El problem = problem(s);
     El body;
     if (!s.loaded) {
       body = col()
@@ -340,33 +319,7 @@ final class Frame {
           .child(Progress.spinner())
           .child(label(Label.Variant.MUTED, "Loading connections…"));
     } else if (!s.workspace().entries().isEmpty()) {
-      El tree = Tree.tree(
-              new CatalogTree.Model(t, s),
-              new Tree.Options<Node>()
-                  .open(
-                      node -> node instanceof Node.Folder f
-                          ? s.folderOpen(f.id())
-                          : c.open.contains(node),
-                      (node, open) -> c.toggle(s, node, open))
-                  .select(s.selected, node -> s.selected = node)
-                  .onActivate(node -> c.activate(s, node))
-                  .drag(
-                      c.dragging,
-                      CatalogTree::canDrag,
-                      move -> CatalogTree.canDrop(s, move),
-                      move -> CatalogTree.dropped(s, move)))
-          .key("connections")
-          .label("Workspace");
-      // Its items only while it is open: Move to walks the workspace for each folder.
-      var items = c.menu.isOpen() ? c.items(s, s.selected) : List.<Menu.Item>of();
-      body = Card.inset(Menu.contextMenu(tree, c.menu, items));
-      El callout = c.callout(s);
-      if (callout != null) {
-        body = col()
-            .grow(1)
-            .child(body)
-            .child(col().padding(0, t.space().s(), t.space().s(), t.space().s()).child(callout));
-      }
+      body = workspace(s);
     } else if (s.loadError == null) {
       body = emptyState(
           Symbol.DATABASE,
@@ -384,11 +337,62 @@ final class Frame {
             Menu.item("New connection…", create).icon(Symbol.ADD),
             Menu.item("New folder…", s.canAddFolder() ? s::newFolder : null).icon(Symbol.FOLDER)));
     return Card.flush(
-        Card.toolbar("Workspace", null, add),
+        Card.toolbar(WORKSPACE, null, add),
         problem == null ? null : col().padding(t.space().s()).child(problem),
         s.update == null ? null : update(s, modal),
         s.notices.isEmpty() ? null : notices(s),
         body);
+  }
+
+  /** Why the workspace could not be read or saved, or null. */
+  private static El problem(State s) {
+    if (s.loadError != null) {
+      // A file that could not be read for another reason is still there: nothing may replace it.
+      return Callout.callout(
+          Callout.Kind.DANGER,
+          "Connections could not be read",
+          s.loadError,
+          s.canChange() ? new El[0] : new El[] {tryAgain(s::reload)});
+    }
+    if (s.saveError != null) {
+      return Callout.callout(
+          Callout.Kind.DANGER, "Connections could not be saved", s.saveError, tryAgain(s::persist));
+    }
+    return null;
+  }
+
+  /** The tree of folders and connections, with its menu, and what the catalog says below it. */
+  private static El workspace(State s) {
+    Theme t = Theme.CURRENT.get();
+    var c = s.catalog;
+    El tree = Tree.tree(
+            new CatalogTree.Model(t, s),
+            new Tree.Options<Node>()
+                .open(
+                    node -> node instanceof Node.Folder f
+                        ? s.folderOpen(f.id())
+                        : c.open.contains(node),
+                    (node, open) -> c.toggle(s, node, open))
+                .select(s.selected, node -> s.selected = node)
+                .onActivate(node -> c.activate(s, node))
+                .drag(
+                    c.dragging,
+                    CatalogTree::canDrag,
+                    move -> CatalogTree.canDrop(s, move),
+                    move -> CatalogTree.dropped(s, move)))
+        .key("connections")
+        .label(WORKSPACE);
+    // Its items only while it is open: Move to walks the workspace for each folder.
+    var items = c.menu.isOpen() ? c.items(s, s.selected) : List.<Menu.Item>of();
+    El body = Card.inset(Menu.contextMenu(tree, c.menu, items));
+    El callout = c.callout(s);
+    if (callout == null) {
+      return body;
+    }
+    return col()
+        .grow(1)
+        .child(body)
+        .child(col().padding(0, t.space().s(), t.space().s(), t.space().s()).child(callout));
   }
 
   /**
@@ -433,13 +437,11 @@ final class Frame {
   private static El update(State s, boolean modal) {
     Theme t = Theme.CURRENT.get();
     var notice = s.update;
-    El act = notice.act() == null
-        ? null
-        : button(
-                notice.primary() ? Button.Variant.PRIMARY : Button.Variant.SECONDARY,
-                notice.act(),
-                modal ? null : notice.action())
-            .key("update-act");
+    El act = null;
+    if (notice.act() != null) {
+      var variant = notice.primary() ? Button.Variant.PRIMARY : Button.Variant.SECONDARY;
+      act = button(variant, notice.act(), modal ? null : notice.action()).key("update-act");
+    }
     El dismiss = button(Button.Variant.SECONDARY, notice.dismiss(), modal ? null : s::dismissUpdate)
         .key("update-dismiss");
     return col()
@@ -645,7 +647,7 @@ final class Frame {
                     .shortcut(Key.CONTROL, "PageUp")
                     .alsoShortcut(Key.CONTROL | Key.SHIFT, "Tab"),
                 Menu.separator(),
-                Menu.item("Workspace", tree ? () -> focusTree(s) : null).shortcut(Key.CONTROL, "0"),
+                Menu.item(WORKSPACE, tree ? () -> focusTree(s) : null).shortcut(Key.CONTROL, "0"),
                 Menu.item("Tab content", close == null ? null : () -> focusContent(s, group))
                     .shortcut(Key.CONTROL, "1"))),
         Menu.submenu(

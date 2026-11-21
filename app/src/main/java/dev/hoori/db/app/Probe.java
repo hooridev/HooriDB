@@ -17,7 +17,10 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.secret.SecretStore;
+import java.io.IOException;
 import java.util.Arrays;
+import java.util.UUID;
 
 /**
  * Tries the connection of the dialog: gets the driver it needs, which the user agrees to download,
@@ -144,12 +147,7 @@ final class Probe {
     work = s.app.background(
         "test a connection",
         () -> {
-          char[] password = typed != null
-              ? typed
-              : kept != null ? kept : secrets != null ? secrets.read(id).orElse(null) : null;
-          if (password == null) {
-            password = new char[0];
-          }
+          char[] password = password(typed, kept, secrets, id);
           try {
             var result = tester.test(profile, password, driver);
             if (result instanceof Tester.Refused r && contains(r.detail(), password)) {
@@ -160,27 +158,48 @@ final class Probe {
             Arrays.fill(password, '\0');
           }
         },
-        done -> {
-          work = null;
-          step = done;
-          if (done.result() instanceof Tester.Refused r) {
-            switch (r.failure()) {
-              case CANCELLED -> step = null;
-              case UNFIT -> d.triedToSave = true; // the fields say why, as for Save
-              default -> {}
-            }
-          }
-        },
+        this::tested,
         error -> {
           work = null;
           step = new Failed(error, tried);
         });
   }
 
+  /**
+   * The password to test with: the one typed, or else the one kept for this session, or else the
+   * keyring's where it is asked; empty for none.
+   */
+  private static char[] password(char[] typed, char[] kept, SecretStore secrets, UUID id)
+      throws IOException {
+    if (typed != null) {
+      return typed;
+    }
+    if (kept != null) {
+      return kept;
+    }
+    char[] saved = secrets == null ? null : secrets.read(id).orElse(null);
+    return saved == null ? new char[0] : saved;
+  }
+
+  /** The test's outcome, which shows; a cancel shows nothing, and an unfit form its fields. */
+  private void tested(Done done) {
+    work = null;
+    step = done;
+    if (done.result() instanceof Tester.Refused(var failure, var detail)) {
+      switch (failure) {
+        case CANCELLED -> step = null;
+        case UNFIT -> dialog.triedToSave = true; // the fields say why, as for Save
+        default -> {
+          // The outcome says what was refused.
+        }
+      }
+    }
+  }
+
   /** The system keyring was found: a test that waited for it goes on. */
   void keyringFound(State s) {
-    if (step instanceof ForKeyring k) {
-      connect(s, k.driver());
+    if (step instanceof ForKeyring(var driver)) {
+      connect(s, driver);
     }
   }
 
@@ -258,15 +277,15 @@ final class Probe {
   El view(State s) {
     return switch (step) {
       case null -> null;
-      case Fetching f ->
+      case Fetching _ ->
         switch (fetch.step) {
-          case Fetch.Waiting w -> status("Looking up the driver…");
-          case Fetch.Loading l -> status("Loading " + Fetch.name(l.found().provider()) + "…");
+          case Fetch.Waiting _ -> status("Looking up the driver…");
+          case Fetch.Loading(var found) -> status("Loading " + Fetch.name(found.provider()) + "…");
           case null -> null;
           default -> fetch.view(s, this::stop);
         };
-      case ForKeyring k -> status("Looking for the system keyring…");
-      case Testing x -> status("Connecting to " + x.host() + "…");
+      case ForKeyring _ -> status("Looking for the system keyring…");
+      case Testing(var host) -> status("Connecting to " + host + "…");
       case Failed f when !holds(f.tried()) -> null;
       case Failed f ->
         Callout.callout(
@@ -274,7 +293,7 @@ final class Probe {
             "The connection could not be tested",
             State.message(f.error()),
             button(SECONDARY, "Try again", () -> test(s)));
-      case Done d -> outcomeView();
+      case Done _ -> outcomeView();
     };
   }
 
@@ -298,8 +317,8 @@ final class Probe {
       return null;
     }
     return switch (done.result()) {
-      case Tester.Reached r -> {
-        String text = "Connected to " + r.server().product() + " " + r.server().version();
+      case Tester.Reached(var server) -> {
+        String text = "Connected to " + server.product() + " " + server.version();
         yield row()
             .gap(t.space().s())
             .align(Style.Align.CENTER)
@@ -308,11 +327,9 @@ final class Probe {
             .child(Icon.icon(Symbol.CHECKMARK_CIRCLE, Icon.Variant.SUCCESS))
             .child(label(text).wrapText());
       }
-      case Tester.Refused r ->
+      case Tester.Refused(var failure, var detail) ->
         Callout.callout(
-            Callout.Kind.DANGER,
-            Words.title(r.failure()),
-            r.detail().isEmpty() ? null : r.detail());
+            Callout.Kind.DANGER, Words.title(failure), detail.isEmpty() ? null : detail);
     };
   }
 
@@ -321,15 +338,21 @@ final class Probe {
     if (password.length == 0) {
       return false;
     }
-    outer:
     for (int i = 0; i + password.length <= text.length(); i++) {
-      for (int j = 0; j < password.length; j++) {
-        if (text.charAt(i + j) != password[j]) {
-          continue outer;
-        }
+      if (at(text, i, password)) {
+        return true;
       }
-      return true;
     }
     return false;
+  }
+
+  /** Whether the password stands in the text at the index. */
+  private static boolean at(String text, int at, char[] password) {
+    for (int j = 0; j < password.length; j++) {
+      if (text.charAt(at + j) != password[j]) {
+        return false;
+      }
+    }
+    return true;
   }
 }

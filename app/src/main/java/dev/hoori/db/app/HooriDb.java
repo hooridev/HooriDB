@@ -18,8 +18,11 @@ import dev.hoori.db.core.DesktopEntry;
 import dev.hoori.db.core.driver.MavenRepository;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -37,6 +40,19 @@ public final class HooriDb {
       size -> Theme.CURRENT.with(Theme.DARK, () -> AppIcon.appIcon(size, COLOR, Symbol.DATABASE)));
 
   private HooriDb() {}
+
+  /**
+   * Who may use a script's temporary folder, in the shared temporary folder: its owner alone, where
+   * the file system has POSIX permissions; on Windows the user's own temporary folder is private.
+   */
+  private static FileAttribute<?>[] ownerOnly() {
+    if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+      return new FileAttribute<?>[0];
+    }
+    return new FileAttribute<?>[] {
+      PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))
+    };
+  }
 
   /** The version that runs, as its JAR's manifest names it; a build of its own has none. */
   static String version() {
@@ -115,7 +131,7 @@ public final class HooriDb {
         folder = Path.of(rest.remove(at + 1));
         rest.remove(at);
       } else {
-        folder = Files.createTempDirectory("hooridb-script-");
+        folder = Files.createTempDirectory("hooridb-script-", ownerOnly());
       }
       var none = new Keyring.Unavailable(Keyring.Reason.UNSUPPORTED_PLATFORM, "a script run");
       Script.handle(rest.toArray(String[]::new), app(folder, () -> none));

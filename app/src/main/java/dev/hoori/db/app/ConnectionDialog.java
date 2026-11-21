@@ -41,11 +41,13 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.secret.Keyring;
+import dev.hoori.db.core.secret.SecretStore;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * The dialog that creates a connection or edits one: a form over its profile, with its password
@@ -151,7 +153,7 @@ final class ConnectionDialog {
     versions.lookedUp = () -> fetch.choices;
     // Only the lookup recommends: until it has found a version, Recommended names none.
     versions.recommendedBy = () ->
-        editing.value().driverVersion() == null && fetch.lookup instanceof Fetch.Found f
+        editing.value().driverVersion() == null && fetch.known instanceof Fetch.Found f
             ? f.version()
             : null;
     versions.date(s, p.driverVersion());
@@ -164,7 +166,7 @@ final class ConnectionDialog {
    */
   private void chooseDriver(State s) {
     choosingDriver = true;
-    if ((versions.read == null || versions.choices() == null) && !versions.reading()) {
+    if ((versions.last == null || versions.choices() == null) && !versions.reading()) {
       versions.read(s);
     }
   }
@@ -270,9 +272,8 @@ final class ConnectionDialog {
     }
     var secrets = s.secrets();
     boolean keep = savePassword && secrets != null;
-    boolean inKeyring = Boolean.TRUE.equals(stored);
     char[] typed = password.isEmpty() ? null : password.toCharArray();
-    char[] put = !keep ? null : typed != null ? typed : inKeyring ? null : s.rememberedCopy(id);
+    char[] put = keep ? toKeyring(s, id, typed) : null;
     // Unknown is not absent: where the keyring may hold one, it is asked to delete it.
     boolean takeOut = !keep && secrets != null && !Boolean.FALSE.equals(stored);
     keyringError = null;
@@ -280,6 +281,27 @@ final class ConnectionDialog {
       saved(s, profile, keep ? null : typed, false);
       return;
     }
+    move(s, profile, secrets, put, typed);
+  }
+
+  /**
+   * The password to put into the keyring: the one typed, or else the one this session keeps,
+   * unless the keyring holds it already; null for none.
+   */
+  private char[] toKeyring(State s, UUID id, char[] typed) {
+    if (typed != null) {
+      return typed;
+    }
+    return Boolean.TRUE.equals(stored) ? null : s.rememberedCopy(id);
+  }
+
+  /**
+   * Puts the password into the keyring, or takes it out where {@code put} is null, and then saves
+   * the profile; a failure keeps the dialog open.
+   */
+  private void move(
+      State s, ConnectionProfile profile, SecretStore secrets, char[] put, char[] typed) {
+    var id = profile.id();
     changing = true;
     held = put == null ? typed : null;
     int move = ++moves;
@@ -302,37 +324,55 @@ final class ConnectionDialog {
             }
             return null;
           }
-          char[] old = typed == null ? secrets.read(id).orElse(null) : null;
-          try {
-            secrets.delete(id);
-          } catch (IOException e) {
-            if (old != null) {
-              Arrays.fill(old, '\0');
-            }
-            throw e;
-          }
-          return old;
+          return takeOut(secrets, id, typed);
         },
-        old -> {
-          moving = null;
-          held = null;
-          slow = false;
-          stored = put != null; // where the password is now, as was done
-          unknown = false;
-          saved(s, profile, put != null ? null : typed != null ? typed : old, put != null);
-        },
-        error -> {
-          moving = null;
-          held = null;
-          slow = false;
-          changing = false;
-          s.drop(act);
-          keyringError = State.message(error);
-          if (put == null && typed != null) {
-            Arrays.fill(typed, '\0');
-          }
-          s.keyringFailed();
-        });
+        old -> moved(s, profile, put, typed, old),
+        error -> notMoved(s, put, typed, error));
+  }
+
+  /**
+   * Deletes the keyring's password, and gives back the one it held where none was typed, for this
+   * session to keep; null for none.
+   */
+  private static char[] takeOut(SecretStore secrets, UUID id, char[] typed) throws IOException {
+    char[] old = typed == null ? secrets.read(id).orElse(null) : null;
+    try {
+      secrets.delete(id);
+    } catch (IOException e) {
+      if (old != null) {
+        Arrays.fill(old, '\0');
+      }
+      throw e;
+    }
+    return old;
+  }
+
+  /** The keyring did as asked: the profile is saved, with the password this session keeps. */
+  private void moved(State s, ConnectionProfile profile, char[] put, char[] typed, char[] old) {
+    moving = null;
+    held = null;
+    slow = false;
+    stored = put != null; // where the password is now, as was done
+    unknown = false;
+    char[] session = null;
+    if (put == null) {
+      session = typed != null ? typed : old;
+    }
+    saved(s, profile, session, put != null);
+  }
+
+  /** The keyring failed: nothing is saved, and the dialog says what it answered. */
+  private void notMoved(State s, char[] put, char[] typed, Exception error) {
+    moving = null;
+    held = null;
+    slow = false;
+    changing = false;
+    s.drop(act);
+    keyringError = State.message(error);
+    if (put == null && typed != null) {
+      Arrays.fill(typed, '\0');
+    }
+    s.keyringFailed();
   }
 
   /**
@@ -552,30 +592,69 @@ final class ConnectionDialog {
 
   El view(State s) {
     Theme t = Theme.CURRENT.get();
-    var e = editing;
-    var p = e.value();
-    var problems = p.problems();
+    var p = editing.value();
     // Nothing changes while a Save waits for a console's answer or the keyring: it saves the form.
     boolean open = !changing && !s.pends(act);
     El save = button(
-        PRIMARY,
-        "Save",
-        () -> save(s),
-        Button.options()
-            .state(
-                changing
-                    ? Button.State.BUSY
-                    : ready() ? Button.State.READY : Button.State.DISABLED));
-    El cancel =
-        button(SECONDARY, "Cancel", !changing ? () -> cancel(s) : slow ? () -> giveUp(s) : null);
-    // Also where it is not known whether the keyring holds one: the choice is the user's.
-    boolean canSave = s.secrets() != null && (stored != null || asking == null);
-    boolean inKeyring = Boolean.TRUE.equals(stored);
-    boolean inSession = !isNew && s.remembers(e.original().id());
-    var keyring =
-        Prop.of(() -> canSave && savePassword, canSave && open ? v -> savePassword = v : null);
-    String fallback = String.valueOf(p.provider().defaultPort());
-    var name = Form.row(
+        PRIMARY, "Save", () -> save(s), Button.options().state(buttonState(changing, ready())));
+    El cancel = button(SECONDARY, "Cancel", cancelAction(s));
+    // What it is, where it connects, and who logs in: groups without headings.
+    El form = Form.form(
+        Form.Labels.BESIDE,
+        Form.group(null, nameRow(open)),
+        Form.group(null, where(s, open)),
+        Form.group(null, login(s, open)).divided());
+    El content = col()
+        .w(formWidth())
+        .gap(t.space().l())
+        .child(form)
+        // Enter while Save cannot go shows what keeps it, the empty host too.
+        .onKey(k -> {
+          if (k.name().equals("Enter") && k.modifiers() == 0 && !ready()) {
+            triedToSave = true;
+            return true;
+          }
+          return false;
+        });
+    notes(s, content);
+    El test = button(
+        SECONDARY,
+        "Test connection",
+        () -> probe.test(s),
+        Button.options().state(buttonState(probe.running(), probe.canTest(s))));
+    var options = Dialog.options().start(test).defaultButton(save);
+    if (p.color() != null) {
+      options = options.leading(ConnectionColors.mark(p.color()));
+    }
+    return Dialog.dialog(
+        isNew ? "New connection" : "Edit connection",
+        content,
+        List.of(cancel, save),
+        () -> cancel(s),
+        options);
+  }
+
+  /** A button's state: busy while its work runs, and else ready where it can go. */
+  private static Button.State buttonState(boolean busy, boolean ready) {
+    if (busy) {
+      return Button.State.BUSY;
+    }
+    return ready ? Button.State.READY : Button.State.DISABLED;
+  }
+
+  /** What Cancel does: closes, or gives up a keyring that keeps the save waiting; null for none. */
+  private Runnable cancelAction(State s) {
+    if (!changing) {
+      return () -> cancel(s);
+    }
+    return slow ? () -> giveUp(s) : null;
+  }
+
+  /** The name and the color. */
+  private Form.Row nameRow(boolean open) {
+    var e = editing;
+    var p = e.value();
+    return Form.row(
         field(
                 "Name",
                 textField(locked(open, e.at(NAME)), p.host().isBlank() ? "Optional" : p.host())
@@ -590,8 +669,52 @@ final class ConnectionDialog {
                     colorPopover,
                     open ? v -> e.at(COLOR).set(ConnectionColors.color(v)) : null)
                 .key("hue")));
+  }
+
+  /** What it is and where it connects: SRV only for a server of documents. */
+  private Form.Entry[] where(State s, boolean open) {
+    var p = editing.value();
+    var problems = p.problems();
+    var type = typeField(s, open);
+    var address = address(open, problems);
+    var database = field(
+            "Database",
+            textField(locked(open, editing.at(DATABASE)), "Optional")
+                .key("database")
+                .wFull())
+        .error(
+            or(error(problems, ConnectionProfile.Field.DATABASE), probe.error(Probe.At.DATABASE)));
+    var tls = field(
+            "TLS",
+            Select.select(
+                    List.of(Tls.values()),
+                    p.tls(),
+                    ConnectionDialog::tlsLabel,
+                    tlsMenu,
+                    open ? this::tls : null)
+                .key("tls")
+                .wFull())
+        .warning(tlsWarning(p))
+        .error(probe.error(Probe.At.TLS));
+    var readOnly = readOnlyField(open);
+    if (!p.provider().keepsDocuments()) {
+      return new Form.Entry[] {type, address, database, tls, readOnly};
+    }
+    var srv = field(
+            "SRV",
+            checkbox(Prop.of(() -> p.srv(), open ? this::srv : null), "Servers from DNS")
+                .key("srv"))
+        .help("The host of a mongodb+srv:// address, such as cluster0.example.net, for which DNS"
+            + " lists the servers and their ports.");
+    return new Form.Entry[] {type, address, srv, database, tls, readOnly};
+  }
+
+  /** The kind of database, with the driver's button beside it. */
+  private Form.Field typeField(State s, boolean open) {
+    Theme t = Theme.CURRENT.get();
+    var p = editing.value();
     var chosen = p.driverVersion();
-    var type = field(
+    return field(
             "Type",
             row()
                 .wFull()
@@ -614,6 +737,12 @@ final class ConnectionDialog {
                     // A long version is cut short by the kit, which shows it whole in a tooltip.
                     .maxSize(6 * t.size().control(), Float.POSITIVE_INFINITY)))
         .warning(driverWarning(s));
+  }
+
+  /** The host, and its port beside it but with SRV, where DNS gives the servers' ports. */
+  private Form.Entry address(boolean open, Set<ConnectionProfile.Problem> problems) {
+    Theme t = Theme.CURRENT.get();
+    var p = editing.value();
     var host = field(
             "Host",
             marked(
@@ -626,46 +755,34 @@ final class ConnectionDialog {
                     .wFull()))
         .required()
         .error(or(error(problems, ConnectionProfile.Field.HOST), probe.error(Probe.At.HOST)));
-    Form.Entry address = host; // with SRV, DNS gives the servers' ports
-    if (!p.srv()) {
-      address = Form.row(
-          host.grow(),
-          field(
-                  "Port",
-                  valueField(
-                          Format.INTEGER,
-                          p.port(),
-                          fallback,
-                          e.at(PORT).draft(),
-                          open ? this::port : null)
-                      .key("port")
-                      .maxLength(5)
-                      .w(3 * t.size().control()))
-              .required()
-              .error(
-                  or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))));
+    if (p.srv()) {
+      return host;
     }
-    var database = field(
-            "Database",
-            textField(locked(open, e.at(DATABASE)), "Optional").key("database").wFull())
-        .error(
-            or(error(problems, ConnectionProfile.Field.DATABASE), probe.error(Probe.At.DATABASE)));
-    var tls = field(
-            "TLS",
-            Select.select(
-                    List.of(Tls.values()),
-                    p.tls(),
-                    ConnectionDialog::tlsLabel,
-                    tlsMenu,
-                    open ? this::tls : null)
-                .key("tls")
-                .wFull())
-        .warning(tlsWarning(p))
-        .error(probe.error(Probe.At.TLS));
-    var readOnly = field(
+    return Form.row(
+        host.grow(),
+        field(
+                "Port",
+                valueField(
+                        Format.INTEGER,
+                        p.port(),
+                        String.valueOf(p.provider().defaultPort()),
+                        editing.at(PORT).draft(),
+                        open ? this::port : null)
+                    .key("port")
+                    .maxLength(5)
+                    .w(3 * t.size().control()))
+            .required()
+            .error(or(error(problems, ConnectionProfile.Field.PORT), probe.error(Probe.At.PORT))));
+  }
+
+  /** Read-only, with what it keeps from the server. */
+  private Form.Field readOnlyField(boolean open) {
+    var p = editing.value();
+    return field(
             "Access",
             checkbox(
-                    Prop.of(() -> p.readOnly(), open ? v -> e.at(READ_ONLY).set(v) : null),
+                    Prop.of(
+                        () -> p.readOnly(), open ? v -> editing.at(READ_ONLY).set(v) : null),
                     "Read-only")
                 .key("read-only"))
         .help(
@@ -674,27 +791,42 @@ final class ConnectionDialog {
                     + " like. Inserts, updates, deletes and every other change are refused."
                 : "The server keeps the session read-only and refuses what writes to tables or"
                     + " changes the schema. A statement that would turn that off is not sent.");
-    var srv = field(
-            "SRV",
-            checkbox(Prop.of(() -> p.srv(), open ? this::srv : null), "Servers from DNS")
-                .key("srv"))
-        .help("The host of a mongodb+srv:// address, such as cluster0.example.net, for which DNS"
-            + " lists the servers and their ports.");
+  }
+
+  /** Who logs in: the auth database only for a server of documents. */
+  private Form.Entry[] login(State s, boolean open) {
+    var p = editing.value();
+    var problems = p.problems();
     var user = field(
             "User",
             marked(
-                Probe.At.USER, textField(locked(open, e.at(USER))).key("user").wFull()))
+                Probe.At.USER,
+                textField(locked(open, editing.at(USER))).key("user").wFull()))
         .error(error(problems, ConnectionProfile.Field.USER));
+    var pass = passwordEntry(s, open);
+    if (!p.provider().keepsDocuments()) {
+      return new Form.Entry[] {user, pass};
+    }
     var authDatabase = field(
             "Auth database",
             textField(
-                    locked(open, e.at(AUTH_DATABASE)),
-                    p.provider().keepsDocuments() ? p.provider().documents().authDatabase() : null)
+                    locked(open, editing.at(AUTH_DATABASE)),
+                    p.provider().documents().authDatabase())
                 .key("auth-database")
                 .wFull())
         .help("The database the user is defined in, MongoDB's authSource.")
         .error(error(problems, ConnectionProfile.Field.AUTH_DATABASE));
-    var pass = field(
+    return new Form.Entry[] {user, authDatabase, pass};
+  }
+
+  /** The password, and whether the keyring keeps it. */
+  private Form.Field passwordEntry(State s, boolean open) {
+    Theme t = Theme.CURRENT.get();
+    // Also where it is not known whether the keyring holds one: the choice is the user's.
+    boolean canSave = s.secrets() != null && (stored != null || asking == null);
+    var keyring =
+        Prop.of(() -> canSave && savePassword, canSave && open ? v -> savePassword = v : null);
+    return field(
             "Password",
             col()
                 .wFull()
@@ -702,9 +834,7 @@ final class ConnectionDialog {
                 .child(revealable(
                         passwordField(
                                 Prop.of(() -> password, open ? this::password : null),
-                                inKeyring
-                                    ? "Unchanged, saved in the keyring"
-                                    : inSession ? "Unchanged, kept until HooriDB closes" : null)
+                                passwordPlaceholder(s))
                             .key("password")
                             .wFull(),
                         revealed,
@@ -713,28 +843,19 @@ final class ConnectionDialog {
                 .child(checkbox(keyring, "Save in system keyring")))
         .help(keyringNote(s))
         .error(probe.error(Probe.At.PASSWORD));
-    // What it is, where it connects, and who logs in: groups without headings.
-    El form = Form.form(
-        Form.Labels.BESIDE,
-        Form.group(null, name),
-        p.provider().keepsDocuments()
-            ? Form.group(null, type, address, srv, database, tls, readOnly)
-            : Form.group(null, type, address, database, tls, readOnly),
-        p.provider().keepsDocuments()
-            ? Form.group(null, user, authDatabase, pass).divided()
-            : Form.group(null, user, pass).divided());
-    El content = col()
-        .w(formWidth())
-        .gap(t.space().l())
-        .child(form)
-        // Enter while Save cannot go shows what keeps it, the empty host too.
-        .onKey(k -> {
-          if (k.name().equals("Enter") && k.modifiers() == 0 && !ready()) {
-            triedToSave = true;
-            return true;
-          }
-          return false;
-        });
+  }
+
+  /** Where the password is kept while none is typed; null where none is kept. */
+  private String passwordPlaceholder(State s) {
+    if (Boolean.TRUE.equals(stored)) {
+      return "Unchanged, saved in the keyring";
+    }
+    boolean inSession = !isNew && s.remembers(editing.original().id());
+    return inSession ? "Unchanged, kept until HooriDB closes" : null;
+  }
+
+  /** What the keyring and a test have to say, under the form. */
+  private void notes(State s, El content) {
     if (slow) {
       content.child(Callout.callout(
           Callout.Kind.WARNING,
@@ -751,25 +872,6 @@ final class ConnectionDialog {
     if (tried != null) {
       content.child(tried);
     }
-    El test = button(
-        SECONDARY,
-        "Test connection",
-        () -> probe.test(s),
-        Button.options()
-            .state(
-                probe.running()
-                    ? Button.State.BUSY
-                    : probe.canTest(s) ? Button.State.READY : Button.State.DISABLED));
-    var options = Dialog.options().start(test).defaultButton(save);
-    if (p.color() != null) {
-      options = options.leading(ConnectionColors.mark(p.color()));
-    }
-    return Dialog.dialog(
-        isNew ? "New connection" : "Edit connection",
-        content,
-        List.of(cancel, save),
-        () -> cancel(s),
-        options);
   }
 
   /**
@@ -808,12 +910,9 @@ final class ConnectionDialog {
         .label("Driver version")
         .grow(1);
     El line = row().wFull().gap(t.space().s()).align(Style.Align.CENTER).child(box);
-    boolean looking = chosen == null && probe.fetch.lookup instanceof Fetch.Looking;
+    boolean looking = chosen == null && probe.fetch.known instanceof Fetch.Looking;
     if (versions.reading() || versions.dating != null || looking) {
-      var waiting = versions.dating != null
-          ? "Looking up when " + versions.dating + " was published"
-          : versions.reading() ? "Reading the versions" : "Looking up the version to use";
-      line.child(col().role("status").label(waiting).child(Progress.spinner()));
+      line.child(col().role("status").label(waiting()).child(Progress.spinner()));
     } else if (versions.problem(s.drivers) != null) {
       line.child(Button.icon(
           Button.Variant.GHOST,
@@ -824,6 +923,14 @@ final class ConnectionDialog {
     return line;
   }
 
+  /** What the driver's version waits for. */
+  private String waiting() {
+    if (versions.dating != null) {
+      return "Looking up when " + versions.dating + " was published";
+    }
+    return versions.reading() ? "Reading the versions" : "Looking up the version to use";
+  }
+
   /**
    * The driver's line with what to think of a version chosen that is too new to be recommended, as
    * the warning replaces the help; null where it is not too new, or where a lookup or the list
@@ -832,7 +939,7 @@ final class ConnectionDialog {
   private String youngWarning(State s) {
     var young = young();
     if (young == null
-        || probe.fetch.lookup instanceof Fetch.Missing
+        || probe.fetch.known instanceof Fetch.Missing
         || s.drivers != null && versions.problem(s.drivers) != null) {
       return null;
     }
@@ -856,7 +963,7 @@ final class ConnectionDialog {
    */
   private String driverWarning(State s) {
     var young = young();
-    var missing = probe.fetch.lookup instanceof Fetch.Missing ? probe.line(s) : null;
+    var missing = probe.fetch.known instanceof Fetch.Missing ? probe.line(s) : null;
     if (young == null) {
       return missing;
     }

@@ -49,6 +49,14 @@ final class FolderDialog {
     return new FolderDialog(Kind.DELETE, folder, name);
   }
 
+  /** What a folder holds of its connections, its folders' included. */
+  private static String holds(int n) {
+    if (n == 0) {
+      return "It holds folders, and no connections.";
+    }
+    return "It holds " + n + (n == 1 ? " connection" : " connections") + ", its folders included.";
+  }
+
   El view(State s) {
     return kind == Kind.DELETE ? deleting(s) : naming(s, () -> s.folderDialog = null);
   }
@@ -56,9 +64,10 @@ final class FolderDialog {
   private El naming(State s, Runnable close) {
     Theme t = Theme.CURRENT.get();
     boolean create = kind == Kind.CREATE;
-    Runnable done = name.isBlank()
-        ? null
-        : create ? () -> s.createFolder(folder, name) : () -> s.renameFolder(folder, name);
+    Runnable done = null;
+    if (!name.isBlank()) {
+      done = create ? () -> s.createFolder(folder, name) : () -> s.renameFolder(folder, name);
+    }
     El ok = button(PRIMARY, create ? "Create" : "Rename", done);
     El field =
         TextField.textField(Prop.of(() -> name, v -> name = v)).key("name").wFull();
@@ -96,13 +105,7 @@ final class FolderDialog {
         .w(ConnectionDialog.width())
         .gap(t.space().m())
         .child(Label.label("Delete the folder " + name + "?").wrapText())
-        .child(Label.label(
-                Label.Variant.MUTED,
-                n == 0
-                    ? "It holds folders, and no connections."
-                    : "It holds " + n + (n == 1 ? " connection" : " connections")
-                        + ", its folders included.")
-            .wrapText())
+        .child(Label.label(Label.Variant.MUTED, holds(n)).wrapText())
         .child(Label.label(
                 Label.Variant.MUTED,
                 "Move contents up puts what it holds where the folder is, and connections stay"

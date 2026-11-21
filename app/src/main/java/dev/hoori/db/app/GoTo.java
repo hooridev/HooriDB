@@ -46,101 +46,21 @@ final class GoTo {
 
   /** The tables that match, best first, and then what is not read yet. */
   static List<FilterList.Entry> entries(State s, TabGroups.Group<Tab> group, String query) {
-    var c = s.catalog;
-    var q = query.strip();
-    var found = new ArrayList<Found>();
-    var notes = new ArrayList<FilterList.Entry>();
-    var connected = c.lives.values().stream()
+    var search = new Search(s, group, query.strip());
+    var connected = s.catalog.lives.values().stream()
         .filter(live -> live.phase instanceof CatalogTree.Connected)
         .map(live -> live.profile)
         .toList();
-    for (var live : c.lives.values()) {
-      if (!(live.phase instanceof CatalogTree.Connected)) {
-        continue;
-      }
-      var id = live.id();
-      var name = label(live.profile, connected);
-      var color = s.color(id);
-      var databases = live.levels.get(new Node.Connection(id));
-      if (!(databases instanceof CatalogTree.Read read)) {
-        if (databases instanceof CatalogTree.Reading) { // a failure shows in the tree
-          notes.add(note(name, "reading its databases…", color, true, null));
-        }
-        continue;
-      }
-      for (var node : read.children()) {
-        var db = (Node.OfDatabase) node;
-        // Unread while its own level, or that of a schema of its own, is not read.
-        boolean reading = false;
-        boolean unread = false;
-        String failed = null;
-        var level = live.levels.get(db);
-        var kids = new ArrayList<Node>();
-        if (level instanceof CatalogTree.Read r) {
-          for (var child : r.children()) {
-            if (child instanceof Node.OfSchema x) {
-              var below = live.levels.get(x);
-              if (below instanceof CatalogTree.Read rx) {
-                kids.addAll(rx.children());
-              } else if (!x.schema().system()) {
-                reading |= below instanceof CatalogTree.Reading;
-                unread |= CatalogTree.unread(below);
-                failed =
-                    failed != null || !failed(below) ? failed : c.problem(s, x).title();
-              }
-            } else {
-              kids.add(child);
-            }
-          }
-        } else {
-          reading = level instanceof CatalogTree.Reading;
-          unread = CatalogTree.unread(level);
-          failed = failed(level) ? c.problem(s, db).title() : null;
-        }
-        for (var kid : kids) {
-          if (kid instanceof Node.OfTable t) {
-            int rank = rank(t.table().name(), q);
-            if (rank >= 0) {
-              found.add(new Found(id, t.table(), where(name, t.table()), rank, system(t.table())));
-            }
-          }
-        }
-        // What the palette itself reads, or failed to.
-        var scan = live.scans.get(db);
-        if (scan != null) {
-          reading |= scan.asked != null;
-          failed = scan.failed != null ? scan.failed : failed;
-        }
-        if (db.database().system() || !(reading || unread || failed != null)) {
-          continue;
-        }
-        String database = db.database().name();
-        // The palette stays open, and shows the tables as they come.
-        Runnable readThem = () -> {
-          var started = c.scan(s, db);
-          if (started != null) {
-            s.readForPalette(group, () -> c.stop(db, started));
-          }
-        };
-        var key = String.join("\0", id.toString(), database);
-        notes.add((reading
-                ? note(database, name + " · reading its tables…", color, true, null)
-                : failed != null
-                    ? note(
-                        database,
-                        name + " · " + failed + ", choose to try again",
-                        color,
-                        false,
-                        readThem)
-                    : note(database, name + " · choose to read its tables", color, false, readThem))
-            .key(key)
-            .keepsOpen(true));
+    for (var live : s.catalog.lives.values()) {
+      if (live.phase instanceof CatalogTree.Connected) {
+        search.connection(live, label(live.profile, connected));
       }
     }
+    var found = search.found;
     found.sort(Comparator.comparingInt(Found::rank)
         .thenComparing(Found::system)
         .thenComparingInt(f -> f.table().name().length()));
-    var entries = new ArrayList<FilterList.Entry>(found.size() + notes.size() + 1);
+    var entries = new ArrayList<FilterList.Entry>(found.size() + search.notes.size() + 1);
     for (var f : found) {
       var table = f.table();
       var symbol = table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE;
@@ -156,8 +76,122 @@ final class GoTo {
           .detail("Open one in the tree to find its tables")
           .symbol(Symbol.INFO));
     }
-    entries.addAll(notes);
+    entries.addAll(search.notes);
     return entries;
+  }
+
+  /** One search of the palette: the tables that match, and the databases not read yet. */
+  private static final class Search {
+    private final State s;
+    private final TabGroups.Group<Tab> group;
+    private final String q;
+    final List<Found> found = new ArrayList<>();
+    final List<FilterList.Entry> notes = new ArrayList<>();
+
+    Search(State s, TabGroups.Group<Tab> group, String q) {
+      this.s = s;
+      this.group = group;
+      this.q = q;
+    }
+
+    /** A connected connection, by the name the palette calls it. */
+    void connection(CatalogTree.Live live, String name) {
+      var databases = live.levels.get(new Node.Connection(live.id()));
+      if (databases instanceof CatalogTree.Read(var children)) {
+        for (var node : children) {
+          database(live, name, (Node.OfDatabase) node);
+        }
+      } else if (databases instanceof CatalogTree.Reading) { // a failure shows in the tree
+        notes.add(note(name, "reading its databases…", s.color(live.id()), true, null));
+      }
+    }
+
+    /**
+     * A database's tables that match, and a note where they are not all known: while its own
+     * level, or that of a schema of its own, is not read.
+     */
+    private void database(CatalogTree.Live live, String name, Node.OfDatabase db) {
+      var unknown = new Unknown();
+      var level = live.levels.get(db);
+      var kids = new ArrayList<Node>();
+      if (level instanceof CatalogTree.Read(var children)) {
+        for (var child : children) {
+          if (!(child instanceof Node.OfSchema x)) {
+            kids.add(child);
+          } else if (live.levels.get(x) instanceof CatalogTree.Read(var below)) {
+            kids.addAll(below);
+          } else if (!x.schema().system()) {
+            unknown.add(live.levels.get(x), x);
+          }
+        }
+      } else {
+        unknown.add(level, db);
+      }
+      for (var kid : kids) {
+        if (kid instanceof Node.OfTable(var _, var table)) {
+          int rank = rank(table.name(), q);
+          if (rank >= 0) {
+            found.add(new Found(live.id(), table, where(name, table), rank, system(table)));
+          }
+        }
+      }
+      // What the palette itself reads, or failed to.
+      var scan = live.scans.get(db);
+      if (scan != null) {
+        unknown.reading |= scan.asked != null;
+        unknown.failed = scan.failed != null ? scan.failed : unknown.failed;
+      }
+      if (!db.database().system() && unknown.any()) {
+        notes.add(unread(live.id(), name, db, unknown));
+      }
+    }
+
+    /** The note of a database not read: choosing it reads it, and the palette stays open. */
+    private FilterList.Entry unread(UUID id, String name, Node.OfDatabase db, Unknown unknown) {
+      var c = s.catalog;
+      var color = s.color(id);
+      String database = db.database().name();
+      // The palette stays open, and shows the tables as they come.
+      Runnable readThem = () -> {
+        var started = c.scan(s, db);
+        if (started != null) {
+          s.readForPalette(group, () -> c.stop(db, started));
+        }
+      };
+      FilterList.Entry note;
+      if (unknown.reading) {
+        note = note(database, name + " · reading its tables…", color, true, null);
+      } else if (unknown.failed != null) {
+        note = note(
+            database,
+            name + " · " + unknown.failed + ", choose to try again",
+            color,
+            false,
+            readThem);
+      } else {
+        note = note(database, name + " · choose to read its tables", color, false, readThem);
+      }
+      return note.key(String.join("\0", id.toString(), database)).keepsOpen(true);
+    }
+
+    /** What keeps a database's tables from being known: a read, none yet, or the first failure. */
+    private final class Unknown {
+      boolean reading;
+      boolean unread;
+      String failed;
+
+      void add(CatalogTree.Level level, Node node) {
+        reading |= level instanceof CatalogTree.Reading;
+        unread |= CatalogTree.unread(level);
+        if (failed == null && failed(level)) {
+          failed = s.catalog.problem(s, node).title();
+        }
+      }
+
+      boolean any() {
+        return reading || unread || failed != null;
+      }
+    }
   }
 
   private static boolean failed(CatalogTree.Level level) {

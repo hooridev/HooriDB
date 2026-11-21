@@ -216,10 +216,10 @@ final class HistoryDialog {
 
   static String outcome(HistoryEntry entry) {
     return switch (entry.outcome()) {
-      case Outcome.Rows r -> "Rows";
-      case Outcome.Changed c -> ConsoleTab.rows(c.count()) + " changed";
-      case Outcome.Failed f -> f.message();
-      case Outcome.Cancelled c -> "Cancelled";
+      case Outcome.Rows _ -> "Rows";
+      case Outcome.Changed(var count) -> ConsoleTab.rows(count) + " changed";
+      case Outcome.Failed(var message) -> message;
+      case Outcome.Cancelled _ -> "Cancelled";
     };
   }
 }
