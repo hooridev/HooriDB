@@ -25,6 +25,9 @@ import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.monitor.ServerSession;
+import java.io.IOException;
+import java.io.Reader;
+import java.lang.reflect.InvocationTargetException;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -55,6 +58,7 @@ public final class PostgreSql implements Dialect {
   private final ErrorDialect errors = new Errors();
   private final PlanDialect plan = new Plan();
   private final SyntaxDialect syntax = new Syntax();
+  private final ClientDialect client = new Client();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new PostgreSqlRows();
   private final MonitorDialect monitor = new Monitor();
@@ -117,6 +121,11 @@ public final class PostgreSql implements Dialect {
   }
 
   @Override
+  public ClientDialect client() {
+    return client;
+  }
+
+  @Override
   public SessionDialect session() {
     return session;
   }
@@ -129,6 +138,51 @@ public final class PostgreSql implements Dialect {
   @Override
   public MonitorDialect monitor() {
     return monitor;
+  }
+
+  // psql, and pgjdbc's copy API.
+  static final class Client implements ClientDialect {
+
+    // pg_dump since 17.6 writes these around a dump: they have psql refuse the meta-commands
+    // between them, which a run of a file never runs anyway.
+    private static final Set<String> SKIPPED = Set.of("restrict", "unrestrict");
+
+    @Override
+    public boolean backslashCommands() {
+      return true;
+    }
+
+    @Override
+    public Set<String> skippedCommands() {
+      return SKIPPED;
+    }
+
+    @Override
+    public boolean copiesFromClient() {
+      return true;
+    }
+
+    @Override
+    public long copyIn(Connection connection, String sql, Reader rows)
+        throws SQLException, IOException {
+      try {
+        var manager = call(connection, "getCopyAPI");
+        return (Long) manager
+            .getClass()
+            .getMethod("copyIn", String.class, Reader.class)
+            .invoke(manager, sql, rows);
+      } catch (InvocationTargetException e) {
+        switch (e.getCause()) {
+          case SQLException failure -> throw failure;
+          case IOException failure -> throw failure;
+          case RuntimeException failure -> throw failure;
+          case Error failure -> throw failure;
+          default -> throw new SQLException(e.getCause());
+        }
+      } catch (ReflectiveOperationException e) {
+        throw new SQLException("This version of pgjdbc has no copy API: " + e.getMessage(), e);
+      }
+    }
   }
 
   // pgjdbc.

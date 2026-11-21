@@ -5,6 +5,7 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.monitor.ServerSession;
+import java.io.Reader;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -23,10 +24,40 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
 
   private final CatalogDialect catalog = new Catalog();
   private final ErrorDialect errors = new Errors();
+  private final ClientDialect client = new Client();
 
   @Override
   public int defaultPort() {
     return 3306;
+  }
+
+  @Override
+  public ClientDialect client() {
+    return client;
+  }
+
+  // Of the commands of their clients, only DELIMITER, which SyntaxDialect has, is in their dumps.
+  static final class Client implements ClientDialect {
+
+    @Override
+    public boolean backslashCommands() {
+      return false;
+    }
+
+    @Override
+    public Set<String> skippedCommands() {
+      return Set.of();
+    }
+
+    @Override
+    public boolean copiesFromClient() {
+      return false;
+    }
+
+    @Override
+    public long copyIn(Connection connection, String sql, Reader rows) {
+      throw new UnsupportedOperationException("The server copies nothing from the client");
+    }
   }
 
   @Override

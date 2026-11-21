@@ -37,6 +37,10 @@ public final class Statements {
   private final List<Integer> afters = new ArrayList<>();
   private String delimiter = ";";
   private int i;
+  // A file's scan: what it finds, its client's commands among them; null for a text of the editor.
+  private List<Part> parts;
+  // Whether a backslash where a statement could begin is a command of the client, to its line end.
+  private boolean backslashCommands;
   // What the last token() skipped, and whether a caret right after it is still inside it.
   private Piece.Kind kind;
   private boolean open;
@@ -67,6 +71,25 @@ public final class Statements {
   // Whether a backslash escapes in a plain string: as MariaDB and MySQL read one by default, and
   // PostgreSQL only with standard_conforming_strings off.
   private boolean escapes;
+
+  /**
+   * What the scan of part of a file found, in order, as offsets in its text: a statement, which ends
+   * where {@link Statement} does; a line with a command of the provider's client, from its
+   * backslash to the end of the line; or a line {@code DELIMITER}, which the scan took.
+   *
+   * @param after the offset after its terminator, or after its line for a command, or its end
+   *     where the text ends first
+   * @param delimiter the terminator from after it on
+   */
+  record Part(Kind kind, int start, int end, int after, String delimiter) {
+
+    /** What a part is. */
+    enum Kind {
+      STATEMENT,
+      COMMAND,
+      DELIMITER
+    }
+  }
 
   private Statements(String text, Provider provider) {
     this.text = text;
@@ -273,6 +296,22 @@ public final class Statements {
     return size > 0 && afters.get(size - 1) == found.get(size - 1).end();
   }
 
+  /**
+   * The parts of the text from the offset on, as a file is read: the statements by the same rules
+   * as {@link #split}, from the delimiter given on, and the lines of client commands, where the
+   * provider's client has commands that begin with a backslash. The text before the offset is only
+   * looked at as what a token there follows.
+   */
+  static List<Part> parts(String text, int from, Provider provider, String delimiter) {
+    var scan = new Statements(text, provider);
+    scan.parts = new ArrayList<>();
+    scan.delimiter = delimiter;
+    scan.backslashCommands = provider.dialect().client().backslashCommands();
+    scan.i = from;
+    scan.run();
+    return scan.parts;
+  }
+
   private static Statements scan(String text, Provider provider) {
     var scan = new Statements(text, provider);
     if (scan.syntax == null) {
@@ -318,7 +357,15 @@ public final class Statements {
     int start = -1;
     int end = -1;
     while (i < n) {
+      int from = i;
       if (start < 0 && syntax.clientDelimiter() && delimiterCommand()) {
+        if (parts != null) {
+          parts.add(new Part(Part.Kind.DELIMITER, from, i, i, delimiter));
+        }
+        continue;
+      }
+      if (start < 0 && backslashCommands && text.charAt(i) == '\\') {
+        command();
         continue;
       }
       if (text.startsWith(delimiter, i)) {
@@ -328,7 +375,6 @@ public final class Statements {
       } else if (whitespace(text.charAt(i))) {
         i++;
       } else {
-        int from = i;
         if (token()) {
           if (start < 0) {
             start = from;
@@ -344,7 +390,28 @@ public final class Statements {
     if (start >= 0) {
       found.add(new Statement(start, end));
       afters.add(after);
+      if (parts != null) {
+        parts.add(new Part(Part.Kind.STATEMENT, start, end, after, delimiter));
+      }
     }
+  }
+
+  // At a backslash where a statement could begin: takes its line as a command of the client, as
+  // psql does with its meta-commands, without the line's end.
+  private void command() {
+    int n = text.length();
+    int from = i;
+    while (i < n && !lineEnd(text.charAt(i))) {
+      i++;
+    }
+    int end = i;
+    if (i < n && text.charAt(i) == '\r') {
+      i++;
+    }
+    if (i < n && text.charAt(i) == '\n') {
+      i++;
+    }
+    parts.add(new Part(Part.Kind.COMMAND, from, end, i, delimiter));
   }
 
   // Skips what begins at i: a comment, a quoted string or identifier, or one character. Whether
