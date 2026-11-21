@@ -141,6 +141,7 @@ final class ConsoleTab implements Tab {
     long dropped; // rows beyond those kept, read to the statement's end and not kept
     boolean pinned; // the next run leaves it
     float[] widths;
+    final DataGrid.Fit fit = new DataGrid.Fit(); // once, in the first frame with rows
     final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
     // Of a server of documents, the documents of the rows, whole, and how they show.
     final List<Document> documents = new ArrayList<>();
@@ -2875,6 +2876,7 @@ final class ConsoleTab implements Tab {
     var options = DataGrid.options()
         .select(o.selection)
         .onResize((c, w) -> o.widths[c] = w)
+        .fitColumns(o.fit)
         .rowNumbers()
         .copy(app.clipboard())
         .loading(row -> row < o.rows.size(), (first, last) -> want(s, o, first, last));

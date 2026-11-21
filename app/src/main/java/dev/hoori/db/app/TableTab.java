@@ -121,6 +121,8 @@ final class TableTab implements Tab {
   Table table; // its kind may change, as a table replaced by a view of its name
   List<Column> columns; // as the catalog read them; null until then
   float[] widths; // of the columns, which the user may change
+  // Fits the columns once they show rows, and again when their names change.
+  final DataGrid.Fit fit = new DataGrid.Fit();
   private List<Field> fields; // as the last read gave them, which each page has to match
   long rows; // known to be there, or as estimated
   private boolean more; // a row more in the grid, whose read says whether there are more
@@ -237,8 +239,11 @@ final class TableTab implements Tab {
         });
   }
 
-  /** The widths of new columns: those of the same name keep theirs. */
+  /** The widths of new columns: those of the same name keep theirs, until the fit is redone. */
   private void shape(List<Column> next) {
+    if (columns != null && !names(columns).equals(names(next))) {
+      fit.reset();
+    }
     var old = new HashMap<String, Float>();
     for (int i = 0; columns != null && widths != null && i < columns.size(); i++) {
       old.put(columns.get(i).name(), widths[i]);
@@ -247,6 +252,10 @@ final class TableTab implements Tab {
     for (int i = 0; i < widths.length; i++) {
       widths[i] = old.getOrDefault(next.get(i).name(), -1f);
     }
+  }
+
+  private static List<String> names(List<Column> columns) {
+    return columns.stream().map(Column::name).toList();
   }
 
   /** The rows the grid shows: those known, and the one more that asks whether there are more. */
@@ -1035,6 +1044,7 @@ final class TableTab implements Tab {
     var options = DataGrid.options()
         .select(selection)
         .onResize((c, w) -> widths[c] = w)
+        .fitColumns(fit)
         .rowNumbers()
         .copy(app.clipboard())
         .copyLimit(

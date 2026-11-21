@@ -395,6 +395,39 @@ class TableTabTest {
   }
 
   @Test
+  void theColumnsFitTheirRowsOnceAndAgainWhenARefreshChangesThem() throws Exception {
+    servers.rows(ORDERS, 1000, OptionalLong.of(1000));
+    var app = shop();
+    var held = servers.hold("read " + ORDERS + " 0-200");
+    c.run(app, open("orders") + SETTLE + table("orders") + "frame\n");
+    var tab = tab(app);
+    float[] guessed = tab.widths.clone();
+    assertTrue(tab.fit.isPending());
+    held.countDown();
+    c.run(app, SETTLE);
+    assertFalse(tab.fit.isPending());
+    var grid = app.state().theme.grid();
+    for (float width : tab.widths) {
+      assertTrue(
+          width >= grid.minColumn() && width <= grid.maxColumn(), Arrays.toString(tab.widths));
+    }
+    assertFalse(Arrays.equals(guessed, tab.widths), Arrays.toString(tab.widths));
+    // The same columns keep every width, also one set by hand.
+    tab.widths[3] = 333.5f;
+    float[] kept = tab.widths.clone();
+    c.run(app, "press #refresh\nframe\n" + SETTLE);
+    assertTrue(Arrays.equals(kept, tab.widths), Arrays.toString(tab.widths));
+    // A column gone: all of them fit again.
+    servers.serve(
+        PG, Provider.POSTGRESQL, "16.4", OUTLINE.replace("      customer_id: integer\n", ""));
+    c.run(app, "press #refresh\nframe\n" + SETTLE + "snap refit\n");
+    assertFalse(tab.fit.isPending());
+    assertEquals(3, tab.widths.length, Arrays.toString(tab.widths));
+    assertTrue(tab.widths[2] != 333.5f, Arrays.toString(tab.widths));
+    assertEquals(kept[0], tab.widths[0], Arrays.toString(tab.widths));
+  }
+
+  @Test
   void columnsChangedUnderneathAreReadAnew() throws Exception {
     servers.rows(ORDERS, 1000, OptionalLong.of(1000));
     var app = shop();

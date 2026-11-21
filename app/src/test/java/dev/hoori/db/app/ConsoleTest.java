@@ -26,11 +26,13 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Message;
 import dev.hoori.db.core.execution.Result;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -216,6 +218,29 @@ class ConsoleTest {
     assertTrue(status(c.tree("more")).contains("400 rows so far"), c.tree("more"));
     c.run(app, "scroll #grid row 300\nframe\nframe\nsnap later\n");
     assertTrue(cell(c.tree("later"), 300, 0).contains("\"301\""), c.tree("later"));
+  }
+
+  @Test
+  void eachResultFitsItsColumnsToItsFirstRows() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(ORDERS) + RUN);
+    var first = tab(app).shown;
+    assertFalse(first.fit.isPending());
+    var grid = app.state().theme.grid();
+    float guessed = Cells.width(Kind.INTEGER) * app.state().theme.size().control();
+    assertTrue(first.widths[0] != guessed, Arrays.toString(first.widths));
+    for (float width : first.widths) {
+      assertTrue(
+          width >= grid.minColumn() && width <= grid.maxColumn(), Arrays.toString(first.widths));
+    }
+    // Rows read later as the grid scrolls leave the widths.
+    float[] fitted = first.widths.clone();
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE);
+    assertTrue(Arrays.equals(fitted, first.widths), Arrays.toString(first.widths));
+    // The next run is a new result, fitted on its own.
+    c.run(app, "press #sql\n" + RUN);
+    assertTrue(tab(app).shown != first);
+    assertFalse(tab(app).shown.fit.isPending());
   }
 
   @Test
