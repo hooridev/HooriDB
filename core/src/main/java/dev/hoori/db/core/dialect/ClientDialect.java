@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.Reader;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -24,6 +25,13 @@ public interface ClientDialect {
    * nothing that it needs; it refuses every other.
    */
   Set<String> skippedCommands();
+
+  /**
+   * Whether a statement begins or ends a transaction, or turns auto-commit on or off, by its words,
+   * in lower case and in order, as {@link dev.hoori.db.core.sql.TransactionControl} reads them: a
+   * run of a file in one transaction refuses it, as it would end that transaction.
+   */
+  boolean controlsTransaction(List<String> words);
 
   /**
    * Whether a statement can copy rows from the client, as PostgreSQL's {@code COPY … FROM STDIN}:

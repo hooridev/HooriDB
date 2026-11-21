@@ -49,6 +49,24 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return Set.of();
     }
 
+    // BEGIN, but MariaDB's compound statement BEGIN NOT ATOMIC, START TRANSACTION, COMMIT,
+    // ROLLBACK, but to a savepoint, XA, and a SET of autocommit, which commits as it turns it on.
+    @Override
+    public boolean controlsTransaction(List<String> words) {
+      if (words.isEmpty()) {
+        return false;
+      }
+      var second = words.size() > 1 ? words.get(1) : "";
+      return switch (words.getFirst()) {
+        case "begin" -> !second.equals("not");
+        case "start" -> second.equals("transaction");
+        case "commit", "xa" -> true;
+        case "rollback" -> !words.contains("to");
+        case "set" -> words.contains("autocommit");
+        default -> false;
+      };
+    }
+
     @Override
     public boolean copiesFromClient() {
       return false;

@@ -157,6 +157,21 @@ public final class PostgreSql implements Dialect {
       return SKIPPED;
     }
 
+    // BEGIN, START TRANSACTION, COMMIT and END, ABORT and ROLLBACK, but to a savepoint, and
+    // PREPARE TRANSACTION, which ends it as well.
+    @Override
+    public boolean controlsTransaction(List<String> words) {
+      if (words.isEmpty()) {
+        return false;
+      }
+      return switch (words.getFirst()) {
+        case "begin", "start", "commit", "end", "abort" -> true;
+        case "rollback" -> !words.contains("to");
+        case "prepare" -> words.size() > 1 && words.get(1).equals("transaction");
+        default -> false;
+      };
+    }
+
     @Override
     public boolean copiesFromClient() {
       return true;
