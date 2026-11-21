@@ -1,0 +1,144 @@
+package dev.hoori.db.app;
+
+import static com.rethinkj.ui.El.row;
+
+import com.rethinkj.ui.El;
+import com.rethinkj.ui.Style;
+import com.rethinkj.ui.kit.Icon;
+import com.rethinkj.ui.kit.Progress;
+import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Tree;
+import dev.hoori.db.core.catalog.Table;
+import java.util.List;
+
+/**
+ * The catalog's rows for the kit's tree, as the state holds them: the workspace's folders and
+ * connections, and below a connection what the tree read of its server, or why it could not.
+ */
+record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
+
+  @Override
+  public List<Node> roots() {
+    return s.workspace().entries().stream().map(Node::of).toList();
+  }
+
+  @Override
+  public Tree.Children<Node> children(Node node) {
+    if (node instanceof Node.Folder(var id)) {
+      var folder = s.folder(id);
+      return Tree.ready(
+          folder == null ? List.of() : folder.entries().stream().map(Node::of).toList());
+    }
+    var c = s.catalog;
+    var live = c.lives.get(node.id());
+    if (live == null) {
+      return Tree.ready(List.of());
+    }
+    if (CatalogTree.failedWhole(live, node)) {
+      return CatalogTree.ended(live.phase)
+          ? Tree.ready(List.of(new Node.Problem(node)))
+          : Tree.loading(loading(node));
+    }
+    var level = live.levels.get(node);
+    if (level instanceof CatalogTree.Read(var children)) {
+      return Tree.ready(children);
+    }
+    if (level instanceof CatalogTree.NotRead || level instanceof CatalogTree.NotOpened) {
+      return Tree.failed(c.problem(s, node).title(), CatalogTree.TRY_AGAIN, () -> c.retry(s, node));
+    }
+    return Tree.loading(loading(node));
+  }
+
+  @Override
+  public boolean muted(Node node) {
+    return switch (node) {
+      case Node.OfDatabase n -> n.database().system();
+      case Node.OfSchema n -> n.schema().system();
+      case Node.OfTable n -> system(n.table());
+      default -> false;
+    };
+  }
+
+  @Override
+  public boolean isLeaf(Node node) {
+    return node instanceof Node.OfColumn || node instanceof Node.Problem;
+  }
+
+  @Override
+  public String label(Node node) {
+    return s.catalog.label(s, node);
+  }
+
+  @Override
+  public String detail(Node node) {
+    return s.catalog.detail(s, node);
+  }
+
+  /** The text of the row below an open node whose children are on their way. */
+  private String loading(Node node) {
+    var live = s.catalog.lives.get(node.id());
+    if (!(node instanceof Node.Connection) || live == null) {
+      return "Loading…";
+    }
+    return switch (live.phase) {
+      case CatalogTree.ForDriver _ -> "Waiting for the driver…";
+      case CatalogTree.ForKeyring _ -> "Looking for the system keyring…";
+      case CatalogTree.ReadingPassword _ -> "Reading the password…";
+      case CatalogTree.ForPassword _ -> "Waiting for the password…";
+      case CatalogTree.Connecting _ -> "Connecting…";
+      default -> "Loading…";
+    };
+  }
+
+  @Override
+  public El icon(Node node) {
+    return switch (node) {
+      case Node.Folder(var id) ->
+        icon(s.folderOpen(id) ? Symbol.FOLDER_OPEN : Symbol.FOLDER, false);
+      case Node.Connection n -> connection(n);
+      case Node.OfDatabase n -> icon(Symbol.DATABASE, n.database().system());
+      case Node.OfSchema n -> icon(Symbol.FOLDER, n.schema().system());
+      case Node.OfTable n ->
+        icon(n.table().kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE, system(n.table()));
+      case Node.OfColumn n ->
+        n.column().keyPosition() > 0
+            ? Icon.icon(Symbol.KEY, Icon.Variant.WARNING)
+            : icon(Symbol.COLUMN_SINGLE, false);
+      case Node.Problem n -> Icon.icon(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
+    };
+  }
+
+  // A system object's icon is quieter too, as its name is muted.
+  private El icon(Symbol symbol, boolean system) {
+    return Icon.icon(symbol, system ? Icon.Variant.DISABLED : Icon.Variant.MUTED);
+  }
+
+  private static boolean system(Table table) {
+    return switch (table.container()) {
+      case dev.hoori.db.core.catalog.Database d -> d.system();
+      case dev.hoori.db.core.catalog.Schema x -> x.system();
+    };
+  }
+
+  // The kind of server is the row's muted text; the icon's color says whether it is connected.
+  private El connection(Node.Connection n) {
+    var live = s.catalog.lives.get(n.id());
+    CatalogTree.Phase phase = live == null ? null : live.phase;
+    El icon = switch (phase) {
+      case CatalogTree.Connected _ -> Icon.icon(Symbol.SERVER, Icon.Variant.SUCCESS);
+      case CatalogTree.Failed _, CatalogTree.Lost _ ->
+        Icon.icon(Symbol.SERVER, Icon.Variant.DANGER);
+      case null, default -> Icon.icon(Symbol.SERVER, Icon.Variant.MUTED);
+    };
+    El mark = row()
+        .gap(t.space().s())
+        .align(Style.Align.CENTER)
+        .child(ConnectionColors.mark(s.color(n.id())))
+        .child(icon);
+    if (phase == null || phase instanceof CatalogTree.Connected || CatalogTree.ended(phase)) {
+      return mark;
+    }
+    return mark.child(Progress.spinner().label("Connecting"));
+  }
+}
