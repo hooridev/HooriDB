@@ -84,7 +84,7 @@ public final class Connector {
     var interrupted = Thread.interrupted();
     try {
       connection.close();
-    } catch (SQLException | RuntimeException e) {
+    } catch (SQLException | RuntimeException _) {
       // Nothing is left to do with a connection that cannot even be closed.
     } finally {
       if (interrupted) {
@@ -130,6 +130,8 @@ public final class Connector {
           connection = null;
         }
       } catch (Throwable e) {
+        // Throwable, not Exception: an Error of the driver, such as a LinkageError of its classes,
+        // would end the worker silently and leave the caller waiting out the time limit.
         result.completeExceptionally(e);
       } finally {
         properties.remove("password");
@@ -157,11 +159,11 @@ public final class Connector {
     try {
       // get() does not look at the interrupt when the result is there, hence the checks after it.
       value = result.get(limit.toMillis(), TimeUnit.MILLISECONDS);
-    } catch (InterruptedException e) {
+    } catch (InterruptedException _) {
       abandon(result, worker);
       Thread.currentThread().interrupt();
       throw cancelled();
-    } catch (TimeoutException e) {
+    } catch (TimeoutException _) {
       abandon(result, worker);
       throw new ConnectionException(Failure.TIMED_OUT, "", null);
     } catch (ExecutionException e) {

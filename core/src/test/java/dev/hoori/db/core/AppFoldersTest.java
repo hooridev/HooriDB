@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.function.Function;
+import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -54,7 +54,7 @@ class AppFoldersTest {
     }
   }
 
-  private static Function<String, String> env(String a, Path aValue, String b, Path bValue) {
+  private static UnaryOperator<String> env(String a, Path aValue, String b, Path bValue) {
     return Map.of(a, aValue.toString(), b, bValue.toString())::get;
   }
 }

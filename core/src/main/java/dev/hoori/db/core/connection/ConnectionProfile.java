@@ -4,6 +4,7 @@ import dev.hoori.db.core.driver.Maven;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Locale;
 import java.util.Objects;
@@ -40,8 +41,7 @@ public record ConnectionProfile(
     String authDatabase)
     implements Workspace.Entry {
 
-  private static final Pattern LABEL =
-      Pattern.compile("[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?");
+  private static final Pattern LABEL = Pattern.compile("\\w([\\w-]{0,61}\\w)?");
   private static final Pattern IPV6 = Pattern.compile("[0-9A-Fa-f:.]+");
   private static final Pattern ZONE = Pattern.compile("[A-Za-z0-9._-]+");
 
@@ -148,7 +148,7 @@ public record ConnectionProfile(
     InetAddress address;
     try {
       address = InetAddress.ofLiteral(withoutZone(host));
-    } catch (IllegalArgumentException notALiteral) {
+    } catch (IllegalArgumentException _) {
       return Tls.ENCRYPTED;
     }
     var local = address.isLoopbackAddress()
@@ -202,49 +202,53 @@ public record ConnectionProfile(
   // their URL as more of the URL: a path, parameters, more hosts.
   private static boolean isHost(String host) {
     if (host.indexOf(':') >= 0) {
-      var literal =
-          host.startsWith("[") && host.endsWith("]") ? host.substring(1, host.length() - 1) : host;
-      int percent = literal.indexOf('%');
-      var address = percent < 0 ? literal : literal.substring(0, percent);
-      if (percent >= 0 && !ZONE.matcher(literal.substring(percent + 1)).matches()
-          || !IPV6.matcher(address).matches()) {
-        return false;
-      }
-      try {
-        InetAddress.ofLiteral(address);
-        return true;
-      } catch (IllegalArgumentException notALiteral) {
-        return false;
-      }
+      return isIpv6(host);
     }
     var name = host.endsWith(".") ? host.substring(0, host.length() - 1) : host;
     if (name.length() > 253) {
       return false;
     }
     var labels = name.split("\\.", -1);
-    for (var label : labels) {
-      if (!LABEL.matcher(label).matches()) {
-        return false;
-      }
+    if (!Arrays.stream(labels).allMatch(label -> LABEL.matcher(label).matches())) {
+      return false;
     }
-    var last = labels[labels.length - 1];
-    if (!last.chars().allMatch(c -> c >= '0' && c <= '9')) {
+    if (!isDigits(labels[labels.length - 1])) {
       return true;
     }
     // A number as the last label makes it an address, which resolvers read in many ways: "127.1",
     // "0x7f.1", and "0177.0.0.1" that Java takes for 177.0.0.1 and the C library for 127.0.0.1.
-    if (labels.length != 4 || !name.equals(host)) {
+    return labels.length == 4
+        && name.equals(host)
+        && Arrays.stream(labels).allMatch(ConnectionProfile::isIpv4Part);
+  }
+
+  private static boolean isIpv6(String host) {
+    var literal =
+        host.startsWith("[") && host.endsWith("]") ? host.substring(1, host.length() - 1) : host;
+    int percent = literal.indexOf('%');
+    var address = percent < 0 ? literal : literal.substring(0, percent);
+    if (percent >= 0 && !ZONE.matcher(literal.substring(percent + 1)).matches()
+        || !IPV6.matcher(address).matches()) {
       return false;
     }
-    for (var part : labels) {
-      if (part.length() > 3 || part.length() > 1 && part.charAt(0) == '0') {
-        return false;
-      }
-      if (!part.chars().allMatch(c -> c >= '0' && c <= '9') || Integer.parseInt(part) > 255) {
-        return false;
-      }
+    try {
+      InetAddress.ofLiteral(address);
+      return true;
+    } catch (IllegalArgumentException _) {
+      return false;
     }
-    return true;
+  }
+
+  // A decimal number from 0 to 255 without leading zeros.
+  private static boolean isIpv4Part(String part) {
+    return part.length() <= 3
+        && !(part.length() > 1 && part.charAt(0) == '0')
+        && isDigits(part)
+        && Integer.parseInt(part) <= 255;
+  }
+
+  private static boolean isDigits(String text) {
+    return text.chars().allMatch(c -> c >= '0' && c <= '9');
   }
 
   public ConnectionProfile withName(String name) {

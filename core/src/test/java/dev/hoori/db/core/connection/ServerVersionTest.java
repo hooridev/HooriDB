@@ -54,7 +54,7 @@ class ServerVersionTest {
             .toList();
     var shuffled = new ArrayList<>(sorted);
     Collections.reverse(shuffled);
-    Collections.sort(shuffled);
+    shuffled.sort(null);
     assertEquals(sorted, shuffled);
 
     assertEquals(0, ServerVersion.parse("17.2").compareTo(ServerVersion.parse("17.2.0")));

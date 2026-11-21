@@ -125,7 +125,7 @@ public final class HooriDb {
     // overlaps with the rest of the start; a script, which draws without a window, needs none.
     GpuPresenter.prepare();
     var folders = AppFolders.find();
-    var central = MavenRepository.central();
+    var central = MavenRepository.mavenCentral();
     var drivers = new Drivers(
         folders.data().resolve("drivers"), central, "Maven Central", MavenRepository.CENTRAL);
     // Only from the app image, whose launcher the helper starts again: never from Maven or a
