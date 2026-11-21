@@ -41,6 +41,22 @@ END;
 $$;
 
 
+--
+-- Name: plus(integer); Type: FUNCTION; Schema: file_run; Owner: hoori
+--
+
+CREATE FUNCTION file_run.plus(a integer) RETURNS integer
+    LANGUAGE sql
+    BEGIN ATOMIC
+ SELECT 0;
+ SELECT
+         CASE
+             WHEN (a > 0) THEN (a + 1)
+             ELSE 0
+         END AS "case";
+END;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;

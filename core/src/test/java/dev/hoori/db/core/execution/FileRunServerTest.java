@@ -95,6 +95,8 @@ class FileRunServerTest {
           "touched; by trigger", text(check, "SELECT note FROM file_run.item WHERE id = 4"));
       assertEquals(
           "Rows; of a dump", text(check, "SELECT obj_description('file_run.item'::regclass)"));
+      // A body of BEGIN ATOMIC … END, its statements one with the function's.
+      assertEquals(3, selectLong(check, "SELECT file_run.plus(2)"));
     } finally {
       // The catalog's tests see the database's schemas, the sample's first.
       try (var cleaning = open(POSTGRESQL)) {
@@ -189,6 +191,32 @@ class FileRunServerTest {
         // The CREATE TABLE committed what came before it and itself; the INSERT is gone.
         assertEquals(0, selectLong(check, "SELECT count(*) FROM " + table));
       }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("mysqlFamily")
+  void oneTransactionTellsThatLockTablesCommittedWhatRanBefore(Provider provider) throws Exception {
+    var table = "file_run_locked";
+    try (var writer = open(provider)) {
+      execute(writer, "DROP TABLE IF EXISTS " + table, "CREATE TABLE " + table + " (id integer)");
+    }
+    // As mysqldump writes a table's rows, then a failure after them.
+    var text = "LOCK TABLES " + table + " WRITE;\n"
+        + "INSERT INTO " + table + " VALUES (1);\n"
+        + "UNLOCK TABLES;\n"
+        + "INSERT INTO " + table + " VALUES (2);\n"
+        + "INSERT INTO " + table + " VALUES ('x');\n";
+    try (var connection = open(provider)) {
+      var report =
+          run(connection, provider, file("locked.sql", text), new FileRun.Options(false, true));
+      assertEquals(FileRun.Ending.STOPPED, report.ending());
+      assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
+      assertEquals(3, report.committedAt());
+    }
+    try (var check = open(provider)) {
+      // What ran up to UNLOCK TABLES stays, what ran after it is gone.
+      assertEquals(1, selectLong(check, "SELECT count(*) FROM " + table));
     }
   }
 
