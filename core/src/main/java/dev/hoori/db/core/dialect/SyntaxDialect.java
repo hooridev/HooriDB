@@ -59,4 +59,12 @@ public interface SyntaxDialect {
    * often.
    */
   Set<String> offeredWords();
+
+  /**
+   * The keywords, in upper case, after which a statement carries a password in a string, as {@code
+   * PASSWORD} does in {@code CREATE ROLE r PASSWORD '…'}: where a statement's text is kept, as in
+   * the statement log, its strings after the first of them are masked, and so is a string that
+   * names one of them with a value, as {@code 'password=…'}.
+   */
+  Set<String> passwordWords();
 }

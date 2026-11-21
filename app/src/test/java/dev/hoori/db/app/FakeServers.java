@@ -16,12 +16,16 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
+import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Message;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Monitor;
@@ -518,7 +522,17 @@ final class FakeServers implements Servers {
       return database;
     }
 
+    // A catalog read, sent through core's seam as core's are, by its key.
     private <T> List<T> read(String key, Database of, Reader<T> reader) throws CatalogException {
+      return Journal.sql(
+          made.provider(),
+          Purpose.CATALOG,
+          key,
+          list -> Outcome.rows(list.size()),
+          () -> catalog(key, of, reader));
+    }
+
+    private <T> List<T> catalog(String key, Database of, Reader<T> reader) throws CatalogException {
       if (busy.incrementAndGet() > 1) {
         overlapped = true;
       }
@@ -631,6 +645,15 @@ final class FakeServers implements Servers {
 
     // A call on a table's rows: on its database, one at a time, held and failed by its key.
     private <T> T rows(String key, Table t, RowsCall<T> call) throws QueryException {
+      return Journal.sql(
+          made.provider(),
+          Purpose.ROWS,
+          key,
+          read -> read instanceof Page page ? Outcome.rows(page.rows().size()) : Outcome.rows(1),
+          () -> table(key, t, call));
+    }
+
+    private <T> T table(String key, Table t, RowsCall<T> call) throws QueryException {
       if (busy.incrementAndGet() > 1) {
         overlapped = true;
       }
@@ -670,6 +693,15 @@ final class FakeServers implements Servers {
 
     @Override
     public OptionalLong estimate(String on, String sql) throws QueryException {
+      return Journal.sql(
+          made.provider(),
+          Purpose.ESTIMATE,
+          "EXPLAIN " + sql,
+          rows -> Outcome.rows(rows.isPresent() ? 1 : 0),
+          () -> explain(on, sql));
+    }
+
+    private OptionalLong explain(String on, String sql) throws QueryException {
       var key = "explain " + host + " " + sql;
       // A PostgreSQL link is on its one database; MariaDB's and MySQL's switch to the one given,
       // and stay on it where they were on none.
@@ -806,8 +838,20 @@ final class FakeServers implements Servers {
         private boolean started;
         private boolean over;
 
+        // The statement is sent with its first portion, as core's.
         @Override
         public Portion next(int count) {
+          return started
+              ? portion(count)
+              : Journal.sql(
+                  made.provider(),
+                  Purpose.STATEMENT,
+                  sql,
+                  Execution::outcome,
+                  () -> portion(count));
+        }
+
+        private Portion portion(int count) {
           if (busy.incrementAndGet() > 1) {
             overlapped = true;
           }
@@ -977,7 +1021,10 @@ final class FakeServers implements Servers {
       if (seen == manual) {
         return;
       }
-      noted("autocommit " + host + (manual ? " off" : " on"));
+      Journal.call(Purpose.TRANSACTION, Journal.autoCommit(!manual), () -> {
+        noted("autocommit " + host + (manual ? " off" : " on"));
+        return null;
+      });
       seen = manual;
       boolean was = this.manual;
       this.manual = manual;
@@ -989,6 +1036,11 @@ final class FakeServers implements Servers {
 
     @Override
     public Status status() throws QueryException {
+      return Journal.sql(
+          made.provider(), Purpose.TRANSACTION, "DO 0", status -> Outcome.DONE, this::asked);
+    }
+
+    private Status asked() throws QueryException {
       var key = "transaction " + host;
       try {
         note(key);
@@ -1112,6 +1164,13 @@ final class FakeServers implements Servers {
 
     @Override
     public void use(String name) throws QueryException {
+      Journal.call(Purpose.SESSION, Journal.catalog(name), () -> {
+        switched(name);
+        return null;
+      });
+    }
+
+    private void switched(String name) throws QueryException {
       var key = "use " + host + " " + name;
       try {
         note(key);

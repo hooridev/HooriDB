@@ -2,6 +2,7 @@ package dev.hoori.db.core.query;
 
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.dialect.ErrorDialect.Condition;
+import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.query.QueryException.Failure;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -34,6 +35,9 @@ import java.util.function.Predicate;
  * does not touch its next statement. pgjdbc does not say whether its cancel arrived. On PostgreSQL
  * with auto-commit off, a cancelled statement fails the transaction, which the caller then rolls
  * back.
+ *
+ * <p>What the caller records with {@link Journal} it records also from the threads that run the
+ * step and its cancel.
  *
  * <p>{@link Failure#ABORTED}: the connection is closed and must be discarded, because the
  * statement did not end within {@link #GRACE} of the cancel, or a cancel was sent that may still
@@ -164,13 +168,13 @@ public final class Query {
       throw cancelled();
     }
     var result = new CompletableFuture<T>();
-    var worker = Thread.ofVirtual().name("query").start(() -> {
+    var worker = Thread.ofVirtual().name("query").start(Journal.carried(() -> {
       try {
         result.complete(step.run());
       } catch (Throwable e) { // any, an Error too, so that the wait for it always ends
         result.completeExceptionally(e);
       }
-    });
+    }));
     T value;
     try {
       // get() does not look at the interrupt when the result is there, hence the checks after it.
@@ -213,13 +217,13 @@ public final class Query {
       Connection connection, Provider provider, Duration limit, Step<T> step, Runnable passed)
       throws QueryException {
     var result = new CompletableFuture<T>();
-    var worker = Thread.ofVirtual().name("query within").start(() -> {
+    var worker = Thread.ofVirtual().name("query within").start(Journal.carried(() -> {
       try {
         result.complete(step.run());
       } catch (Throwable e) { // any, an Error too, so that the wait for it always ends
         result.completeExceptionally(e);
       }
-    });
+    }));
     var interrupted = false;
     var deadline = System.nanoTime() + limit.toNanos();
     try {
@@ -291,13 +295,13 @@ public final class Query {
       return cancelled();
     }
     var sent = new CompletableFuture<Boolean>();
-    var canceller = Thread.ofVirtual().name("query cancel").start(() -> {
+    var canceller = Thread.ofVirtual().name("query cancel").start(Journal.carried(() -> {
       try {
         sent.complete(stop.stop());
       } catch (Throwable e) { // any, an Error too, so that the wait for it always ends
         sent.completeExceptionally(e);
       }
-    });
+    }));
     var deadline = System.nanoTime() + GRACE.toNanos();
     if (ended(result, deadline) && ended(sent, deadline)) {
       var answered = !sent.isCompletedExceptionally();

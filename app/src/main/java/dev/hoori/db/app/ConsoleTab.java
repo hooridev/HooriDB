@@ -14,7 +14,6 @@ import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Theme;
-import com.rethinkj.ui.sql.Sql;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -2038,11 +2037,7 @@ final class ConsoleTab implements Tab {
   }
 
   private El editor(State s, App<State> app, Provider provider) {
-    Highlighter syntax = switch (provider) {
-      case POSTGRESQL -> Sql.of(Sql.Dialect.POSTGRES);
-      case MARIADB, MYSQL -> Sql.of(Sql.Dialect.MYSQL);
-      case MONGODB -> ShellSyntax.of();
-    };
+    Highlighter syntax = Syntax.of(provider);
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
     El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {

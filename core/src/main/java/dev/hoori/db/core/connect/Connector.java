@@ -4,6 +4,9 @@ import dev.hoori.db.core.connect.ConnectionException.Failure;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -49,8 +52,14 @@ public final class Connector {
       // Not JDBC's setReadOnly, with which MySQL Connector/J refuses by its own reading of the
       // text, in place of the server's error.
       if (profile.readOnly()) {
+        var readOnly = profile.provider().dialect().connecting().readOnly();
         try (var statement = connection.createStatement()) {
-          statement.execute(profile.provider().dialect().connecting().readOnly());
+          Journal.sql(
+              profile.provider(),
+              Purpose.SESSION,
+              readOnly,
+              sent -> Outcome.DONE,
+              () -> statement.execute(readOnly));
         }
       }
       var metadata = connection.getMetaData();
@@ -122,25 +131,29 @@ public final class Connector {
       properties.setProperty("password", secret);
     }
     var result = new CompletableFuture<T>();
-    var worker = Thread.ofVirtual().name("connect " + provider.displayName()).start(() -> {
-      Connection connection = null;
-      try {
-        connection = driver.connect(url, properties);
-        if (result.complete(step.apply(connection))) {
-          connection = null;
-        }
-      } catch (Throwable e) {
-        // Throwable, not Exception: an Error of the driver, such as a LinkageError of its classes,
-        // would end the worker silently and leave the caller waiting out the time limit.
-        result.completeExceptionally(e);
-      } finally {
-        properties.remove("password");
-        // The caller has given up, or the step failed.
-        if (connection != null) {
-          close(connection);
-        }
-      }
-    });
+    // What the step sends is recorded where the caller records, as the read-only statement.
+    var worker = Thread.ofVirtual()
+        .name("connect " + provider.displayName())
+        .start(Journal.carried(() -> {
+          Connection connection = null;
+          try {
+            connection = driver.connect(url, properties);
+            if (result.complete(step.apply(connection))) {
+              connection = null;
+            }
+          } catch (Throwable e) {
+            // Throwable, not Exception: an Error of the driver, such as a LinkageError of its
+            // classes, would end the worker silently and leave the caller waiting out the time
+            // limit.
+            result.completeExceptionally(e);
+          } finally {
+            properties.remove("password");
+            // The caller has given up, or the step failed.
+            if (connection != null) {
+              close(connection);
+            }
+          }
+        }));
     return await(
         result, worker, timeout.plus(GRACE), thrown -> Failures.of(profile, secret, thrown));
   }

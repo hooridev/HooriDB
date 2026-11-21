@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * A document as a server of documents keeps it: its fields in their order, each a name and a value.
@@ -107,6 +108,27 @@ public record Document(List<Entry> entries) {
   /** A copy without the fields of the name. */
   public Document without(String name) {
     return new Document(entries.stream().filter(e -> !e.name().equals(name)).toList());
+  }
+
+  /**
+   * A copy with the value of each field of the names replaced by the mask, at any depth, within
+   * documents and arrays.
+   */
+  public Document masked(Set<String> names, Object mask) {
+    var next = new ArrayList<Entry>(entries.size());
+    for (var entry : entries) {
+      next.add(new Entry(
+          entry.name(), names.contains(entry.name()) ? mask : masked(entry.value(), names, mask)));
+    }
+    return new Document(next);
+  }
+
+  private static Object masked(Object value, Set<String> names, Object mask) {
+    return switch (value) {
+      case Document d -> d.masked(names, mask);
+      case List<?> list -> list.stream().map(v -> masked(v, names, mask)).toList();
+      case null, default -> value;
+    };
   }
 
   @Override
