@@ -341,7 +341,7 @@ final class Frame {
           .child(label(Label.Variant.MUTED, "Loading connections…"));
     } else if (!s.workspace().entries().isEmpty()) {
       El tree = Tree.tree(
-              new CatalogTree.Model(t, s),
+              new CatalogModel(t, s),
               new Tree.Options<Node>()
                   .open(
                       node -> node instanceof Node.Folder f
