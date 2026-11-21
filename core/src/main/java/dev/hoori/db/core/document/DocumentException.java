@@ -1,5 +1,6 @@
 package dev.hoori.db.core.document;
 
+import java.io.Serial;
 import java.util.Objects;
 
 /**
@@ -7,6 +8,8 @@ import java.util.Objects;
  * for the server's own refusal its code and its words. The detail never holds the password.
  */
 public final class DocumentException extends Exception {
+  @Serial
+  private static final long serialVersionUID = 1L;
 
   public enum Kind {
     /** Nothing answered at the host and port: the host is unknown or unreachable, or refused. */

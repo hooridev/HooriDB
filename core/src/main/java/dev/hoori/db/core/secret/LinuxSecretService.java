@@ -67,6 +67,7 @@ final class LinuxSecretService implements SecretStore {
   private final MethodHandle passwordFree;
 
   /** The service, or why there is none; asks it over D-Bus whether it is there. */
+  @SuppressWarnings("restricted") // the keyring reaches its native library through FFM
   static Keyring open(String library) {
     LinuxSecretService service;
     try {
@@ -83,6 +84,7 @@ final class LinuxSecretService implements SecretStore {
     return new Available(service);
   }
 
+  @SuppressWarnings("restricted") // the keyring reaches its native library through FFM
   private LinuxSecretService(SymbolLookup lib) {
     Linker linker = Linker.nativeLinker();
     serviceGet = linker.downcallHandle(
@@ -234,6 +236,7 @@ final class LinuxSecretService implements SecretStore {
   }
 
   /** Throws the GError that a call left, with its message and code, and frees it. */
+  @SuppressWarnings("restricted") // the keyring reaches its native library through FFM
   private void check(MemorySegment error) throws IOException {
     MemorySegment gerror = error.get(ADDRESS, 0);
     if (gerror.equals(MemorySegment.NULL)) {
@@ -274,6 +277,7 @@ final class LinuxSecretService implements SecretStore {
   }
 
   /** The bytes of a string that ends with a zero, without the zero. */
+  @SuppressWarnings("restricted") // the keyring reaches its native library through FFM
   static MemorySegment cString(MemorySegment pointer) {
     MemorySegment all = pointer.reinterpret(Long.MAX_VALUE);
     long length = 0;
