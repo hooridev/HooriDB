@@ -101,8 +101,8 @@ console's rules, with the `DELIMITER` lines and `/*!…*/` comments of MySQL's a
 the rows after PostgreSQL's `COPY … FROM stdin` go through the driver's copy API as they are read,
 psql's `\restrict` and `\unrestrict` are skipped and its other backslash commands refused, which
 stops the run. On an error it stops or goes on, optionally in one transaction, which an error or a
-cancel rolls back and which the dialog says does not cover DDL where the server commits it by
-itself; it shows the bytes and statements run, cancels at any point, can be hidden behind the
+cancel rolls back, which refuses a statement of the file that begins or ends a transaction, and
+which the dialog says does not cover DDL where the server commits it by itself; it shows the bytes and statements run, cancels at any point, can be hidden behind the
 status line, and ends with the failed statements and their lines, passwords masked. Its statements
 go into the statement log, not the history; disconnecting, changing or deleting its connection and
 Exit cancel it. Run from its app image,

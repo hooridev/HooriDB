@@ -31,7 +31,9 @@ The file runs on a session of its own, so it does not hold up the Workspace tree
 
 PostgreSQL rolls back everything a transaction ran, including `CREATE`, `ALTER`, and `DROP`. MySQL and MariaDB commit such statements (DDL) on their own, together with what ran before them, so **In one transaction** does not undo them; the dialog says so for these connections.
 
-Without **In one transaction**, each statement commits on its own, and what ran before an error or a cancel stays.
+In one transaction, a statement of the file that begins or ends a transaction, such as `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`, or MySQL's `SET autocommit`, stops the run with an error at its line, and what ran is rolled back: it would have committed what ran before it. Run such a file without **In one transaction**, so that it keeps its own.
+
+Without **In one transaction**, each statement commits on its own, and what ran before an error or a cancel stays. A file that opens a transaction of its own, with `BEGIN` or `START TRANSACTION`, is the exception: what runs after that is committed only by a `COMMIT` in the file, and a run that stops or is cancelled before it leaves it uncommitted, so that the server rolls it back as the run's session closes.
 
 ## Dumps and client commands
 
