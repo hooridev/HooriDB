@@ -22,11 +22,18 @@ import json
 import pathlib
 import re
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 
 # Surefire's default includes; the POMs name none of their own.
 INCLUDES = re.compile(r"^(Test.*|.*Test|.*Tests|.*TestCase)\.java$")
 TESTS = re.compile(r"@(Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b")
+IMPORT = re.compile(r"^import\s+([\w.]+)\s*;", re.M)
+# The file's own type, after its annotations and modifiers, up to its body.
+DECLARATION = (
+    r"^[ \t]*(?P<modifiers>(?:@\w+(?:\([^)]*\))?\s+|[\w-]+\s+)*?)"
+    r"(?P<kind>class|interface|enum|record|@interface)\s+{name}\b(?P<rest>[^{{]*)\{{"
+)
 # A class not yet timed on main, such as a new test.
 DEFAULT_SECONDS = 5.0
 # Each JVM, one a module, starts its own servers in the first class that uses them. The key holds
@@ -37,21 +44,48 @@ NO_DOCKER = "Docker is not available"
 
 
 def discover(root):
-    """Every class Surefire runs: a file it includes, not abstract, with tests of its own."""
-    classes, servers, modules = [], set(), {}
+    """Every class Surefire runs: a file it includes, of a concrete class with tests of its own or
+    inherited from a class or interface among the module's tests."""
+    types = {}  # fqcn -> (module, included, concrete, tests, servers, supertypes)
     for java in sorted(root.glob("*/src/test/java/**/*.java")):
-        if not INCLUDES.match(java.name):
-            continue
         text = java.read_text(encoding="utf-8")
-        name = java.stem
-        # shortcut: a class that only inherits its tests is missed, add it here when one exists.
-        if re.search(rf"\babstract\s+class\s+{name}\b", text) or not TESTS.search(text):
+        parts = java.relative_to(root).parts
+        package = ".".join(parts[4:-1])
+        head = re.search(DECLARATION.format(name=re.escape(java.stem)), text, re.M)
+        if not head:
             continue
-        fqcn = ".".join(java.relative_to(root).parts[4:])[: -len(".java")]
-        classes.append(fqcn)
-        modules[fqcn] = java.relative_to(root).parts[0]
-        if "TestServer" in text or "Servers.SERVER" in text:
-            servers.add(fqcn)
+        imports = {i.rsplit(".", 1)[1]: i for i in IMPORT.findall(text)}
+        supertypes = []
+        for clause in re.findall(
+            r"\b(?:extends|implements)\s+(.+?)(?=\b(?:implements|permits)\b|$)", head["rest"], re.S
+        ):
+            for t in re.sub(r"<[^<>]*>", "", re.sub(r"<[^<>]*>", "", clause)).split(","):
+                if t := t.strip():
+                    supertypes.append(t if "." in t else imports.get(t, f"{package}.{t}"))
+        concrete = head["kind"] == "class" and "abstract" not in head["modifiers"].split()
+        types[f"{package}.{java.stem}"] = (
+            parts[0],
+            bool(INCLUDES.match(java.name)),
+            concrete,
+            bool(TESTS.search(text)),
+            "TestServer" in text or "Servers.SERVER" in text,
+            supertypes,
+        )
+
+    def has(fqcn, trait, seen=()):
+        """Whether the type, or a supertype of it among the tests, has the trait."""
+        t = types.get(fqcn)
+        return t is not None and fqcn not in seen and (
+            t[trait] or any(has(s, trait, (*seen, fqcn)) for s in t[5])
+        )
+
+    classes, servers, modules = [], set(), {}
+    for fqcn, (module, included, concrete, *_) in sorted(types.items()):
+        if included and concrete and has(fqcn, 3):
+            classes.append(fqcn)
+            modules[fqcn] = module
+            if has(fqcn, 4):
+                servers.add(fqcn)
     return classes, servers, modules
 
 
@@ -178,6 +212,22 @@ def budget(args):
     return 1 if over else 0
 
 
+# Classes for discover: some inherit their tests, and Surefire runs none of the others.
+SAMPLE = {
+    "m/src/test/java/p/Base.java": "package p;\n@Tag(\"x\")\npublic abstract class Base {\n"
+    "  @Test void a() { TestServer.of(null); }\n}\n",
+    "m/src/test/java/p/SubTest.java": "package p;\nfinal class SubTest extends Base {}\n",
+    "m/src/test/java/p/Mixin.java": "package p;\ninterface Mixin { @Test default void b() {} }\n",
+    "m/src/test/java/p/MixinTest.java": "package p;\nclass MixinTest implements Mixin, Runnable {\n"
+    "  public void run() {}\n}\n",
+    "m/src/test/java/p/OwnTest.java": "package p;\nclass OwnTest {\n  @ParameterizedTest void c() {}\n}\n",
+    "m/src/test/java/p/AbstractTest.java": "package p;\nabstract class AbstractTest { @Test void d() {} }\n",
+    "m/src/test/java/p/HelperTest.java": "package p;\nclass HelperTest { void e() {} }\n",
+    "m/src/test/java/p/Fixture.java": "package p;\nclass Fixture { @Test void f() {} }\n",
+    "m/src/test/java/q/FarTest.java": "package q;\nimport p.Base;\nclass FarTest\n    extends Base {}\n",
+}
+
+
 def self_test(_):
     slices, loads = partition(["a", "b", "c", "d", "e"], {"a": 5, "b": 4, "c": 3, "d": 3}, 2)
     assert slices == [["a", "b"], ["c", "d", "e"]], slices  # e takes the default 5 s
@@ -188,6 +238,13 @@ def self_test(_):
     t = {"x": 2, "y": 2, "z": 5, SERVER_START: 3}
     slices, loads = partition(["x", "y", "z"], t, 2, {"x", "y"}, {"x": "m", "y": "m"})
     assert slices == [["z"], ["x", "y"]] and loads == [5.0, 7.0], (slices, loads)
+    with tempfile.TemporaryDirectory() as folder:
+        for path, text in SAMPLE.items():
+            (pathlib.Path(folder) / path).parent.mkdir(parents=True, exist_ok=True)
+            (pathlib.Path(folder) / path).write_text(text, encoding="utf-8")
+        classes, servers, modules = discover(pathlib.Path(folder))
+        assert classes == ["p.MixinTest", "p.OwnTest", "p.SubTest", "q.FarTest"], classes
+        assert servers == {"p.SubTest", "q.FarTest"} and modules["q.FarTest"] == "m", servers
     classes, servers, _ = discover(pathlib.Path("."))
     assert "dev.hoori.db.core.query.QueryServerTest" in classes, "discovery finds no tests"
     assert "dev.hoori.db.core.TestServer" not in classes, "a helper counts as a test"
