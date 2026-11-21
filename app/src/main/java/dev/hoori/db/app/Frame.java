@@ -366,7 +366,7 @@ final class Frame {
     Theme t = Theme.CURRENT.get();
     var c = s.catalog;
     El tree = Tree.tree(
-            new CatalogTree.Model(t, s),
+            new CatalogModel(t, s),
             new Tree.Options<Node>()
                 .open(
                     node -> node instanceof Node.Folder f

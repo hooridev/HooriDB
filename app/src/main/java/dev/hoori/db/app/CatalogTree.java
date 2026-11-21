@@ -1,22 +1,18 @@
 package dev.hoori.db.app;
 
 import static com.rethinkj.ui.El.col;
-import static com.rethinkj.ui.El.row;
 import static com.rethinkj.ui.kit.Button.Variant.PRIMARY;
 import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.El;
-import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Checkbox;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.HuePicker;
-import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
-import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TabGroups;
@@ -58,7 +54,7 @@ import java.util.function.Consumer;
  */
 final class CatalogTree {
 
-  private static final String TRY_AGAIN = "Try again";
+  static final String TRY_AGAIN = "Try again";
   private static final String CANCEL = "Cancel";
 
   /** Where a connection the user opened is. */
@@ -182,7 +178,7 @@ final class CatalogTree {
     return live != null && !ended(live.phase);
   }
 
-  private static boolean ended(Phase phase) {
+  static boolean ended(Phase phase) {
     return phase instanceof Failed || phase instanceof Lost || phase instanceof WithoutDrivers;
   }
 
@@ -818,7 +814,7 @@ final class CatalogTree {
    */
   record Session(Lane lane, LoadedDriver driver, char[] password) {
 
-    // The password's content counts, as for any record; its text never shows.
+    // The password's content counts, as for any record; it never shows.
     @Override
     public boolean equals(Object o) {
       return o instanceof Session(var l, var d, var p)
@@ -834,7 +830,7 @@ final class CatalogTree {
 
     @Override
     public String toString() {
-      return "Session[lane=" + lane + ", driver=" + driver + ", password=(withheld)]";
+      return "Session[lane=" + lane + ", driver=" + driver + "]";
     }
   }
 
@@ -1284,10 +1280,10 @@ final class CatalogTree {
     return switch (node) {
       case Node.Folder(var id) -> s.folder(id).name();
       case Node.Connection(var id) -> State.name(s.profile(id));
-      case Node.OfDatabase(var _, var database) -> database.name();
-      case Node.OfSchema(var _, var schema) -> schema.name();
-      case Node.OfTable(var _, var table) -> table.name();
-      case Node.OfColumn(var _, var column) -> column.name();
+      case Node.OfDatabase n -> n.database().name();
+      case Node.OfSchema n -> n.schema().name();
+      case Node.OfTable n -> n.table().name();
+      case Node.OfColumn n -> n.column().name();
       case Node.Problem(var of) -> name(s, of);
     };
   }
@@ -1305,7 +1301,7 @@ final class CatalogTree {
   /** The muted text after a node's name: a column's type, a connection's kind of server. */
   String detail(State s, Node node) {
     return switch (node) {
-      case Node.OfColumn(var _, var column) -> column.type();
+      case Node.OfColumn n -> n.column().type();
       case Node.Connection(var id) -> s.profile(id).provider().displayName();
       default -> null;
     };
@@ -1369,7 +1365,7 @@ final class CatalogTree {
    * callout's actions. Any other node's failed read, a connected connection's databases too, shows
    * in the tree's row of its failure, with its action.
    */
-  private static boolean failedWhole(Live live, Node node) {
+  static boolean failedWhole(Live live, Node node) {
     return node instanceof Node.Connection && !(live.phase instanceof Connected);
   }
 
@@ -1436,133 +1432,6 @@ final class CatalogTree {
     }
     return Callout.callout(
         Callout.Kind.DANGER, trouble.title(), trouble.text(), actions.toArray(El[]::new));
-  }
-
-  /** The tree's nodes, as the state holds them. */
-  record Model(Theme t, State s) implements Tree.Model<Node> {
-
-    @Override
-    public List<Node> roots() {
-      return s.workspace().entries().stream().map(Node::of).toList();
-    }
-
-    @Override
-    public Tree.Children<Node> children(Node node) {
-      if (node instanceof Node.Folder(var id)) {
-        var folder = s.folder(id);
-        return Tree.ready(
-            folder == null ? List.of() : folder.entries().stream().map(Node::of).toList());
-      }
-      var c = s.catalog;
-      var live = c.lives.get(node.id());
-      if (live == null) {
-        return Tree.ready(List.of());
-      }
-      if (failedWhole(live, node)) {
-        return ended(live.phase)
-            ? Tree.ready(List.of(new Node.Problem(node)))
-            : Tree.loading(loading(node));
-      }
-      var level = live.levels.get(node);
-      if (level instanceof Read(var children)) {
-        return Tree.ready(children);
-      }
-      if (level instanceof NotRead || level instanceof NotOpened) {
-        return Tree.failed(c.problem(s, node).title(), TRY_AGAIN, () -> c.retry(s, node));
-      }
-      return Tree.loading(loading(node));
-    }
-
-    @Override
-    public boolean muted(Node node) {
-      return switch (node) {
-        case Node.OfDatabase n -> n.database().system();
-        case Node.OfSchema n -> n.schema().system();
-        case Node.OfTable n -> system(n.table());
-        default -> false;
-      };
-    }
-
-    @Override
-    public boolean isLeaf(Node node) {
-      return node instanceof Node.OfColumn || node instanceof Node.Problem;
-    }
-
-    @Override
-    public String label(Node node) {
-      return s.catalog.label(s, node);
-    }
-
-    @Override
-    public String detail(Node node) {
-      return s.catalog.detail(s, node);
-    }
-
-    /** The text of the row below an open node whose children are on their way. */
-    private String loading(Node node) {
-      var live = s.catalog.lives.get(node.id());
-      if (!(node instanceof Node.Connection) || live == null) {
-        return "Loading…";
-      }
-      return switch (live.phase) {
-        case ForDriver _ -> "Waiting for the driver…";
-        case ForKeyring _ -> "Looking for the system keyring…";
-        case ReadingPassword _ -> "Reading the password…";
-        case ForPassword _ -> "Waiting for the password…";
-        case Connecting _ -> "Connecting…";
-        default -> "Loading…";
-      };
-    }
-
-    @Override
-    public El icon(Node node) {
-      return switch (node) {
-        case Node.Folder(var id) ->
-          icon(s.folderOpen(id) ? Symbol.FOLDER_OPEN : Symbol.FOLDER, false);
-        case Node.Connection n -> connection(n);
-        case Node.OfDatabase n -> icon(Symbol.DATABASE, n.database().system());
-        case Node.OfSchema n -> icon(Symbol.FOLDER, n.schema().system());
-        case Node.OfTable n ->
-          icon(n.table().kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE, system(n.table()));
-        case Node.OfColumn n ->
-          n.column().keyPosition() > 0
-              ? Icon.icon(Symbol.KEY, Icon.Variant.WARNING)
-              : icon(Symbol.COLUMN_SINGLE, false);
-        case Node.Problem n -> Icon.icon(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
-      };
-    }
-
-    // A system object's icon is quieter too, as its name is muted.
-    private El icon(Symbol symbol, boolean system) {
-      return Icon.icon(symbol, system ? Icon.Variant.DISABLED : Icon.Variant.MUTED);
-    }
-
-    private static boolean system(Table table) {
-      return switch (table.container()) {
-        case dev.hoori.db.core.catalog.Database d -> d.system();
-        case dev.hoori.db.core.catalog.Schema x -> x.system();
-      };
-    }
-
-    // The kind of server is the row's muted text; the icon's color says whether it is connected.
-    private El connection(Node.Connection n) {
-      var live = s.catalog.lives.get(n.id());
-      Phase phase = live == null ? null : live.phase;
-      El icon = switch (phase) {
-        case Connected _ -> Icon.icon(Symbol.SERVER, Icon.Variant.SUCCESS);
-        case Failed _, Lost _ -> Icon.icon(Symbol.SERVER, Icon.Variant.DANGER);
-        case null, default -> Icon.icon(Symbol.SERVER, Icon.Variant.MUTED);
-      };
-      El mark = row()
-          .gap(t.space().s())
-          .align(Style.Align.CENTER)
-          .child(ConnectionColors.mark(s.color(n.id())))
-          .child(icon);
-      if (phase == null || phase instanceof Connected || ended(phase)) {
-        return mark;
-      }
-      return mark.child(Progress.spinner().label("Connecting"));
-    }
   }
 
   /** The context menu of the selected node. */
