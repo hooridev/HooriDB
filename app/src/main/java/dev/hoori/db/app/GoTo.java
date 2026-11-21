@@ -48,11 +48,11 @@ final class GoTo {
   static List<FilterList.Entry> entries(State s, TabGroups.Group<Tab> group, String query) {
     var search = new Search(s, group, query.strip());
     var connected = s.catalog.lives.values().stream()
-        .filter(live -> live.phase instanceof CatalogTree.Connected)
+        .filter(live -> live.phase instanceof Live.Connected)
         .map(live -> live.profile)
         .toList();
     for (var live : s.catalog.lives.values()) {
-      if (live.phase instanceof CatalogTree.Connected) {
+      if (live.phase instanceof Live.Connected) {
         search.connection(live, label(live.profile, connected));
       }
     }
@@ -95,7 +95,7 @@ final class GoTo {
     }
 
     /** A connected connection, by the name the palette calls it. */
-    void connection(CatalogTree.Live live, String name) {
+    void connection(Live live, String name) {
       var databases = live.levels.get(new Node.Connection(live.id()));
       if (databases instanceof CatalogTree.Read(var children)) {
         for (var node : children) {
@@ -110,7 +110,7 @@ final class GoTo {
      * A database's tables that match, and a note where they are not all known: while its own
      * level, or that of a schema of its own, is not read.
      */
-    private void database(CatalogTree.Live live, String name, Node.OfDatabase db) {
+    private void database(Live live, String name, Node.OfDatabase db) {
       var unknown = new Unknown();
       for (var kid : known(live, db, unknown)) {
         if (kid instanceof Node.OfTable t) {
@@ -136,7 +136,7 @@ final class GoTo {
      * What the tree has read below the database: its tables, and those of its schemas that are
      * read; what is not read goes into {@code unknown}.
      */
-    private List<Node> known(CatalogTree.Live live, Node.OfDatabase db, Unknown unknown) {
+    private List<Node> known(Live live, Node.OfDatabase db, Unknown unknown) {
       var level = live.levels.get(db);
       var kids = new ArrayList<Node>();
       if (!(level instanceof CatalogTree.Read(var children))) {

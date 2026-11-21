@@ -149,7 +149,7 @@ final class Delivery {
       case QueryException e when e.failure() == QueryException.Failure.CANCELLED -> List.of();
       case ConnectionException e
       when e.failure() == ConnectionException.Failure.CANCELLED -> List.of();
-      case Exception e -> List.of(new Matter("It failed: " + State.message(e), true));
+      case Exception e -> List.of(new Matter("It failed: " + State.messageOf(e), true));
       case null, default -> List.of();
     };
   }

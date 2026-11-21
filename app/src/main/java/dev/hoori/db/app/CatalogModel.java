@@ -82,11 +82,11 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       return "Loading…";
     }
     return switch (live.phase) {
-      case CatalogTree.ForDriver _ -> "Waiting for the driver…";
-      case CatalogTree.ForKeyring _ -> "Looking for the system keyring…";
-      case CatalogTree.ReadingPassword _ -> "Reading the password…";
-      case CatalogTree.ForPassword _ -> "Waiting for the password…";
-      case CatalogTree.Connecting _ -> "Connecting…";
+      case Live.ForDriver _ -> "Waiting for the driver…";
+      case Live.ForKeyring _ -> "Looking for the system keyring…";
+      case Live.ReadingPassword _ -> "Reading the password…";
+      case Live.ForPassword _ -> "Waiting for the password…";
+      case Live.Connecting _ -> "Connecting…";
       default -> "Loading…";
     };
   }
@@ -124,11 +124,10 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
   // The kind of server is the row's muted text; the icon's color says whether it is connected.
   private El connection(Node.Connection n) {
     var live = s.catalog.lives.get(n.id());
-    CatalogTree.Phase phase = live == null ? null : live.phase;
+    Live.Phase phase = live == null ? null : live.phase;
     El icon = switch (phase) {
-      case CatalogTree.Connected _ -> Icon.icon(Symbol.SERVER, Icon.Variant.SUCCESS);
-      case CatalogTree.Failed _, CatalogTree.Lost _ ->
-        Icon.icon(Symbol.SERVER, Icon.Variant.DANGER);
+      case Live.Connected _ -> Icon.icon(Symbol.SERVER, Icon.Variant.SUCCESS);
+      case Live.Failed _, Live.Lost _ -> Icon.icon(Symbol.SERVER, Icon.Variant.DANGER);
       case null, default -> Icon.icon(Symbol.SERVER, Icon.Variant.MUTED);
     };
     El mark = row()
@@ -136,7 +135,7 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
         .align(Style.Align.CENTER)
         .child(ConnectionColors.mark(s.color(n.id())))
         .child(icon);
-    if (phase == null || phase instanceof CatalogTree.Connected || CatalogTree.ended(phase)) {
+    if (phase == null || phase instanceof Live.Connected || CatalogTree.ended(phase)) {
       return mark;
     }
     return mark.child(Progress.spinner().label("Connecting"));

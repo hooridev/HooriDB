@@ -47,15 +47,15 @@ final class HistoryDialog {
 
   /** The entries of the console's connection that hold the search, the newest first. */
   List<HistoryEntry> shown(State s, ConsoleTab console) {
-    if (s.history != of || !search.equals(found)) { // each change hands over a new list
+    if (s.keeping.history != of || !search.equals(found)) { // each change hands over a new list
       var chosen = chosen();
       var part = search.toLowerCase(Locale.ROOT);
-      shown = s.history.reversed().stream()
+      shown = s.keeping.history.reversed().stream()
           .filter(e -> e.connection().equals(console.id)
               && e.statement().toLowerCase(Locale.ROOT).contains(part))
           .sorted(Comparator.comparing(HistoryEntry::started).reversed()) // by when each began
           .toList();
-      of = s.history;
+      of = s.keeping.history;
       found = search;
       // The entry chosen stays chosen where it is still shown, also with an outcome learned since,
       // else the newest is.
@@ -93,7 +93,7 @@ final class HistoryDialog {
 
   /** Clear history, once asked: the connection's statements are deleted, here and on the disk. */
   private void clear(State s, ConsoleTab console) {
-    s.forget(console.id);
+    s.keeping.forget(console.id);
     clearing = false;
     s.tell("The history of " + State.name(s.profile(console.id)) + " was deleted");
   }
@@ -101,7 +101,7 @@ final class HistoryDialog {
   El view(State s, ConsoleTab console, App<State> app) {
     Theme t = Theme.CURRENT.get();
     var entries = shown(s, console);
-    boolean any = s.history.stream().anyMatch(e -> e.connection().equals(console.id));
+    boolean any = s.keeping.history.stream().anyMatch(e -> e.connection().equals(console.id));
     float unit = t.size().control();
     El list;
     if (entries.isEmpty()) {
@@ -183,7 +183,9 @@ final class HistoryDialog {
     if (!clearing) {
       return null;
     }
-    long n = s.history.stream().filter(e -> e.connection().equals(console.id)).count();
+    long n = s.keeping.history.stream()
+        .filter(e -> e.connection().equals(console.id))
+        .count();
     Runnable cancel = () -> clearing = false;
     return Dialog.dialog(
             "Clear the history of " + State.name(s.profile(console.id)) + "?",

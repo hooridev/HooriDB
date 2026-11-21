@@ -58,7 +58,7 @@ final class FolderDialog {
   }
 
   El view(State s) {
-    return kind == Kind.DELETE ? deleting(s) : naming(s, () -> s.folderDialog = null);
+    return kind == Kind.DELETE ? deleting(s) : naming(s, () -> s.dialogs.folderDialog = null);
   }
 
   private El naming(State s, Runnable close) {

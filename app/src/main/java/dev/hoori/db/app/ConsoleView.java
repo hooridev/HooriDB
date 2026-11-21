@@ -63,7 +63,7 @@ final class ConsoleView {
   /** The toolbar's actions: the database, the transaction's, the runs' and the statements kept. */
   List<El> actions(State s, Provider provider) {
     boolean busy = tab.busy();
-    var locked = s.locked(tab);
+    var locked = s.guard.locked(tab);
     var actions = new ArrayList<El>();
     actions.add(databases(s));
     // Off where Manual cannot be made sure of, which its tooltip and a note say.
@@ -160,7 +160,7 @@ final class ConsoleView {
                     Button.Variant.GHOST,
                     Symbol.SAVE,
                     "Save query",
-                    s.queriesUsable() ? tab::saveQuery : null)
+                    s.keeping.queriesUsable() ? tab::saveQuery : null)
                 .key("query-save-open")
                 .keepFocus(),
             "Save query: the selection, or else the whole text, under a name"),
@@ -169,7 +169,7 @@ final class ConsoleView {
                     Button.Variant.GHOST,
                     Symbol.STAR,
                     "Saved queries",
-                    s.queriesUsable() ? tab::openQueries : null)
+                    s.keeping.queriesUsable() ? tab::openQueries : null)
                 .key("queries-open")
                 .keepFocus(),
             "Saved queries"),

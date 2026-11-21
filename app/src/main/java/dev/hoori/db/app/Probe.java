@@ -289,7 +289,7 @@ final class Probe {
         Callout.callout(
             Callout.Kind.DANGER,
             "The connection could not be tested",
-            State.message(f.error()),
+            State.messageOf(f.error()),
             button(SECONDARY, "Try again", () -> test(s)));
       case Done _ -> outcomeView();
     };

@@ -106,7 +106,8 @@ public final class HooriDb {
       Servers servers,
       Updater updater,
       String version) {
-    var state = new State(folder, keyring, drivers, tester, servers, updater, version);
+    var state =
+        new State(folder, new Services(keyring, drivers, tester, servers, updater), version);
     App<State> app = new App<>(state, Frame::view).provide(Theme.CURRENT, s -> s.theme);
     app.state().app = app;
     // A script's images must not depend on the platform they were made on.

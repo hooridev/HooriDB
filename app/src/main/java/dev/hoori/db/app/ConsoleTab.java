@@ -82,7 +82,7 @@ import java.util.regex.Pattern;
  *       Rollback, the safe way out, wherever something may be open and no statement that may
  *       change something runs; neither twice at once.
  *   <li>Every act that would end the session or its transaction asks first, through {@link
- *       State#asks}; one act waits at most, and once armed it locks the consoles it concerns.
+ *       Guard#asks}; one act waits at most, and once armed it locks the consoles it concerns.
  *       Every statement and portion goes to the session through one gate ({@link #gate}).
  * </ul>
  */
@@ -346,7 +346,7 @@ final class ConsoleTab implements Tab {
         entry.started(),
         time.truncatedTo(ChronoUnit.MILLIS), // as it is kept
         outcome);
-    s.ran(recorded);
+    s.keeping.ran(recorded);
   }
 
   /** How the first part of a statement's outcome ended, its failure first. */
@@ -483,7 +483,7 @@ final class ConsoleTab implements Tab {
     if (lane == null && database.isEmpty() && !chosen) {
       database = s.catalog.onlyDatabase(id);
       if (!database.isEmpty()) {
-        s.edited(); // kept, so that it opens there next time too
+        s.keeping.edited(); // kept, so that it opens there next time too
       }
     }
   }
@@ -664,7 +664,7 @@ final class ConsoleTab implements Tab {
    * again.
    */
   private boolean gate(State s, String sql) {
-    var why = s.locked(this);
+    var why = s.guard.locked(this);
     if (why == null && asked(s) != null) {
       why = "A question about this console waits for its answer";
     }
@@ -853,7 +853,7 @@ final class ConsoleTab implements Tab {
     var used = used(s, sql, portion);
     if (used != null) {
       database = used; // the shell's use: the console runs on there from now on
-      s.edited();
+      s.keeping.edited();
     }
     var failure = failure(portion);
     remember(s, outcomeOf(portion), portion.elapsed());
@@ -909,7 +909,7 @@ final class ConsoleTab implements Tab {
       unavailable = UNVERIFIABLE;
       mode = Mode.AUTO;
     }
-    s.drop(this);
+    s.guard.drop(this);
   }
 
   /**
@@ -963,7 +963,7 @@ final class ConsoleTab implements Tab {
     };
     problem = new Problem("Not committed", why);
     log.add(new Logged(Level.WARNING, sql, null, "Not committed"));
-    s.drop(this);
+    s.guard.drop(this);
   }
 
   /** What Commit's or Rollback's statement did, as Messages and the status line say it. */
@@ -994,7 +994,7 @@ final class ConsoleTab implements Tab {
           DISCONNECTED,
           "The connection was lost while it rolled back: the server rolls back what was not"
               + " committed.");
-      s.drop(this);
+      s.guard.drop(this);
       closeSession();
     } else {
       learn(portion, false);
@@ -1018,7 +1018,7 @@ final class ConsoleTab implements Tab {
    * that waited on it does not go on, as its outcome is not what was asked.
    */
   private void partly(State s, String sql) {
-    s.drop(this);
+    s.guard.drop(this);
     problem = new Problem(
         PARTLY,
         brief(sql) + " could not undo everything: changes to tables that keep no transactions,"
@@ -1142,7 +1142,8 @@ final class ConsoleTab implements Tab {
           Level.WARNING,
           "",
           null,
-          words("The server did not say whether a transaction is open: " + State.message(error))));
+          words(
+              "The server did not say whether a transaction is open: " + State.messageOf(error))));
     }
   }
 
@@ -1234,7 +1235,7 @@ final class ConsoleTab implements Tab {
     }
     problem = heard(title(f.kind()), message.toString());
     if (doubt == null) {
-      s.drop(this);
+      s.guard.drop(this);
     }
     if (f.kind() == Failure.Kind.CONNECTION_LOST) {
       closeSession();
@@ -1297,7 +1298,7 @@ final class ConsoleTab implements Tab {
     var profile = s.profile(id);
     boolean lost = lost(error);
     if (doubt == null) {
-      s.drop(this);
+      s.guard.drop(this);
     }
     problem = problem(profile, error, lost);
     log.add(new Logged(Level.ERROR, brief(sql), null, problem.title()));
@@ -1314,7 +1315,7 @@ final class ConsoleTab implements Tab {
    * an act that waited too. Where that lost the connection, the session is over.
    */
   private void gaveUp(State s, String sql, Session.GaveUp g) {
-    s.drop(this);
+    s.guard.drop(this);
     failedRun = true;
     if (g.failure.kind() == Failure.Kind.CONNECTION_LOST) {
       // Ending it lost the connection, or ran past its deadline: the session is over, at once
@@ -1345,10 +1346,10 @@ final class ConsoleTab implements Tab {
       return heard(Words.title(e.failure()), lines(Words.note(e.failure(), on, true), e.detail()));
     }
     if (lost) {
-      var detail = error instanceof QueryException e ? e.detail() : State.message(error);
+      var detail = error instanceof QueryException e ? e.detail() : State.messageOf(error);
       return heard(DISCONNECTED, lines(detail, gone()));
     }
-    return heard("The statement could not be run", State.message(error));
+    return heard("The statement could not be run", State.messageOf(error));
   }
 
   /** Two texts on lines of their own, where either is null or empty the other alone. */
@@ -1402,7 +1403,7 @@ final class ConsoleTab implements Tab {
               var was = recorded;
               recorded = new HistoryEntry(
                   was.connection(), was.statement(), was.started(), was.took(), outcomeOf(portion));
-              s.ranAgain(was, recorded);
+              s.keeping.ranAgain(was, recorded);
             }
             // Where the server says, also in its later rows.
             help.failed(sql, failure, provider(s), words(failure.message()));
@@ -1471,7 +1472,7 @@ final class ConsoleTab implements Tab {
 
   /** Why the console may start nothing now: the act that holds its connection; or null. */
   private String locked(State s) {
-    var why = s.locked(this);
+    var why = s.guard.locked(this);
     if (why != null) {
       say(s, why + ": nothing runs until that is done");
     }
@@ -1491,11 +1492,12 @@ final class ConsoleTab implements Tab {
     var version = s.catalog.version(id);
     if (lane == null || profile == null) {
       database = name; // the next session opens on it
-      s.edited();
+      s.keeping.edited();
       return;
     }
-    if (s.asks(
-        new State.Act("switch the database to " + name, this),
+    if (s.guard.asks(
+        s,
+        new Guard.Act("switch the database to " + name, this),
         "it switches to " + (name.isEmpty() ? "no database" : name),
         List.of(this),
         () -> use(s, name))) {
@@ -1505,7 +1507,7 @@ final class ConsoleTab implements Tab {
         || profile.provider().supports(Capability.CONNECTION_PER_DATABASE, version)) {
       closeSession();
       database = name;
-      s.edited();
+      s.keeping.edited();
       return;
     }
     leave();
@@ -1526,7 +1528,7 @@ final class ConsoleTab implements Tab {
           activity = new Idle();
           switching = null;
           database = done;
-          s.edited();
+          s.keeping.edited();
           log.add(new Logged(Level.RAN, switched, null, "Switched"));
         },
         error -> {
@@ -1736,8 +1738,8 @@ final class ConsoleTab implements Tab {
       return;
     }
     var before = "it switches to " + mode.title;
-    var act = new State.Act("switch to " + mode, this);
-    if (s.asks(act, before, List.of(this), () -> switchMode(s, mode))) {
+    var act = new Guard.Act("switch to " + mode, this);
+    if (s.guard.asks(s, act, before, List.of(this), () -> switchMode(s, mode))) {
       return;
     }
     boolean wasEmpty = empty;
@@ -1764,7 +1766,7 @@ final class ConsoleTab implements Tab {
                 Level.RAN, AUTO_COMMIT, null, mode == Mode.AUTO ? "Turned on" : "Turned off"));
           } else {
             // The server had one open after all.
-            s.asks(act, before, List.of(this), () -> switchMode(s, mode));
+            s.guard.asks(s, act, before, List.of(this), () -> switchMode(s, mode));
           }
         },
         error -> {
@@ -1830,7 +1832,7 @@ final class ConsoleTab implements Tab {
 
   static final double FIRM_SECONDS = 10;
 
-  /** Shows the console's tab, in its window raised, for the question {@link State#asks} put. */
+  /** Shows the console's tab, in its window raised, for the question {@link Guard#asks} put. */
   void show(State s) {
     var group = s.tabs.groupOf(this);
     if (group == null) {
@@ -1848,8 +1850,8 @@ final class ConsoleTab implements Tab {
   }
 
   /** The act that waits for this console's question, or null. */
-  State.Pending.Question asked(State s) {
-    return s.pending instanceof State.Pending.Question question && question.console() == this
+  Guard.Pending.Question asked(State s) {
+    return s.guard.pending instanceof Guard.Pending.Question question && question.console() == this
         ? question
         : null;
   }
@@ -1867,18 +1869,18 @@ final class ConsoleTab implements Tab {
       return;
     }
     if (choice == null) {
-      s.pending = null;
+      s.guard.pending = null;
       return;
     }
     switch (choice) {
       case CONTINUE -> {
-        s.pending = null;
+        s.guard.pending = null;
         doubt = null;
         asked.then().run();
         return;
       }
       case GO_ON -> {
-        s.pending = null;
+        s.guard.pending = null;
         var cut = running;
         if (teller != null) {
           teller.tell(cut, WENT_ON, true); // the app keeps it, whatever becomes of the console
@@ -1923,12 +1925,12 @@ final class ConsoleTab implements Tab {
 
   /**
    * The act that waited for this console goes on once nothing is at stake any more; after every
-   * call's result, and every answer. A failure gives it up before ({@link State#drop}).
+   * call's result, and every answer. A failure gives it up before ({@link Guard#drop}).
    */
   private void settle(State s) {
     var asked = asked(s);
     if (asked != null && !atStake()) {
-      s.pending = null;
+      s.guard.pending = null;
       asked.then().run();
     }
   }
@@ -2042,7 +2044,7 @@ final class ConsoleTab implements Tab {
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
     El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
           text = v;
-          s.edited();
+          s.keeping.edited();
         })
         .key("sql")
         .label(Language.of(provider).label())

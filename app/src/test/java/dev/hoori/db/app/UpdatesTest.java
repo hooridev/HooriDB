@@ -213,7 +213,7 @@ class UpdatesTest {
     assertTrue(failed.contains("The helper JAR is neither on the class path"), failed);
     assertTrue(failed.contains("HooriDB stayed open, as it could not restart to update."), failed);
     assertEquals(before, stored().attempt());
-    assertEquals(null, app.state().pending, "the Exit is over");
+    assertEquals(null, app.state().guard.pending, "the Exit is over");
   }
 
   /**

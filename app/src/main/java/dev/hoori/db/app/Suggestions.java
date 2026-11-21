@@ -115,7 +115,7 @@ final class Suggestions {
     final List<String> path;
     private final State s;
     private final boolean exact;
-    private final CatalogTree.Live live; // null while not connected
+    private final Live live; // null while not connected
     private final String named; // the console's database, or null
     private Node.OfDatabase console; // the node of that name, or null, once looked up
     private boolean looked;
@@ -125,7 +125,7 @@ final class Suggestions {
       this.provider = provider;
       this.exact = exact;
       var opened = s.catalog.live(tab.id);
-      var connected = opened != null && opened.phase instanceof CatalogTree.Connected c ? c : null;
+      var connected = opened != null && opened.phase instanceof Live.Connected c ? c : null;
       this.live = connected == null ? null : opened;
       schemas = connected != null && connected.schemas();
       named = !tab.database.isEmpty() || connected == null ? tab.database : connected.database();

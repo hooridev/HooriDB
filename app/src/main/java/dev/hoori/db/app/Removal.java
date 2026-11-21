@@ -33,12 +33,12 @@ final class Removal {
   // The connections it takes out, one after another; the act that locks their consoles; the
   // folder it deletes once all are out, or null for one connection; and those that stayed.
   private final List<ConnectionProfile> doomed = new ArrayList<>();
-  private State.Act act;
+  private Guard.Act act;
   private UUID folder;
   final List<ConnectionProfile> kept = new ArrayList<>();
 
   /** Begins to take the connections out, whose consoles the act has locked. */
-  void start(State s, State.Act act, List<ConnectionProfile> profiles, UUID folder) {
+  void start(State s, Guard.Act act, List<ConnectionProfile> profiles, UUID folder) {
     running = true;
     error = null;
     this.act = act;
@@ -61,7 +61,7 @@ final class Removal {
     s.app.after(State.KEYRING_SECONDS, () -> {
       if (running && patience == at) {
         slow = true;
-        if (s.quitting()) {
+        if (s.guard.quitting()) {
           giveUp(s); // closing never waits for a keyring that does not answer
         }
       }
@@ -98,7 +98,7 @@ final class Removal {
           slow = false;
           doomed.removeFirst();
           kept.add(profile); // and the next ones are tried
-          error = State.message(failure);
+          error = State.messageOf(failure);
           next(s);
         });
   }
@@ -110,7 +110,7 @@ final class Removal {
   private void done(State s) {
     running = false;
     slow = false;
-    s.drop(act);
+    s.guard.drop(act);
     if (!kept.isEmpty()) {
       s.keyringFailed();
       return;
@@ -133,7 +133,7 @@ final class Removal {
     error = folder == null ? DELETE_GAVE_UP : FOLDER_GAVE_UP;
     kept.addAll(doomed);
     doomed.clear();
-    s.drop(act);
+    s.guard.drop(act);
     s.keyringFailed();
   }
 }

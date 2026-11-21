@@ -12,12 +12,6 @@ import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
-import dev.hoori.db.core.connection.ConsoleStore;
-import dev.hoori.db.core.connection.HistoryEntry;
-import dev.hoori.db.core.connection.HistoryStore;
-import dev.hoori.db.core.connection.QueryStore;
-import dev.hoori.db.core.connection.SavedQuery;
-import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.dialect.Dialect;
@@ -25,7 +19,6 @@ import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
-import java.io.IOException;
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -34,17 +27,15 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
 /** The app's state, which only the handlers change, on the app's thread. */
 final class State {
 
-  static final Split.Position SIDEBAR = Split.Position.first(320); // room for a column and its type
+  // The sidebar at the start and where resetting it puts it: room for a column and its type.
+  static final Split.Position DEFAULT_SIDEBAR = Split.Position.first(320);
   static final double MESSAGE_SECONDS = 5; // how long a message stays in the status line
   // How long a change of the keyring may keep its dialog waiting before Cancel gives it up.
   static final double KEYRING_SECONDS = 5;
@@ -52,7 +43,7 @@ final class State {
   App<State> app; // runs the clock and the windows, and says whether the window is maximized
   Theme theme = Theme.DARK;
   ZoneId zone = ZoneId.systemDefault(); // the computer's, in which moments show
-  Split.Position sidebar = SIDEBAR;
+  Split.Position sidebar = DEFAULT_SIDEBAR;
   final MenuBar.State bar = new MenuBar.State();
   // The tabs of every window: the first window's, and those torn off into windows of their own.
   final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow)
@@ -97,13 +88,8 @@ final class State {
   // Passwords typed but not saved, for this session only.
   private final Map<UUID, char[]> passwords = new HashMap<>();
   Node selected; // the selected node of the catalog, or null
-  ConnectionDialog dialog; // null while closed
-  DriversDialog driverList; // the Drivers dialog, null while closed
-  ConnectionProfile deleting; // the connection the delete dialog asks about, or null
-  FolderDialog folderDialog; // a folder's name or the question before its delete; null while closed
-  private UUID placing; // the folder the new connection's dialog puts it in, or null for the top
-  boolean about; // whether the About dialog is open
-  Pending pending; // the one act that waits, or null
+  final Dialogs dialogs = new Dialogs(); // the main window's dialogs that are open
+  final Guard guard = new Guard(); // the one act that waits
   final Removal removal = new Removal(); // the deletion of connections, out of the keyring first
   // What finishing something on a console's session did, failures and warnings, in the order they
   // came, each until the user dismisses it: the app's from the moment it exists.
@@ -118,125 +104,30 @@ final class State {
   private boolean saveAgain; // the workspace changed while it ran
   private boolean quitAnyway; // the last save at the end failed and the user was told
 
-  // How long after the last edit of a console its text is saved.
-  static final double EDIT_SECONDS = 1;
-
-  /**
-   * A file kept beside the connections, saved as they are ({@link #persist()}): one save at a time,
-   * a change meanwhile saves again with what is there then. None before its load has ended, nor
-   * after a load that failed with the file still there, which nothing may replace.
-   */
-  static final class Kept {
-    final String what; // "consoles", in messages
-    final Callable<Callable<?>> next; // on the app's thread: the save of what is there now
-    boolean canSave; // its load ended, and for the consoles they were restored
-    boolean unsaved; // differs from what was last written
-    String saveError; // why the last save failed, or null
-    private Work saving;
-    private boolean again;
-    boolean quitAnyway; // the last Exit stopped for it, and the next goes without it
-
-    Kept(String what, Callable<Callable<?>> next) {
-      this.what = what;
-      this.next = next;
-    }
-
-    /** Whether Exit waits for it: a save runs, or one is due. */
-    boolean waits() {
-      return saving != null || unsaved && canSave && !quitAnyway;
-    }
-
-    /** What notices call it: "Consoles", "History", "Saved queries". */
-    String title() {
-      return what.substring(0, 1).toUpperCase(Locale.ROOT) + what.substring(1);
-    }
-  }
-
-  /** What writes a file: a store's save. */
-  interface Store<T> {
-    void save(T value) throws IOException;
-  }
-
-  /** The save of the value by the store, which gets only these two, off the app's thread. */
-  static <T> Callable<T> writing(T value, Store<T> store) {
-    return () -> {
-      store.save(value);
-      return value;
-    };
-  }
-
   // What HooriDB sent to servers, and the panel that shows it.
   final StatementLog statements;
   final LogPanel logPanel = new LogPanel();
-  private final ConsoleStore consoleStore;
-  private final HistoryStore historyStore;
-  private final QueryStore queryStore;
-  final Kept consolesKept;
-  final Kept historyKept;
-  final Kept queriesKept;
-  // The queries saved on purpose, of every connection, in the order they were first saved.
-  List<SavedQuery> queries = List.of();
-  // Until the file is read nothing is saved or deleted, so that each name and id is the file's.
-  boolean queriesLoading = true;
 
-  /**
-   * Whether a query can be saved or deleted now: once the file was read, and not where it could not
-   * be, as nothing would be written.
-   */
-  boolean queriesUsable() {
-    return !queriesLoading && queriesKept.canSave;
-  }
-  // The statements run from consoles, of every connection, the oldest first.
-  List<HistoryEntry> history = List.of();
-  // Connections deleted: what is loaded of their history and consoles after that goes too.
-  private final Set<UUID> forgotten = new HashSet<>();
-  // Connections deleted: their saved queries go, also those loaded after.
-  private final Set<UUID> deletedConnections = new HashSet<>();
-  // The consoles loaded and not yet restored, which waits for the profiles; null before and after.
-  private List<StoredConsole> restoring;
-  // The consoles kept of connections not known, saved along with the others and not shown.
-  private List<StoredConsole> unseen = List.of();
-  private int edits; // counted, so that a late patience is dropped
+  final Keeping keeping; // the consoles, the history and the saved queries
 
   final String version; // the version that runs, as About shows it
   final Updates updates;
 
   /**
    * @param folder where the workspace is kept
-   * @param keyring finds the system keyring, off the app's thread
-   * @param drivers where drivers are kept and come from, or null for none
-   * @param tester tests a connection, off the app's thread
-   * @param servers opens connections and reads their catalog, off the app's thread
-   * @param updater updates HooriDB, off the app's thread; null for none
+   * @param services what it reaches outside the app through
    * @param version the version that runs
    */
-  State(
-      Path folder,
-      Callable<Keyring> keyring,
-      Drivers drivers,
-      Tester tester,
-      Servers servers,
-      Updater updater,
-      String version) {
+  State(Path folder, Services services, String version) {
     this.store = new WorkspaceStore(folder);
-    this.consoleStore = new ConsoleStore(folder);
-    this.historyStore = new HistoryStore(folder);
-    this.queryStore = new QueryStore(folder);
-    consolesKept = new Kept("consoles", () -> {
-      var list = new ArrayList<StoredConsole>();
-      consoles(null).forEach(x -> list.add(x.stored()));
-      list.addAll(unseen);
-      return writing(list, consoleStore::save);
-    });
-    historyKept = new Kept("history", () -> writing(history, historyStore::save));
-    queriesKept = new Kept("saved queries", () -> writing(queries, queryStore::save));
-    this.updates = new Updates(folder, updater, version);
+    this.keeping = new Keeping(folder, this);
+    this.updates = new Updates(folder, services.updater(), version);
     this.version = version;
-    this.findKeyring = keyring;
-    this.drivers = drivers;
-    this.tester = tester;
+    this.findKeyring = services.keyring();
+    this.drivers = services.drivers();
+    this.tester = services.tester();
     this.statements = new StatementLog(folder);
-    this.catalog = new CatalogTree(new Recorded(servers, statements));
+    this.catalog = new CatalogTree(new Recorded(services.servers(), statements));
   }
 
   /**
@@ -247,55 +138,7 @@ final class State {
     load();
     startUpdates();
     statements.start(app);
-    var consoles = consoleStore;
-    app.background(
-        "load consoles",
-        consoles::load,
-        list -> {
-          restoring = list;
-          restore();
-        },
-        error -> {
-          loadFailed(consolesKept, error);
-          // Not restored; what the user opens is saved where the old file is set aside.
-          consolesKept.canSave = error instanceof WorkspaceStore.UnreadableException;
-        });
-    app.background(
-        "load history",
-        historyStore::load,
-        list -> {
-          var all =
-              list.stream().filter(e -> !forgotten.contains(e.connection())).toList();
-          for (var entry : this.history) { // run before the load
-            all = HistoryStore.add(all, entry);
-          }
-          this.history = all;
-          historyLoaded(true);
-        },
-        error -> {
-          loadFailed(historyKept, error);
-          historyLoaded(error instanceof WorkspaceStore.UnreadableException);
-        });
-    var saved = queryStore;
-    app.background(
-        "load saved queries",
-        saved::load,
-        list -> {
-          var all = list.stream()
-              .filter(q -> !deletedConnections.contains(q.connection()))
-              .toList();
-          // Those of a connection deleted while they loaded are deleted from the file too.
-          boolean dropped = all.size() != list.size();
-          this.queries = all;
-          if (dropped) {
-            queriesKept.unsaved = true;
-          }
-          queriesLoaded(true);
-        },
-        error -> {
-          loadFailed(queriesKept, error);
-          queriesLoaded(error instanceof WorkspaceStore.UnreadableException);
-        });
+    keeping.start();
   }
 
   // Apart, so that what start() calls reads as one list.
@@ -303,203 +146,16 @@ final class State {
     updates.start(this);
   }
 
-  private void queriesLoaded(boolean canSave) {
-    queriesLoading = false;
-    queriesKept.canSave = canSave;
-    dropOrphanQueries();
-    if (queriesKept.unsaved) {
-      save(queriesKept);
-    }
-  }
-
-  /**
-   * Deletes the queries of connections the workspace does not have, as those of one deleted while
-   * HooriDB closed before they were read; once both files are read, and not where the workspace
-   * failed to load, which then has none.
-   */
-  private void dropOrphanQueries() {
-    if (!loaded || loadError != null || queriesLoading || !queriesKept.canSave) {
-      return;
-    }
-    var known = new HashSet<UUID>();
-    workspace.connections().forEach(p -> known.add(p.id()));
-    var left = queries.stream().filter(q -> known.contains(q.connection())).toList();
-    if (left.size() != queries.size()) {
-      queries = left;
-      persist(queriesKept);
-    }
-  }
-
-  /** Keeps the query, in place of one of its connection and name. */
-  void saveQuery(SavedQuery query) {
-    queries = QueryStore.put(queries, query);
-    persist(queriesKept);
-  }
-
-  /** Deletes the saved query. */
-  void deleteQuery(UUID id) {
-    queries = queries.stream().filter(q -> !q.id().equals(id)).toList();
-    persist(queriesKept);
-  }
-
-  private void loadFailed(Kept kept, Exception error) {
-    notice(kept.title(), "not read", message(error), true, null);
-  }
-
-  private void historyLoaded(boolean canSave) {
-    historyKept.canSave = canSave;
-    if (historyKept.unsaved) {
-      save(historyKept);
-    }
-  }
-
-  /**
-   * Opens the consoles loaded in the main window, in their order, once the profiles have loaded as
-   * well; those of a connection not known stay in the file unseen, as its connection may come
-   * back, as from a file of connections set aside and mended. Not after the profiles failed to load:
-   * a save would drop them all.
-   */
-  private void restore() {
-    if (restoring == null || !loaded || loadError != null) {
-      return;
-    }
-    var main = tabs.main();
-    var hidden = new ArrayList<StoredConsole>();
-    for (var stored : restoring) {
-      if (profile(stored.connection()) != null) {
-        var console = new ConsoleTab(stored.connection(), stored.database());
-        console.text = stored.text();
-        tabs.add(main, main.tabs().size(), console);
-      } else if (forgotten.contains(stored.connection())) {
-        consolesKept.unsaved = true; // its connection was deleted before they were read
-      } else {
-        hidden.add(stored);
-      }
-    }
-    unseen = List.copyOf(hidden);
-    restoring = null;
-    consolesKept.canSave = true;
-    if (consolesKept.unsaved) {
-      save(consolesKept);
-    }
-  }
-
-  /** A console's text or database changed: it is saved once it has not changed for a while. */
-  void edited() {
-    if (!quitting()) {
-      consolesKept.quitAnyway = false; // a change since: the next Exit tries to save it
-    }
-    consolesKept.unsaved = true;
-    int at = ++edits;
-    app.after(EDIT_SECONDS, () -> {
-      if (edits == at && !consolesKept.quitAnyway) { // the last Exit went without it
-        save(consolesKept);
-      }
-    });
-  }
-
-  /** A statement of a console's ran: it goes into the history of its connection. */
-  void ran(HistoryEntry entry) {
-    var before = history;
-    history = HistoryStore.add(history, entry);
-    if (history != before) {
-      persist(historyKept);
-    }
-  }
-
-  /** A statement's outcome turned out otherwise, as a read that failed in its later rows. */
-  void ranAgain(HistoryEntry was, HistoryEntry now) {
-    int at = history.lastIndexOf(was);
-    if (at >= 0) { // else gone, by the cap or a clear
-      var list = new ArrayList<>(history);
-      list.set(at, now);
-      history = List.copyOf(list);
-      persist(historyKept);
-    }
-  }
-
-  /** Deletes the history of the connection. */
-  void forget(UUID id) {
-    forgotten.add(id);
-    history = history.stream().filter(e -> !e.connection().equals(id)).toList();
-    persist(historyKept);
-  }
-
   /** A tab closed, by the user or with its connection: a console's text is no longer kept. */
   private void tabClosed(Tab tab) {
     tab.close();
     if (tab instanceof ConsoleTab) {
-      persist(consolesKept);
-    }
-  }
-
-  /**
-   * Writes the file as the state is now, off the app's thread, as {@link #persist()} writes the
-   * profiles; a failure goes to the notices once, until a save succeeds.
-   */
-  void persist(Kept kept) {
-    if (!quitting()) {
-      kept.quitAnyway = false;
-    }
-    kept.unsaved = true;
-    save(kept);
-  }
-
-  /** Writes what changed before, as {@link #persist(Kept)} does; a change since waits for it. */
-  private void save(Kept kept) {
-    if (!kept.canSave) {
-      return; // its load saves it, if it may
-    }
-    if (kept.saving != null) {
-      kept.again = true;
-      return;
-    }
-    Callable<?> save;
-    try {
-      save = kept.next.call();
-    } catch (Exception e) {
-      throw new IllegalStateException(e); // it only reads the state
-    }
-    int at = edits; // an edit after this is not in what it writes, and saves after its pause
-    kept.saving = app.background(
-        "save " + kept.what, save, done -> saved(kept, at), error -> saveFailed(kept, error));
-  }
-
-  /** The save of the file ended well: a change meanwhile saves again. */
-  private void saved(Kept kept, int edit) {
-    kept.saving = null;
-    kept.saveError = null;
-    if (kept.again) {
-      kept.again = false;
-      save(kept);
-      return;
-    }
-    kept.unsaved = kept == consolesKept && edits != edit;
-    settled();
-  }
-
-  /** The save of the file failed: an Exit stays, else the first failure is told. */
-  private void saveFailed(Kept kept, Exception error) {
-    kept.saving = null;
-    boolean first = kept.saveError == null;
-    kept.saveError = message(error);
-    if (kept.again) {
-      kept.again = false;
-      save(kept);
-    } else if (quitting()) {
-      kept.quitAnyway = true;
-      stay("HooriDB stayed open, as the " + kept.what + " could not be saved. Close it again"
-          + " to quit without "
-          + them(kept == historyKept));
-    } else if (kept == updates.kept) {
-      tell("The update settings could not be saved: " + kept.saveError);
-    } else if (first) {
-      notice(kept.title(), "not saved", kept.saveError, true, null);
+      keeping.persist(keeping.consolesKept);
     }
   }
 
   /** The end of a sentence about what Exit would go without: one thing, or several. */
-  private static String them(boolean one) {
+  static String them(boolean one) {
     return one ? "it." : "them.";
   }
 
@@ -518,13 +174,13 @@ final class State {
           change(found);
           loaded = true;
           setAside = null;
-          dropOrphanQueries();
+          keeping.dropOrphanQueries();
           lookForKeyring();
-          restore();
+          keeping.restore();
         },
         error -> {
           loaded = true;
-          loadError = message(error);
+          loadError = messageOf(error);
           setAside = error instanceof WorkspaceStore.UnreadableException unreadable
               ? WorkspaceStore.kept(unreadable)
               : null;
@@ -547,14 +203,15 @@ final class State {
             found instanceof Keyring.Available(var secrets)
                 ? new Keyring.Available(worker.serial(secrets))
                 : found),
-        error -> keyringFound(new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, message(error))));
+        error ->
+            keyringFound(new Keyring.Unavailable(Keyring.Reason.NO_SERVICE, messageOf(error))));
   }
 
   private void keyringFound(Keyring found) {
     keyring = found;
-    if (dialog != null) {
-      dialog.lookUp(this);
-      dialog.probe.keyringFound(this);
+    if (dialogs.dialog != null) {
+      dialogs.dialog.lookUp(this);
+      dialogs.dialog.probe.keyringFound(this);
     }
     catalog.keyringFound(this);
     if (removal.running) {
@@ -577,8 +234,8 @@ final class State {
 
   /** Opens the dialog for a new connection, which goes where {@link #folderFor} the selection. */
   void newConnection() {
-    placing = folderFor(selected);
-    dialog = ConnectionDialog.create(this);
+    dialogs.placing = folderFor(selected);
+    dialogs.dialog = ConnectionDialog.create(this);
   }
 
   /** What is saved: the connections in folders. */
@@ -619,12 +276,12 @@ final class State {
 
   /** Opens the dialog for a new folder, which goes where {@link #folderFor} the selection. */
   void newFolder() {
-    folderDialog = FolderDialog.create(folderFor(selected));
+    dialogs.folderDialog = FolderDialog.create(folderFor(selected));
   }
 
   /** A new folder of the name, open and last in the folder of the id or at the top; selected. */
   void createFolder(UUID in, String name) {
-    folderDialog = null;
+    dialogs.folderDialog = null;
     var folder = new Workspace.Folder(UUID.randomUUID(), name, true, List.of());
     var at = folder(in) == null ? null : in; // gone meanwhile: at the top
     if (!workspace.fits(at, folder)) {
@@ -639,12 +296,12 @@ final class State {
   void askRenameFolder(UUID id) {
     var folder = folder(id);
     if (folder != null) {
-      folderDialog = FolderDialog.rename(id, folder.name());
+      dialogs.folderDialog = FolderDialog.rename(id, folder.name());
     }
   }
 
   void renameFolder(UUID id, String name) {
-    folderDialog = null;
+    dialogs.folderDialog = null;
     if (folder(id) != null) {
       change(workspace.rename(id, name));
       persist();
@@ -709,7 +366,7 @@ final class State {
     } else {
       removal.kept.clear();
       removal.error = null;
-      folderDialog = FolderDialog.delete(id, folder.name());
+      dialogs.folderDialog = FolderDialog.delete(id, folder.name());
     }
   }
 
@@ -718,8 +375,8 @@ final class State {
     if (removal.running) {
       return;
     }
-    folderDialog = null;
-    drop(deleteFolderAct(id)); // and a console's question it asked
+    dialogs.folderDialog = null;
+    guard.drop(deleteFolderAct(id)); // and a console's question it asked
     if (folder(id) == null) {
       return;
     }
@@ -731,7 +388,7 @@ final class State {
   }
 
   void edit(ConnectionProfile profile) {
-    dialog = ConnectionDialog.edit(this, profile);
+    dialogs.dialog = ConnectionDialog.edit(this, profile);
   }
 
   /** A copy of the profile under a new id, after it; without its password. */
@@ -771,8 +428,9 @@ final class State {
             || !database(old).equals(database(profile)))) {
       close(tables(profile.id()));
     }
-    if (old == null && workspace.fits(placing, profile)) { // a folder gone meanwhile: the top
-      change(revealing(workspace.into(placing, profile), profile.id()));
+    if (old == null
+        && workspace.fits(dialogs.placing, profile)) { // a folder gone meanwhile: the top
+      change(revealing(workspace.into(dialogs.placing, profile), profile.id()));
     } else {
       change(workspace.put(profile));
     }
@@ -833,7 +491,7 @@ final class State {
    */
   void acted() {
     waived = 0;
-    if (!quitting()) {
+    if (!guard.quitting()) {
       quitAnyway = false;
     }
   }
@@ -841,23 +499,14 @@ final class State {
   // How long Exit waits for the sessions to say how they closed: longer than their closing takes.
   static final double EXIT_SECONDS = (double) Lane.CLOSES.toSeconds();
 
-  /** Whether a dialog is open, which an act that opens one must not replace. */
-  boolean dialogOpen() {
-    return dialog != null
-        || deleting != null
-        || folderDialog != null
-        || about
-        || driverList != null;
-  }
-
   /** The act of deleting the connection, which its disconnect and its delete share. */
-  static Act deleteAct(ConnectionProfile profile) {
-    return new Act("delete", profile.id());
+  static Guard.Act deleteAct(ConnectionProfile profile) {
+    return new Guard.Act("delete", profile.id());
   }
 
   /** Asks before the connection is deleted. */
   void askDelete(ConnectionProfile profile) {
-    deleting = profile;
+    dialogs.deleting = profile;
     removal.error = null;
   }
 
@@ -866,10 +515,11 @@ final class State {
    * keyring is known. Without a keyring it goes, and the status line says what may be left.
    */
   void delete() {
-    var profile = deleting;
+    var profile = dialogs.deleting;
     if (profile == null
         || removal.running
-        || asks(
+        || guard.asks(
+            this,
             deleteAct(profile),
             name(profile) + " is deleted",
             consoles(profile.id()),
@@ -880,8 +530,8 @@ final class State {
   }
 
   /** The act of deleting the folder with what it holds. */
-  static Act deleteFolderAct(UUID folder) {
-    return new Act("delete folder", folder);
+  static Guard.Act deleteFolderAct(UUID folder) {
+    return new Guard.Act("delete folder", folder);
   }
 
   /**
@@ -892,7 +542,7 @@ final class State {
   void deleteFolder(UUID id) {
     var folder = folder(id);
     if (folder == null) {
-      drop(deleteFolderAct(id)); // gone while a console's question waited
+      guard.drop(deleteFolderAct(id)); // gone while a console's question waited
       return;
     }
     if (removal.running) {
@@ -901,7 +551,7 @@ final class State {
     var held = folder.connections();
     var consoles = held.stream().flatMap(p -> consoles(p.id()).stream()).toList();
     var act = deleteFolderAct(id);
-    if (asks(act, folder.name() + " is deleted", consoles, () -> deleteFolder(id))) {
+    if (guard.asks(this, act, folder.name() + " is deleted", consoles, () -> deleteFolder(id))) {
       return;
     }
     remove(act, folder.name() + " is being deleted", held, id);
@@ -911,10 +561,10 @@ final class State {
    * Takes the connections out one after another, their consoles locked meanwhile, and then the
    * folder where it is one's.
    */
-  private void remove(Act act, String what, List<ConnectionProfile> profiles, UUID folder) {
+  private void remove(Guard.Act act, String what, List<ConnectionProfile> profiles, UUID folder) {
     var ids = new HashSet<UUID>();
     profiles.forEach(p -> ids.add(p.id()));
-    if (!lock(act, what, ids)) {
+    if (!guard.lock(this, act, what, ids)) {
       return;
     }
     removal.start(this, act, profiles, folder);
@@ -925,15 +575,9 @@ final class State {
     forgetPassword(profile.id());
     catalog.drop(this, profile.id());
     closeTabs(profile.id()); // its consoles, and with them their texts
-    forget(profile.id());
+    keeping.forget(profile.id());
     change(workspace.remove(profile.id()));
-    // Its saved queries go too; those not loaded yet go as they load.
-    deletedConnections.add(profile.id());
-    var before = queries;
-    queries = queries.stream().filter(q -> !q.connection().equals(profile.id())).toList();
-    if (queries.size() != before.size()) {
-      persist(queriesKept);
-    }
+    keeping.forgetQueries(profile.id());
     if (selected != null && selected.id().equals(profile.id())) {
       selected = null;
     }
@@ -948,10 +592,10 @@ final class State {
    */
   void deleted(UUID id) {
     if (id == null) {
-      deleting = null;
+      dialogs.deleting = null;
       return;
     }
-    folderDialog = null;
+    dialogs.folderDialog = null;
     var folder = folder(id);
     if (folder != null && folder.connections().isEmpty()) {
       change(workspace.remove(id));
@@ -971,9 +615,9 @@ final class State {
       removal.giveUp(this);
       return;
     }
-    if (deleting != null && !removal.running) {
-      drop(deleteAct(deleting)); // and the way out it asked for
-      deleting = null;
+    if (dialogs.deleting != null && !removal.running) {
+      guard.drop(deleteAct(dialogs.deleting)); // and the way out it asked for
+      dialogs.deleting = null;
     }
   }
 
@@ -983,9 +627,9 @@ final class State {
       removal.giveUp(this);
       return;
     }
-    if (folderDialog != null && !removal.running) {
-      drop(deleteFolderAct(folderDialog.folder));
-      folderDialog = null;
+    if (dialogs.folderDialog != null && !removal.running) {
+      guard.drop(deleteFolderAct(dialogs.folderDialog.folder));
+      dialogs.folderDialog = null;
     }
   }
 
@@ -1019,7 +663,7 @@ final class State {
    * until a write of it has succeeded.
    */
   void persist() {
-    if (!quitting()) {
+    if (!guard.quitting()) {
       quitAnyway = false; // a change since: the next Exit tries to save it
     }
     unsaved = true;
@@ -1029,14 +673,14 @@ final class State {
     }
     saving = app.background(
         "save connections",
-        writing(workspace, store::save),
+        Kept.writing(workspace, store::save),
         done -> {
           saving = null;
           saveError = null;
           if (loadError != null) { // the file is readable now
             loadError = null;
             tell("The connections that could not be read were kept in " + setAside);
-            restore();
+            keeping.restore();
           }
           if (saveAgain) {
             saveAgain = false;
@@ -1048,12 +692,12 @@ final class State {
         },
         error -> {
           saving = null;
-          saveError = message(error);
+          saveError = messageOf(error);
           if (saveAgain) {
             saveAgain = false;
             persist();
-          } else if (quitting()) {
-            pending = null;
+          } else if (guard.quitting()) {
+            guard.pending = null;
             quitAnyway = true;
             tell("HooriDB stayed open, as the connections could not be saved. Close it again to"
                 + " quit without them.");
@@ -1063,7 +707,7 @@ final class State {
 
   /** Whether a change of the keyring runs, which no one may leave halfway. */
   private boolean keyringBusy() {
-    return removal.running || dialog != null && dialog.changing();
+    return removal.running || dialogs.dialog != null && dialogs.dialog.changing();
   }
 
   /**
@@ -1089,27 +733,27 @@ final class State {
 
   private void close() {
     // The consoles first: their answers come back here, and Cancel gives up closing.
-    if (asks(EXIT, "HooriDB closes", consoles(null), this::close)) {
+    if (guard.asks(this, Guard.EXIT, "HooriDB closes", consoles(null), this::close)) {
       return;
     }
-    if (dialog != null) {
+    if (dialogs.dialog != null) {
       // A test or a download can always be done again: closing cancels them instead of waiting.
-      dialog.probe.stop();
+      dialogs.dialog.probe.stop();
     }
-    if (driverList != null) {
-      driverList.close(this); // a download can be done again
+    if (dialogs.driverList != null) {
+      dialogs.driverList.close(this); // a download can be done again
     }
     // A keyring that keeps a change waiting is given up, as its Cancel does: the window stays, and
     // says what that left; the next close closes. A slower one is given up once it is slow.
-    if (dialog != null && dialog.slow()) {
-      dialog.giveUp(this);
+    if (dialogs.dialog != null && dialogs.dialog.slow()) {
+      dialogs.dialog.giveUp(this);
       return;
     }
     if (removal.slow) {
       removal.giveUp(this);
       return;
     }
-    if (!lock(EXIT, "HooriDB is closing", null)) {
+    if (!guard.lock(this, Guard.EXIT, "HooriDB is closing", null)) {
       return;
     }
     if (keyringBusy() || saving != null || unsaved && !quitAnyway) {
@@ -1120,7 +764,7 @@ final class State {
 
   /** What was on its way has ended: the window closes now if it was asked to. */
   void settled() {
-    if (!quitting() || keyringBusy() || saving != null || updates.busy()) {
+    if (!guard.quitting() || keyringBusy() || saving != null || updates.busy()) {
       return;
     }
     // The one way out: the file saved, unless the user chose to go without it ("anyway" waives
@@ -1132,20 +776,7 @@ final class State {
       return;
     }
     if (exitAt < 0) {
-      exitAt = noticed;
-      consoles(null).forEach(ConsoleTab::end);
-      monitors(null).forEach(m -> m.end(this));
-      int at = ++exits;
-      app.after(EXIT_SECONDS, () -> {
-        if (exits == at && quitting() && closing > waived) {
-          int silent = closing - waived;
-          stay(silent + (silent == 1 ? " session" : " sessions")
-              + " did not say in time that it closed, so what it finished is not confirmed."
-              + " HooriDB stayed open; close it again to quit without waiting for "
-              + them(silent == 1));
-          waived = closing;
-        }
-      });
+      endSessions();
     }
     if (closing > waived) {
       return;
@@ -1154,7 +785,7 @@ final class State {
       stay("HooriDB stayed open: a session reported a problem as it closed. See the connections.");
       return;
     }
-    if (!keptWaits()) { // what the sessions' ends added
+    if (!keeping.waits()) { // what the sessions' ends added
       if (updates.restartWith != null) {
         updates.restartNow(this);
       } else {
@@ -1164,37 +795,29 @@ final class State {
   }
 
   /**
-   * Whether Exit waits for the consoles, the history or the saved queries to be saved; a save due
-   * begins. Changes that cannot be saved, as the file was not read, stop it once.
+   * The first step of an Exit past the save: every console's and monitor's session ends, and Exit
+   * stays where they do not all say in time how they closed.
    */
-  private boolean keptWaits() {
-    for (var each : List.of(consolesKept, historyKept, queriesKept, updates.kept)) {
-      if (each.waits()) {
-        if (each.saving == null) {
-          save(each);
-        }
-        return true;
+  private void endSessions() {
+    exitAt = noticed;
+    consoles(null).forEach(ConsoleTab::end);
+    monitors(null).forEach(m -> m.end(this));
+    int at = ++exits;
+    app.after(EXIT_SECONDS, () -> {
+      if (exits == at && guard.quitting() && closing > waived) {
+        int silent = closing - waived;
+        stay(silent + (silent == 1 ? " session" : " sessions")
+            + " did not say in time that it closed, so what it finished is not confirmed."
+            + " HooriDB stayed open; close it again to quit without waiting for "
+            + them(silent == 1));
+        waived = closing;
       }
-      if (each.unsaved && !each.canSave && !each.quitAnyway) {
-        unreadStops(each);
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** Changes to a file that was not read stop Exit once, as they cannot be saved. */
-  private void unreadStops(Kept kept) {
-    kept.quitAnyway = true;
-    boolean one = kept == historyKept;
-    stay("HooriDB stayed open: the " + kept.what + (one ? " was" : " were") + " not read, so "
-        + (one ? "it" : "they") + " cannot be saved. Close it again to quit without "
-        + them(one));
+    });
   }
 
   /** Exit stops, and says why; the next one asks again. */
   void stay(String why) {
-    pending = null;
+    guard.pending = null;
     exitAt = -1;
     exits++;
     tell(why);
@@ -1202,8 +825,8 @@ final class State {
 
   /** The keyring refused a change: the window stays open, so that the user sees why. */
   void keyringFailed() {
-    if (quitting()) {
-      pending = null;
+    if (guard.quitting()) {
+      guard.pending = null;
       tell("HooriDB stayed open, as the system keyring reported a problem.");
     }
   }
@@ -1278,7 +901,7 @@ final class State {
     var console = new ConsoleTab(id, at == null ? database(profile) : at);
     console.take(this);
     tabs.add(group, group.tabs().size(), console);
-    persist(consolesKept);
+    keeping.persist(keeping.consolesKept);
   }
 
   /**
@@ -1365,121 +988,15 @@ final class State {
     }
   }
 
-  /**
-   * The one act in the app that waits, with what owns it and what it is: a {@link Question} while a
-   * console asks, or {@link Locked} once it is armed.
-   */
-  sealed interface Pending {
-    Object owner();
-
-    String what();
-
-    /** The act waits on the question of a console, and goes on by {@code then} once it is settled. */
-    record Question(Object owner, String what, ConsoleTab console, Runnable then)
-        implements Pending {}
-
-    /**
-     * The act is armed and locks the consoles of a scope until it is done: those of these
-     * connections, or all of them for null.
-     */
-    record Locked(Object owner, String what, Set<UUID> scope) implements Pending {}
-  }
-
-  /**
-   * An act that may wait, as the owner of {@link Pending}: what it does, and to what. Two are the
-   * same act only where both are the same; another act, on the same connection or console, is
-   * refused while one waits.
-   */
-  record Act(String kind, Object target) {}
-
-  private static final Object EXIT = new Object();
-
-  /**
-   * The one guard of every way out that would end consoles' sessions or their transactions: the
-   * first of the consoles where something is at stake ({@link ConsoleTab#atStake}) asks in its
-   * window what becomes of it, and {@code then} runs again once that is settled. True while one
-   * asks, and the caller goes no further. While another act waits, one that would ask is refused,
-   * visibly, instead of taking its place.
-   */
-  boolean asks(Object owner, String what, List<ConsoleTab> consoles, Runnable then) {
-    var asking = consoles.stream().filter(ConsoleTab::atStake).findFirst().orElse(null);
-    boolean mine = pending != null && Objects.equals(pending.owner(), owner);
-    if (asking == null) {
-      if (mine && pending instanceof Pending.Question) {
-        pending = null;
-      }
-      return false;
-    }
-    if (pending != null && !mine) {
-      refuse();
-      return true;
-    }
-    pending = new Pending.Question(owner, what, asking, then);
-    asking.show(this);
-    return true;
-  }
-
-  /**
-   * Arms the act once nothing of its consoles is at stake: from now until it is done or given up
-   * ({@link #drop}), those consoles start nothing, so that nothing comes between the answers and the
-   * act. False, refused visibly, while another act waits.
-   *
-   * @param scope the connections whose consoles it locks, or null for all
-   */
-  boolean lock(Object owner, String what, Set<UUID> scope) {
-    if (pending != null && !Objects.equals(pending.owner(), owner)) {
-      refuse();
-      return false;
-    }
-    pending = new Pending.Locked(owner, what, scope);
-    return true;
-  }
-
-  private void refuse() {
-    switch (pending) {
-      case Pending.Locked locked -> tell(locked.what() + ": that comes first.");
-      case Pending.Question question -> {
-        tell("A question about a console's transaction waits for its answer.");
-        question.console().show(this);
-      }
-    }
-  }
-
-  /** The act is done, or given up: with what owns it, or with the console it waited on. */
-  void drop(Object owner) {
-    if (pending != null
-        && (Objects.equals(pending.owner(), owner)
-            || pending instanceof Pending.Question question && question.console() == owner)) {
-      pending = null;
-    }
-  }
-
-  /** Whether the act waits: for a console's answer, or until it is done. */
-  boolean pends(Object owner) {
-    return pending != null && Objects.equals(pending.owner(), owner);
-  }
-
-  /** Why the console may start nothing now, or null. */
-  String locked(ConsoleTab console) {
-    return pending instanceof Pending.Locked locked
-            && (locked.scope() == null || locked.scope().contains(console.id))
-        ? locked.what()
-        : null;
-  }
-
-  boolean quitting() {
-    return pending instanceof Pending.Locked locked && locked.owner() == EXIT;
-  }
-
-  /** Whether Exit, or Restart now, asks or is under way: nothing comes between. */
-  boolean exiting() {
-    return pending != null && pending.owner() == EXIT;
-  }
-
   /** The user closes a tab, by its cross or Control+W: a console asks first. */
   private void closeTab(TabGroups.Group<Tab> group, int index) {
     if (!(group.tabs().get(index) instanceof ConsoleTab x
-        && asks(new Act("close", x), "the console closes", List.of(x), () -> closeTab(x)))) {
+        && guard.asks(
+            this,
+            new Guard.Act("close", x),
+            "the console closes",
+            List.of(x),
+            () -> closeTab(x)))) {
       tabs.close(group, index);
     }
   }
@@ -1692,7 +1209,7 @@ final class State {
     return profile.name().isBlank() ? profile.host() : profile.name();
   }
 
-  static String message(Exception e) {
+  static String messageOf(Exception e) {
     return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
   }
 
@@ -1719,8 +1236,8 @@ final class State {
   }
 
   void closeAll() {
-    if (dialog != null) {
-      dialog.close(this); // and what it reads, its driver's dialog's too
+    if (dialogs.dialog != null) {
+      dialogs.dialog.close(this); // and what it reads, its driver's dialog's too
     }
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);

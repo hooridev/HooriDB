@@ -411,7 +411,7 @@ final class MonitorTab implements Tab {
                 || q.failure() == QueryException.Failure.ABORTED);
   }
 
-  private void failed(State s, Exception error, CatalogTree.Live live, View of) {
+  private void failed(State s, Exception error, Live live, View of) {
     var detail = CatalogTree.words(live, detail(error));
     if (lost(error)) {
       closeSession(s);
@@ -506,7 +506,7 @@ final class MonitorTab implements Tab {
     return switch (error) {
       case QueryException e -> e.detail();
       case ConnectionException e -> e.detail();
-      default -> State.message(error);
+      default -> State.messageOf(error);
     };
   }
 
