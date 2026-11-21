@@ -135,6 +135,16 @@ public record Search(String text, Match match, boolean caseSensitive) {
     return Double.isFinite(d) && BigDecimal.valueOf(d).compareTo(number) == 0;
   }
 
+  // The most digits before the point and after it of an exact number in a column of a server's:
+  // of PostgreSQL's numeric, the widest, which refuses or misreads a number given with more.
+  private static final int EXACT_DIGITS = 131_072;
+  private static final int EXACT_SCALE = 16_383;
+
+  /** Whether a column of exact numbers can hold the number, as 1E-20000 none can. */
+  static boolean isExact(BigDecimal number) {
+    return number.scale() <= EXACT_SCALE && number.precision() - number.scale() <= EXACT_DIGITS;
+  }
+
   /** Whether a float is the number, as {@link #isDouble} says of a double. */
   static boolean isFloat(BigDecimal number) {
     float f = number.floatValue();

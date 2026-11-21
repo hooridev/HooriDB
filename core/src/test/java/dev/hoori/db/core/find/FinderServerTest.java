@@ -321,6 +321,11 @@ class FinderServerTest {
       assertEquals(
           pg ? List.of("id", "o", "w", "t", "note") : List.of("id", "t", "note"), huge.searched());
       assertTrue(huge.columns().isEmpty());
+      // Beyond any exact number's digits, the columns of numbers not searched either, as
+      // PostgreSQL would refuse the number and fail the search of the texts too.
+      assertEquals(
+          pg ? List.of("w", "t", "note") : List.of("t", "note"),
+          search(scratch, measure, "1e-20000").searched());
       assertEquals(
           List.of(new Hits.Hit("d", 1)), search(scratch, measure, "1e300").columns());
       // A domain and an enum as their text.

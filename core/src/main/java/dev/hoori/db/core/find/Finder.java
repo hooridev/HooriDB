@@ -275,13 +275,15 @@ public final class Finder {
     };
   }
 
-  // Whether a value of the column can be the number: any exact one, a binary one only where it is
-  // the number, so that no other is compared, nor one that the server cannot convert.
+  // Whether a value of the column can be the number: an exact one within the digits it can have,
+  // a binary one only where it is the number, so that no other is compared, nor one that the
+  // server cannot convert, which would fail the search of the whole table.
   private static boolean canHold(Holds holds, BigDecimal number) {
     return switch (holds) {
+      case NUMBER -> Search.isExact(number);
       case DOUBLE -> Search.isDouble(number);
       case FLOAT -> Search.isFloat(number);
-      case NUMBER, TEXT, OTHER -> true;
+      case TEXT, OTHER -> true;
     };
   }
 
