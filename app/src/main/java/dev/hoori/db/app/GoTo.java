@@ -112,23 +112,9 @@ final class GoTo {
      */
     private void database(CatalogTree.Live live, String name, Node.OfDatabase db) {
       var unknown = new Unknown();
-      var level = live.levels.get(db);
-      var kids = new ArrayList<Node>();
-      if (level instanceof CatalogTree.Read(var children)) {
-        for (var child : children) {
-          if (!(child instanceof Node.OfSchema x)) {
-            kids.add(child);
-          } else if (live.levels.get(x) instanceof CatalogTree.Read(var below)) {
-            kids.addAll(below);
-          } else if (!x.schema().system()) {
-            unknown.add(live.levels.get(x), x);
-          }
-        }
-      } else {
-        unknown.add(level, db);
-      }
-      for (var kid : kids) {
-        if (kid instanceof Node.OfTable(var _, var table)) {
+      for (var kid : known(live, db, unknown)) {
+        if (kid instanceof Node.OfTable t) {
+          var table = t.table();
           int rank = rank(table.name(), q);
           if (rank >= 0) {
             found.add(new Found(live.id(), table, where(name, table), rank, system(table)));
@@ -144,6 +130,29 @@ final class GoTo {
       if (!db.database().system() && unknown.any()) {
         notes.add(unread(live.id(), name, db, unknown));
       }
+    }
+
+    /**
+     * What the tree has read below the database: its tables, and those of its schemas that are
+     * read; what is not read goes into {@code unknown}.
+     */
+    private List<Node> known(CatalogTree.Live live, Node.OfDatabase db, Unknown unknown) {
+      var level = live.levels.get(db);
+      var kids = new ArrayList<Node>();
+      if (!(level instanceof CatalogTree.Read(var children))) {
+        unknown.add(level, db);
+        return kids;
+      }
+      for (var child : children) {
+        if (!(child instanceof Node.OfSchema x)) {
+          kids.add(child);
+        } else if (live.levels.get(x) instanceof CatalogTree.Read(var below)) {
+          kids.addAll(below);
+        } else if (!x.schema().system()) {
+          unknown.add(live.levels.get(x), x);
+        }
+      }
+      return kids;
     }
 
     /** The note of a database not read: choosing it reads it, and the palette stays open. */
@@ -174,6 +183,38 @@ final class GoTo {
       return note.key(String.join("\0", id.toString(), database)).keepsOpen(true);
     }
 
+    private static boolean failed(CatalogTree.Level level) {
+      return level instanceof CatalogTree.NotRead || level instanceof CatalogTree.NotOpened;
+    }
+
+    /** A row below the tables about a database whose tables are not known. */
+    private static FilterList.Entry note(
+        String what, String detail, Color color, boolean waits, Runnable read) {
+      return FilterList.entry(what, read)
+          .detail(detail)
+          .group(UNREAD)
+          .leading(() -> lead(
+              color,
+              waits
+                  ? Progress.spinner().label("Reading")
+                  : Icon.icon(Symbol.DATABASE, Icon.Variant.MUTED)));
+    }
+
+    /** Where the table is: its connection, database and schema. */
+    private static String where(String connection, Table table) {
+      return switch (table.container()) {
+        case Database d -> connection + " · " + d.name();
+        case Schema x -> connection + " · " + x.database().name() + " · " + x.name();
+      };
+    }
+
+    private static boolean system(Table table) {
+      return switch (table.container()) {
+        case Database d -> d.system();
+        case Schema x -> x.system();
+      };
+    }
+
     /** What keeps a database's tables from being known: a read, none yet, or the first failure. */
     private final class Unknown {
       boolean reading;
@@ -192,23 +233,6 @@ final class GoTo {
         return reading || unread || failed != null;
       }
     }
-  }
-
-  private static boolean failed(CatalogTree.Level level) {
-    return level instanceof CatalogTree.NotRead || level instanceof CatalogTree.NotOpened;
-  }
-
-  /** A row below the tables about a database whose tables are not known. */
-  private static FilterList.Entry note(
-      String what, String detail, Color color, boolean waits, Runnable read) {
-    return FilterList.entry(what, read)
-        .detail(detail)
-        .group(UNREAD)
-        .leading(() -> lead(
-            color,
-            waits
-                ? Progress.spinner().label("Reading")
-                : Icon.icon(Symbol.DATABASE, Icon.Variant.MUTED)));
   }
 
   private static El lead(Color color, El icon) {
@@ -241,14 +265,6 @@ final class GoTo {
     return (p.user().isBlank() ? "" : p.user() + "@") + p.host() + (p.srv() ? "" : ":" + p.port());
   }
 
-  /** Where the table is: its connection, database and schema. */
-  private static String where(String connection, Table table) {
-    return switch (table.container()) {
-      case Database d -> connection + " · " + d.name();
-      case Schema x -> connection + " · " + x.database().name() + " · " + x.name();
-    };
-  }
-
   /** What tells the table from every other: its connection, database, schema and name. */
   private static String key(UUID id, Table table) {
     var path = switch (table.container()) {
@@ -256,13 +272,6 @@ final class GoTo {
       case Schema x -> List.of(x.database().name(), x.name());
     };
     return id + "\0" + String.join("\0", path) + "\0" + table.name();
-  }
-
-  private static boolean system(Table table) {
-    return switch (table.container()) {
-      case Database d -> d.system();
-      case Schema x -> x.system();
-    };
   }
 
   /**

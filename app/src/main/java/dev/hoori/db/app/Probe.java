@@ -185,8 +185,8 @@ final class Probe {
   private void tested(Done done) {
     work = null;
     step = done;
-    if (done.result() instanceof Tester.Refused(var failure, var detail)) {
-      switch (failure) {
+    if (done.result() instanceof Tester.Refused r) {
+      switch (r.failure()) {
         case CANCELLED -> step = null;
         case UNFIT -> dialog.triedToSave = true; // the fields say why, as for Save
         default -> {
