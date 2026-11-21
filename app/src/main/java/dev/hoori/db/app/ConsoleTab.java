@@ -2,33 +2,19 @@ package dev.hoori.db.app;
 
 import static com.rethinkj.ui.El.col;
 import static com.rethinkj.ui.El.row;
-import static com.rethinkj.ui.kit.Button.Variant.PRIMARY;
-import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
-import static com.rethinkj.ui.kit.Button.button;
 import static dev.hoori.db.app.Session.failure;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Highlighter;
 import com.rethinkj.ui.Key;
-import com.rethinkj.ui.Style;
-import com.rethinkj.ui.kit.Badge;
-import com.rethinkj.ui.kit.Button;
-import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.DataGrid;
-import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Divider;
-import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
-import com.rethinkj.ui.kit.Progress;
-import com.rethinkj.ui.kit.Segmented;
-import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Split;
-import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
-import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.sql.Sql;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
@@ -56,7 +42,6 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -217,6 +202,7 @@ final class ConsoleTab implements Tab {
   final CodeEditor.State editor = new CodeEditor.State();
   final ConsoleEditor help = new ConsoleEditor(this); // the error's place, completions
   private final ResultsArea area = new ResultsArea(this);
+  private final ConsoleView ui = new ConsoleView(this);
   Split.Position split = FIRST_SPLIT;
   final Menu.State databases = new Menu.State();
   private Lane lane; // the session, or null until it is needed
@@ -231,8 +217,8 @@ final class ConsoleTab implements Tab {
   private AtomicReference<Servers.Run> sent = new AtomicReference<>();
   private Output reading; // the result whose rows it has
   private final ArrayDeque<String> queue = new ArrayDeque<>(); // the run's statements still to run
-  private Asking work; // the statement, the rows or the switch under way, or null
-  private String running; // the statement under way, or the one whose rows are read
+  Asking work; // the statement, the rows or the switch under way, or null
+  String running; // the statement under way, or the one whose rows are read
   // The shell's statement under way as it was read once, on taking it from the queue; null for SQL.
   private Script.Parsed parsed;
   boolean waiting; // for the tree's connection, which the session is opened from
@@ -266,16 +252,16 @@ final class ConsoleTab implements Tab {
   int inTransaction; // the user's statements run in it
   // What is open is the server's own, begun as the user's Commit or Rollback ended theirs, as with
   // MySQL's completion_type=1: no statement ran in it, and it holds nothing.
-  private boolean empty;
-  private boolean firm; // the call is Commit, Rollback or a switch of auto-commit: none stops it
+  boolean empty;
+  boolean firm; // the call is Commit, Rollback or a switch of auto-commit: none stops it
   // The call under way may change data or the transaction: a statement not on the read list, read
   // to its end, or Commit, Rollback, a switch of auto-commit or of the database. Cut short or
   // lost, what it did is not known.
-  private boolean writes;
-  private boolean overdue; // the Commit, Rollback or switch under way has not answered for long
+  boolean writes;
+  boolean overdue; // the Commit, Rollback or switch under way has not answered for long
   private int firms; // counted, so that a late patience is dropped
   // The last Commit or Rollback failed, the connection still there: ending it is a way out.
-  private boolean endFailed;
+  boolean endFailed;
   // The call is a plain read ({@link #reads}): read whole in a transaction, and at stake while it
   // runs there, but what it did, cut short, is the transaction's, which the server says.
   private boolean plain;
@@ -1603,7 +1589,7 @@ final class ConsoleTab implements Tab {
   }
 
   /** Whether the call under way may change data or the transaction beyond a plain read. */
-  private boolean changes() {
+  boolean changes() {
     return writes && !plain;
   }
 
@@ -1788,7 +1774,7 @@ final class ConsoleTab implements Tab {
   }
 
   /** The act that waits for this console's question, or null. */
-  private State.Pending asked(State s) {
+  State.Pending asked(State s) {
     var pending = s.pending;
     return pending != null && !pending.armed() && pending.console() == this ? pending : null;
   }
@@ -1952,7 +1938,7 @@ final class ConsoleTab implements Tab {
     var provider = profile.provider();
     El top =
         // Without the provider's name, which the tree says: Commit and Rollback need its room.
-        Card.toolbar(State.name(profile), null, actions(s, provider).toArray(El[]::new));
+        Card.toolbar(State.name(profile), null, ui.actions(s, provider).toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     El code = editor(s, app, provider);
     El panes = Split.split(
@@ -1968,163 +1954,11 @@ final class ConsoleTab implements Tab {
     return col()
         .grow(1)
         .minSize(0, 0)
-        .onKey(keys(s))
+        .onKey(ui.keys(s))
         .child(top)
         .child(line == null ? Divider.divider() : line)
         .child(panes)
-        .child(footer(s));
-  }
-
-  /** Keys go up from the focused element: these work from the editor and from the grids. */
-  private Predicate<Key> keys(State s) {
-    return key -> {
-      if (key.modifiers() != (Key.CONTROL | Key.SHIFT)) {
-        return false;
-      }
-      switch (key.name()) {
-        case "C" -> commitTransaction(s);
-        case "R" -> rollBackTransaction(s);
-        default -> {
-          return false;
-        }
-      }
-      return true;
-    };
-  }
-
-  /** The toolbar's actions: the database, the transaction's, the runs' and the statements kept. */
-  private List<El> actions(State s, Provider provider) {
-    boolean busy = busy();
-    var locked = s.locked(this);
-    var actions = new ArrayList<El>();
-    actions.add(databases(s));
-    // Off where Manual cannot be made sure of, which its tooltip and a note say.
-    boolean switchable = !busy && locked == null && unavailable == null;
-    // A server of documents commits each command by itself, and has no Manual to offer.
-    if (!provider.keepsDocuments()) {
-      actions.add(modes(s, switchable));
-    }
-    if (mode == Mode.MANUAL || transaction != Transaction.NONE) {
-      actions.add(commitButton(s));
-      actions.add(rollbackButton(s));
-    }
-    actions.addAll(runs(s, busy, locked));
-    actions.addAll(kept(s));
-    return actions;
-  }
-
-  /** Auto or Manual, with what each does, or why Manual is unavailable. */
-  private El modes(State s, boolean switchable) {
-    return Tooltip.tooltip(
-        Segmented.segmented(
-                List.of(Mode.values()),
-                mode,
-                m -> m.title,
-                switchable ? m -> switchMode(s, m) : null)
-            .key("mode")
-            .label("Transactions"),
-        unavailable == null
-            ? "Auto commits each statement by itself; in Manual, Commit or Rollback ends the"
-                + " transaction"
-            : "Manual is unavailable: " + unavailable);
-  }
-
-  private El commitButton(State s) {
-    return Tooltip.tooltip(
-        button(
-                SECONDARY,
-                "Commit",
-                canCommit() ? () -> commitTransaction(s) : null,
-                Button.options().icon(Symbol.CHECKMARK).state(busyWith(COMMIT)))
-            .key("commit")
-            .keepFocus(),
-        "Commit (Control+Shift+C)");
-  }
-
-  private El rollbackButton(State s) {
-    return Tooltip.tooltip(
-        button(
-                SECONDARY,
-                ROLLBACK_BUTTON,
-                canRollback() ? () -> rollBackTransaction(s) : null,
-                Button.options().icon(Symbol.ARROW_UNDO).state(busyWith(ROLLBACK)))
-            .key("rollback")
-            .keepFocus(),
-        "Roll back (Control+Shift+R)");
-  }
-
-  /** Busy while Commit's or Rollback's own statement runs. */
-  private Button.State busyWith(String sql) {
-    return firm && sql.equals(running) ? Button.State.BUSY : Button.State.READY;
-  }
-
-  /** Run, Run all and Cancel. */
-  private List<El> runs(State s, boolean busy, String locked) {
-    return List.of(
-        button(
-                PRIMARY,
-                "Run",
-                firm || locked != null ? null : () -> run(s),
-                Button.options()
-                    .icon(Symbol.PLAY)
-                    // Off, not busy, while a change of its connection is saved or deleted.
-                    .state(
-                        working() && !firm && locked == null
-                            ? Button.State.BUSY
-                            : Button.State.READY))
-            .key("run")
-            .keepFocus(),
-        button(SECONDARY, "Run all", busy || locked != null ? null : () -> runAll(s))
-            .key("run-all")
-            .keepFocus(),
-        button(SECONDARY, CANCEL_BUTTON, busy && !firm ? () -> cancel(s) : null)
-            .key("cancel")
-            .keepFocus());
-  }
-
-  /** Save query, Saved queries and History. */
-  private List<El> kept(State s) {
-    return List.of(
-        Tooltip.tooltip(
-            Button.icon(
-                    Button.Variant.GHOST,
-                    Symbol.SAVE,
-                    "Save query",
-                    s.queriesUsable() ? this::saveQuery : null)
-                .key("query-save-open")
-                .keepFocus(),
-            "Save query: the selection, or else the whole text, under a name"),
-        Tooltip.tooltip(
-            Button.icon(
-                    Button.Variant.GHOST,
-                    Symbol.STAR,
-                    "Saved queries",
-                    s.queriesUsable() ? this::openQueries : null)
-                .key("queries-open")
-                .keepFocus(),
-            "Saved queries"),
-        Tooltip.tooltip(
-            Button.icon(Button.Variant.GHOST, Symbol.HISTORY, "History", this::openHistory)
-                .key("history-open")
-                .keepFocus(),
-            "History"));
-  }
-
-  /** The databases to switch to: those the tree read, and the one it is on. */
-  private El databases(State s) {
-    Theme t = Theme.CURRENT.get();
-    var names = new LinkedHashSet<String>();
-    names.add(database);
-    names.addAll(s.catalog.databases(id));
-    return Select.select(
-            List.copyOf(names),
-            database,
-            n -> n.isEmpty() ? "No database" : n,
-            databases,
-            n -> use(s, n))
-        .key("database")
-        .label("Database")
-        .w(6 * t.size().control());
+        .child(ui.footer(s));
   }
 
   private El editor(State s, App<State> app, Provider provider) {
@@ -2162,221 +1996,17 @@ final class ConsoleTab implements Tab {
     return help.editor(s, app, provider, code);
   }
 
-  /** The last run's time and rows, or that it runs. */
-  private El footer(State s) {
-    El status = runStatus(s).key("run-status");
-    El badge = badge();
-    var end = new ArrayList<El>();
-    if (said != null) {
-      end.add(Label.label(Label.Variant.MUTED, said).key("said"));
-    }
-    if (badge != null) {
-      end.add(badge);
-    }
-    return Card.footer(status, end.toArray(El[]::new));
-  }
-
-  /** That the console waits for the user's answer, what runs, or how the last run went. */
-  private El runStatus(State s) {
-    Theme t = Theme.CURRENT.get();
-    if (confirming != null) {
-      return Label.label(Label.Variant.MUTED, "Waiting for your answer");
-    }
-    if (busy()) {
-      return row()
-          .gap(t.space().s())
-          .align(Style.Align.CENTER)
-          .child(Progress.spinner().label("Running"))
-          .child(Label.label(Label.Variant.MUTED, underWay()));
-    }
-    return Label.label(Label.Variant.MUTED, status(s)).ellipsis();
-  }
-
-  /** What runs or waits, as the status line says it. */
-  private String underWay() {
-    if (waiting) {
-      return "Connecting…";
-    }
-    if (switching != null) {
-      return "Switching to " + (switching.isEmpty() ? "no database" : switching) + "…";
-    }
-    if (!firm) {
-      return writes ? "Running; rows show once all are read…" : "Running…";
-    }
-    if (COMMIT.equals(running)) {
-      return "Committing…";
-    }
-    return ROLLBACK.equals(running) ? "Rolling back…" : "Switching auto-commit…";
-  }
-
-  /** The transaction, as the server last said it; in Auto none while none is open. */
-  private El badge() {
-    var o = Badge.options().toolbar();
-    if (doubt != null) {
-      o.kind(Badge.Kind.DANGER).strong().icon(Symbol.ERROR_CIRCLE);
-      return Badge.badge("Outcome not known", o).key("transaction");
-    }
-    String label = switch (transaction) {
-      case NONE -> {
-        o.kind(Badge.Kind.NEUTRAL);
-        yield mode == Mode.MANUAL ? "No transaction" : null;
-      }
-      case OPEN -> {
-        if (empty) {
-          o.kind(Badge.Kind.NEUTRAL);
-          yield "Transaction open · empty";
-        }
-        o.kind(Badge.Kind.WARNING).strong().icon(Symbol.LOCK_OPEN);
-        yield "Transaction open" + (inTransaction > 0 ? " · " + counted(inTransaction) : "");
-      }
-      case FAILED -> {
-        o.kind(Badge.Kind.DANGER).strong().icon(Symbol.ERROR_CIRCLE);
-        yield "Transaction failed";
-      }
-      case UNKNOWN -> {
-        o.kind(Badge.Kind.WARNING).icon(Symbol.LOCK_OPEN);
-        yield "Transaction may be open";
-      }
-    };
-    return label == null ? null : Badge.badge(label, o).key("transaction");
-  }
-
-  /** How many statements, as "1 statement" or "3 statements". */
-  private static String counted(int statements) {
-    return statements + (statements == 1 ? " statement" : " statements");
-  }
-
-  /** What the question about what may be open says, and the buttons it adds to Cancel. */
-  private record Wording(String title, String text, List<El> buttons) {}
-
   /**
-   * The question about what may be open, while it is asked; in the console's window. What it
-   * offers follows what is known: Commit only where the server said a transaction is open,
-   * Rollback where anything may be, and while Commit or Rollback runs nothing but waiting.
+   * The question about what may be open, while it is asked; in the console's window ({@link
+   * ConsoleView#question}).
    */
   El question(State s) {
-    Theme t = Theme.CURRENT.get();
-    var asked = asked(s);
-    if (asked == null) {
-      return null;
-    }
-    var buttons = new ArrayList<El>();
-    buttons.add(button(SECONDARY, CANCEL_BUTTON, () -> answer(s, null)).key("answer-cancel"));
-    boolean waits = firm || work != null && changes();
-    var wording = wording(s, s.title(this), asked.what(), waits);
-    buttons.addAll(wording.buttons());
-    var body = wording.text();
-    if (endFailed && !firm && work == null && doubt == null) {
-      body += " Or end the connection: it is closed, and the server rolls back what was not"
-          + " committed.";
-      buttons.add(1, endIt(s));
-    }
-    El content = col()
-        .w(ConnectionDialog.width())
-        .gap(t.space().m())
-        .child(Label.label(body).wrapText())
-        .child(
-            waits && doubt == null
-                ? row()
-                    .gap(t.space().s())
-                    .align(Style.Align.CENTER)
-                    .child(Progress.spinner().label("Waiting"))
-                    .child(Label.label(Label.Variant.MUTED, "Waiting for the server…"))
-                : null)
-        // Why the last Commit or Rollback did not end it, where it did not.
-        .child(
-            problem == null || waits || doubt != null
-                ? null
-                : Callout.callout(Callout.Kind.DANGER, problem.title(), problem.text())
-                    .key("question-problem"));
-    return Dialog.dialog(wording.title(), content, buttons, () -> answer(s, null))
-        .key("transaction-question");
+    return ui.question(s);
   }
 
-  /** What the question says on the console {@code name} before the act {@code before}. */
-  private Wording wording(State s, String name, String before, boolean waits) {
-    if (doubt != null) {
-      return new Wording(
-          UNSURE,
-          "On " + name + ", " + doubt + " Go on, and " + before + "?",
-          List.of(button(PRIMARY, "Continue", () -> answer(s, CONTINUE)).key("answer-continue")));
-    }
-    if (firm) {
-      return waitingForEnd(s, name, before);
-    }
-    if (waits) {
-      // What it promises nothing of: no Rollback, which could not say what it undid.
-      return new Wording(
-          "Waiting for " + brief(running),
-          brief(running) + " still runs on " + name + ". Wait: once it has ended with nothing"
-              + " left open, " + before + ". Or go on now: the connection ends, the server rolls"
-              + " back what was not committed, and what it did with this statement will not be"
-              + " known.",
-          List.of(button(
-                  SECONDARY,
-                  "Go on now",
-                  () -> answer(s, GO_ON),
-                  Button.options().tone(Button.Tone.DANGER))
-              .key("answer-go-on")));
-    }
-    if (work != null) {
-      return rollBackFirst(
-          s,
-          "A statement still runs on " + name + ", and a transaction may be open. Roll back,"
-              + " which cancels the statement, or wait: once it has ended with nothing open, "
-              + before + ".");
-    }
-    if (transaction == Transaction.FAILED) {
-      return rollBackFirst(
-          s,
-          "The transaction of " + name + " failed: the server takes nothing more in it but a"
-              + " rollback. Roll it back before " + before + ".");
-    }
-    if (!canCommit()) {
-      return rollBackFirst(
-          s,
-          "A transaction may be open on " + name + ": the server has not said. Roll it back"
-              + " before " + before + ".");
-    }
-    // A transaction is open, which is not to say that anything in it changed.
-    return new Wording(
-        "Commit the transaction?",
-        name + " has a transaction open"
-            + (inTransaction > 0 ? ", after " + counted(inTransaction) : "")
-            + ". Commit it or roll it back before " + before + ".",
-        List.of(
-            button(SECONDARY, ROLLBACK_BUTTON, () -> answer(s, ROLLBACK)).key("answer-rollback"),
-            button(PRIMARY, "Commit", () -> answer(s, COMMIT)).key("answer-commit")));
-  }
-
-  /** Commit, Rollback or a switch of auto-commit runs: the question waits for it. */
-  private Wording waitingForEnd(State s, String name, String before) {
-    String title;
-    if (COMMIT.equals(running)) {
-      title = "Waiting for the commit";
-    } else if (ROLLBACK.equals(running)) {
-      title = "Waiting for the rollback";
-    } else {
-      title = "Waiting for the server";
-    }
-    var body = name + " waits for the server's answer. Once nothing is left open, " + before + ".";
-    if (!overdue) {
-      return new Wording(title, body, List.of());
-    }
-    return new Wording(
-        title,
-        body + " It has not answered for a while. Or end the connection now: it is closed, the"
-            + " server rolls back what was not committed, and what this did is not known.",
-        List.of(endIt(s)));
-  }
-
-  /** The question that offers Rollback alone, with Cancel. */
-  private Wording rollBackFirst(State s, String text) {
-    return new Wording(
-        ROLL_BACK_FIRST,
-        text,
-        List.of(
-            button(PRIMARY, ROLLBACK_BUTTON, () -> answer(s, ROLLBACK)).key("answer-rollback")));
+  /** What is asked before a statement is sent, while it is; in the console's window. */
+  El confirmation(State s) {
+    return ui.confirmation(s);
   }
 
   /** Run anyway: the statement asked about is sent, through the gate again. */
@@ -2527,42 +2157,11 @@ final class ConsoleTab implements Tab {
     return new Ending(terminator, sql.length() + terminator.length());
   }
 
-  /** What is asked before a statement is sent, while it is; in the console's window. */
-  El confirmation(State s) {
-    Theme t = Theme.CURRENT.get();
-    var asked = confirming;
-    if (asked == null) {
-      return null;
-    }
-    var options = asked.danger() ? Button.options().tone(Button.Tone.DANGER) : Button.options();
-    return Dialog.dialog(
-            asked.title(),
-            col()
-                .w(ConnectionDialog.width())
-                .gap(t.space().m())
-                .child(Label.label(asked.text()).wrapText()),
-            List.of(
-                button(SECONDARY, CANCEL_BUTTON, this::decline).key("confirm-cancel"),
-                button(PRIMARY, "Run anyway", () -> proceed(s), options).key("confirm-run")),
-            this::decline)
-        .key("run-question");
-  }
-
-  /** The way out where the server does not answer, or its answer keeps failing. */
-  private El endIt(State s) {
-    return button(
-            SECONDARY,
-            "End the connection",
-            () -> answer(s, GO_ON),
-            Button.options().tone(Button.Tone.DANGER))
-        .key("answer-go-on");
-  }
-
   /**
    * "Ran in 12 ms · 3 rows": the last run's time on the server, and its rows; "Not connected"
    * while neither the console nor the tree is, and "Ready" before the first run.
    */
-  private String status(State s) {
+  String status(State s) {
     var status = !connected() && !s.catalog.connected(id) ? "Not connected" : ran(s);
     // shortcut: Manual reads every result whole before showing it, as it may not stay open in a
     // transaction; read lazily in Manual too once giving up a read can keep the transaction.
@@ -2570,6 +2169,11 @@ final class ConsoleTab implements Tab {
   }
 
   static final String WHOLE = "Manual reads each result whole";
+
+  /** How many statements, as "1 statement" or "3 statements". */
+  static String counted(int statements) {
+    return statements + (statements == 1 ? " statement" : " statements");
+  }
 
   private String ran(State s) {
     if (took == null || statements == 0 && !cancelled && !failedRun) {
