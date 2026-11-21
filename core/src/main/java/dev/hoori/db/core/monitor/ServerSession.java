@@ -10,8 +10,12 @@ import java.util.Objects;
  *
  * @param id the server's own id of the session, as its users know it: PostgreSQL's process id,
  *     MariaDB's and MySQL's thread id, MongoDB's connection id
- * @param operation the id by which what it runs is cancelled; empty while it runs nothing that can
- *     be
+ * @param operation what names what it runs, by which it is cancelled: PostgreSQL's start of the
+ *     statement, which names it together with the id and {@code started}, MariaDB's and MySQL's
+ *     thread id, MongoDB's operation id; empty while it runs nothing that can be cancelled
+ * @param started when the session started, in the server's words, by which an action checks that
+ *     the id still names this session, as PostgreSQL reuses its process ids; empty where the
+ *     server does not tell or never reuses an id
  * @param own whether it is the monitor's own session, which reads the list
  * @param endable whether the server can end it from another session
  * @param user the user it is logged in as
@@ -27,6 +31,7 @@ import java.util.Objects;
 public record ServerSession(
     String id,
     String operation,
+    String started,
     boolean own,
     boolean endable,
     String user,
@@ -40,6 +45,7 @@ public record ServerSession(
   public ServerSession {
     Objects.requireNonNull(id, "id");
     operation = text(operation);
+    started = text(started);
     user = text(user);
     client = text(client);
     database = text(database);
@@ -61,7 +67,8 @@ public record ServerSession(
   /** The same session with this statement. */
   public ServerSession withStatement(String statement) {
     return new ServerSession(
-        id, operation, own, endable, user, client, database, state, statement, elapsed, waiting);
+        id, operation, started, own, endable, user, client, database, state, statement, elapsed,
+        waiting);
   }
 
   /**

@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -46,7 +47,12 @@ class MonitorServerTest {
         assertFalse(found.client().isEmpty(), found.toString());
         assertTrue(found.cancellable(), found.toString());
         assertTrue(found.ends());
-        assertEquals(found.id(), found.operation());
+        // PostgreSQL names the statement by its start, the others by the thread's id.
+        assertEquals(
+            provider == Provider.POSTGRESQL,
+            !found.operation().equals(found.id()),
+            found.toString());
+        assertEquals(provider == Provider.POSTGRESQL, !found.started().isEmpty(), found.toString());
         assertNotNull(found.elapsed());
         // Its credential is masked; the rest of its statement shows.
         assertFalse(found.statement().contains("Pw-secret"), found.statement());
@@ -120,6 +126,45 @@ class MonitorServerTest {
       assertFalse(monitor.end(found));
       assertThrows(QueryException.class, () -> id(other, provider));
     }
+  }
+
+  @Test
+  void postgreSqlActsOnlyOnTheSessionAndStatementAsRead() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var server = TestServer.of(provider);
+    var mark = "m" + UUID.randomUUID().toString().replace("-", "");
+    try (var connection = open(server);
+        var other = open(server)) {
+      var monitor = new SqlMonitor(connection, provider);
+      var sleeping = sleep(other, provider, mark, 30);
+      try {
+        var found = waitFor(monitor, mark);
+        // Another statement since, and another session of the same id.
+        assertFalse(monitor.cancel(with(found, found.started(), "2000-01-01 00:00:00+00")));
+        assertFalse(monitor.end(with(found, "2000-01-01 00:00:00+00", found.operation())));
+        assertFalse(other.isClosed());
+        assertFalse(sleeping.isDone());
+        assertTrue(monitor.cancel(found));
+      } finally {
+        sleeping.cancel(true);
+      }
+    }
+  }
+
+  private static ServerSession with(ServerSession s, String started, String operation) {
+    return new ServerSession(
+        s.id(),
+        operation,
+        started,
+        s.own(),
+        s.endable(),
+        s.user(),
+        s.client(),
+        s.database(),
+        s.state(),
+        s.statement(),
+        s.elapsed(),
+        s.waiting());
   }
 
   @ParameterizedTest

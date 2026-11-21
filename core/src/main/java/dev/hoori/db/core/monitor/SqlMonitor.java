@@ -2,6 +2,7 @@ package dev.hoori.db.core.monitor;
 
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.dialect.ErrorDialect.Condition;
+import dev.hoori.db.core.dialect.MonitorDialect;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -31,7 +32,7 @@ public record SqlMonitor(Connection connection, Provider provider) implements Mo
     if (!session.cancellable()) {
       throw new IllegalArgumentException("Session " + session.id() + " runs nothing to cancel");
     }
-    return stop(provider.dialect().monitor().cancel(session.operation()));
+    return stop(provider.dialect().monitor().cancel(session));
   }
 
   @Override
@@ -39,7 +40,7 @@ public record SqlMonitor(Connection connection, Provider provider) implements Mo
     if (!session.ends()) {
       throw new IllegalArgumentException("Session " + session.id() + " cannot be ended here");
     }
-    return stop(provider.dialect().monitor().end(session.id()));
+    return stop(provider.dialect().monitor().end(session));
   }
 
   /** By the first of the dialect's queries that the server answers. */
@@ -101,10 +102,13 @@ public record SqlMonitor(Connection connection, Provider provider) implements Mo
   }
 
   // Runs the statement that stops a session: whether the server found it, by its row where it
-  // gives one, else by whether it failed as a session that is not there.
-  private boolean stop(String sql) throws QueryException {
+  // gives one, none where it gives none, else by whether it failed as a session that is not there.
+  private boolean stop(MonitorDialect.Stop stop) throws QueryException {
     try {
-      return Query.run(connection, provider, sql, statement -> {
+      return Query.run(connection, provider, stop.sql(), statement -> {
+        for (int i = 0; i < stop.values().size(); i++) {
+          statement.setString(i + 1, stop.values().get(i));
+        }
         if (!statement.execute()) {
           return true;
         }

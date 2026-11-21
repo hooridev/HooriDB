@@ -45,10 +45,13 @@ public final class Credentials {
     var openings = provider.keepsDocuments()
         ? List.<String>of()
         : provider.dialect().syntax().executableComments();
-    // The code where it stands, with its white space, and blanks in place of all else.
+    // The code where it stands, with its white space, and blanks in place of all else. A quoted
+    // name counts as code, as an option may be named "password".
     var code = new StringBuilder(sql);
     for (var piece : pieces) {
-      if (piece.kind() != Statements.Piece.Kind.CODE && !executes(sql, piece, openings)) {
+      if (piece.kind() != Statements.Piece.Kind.CODE
+          && piece.kind() != Statements.Piece.Kind.QUOTED
+          && !executes(sql, piece, openings)) {
         for (int i = piece.start(); i < piece.end(); i++) {
           code.setCharAt(i, ' ');
         }

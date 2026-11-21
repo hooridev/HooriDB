@@ -699,7 +699,8 @@ public final class PostgreSql implements Dialect {
           + " a.state, a.query,"
           + " EXTRACT(EPOCH FROM pg_catalog.clock_timestamp() OPERATOR(pg_catalog.-)"
           + " a.state_change),"
-          + " a.wait_event_type, a.wait_event"
+          + " a.wait_event_type, a.wait_event,"
+          + " a.backend_start::pg_catalog.text, a.query_start::pg_catalog.text"
           + " FROM pg_catalog.pg_stat_activity a"
           + " WHERE a.backend_type" + EQ + "'client backend' ORDER BY a.pid";
     }
@@ -714,7 +715,8 @@ public final class PostgreSql implements Dialect {
       boolean runs = state.equals("active") || state.startsWith("fastpath");
       return new ServerSession(
           pid,
-          runs ? pid : "",
+          runs ? MonitorRows.text(row, 14) : "",
+          MonitorRows.text(row, 13),
           own,
           true,
           MonitorRows.text(row, 3),
@@ -723,18 +725,36 @@ public final class PostgreSql implements Dialect {
           state,
           MonitorRows.text(row, 9),
           MonitorRows.seconds(row, 10),
-          MonitorRows.joined(": ", MonitorRows.text(row, 11), MonitorRows.text(row, 12)));
+          // An idle session waits for its client, which says nothing of what it does.
+          runs
+              ? MonitorRows.joined(": ", MonitorRows.text(row, 11), MonitorRows.text(row, 12))
+              : "");
     }
 
-    // A process id that is gone gives false, with a warning.
+    // The process id names the session only with its start, as the server uses ids again, and
+    // what it runs only with the statement's start: a session that is gone or runs another gives
+    // no row. The times are compared as the sessions' query wrote them, on the same connection.
     @Override
-    public String cancel(String operation) {
-      return "SELECT pg_catalog.pg_cancel_backend(" + Integer.parseInt(operation) + ")";
+    public Stop cancel(ServerSession session) {
+      return new Stop(
+          "SELECT pg_catalog.pg_cancel_backend(a.pid)" + same(session)
+              + " AND a.query_start::pg_catalog.text" + EQ + "?",
+          session.started().isEmpty()
+              ? List.of(session.operation())
+              : List.of(session.started(), session.operation()));
     }
 
     @Override
-    public String end(String id) {
-      return "SELECT pg_catalog.pg_terminate_backend(" + Integer.parseInt(id) + ")";
+    public Stop end(ServerSession session) {
+      return new Stop(
+          "SELECT pg_catalog.pg_terminate_backend(a.pid)" + same(session),
+          session.started().isEmpty() ? List.of() : List.of(session.started()));
+    }
+
+    // The session of the id, and of its start where the read could see it.
+    private static String same(ServerSession session) {
+      return " FROM pg_catalog.pg_stat_activity a WHERE a.pid" + EQ + Integer.parseInt(session.id())
+          + (session.started().isEmpty() ? "" : " AND a.backend_start::pg_catalog.text" + EQ + "?");
     }
 
     // The value as SHOW writes it, with its unit.
@@ -778,7 +798,8 @@ public final class PostgreSql implements Dialect {
           + " CROSS JOIN LATERAL (VALUES " + rows + ") v (name, n, value) ORDER BY v.n";
     }
 
-    // Each session that waits, beside each that blocks it, with the lock it waits for. A relation
+    // Each session that waits for a lock, beside each that blocks it, with the lock it waits for;
+    // pg_blocking_pids() is costly, so only those that wait for a lock ask it. A relation
     // has its name only in its own database, or where it is shared; in another, its database and
     // number. An advisory lock is told by its keys.
     @Override
@@ -795,7 +816,8 @@ public final class PostgreSql implements Dialect {
           + " l.objid::pg_catalog.text, l.objsubid::pg_catalog.text)"
           + " ELSE pg_catalog.concat_ws(' ', l.locktype, l.transactionid::pg_catalog.text) END,"
           + " l.mode"
-          + " FROM pg_catalog.pg_stat_activity a"
+          + " FROM (SELECT w.pid FROM pg_catalog.pg_stat_activity w"
+          + " WHERE w.wait_event_type" + EQ + "'Lock') a"
           + " CROSS JOIN LATERAL pg_catalog.unnest(pg_catalog.pg_blocking_pids(a.pid)) b (pid)"
           + " LEFT JOIN pg_catalog.pg_locks l ON l.pid" + EQ + "a.pid AND NOT l.granted"
           + " LEFT JOIN pg_catalog.pg_database o ON o.oid" + EQ + "l.database"
