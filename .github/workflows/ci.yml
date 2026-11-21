@@ -92,7 +92,7 @@ jobs:
       fail-fast: false
       matrix:
         # Shards are bought after cores: fewer, fuller ones, as long as they fit the budget.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     env:
       # The test classes to run, all of them or a comma list, split over the shards.
       TESTS: all
@@ -109,6 +109,7 @@ jobs:
           REF: ${{ github.event_name == 'workflow_dispatch' && github.ref || 'refs/heads/main' }}
         run: |
           echo "STARTED=$(date +%s.%N)" >> "$GITHUB_ENV"
+          nohup vmstat -n -t 1 > "$RUNNER_TEMP/vmstat.log" 2>&1 &  # MEASURE
           (
             set -eo pipefail
             api() { curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/$1"; }
@@ -196,6 +197,7 @@ jobs:
       - if: always()
         run: |
           cat "$RUNNER_TEMP/pull.log" 2>/dev/null || true
+          awk 'NR > 2 { n++; us += $13; sy += $14; id += $15; wa += $16; if ($15 < 5) busy++ } END { printf "MEASURE cpu: %d s, us %.0f sy %.0f id %.0f wa %.0f, %d s under 5%% idle\n", n, us/n, sy/n, id/n, wa/n, busy }' "$RUNNER_TEMP/vmstat.log" || true
           failed=0
           # The tests' own time: the sum of their classes' times in the reports.
           python3 .github/ci.py budget tests "$(python3 .github/ci.py times | jq 'add // 0')" 30 || failed=1
