@@ -95,49 +95,58 @@ def discover(root):
     return classes, servers, modules
 
 
-def spread(classes, seconds, n):
-    """Greedy, longest first, onto the least loaded of n shards; ties go by name and by shard."""
-    slices, loads = [[] for _ in range(n)], [0.0] * n
+def spread(classes, seconds, n, servers=frozenset(), start=0.0):
+    """Greedy, longest first, onto the shard of n that it ends least loaded on, counting the start
+    of the servers where it is the shard's first class to use them; ties go by name and shard."""
+    slices, loads, started = [[] for _ in range(n)], [0.0] * n, set()
+
+    def cost(c, k):
+        return seconds[c] + (start if c in servers and k not in started else 0.0)
+
     for c in sorted(classes, key=lambda c: (-seconds[c], c)):
-        k = min(range(n), key=lambda k: (loads[k], k))
+        k = min(range(n), key=lambda k: (loads[k] + cost(c, k), k))
+        loads[k] += cost(c, k)
         slices[k].append(c)
-        loads[k] += seconds[c]
+        if c in servers:
+            started.add(k)
     return slices
 
 
 def partition(classes, times, shards, servers=frozenset(), modules=None, forks=1):
-    """Shards of one module each, either all with servers or all without, so that a shard builds
-    only its module and starts servers only for classes that use them. Each group of classes gets
-    the number of shards, at least one, that lets the slowest shard end first, and then costs the
+    """Shards of one module each, so that a shard builds only its module. Each module gets the
+    number of shards, at least one, that lets the slowest shard end first, and then costs the
     fewest seconds in all. A shard takes the longest of its classes, or their seconds spread over
-    its JVMs, and what its group pays before them. Returns the groups, slices and loads."""
+    its JVMs, what its module pays before them, and the start of the servers where a class uses
+    them. Returns the module of each shard, its classes and its seconds."""
     seconds = {c: float(times.get(c, DEFAULT_SECONDS)) for c in classes}
     start = float(times.get(SERVER_START, DEFAULT_SERVER_START))
     groups = {}
     for c in sorted(classes):
-        groups.setdefault(((modules or {}).get(c, ""), c in servers), []).append(c)
+        groups.setdefault((modules or {}).get(c, ""), []).append(c)
     groups = sorted(groups.items())
     if len(groups) > shards:
-        sys.exit(f"{len(groups)} groups of classes need as many shards, not {shards}")
+        sys.exit(f"{len(groups)} modules with tests need as many shards, not {shards}")
 
-    def load(group, s):
+    def load(module, s):
         if not s:
             return 0.0
         took = max(max(seconds[c] for c in s), sum(seconds[c] for c in s) / forks)
-        return took + MODULE_START.get(group[0], 0.0) + (start if group[1] else 0.0)
+        return took + MODULE_START.get(module, 0.0) + (start if servers & set(s) else 0.0)
 
     best = None
     for cuts in itertools.combinations(range(1, shards), len(groups) - 1):
         counts = [b - a for a, b in zip((0, *cuts), (*cuts, shards))]
-        plan = [(g, s) for (g, cs), n in zip(groups, counts) for s in spread(cs, seconds, n)]
-        loads = [load(g, s) for g, s in plan]
+        plan = [
+            (m, s) for (m, cs), n in zip(groups, counts) for s in spread(cs, seconds, n, servers, start)
+        ]
+        loads = [load(m, s) for m, s in plan]
         key = (round(max(loads), 6), round(sum(loads), 6))
         if best is None or key < best[0]:
             best = (key, plan, loads)
     _, plan, loads = best
     every = [c for _, s in plan for c in s]
     assert sorted(every) == sorted(set(classes)) and len(every) == len(classes), "not a partition"
-    return [g for g, _ in plan], [sorted(s) for _, s in plan], loads
+    return [m for m, _ in plan], [sorted(s) for _, s in plan], loads
 
 
 def selected(tests, classes):
@@ -159,15 +168,17 @@ def plan(args):
     classes, servers, modules = discover(root)
     times = json.loads(pathlib.Path(args.times).read_text()) if args.times else {}
     chosen = selected(args.tests, classes)
-    groups, slices, loads = partition(chosen, times, args.shards, servers, modules, args.forks)
+    shard_modules, slices, loads = partition(
+        chosen, times, args.shards, servers, modules, args.forks
+    )
     assert sorted(c for s in slices for c in s) == sorted(chosen), "the shards miss classes"
-    for k, ((module, uses), s, load) in enumerate(zip(groups, slices, loads), 1):
-        kind = "with servers" if uses else "without servers"
+    for k, (module, s, load) in enumerate(zip(shard_modules, slices, loads), 1):
+        kind = "with servers" if servers & set(s) else "without servers"
         print(f"shard {k}: {module} {kind}, {len(s)} classes, {load:.1f} s", file=sys.stderr)
-    (module, uses), mine = groups[args.shard - 1], slices[args.shard - 1]
+    mine = slices[args.shard - 1]
     print(f"tests={','.join(mine)}")
-    print(f"module={module}")
-    print(f"servers={'true' if uses else 'false'}")
+    print(f"module={shard_modules[args.shard - 1]}")
+    print(f"servers={'true' if servers & set(mine) else 'false'}")
 
 
 def check(args):
@@ -261,13 +272,16 @@ SAMPLE = {
 
 def self_test(_):
     assert spread(list("abcde"), dict(a=5, b=4, c=3, d=3, e=5), 2) == [["a", "b"], ["e", "c", "d"]]
+    # x and y share the servers' start of 3 s on one shard rather than pay it twice.
+    t = dict(x=2, y=2, z=5)
+    assert spread(["x", "y", "z"], t, 2, {"x", "y"}, 3) == [["z"], ["x", "y"]]
     m = dict(a="core", b="core", c="core", x="app", y="app")
     t = {"a": 6, "b": 3, "c": 3, "x": 2, "y": 9, SERVER_START: 4}
-    groups, slices, loads = partition(list(m), t, 4, {"y"}, m)
-    # y alone pays the servers, b and c share a shard, and x pays app's start; e takes 5 s.
-    assert groups == [("app", False), ("app", True), ("core", False), ("core", False)], groups
-    assert slices == [["x"], ["y"], ["a"], ["b", "c"]], slices
-    assert loads == [7.0, 18.0, 6.0, 6.0], loads
+    modules, slices, loads = partition(list(m), t, 4, {"y"}, m)
+    # app pays its start, and y the servers' as well; b and c share a shard.
+    assert modules == ["app", "app", "core", "core"], modules
+    assert slices == [["y"], ["x"], ["a"], ["b", "c"]], slices
+    assert loads == [18.0, 7.0, 6.0, 6.0], loads
     # Two JVMs a shard: a and b run side by side.
     assert partition(["a", "b"], {"a": 4, "b": 4}, 1, forks=2)[2] == [4.0]
     assert partition(["b", "a"], {}, 2) == partition(["a", "b"], {}, 2), "order matters"

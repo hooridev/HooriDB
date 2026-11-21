@@ -17,9 +17,11 @@ permissions:
   actions: read
 
 # Maven's own JVM, javac in it included, compiles twice as fast on C1 alone; the tests' JVMs are
-# Surefire's forks and keep their flags.
+# Surefire's forks and keep their flags. With -U, Maven fetches Central's list of prefixes in every
+# job for its filter of requests, and Central answers 429 when many jobs ask at once (a 31 s stall
+# on 2026-11-21); with the repository cached, the filter saves nothing.
 env:
-  MAVEN_OPTS: -XX:TieredStopAtLevel=1 -XX:+UseParallelGC
+  MAVEN_OPTS: -XX:TieredStopAtLevel=1 -XX:+UseParallelGC -Daether.remoteRepositoryFilter.prefixes=false
 
 # A pull request's new commit cancels its run; the merge queue's and main's runs are never cancelled.
 concurrency:
@@ -162,6 +164,9 @@ jobs:
         env:
           SLICE: ${{ steps.plan.outputs.tests }}
           MODULE: ${{ steps.plan.outputs.module }}
+          # Each JVM starts its servers as its tests begin, beside the classes before those that
+          # use them (core's EarlyServers).
+          HOORIDB_TEST_EARLY_SERVERS: ${{ steps.plan.outputs.servers }}
         run: |
           if [ -n "$SLICE" ]; then
             mvn -B -U test -pl "$MODULE" -am -Dtest="$SLICE" -Dsurefire.failIfNoSpecifiedTests=false \
