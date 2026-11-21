@@ -28,6 +28,7 @@ import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
+import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
@@ -1098,7 +1099,11 @@ final class FakeServers implements Servers {
               "SELECT the sessions",
               Duration.ZERO,
               ""));
-          all.addAll(FakeServers.this.sessions.getOrDefault(host, List.of()));
+          // Masked as core's monitors mask them, which keeps each statement's digest.
+          var provider = servers.get(host).provider();
+          for (var session : FakeServers.this.sessions.getOrDefault(host, List.of())) {
+            all.add(session.withStatement(Credentials.mask(session.statement(), provider)));
+          }
           return all;
         }
 

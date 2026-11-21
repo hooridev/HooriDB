@@ -1,6 +1,10 @@
 package dev.hoori.db.core.monitor;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.HexFormat;
 import java.util.Objects;
 
 /**
@@ -27,6 +31,8 @@ import java.util.Objects;
  * @param elapsed how long it has been in its state, as the server measured it as it was read; null
  *     where the server does not tell
  * @param waiting what it waits for, in the server's words; empty where it waits for nothing
+ * @param digest a digest of the statement as the server told it, before any masking, so that two
+ *     statements that read alike once masked are still told apart; it keeps no credential
  */
 public record ServerSession(
     String id,
@@ -40,7 +46,38 @@ public record ServerSession(
     String state,
     String statement,
     Duration elapsed,
-    String waiting) {
+    String waiting,
+    String digest) {
+
+  /** A session whose digest is that of its statement, as the server told it. */
+  public ServerSession(
+      String id,
+      String operation,
+      String started,
+      boolean own,
+      boolean endable,
+      String user,
+      String client,
+      String database,
+      String state,
+      String statement,
+      Duration elapsed,
+      String waiting) {
+    this(
+        id,
+        operation,
+        started,
+        own,
+        endable,
+        user,
+        client,
+        database,
+        state,
+        statement,
+        elapsed,
+        waiting,
+        digest(statement));
+  }
 
   public ServerSession {
     Objects.requireNonNull(id, "id");
@@ -52,6 +89,7 @@ public record ServerSession(
     state = text(state);
     statement = text(statement);
     waiting = text(waiting);
+    digest = text(digest);
   }
 
   /** Whether what it runs can be cancelled from the monitor: not the monitor's own. */
@@ -64,11 +102,11 @@ public record ServerSession(
     return !own && endable;
   }
 
-  /** The same session with this statement. */
+  /** The same session with this statement, as masked, and the digest of the one it had. */
   public ServerSession withStatement(String statement) {
     return new ServerSession(
         id, operation, started, own, endable, user, client, database, state, statement, elapsed,
-        waiting);
+        waiting, digest);
   }
 
   /**
@@ -82,6 +120,16 @@ public record ServerSession(
       return p + a;
     }
     return p + " (" + a + ")";
+  }
+
+  private static String digest(String statement) {
+    try {
+      return HexFormat.of()
+          .formatHex(MessageDigest.getInstance("SHA-256")
+              .digest(text(statement).getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e); // every Java platform has SHA-256
+    }
   }
 
   private static String text(String value) {

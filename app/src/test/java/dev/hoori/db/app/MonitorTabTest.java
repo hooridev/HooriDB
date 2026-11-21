@@ -18,6 +18,7 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
+import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Path;
@@ -820,7 +821,10 @@ class MonitorTabTest {
         START + open("legacy") + SETTLE
             + "press role=treeitem label=\"legacy\" level=1 right\nframe\nadvance 1\nframe\n"
             + "press role=menuitem label=\"Server monitor\"\nframe\nadvance 1\nframe\n" + SETTLE);
-    c.run(app, pick(1));
+    c.run(app, pick(1) + "snap masked\n");
+    // Masked as core masks it, the statement does not show its value.
+    assertTrue(c.tree("masked").contains(Credentials.MASK), c.tree("masked"));
+    assertFalse(c.tree("masked").contains("'one'"), c.tree("masked"));
     // Another statement that reads alike once masked comes in while the question is open.
     var held = c.servers.hold(key);
     c.run(app, "advance 5\nframe\nframe\npress #cancel-statement\n" + SHOWN);
