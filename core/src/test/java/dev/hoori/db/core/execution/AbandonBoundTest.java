@@ -16,11 +16,11 @@ class AbandonBoundTest {
   @Test
   void aGiveUpWhoseDriverCallNeverReturnsEndsWithinItsBound() throws Exception {
     var stuck = new Stuck();
-    try {
+    try (var _ = new ShortEnding()) {
       var read = new Execution(stuck.connection(), Provider.POSTGRESQL, "SELECT a FROM t");
       assertTrue(read.next(10).more());
       stuck.arm();
-      var bound = Execution.ENDING.plus(Query.GRACE.multipliedBy(3));
+      var bound = ShortEnding.BOUND.plus(Query.GRACE.multipliedBy(3));
       var ended =
           CompletableFuture.supplyAsync(read::abandon).get(bound.toMillis(), TimeUnit.MILLISECONDS);
       assertEquals(Failure.Kind.CONNECTION_LOST, ended.failure().orElseThrow().kind());
@@ -37,7 +37,7 @@ class AbandonBoundTest {
   @Test
   void aGiveUpsWorkerThatWakesUpAfterItsDeadlineChangesNothing() throws Exception {
     var stuck = new Stuck();
-    try {
+    try (var _ = new ShortEnding()) {
       var read = new Execution(stuck.connection(), Provider.POSTGRESQL, "SELECT a FROM t");
       assertTrue(read.next(10).more());
       assertTrue(stuck.calls.contains("setAutoCommit(false)"), "its own transaction");

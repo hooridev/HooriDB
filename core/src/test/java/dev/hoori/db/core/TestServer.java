@@ -27,8 +27,8 @@ import org.testcontainers.utility.MountableFile;
 
 /**
  * A real database server for tests, in Docker through Testcontainers. {@link #of} gives the server
- * of a provider, started the first time any test asks for one, all three at once, and shared by
- * every test class of the run; Testcontainers removes them when the JVM ends. Without Docker, the
+ * of a provider, started the first time any test asks for one, the three of SQL at once, and
+ * shared by every test class that runs in the same JVM; Testcontainers removes them when the JVM ends. Without Docker, the
  * test that asks is skipped. Each server holds the sample schema of {@code
  * src/test/resources/sample-schema/<provider>.sql} in the database {@link #DATABASE}, and the empty
  * databases {@link #SPACED_DATABASE} and {@link #NON_ASCII_DATABASE}, all open to {@link #USER}.
@@ -36,7 +36,8 @@ import org.testcontainers.utility.MountableFile;
  *
  * <p>{@link #profile} connects to it as that user, and {@link #driver} is the provider's JDBC
  * driver, copied by Maven into {@code target/jdbc-drivers} and loaded through a {@link DriverStore}
- * the way the app loads it, never from the class path.
+ * the way the app loads it, never from the class path. Each JVM that tests run in has servers and
+ * a store of its own.
  *
  * <p>The PostgreSQL server offers no TLS, while MariaDB and MySQL offer it with the self-signed
  * certificate they make for themselves; {@link #otherTls} is a second server of the provider that
@@ -83,9 +84,10 @@ public final class TestServer {
   private static synchronized TestServer started(
       Map<Provider, TestServer> servers, Provider provider, boolean other) {
     assumeTrue(DockerClientFactory.instance().isDockerAvailable(), "Docker is not available");
-    if (servers.isEmpty()) {
+    if (!servers.containsKey(provider)) {
       var starting = new EnumMap<Provider, TestServer>(Provider.class);
-      for (var p : other ? Provider.SQL : List.of(Provider.values())) {
+      // The servers of SQL together, as most tests run on each of them; MongoDB on its own.
+      for (var p : provider.keepsDocuments() ? List.of(provider) : Provider.SQL) {
         var tls = p != Provider.POSTGRESQL && p != Provider.MONGODB;
         starting.put(p, new TestServer(p, other ? !tls : tls));
       }
@@ -154,7 +156,9 @@ public final class TestServer {
     if (version == null) {
       throw new IllegalStateException("No " + key + "; run the tests through Maven");
     }
-    var work = copied.resolveSibling("test-driver-store");
+    // A folder of its own for each JVM that tests run in, as they run at the same time.
+    var work = Path.of(System.getProperty(
+        "hooridb.test.store", copied.resolveSibling("test-driver-store").toString()));
     var repository = new FolderRepository(work.resolve("repository"));
     var artifacts = new ArrayList<String>();
     artifacts.add(driver.artifact());

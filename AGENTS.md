@@ -295,6 +295,12 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   core's `TestServer`, which comes with core's test-jar; the JDBC drivers for such tests are copied
   by the `jdbc-drivers` execution of the root POM, which a module takes by naming
   `maven-dependency-plugin`. Without Docker these tests are skipped.
+- A module's test classes run in `test.forks` JVMs at once (4, `-Dtest.forks=1` for one), in an
+  order of chance that the log's `-Dsurefire.runOrder.random.seed=` replays. Each JVM starts its
+  own servers and keeps its files under `target/` by `${surefire.forkNumber}`; a test that changes
+  static state puts it back, so that no class depends on another or on its order. A test of a
+  give-up that is never answered waits out a bound of one second, core's `ShortEnding`, in place of
+  `Execution.ENDING`.
 - Tests open no real windows and need no display, except the opt-in measurement of the performance
   budget below. Tests of `core` need neither the UI framework nor a database that is not started by
   the test itself.

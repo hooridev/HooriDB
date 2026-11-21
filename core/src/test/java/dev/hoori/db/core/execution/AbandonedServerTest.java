@@ -478,7 +478,8 @@ class AbandonedServerTest {
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aGiveUpTheServerNeverAnswersEndsWithinItsBound(Provider provider) throws Exception {
     var server = dev.hoori.db.core.TestServer.of(provider);
-    try (var relay = new dev.hoori.db.core.query.Relay(server.host(), server.port());
+    try (var _ = new ShortEnding();
+        var relay = new dev.hoori.db.core.query.Relay(server.host(), server.port());
         var connection = dev.hoori.db.core.connect.Connector.open(
                 server
                     .profile()
@@ -495,7 +496,8 @@ class AbandonedServerTest {
       var ended = read.abandon();
       var took = java.time.Duration.ofNanos(System.nanoTime() - started);
       assertTrue(
-          took.compareTo(Execution.ENDING.plus(dev.hoori.db.core.query.Query.GRACE.multipliedBy(2)))
+          took.compareTo(
+                  ShortEnding.BOUND.plus(dev.hoori.db.core.query.Query.GRACE.multipliedBy(2)))
               < 0,
           took.toString());
       assertEquals(Failure.Kind.CONNECTION_LOST, ended.failure().orElseThrow().kind());
