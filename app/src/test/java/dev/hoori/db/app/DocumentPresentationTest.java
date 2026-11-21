@@ -65,7 +65,7 @@ class DocumentPresentationTest {
     presentation.mode(DocumentPresentation.Mode.JSON);
     var valuePanel = new ValuePanel();
     var order = new ArrayList<String>();
-    var state = new State(dir, null, null, null, null, null, HooriDb.version());
+    var state = new State(dir, new Services(null, null, null, null, null), HooriDb.version());
     var app = new App<>(state, s -> {
           // ofDocuments = false forces Grid even though mode is JSON.
           var view = presentation.view(
@@ -119,7 +119,7 @@ class DocumentPresentationTest {
     var loading = new AtomicBoolean(false);
     var turns = new AtomicInteger();
 
-    var state = new State(dir, null, null, null, null, null, HooriDb.version());
+    var state = new State(dir, new Services(null, null, null, null, null), HooriDb.version());
     var app = new App<>(state, s -> {
           var view = presentation.view(
               s.app,

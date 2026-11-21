@@ -115,30 +115,19 @@ final class State {
 
   /**
    * @param folder where the workspace is kept
-   * @param keyring finds the system keyring, off the app's thread
-   * @param drivers where drivers are kept and come from, or null for none
-   * @param tester tests a connection, off the app's thread
-   * @param servers opens connections and reads their catalog, off the app's thread
-   * @param updater updates HooriDB, off the app's thread; null for none
+   * @param services what it reaches outside the app through
    * @param version the version that runs
    */
-  State(
-      Path folder,
-      Callable<Keyring> keyring,
-      Drivers drivers,
-      Tester tester,
-      Servers servers,
-      Updater updater,
-      String version) {
+  State(Path folder, Services services, String version) {
     this.store = new WorkspaceStore(folder);
     this.keeping = new Keeping(folder, this);
-    this.updates = new Updates(folder, updater, version);
+    this.updates = new Updates(folder, services.updater(), version);
     this.version = version;
-    this.findKeyring = keyring;
-    this.drivers = drivers;
-    this.tester = tester;
+    this.findKeyring = services.keyring();
+    this.drivers = services.drivers();
+    this.tester = services.tester();
     this.statements = new StatementLog(folder);
-    this.catalog = new CatalogTree(new Recorded(servers, statements));
+    this.catalog = new CatalogTree(new Recorded(services.servers(), statements));
   }
 
   /**
