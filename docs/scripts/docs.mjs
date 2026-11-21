@@ -28,8 +28,9 @@ function copy(from, to) {
 function prepare() {
   const problems = [];
   const shots = new Set();
-  const pages = [...walk(CONTENT), ...walk(path.join(DOCS, 'app'))]
-    .filter((f) => f.endsWith('.mdx') || f.endsWith('.tsx'));
+  const pages = [...walk(CONTENT), ...walk(path.join(DOCS, 'app'))].filter(
+    (f) => f.endsWith('.mdx') || f.endsWith('.tsx'),
+  );
   for (const file of pages) {
     const rel = path.relative(DOCS, file);
     const text = fs.readFileSync(file, 'utf8');
@@ -80,7 +81,10 @@ function check() {
   const ids = new Map();
   const idsOf = (file) => {
     if (!ids.has(file)) {
-      ids.set(file, new Set([...fs.readFileSync(file, 'utf8').matchAll(/\sid="([^"]+)"/g)].map((m) => m[1])));
+      ids.set(
+        file,
+        new Set([...fs.readFileSync(file, 'utf8').matchAll(/\sid="([^"]+)"/g)].map((m) => m[1])),
+      );
     }
     return ids.get(file);
   };
@@ -88,7 +92,12 @@ function check() {
   const html = walk(OUT).filter((f) => f.endsWith('.html'));
   for (const file of html) {
     const text = fs.readFileSync(file, 'utf8');
-    const page = '/' + path.relative(OUT, file).replace(/index\.html$/, '').replace(/\.html$/, '');
+    const page =
+      '/' +
+      path
+        .relative(OUT, file)
+        .replace(/index\.html$/, '')
+        .replace(/\.html$/, '');
     for (const m of text.matchAll(/\s(?:href|src)="([^"]*)"/g)) {
       const link = m[1].replaceAll('&amp;', '&');
       if (!link.startsWith('/') && !link.startsWith('#')) continue;
@@ -100,7 +109,11 @@ function check() {
         dead.push(`${page}: ${link}`);
         continue;
       }
-      if (hash && servedFile.endsWith('.html') && !idsOf(servedFile).has(decodeURIComponent(hash))) {
+      if (
+        hash &&
+        servedFile.endsWith('.html') &&
+        !idsOf(servedFile).has(decodeURIComponent(hash))
+      ) {
         dead.push(`${page}: ${link} (no #${hash} there)`);
       }
     }
@@ -112,7 +125,9 @@ function check() {
     }
   }
   if (dead.length) {
-    console.error(`docs: ${dead.length} internal link(s) lead nowhere:\n  ${[...new Set(dead)].join('\n  ')}`);
+    console.error(
+      `docs: ${dead.length} internal link(s) lead nowhere:\n  ${[...new Set(dead)].join('\n  ')}`,
+    );
     process.exit(1);
   }
   console.log(`docs: ${pages} pages as Markdown, links of ${html.length} HTML files checked`);
