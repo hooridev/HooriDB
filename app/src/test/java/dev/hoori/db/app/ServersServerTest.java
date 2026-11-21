@@ -94,15 +94,18 @@ class ServersServerTest {
   static long session(Lane lane, Provider provider) throws Exception {
     var sql =
         provider == Provider.POSTGRESQL ? "SELECT pg_backend_pid()" : "SELECT CONNECTION_ID()";
-    return ((Number) lane.submit(link -> value(link, sql)).get()).longValue();
+    return ((Number) lane.submit(link -> value(link, sql)).get(30, TimeUnit.SECONDS)).longValue();
   }
 
-  /** Waits until the session runs a statement on the server, as the watcher's session sees it. */
-  static void running(Servers.Link watcher, Provider provider, long session)
+  /**
+   * Waits until the session sleeps in a statement of {@link #sleep} on the server, as the
+   * watcher's session sees it: past the driver's BEGIN, which PostgreSQL also reports as active.
+   */
+  static void sleeping(Servers.Link watcher, Provider provider, long session)
       throws InterruptedException {
     var sql = provider == Provider.POSTGRESQL
-        ? "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND pid = " + session
-        : "SELECT count(*) FROM information_schema.processlist WHERE command = 'Query' AND id = "
+        ? "SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'PgSleep' AND pid = " + session
+        : "SELECT count(*) FROM information_schema.processlist WHERE state = 'User sleep' AND id = "
             + session;
     eventually(() -> ((Number) value(watcher, sql)).longValue() == 1);
   }
@@ -210,7 +213,7 @@ class ServersServerTest {
       long id = session(lane, provider);
       long started = System.nanoTime();
       var slow = lane.submit(link -> link.run(sleep(provider, 30)).next(10));
-      running(watcher, provider, id);
+      sleeping(watcher, provider, id);
       slow.cancel(true); // as Lane.await does when the console's work is cancelled
       var next = lane.submit(link -> value(link, "SELECT 7")).get(20, TimeUnit.SECONDS);
       assertEquals(7L, ((Number) next).longValue());
@@ -249,7 +252,7 @@ class ServersServerTest {
       });
       var watcher = open(server);
       try {
-        running(watcher, provider, id);
+        sleeping(watcher, provider, id);
       } finally {
         watcher.close();
       }
@@ -287,7 +290,7 @@ class ServersServerTest {
           ? "SELECT count(*) FROM pg_stat_activity WHERE pid = " + id
           : "SELECT count(*) FROM information_schema.processlist WHERE id = " + id;
       lane.submit(link -> link.run(sleep(provider, 30)).next(10));
-      running(watcher, provider, id);
+      sleeping(watcher, provider, id);
       assertEquals(1L, ((Number) value(watcher, sessions)).longValue());
       lane.close(); // as closing the console's tab does
       eventually(() -> ((Number) value(watcher, sessions)).longValue() == 0);
@@ -599,7 +602,7 @@ class ServersServerTest {
       mode(lane, true, false);
       statement(lane, "INSERT INTO seam_cancel VALUES (1)", ConsoleTab.Mode.MANUAL);
       var slow = lane.submit(link -> link.run(sleep(provider, 30)).next(10));
-      running(watcher, provider, id);
+      sleeping(watcher, provider, id);
       slow.cancel(true); // as the console's Cancel does
       var ended = end(lane, ConsoleTab.COMMIT);
       if (pg) {
