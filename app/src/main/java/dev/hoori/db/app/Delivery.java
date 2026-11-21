@@ -156,16 +156,26 @@ final class Delivery {
 
   private static List<Matter> matters(Portion portion, boolean plain) {
     var all = new ArrayList<Matter>();
-    var failure = Session.failure(portion);
-    if (failure != null && failure.kind() != Failure.Kind.CANCELLED) {
-      all.add(new Matter("It failed: " + failure.message(), true));
-    }
+    // The first failure that is not the cancel, as a connection lost while a cancelled read ended.
+    portion.results().stream()
+        .filter(Failure.class::isInstance)
+        .map(Failure.class::cast)
+        .filter(f -> f.kind() != Failure.Kind.CANCELLED)
+        .findFirst()
+        .ifPresent(f -> all.add(new Matter("It failed: " + said(f), true)));
     if (!plain) {
       for (var m : portion.messages()) {
         all.add(matter(m));
       }
     }
     return all;
+  }
+
+  /** A failure's words; core's own for a lost connection has none. */
+  private static String said(Failure f) {
+    return f.message().isEmpty() && f.kind() == Failure.Kind.CONNECTION_LOST
+        ? "The connection was lost."
+        : f.message();
   }
 
   /** What a notice says of a message of the server's: a rollback in part, or a warning. */
