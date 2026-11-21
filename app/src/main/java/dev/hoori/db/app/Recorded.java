@@ -13,6 +13,7 @@ import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
+import dev.hoori.db.core.execution.FileRun;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.log.Journal;
@@ -242,6 +243,11 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     // Not logged yet: what the monitor sends runs outside the link's calls.
+    @Override
+    public FileRun.Report runFile(FileRun file) throws QueryException {
+      return recorded(null, () -> link.runFile(file));
+    }
+
     @Override
     public Monitor monitor() throws QueryException {
       return link.monitor();

@@ -22,6 +22,7 @@ import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
+import dev.hoori.db.core.execution.FileRun;
 import dev.hoori.db.core.execution.Plan;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
@@ -129,6 +130,15 @@ interface Servers {
     default Run run(Script.Parsed statement) throws QueryException {
       return run(statement.statement());
     }
+
+    /**
+     * Runs the file on the connection from its start to its end, as {@link FileRun#run} does, and
+     * says how that went; {@link FileRun#cancel} stops it.
+     *
+     * @throws QueryException on a link that core reported lost, and on a server of documents,
+     *     which runs no file of SQL
+     */
+    FileRun.Report runFile(FileRun file) throws QueryException;
 
     /** Makes the database the connection's own, where the server switches on one connection. */
     void use(String database) throws QueryException;
@@ -355,6 +365,12 @@ interface Servers {
     }
 
     @Override
+    public FileRun.Report runFile(FileRun file) throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of documents runs no file of SQL");
+    }
+
+    @Override
     public void use(String database) throws QueryException {
       usable();
       current.set(database);
@@ -542,6 +558,12 @@ interface Servers {
           return saw(execution.abandon());
         }
       };
+    }
+
+    @Override
+    public FileRun.Report runFile(FileRun file) throws QueryException {
+      usable();
+      return file.run(FileRun.target(connection, provider, readOnly));
     }
 
     @Override

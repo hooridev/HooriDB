@@ -208,6 +208,7 @@ public final class FileRun {
         }
       }
       last = new Progress(0, file.size(), 0, 0);
+      progress.accept(last);
       if (options.transaction()) {
         var failure = target.begin();
         if (failure != null) {

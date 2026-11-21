@@ -18,6 +18,7 @@ import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
+import dev.hoori.db.core.execution.FileRun;
 import dev.hoori.db.core.execution.Message;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
@@ -1022,6 +1023,86 @@ final class FakeServers implements Servers {
               || lost
           ? null
           : !manual;
+    }
+
+    /**
+     * The file's statements run as {@link #run} runs a console's, one after another; a copy notes
+     * {@code copy <host> <sql>} with the rows it was given, and fails where a statement of the
+     * same text was made to; Commit and Rollback run as their statements.
+     */
+    @Override
+    public FileRun.Report runFile(FileRun file) {
+      return file.run(new FileRun.Target() {
+        @Override
+        public Failure run(String sql) {
+          var running = FakeLink.this.run(sql);
+          try {
+            while (true) {
+              var portion = running.next(1_000);
+              for (var result : portion.results()) {
+                if (result instanceof Failure failure) {
+                  return failure;
+                }
+              }
+              if (!portion.more()) {
+                return null;
+              }
+            }
+          } finally {
+            running.close();
+          }
+        }
+
+        @Override
+        public Failure copy(String sql, java.io.Reader rows) {
+          var text = new StringBuilder();
+          try {
+            rows.transferTo(new java.io.Writer() {
+              @Override
+              public void write(char[] chars, int from, int length) {
+                text.append(chars, from, length);
+              }
+
+              @Override
+              public void flush() {}
+
+              @Override
+              public void close() {}
+            });
+          } catch (java.io.IOException e) {
+            return new Failure(Failure.Kind.CANCELLED, "", "57014", 0, 0, "", 0, 0, "", "", "", "");
+          }
+          noted("copy " + host + " " + sql + " " + text);
+          var answer = statements.get(sql);
+          return answer != null
+                  && !answer.results().isEmpty()
+                  && answer.results().getLast() instanceof Failure f
+              ? f
+              : null;
+        }
+
+        @Override
+        public Failure begin() {
+          manual(true);
+          return null;
+        }
+
+        @Override
+        public Failure commit() {
+          return run("COMMIT");
+        }
+
+        @Override
+        public Failure rollback() {
+          return run("ROLLBACK");
+        }
+
+        @Override
+        public Failure end() {
+          manual(false);
+          return null;
+        }
+      });
     }
 
     @Override

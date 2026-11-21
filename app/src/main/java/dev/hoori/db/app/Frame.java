@@ -81,7 +81,11 @@ final class Frame {
             .grow(1)
             .padding(0, t.space().m(), t.space().m(), t.space().m()))
         .child(StatusBar.statusBar(
-            Arrays.asList(connections(s), uncommitted(s, modal), downloading(s)),
+            Arrays.asList(
+                connections(s),
+                uncommitted(s, modal),
+                downloading(s),
+                s.dialogs.fileRun == null ? null : s.dialogs.fileRun.status(s, modal)),
             s.message == null ? null : StatusBar.text(s.message).key("message"),
             List.of(
                 s.logPanel.toggle(s, modal),
@@ -96,6 +100,7 @@ final class Frame {
     root.overlay(s.dialogs.deleting == null ? null : deleteDialog(s));
     root.overlay(s.dialogs.folderDialog == null ? null : s.dialogs.folderDialog.view(s));
     root.overlay(s.dialogs.about ? aboutDialog(s) : null);
+    root.overlay(s.dialogs.fileRun == null ? null : s.dialogs.fileRun.view(s));
     root.overlay(asked);
     root.overlay(question);
     root.overlay(confirmation);
@@ -122,7 +127,8 @@ final class Frame {
     return s.dialogs.dialog != null
         || s.dialogs.deleting != null
         || s.dialogs.folderDialog != null
-        || s.dialogs.about;
+        || s.dialogs.about
+        || s.dialogs.fileRun != null && s.dialogs.fileRun.shown();
   }
 
   /**
@@ -646,6 +652,12 @@ final class Frame {
                         console == null ? null : () -> s.openMonitor(console, group))
                     .icon(Symbol.SERVER),
                 Menu.item(
+                        "Run SQL file…",
+                        console != null && s.canRunFile(console)
+                            ? inMain(s, () -> s.openFileRun(console, ""))
+                            : null)
+                    .icon(Symbol.DOCUMENT),
+                Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c ? c::openHistory : null)
                     .icon(Symbol.HISTORY),
@@ -724,6 +736,7 @@ final class Frame {
         || s.dialogs.folderDialog != null
         || s.dialogs.about
         || s.dialogs.driverList != null
+        || s.dialogs.fileRun != null && s.dialogs.fileRun.shown()
         || asks(s, s.tabs.main());
   }
 

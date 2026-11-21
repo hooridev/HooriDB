@@ -802,6 +802,9 @@ final class State {
     exitAt = noticed;
     consoles(null).forEach(ConsoleTab::end);
     monitors(null).forEach(m -> m.end(this));
+    if (dialogs.fileRun != null) {
+      dialogs.fileRun.end(this, "HooriDB closed");
+    }
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
       if (exits == at && guard.quitting() && closing > waived) {
@@ -941,6 +944,33 @@ final class State {
     monitor.open(this);
   }
 
+  /**
+   * Run SQL file for the connection, on the database or, where it is empty, on the one it connects
+   * to; a run under way shows instead. Not while another dialog is open.
+   */
+  void openFileRun(UUID id, String database) {
+    if (dialogs.fileRun != null) {
+      dialogs.fileRun.hidden = false;
+      return;
+    }
+    if (!canRunFile(id)) {
+      return;
+    }
+    dialogs.fileRun = FileRunDialog.open(this, id, database);
+  }
+
+  /** Whether Run SQL file can open for the connection: one of SQL that is connected. */
+  boolean canRunFile(UUID id) {
+    var profile = id == null ? null : profile(id);
+    if (dialogs.fileRun != null) {
+      return !dialogs.anyOpen() || dialogs.fileRun.shown();
+    }
+    return profile != null
+        && !profile.provider().keepsDocuments()
+        && catalog.connected(id)
+        && !dialogs.anyOpen();
+  }
+
   /** The server monitors of every window, of the connection or of all where it is null. */
   List<MonitorTab> monitors(UUID id) {
     var all = new ArrayList<MonitorTab>();
@@ -1052,6 +1082,9 @@ final class State {
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
+    if (dialogs.fileRun != null && dialogs.fileRun.id.equals(id)) {
+      dialogs.fileRun.end(this, "its connection ended");
+    }
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -1241,6 +1274,9 @@ final class State {
     }
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    if (dialogs.fileRun != null) {
+      dialogs.fileRun.closeAll(this);
+    }
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();
