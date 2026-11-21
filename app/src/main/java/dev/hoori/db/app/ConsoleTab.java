@@ -260,7 +260,7 @@ final class ConsoleTab implements Tab {
 
   // What the console says in more than one place.
   static final String NOT_RUN = "Not run";
-  static final String CANCELLED = "Cancelled";
+  static final String CANCELLED_TEXT = "Cancelled";
   static final String DISCONNECTED = "Disconnected";
   static final String CHANGED = " changed";
   static final String AUTO_COMMIT = "Auto-commit";
@@ -1282,7 +1282,7 @@ final class ConsoleTab implements Tab {
       at++;
     }
     var kept = ((Result.Rows) results.get(at)).rows();
-    int room = Math.clamp(keep - kept.size(), 0, r.rows().size());
+    int room = Math.clamp(keep - (long) kept.size(), 0, r.rows().size());
     kept.addAll(r.rows().subList(0, room));
     if (!r.documents().isEmpty()) {
       documents.get(at).addAll(r.documents().subList(0, room));
@@ -1815,7 +1815,7 @@ final class ConsoleTab implements Tab {
       case CONSTRAINT -> "A constraint was violated";
       case ACCESS_DENIED -> "Access denied";
       case CONNECTION_LOST -> DISCONNECTED;
-      case CANCELLED -> CANCELLED;
+      case CANCELLED -> CANCELLED_TEXT;
       case TIMEOUT -> "Timed out";
       case OTHER -> "The statement failed";
     };
@@ -2001,7 +2001,7 @@ final class ConsoleTab implements Tab {
       closeSession();
     }
     cancelled = true;
-    log.add(new Logged(Level.WARNING, brief(running), null, CANCELLED));
+    log.add(new Logged(Level.WARNING, brief(running), null, CANCELLED_TEXT));
     // Not where it was never sent, as one cancelled while the session opened.
     if (changes() && !firm && sent.get() != null) {
       doubt(running, "it was cancelled");
@@ -2416,7 +2416,7 @@ final class ConsoleTab implements Tab {
           queue.clear();
           leave();
           cancelled = true;
-          log.add(new Logged(Level.WARNING, brief(running), null, CANCELLED));
+          log.add(new Logged(Level.WARNING, brief(running), null, CANCELLED_TEXT));
         }
         if (lane != null) {
           end(s, ROLLBACK);
@@ -2486,8 +2486,9 @@ final class ConsoleTab implements Tab {
     for (var result : portion.results()) {
       switch (result) {
         case Result.Rows r -> parts.add(rows(r.rows().size()) + (portion.more() ? " so far" : ""));
-        case Result.Count c -> parts.add(rows(c.count()) + CHANGED);
-        case Failure f -> parts.add(f.kind() == Failure.Kind.CANCELLED ? CANCELLED : f.message());
+        case Result.Count(var count) -> parts.add(rows(count) + CHANGED);
+        case Failure f ->
+          parts.add(f.kind() == Failure.Kind.CANCELLED ? CANCELLED_TEXT : f.message());
       }
     }
     return parts.isEmpty() ? "Done" : String.join(", ", parts);
@@ -3182,16 +3183,16 @@ final class ConsoleTab implements Tab {
     boolean waits = firm || work != null && changes();
     var wording = wording(s, s.title(this), asked.what(), waits);
     buttons.addAll(wording.buttons());
-    var text = wording.text();
+    var body = wording.text();
     if (endFailed && !firm && work == null && doubt == null) {
-      text += " Or end the connection: it is closed, and the server rolls back what was not"
+      body += " Or end the connection: it is closed, and the server rolls back what was not"
           + " committed.";
       buttons.add(1, endIt(s));
     }
     El content = col()
         .w(ConnectionDialog.width())
         .gap(t.space().m())
-        .child(Label.label(text).wrapText())
+        .child(Label.label(body).wrapText())
         .child(
             waits && doubt == null
                 ? row()
@@ -3276,13 +3277,13 @@ final class ConsoleTab implements Tab {
     } else {
       title = "Waiting for the server";
     }
-    var text = name + " waits for the server's answer. Once nothing is left open, " + before + ".";
+    var body = name + " waits for the server's answer. Once nothing is left open, " + before + ".";
     if (!overdue) {
-      return new Wording(title, text, List.of());
+      return new Wording(title, body, List.of());
     }
     return new Wording(
         title,
-        text + " It has not answered for a while. Or end the connection now: it is closed, the"
+        body + " It has not answered for a while. Or end the connection now: it is closed, the"
             + " server rolls back what was not committed, and what this did is not known.",
         List.of(endIt(s)));
   }
@@ -3502,7 +3503,7 @@ final class ConsoleTab implements Tab {
   private String how() {
     var ms = took.toMillis() + " ms";
     if (cancelled) {
-      return CANCELLED;
+      return CANCELLED_TEXT;
     }
     if (failedRun && statements == 1) {
       return "Failed after " + ms;
