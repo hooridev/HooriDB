@@ -278,7 +278,15 @@ final class ResultsArea {
           .child(Label.label(Label.Variant.MUTED, o.more ? "Reading documents…" : "No documents")
               .key("no-documents"));
     }
-    o.whole.show("p" + o.page, o.documents, from, to);
+    if (!o.whole.show("p" + o.page, o.documents, from, to)) {
+      return col()
+          .padding(Theme.CURRENT.get().space().m())
+          .child(Callout.callout(
+              Callout.Kind.WARNING,
+              "Documents cannot be shown whole",
+              "This page is too large or deeply nested to show whole."
+                  + " Its documents remain available in the grid."));
+    }
     return o.whole.view(app, o.shown, s.zone, "Documents of result " + o.number);
   }
 

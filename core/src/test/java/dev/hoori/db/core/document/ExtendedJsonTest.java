@@ -2,6 +2,7 @@ package dev.hoori.db.core.document;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Kind;
@@ -73,6 +74,27 @@ class ExtendedJsonTest {
     assertEquals(
         "{\"$regularExpression\": {\"pattern\": \"x\", \"options\": \"im\"}}",
         ExtendedJson.of(new Bson.Regex("x", "mi")));
+  }
+
+  @Test
+  void boundedJsonStopsBeforeUntrustedTextOrNestingGrowsPastItsLimits() {
+    assertEquals(
+        "[{\"name\": \"Ada\"}]",
+        ExtendedJson.limitedArray(List.of(Document.of("name", "Ada")), 100, 10).orElseThrow());
+    assertTrue(
+        ExtendedJson.limitedArray(List.of(Document.of("text", "x".repeat(100))), 50, 10)
+            .isEmpty());
+    assertTrue(
+        ExtendedJson.limitedArray(
+                List.of(Document.of("bytes", new Bson.Binary(0, new byte[100]))), 50, 10)
+            .isEmpty());
+
+    Object nested = 1;
+    for (int i = 0; i < 12; i++) {
+      nested = Document.of("next", nested);
+    }
+    assertTrue(
+        ExtendedJson.limitedArray(List.of((Document) nested), 10_000, 10).isEmpty());
   }
 
   @Test

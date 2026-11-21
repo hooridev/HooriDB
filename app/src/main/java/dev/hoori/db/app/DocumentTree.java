@@ -28,6 +28,15 @@ import java.util.Set;
 final class DocumentTree {
 
   /**
+   * Whole documents are untrusted. This compact bound also bounds retained document contents and
+   * editor input; {@link #MAX_NESTING} separately bounds formatting and tree traversal depth.
+   */
+  static final int MAX_TEXT = 64 * 1024;
+
+  /** MongoDB permits deeply nested values, but the UI does not recurse without a finite bound. */
+  static final int MAX_NESTING = 100;
+
+  /**
    * A value in a document: the document's place among those shown, and the indexes of the fields
    * and items that lead to it; empty for the document itself.
    */
@@ -48,6 +57,7 @@ final class DocumentTree {
   private String scope = ""; // the documents shown, such as a page; what is open is theirs
   private List<Document> of = List.of(); // what they are a part of
   private List<Document> documents = List.of();
+  private String compact = "[]"; // bounded, one-line Extended JSON
   private String text; // the documents as text, made once for them
   final CodeEditor.State editor = new CodeEditor.State().readOnly(true);
 
@@ -55,7 +65,7 @@ final class DocumentTree {
    * Shows the documents from to before to of these, which only grow, as the scope: what was open
    * stays open where the scope is the same, and the text is made anew where the documents changed.
    */
-  void show(String scope, List<Document> of, int from, int to) {
+  boolean show(String scope, List<Document> of, int from, int to) {
     boolean other = !scope.equals(this.scope);
     if (other) {
       open.clear();
@@ -63,19 +73,38 @@ final class DocumentTree {
       editor.select(0, 0);
     }
     if (other || of != this.of || to - from != documents.size()) {
+      var next = List.copyOf(of.subList(from, to));
+      var json = ExtendedJson.limitedArray(next, MAX_TEXT, MAX_NESTING);
+      if (json.isEmpty()) {
+        clear();
+        return false;
+      }
       text = null;
-      documents = List.copyOf(of.subList(from, to));
+      compact = json.get();
+      documents = next;
     }
     this.scope = scope;
     this.of = of;
+    return true;
+  }
+
+  /** Releases documents and rendered text when their page is no longer shown. */
+  void clear() {
+    open.clear();
+    selected = null;
+    scope = "";
+    of = List.of();
+    documents = List.of();
+    compact = "[]";
+    text = null;
+    editor.select(0, 0);
   }
 
   /** The documents as a JSON array of Relaxed Extended JSON, formatted. */
   String text() {
     if (text == null) {
-      var json = ExtendedJson.array(documents);
-      var formatted = Json.format(json);
-      text = formatted.valid() ? formatted.text() : json;
+      var formatted = Json.format(compact);
+      text = formatted.valid() ? formatted.text() : compact;
     }
     return text;
   }

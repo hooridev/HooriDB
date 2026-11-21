@@ -130,11 +130,12 @@ final class TableTab implements Tab {
   private boolean more; // a row more in the grid, whose read says whether there are more
   Counted counted = Counted.ESTIMATED;
   final Map<Long, List<List<Object>>> pages = new HashMap<>(); // the rows read, by page
-  // A collection's documents of the pages read, whole; none for a table.
+  // A collection's current page whole in JSON or Tree; none in Grid or for a table.
   final Map<Long, List<Document>> documents = new HashMap<>();
   Shown showing = Shown.GRID;
   long documentPage; // the page of documents that JSON and Tree show
   final DocumentTree documentView = new DocumentTree();
+  private String documentProblem; // why the current page cannot be shown whole; or null
   final Map<Long, Lane.Asked> reading = new HashMap<>(); // the pages asked for
   Lane.Asked opening; // the columns, the estimate and the first page, or null
   Lane.Asked counting; // the exact count, or null
@@ -183,7 +184,7 @@ final class TableTab implements Tab {
     ending = false;
     countedFirst = false;
     pages.clear();
-    documents.clear();
+    forgetDocuments();
     if (columns == null) {
       treeColumns(s);
     }
@@ -315,7 +316,11 @@ final class TableTab implements Tab {
     }
     // A page read when the table seemed to end in it is read again for the rows now in range.
     var have = pages.get(page);
-    if (have != null && have.size() >= Math.min(PAGE, rows - page * PAGE)) {
+    if (have != null
+        && have.size() >= Math.min(PAGE, rows - page * PAGE)
+        && (showing == Shown.GRID
+            || documents.containsKey(page)
+            || page == documentPage && documentProblem != null)) {
       return;
     }
     var lane = s.catalog.lane(s, id, table);
@@ -362,10 +367,30 @@ final class TableTab implements Tab {
     long from = page * PAGE;
     if (n > 0) {
       pages.put(page, read.rows());
-      documents.put(page, read.documents());
+      if (showing != Shown.GRID && page == documentPage) {
+        documents.clear();
+        if (documentView.show("p" + page, read.documents(), 0, read.documents().size())) {
+          documents.put(page, read.documents());
+          documentProblem = null;
+        } else {
+          documentProblem = "This page is too large or deeply nested to show whole."
+              + " Its documents remain available in the grid.";
+        }
+      } else {
+        // The grid keeps only its bounded cell previews, never the whole source documents.
+        if (showing == Shown.GRID) {
+          forgetDocuments();
+        } else {
+          documents.remove(page);
+        }
+      }
     } else {
       pages.remove(page);
       documents.remove(page);
+      if (page == documentPage) {
+        documentView.clear();
+        documentProblem = null;
+      }
     }
     if (n < PAGE) {
       endsIn(s, page, n);
@@ -611,7 +636,7 @@ final class TableTab implements Tab {
     closed = true;
     stop();
     pages.clear();
-    documents.clear();
+    forgetDocuments();
   }
 
   /** Shows the documents as asked: whole, the page the grid was at. */
@@ -624,6 +649,7 @@ final class TableTab implements Tab {
     }
     showing = next;
     if (next == Shown.GRID) {
+      forgetDocuments();
       // The grid at the page shown last, which it scrolls to as it is built.
       int top = (int) Math.min(documentPage * PAGE, GRID_ROWS);
       selection.scrollToRow(top);
@@ -635,7 +661,11 @@ final class TableTab implements Tab {
 
   /** Shows the page of documents whole, read where it is not. */
   void turn(State s, long to) {
-    documentPage = Math.max(0, to);
+    long next = Math.max(0, to);
+    if (next != documentPage) {
+      forgetDocuments();
+    }
+    documentPage = next;
     if (closed || columns == null || opening != null || failure != null) {
       return;
     }
@@ -644,6 +674,13 @@ final class TableTab implements Tab {
       asked.promote(Lane.Priority.VIEW);
     }
     read(s, documentPage, Lane.Priority.VIEW);
+  }
+
+  /** Releases the one raw page and any text or tree nodes made from it. */
+  private void forgetDocuments() {
+    documents.clear();
+    documentView.clear();
+    documentProblem = null;
   }
 
   /** Whether anything of the tab is read now. */
@@ -997,6 +1034,13 @@ final class TableTab implements Tab {
   /** A page of documents whole: as Extended JSON, in an editor that only shows them, or as a tree. */
   private El documents(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
+    if (documentProblem != null) {
+      return col()
+          .grow(1)
+          .padding(t.space().m())
+          .child(Callout.callout(
+              Callout.Kind.WARNING, "Documents cannot be shown whole", documentProblem));
+    }
     var read = documents.get(documentPage);
     if (read == null && !reading.containsKey(documentPage) && opening == null) {
       // Nothing comes: an empty collection, or a page past its end.
