@@ -1133,20 +1133,7 @@ final class State {
       return;
     }
     if (exitAt < 0) {
-      exitAt = noticed;
-      consoles(null).forEach(ConsoleTab::end);
-      monitors(null).forEach(m -> m.end(this));
-      int at = ++exits;
-      app.after(EXIT_SECONDS, () -> {
-        if (exits == at && quitting() && closing > waived) {
-          int silent = closing - waived;
-          stay(silent + (silent == 1 ? " session" : " sessions")
-              + " did not say in time that it closed, so what it finished is not confirmed."
-              + " HooriDB stayed open; close it again to quit without waiting for "
-              + them(silent == 1));
-          waived = closing;
-        }
-      });
+      endSessions();
     }
     if (closing > waived) {
       return;
@@ -1162,6 +1149,27 @@ final class State {
         closeAll();
       }
     }
+  }
+
+  /**
+   * The first step of an Exit past the save: every console's and monitor's session ends, and Exit
+   * stays where they do not all say in time how they closed.
+   */
+  private void endSessions() {
+    exitAt = noticed;
+    consoles(null).forEach(ConsoleTab::end);
+    monitors(null).forEach(m -> m.end(this));
+    int at = ++exits;
+    app.after(EXIT_SECONDS, () -> {
+      if (exits == at && quitting() && closing > waived) {
+        int silent = closing - waived;
+        stay(silent + (silent == 1 ? " session" : " sessions")
+            + " did not say in time that it closed, so what it finished is not confirmed."
+            + " HooriDB stayed open; close it again to quit without waiting for "
+            + them(silent == 1));
+        waived = closing;
+      }
+    });
   }
 
   /**
