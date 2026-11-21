@@ -195,32 +195,29 @@ public final class Bson {
    * cannot be changed; throws for anything that is not a value of a document, also in an array.
    */
   static Object value(Object value) {
-    switch (value) {
-      case null -> {}
-      case Boolean b -> {}
-      case Integer n -> {}
-      case Long n -> {}
-      case Double n -> {}
-      case Decimal128 n -> {}
-      case String s -> {}
-      case Instant i -> {}
-      case ObjectId id -> {}
-      case Binary b -> {}
-      case Timestamp t -> {}
-      case Regex r -> {}
-      case Code c -> {}
-      case Symbol s -> {}
-      case Special s -> {}
-      case Document d -> {}
-      case Array a -> {} // made by this method, of values it took
-      case List<?> list -> {
-        return Array.of(list);
-      }
+    return switch (value) {
+      case null -> null;
+      case Boolean _,
+          Integer _,
+          Long _,
+          Double _,
+          Decimal128 _,
+          String _,
+          Instant _,
+          ObjectId _,
+          Binary _,
+          Timestamp _,
+          Regex _,
+          Code _,
+          Symbol _,
+          Special _,
+          Document _,
+          Array _ -> value; // an Array made by this method, of values it took
+      case List<?> list -> Array.of(list);
       default ->
         throw new IllegalArgumentException(
             "Not a value of a document: " + value.getClass().getName());
-    }
-    return value;
+    };
   }
 
   // An array as a document holds it: its values, checked, which nothing changes; null among them.
@@ -254,27 +251,27 @@ public final class Bson {
   public static String type(Object value) {
     return switch (value) {
       case null -> "null";
-      case Boolean b -> "bool";
-      case Integer n -> "int";
-      case Long n -> "long";
-      case Double n -> "double";
-      case Decimal128 n -> "decimal";
-      case String s -> "string";
-      case Instant i -> "date";
-      case ObjectId id -> "objectId";
-      case Binary b -> "binData";
-      case Timestamp t -> "timestamp";
-      case Regex r -> "regex";
+      case Boolean _ -> "bool";
+      case Integer _ -> "int";
+      case Long _ -> "long";
+      case Double _ -> "double";
+      case Decimal128 _ -> "decimal";
+      case String _ -> "string";
+      case Instant _ -> "date";
+      case ObjectId _ -> "objectId";
+      case Binary _ -> "binData";
+      case Timestamp _ -> "timestamp";
+      case Regex _ -> "regex";
       case Code c -> c.scope() == null ? "javascript" : "javascriptWithScope";
-      case Symbol s -> "symbol";
+      case Symbol _ -> "symbol";
       case Special s ->
         switch (s) {
           case MIN_KEY -> "minKey";
           case MAX_KEY -> "maxKey";
           case UNDEFINED -> "undefined";
         };
-      case Document d -> "object";
-      case List<?> list -> "array";
+      case Document _ -> "object";
+      case List<?> _ -> "array";
       default -> throw new IllegalArgumentException("Not a value of a document");
     };
   }
