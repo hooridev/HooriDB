@@ -48,11 +48,12 @@ public final class PostgreSqlDump extends DumpDialect {
   private static final String CLASS = "'pg_catalog.pg_class'::pg_catalog.regclass";
   private static final String PROC = "'pg_catalog.pg_proc'::pg_catalog.regclass";
   private static final String TYPE = "'pg_catalog.pg_type'::pg_catalog.regclass";
+  private static final String LOCK_TIMEOUT = "lock_timeout";
 
   // What the file's header sets, and its footer puts back from where the header kept it.
   private static final List<String> SETTINGS = List.of(
       "statement_timeout",
-      "lock_timeout",
+      LOCK_TIMEOUT,
       "client_encoding",
       "standard_conforming_strings",
       "search_path",
@@ -116,10 +117,10 @@ public final class PostgreSqlDump extends DumpDialect {
     var was = Sql.one(
         connection,
         provider,
-        "lock_timeout",
-        "SELECT pg_catalog.current_setting('lock_timeout')",
+        LOCK_TIMEOUT,
+        "SELECT pg_catalog.current_setting('" + LOCK_TIMEOUT + "')",
         rows -> rows.getString(1));
-    setting(connection, provider, "lock_timeout", LOCK_WAIT.toMillis() + "ms");
+    setting(connection, provider, LOCK_TIMEOUT, LOCK_WAIT.toMillis() + "ms");
     try {
       Sql.execute(connection, provider, "LOCK TABLE " + names + " IN ACCESS SHARE MODE");
     } catch (QueryException e) {
@@ -132,7 +133,7 @@ public final class PostgreSqlDump extends DumpDialect {
       }
       throw e;
     }
-    setting(connection, provider, "lock_timeout", was);
+    setting(connection, provider, LOCK_TIMEOUT, was);
   }
 
   // For the transaction alone.
