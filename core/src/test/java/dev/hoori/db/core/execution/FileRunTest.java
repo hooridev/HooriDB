@@ -180,8 +180,13 @@ class FileRunTest {
 
   @Test
   void oneTransactionTellsWhereTheServerCommittedByItself() {
-    var text = "INSERT 1;\nLOCK TABLES t WRITE;\nINSERT 2;\nUNLOCK TABLES;\n"
-        + "LOCK TABLES u WRITE;\nSELEC 3;";
+    var text = """
+        INSERT 1;
+        LOCK TABLES t WRITE;
+        INSERT 2;
+        UNLOCK TABLES;
+        LOCK TABLES u WRITE;
+        SELEC 3;""";
     var session = new Session(Map.of("SELEC 3", WRONG));
     var report = run(MARIADB, text, new FileRun.Options(false, true), session);
     assertEquals(FileRun.Ending.STOPPED, report.ending());

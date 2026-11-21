@@ -40,6 +40,9 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   // Of the commands of their clients, only DELIMITER, which SyntaxDialect has, is in their dumps.
   static final class Client implements ClientDialect {
 
+    // A word of the statements that commit implicitly, in lower case as they come.
+    private static final String TABLE = "table";
+
     @Override
     public boolean backslashCommands() {
       return false;
@@ -96,15 +99,15 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       }
       var second = words.size() > 1 ? words.get(1) : "";
       return switch (words.getFirst()) {
-        case "lock", "unlock" -> second.equals("table") || second.equals("tables");
+        case "lock", "unlock" -> second.equals(TABLE) || second.equals("tables");
         case "grant", "revoke", "flush" -> true;
         // Not MariaDB's ANALYZE SELECT, which runs and explains a query.
         case "analyze", "optimize", "repair" ->
-          second.equals("table")
+          second.equals(TABLE)
               || (second.equals("local") || second.equals("no_write_to_binlog"))
                   && words.size() > 2
-                  && words.get(2).equals("table");
-        case "check" -> second.equals("table");
+                  && words.get(2).equals(TABLE);
+        case "check" -> second.equals(TABLE);
         case "cache", "load" -> second.equals("index");
         case "create", "alter", "drop", "rename" -> {
           // CREATE OR REPLACE USER, as MariaDB has it

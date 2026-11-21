@@ -41,8 +41,12 @@ class StatementsTest {
 
   @Test
   void aBodyOfBeginAtomicIsOneStatement() {
-    var function = "CREATE FUNCTION f(a integer) RETURNS integer LANGUAGE sql\n"
-        + "BEGIN ATOMIC\n SELECT 1;\n SELECT CASE WHEN a > 0 THEN (a + 1) ELSE 0 END;\nEND";
+    var function = """
+        CREATE FUNCTION f(a integer) RETURNS integer LANGUAGE sql
+        BEGIN ATOMIC
+         SELECT 1;
+         SELECT CASE WHEN a > 0 THEN (a + 1) ELSE 0 END;
+        END""";
     var procedure = "create or replace procedure p() begin atomic insert into t values (1); end";
     assertSplit(
         POSTGRESQL,

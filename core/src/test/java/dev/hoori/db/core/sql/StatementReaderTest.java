@@ -233,8 +233,14 @@ class StatementReaderTest {
 
   @Test
   void whatFollowsACopyOnItsLineIsTold() throws IOException {
-    var text = "COPY a FROM stdin; -- the rows /* follow */\n1\n\\.\n"
-        + "COPY b FROM stdin; SELECT 1;\n2\n\\.\nSELECT 3;";
+    var text = """
+        COPY a FROM stdin; -- the rows /* follow */
+        1
+        \\.
+        COPY b FROM stdin; SELECT 1;
+        2
+        \\.
+        SELECT 3;""";
     assertRead(
         POSTGRESQL,
         text,

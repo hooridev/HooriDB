@@ -173,7 +173,7 @@ public final class FileRun {
   private StatementReader reader; // under the lock
   private volatile boolean cancelled;
   private boolean interrupted; // the cancel interrupted the run, under the lock
-  private final List<Failed> listed = new ArrayList<>(); // the first LISTED failures
+  private final List<Failed> failures = new ArrayList<>(); // the first LISTED failures
   private long statements; // as Progress counts them
   private long failed;
   private long committedAt; // as Report says it
@@ -280,20 +280,7 @@ public final class FileRun {
         return Ending.RAN;
       }
       var step = next.get();
-      var failure = switch (step) {
-        case StatementReader.Sql sql -> statement(target, sql);
-        case StatementReader.Copy copy
-        when copy.followed() ->
-          Optional.of(Failure.of(
-              Failure.Kind.INVALID,
-              "More follows COPY … FROM STDIN on its line, where its rows begin on the next line:"
-                  + " it does not run."));
-        case StatementReader.Copy copy -> copy(target, copy.sql(), file);
-        case StatementReader.Command command -> command(command);
-      };
-      if (!(step instanceof StatementReader.Command) || failure.isPresent()) {
-        statements++; // a command that was skipped is none
-      }
+      var failure = take(target, step, file);
       var stops = failure.isPresent() && stops(step, failure.get());
       progress.accept(progress(file));
       if (stops) {
@@ -301,6 +288,25 @@ public final class FileRun {
       }
     }
     return Ending.CANCELLED;
+  }
+
+  // Runs a step of the file and counts it; how it failed, if it did.
+  private Optional<Failure> take(Target target, StatementReader.Step step, StatementReader file) {
+    var failure = switch (step) {
+      case StatementReader.Sql sql -> statement(target, sql);
+      case StatementReader.Copy copy
+      when copy.followed() ->
+        Optional.of(Failure.of(
+            Failure.Kind.INVALID,
+            "More follows COPY … FROM STDIN on its line, where its rows begin on the next line:"
+                + " it does not run."));
+      case StatementReader.Copy copy -> copy(target, copy.sql(), file);
+      case StatementReader.Command command -> command(command);
+    };
+    if (!(step instanceof StatementReader.Command) || failure.isPresent()) {
+      statements++; // a command that was skipped is none
+    }
+    return failure;
   }
 
   // Counts and lists the step's failure, unless a cancel ended it; whether the run stops at it.
@@ -407,7 +413,7 @@ public final class FileRun {
   private Report report(Ending ending, Kept kept, Progress last, long started) {
     var at = new Progress(last.bytes(), last.size(), statements, failed);
     return new Report(
-        ending, at, listed, kept, committedAt, Duration.ofNanos(System.nanoTime() - started));
+        ending, at, failures, kept, committedAt, Duration.ofNanos(System.nanoTime() - started));
   }
 
   // Lists the failure of a step. A command of the client shows by its name alone, as its line,
@@ -437,8 +443,8 @@ public final class FileRun {
 
   // Lists a failure, where the report has room for it.
   private void list(long line, String statement, String message) {
-    if (listed.size() < LISTED) {
-      listed.add(new Failed(line, statement, message));
+    if (failures.size() < LISTED) {
+      failures.add(new Failed(line, statement, message));
     }
   }
 

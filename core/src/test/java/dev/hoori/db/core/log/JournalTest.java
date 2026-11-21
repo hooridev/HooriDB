@@ -40,7 +40,7 @@ class JournalTest {
   @Test
   void aRecorderThatTakesNothingNowGetsNoEntry() throws Exception {
     var taking = new boolean[1];
-    var recorder = new Recorder() {
+    var choosing = new Recorder() {
       @Override
       public void sent(Sent entry) {
         sent.add(entry);
@@ -52,13 +52,13 @@ class JournalTest {
       }
     };
     Journal.recording(
-        recorder,
+        choosing,
         () ->
             Journal.sql(Provider.POSTGRESQL, Purpose.FILE, "SELECT 1", v -> Outcome.DONE, () -> 7));
     assertTrue(sent.isEmpty(), sent.toString());
     taking[0] = true;
     Journal.recording(
-        recorder,
+        choosing,
         () ->
             Journal.sql(Provider.POSTGRESQL, Purpose.FILE, "SELECT 2", v -> Outcome.DONE, () -> 7));
     assertEquals("SELECT 2", sent.getFirst().text());

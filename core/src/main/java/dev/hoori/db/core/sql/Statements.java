@@ -32,12 +32,6 @@ public final class Statements {
   // What the clients of MariaDB and MySQL keep of a delimiter; they cut a longer one off.
   private static final int MAX_DELIMITER = 15;
 
-  // How far a statement's first words are those of CREATE [OR REPLACE] FUNCTION or PROCEDURE: 0
-  // before any, 1 after CREATE, 2 after OR, 3 after REPLACE, ROUTINE once they are, NOT_ROUTINE
-  // once they are not.
-  private static final int ROUTINE = 4;
-  private static final int NOT_ROUTINE = -1;
-
   private final String text;
   private final SyntaxDialect syntax;
   private final List<Statement> found = new ArrayList<>();
@@ -53,9 +47,8 @@ public final class Statements {
   private Piece.Kind kind;
   private boolean open;
   // For bodies of BEGIN ATOMIC … END: how far the pending statement's first words are those of
-  // CREATE [OR REPLACE] FUNCTION or PROCEDURE, as routine() follows them, and how deep it is in
-  // parentheses and in blocks.
-  private int routine;
+  // CREATE [OR REPLACE] FUNCTION or PROCEDURE, and how deep it is in parentheses and in blocks.
+  private Head head = Head.START;
   private int parens;
   private int blocks;
 
@@ -79,6 +72,33 @@ public final class Statements {
     /** Whether a caret at the offset is inside it, other than at its start. */
     public boolean holds(int caret) {
       return start < caret && (caret < end || caret == end && open);
+    }
+  }
+
+  // How far a statement's first words are those of CREATE [OR REPLACE] FUNCTION or PROCEDURE:
+  // before any, after CREATE, after OR, after REPLACE, ROUTINE once they are, OTHER once they are
+  // not.
+  private enum Head {
+    START,
+    CREATE,
+    OR,
+    REPLACE,
+    ROUTINE,
+    OTHER;
+
+    // Where the next word of the statement leads.
+    Head next(String word) {
+      return switch (this) {
+        case START -> word.equals("CREATE") ? CREATE : OTHER;
+        case CREATE -> word.equals("OR") ? OR : routine(word);
+        case OR -> word.equals("REPLACE") ? REPLACE : OTHER;
+        case REPLACE -> routine(word);
+        case ROUTINE, OTHER -> this;
+      };
+    }
+
+    private static Head routine(String word) {
+      return word.equals("FUNCTION") || word.equals("PROCEDURE") ? ROUTINE : OTHER;
     }
   }
 
@@ -379,19 +399,11 @@ public final class Statements {
         i += delimiter.length();
         finish(start, end, i);
         start = -1;
-        routine = parens = 0;
+        head = Head.START;
+        parens = 0;
       } else if (whitespace(text.charAt(i))) {
         i++;
-      } else if (bodies && word()) {
-        if (start < 0) {
-          start = from;
-        }
-        end = i;
-      } else if (token()) {
-        if (bodies) {
-          char c = text.charAt(from);
-          parens += c == '(' ? 1 : c == ')' && parens > 0 ? -1 : 0;
-        }
+      } else if (code(bodies)) {
         if (start < 0) {
           start = from;
         }
@@ -399,6 +411,24 @@ public final class Statements {
       }
     }
     finish(start, end, end);
+  }
+
+  // Takes a word or another token at i, and follows the parentheses where the syntax has bodies of
+  // BEGIN ATOMIC … END; whether it was more than a comment.
+  private boolean code(boolean bodies) {
+    if (bodies && word()) {
+      return true;
+    }
+    char c = text.charAt(i);
+    if (!token()) {
+      return false;
+    }
+    if (bodies && c == '(') {
+      parens++;
+    } else if (bodies && c == ')' && parens > 0) {
+      parens--;
+    }
+    return true;
   }
 
   // At a word that begins at i, as a token of code and no string such as E'…': takes it, and
@@ -414,34 +444,18 @@ public final class Statements {
     while (i < n && (tagStart(text.charAt(i)) || digit(text.charAt(i)) || text.charAt(i) == '$')) {
       i++;
     }
-    if (routine == NOT_ROUTINE || routine == ROUTINE && parens > 0) {
+    if (head == Head.OTHER || head == Head.ROUTINE && parens > 0) {
       return true; // nothing to follow, nor a word to make
     }
     var word = Tokens.keyword(text.substring(from, i));
-    if (routine != ROUTINE) {
-      routine = routine(routine, word);
+    if (head != Head.ROUTINE) {
+      head = head.next(word);
     } else if (word.equals("BEGIN") || word.equals("CASE") && blocks > 0) {
       blocks++;
     } else if (word.equals("END") && blocks > 0) {
       blocks--;
     }
     return true;
-  }
-
-  // What follows the next word of a statement, as its words are those of CREATE [OR REPLACE]
-  // FUNCTION or PROCEDURE.
-  private static int routine(int after, String word) {
-    return switch (after) {
-      case 0 -> word.equals("CREATE") ? 1 : NOT_ROUTINE;
-      case 1 -> word.equals("OR") ? 2 : routineWord(word);
-      case 2 -> word.equals("REPLACE") ? 3 : NOT_ROUTINE;
-      case 3 -> routineWord(word);
-      default -> after;
-    };
-  }
-
-  private static int routineWord(String word) {
-    return word.equals("FUNCTION") || word.equals("PROCEDURE") ? ROUTINE : NOT_ROUTINE;
   }
 
   // Takes a line that the client reads as its own at i, where a statement could begin: a
