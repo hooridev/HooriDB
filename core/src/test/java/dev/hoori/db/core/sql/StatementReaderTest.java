@@ -334,6 +334,30 @@ class StatementReaderTest {
     assertEquals(
         "The file is not UTF-8 on line 3",
         assertThrows(IOException.class, reader::next).getMessage());
+    // The end of a copy's rows on the line where it stops ends none: the rows fail, unless the
+    // line has ended before. A row of some length, as the scan looks beyond the copy's statement.
+    var row = "1\tthe first row, of some length\n";
+    for (var rows : List.of(row + "\\.\u00fc\n", row + "\\.\r\u00fc")) {
+      for (int chunk : CHUNKS) {
+        var copy = new StatementReader(
+            new StatementReader.Utf8(new ByteArrayInputStream(
+                ("COPY t FROM stdin;\n" + rows).getBytes(StandardCharsets.ISO_8859_1))),
+            POSTGRESQL,
+            -1,
+            chunk);
+        assertInstanceOf(StatementReader.Copy.class, copy.next().orElseThrow());
+        assertThrows(IOException.class, () -> all(copy.rows()), rows + ", chunk " + chunk);
+      }
+    }
+    var ended = new StatementReader(
+        new StatementReader.Utf8(new ByteArrayInputStream(
+            ("COPY t FROM stdin;\n" + row + "\\.\n\u00fc").getBytes(StandardCharsets.ISO_8859_1))),
+        POSTGRESQL,
+        -1,
+        1);
+    assertInstanceOf(StatementReader.Copy.class, ended.next().orElseThrow());
+    assertEquals(row, all(ended.rows()));
+    assertThrows(IOException.class, ended::next);
   }
 
   @Test

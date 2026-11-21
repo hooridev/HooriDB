@@ -246,8 +246,9 @@ public final class StatementReader implements Closeable {
   private boolean restOfLine() throws IOException {
     int end = buffer.indexOf("\n", at);
     while (end < 0 && !ended) {
-      fill(buffer.length() - at + windowSize);
-      end = buffer.indexOf("\n", at);
+      int searched = buffer.length() - at; // past the reader, as a fill may move it
+      fill(searched + windowSize);
+      end = buffer.indexOf("\n", at + searched);
     }
     int to = end < 0 ? buffer.length() : end + 1;
     var rest = buffer.substring(at, to);
@@ -548,7 +549,8 @@ public final class StatementReader implements Closeable {
     }
 
     // Where the line the reader is at ends, after its line's end, where it holds the end of the
-    // rows alone; -1 for other lines.
+    // rows alone; -1 for other lines, and for one the file stops being UTF-8 on, which the rows
+    // then fail at.
     private int endOfRows() {
       int n = buffer.length();
       int k = at + closing.length();
@@ -564,7 +566,7 @@ public final class StatementReader implements Closeable {
         k++;
       }
       if (k == n) {
-        return k;
+        return broken == null ? k : -1;
       }
       return buffer.charAt(k) == '\n' ? k + 1 : -1;
     }
