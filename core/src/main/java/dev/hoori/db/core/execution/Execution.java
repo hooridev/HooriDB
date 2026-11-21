@@ -281,21 +281,29 @@ public final class Execution implements AutoCloseable {
           return status;
         }
         results.add(new Result.Count(changed));
-      } else {
-        if (rows == null) {
-          open();
-        }
-        readRows(count, results);
-        if (ahead) {
-          return status;
-        }
-        if (session.warningsKeptByDriver()) {
-          collect(rows.getWarnings(), messages);
-        }
+      } else if (readResultOfRows(count, results, messages)) {
+        return status;
       }
       status = session.status(connection);
       resultSet = moreResults();
     }
+  }
+
+  // Reads at most the given number of rows of the result of rows it is on, or goes on to the
+  // statement's current one; whether rows of it are still ahead.
+  private boolean readResultOfRows(int count, List<Result> results, List<Message> messages)
+      throws SQLException {
+    if (rows == null) {
+      open();
+    }
+    readRows(count, results);
+    if (ahead) {
+      return true;
+    }
+    if (session.warningsKeptByDriver()) {
+      collect(rows.getWarnings(), messages);
+    }
+    return false;
   }
 
   // Goes on to the statement's current result, of rows, before its first row.

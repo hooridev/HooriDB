@@ -76,11 +76,7 @@ final class Tokens {
         case STRING -> {
           // left out
         }
-        case COMMENT -> {
-          if (reading.code()) {
-            depth = comment(tokens, sql, from, piece, provider, reading, depth);
-          }
-        }
+        case COMMENT -> depth = comment(tokens, sql, from, piece, provider, reading, depth);
         case QUOTED ->
           tokens.add(new Token(
               sql.substring(start, from + piece.end()), start, from + piece.end(), depth, true));
@@ -109,7 +105,7 @@ final class Tokens {
       Provider provider,
       Reading reading,
       int depth) {
-    int body = executable(sql, from + piece.start(), provider);
+    int body = reading.code() ? executable(sql, from + piece.start(), provider) : 0;
     if (body == 0) {
       return depth;
     }
