@@ -16,7 +16,8 @@ import dev.hoori.db.core.driver.DriverStore.Recommended;
 import dev.hoori.db.core.driver.FolderRepository.Sum;
 import java.io.IOException;
 import java.net.InetAddress;
-import java.net.ServerSocket;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -571,12 +572,12 @@ public class DriverStoreTest {
     var jar = Files.readAllBytes(copied.resolve(driver.artifact() + "-" + version + ".jar"));
     repository.publish(driver, version, jar, Sum.SHA256, NOW);
     store.download(driver, version, DriverStore.Progress.NONE);
-    int port;
-    try (var free = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
-      port = free.getLocalPort();
-    }
-    try (var loaded = store.load(driver, version)) {
-      var url = "jdbc:mysql://127.0.0.1:" + port + "/x";
+    // Bound and not listening, on the address it connects to, so that nothing listens there.
+    var host = "127.0.0.1";
+    try (var free = new Socket();
+        var loaded = store.load(driver, version)) {
+      free.bind(new InetSocketAddress(InetAddress.getByName(host), 0));
+      var url = "jdbc:mysql://" + host + ":" + free.getLocalPort() + "/x";
       assertThrows(SQLException.class, () -> loaded.connect(url, new Properties()));
     }
     assertEquals(List.of(), openBelow(temp));

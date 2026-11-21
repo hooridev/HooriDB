@@ -5,7 +5,10 @@ description: Write and run SQL, read the results and messages, find errors, and 
 
 An SQL console gives you an editor, result tabs, a Messages log, and transaction controls on a dedicated server connection. A console on a MongoDB connection runs shell statements instead, without transactions; see [MongoDB](/docs/features/mongodb#run-shell-statements-in-a-console).
 
-<Shot name="console" alt="An SQL console with two SQL statements in the editor and Result 1, Result 2, and Messages tabs below" />
+<Shot
+  name="console"
+  alt="An SQL console with two SQL statements in the editor and Result 1, Result 2, and Messages tabs below"
+/>
 
 ## Open a console
 
@@ -44,7 +47,10 @@ Each statement that returns rows or changes rows creates a result tab (**Result 
 
 ## Find errors in the editor
 
-<Shot name="console-error" alt="A console showing an unknown column error underlined at line 4 with the error message below the editor and logged in Messages" />
+<Shot
+  name="console-error"
+  alt="A console showing an unknown column error underlined at line 4 with the error message below the editor and logged in Messages"
+/>
 
 When a statement fails and the server reports where the error occurred, HooriDB underlines that location in the editor, moves the caret there, and displays the server's message above the results tabs. The underline clears as soon as you edit the text.
 
@@ -61,7 +67,10 @@ What the server does not refuse this way is listed under [Limitations](/docs/ref
 
 ## Complete SQL keywords and names
 
-<Shot name="completion" alt="A console editor showing column name completions and data types after typing an alias and a dot" />
+<Shot
+  name="completion"
+  alt="A console editor showing column name completions and data types after typing an alias and a dot"
+/>
 
 The completion list suggests SQL keywords for your database dialect along with schemas, tables, views, and columns for the console's database.
 

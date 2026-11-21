@@ -66,6 +66,7 @@ final class WindowsCredentials implements SecretStore {
   private final MethodHandle credDelete;
   private final MethodHandle credFree;
 
+  @SuppressWarnings("restricted") // the keyring reaches its native library through FFM
   static Keyring open() {
     try {
       return new Available(
@@ -75,6 +76,7 @@ final class WindowsCredentials implements SecretStore {
     }
   }
 
+  @SuppressWarnings("restricted") // the keyring reaches its native library through FFM
   private WindowsCredentials(SymbolLookup lib) {
     Linker linker = Linker.nativeLinker();
     Linker.Option capture = Linker.Option.captureCallState("GetLastError");
@@ -114,6 +116,7 @@ final class WindowsCredentials implements SecretStore {
   }
 
   @Override
+  @SuppressWarnings("restricted") // the keyring reaches its native library through FFM
   public Optional<char[]> read(UUID key) throws IOException {
     try (Arena call = Arena.ofConfined()) {
       MemorySegment error = call.allocate(state);

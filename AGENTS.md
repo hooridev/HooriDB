@@ -310,6 +310,21 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   core's `TestServer`, which comes with core's test-jar; the JDBC drivers for such tests are copied
   by the `jdbc-drivers` execution of the root POM, which a module takes by naming
   `maven-dependency-plugin`. Without Docker these tests are skipped.
+- A module's test classes run in `test.forks` JVMs at once (4, `-Dtest.forks=1` for one), in an
+  order of chance. Surefire shuffles them by the seed the log names, which
+  `-Dsurefire.runOrder.random.seed=` takes, and hands them to the JVMs from one queue as each comes
+  free: the seed gives the same order again, but not which classes shared a JVM. Each class's
+  report, `target/surefire-reports/TEST-*.xml`, names its JVM in the property `hooridb.test.store`
+  and is written as the class ends, so the files' times give each JVM's sequence; with
+  `-Dtest.forks=1` and the seed, all of them run in one JVM in that order. Each JVM starts its own
+  servers in Docker as its tests ask for them, up to seven: the three of SQL, a second of each with
+  the other TLS, and MongoDB. Its own files are the drivers' store, `target/test-driver-store-<n>`,
+  and in the app the framework's natives, `target/natives-cache-<n>`; a test's other files are in
+  its JUnit temporary folder, and the drivers copied into `target/jdbc-drivers` are only read. A
+  test that changes static state puts it back, so that no class depends on another or on its order.
+- A test of a give-up that is never answered waits out a bound of one second, core's
+  `ShortEnding`, in place of `Execution.ENDING`, and fails where it lasts as long as that; one
+  test, in `AbandonBoundTest`, waits out the ten seconds as shipped.
 - Tests open no real windows and need no display, except the opt-in measurement of the performance
   budget below. Tests of `core` need neither the UI framework nor a database that is not started by
   the test itself.
@@ -375,7 +390,7 @@ the user may write, such as `~/.local/opt/HooriDB`.
 - A version with a SemVer pre-release part, such as `X.Y.Z-rc.1`, is a pre-release: `release.yml`
   marks its GitHub release as one, and nightlies and update channels treat it as one too, never
   offering it as stable.
-- Nightlies: each night at 03:00 UTC, and by hand, `nightly.yml` builds main when it changed since
+- Nightlies: each night at 06:07 UTC, and by hand, `nightly.yml` builds main when it changed since
   the last nightly as `X.Y.Z-nightly.YYYYMMDDHHMM`, main's version without `-SNAPSHOT` and the UTC
   minute, set for the build alone, and publishes it as a pre-release of the tag
   `vX.Y.Z-nightly.YYYYMMDDHHMM` with the same assets, never marked Latest, which stays on the stable

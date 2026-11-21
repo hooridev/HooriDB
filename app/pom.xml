@@ -87,7 +87,7 @@
           <!-- The tests run on the class path, where the framework is an unnamed module. -->
           <argLine>--enable-native-access=ALL-UNNAMED</argLine>
           <systemPropertyVariables>
-            <rethinkj.ui.natives.cache>${project.build.directory}/natives-cache</rethinkj.ui.natives.cache>
+            <rethinkj.ui.natives.cache>${project.build.directory}/natives-cache-${surefire.forkNumber}</rethinkj.ui.natives.cache>
           </systemPropertyVariables>
         </configuration>
       </plugin>

@@ -1,6 +1,7 @@
+import { Database, Download, Monitor } from 'lucide-react';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
-import { Database, Download, Monitor } from 'lucide-react';
+
 import { Shot } from '@/components/shot';
 import { download, repository } from '@/lib/shared';
 
@@ -9,7 +10,8 @@ import { download, repository } from '@/lib/shared';
 const content = {
   hero: {
     title: 'HooriDB',
-    tagline: 'A desktop database manager for browsing schemas, reading table rows and documents, and running SQL or MongoDB shell statements.',
+    tagline:
+      'A desktop database manager for browsing schemas, reading table rows and documents, and running SQL or MongoDB shell statements.',
     download: 'Download',
     docs: 'Read the docs',
     platforms: 'Windows 11 and Linux, x64',
@@ -37,7 +39,7 @@ const content = {
       points: [
         'Rows load as you scroll, with buttons to move one screen up or down or jump to the start and known end',
         'Side value panel with formatted, syntax-colored JSON; reads shortened table values whole by primary key when the table has one',
-        'Timestamps with a time zone shown and copied in your computer\'s time zone',
+        "Timestamps with a time zone shown and copied in your computer's time zone",
       ],
       link: 'Read about table data',
       href: '/docs/features/table-data',
@@ -118,7 +120,15 @@ const content = {
 };
 
 /** A link that opens the docs in place and anything outside the site as an ordinary link. */
-function Go({ href, className, children }: { href: string; className?: string; children: ReactNode }) {
+function Go({
+  href,
+  className,
+  children,
+}: {
+  href: string;
+  className?: string;
+  children: ReactNode;
+}) {
   return href.startsWith('/') ? (
     <Link href={href} className={className}>
       {children}
@@ -161,7 +171,10 @@ export default function HomePage() {
             {hero.tagline}
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <a href={download} className={`${button} bg-hd-accent text-hd-accent-foreground hover:opacity-90`}>
+            <a
+              href={download}
+              className={`${button} bg-hd-accent text-hd-accent-foreground hover:opacity-90`}
+            >
               <Download className="size-4" aria-hidden />
               {hero.download}
             </a>
@@ -181,20 +194,28 @@ export default function HomePage() {
           </ul>
           <div className="relative isolate mt-14 md:mt-20">
             <Grid />
-            <Shot name={hero.shot} alt={hero.alt} className="my-0 shadow-xl shadow-black/5 dark:shadow-black/40 rounded-xl" />
+            <Shot
+              name={hero.shot}
+              alt={hero.alt}
+              className="my-0 shadow-xl shadow-black/5 dark:shadow-black/40 rounded-xl"
+            />
           </div>
         </section>
 
         <section className="mx-auto max-w-[1200px] px-4 py-20 md:px-8 md:py-28">
           <div className="flex flex-col gap-20 md:gap-28">
-            {features.map((feature, i) => (
+            {features.map((feature, index) => (
               <article
                 key={feature.href}
                 className="grid items-center gap-8 md:grid-cols-12 md:gap-12"
               >
-                <div className={`md:col-span-5 ${i % 2 ? 'md:order-2' : ''}`}>
-                  <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">{feature.title}</h2>
-                  <p className="mt-4 max-w-[36rem] leading-relaxed text-fd-muted-foreground">{feature.text}</p>
+                <div className={`md:col-span-5 ${index % 2 ? 'md:order-2' : ''}`}>
+                  <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
+                    {feature.title}
+                  </h2>
+                  <p className="mt-4 max-w-[36rem] leading-relaxed text-fd-muted-foreground">
+                    {feature.text}
+                  </p>
                   <ul className="mt-5 flex flex-col gap-2 text-sm">
                     {feature.points.map((point) => (
                       <li key={point} className="flex gap-3">
@@ -207,7 +228,7 @@ export default function HomePage() {
                     {feature.link}
                   </Link>
                 </div>
-                <div className={`md:col-span-7 ${i % 2 ? 'md:order-1' : ''}`}>
+                <div className={`md:col-span-7 ${index % 2 ? 'md:order-1' : ''}`}>
                   <Shot name={feature.shot} alt={feature.alt} className="my-0" />
                 </div>
               </article>
@@ -219,10 +240,12 @@ export default function HomePage() {
           <div className="mx-auto max-w-[1200px] px-4 py-16 md:px-8 md:py-20">
             <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">{about.title}</h2>
             <div className="mt-10 grid gap-10 md:grid-cols-3 md:gap-0 md:divide-x">
-              {about.items.map((item, i) => (
-                <div key={item.title} className={i ? 'md:pl-8' : 'md:pr-8'}>
+              {about.items.map((item, index) => (
+                <div key={item.title} className={index ? 'md:pl-8' : 'md:pr-8'}>
                   <h3 className="font-semibold">{item.title}</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-fd-muted-foreground">{item.text}</p>
+                  <p className="mt-2 text-sm leading-relaxed text-fd-muted-foreground">
+                    {item.text}
+                  </p>
                   <Go href={item.href} className={`mt-4 inline-block text-sm ${textLink}`}>
                     {item.link}
                   </Go>

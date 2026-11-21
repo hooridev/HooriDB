@@ -1,6 +1,7 @@
 package dev.hoori.db.core.connection;
 
 import dev.hoori.db.core.driver.Maven;
+import java.io.Serial;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -99,6 +100,9 @@ public record ConnectionProfile(
 
   /** A profile that cannot connect as it is. Its message names the problems, not the values. */
   public static final class UnfitException extends Exception {
+    @Serial
+    private static final long serialVersionUID = 1L;
+
     private final transient Set<Problem> problems;
 
     UnfitException(Set<Problem> problems) {

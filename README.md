@@ -63,11 +63,13 @@ mvn -Pbundle verify                       # build the release bundle for this pl
 | `core/` | `hooridb-core` | Connections, metadata, and queries (no UI dependencies). |
 | `app/` | `hooridb-app` | Desktop app: state, views, and windows (`dev.hoori.db.app.HooriDb`). |
 
-The website and documentation live in `docs/` (requires Node.js 24 or later):
+The website and documentation live in `docs/` (requires [Bun](https://bun.com) 1.4.5 and Node.js 24 or later):
 
 ```sh
-cd docs && npm ci && npm run dev
+cd docs && bun install && bun run dev
 ```
+
+`bun install` also puts the Bun that the website's scripts run into `docs/node_modules`: the canary `1.4.5-canary.20261120.1`, pinned in `package.json` and `bun.lock`, as the first Bun with a linter. In `docs/`, `bun run lint` (rules in `.oxlintrc.json`), `bun run fmt` (settings in `bunfig.toml`) and `bun run check` (types) run it by its path, as the website's workflow does; a plain `bun fmt` or `bun check` runs the Bun on the `PATH` instead.
 
 ## Contributing
 
