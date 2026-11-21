@@ -737,6 +737,6 @@ final class Frame {
   }
 
   private static Menu.Item themeItem(State s, Theme theme, String name) {
-    return Menu.item(name, () -> s.theme(theme, name)).checked(s.theme == theme);
+    return Menu.item(name, () -> s.useTheme(theme, name)).checked(s.theme == theme);
   }
 }
