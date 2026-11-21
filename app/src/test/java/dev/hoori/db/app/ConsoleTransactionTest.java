@@ -2451,7 +2451,8 @@ class ConsoleTransactionTest {
               connection,
               Provider.POSTGRESQL,
               dev.hoori.db.core.connection.ServerVersion.UNKNOWN,
-              "shop"),
+              "shop",
+              false),
           SHOP,
           ConnectionsTest.PASSWORD.toCharArray(),
           null);
@@ -2489,7 +2490,8 @@ class ConsoleTransactionTest {
             stuck.connection(),
             Provider.POSTGRESQL,
             dev.hoori.db.core.connection.ServerVersion.UNKNOWN,
-            "shop")
+            "shop",
+            false)
         : servers.open(profile, password, driver);
     try {
       var app = c.app(mixed, () -> new Keyring.Available(c.secrets), SHOP);

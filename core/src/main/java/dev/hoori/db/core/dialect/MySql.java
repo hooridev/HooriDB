@@ -177,10 +177,13 @@ public final class MySql extends MySqlFamily {
       return address.replace("%", "%25");
     }
 
-    // Else Connector/J applies JDBC escapes to a prepared statement, also inside a quoted name.
+    // Else Connector/J applies JDBC escapes to a prepared statement, also inside a quoted name;
+    // and on a read-only session it refuses a write by its own reading of the text, in place of the
+    // server's error.
     @Override
     public Map<String, String> properties() {
-      return Map.of("processEscapeCodesForPrepStmts", "false");
+      return Map.of(
+          "processEscapeCodesForPrepStmts", "false", "readOnlyPropagatesToServer", "false");
     }
 
     @Override

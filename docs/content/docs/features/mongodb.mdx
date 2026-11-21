@@ -41,7 +41,7 @@ Expanding a MongoDB connection in the tree shows its databases, then their colle
 
 Open a collection or view as you open a table (double-click it, or select it and press `Enter`). The **Show documents as** switch in the toolbar has three views:
 
-- **Grid**: the fields as columns, read in pages as you scroll, with the same paging buttons, row count, copying, and [value panel](/docs/features/table-data#inspect-a-cell-in-the-value-panel) as a table. A document or an array in a cell is shown as Relaxed Extended JSON, which the value panel formats and colors when the field holds only documents or arrays. A value shortened in the grid is read whole by its document's `_id`.
+- **Grid**: the fields as columns, read in pages as you scroll, with the same paging buttons, row count, copying, and [value panel](/docs/features/table-data#inspect-a-cell-in-the-value-panel) as a table. A document or an array in a cell is shown as Relaxed Extended JSON, which the value panel formats and colors when the field holds only documents or arrays. A value shortened in the grid is read whole by its document's `_id`. A field that a document does not have is an empty cell, which copies as empty text and for which the value panel shows **No such field**; a field that is `null` shows `NULL`.
 - **JSON**: 200 documents at a time as a formatted array of Relaxed Extended JSON. The paging buttons in the status bar move between pages, as in the grid.
 - **Tree**: the same 200 documents, each as a tree of its fields.
 
@@ -49,7 +49,7 @@ Documents are read in pages ordered by `_id`. The status bar shows the document 
 
 ## Run shell statements in a console
 
-**New console** on a MongoDB connection opens a console for MongoDB shell statements. HooriDB parses them itself without JavaScript and sends each as a server command; `use` and `db.getName()` are handled locally by HooriDB. Statements end at a semicolon or at the end of a complete line. You run them the same way as in an [SQL console](/docs/features/console) (the statement at the caret, the selection, or all statements), with **Cancel**, Messages, pinned results, History, and consoles kept across restarts.
+**New console** on a MongoDB connection opens a console for MongoDB shell statements. HooriDB parses them itself without JavaScript and sends each as a server command; `use` and `db.getName()` are handled locally by HooriDB. Statements end at a semicolon or at the end of a complete line. You run them the same way as in an [SQL console](/docs/features/console) (the statement at the caret, the selection, or all statements), with **Cancel**, Messages, pinned results, History, [saved queries](/docs/features/saved-queries), and consoles kept across restarts.
 
 The console understands:
 

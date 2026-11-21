@@ -44,22 +44,25 @@ switching auto-commit or the database, disconnecting, changing or deleting its c
 closing HooriDB ask first while one may be open. In Manual, and while a transaction is open, it
 reads each result whole before showing it and keeps the first 100,000 rows of each, asking first
 where the server's plan estimates more; it asks before an UPDATE or DELETE without a WHERE in any
-mode; while a change of its connection is saved or deleted it runs nothing. What finishing a
-session's work reports, a read's commit as it is given up, Commit's or Rollback's failure or
-warnings, a closing session's failure, and any outcome of a call on its session that the console no
-longer takes, as when it was cancelled or closed, goes to a list of notices in the main window until
-dismissed, and stops what waited on it; a Commit or Rollback that fails or does not answer can be
-left by ending the connection; closing a session ends within a bound, and Exit, also without the
-workspace's file, waits for the sessions it ends and stays open on a failure. The system keyring's
-calls run one after another; one that does not answer can be given up, and what is asked of the
-keyring next waits behind it; a saved password it does not give in time is asked of the user, and
-where the dialog does not know what the keyring holds, not keeping the password there deletes it. A
-command palette (Control+Shift+P, or the View menu) runs the menus' commands in its window, and
-after `@` (Control+P) finds the tables and views the tree has read by name and opens one, reading a
-database it has not read when chosen; the menus give keys to a new console, closing a tab, the next
-and previous tab, and the focus on the tree or the tab. Consoles are kept: their texts, connections
-and databases are saved a moment after each change, beside the workspace, and reopened unconnected
-at the next start; each statement run from a console goes into its connection's history
+mode; while a change of its connection is saved or deleted it runs nothing. A connection to a server
+of SQL may be read-only: each of its sessions, the tree's, a console's and the planner's, is
+read-only at the server from its opening, on any database, so that the server refuses what writes,
+and a statement that would turn that off is not sent. What finishing a session's work reports, a
+read's commit as it is given up, Commit's or Rollback's failure or warnings, a closing session's
+failure, and any outcome of a call on its session that the console no longer takes, as when it was
+cancelled or closed, goes to a list of notices in the main window until dismissed, and stops what
+waited on it; a Commit or Rollback that fails or does not answer can be left by ending the
+connection; closing a session ends within a bound, and Exit, also without the workspace's file,
+waits for the sessions it ends and stays open on a failure. The system keyring's calls run one after
+another; one that does not answer can be given up, and what is asked of the keyring next waits
+behind it; a saved password it does not give in time is asked of the user, and where the dialog does
+not know what the keyring holds, not keeping the password there deletes it. A command palette
+(Control+Shift+P, or the View menu) runs the menus' commands in its window, and after `@`
+(Control+P) finds the tables and views the tree has read by name and opens one, reading a database
+it has not read when chosen; the menus give keys to a new console, closing a tab, the next and
+previous tab, and the focus on the tree or the tab. Consoles are kept: their texts, connections and
+databases are saved a moment after each change, beside the workspace, and reopened unconnected at
+the next start; each statement run from a console goes into its connection's history
 (`history.json`, at most 1,000 a connection, owner-only), which History lists, searches, inserts
 from and clears; Save query keeps the selection, or else the whole text, under a name
 (`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. The
@@ -77,8 +80,9 @@ port; its user may be defined in a database other than `admin`, which it names (
 may be read-only, which sends only commands that read, as find, aggregate without `$out` or `$merge`
 and counts, and refuses the others unsent. Its databases and collections show in the tree, with the
 fields that a sample of their documents has; a collection opens in a tab as a grid of its fields,
-read in pages, with a document or an array in a cell as Relaxed Extended JSON, or a page of
-documents at a time as Relaxed Extended JSON or as a tree of their fields. Its console runs
+read in pages, with a document or an array in a cell as Relaxed Extended JSON and a field a
+document does not have as an empty cell, where a `null` shows NULL, or a page of documents at a
+time as Relaxed Extended JSON or as a tree of their fields. Its console runs
 statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls, `aggregate`,
 counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their documents in
 the same three ways, underlines where a statement goes wrong, lays its statements out with
@@ -202,7 +206,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   they see the driver and core; the bridge speaks to core in core's values alone (`Document`,
   `Bson`) and names none of the driver's classes in `MongoBridge` itself, so that it loads beside
   any JAR. Every command goes through `DocumentSession.command`, which is where a read-only
-  connection refuses what `Commands.reads` does not let through.
+  connection refuses what `Commands.reads` does not let through. A read-only connection to a server
+  of SQL is made so by `Connector.open`, with the dialect's `connecting().readOnly()`, and its
+  `Execution` does not send what `ReadWrite` finds may turn that off.
 - Credentials never go into logs, exceptions' messages, element trees or stored images.
 - Code, comments, messages and docs are in American English, as the UI framework's are: color, gray,
   catalog, behavior, initialize. "Cancelled" stays as Java writes it.

@@ -5,6 +5,7 @@ import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import java.time.Instant;
@@ -22,7 +23,7 @@ import java.util.Set;
 /**
  * The values of documents as a grid shows them: a field a column, with the {@link Kind} its types
  * have in common, and each value of the Java type that kind says. A field a document lacks is
- * {@code null}, as a field that is null. A document or an array is its Relaxed Extended JSON, of
+ * {@link Missing#FIELD}, and one that is null {@code null}. A document or an array is its Relaxed Extended JSON, of
  * {@link Kind#JSON} where the field holds only them, and a value of another type than the
  * column's the shell's text of it, each cut short beyond {@link Rows#LIMIT} characters.
  */
@@ -101,7 +102,9 @@ public final class Values {
   public static List<Object> row(List<Field> fields, Document document) {
     var row = new ArrayList<Object>(fields.size());
     for (var field : fields) {
-      row.add(value(document.get(field.name()), field.kind()));
+      var value = document.get(field.name());
+      row.add(
+          value != null || document.has(field.name()) ? value(value, field.kind()) : Missing.FIELD);
     }
     return Collections.unmodifiableList(row);
   }

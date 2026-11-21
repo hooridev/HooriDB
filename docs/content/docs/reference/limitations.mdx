@@ -37,7 +37,6 @@ Some of these limits are tracked in [issue #57](https://github.com/hooridev/Hoor
 
 - Connections support a single host and port, or a `mongodb+srv://` host. Host lists are not supported, and the options a `mongodb+srv://` host lists in its DNS TXT record, such as `replicaSet` or `loadBalanced`, are not read.
 - Only user name and password authentication (SCRAM) is supported: no X.509 certificates, LDAP, Kerberos, or AWS IAM, which authenticate against `$external`.
-- A missing field appears in the grid the same as a `null` field. **JSON** and **Tree** show the difference.
 - Pages are read by offset, ordered by `_id`. On a view that projects out or duplicates `_id`, documents can repeat or be skipped between pages.
 - A collection's fields in the tree and grid come from a sample of 100 documents, so fields absent from that sample do not appear there; **JSON** and **Tree** still show them.
 - The console parses [shell statements](/docs/features/mongodb#run-shell-statements-in-a-console) without JavaScript: variables, functions, and loops are not supported.
@@ -45,7 +44,11 @@ Some of these limits are tracked in [issue #57](https://github.com/hooridev/Hoor
 
 ## Connections and appearance
 
-- **Read-only** is available only for MongoDB connections.
+- **Read-only** on PostgreSQL, MySQL, and MariaDB uses the server's read-only transactions, which do not cover everything a statement can do (see [SQL console](/docs/features/console#read-only-connections)):
+  - Statements that act outside the tables still run, such as advisory locks (`pg_advisory_lock`, `GET_LOCK`), `NOTIFY`, `VACUUM`, `ANALYZE`, and `CHECKPOINT` on PostgreSQL, `ANALYZE TABLE` on MariaDB, functions that reach outside the transaction, as through `dblink`, and `COMMIT PREPARED` (PostgreSQL) or `XA COMMIT` (MySQL and MariaDB) of a transaction that another session prepared.
+  - `SET` still changes the session's other settings.
+  - HooriDB finds a statement that would turn read-only off by its text. It does not see one put together at run time, such as a setting's name joined from two strings, nor an existing function, procedure, or trigger that turns it off; after such a statement, the session can write.
+  - For a hard limit, log in as a user who has only read permissions.
 - There is no built-in support for SSH tunnels, client TLS certificates, or custom driver parameters.
 - Connections cannot be imported or exported from the UI.
 - Theme selection (**Dark theme** / **Light theme**) is not saved across restarts; HooriDB starts in dark theme each time.

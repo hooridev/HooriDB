@@ -16,11 +16,13 @@ import java.util.regex.Pattern;
  * {@link #problems} says what keeps it from connecting. The password is not part of it: it is kept
  * in the system keyring under the id. The color that marks it is null for none, and the version
  * of its driver is null for the recommended one. A read-only connection to a server of documents
- * sends only commands that read, as {@link dev.hoori.db.core.document.Commands#reads} says; a
- * server of SQL does not take it. Neither does it SRV: the host of such a profile names a DNS SRV
- * record that lists the servers, as {@code mongodb+srv://} does, and its port is not used. The
- * database its user is defined in, MongoDB's {@code authSource}, is empty for the provider's
- * default, also for a server of SQL, which has none. In the workspace it is an entry of its own.
+ * sends only commands that read, as {@link dev.hoori.db.core.document.Commands#reads} says; one to
+ * a server of SQL has the server keep its sessions read-only, as {@link
+ * dev.hoori.db.core.connect.Connector#open} does. A server of SQL does not take SRV: the host of
+ * such a profile names a DNS SRV record that lists the servers, as {@code mongodb+srv://} does, and
+ * its port is not used. The database its user is defined in, MongoDB's {@code authSource}, is
+ * empty for the provider's default, also for a server of SQL, which has none. In the workspace it
+ * is an entry of its own.
  */
 public record ConnectionProfile(
     UUID id,

@@ -492,7 +492,11 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   public static boolean names(List<Column> columns, List<Object> row) {
     var keys = keys(columns);
     return !keys.isEmpty()
-        && keys.stream().allMatch(i -> i < row.size() && row.get(i) != null && whole(row.get(i)));
+        && keys.stream()
+            .allMatch(i -> i < row.size()
+                && row.get(i) != null
+                && row.get(i) != Missing.FIELD
+                && whole(row.get(i)));
   }
 
   private static void requireValues(List<Column> columns, Map<Integer, Object> values) {

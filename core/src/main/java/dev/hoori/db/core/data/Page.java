@@ -5,8 +5,9 @@ import java.util.List;
 
 /**
  * Rows of a table or view, with their columns. Each row holds a value per field, in the fields'
- * order, of the Java type that the field's {@link Kind} says; the lists cannot be changed. Of a
- * collection of documents, the documents too, whole, a row each; of a table, none.
+ * order, of the Java type that the field's {@link Kind} says, or {@link Missing#FIELD} where a
+ * document lacks the field; the lists cannot be changed. Of a collection of documents, the
+ * documents too, whole, a row each; of a table, none.
  */
 public record Page(List<Field> fields, List<List<Object>> rows, List<Document> documents) {
 

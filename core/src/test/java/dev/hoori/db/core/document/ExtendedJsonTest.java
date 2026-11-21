@@ -5,8 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Rows;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -81,6 +83,13 @@ class ExtendedJsonTest {
     assertEquals(
         List.of("{\"x\": 1}", "[1]"),
         Values.row(fields, Document.of("a", Document.of("x", 1), "b", List.of(1))));
+  }
+
+  @Test
+  void aFieldADocumentLacksIsMissingAndANullIsNull() {
+    var fields = Values.found(List.of(Document.of("a", 1), Document.of("b", null)));
+    assertEquals(Arrays.asList(Missing.FIELD, null), Values.row(fields, Document.of("b", null)));
+    assertEquals(Arrays.asList(1L, Missing.FIELD), Values.row(fields, Document.of("a", 1)));
   }
 
   @Test
