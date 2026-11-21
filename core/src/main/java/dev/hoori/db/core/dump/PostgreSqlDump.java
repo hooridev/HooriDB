@@ -83,11 +83,8 @@ public final class PostgreSqlDump extends DumpDialect {
       autoCommit(connection, provider, false);
       Sql.execute(
           connection, provider, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY");
-      Sql.rows(
-          connection,
-          provider,
-          "SELECT pg_catalog.set_config('search_path', '', true)",
-          rows -> rows.getString(1));
+      // No SELECT before lock(), as the first fixes the snapshot.
+      Sql.execute(connection, provider, "SET LOCAL search_path = ''");
       Sql.execute(connection, provider, "SET LOCAL row_security = off");
       Sql.execute(connection, provider, "SET LOCAL IntervalStyle = 'postgres'");
       Sql.execute(connection, provider, "SET LOCAL DateStyle = 'ISO, YMD'");
@@ -105,7 +102,8 @@ public final class PostgreSqlDump extends DumpDialect {
   // ACCESS SHARE, as pg_dump takes it: what reads or writes rows goes on, and what changes a
   // table's definition, drops it or empties it waits for the export. A session that holds one
   // already gets the bound to let go of it, after which the export fails rather than holding up
-  // everything that waits behind it.
+  // everything that waits behind it. Taken before the snapshot, which the first SELECT fixes, so
+  // that it holds what such a session committed: of a table it emptied, the rows it put back.
   @Override
   void lock(Connection connection, Provider provider, List<Item> tables) throws QueryException {
     if (tables.isEmpty()) {
@@ -115,12 +113,9 @@ public final class PostgreSqlDump extends DumpDialect {
         .map(t -> "ONLY " + qualified(provider, t.container().name(), t.name()))
         .collect(Collectors.joining(", "));
     var was = Sql.one(
-        connection,
-        provider,
-        LOCK_TIMEOUT,
-        "SELECT pg_catalog.current_setting('" + LOCK_TIMEOUT + "')",
-        rows -> rows.getString(1));
-    setting(connection, provider, LOCK_TIMEOUT, LOCK_WAIT.toMillis() + "ms");
+        connection, provider, LOCK_TIMEOUT, "SHOW " + LOCK_TIMEOUT, rows -> rows.getString(1));
+    Sql.execute(
+        connection, provider, "SET LOCAL " + LOCK_TIMEOUT + " = '" + LOCK_WAIT.toMillis() + "ms'");
     try {
       Sql.execute(connection, provider, "LOCK TABLE " + names + " IN ACCESS SHARE MODE");
     } catch (QueryException e) {

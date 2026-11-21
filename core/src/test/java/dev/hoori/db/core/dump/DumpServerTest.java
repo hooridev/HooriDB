@@ -27,6 +27,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -352,6 +354,51 @@ class DumpServerTest {
       } finally {
         execute(other, "ROLLBACK");
       }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aTableRefilledWhileTheExportWaitsForItGoesWithItsNewRows(Provider provider)
+      throws Exception {
+    assumeTrue(provider == Provider.POSTGRESQL, "Only PostgreSQL's export locks its tables");
+    try (var databases = new Databases(provider);
+        var other = databases.open(databases.source);
+        var executor = Executors.newSingleThreadExecutor()) {
+      var file = folder.resolve("refilled.sql");
+      var choice = new Dump.Choice(
+          new Database(databases.source, false),
+          List.of(Item.of(databases.container(), Item.Kind.TABLE, "scratch")),
+          Dump.Content.DATA,
+          Dump.Options.DEFAULT);
+      execute(other, "BEGIN");
+      execute(other, "TRUNCATE scratch");
+      execute(other, "INSERT INTO scratch VALUES ('refilled')");
+      try (var connection = databases.open(databases.source)) {
+        var written = executor.submit(
+            () -> Dump.write(connection, provider, choice, file, (item, rows) -> {}));
+        // Committed once the export waits for the table, before its snapshot.
+        var until = System.nanoTime() + TIMEOUT.toNanos();
+        while (!waitsForALock(other)) {
+          assertTrue(System.nanoTime() < until, "The export never waited for the table");
+          Thread.sleep(20);
+        }
+        execute(other, "COMMIT");
+        assertEquals(1, written.get(TIMEOUT.toSeconds(), TimeUnit.SECONDS).rows());
+      }
+      var text = Files.readString(file);
+      assertTrue(text.contains("'refilled'"), text);
+    }
+  }
+
+  private static boolean waitsForALock(Connection connection) throws SQLException {
+    try (var statement = connection.createStatement();
+        var result = statement.executeQuery("""
+            SELECT count(*) FROM pg_catalog.pg_locks l JOIN pg_catalog.pg_database d
+              ON d.oid = l.database
+            WHERE NOT l.granted AND d.datname = pg_catalog.current_database()""")) {
+      result.next();
+      return result.getLong(1) > 0;
     }
   }
 
