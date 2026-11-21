@@ -47,6 +47,9 @@ class ReadWriteTest {
       turnsOff(p, "/*!50000 PREPARE s FROM 'SET SESSION TRANSACTION READ WRITE' */");
     }
     turnsOff(Provider.MARIADB, "SET SESSION AUTHORIZATION 'other'@'%'");
+    turnsOff(Provider.MARIADB, "RESET\nCONNECTION");
+    turnsOff(Provider.MARIADB, "/*! RESET CONNECTION */");
+    turnsOff(Provider.MARIADB, "PREPARE reset FROM 'RESET CONNECTION'");
     turnsOff(Provider.MYSQL, "CREATE TABLE t (id integer) ENGINE=InnoDB START TRANSACTION");
   }
 
@@ -68,6 +71,7 @@ class ReadWriteTest {
               + p.dialect().syntax().identifierQuote() + " FROM t");
     }
     keeps(Provider.MYSQL, "SHOW VARIABLES LIKE 'transaction_read_only'");
+    keeps(Provider.MARIADB, "SELECT reset_connection FROM session_status");
     keeps(Provider.POSTGRESQL, "RESET search_path");
     keeps(Provider.POSTGRESQL, "DISCARD PLANS");
   }
