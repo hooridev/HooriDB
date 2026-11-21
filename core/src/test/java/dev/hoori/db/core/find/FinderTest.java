@@ -11,6 +11,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.dialect.FindDialect.Holds;
 import dev.hoori.db.core.find.Search.Match;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -138,5 +139,29 @@ class FinderTest {
     assertEquals(
         Optional.of("db.getCollection('my orders').find({ name: { $regex: 'a\\\\.b' } })"),
         DocumentFinder.rows(collection, "name", new Search("a.b", Match.CONTAINS, true)));
+  }
+
+  @Test
+  void aDecimalGoesOnlyAsWhatCanHoldIt() {
+    var collection = new Table(new Database("hoori", false), "orders", Table.Kind.TABLE);
+    // More digits than a Decimal128 holds: as a double alone, which the driver takes.
+    var digits = "0.12345678901234567890123456789012345";
+    assertEquals(
+        Optional.of("db.getCollection('orders').find({ $or: [ { total: { $regex: '"
+            + digits.replace(".", "\\\\.") + "' } }, { total: { $in: [ 0.12345678901234568 ] } }"
+            + " ] })"),
+        DocumentFinder.rows(collection, "total", new Search(digits, Match.CONTAINS, true)));
+    // Beyond a double's range: as a Decimal128 alone.
+    assertEquals(
+        Optional.of("db.getCollection('orders').find({ $or: [ { total: { $regex: '1\\\\.5E400' } },"
+            + " { total: { $in: [ Decimal128('1.5E+400') ] } } ] })"),
+        DocumentFinder.rows(collection, "total", new Search("1.5E400", Match.CONTAINS, true)));
+    assertTrue(DocumentFinder.decimal128(new BigDecimal("1234567890123456789012345678901234")));
+    assertFalse(DocumentFinder.decimal128(new BigDecimal("12345678901234567890123456789012345")));
+    assertTrue(DocumentFinder.decimal128(new BigDecimal("1.20000000000000000000000000000000000")));
+    assertTrue(DocumentFinder.decimal128(new BigDecimal("1E6144")));
+    assertFalse(DocumentFinder.decimal128(new BigDecimal("1E6145")));
+    assertTrue(DocumentFinder.decimal128(new BigDecimal("1E-6176")));
+    assertFalse(DocumentFinder.decimal128(new BigDecimal("1E-6177")));
   }
 }

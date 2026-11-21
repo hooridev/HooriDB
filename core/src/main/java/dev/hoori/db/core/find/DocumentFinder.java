@@ -11,6 +11,7 @@ import dev.hoori.db.core.document.Shell;
 import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -29,6 +30,10 @@ import java.util.regex.Pattern;
  * DocumentSession#SAMPLE} documents, nested ones and those in arrays included, by their paths.
  */
 public final class DocumentFinder {
+
+  // The least exponent of a Decimal128's coefficient, and the greatest of its leading digit.
+  private static final int DECIMAL128_MIN_EXPONENT = -6176;
+  private static final int DECIMAL128_MAX_ADJUSTED = 6144;
 
   private DocumentFinder() {}
 
@@ -238,14 +243,32 @@ public final class DocumentFinder {
 
   // A number as the server compares it: a whole one as a long, which every type of number is
   // equal to; else as a double, for the doubles, or as a decimal of the text, for a Decimal128,
-  // which is equal to no double that is not exactly it, as 0.1 is not.
+  // which is equal to no double that is not exactly it, as 0.1 is not. Each only where it can
+  // hold the number: a double where it is finite, a Decimal128 where it is exact, which the
+  // driver refuses otherwise; and nothing of a number neither can hold, which no field equals.
   private static Object value(BigDecimal number) {
     try {
       return number.longValueExact();
     } catch (ArithmeticException _) {
-      return Document.of(
-          "$in", Document.array(number.doubleValue(), new Bson.Decimal128(number.toString())));
+      var operands = new ArrayList<Object>();
+      double asDouble = number.doubleValue();
+      if (Double.isFinite(asDouble)) {
+        operands.add(asDouble);
+      }
+      if (decimal128(number)) {
+        operands.add(new Bson.Decimal128(number.toString()));
+      }
+      return Document.of("$in", Document.array(operands));
     }
+  }
+
+  // Whether a Decimal128 holds the number exactly: at most 34 digits, at an exponent in its range.
+  static boolean decimal128(BigDecimal number) {
+    var stripped = number.stripTrailingZeros();
+    int exponent = -stripped.scale();
+    return stripped.precision() <= MathContext.DECIMAL128.getPrecision()
+        && exponent >= DECIMAL128_MIN_EXPONENT
+        && exponent + stripped.precision() - 1 <= DECIMAL128_MAX_ADJUSTED;
   }
 
   private static Optional<BigDecimal> number(Object value) {
