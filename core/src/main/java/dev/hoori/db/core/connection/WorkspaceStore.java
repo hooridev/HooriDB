@@ -8,6 +8,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -43,12 +44,19 @@ public final class WorkspaceStore {
   /** A larger file is refused unread; thousands of connections are far below it. */
   static final long MAX_SIZE = 16L << 20;
 
-  private final JsonFile file;
-  private final JsonFile connections;
+  // The names of the file's fields that more than one place reads or writes.
+  private static final String ENTRIES = "entries";
+  private static final String FOLDER = "folder";
+  private static final String CONNECTION = "connection";
+  private static final String COLOR = "color";
+  private static final String DRIVER_VERSION = "driverVersion";
+
+  private final JsonFile json;
+  private final JsonFile connectionsJson;
 
   public WorkspaceStore(Path folder) {
-    this.file = new JsonFile(folder, FILE, "connections", MAX_SIZE);
-    this.connections = new JsonFile(folder, CONNECTIONS, "connections", MAX_SIZE);
+    this.json = new JsonFile(folder, FILE, "connections", MAX_SIZE);
+    this.connectionsJson = new JsonFile(folder, CONNECTIONS, "connections", MAX_SIZE);
   }
 
   /**
@@ -56,7 +64,7 @@ public final class WorkspaceStore {
    * message says why and names the file.
    */
   public static final class UnreadableException extends IOException {
-    private final Path file;
+    private final transient Path file; // a Path is not serializable
 
     UnreadableException(String what, Path file, String why) {
       super("Cannot read the " + what + " in " + file + ": " + why + ".");
@@ -90,25 +98,24 @@ public final class WorkspaceStore {
    *     HooriDB's words, and its cause is what the file system threw
    */
   public Workspace load() throws IOException {
-    var bytes = file.load();
+    var bytes = json.load();
     if (bytes != null) {
       return parse(bytes);
     }
     // Only where the workspace is missing: in place of one that is there but could not be read,
     // the older list would bring back connections deleted since, without their passwords, and lose
     // those added since.
-    var older = connections.load();
+    var older = connectionsJson.load();
     return older == null ? Workspace.EMPTY : older(older);
   }
 
   // shortcut: folders nest some 248 deep, within the JSON parser's limit of 500, and a save of a
   // deeper workspace fails and leaves the file; parse and write without recursion to go deeper.
   private Workspace parse(byte[] bytes) throws UnreadableException {
-    var root = file.root(bytes, VERSION);
+    var root = json.root(bytes, VERSION);
     // Fields this version does not know are ignored: a later HooriDB may add one without raising
     // the version, as long as an older one can do without it. The older one drops it on a save.
-    return new Workspace(
-        entries(file.objects(root, "entries", "entry"), "entry ", new HashSet<>()));
+    return new Workspace(entries(json.objects(root, ENTRIES, "entry"), "entry ", new HashSet<>()));
   }
 
   // The entries of a level, numbered in messages after the prefix, as "entry 2.1" for the first in
@@ -120,35 +127,35 @@ public final class WorkspaceStore {
       var where = prefix + (i + 1);
       var node = list.get(i);
       if (!node.isObject()) {
-        throw file.unreadable(where + " is not a JSON object");
+        throw json.unreadable(where + " is not a JSON object");
       }
-      var kind = file.text(node, where, "kind");
-      if (!kind.equals("folder") && !kind.equals("connection")) {
-        throw file.unreadable("in " + where + ", \"kind\" is not \"folder\" or \"connection\"");
-      }
-      var id = id(file, node, where, ids);
       entries.add(
-          kind.equals("folder")
-              ? new Workspace.Folder(
-                  id,
-                  file.text(node, where, "name"),
-                  file.bool(node, where, "open"),
-                  entries(file.array(node, where, "entries"), where + ".", ids))
-              : profile(file, node, where, id));
+          switch (json.text(node, where, "kind")) {
+            case FOLDER ->
+              new Workspace.Folder(
+                  id(json, node, where, ids),
+                  json.text(node, where, "name"),
+                  json.bool(node, where, "open"),
+                  entries(json.array(node, where, ENTRIES), where + ".", ids));
+            case CONNECTION -> profile(json, node, where, id(json, node, where, ids));
+            default ->
+              throw json.unreadable(
+                  "in " + where + ", \"kind\" is not \"folder\" or \"connection\"");
+          });
     }
     return entries;
   }
 
   // The list of an older HooriDB: its version 1, with the profiles in their order.
   private Workspace older(byte[] bytes) throws UnreadableException {
-    var root = connections.root(bytes, 1);
-    var list = connections.objects(root, "profiles", "profile");
+    var root = connectionsJson.root(bytes, 1);
+    var list = connectionsJson.objects(root, "profiles", "profile");
     var ids = new HashSet<UUID>();
     var profiles = new ArrayList<Workspace.Entry>();
     for (int i = 0; i < list.size(); i++) {
       var where = "profile " + (i + 1);
       var node = list.get(i);
-      profiles.add(profile(connections, node, where, id(connections, node, where, ids)));
+      profiles.add(profile(connectionsJson, node, where, id(connectionsJson, node, where, ids)));
     }
     return new Workspace(profiles);
   }
@@ -175,9 +182,15 @@ public final class WorkspaceStore {
         tls(in, node, where),
         color(in, node, where),
         driverVersion(in, node, where),
-        node.get("readOnly") != null && in.bool(node, where, "readOnly"),
-        node.get("srv") != null && in.bool(node, where, "srv"),
+        optionalBool(in, node, where, "readOnly"),
+        optionalBool(in, node, where, "srv"),
         optionalText(in, node, where, "authDatabase"));
+  }
+
+  // False where it is missing, as in a file from before there was the field.
+  private static boolean optionalBool(JsonFile in, JsonNode node, String where, String field)
+      throws UnreadableException {
+    return node.get(field) != null && in.bool(node, where, field);
   }
 
   // Empty where it is missing, as in a file from before there was the field.
@@ -195,23 +208,18 @@ public final class WorkspaceStore {
    * @throws IOException if it could not be written, with a message as {@link #load} gives
    */
   public void save(Workspace workspace) throws IOException {
-    var root = JsonFile.Json.MAPPER.createObjectNode();
-    root.put("version", VERSION);
-    write(root.putArray("entries"), workspace.entries());
-    file.save(JsonFile.bytes(root), this::parse);
+    var root = JsonFile.newRoot(VERSION);
+    write(root.putArray(ENTRIES), workspace.entries());
+    json.save(JsonFile.bytes(root), this::parse);
   }
 
   private static void write(ArrayNode list, List<Workspace.Entry> entries) {
     for (var entry : entries) {
       var object = list.addObject();
       switch (entry) {
-        case Workspace.Folder folder -> {
-          object
-              .put("kind", "folder")
-              .put("id", folder.id().toString())
-              .put("name", folder.name())
-              .put("open", folder.open());
-          write(object.putArray("entries"), folder.entries());
+        case Workspace.Folder(var id, var name, var open, var inner) -> {
+          object.put("kind", FOLDER).put("id", id.toString()).put("name", name).put("open", open);
+          write(object.putArray(ENTRIES), inner);
         }
         case ConnectionProfile profile -> write(object, profile);
       }
@@ -220,7 +228,7 @@ public final class WorkspaceStore {
 
   private static void write(ObjectNode object, ConnectionProfile profile) {
     object
-        .put("kind", "connection")
+        .put("kind", CONNECTION)
         .put("id", profile.id().toString())
         .put("name", profile.name())
         .put("provider", stored(profile.provider()))
@@ -230,10 +238,10 @@ public final class WorkspaceStore {
         .put("user", profile.user())
         .put("tls", stored(profile.tls()));
     if (profile.color() != null) {
-      object.put("color", stored(profile.color()));
+      object.put(COLOR, stored(profile.color()));
     }
     if (profile.driverVersion() != null) {
-      object.put("driverVersion", profile.driverVersion());
+      object.put(DRIVER_VERSION, profile.driverVersion());
     }
     // Left out where it may write, as in a file from before there was the choice.
     if (profile.readOnly()) {
@@ -249,47 +257,63 @@ public final class WorkspaceStore {
 
   private static Provider provider(JsonFile in, JsonNode profile, String where)
       throws UnreadableException {
-    var value = in.text(profile, where, "provider");
-    for (var provider : Provider.values()) {
-      if (stored(provider).equals(value)) {
-        return provider;
-      }
-    }
-    throw in.unreadable("in " + where + ", \"provider\" is not a database HooriDB knows");
+    return choice(
+        in,
+        profile,
+        where,
+        "provider",
+        Provider.values(),
+        WorkspaceStore::stored,
+        "a database HooriDB knows");
   }
 
   private static Tls tls(JsonFile in, JsonNode profile, String where) throws UnreadableException {
-    var value = in.text(profile, where, "tls");
-    for (var tls : Tls.values()) {
-      if (stored(tls).equals(value)) {
-        return tls;
-      }
-    }
-    throw in.unreadable("in " + where + ", \"tls\" is not \"off\", \"encrypted\" or \"verified\"");
+    return choice(
+        in,
+        profile,
+        where,
+        "tls",
+        Tls.values(),
+        WorkspaceStore::stored,
+        "\"off\", \"encrypted\" or \"verified\"");
   }
 
   // Left out for none, as in a file written before there were colors.
   private static Color color(JsonFile in, JsonNode profile, String where)
       throws UnreadableException {
-    if (profile.get("color") == null) {
+    if (profile.get(COLOR) == null) {
       return null;
     }
-    var value = in.text(profile, where, "color");
-    for (var color : Color.values()) {
-      if (stored(color).equals(value)) {
-        return color;
+    return choice(
+        in, profile, where, COLOR, Color.values(), WorkspaceStore::stored, "a color HooriDB knows");
+  }
+
+  // The constant whose stored name the field holds; the message says what else it could be.
+  private static <E extends Enum<E>> E choice(
+      JsonFile in,
+      JsonNode profile,
+      String where,
+      String field,
+      E[] values,
+      Function<E, String> stored,
+      String expected)
+      throws UnreadableException {
+    var value = in.text(profile, where, field);
+    for (var constant : values) {
+      if (stored.apply(constant).equals(value)) {
+        return constant;
       }
     }
-    throw in.unreadable("in " + where + ", \"color\" is not a color HooriDB knows");
+    throw in.unreadable("in " + where + ", \"" + field + "\" is not " + expected);
   }
 
   // Left out for the recommended one, as in a file written before a version could be chosen.
   private static String driverVersion(JsonFile in, JsonNode profile, String where)
       throws UnreadableException {
-    if (profile.get("driverVersion") == null) {
+    if (profile.get(DRIVER_VERSION) == null) {
       return null;
     }
-    var value = in.text(profile, where, "driverVersion");
+    var value = in.text(profile, where, DRIVER_VERSION);
     if (!Maven.isVersion(value)) {
       throw in.unreadable("in " + where + ", \"driverVersion\" is not a version HooriDB accepts");
     }
