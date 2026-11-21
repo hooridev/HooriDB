@@ -1024,6 +1024,7 @@ final class MonitorTab implements Tab {
                   : null;
               selected = at == null ? null : at.id();
               selectedStart = at == null ? null : at.started();
+              went = false;
             },
             menu,
             menuItems(s),
