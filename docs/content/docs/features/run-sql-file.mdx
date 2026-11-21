@@ -38,7 +38,7 @@ Without **In one transaction**, each statement commits on its own, and what ran 
 ## Dumps and client commands
 
 - **MySQL and MariaDB dumps**: `DELIMITER` lines are handled as the `mysql` client handles them, so triggers and routines run whole, and version comments such as `/*!40101 … */` are sent to the server as they are.
-- **PostgreSQL plain dumps**: the rows after `COPY … FROM stdin`, up to the line `\.`, are sent through the driver's copy interface as they are read.
+- **PostgreSQL plain dumps**: the rows after `COPY … FROM stdin`, up to the line `\.`, are sent through the driver's copy interface as they are read. A `COPY … FROM stdin` with more than a comment after it on its line fails, as its rows begin on the next line. Functions and procedures whose body is `BEGIN ATOMIC … END` run whole, as in `psql`.
 - **psql commands**: `\restrict` and `\unrestrict`, which newer versions of `pg_dump` write, are skipped. Every other backslash command, such as `\connect`, stops the run with an error that names its line, because the statements after it may depend on it. To run a dump made with `pg_dump --create`, remove its `CREATE DATABASE` and `\connect` lines and choose the database in the dialog.
 
 Read-only connections run the file as a console would: the server refuses the statements that write.

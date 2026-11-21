@@ -18,17 +18,25 @@ import java.util.OptionalLong;
  * closed runs to the end of the text. For MariaDB and MySQL the client command {@code DELIMITER}
  * changes the terminator, as their command-line clients do: a line where a statement would begin
  * and whose first word is {@code DELIMITER}, in any case, is no statement, and its argument is the
- * terminator from then on.
+ * terminator from then on. Where the syntax has {@linkplain SyntaxDialect#atomicBodies bodies of
+ * BEGIN ATOMIC … END}, a terminator does not count inside one, as psql tracks it: in a statement
+ * that begins {@code CREATE [OR REPLACE] FUNCTION} or {@code PROCEDURE}, each {@code BEGIN} outside
+ * parentheses opens a block, and so does a {@code CASE} within one, which an {@code END} closes.
  *
  * <p>The scan is linear in the length of the text and never throws.
  */
-// shortcut: this scans characters and is no SQL parser, so a body that holds semicolons without
-// being quoted, such as PostgreSQL's BEGIN ATOMIC ... END or a MariaDB/MySQL routine written
-// without DELIMITER, is split at its inner semicolons; parse such bodies if users trip over it.
+// shortcut: this scans characters and is no SQL parser, so a MariaDB or MySQL routine written
+// without DELIMITER, whose body holds semicolons, is split at them, as their clients split it.
 public final class Statements {
 
   // What the clients of MariaDB and MySQL keep of a delimiter; they cut a longer one off.
   private static final int MAX_DELIMITER = 15;
+
+  // How far a statement's first words are those of CREATE [OR REPLACE] FUNCTION or PROCEDURE: 0
+  // before any, 1 after CREATE, 2 after OR, 3 after REPLACE, ROUTINE once they are, NOT_ROUTINE
+  // once they are not.
+  private static final int ROUTINE = 4;
+  private static final int NOT_ROUTINE = -1;
 
   private final String text;
   private final SyntaxDialect syntax;
@@ -44,6 +52,12 @@ public final class Statements {
   // What the last token() skipped, and whether a caret right after it is still inside it.
   private Piece.Kind kind;
   private boolean open;
+  // For bodies of BEGIN ATOMIC … END: how far the pending statement's first words are those of
+  // CREATE [OR REPLACE] FUNCTION or PROCEDURE, as routine() follows them, and how deep it is in
+  // parentheses and in blocks.
+  private int routine;
+  private int parens;
+  private int blocks;
 
   /**
    * A piece of a text of SQL as the server reads it: a comment, a string, a quoted name, or one
@@ -356,17 +370,28 @@ public final class Statements {
     // and comments; -1 while it holds nothing.
     int start = -1;
     int end = -1;
+    boolean bodies = syntax.atomicBodies();
     while (i < n) {
       int from = i;
       if (start < 0 && clientLine()) {
         // A line of the client's own, where a statement could begin, is none.
-      } else if (text.startsWith(delimiter, i)) {
+      } else if (blocks == 0 && text.startsWith(delimiter, i)) {
         i += delimiter.length();
         finish(start, end, i);
         start = -1;
+        routine = parens = 0;
       } else if (whitespace(text.charAt(i))) {
         i++;
+      } else if (bodies && word()) {
+        if (start < 0) {
+          start = from;
+        }
+        end = i;
       } else if (token()) {
+        if (bodies) {
+          char c = text.charAt(from);
+          parens += c == '(' ? 1 : c == ')' && parens > 0 ? -1 : 0;
+        }
         if (start < 0) {
           start = from;
         }
@@ -374,6 +399,49 @@ public final class Statements {
       }
     }
     finish(start, end, end);
+  }
+
+  // At a word that begins at i, as a token of code and no string such as E'…': takes it, and
+  // follows the blocks of a routine's body that it opens or closes; whether there was one.
+  private boolean word() {
+    int n = text.length();
+    if (!tagStart(text.charAt(i))
+        || identifierBefore()
+        || syntax.escapeStrings() && charAt(i + 1) == '\'') {
+      return false;
+    }
+    int from = i;
+    while (i < n && (tagStart(text.charAt(i)) || digit(text.charAt(i)) || text.charAt(i) == '$')) {
+      i++;
+    }
+    if (routine == NOT_ROUTINE || routine == ROUTINE && parens > 0) {
+      return true; // nothing to follow, nor a word to make
+    }
+    var word = Tokens.keyword(text.substring(from, i));
+    if (routine != ROUTINE) {
+      routine = routine(routine, word);
+    } else if (word.equals("BEGIN") || word.equals("CASE") && blocks > 0) {
+      blocks++;
+    } else if (word.equals("END") && blocks > 0) {
+      blocks--;
+    }
+    return true;
+  }
+
+  // What follows the next word of a statement, as its words are those of CREATE [OR REPLACE]
+  // FUNCTION or PROCEDURE.
+  private static int routine(int after, String word) {
+    return switch (after) {
+      case 0 -> word.equals("CREATE") ? 1 : NOT_ROUTINE;
+      case 1 -> word.equals("OR") ? 2 : routineWord(word);
+      case 2 -> word.equals("REPLACE") ? 3 : NOT_ROUTINE;
+      case 3 -> routineWord(word);
+      default -> after;
+    };
+  }
+
+  private static int routineWord(String word) {
+    return word.equals("FUNCTION") || word.equals("PROCEDURE") ? ROUTINE : NOT_ROUTINE;
   }
 
   // Takes a line that the client reads as its own at i, where a statement could begin: a

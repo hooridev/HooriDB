@@ -40,6 +40,38 @@ class StatementsTest {
   }
 
   @Test
+  void aBodyOfBeginAtomicIsOneStatement() {
+    var function = "CREATE FUNCTION f(a integer) RETURNS integer LANGUAGE sql\n"
+        + "BEGIN ATOMIC\n SELECT 1;\n SELECT CASE WHEN a > 0 THEN (a + 1) ELSE 0 END;\nEND";
+    var procedure = "create or replace procedure p() begin atomic insert into t values (1); end";
+    assertSplit(
+        POSTGRESQL,
+        function + ";\n" + procedure + ";\nSELECT 2; BEGIN; SELECT 3; END;",
+        function,
+        procedure,
+        "SELECT 2",
+        "BEGIN",
+        "SELECT 3",
+        "END");
+    // Not in parentheses, strings or comments, nor in other statements.
+    assertSplit(
+        POSTGRESQL,
+        "CREATE FUNCTION g(begin int) RETURNS int AS $$ BEGIN RETURN 1; END $$ LANGUAGE plpgsql;"
+            + " SELECT 'begin'; -- begin\nCREATE TABLE t (a int); DO $$BEGIN END$$; SELECT 4",
+        "CREATE FUNCTION g(begin int) RETURNS int AS $$ BEGIN RETURN 1; END $$ LANGUAGE plpgsql",
+        "SELECT 'begin'",
+        "CREATE TABLE t (a int)",
+        "DO $$BEGIN END$$",
+        "SELECT 4");
+    // MariaDB and MySQL split such a body, as their clients do without DELIMITER.
+    assertSplit(
+        MARIADB,
+        "CREATE PROCEDURE p() BEGIN SELECT 1; END;",
+        "CREATE PROCEDURE p() BEGIN SELECT 1",
+        "END");
+  }
+
+  @Test
   void offsetsLeaveOutWhitespaceCommentsAndTheSemicolon() {
     assertEquals(
         List.of(new Statement(2, 10), new Statement(21, 29)),

@@ -630,6 +630,12 @@ public final class PostgreSql implements Dialect {
       return false;
     }
 
+    // As psql reads them since PostgreSQL 14, which has them.
+    @Override
+    public boolean atomicBodies() {
+      return true;
+    }
+
     @Override
     public boolean userVariables() {
       return false;

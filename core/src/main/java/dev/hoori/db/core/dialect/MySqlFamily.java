@@ -420,6 +420,12 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return true;
     }
 
+    // A routine's body with semicolons needs DELIMITER, as their clients split at each.
+    @Override
+    public boolean atomicBodies() {
+      return false;
+    }
+
     @Override
     public boolean userVariables() {
       return true;
