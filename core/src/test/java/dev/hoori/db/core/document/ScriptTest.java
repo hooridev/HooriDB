@@ -115,6 +115,11 @@ class ScriptTest {
     var other = Script.parse("db.getSiblingDB('logs').events.find()");
     assertEquals("logs", other.database());
     assertEquals("events", other.command().get("find"));
+    // getSisterDB, the older name, does the same; a method that names its own database keeps it.
+    assertEquals("logs", Script.parse("db.getSisterDB('logs').getName()").database());
+    assertEquals(
+        "admin", Script.parse("db.getSisterDB('logs').adminCommand('ping')").database());
+    assertFalse(Script.DATABASE_METHODS.contains("getSisterDB"));
   }
 
   @Test
@@ -267,7 +272,7 @@ class ScriptTest {
   }
 
   @Test
-  void anUnclosedCommentStaysInItsStatement() throws Exception {
+  void anUnclosedCommentStaysInItsStatement() {
     var text = "db.a.insertOne({ x: 1 }) /* not closed";
     var pieces = Script.split(text);
     assertEquals(text, pieces.getFirst().text());

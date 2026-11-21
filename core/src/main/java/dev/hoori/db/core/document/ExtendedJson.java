@@ -41,59 +41,28 @@ public final class ExtendedJson {
       case Boolean b -> out.append(b);
       case Integer n -> out.append(n);
       case Long n -> out.append(n);
-      case Double n -> {
-        if (n.isNaN() || n.isInfinite()) {
-          wrapped(out, "$numberDouble", n.isNaN() ? "NaN" : n > 0 ? "Infinity" : "-Infinity");
-        } else {
-          out.append(n);
-        }
-      }
-      case Bson.Decimal128 n -> wrapped(out, "$numberDecimal", n.text());
+      case Double n when n.isNaN() || n.isInfinite() -> wrapped(out, "$numberDouble", nonFinite(n));
+      case Double n -> out.append(n);
+      case Bson.Decimal128(var text) -> wrapped(out, "$numberDecimal", text);
       case String s -> string(out, s);
-      case Instant i -> {
-        long millis = i.toEpochMilli();
-        out.append("{\"$date\": ");
-        if (millis >= FIRST && millis <= LAST) {
-          string(out, Shell.date(i));
-        } else {
-          wrapped(out, "$numberLong", Long.toString(millis));
-        }
-        out.append('}');
-      }
-      case Bson.ObjectId id -> wrapped(out, "$oid", id.hex());
-      case Bson.Binary b -> {
+      case Instant i -> date(out, i);
+      case Bson.ObjectId(var hex) -> wrapped(out, "$oid", hex);
+      case Bson.Binary(var subtype, var bytes) -> {
         out.append("{\"$binary\": {\"base64\": ");
-        string(out, Base64.getEncoder().encodeToString(b.bytes()));
+        string(out, Base64.getEncoder().encodeToString(bytes));
         out.append(", \"subType\": ");
-        string(out, String.format("%02x", b.subtype()));
+        string(out, String.format("%02x", subtype));
         out.append("}}");
       }
-      case Bson.Timestamp t ->
+      case Bson.Timestamp(var seconds, var increment) ->
         out.append("{\"$timestamp\": {\"t\": ")
-            .append(t.seconds())
+            .append(seconds)
             .append(", \"i\": ")
-            .append(t.increment())
+            .append(increment)
             .append("}}");
-      case Bson.Regex r -> {
-        out.append("{\"$regularExpression\": {\"pattern\": ");
-        string(out, r.pattern());
-        out.append(", \"options\": ");
-        // In alphabetical order, as Extended JSON has them.
-        var options = r.options().toCharArray();
-        java.util.Arrays.sort(options);
-        string(out, new String(options));
-        out.append("}}");
-      }
-      case Bson.Code c -> {
-        out.append("{\"$code\": ");
-        string(out, c.code());
-        if (c.scope() != null) {
-          out.append(", \"$scope\": ");
-          write(out, c.scope());
-        }
-        out.append('}');
-      }
-      case Bson.Symbol s -> wrapped(out, "$symbol", s.symbol());
+      case Bson.Regex(var pattern, var options) -> regex(out, pattern, options);
+      case Bson.Code(var code, var scope) -> code(out, code, scope);
+      case Bson.Symbol(var symbol) -> wrapped(out, "$symbol", symbol);
       case Bson.Special s ->
         out.append(
             switch (s) {
@@ -101,34 +70,77 @@ public final class ExtendedJson {
               case MAX_KEY -> "{\"$maxKey\": 1}";
               case UNDEFINED -> "{\"$undefined\": true}";
             });
-      case Document d -> {
-        out.append('{');
-        boolean first = true;
-        for (var entry : d.entries()) {
-          if (!first) {
-            out.append(", ");
-          }
-          first = false;
-          string(out, entry.name());
-          out.append(": ");
-          write(out, entry.value());
-        }
-        out.append('}');
-      }
-      case List<?> list -> {
-        out.append('[');
-        for (int i = 0; i < list.size(); i++) {
-          if (i > 0) {
-            out.append(", ");
-          }
-          write(out, list.get(i));
-        }
-        out.append(']');
-      }
+      case Document d -> document(out, d);
+      case List<?> list -> array(out, list);
       default ->
         throw new IllegalArgumentException(
             "Not a value of a document: " + value.getClass().getName());
     }
+  }
+
+  private static String nonFinite(double n) {
+    if (Double.isNaN(n)) {
+      return "NaN";
+    }
+    return n > 0 ? "Infinity" : "-Infinity";
+  }
+
+  private static void date(StringBuilder out, Instant instant) {
+    long millis = instant.toEpochMilli();
+    out.append("{\"$date\": ");
+    if (millis >= FIRST && millis <= LAST) {
+      string(out, Shell.date(instant));
+    } else {
+      wrapped(out, "$numberLong", Long.toString(millis));
+    }
+    out.append('}');
+  }
+
+  private static void regex(StringBuilder out, String pattern, String options) {
+    out.append("{\"$regularExpression\": {\"pattern\": ");
+    string(out, pattern);
+    out.append(", \"options\": ");
+    // In alphabetical order, as Extended JSON has them.
+    var sorted = options.toCharArray();
+    java.util.Arrays.sort(sorted);
+    string(out, new String(sorted));
+    out.append("}}");
+  }
+
+  private static void code(StringBuilder out, String code, Document scope) {
+    out.append("{\"$code\": ");
+    string(out, code);
+    if (scope != null) {
+      out.append(", \"$scope\": ");
+      write(out, scope);
+    }
+    out.append('}');
+  }
+
+  private static void document(StringBuilder out, Document document) {
+    out.append('{');
+    boolean first = true;
+    for (var entry : document.entries()) {
+      if (!first) {
+        out.append(", ");
+      }
+      first = false;
+      string(out, entry.name());
+      out.append(": ");
+      write(out, entry.value());
+    }
+    out.append('}');
+  }
+
+  private static void array(StringBuilder out, List<?> list) {
+    out.append('[');
+    for (int i = 0; i < list.size(); i++) {
+      if (i > 0) {
+        out.append(", ");
+      }
+      write(out, list.get(i));
+    }
+    out.append(']');
   }
 
   private static void wrapped(StringBuilder out, String name, String text) {
