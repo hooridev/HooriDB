@@ -98,6 +98,7 @@ class DocumentsServerTest {
     assertTrue(cell(tree, 0, 0).contains("\"1\""), tree);
     assertTrue(cell(tree, 0, 2).contains("\"1.5\""), tree);
     assertTrue(TableTabTest.status(tree).contains("\"250 documents\""), tree);
+    assertTrue(TableTabTest.tab(app).documents.isEmpty());
     c.run(app, table("customers") + SETTLE + "snap customers\n");
     var customers = c.tree("customers");
     // Relaxed Extended JSON, as the element tree writes a text with quotes.
@@ -146,6 +147,7 @@ class DocumentsServerTest {
     assertTrue(editor.contains("\\\"score\\\": 42\\n    }\\n]\""), editor);
     assertTrue(line(json, "#rows-in-view").contains("\"Documents 1–3\""), json);
     assertTrue(line(json, "role=button label=\"Next page\"").contains("disabled"), json);
+    assertEquals(List.of(0L), TableTabTest.tab(app).documents.keySet().stream().toList());
     var tree = c.tree("tree");
     assertEquals(List.of("1", "2", "3"), documents(tree));
     c.run(app, """
@@ -165,6 +167,8 @@ class DocumentsServerTest {
         line(c.tree("open"), "role=treeitem label=\"born\"")
             .contains("value=\"1815-12-10 00:53:28+00:53:28 · date\""),
         c.tree("open"));
+    c.run(app, "press role=radio label=\"Grid\"\nframe\n");
+    assertTrue(TableTabTest.tab(app).documents.isEmpty());
   }
 
   @Test
@@ -190,5 +194,6 @@ class DocumentsServerTest {
     assertTrue(line(second, "#rows-in-view").contains("\"Documents 201–250\""), second);
     assertTrue(line(second, "#json").contains("\\\"_id\\\": 201"), second);
     assertTrue(line(second, "role=button label=\"Next page\"").contains("disabled"), second);
+    assertEquals(List.of(1L), TableTabTest.tab(app).documents.keySet().stream().toList());
   }
 }

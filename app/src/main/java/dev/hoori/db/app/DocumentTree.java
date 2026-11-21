@@ -3,6 +3,7 @@ package dev.hoori.db.app;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.json.Json;
+import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Symbol;
@@ -27,6 +28,17 @@ import java.util.Set;
  */
 final class DocumentTree {
 
+  /** A conservative upper bound on the formatted text and tree work of documents shown whole. */
+  static final long VIEW_BUDGET = 2_000_000;
+
+  /** Deep enough for ordinary BSON, without letting nesting exhaust a formatter's stack. */
+  static final int VIEW_DEPTH = 64;
+
+  static final String LIMITED_TITLE = "Page too large to show";
+  static final String LIMITED_TEXT =
+      "Its whole documents are too large or deeply nested. Use Grid to inspect their bounded"
+          + " previews.";
+
   /**
    * A value in a document: the document's place among those shown, and the indexes of the fields
    * and items that lead to it; empty for the document itself.
@@ -48,6 +60,8 @@ final class DocumentTree {
   private String scope = ""; // the documents shown, such as a page; what is open is theirs
   private List<Document> of = List.of(); // what they are a part of
   private List<Document> documents = List.of();
+  private int count;
+  private boolean limited;
   private String text; // the documents as text, made once for them
   final CodeEditor.State editor = new CodeEditor.State().readOnly(true);
 
@@ -62,12 +76,91 @@ final class DocumentTree {
       selected = null;
       editor.select(0, 0);
     }
-    if (other || of != this.of || to - from != documents.size()) {
+    if (other || of != this.of || to - from != count) {
       text = null;
-      documents = List.copyOf(of.subList(from, to));
+      count = to - from;
+      limited = !showable(of, from, to);
+      documents = limited ? List.of() : List.copyOf(of.subList(from, to));
+      if (limited) {
+        open.clear();
+        selected = null;
+        editor.select(0, 0);
+      }
     }
     this.scope = scope;
-    this.of = of;
+    this.of = limited ? List.of() : of;
+  }
+
+  /** Releases documents when their view is no longer visible. */
+  void clear() {
+    open.clear();
+    selected = null;
+    scope = "";
+    of = List.of();
+    documents = List.of();
+    count = 0;
+    limited = false;
+    text = null;
+  }
+
+  /**
+   * Whether these documents fit the bounded whole-document view. The estimate covers worst-case
+   * JSON escaping, formatting indentation, binary expansion and every value visited by the tree.
+   */
+  static boolean showable(List<Document> documents, int from, int to) {
+    long left = VIEW_BUDGET;
+    for (int i = from; i < to && left >= 0; i++) {
+      left = left(documents.get(i), 0, left);
+    }
+    return left >= 0;
+  }
+
+  private static long left(Object value, int depth, long left) {
+    if (depth > VIEW_DEPTH) {
+      return -1;
+    }
+    // This also limits the number of tree nodes that one expansion can make on the app thread.
+    left = take(left, 256L + depth * 4L);
+    if (left < 0) {
+      return -1;
+    }
+    return switch (value) {
+      case Document d -> {
+        long rest = left;
+        for (var entry : d.entries()) {
+          rest = take(rest, 6L * entry.name().length());
+          if (rest < 0 || (rest = left(entry.value(), depth + 1, rest)) < 0) {
+            break;
+          }
+        }
+        yield rest;
+      }
+      case List<?> list -> {
+        long rest = left;
+        for (var item : list) {
+          rest = left(item, depth + 1, rest);
+          if (rest < 0) {
+            break;
+          }
+        }
+        yield rest;
+      }
+      case String text -> take(left, 6L * text.length());
+      case Bson.Binary binary -> take(left, 2L * binary.length());
+      case Bson.Decimal128 decimal -> take(left, 6L * decimal.text().length());
+      case Bson.Regex regex ->
+        take(take(left, 6L * regex.pattern().length()), 6L * regex.options().length());
+      case Bson.Code code -> {
+        long rest = take(left, 6L * code.code().length());
+        yield code.scope() == null || rest < 0 ? rest : left(code.scope(), depth + 1, rest);
+      }
+      case Bson.Symbol symbol -> take(left, 6L * symbol.symbol().length());
+      case null, default -> left;
+    };
+  }
+
+  private static long take(long left, long cost) {
+    return cost > left ? -1 : left - cost;
   }
 
   /** The documents as a JSON array of Relaxed Extended JSON, formatted. */
@@ -85,6 +178,9 @@ final class DocumentTree {
    * the zone.
    */
   El view(App<State> app, TableTab.Shown shown, ZoneId zone, String label) {
+    if (limited) {
+      return Callout.callout(Callout.Kind.WARNING, LIMITED_TITLE, LIMITED_TEXT);
+    }
     return shown == TableTab.Shown.JSON
         ? CodeEditor.embedded(CodeEditor.codeEditor(app, text(), editor, Json.of(), null)
             .key("json")
