@@ -779,9 +779,11 @@ final class FindTab implements Tab {
 
   /** A column's hits, with a + where the table had more matching rows than were counted. */
   static String hitText(Result result) {
-    return result instanceof Hit hit
-        ? String.format(Locale.ROOT, "%,d", hit.rows()) + (hit.more() ? "+" : "")
-        : "";
+    if (!(result instanceof Hit hit)) {
+      return "";
+    }
+    var rows = String.format(Locale.ROOT, "%,d", hit.rows());
+    return hit.more() ? rows + "+" : rows;
   }
 
   /** The tables chosen, and their estimated size. */

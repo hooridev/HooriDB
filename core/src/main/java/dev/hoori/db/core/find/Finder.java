@@ -240,31 +240,39 @@ public final class Finder {
       Provider provider, List<Column> columns, Search search, boolean others) {
     var find = provider.dialect().find();
     var number = search.number();
-    boolean sensitive = search.caseSensitive();
     var conditions = new ArrayList<Condition>();
     for (var column : columns) {
       var name = provider.quote(column.name());
       var holds = find.holds(column.type());
       boolean numbers = holds == Holds.NUMBER || holds == Holds.DOUBLE || holds == Holds.FLOAT;
       if (numbers && number.isPresent()) {
-        // A double as one, as a server may read a long decimal as none, as MySQL does 1E300's.
-        if (canHold(holds, number.get())) {
-          Object value = holds == Holds.DOUBLE ? number.get().doubleValue() : number.get();
-          conditions.add(new Condition(column, find.equalNumber(name, column.type()), value));
-        }
+        number(find, column, name, holds, number.get()).ifPresent(conditions::add);
       } else if (holds == Holds.TEXT || others) {
-        var text = holds == Holds.TEXT ? name : find.asText(name);
-        conditions.add(
-            switch (search.match()) {
-              case CONTAINS ->
-                new Condition(
-                    column, find.contains(text, sensitive), find.contained(search.text()));
-              case EQUALS -> new Condition(column, find.equalText(text, sensitive), search.text());
-              case PATTERN -> new Condition(column, find.matches(text, sensitive), search.text());
-            });
+        conditions.add(text(find, column, holds == Holds.TEXT ? name : find.asText(name), search));
       }
     }
     return conditions;
+  }
+
+  // A double as one, as a server may read a long decimal as none, as MySQL does 1E300's; none
+  // where no value of the column can be the number.
+  private static Optional<Condition> number(
+      FindDialect find, Column column, String name, Holds holds, BigDecimal number) {
+    if (!canHold(holds, number)) {
+      return Optional.empty();
+    }
+    Object value = holds == Holds.DOUBLE ? number.doubleValue() : number;
+    return Optional.of(new Condition(column, find.equalNumber(name, column.type()), value));
+  }
+
+  private static Condition text(FindDialect find, Column column, String text, Search search) {
+    boolean sensitive = search.caseSensitive();
+    return switch (search.match()) {
+      case CONTAINS ->
+        new Condition(column, find.contains(text, sensitive), find.contained(search.text()));
+      case EQUALS -> new Condition(column, find.equalText(text, sensitive), search.text());
+      case PATTERN -> new Condition(column, find.matches(text, sensitive), search.text());
+    };
   }
 
   // Whether a value of the column can be the number: any exact one, a binary one only where it is
@@ -371,12 +379,10 @@ public final class Finder {
   }
 
   private static void bind(PreparedStatement statement, int at, Object value) throws SQLException {
-    if (value instanceof BigDecimal number) {
-      statement.setBigDecimal(at, number);
-    } else if (value instanceof Double number) {
-      statement.setDouble(at, number);
-    } else {
-      statement.setString(at, (String) value);
+    switch (value) {
+      case BigDecimal number -> statement.setBigDecimal(at, number);
+      case Double number -> statement.setDouble(at, number);
+      default -> statement.setString(at, (String) value);
     }
   }
 
