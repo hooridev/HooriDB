@@ -90,6 +90,23 @@ class ServersServerTest {
         : "SELECT SLEEP(" + seconds + ")";
   }
 
+  /** The number of the lane's session on the server, as other sessions see it. */
+  static long session(Lane lane, Provider provider) throws Exception {
+    var sql =
+        provider == Provider.POSTGRESQL ? "SELECT pg_backend_pid()" : "SELECT CONNECTION_ID()";
+    return ((Number) lane.submit(link -> value(link, sql)).get()).longValue();
+  }
+
+  /** Waits until the session runs a statement on the server, as the watcher's session sees it. */
+  static void running(Servers.Link watcher, Provider provider, long session)
+      throws InterruptedException {
+    var sql = provider == Provider.POSTGRESQL
+        ? "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND pid = " + session
+        : "SELECT count(*) FROM information_schema.processlist WHERE command = 'Query' AND id = "
+            + session;
+    eventually(() -> ((Number) value(watcher, sql)).longValue() == 1);
+  }
+
   static String database(Provider provider) {
     return provider == Provider.POSTGRESQL ? "SELECT current_database()" : "SELECT DATABASE()";
   }
@@ -188,16 +205,19 @@ class ServersServerTest {
   void aCancelledStatementLeavesTheConnectionToTheNext(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var lane = lane(server, TestServer.DATABASE);
+    var watcher = open(server);
     try {
+      long id = session(lane, provider);
       long started = System.nanoTime();
       var slow = lane.submit(link -> link.run(sleep(provider, 30)).next(10));
-      Thread.sleep(500);
+      running(watcher, provider, id);
       slow.cancel(true); // as Lane.await does when the console's work is cancelled
       var next = lane.submit(link -> value(link, "SELECT 7")).get(20, TimeUnit.SECONDS);
       assertEquals(7L, ((Number) next).longValue());
       assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(20));
     } finally {
       lane.close();
+      watcher.close();
     }
   }
 
@@ -221,12 +241,18 @@ class ServersServerTest {
         return;
       }
       // A switch queued behind a statement, both cancelled: the connection stays where it was.
+      long id = session(lane, provider);
       var slow = lane.submit(link -> link.run(sleep(provider, 30)).next(10));
       var queued = lane.submit(link -> {
         link.use(TestServer.NON_ASCII_DATABASE);
         return null;
       });
-      Thread.sleep(500);
+      var watcher = open(server);
+      try {
+        running(watcher, provider, id);
+      } finally {
+        watcher.close();
+      }
       queued.cancel(true);
       slow.cancel(true);
       assertEquals(
@@ -261,7 +287,7 @@ class ServersServerTest {
           ? "SELECT count(*) FROM pg_stat_activity WHERE pid = " + id
           : "SELECT count(*) FROM information_schema.processlist WHERE id = " + id;
       lane.submit(link -> link.run(sleep(provider, 30)).next(10));
-      Thread.sleep(500);
+      running(watcher, provider, id);
       assertEquals(1L, ((Number) value(watcher, sessions)).longValue());
       lane.close(); // as closing the console's tab does
       eventually(() -> ((Number) value(watcher, sessions)).longValue() == 0);
@@ -567,12 +593,13 @@ class ServersServerTest {
     var lane = lane(server, TestServer.DATABASE);
     var watcher = open(server);
     try {
+      long id = session(lane, provider);
       statement(lane, "DROP TABLE IF EXISTS seam_cancel", ConsoleTab.Mode.AUTO);
       statement(lane, "CREATE TABLE seam_cancel (id integer)", ConsoleTab.Mode.AUTO);
       mode(lane, true, false);
       statement(lane, "INSERT INTO seam_cancel VALUES (1)", ConsoleTab.Mode.MANUAL);
       var slow = lane.submit(link -> link.run(sleep(provider, 30)).next(10));
-      Thread.sleep(500);
+      running(watcher, provider, id);
       slow.cancel(true); // as the console's Cancel does
       var ended = end(lane, ConsoleTab.COMMIT);
       if (pg) {

@@ -120,10 +120,16 @@ class ValuePanelTest {
     t.c.run(app, "key Enter shift\nadvance 1\nframe\nsnap closed\n");
     assertFalse(t.c.tree("closed").contains("#value-panel"), t.c.tree("closed"));
     assertFalse(t.tab(app).value.open);
-    t.c.run(
-        app,
-        "key Enter shift\nadvance 1\nframe\npress #value\nkey Enter shift\nadvance 1\nframe\n"
-            + "snap closed-there\n");
+    t.c.run(app, """
+            key Enter shift
+            advance 1
+            frame
+            press #value
+            key Enter shift
+            advance 1
+            frame
+            snap closed-there
+            """);
     assertFalse(t.c.tree("closed-there").contains("#value-panel"), t.c.tree("closed-there"));
     assertFalse(t.tab(app).value.open);
   }

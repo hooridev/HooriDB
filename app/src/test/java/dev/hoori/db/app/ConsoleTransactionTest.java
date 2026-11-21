@@ -61,8 +61,16 @@ class ConsoleTransactionTest {
   static final String DEADLOCKED = "UPDATE stock SET n = n - 1 WHERE id = 7";
   static final String CHAIN = "SET completion_type=1";
   static final String COMMITTING = "run " + PG + " COMMIT";
-  static final String EXIT = "press role=menuitem label=\"File\"\nframe\nadvance 0.3\nframe\n"
-      + "press role=menuitem label=\"Exit\"\nframe\nadvance 1\nframe\n";
+  static final String EXIT = """
+      press role=menuitem label="File"
+      frame
+      advance 0.3
+      frame
+      press role=menuitem label="Exit"
+      frame
+      advance 1
+      frame
+      """;
   static final String OPENED = "advance 1\nframe\n"; // a dialog fades in, or out
 
   @TempDir
@@ -518,10 +526,14 @@ class ConsoleTransactionTest {
     // The cancelled call ends; the question to the server is held.
     c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
     eventually(() -> servers.calls.contains("transaction " + PG));
-    c.run(
-        app,
-        "frame\nsnap asking\npress role=button label=\"Commit\"\nframe\nkey C control shift\n"
-            + "frame\n");
+    c.run(app, """
+            frame
+            snap asking
+            press role=button label="Commit"
+            frame
+            key C control shift
+            frame
+            """);
     String asking = c.tree("asking");
     assertTrue(line(asking, "#commit").contains("disabled"), asking);
     assertFalse(line(asking, "#rollback").contains("disabled"), "the safe way out: " + asking);
@@ -855,10 +867,17 @@ class ConsoleTransactionTest {
   void commitRunsOnceAndNotWhileAStatementRuns() throws Exception {
     var app = open(SHOP);
     var gate = servers.hold(COMMITTING);
-    c.run(
-        app,
-        "press role=button label=\"Commit\"\nframe\nframe\npress role=button label=\"Commit\"\n"
-            + "frame\nkey C control shift\nframe\nkey R control shift\nframe\n");
+    c.run(app, """
+            press role=button label="Commit"
+            frame
+            frame
+            press role=button label="Commit"
+            frame
+            key C control shift
+            frame
+            key R control shift
+            frame
+            """);
     eventually(() -> servers.calls.contains(COMMITTING));
     gate.countDown();
     c.run(app, SETTLE);
@@ -1819,7 +1838,7 @@ class ConsoleTransactionTest {
     try {
       ConsoleTab.drained(cut, cut.next(200), 1000);
       throw new AssertionError("not stopped");
-    } catch (InterruptedException e) {
+    } catch (InterruptedException _) {
       assertEquals(3, cut.portions, "no portion after the interrupt");
     } finally {
       Thread.interrupted();
@@ -1961,12 +1980,17 @@ class ConsoleTransactionTest {
     c.ready(app, SHOP);
     c.run(app, CatalogTreeTest.START + menu("shop-prod", "Edit…") + OPENED + SETTLE);
     c.secrets.gate = new CountDownLatch(1);
-    c.run(
-        app,
-        "press role=textbox label=\"User\"\ntype \"2\"\n"
-            + "press role=textbox label=\"Password\"\ntype \"hunter2\"\n"
-            + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
-            + "press role=button label=\"Save\"\nframe\nsnap waits\n");
+    c.run(app, """
+            press role=textbox label="User"
+            type "2"
+            press role=textbox label="Password"
+            type "hunter2"
+            press role=checkbox label="Save in system keyring"
+            frame
+            press role=button label="Save"
+            frame
+            snap waits
+            """);
     assertTrue(line(c.tree("waits"), "role=button label=\"Cancel\"").contains("disabled"));
     assertTrue(app.state().pending != null, "the save holds its lock");
     c.run(app, "advance " + State.KEYRING_SECONDS + "\nframe\nsnap slow\n");
@@ -2214,10 +2238,13 @@ class ConsoleTransactionTest {
     assertTrue(c.tree("silent").contains("did not say in time"), c.tree("silent"));
     // The saves end, which an await would not hear, as it waits for the silent session too; the
     // consoles' change since the save on its way is saved after it.
-    c.run(
-        app,
-        "await \"save history\"\nawait \"save consoles\"\nframe\n"
-            + "await \"save consoles\"\nframe\n");
+    c.run(app, """
+            await "save history"
+            await "save consoles"
+            frame
+            await "save consoles"
+            frame
+            """);
     c.run(app, EXIT);
     assertTrue(app.windows().all().isEmpty(), "the second Exit goes");
     gate.countDown();

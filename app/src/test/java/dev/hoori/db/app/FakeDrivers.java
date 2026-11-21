@@ -154,7 +154,7 @@ final class FakeDrivers implements Repository {
         if (gate != null) {
           try {
             gate.await();
-          } catch (InterruptedException e) {
+          } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
             throw new InterruptedIOException();
           }
@@ -358,7 +358,7 @@ final class FakeDrivers implements Repository {
       if (g != null) {
         try {
           g.await();
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
           interrupted = true;
           Thread.currentThread().interrupt();
           return new Tester.Refused(ConnectionException.Failure.CANCELLED, "");
