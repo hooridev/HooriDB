@@ -18,6 +18,7 @@ import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.sql.Statements;
@@ -131,6 +132,31 @@ class ServersServerTest {
           link.run("CREATE TABLE never_made (id integer)").next(10).results().getLast();
       assertEquals("25006", write.state(), write.toString()); // the server's own refusal
       assertTrue(link.estimate(TestServer.DATABASE, "SELECT * FROM customer").isPresent());
+    } finally {
+      link.close();
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(Provider.class)
+  void aLinksMonitorReadsTheServerOnThatLink(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var link = open(server);
+    try {
+      var monitor = link.monitor();
+      var sessions = monitor.sessions();
+      assertEquals(1, sessions.stream().filter(ServerSession::own).count(), sessions.toString());
+      assertFalse(monitor.variables().isEmpty());
+      assertFalse(monitor.status().isEmpty());
+      switch (provider) {
+        case POSTGRESQL -> assertTrue(monitor.locks().orElseThrow().isEmpty());
+        case MONGODB -> assertTrue(monitor.locks().isEmpty());
+        // Who blocks whom takes a privilege the test's user lacks, which the tab says.
+        case MARIADB, MYSQL ->
+          assertEquals(
+              QueryException.Failure.ACCESS_DENIED,
+              assertThrows(QueryException.class, monitor::locks).failure());
+      }
     } finally {
       link.close();
     }
