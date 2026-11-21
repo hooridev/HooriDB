@@ -1,7 +1,9 @@
 package dev.hoori.db.core.dialect;
 
 import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.ServerSession;
+import dev.hoori.db.core.monitor.ServerVariable;
 import java.util.List;
 
 /** How a provider of documents tells what the sessions of its server do now. */
@@ -26,4 +28,16 @@ public interface DocumentMonitorDialect {
 
   /** The command that stops what runs by the operation's id; the server does not say whether. */
   Document cancel(String operation);
+
+  /** The command of the server's variables. */
+  Document variables();
+
+  /** The variables of the command's reply, by name. */
+  List<ServerVariable> variables(Document reply);
+
+  /** The command of the server's status. */
+  Document status();
+
+  /** The counters of the command's reply. */
+  List<Counter> status(Document reply);
 }

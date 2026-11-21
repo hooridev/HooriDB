@@ -13,6 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import dev.hoori.db.core.monitor.Block;
+import dev.hoori.db.core.monitor.Counter;
+import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Path;
 import org.junit.jupiter.api.AfterEach;
@@ -287,6 +290,75 @@ class MonitorTabTest {
     assertTrue(tree.contains("The server does not let this user do that to session 102."), tree);
     c.run(app, "press role=button label=\"Dismiss\"\n" + SHOWN + "snap dismissed\n");
     assertFalse(c.tree("dismissed").contains("Not ended"), c.tree("dismissed"));
+  }
+
+  @Test
+  void theVariablesAreReadWhenShownAndByRefreshAndSearched() throws Exception {
+    c.servers.variables(
+        PG,
+        new ServerVariable("max_connections", "100", "configuration file"),
+        new ServerVariable("work_mem", "4MB", "default"),
+        new ServerVariable("shared_buffers", "128MB", "configuration file"));
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Variables\"\n" + SHOWN + SETTLE + "snap variables\n");
+    var tree = c.tree("variables");
+    assertTrue(tree.contains("\"work_mem\"") && tree.contains("\"4MB\""), tree);
+    assertTrue(tree.contains("\"3 variables\""), tree);
+    assertTrue(tree.contains("\"By Refresh\""), tree);
+    assertTrue(c.servers.linked.contains("2 variables " + PG), c.servers.linked.toString());
+    long read = c.servers.calls.stream().filter(("variables " + PG)::equals).count();
+    c.run(app, after(30) + after(30));
+    assertEquals(
+        read, c.servers.calls.stream().filter(("variables " + PG)::equals).count());
+    c.run(app, "press #search\ntype \"config\"\nframe\nsnap searched\n");
+    var searched = c.tree("searched");
+    assertTrue(searched.contains("\"2 of 3 variables\""), searched);
+    assertFalse(searched.contains("\"work_mem\""), searched);
+    c.run(app, "press #refresh\nframe\nawait\nframe\n");
+    assertEquals(
+        read + 1, c.servers.calls.stream().filter(("variables " + PG)::equals).count());
+  }
+
+  @Test
+  void theStatusIsReadAtTheIntervalWhileShown() throws Exception {
+    c.servers.counters(PG, new Counter("commits", "42"), new Counter("rollbacks", "3"));
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Status\"\n" + SHOWN + SETTLE + "snap status\n");
+    var tree = c.tree("status");
+    assertTrue(tree.contains("\"commits\"") && tree.contains("\"42\""), tree);
+    assertTrue(tree.contains("\"2 counters\""), tree);
+    long status = c.servers.calls.stream().filter(("status " + PG)::equals).count();
+    long sessions = reads();
+    c.run(app, after(5));
+    assertEquals(
+        status + 1, c.servers.calls.stream().filter(("status " + PG)::equals).count());
+    // Only the view shown is read.
+    assertEquals(sessions, reads());
+  }
+
+  @Test
+  void theLocksLeadToTheSessionThatBlocks() throws Exception {
+    c.servers.locks(PG, new Block("101", "102", "public.orders", "ShareLock"));
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Locks\"\n" + SHOWN + SETTLE + "snap locks\n");
+    var tree = c.tree("locks");
+    assertTrue(tree.contains("\"public.orders\"") && tree.contains("\"ShareLock\""), tree);
+    assertTrue(tree.contains("\"1 wait\""), tree);
+    c.run(app, "press #cell-0-1 clicks 2\n" + SHOWN + SETTLE + "snap blocker\n");
+    var blocker = c.tree("blocker");
+    assertTrue(line(blocker, "role=radio label=\"Sessions\"").contains("checked"), blocker);
+    // The session that blocks is selected, to be ended.
+    assertTrue(row(blocker, 2).contains("selected"), row(blocker, 2));
+    assertFalse(line(blocker, "#end-session").contains("disabled"), blocker);
+  }
+
+  @Test
+  void aServerThatDoesNotTellLocksSaysSo() throws Exception {
+    c.servers.locks(PG, (Block[]) null);
+    var app = monitor();
+    c.run(app, "press role=radio label=\"Locks\"\n" + SHOWN + SETTLE + "snap locks\n");
+    assertTrue(
+        c.tree("locks").contains("The server does not tell who holds a lock."), c.tree("locks"));
   }
 
   @Test

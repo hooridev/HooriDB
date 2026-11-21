@@ -4,7 +4,9 @@ import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.ExtendedJson;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.ServerSession;
+import dev.hoori.db.core.monitor.ServerVariable;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -148,6 +150,58 @@ public final class MongoDb implements DocumentDialect {
       Object op =
           operation.matches("-?\\d{1,9}") ? (Object) Integer.parseInt(operation) : operation;
       return Document.of("killOp", 1, "op", op);
+    }
+
+    @Override
+    public Document variables() {
+      return Document.of("getParameter", "*");
+    }
+
+    // Every field of the reply but those of the reply itself.
+    @Override
+    public List<ServerVariable> variables(Document reply) {
+      var variables = new ArrayList<ServerVariable>();
+      for (var entry : reply.entries()) {
+        var name = entry.name();
+        if (!name.equals("ok") && !name.equals("operationTime") && !name.startsWith("$")) {
+          variables.add(new ServerVariable(name, value(entry.value()), ""));
+        }
+      }
+      variables.sort(Comparator.comparing(ServerVariable::name));
+      return variables;
+    }
+
+    @Override
+    public Document status() {
+      return Document.of("serverStatus", 1);
+    }
+
+    // The sections that say how busy the server is, by dotted names.
+    private static final List<String> SECTIONS =
+        List.of("uptime", "connections", "opcounters", "network", "mem");
+
+    @Override
+    public List<Counter> status(Document reply) {
+      var counters = new ArrayList<Counter>();
+      for (var section : SECTIONS) {
+        flatten(section, reply.get(section), counters);
+      }
+      return counters;
+    }
+
+    private static void flatten(String name, Object value, List<Counter> counters) {
+      if (value instanceof Document d) {
+        for (var entry : d.entries()) {
+          flatten(name + "." + entry.name(), entry.value(), counters);
+        }
+      } else if (value != null) {
+        counters.add(new Counter(name, value(value)));
+      }
+    }
+
+    // A text as it is, any other value as Relaxed Extended JSON.
+    private static String value(Object value) {
+      return value instanceof String s ? s : ExtendedJson.of(value);
     }
 
     private static ServerSession session(Document entry, boolean own) {

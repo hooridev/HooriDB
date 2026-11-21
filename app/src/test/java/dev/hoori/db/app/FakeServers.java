@@ -22,8 +22,11 @@ import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.monitor.Block;
+import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
+import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -88,7 +91,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>A server's monitor lists the sessions {@link #sessions} gives after the monitor's own, whose
  * id is the number of its link; a read of them is keyed {@code sessions <host>}. Cancelling what one
  * runs, keyed {@code cancel <host> <operation>}, leaves it idle, and ending one, keyed {@code end
- * <host> <id>}, takes it out; either says false for a session the server does not have.
+ * <host> <id>}, takes it out; either says false for a session the server does not have. Its
+ * variables, status counters and locks are those {@link #variables}, {@link #counters} and {@link
+ * #locks} give, read keyed {@code variables <host>}, {@code status <host>} and {@code locks
+ * <host>}; a server whose locks are {@code null} does not tell them.
  */
 final class FakeServers implements Servers {
 
@@ -223,6 +229,28 @@ final class FakeServers implements Servers {
   /** The host's server has these sessions besides the monitor's own, as a test may change. */
   FakeServers sessions(String host, ServerSession... others) {
     sessions.put(host, List.of(others));
+    return this;
+  }
+
+  private final Map<String, List<ServerVariable>> variables = new ConcurrentHashMap<>();
+  private final Map<String, List<Counter>> counters = new ConcurrentHashMap<>();
+  private final Map<String, Optional<List<Block>>> locks = new ConcurrentHashMap<>();
+
+  /** The host's server has these variables. */
+  FakeServers variables(String host, ServerVariable... all) {
+    variables.put(host, List.of(all));
+    return this;
+  }
+
+  /** The host's server has these status counters. */
+  FakeServers counters(String host, Counter... all) {
+    counters.put(host, List.of(all));
+    return this;
+  }
+
+  /** These sessions of the host's server wait for locks; null for a server that does not tell. */
+  FakeServers locks(String host, Block... all) {
+    locks.put(host, all == null ? Optional.empty() : Optional.of(List.of(all)));
     return this;
   }
 
@@ -1009,6 +1037,36 @@ final class FakeServers implements Servers {
               ""));
           all.addAll(FakeServers.this.sessions.getOrDefault(host, List.of()));
           return all;
+        }
+
+        @Override
+        public List<ServerVariable> variables() throws QueryException {
+          read("variables " + host);
+          return FakeServers.this.variables.getOrDefault(host, List.of());
+        }
+
+        @Override
+        public List<Counter> status() throws QueryException {
+          read("status " + host);
+          return FakeServers.this.counters.getOrDefault(host, List.of());
+        }
+
+        @Override
+        public Optional<List<Block>> locks() throws QueryException {
+          read("locks " + host);
+          return FakeServers.this.locks.getOrDefault(host, Optional.of(List.of()));
+        }
+
+        private void read(String key) throws QueryException {
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception e) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          done.add(key);
         }
 
         @Override

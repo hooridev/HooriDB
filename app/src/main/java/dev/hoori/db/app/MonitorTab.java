@@ -15,37 +15,75 @@ import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Divider;
-import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
+import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.monitor.Block;
+import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.monitor.ServerSession;
+import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
-import java.util.function.Function;
 
 /**
- * What a server does now, in a tab of its connection: the sessions of its clients. They are read
- * on a session and lane of the monitor's own, never the tree's or a console's, so that a read
- * never waits behind theirs; it opens once the tree's connection is connected, and closing the tab
- * ends it. The list is read again at the interval chosen while the tab is shown, not while it is
- * hidden or paused; a tab shown again reads at once. Only the app's thread uses it.
+ * What a server does now, in a tab of its connection: the sessions of its clients, its variables,
+ * its status counters and who blocks whom. They are read on a session and lane of the monitor's
+ * own, never the tree's or a console's, so that a read never waits behind theirs; it opens once the
+ * tree's connection is connected, and closing the tab ends it. The view shown is read again at the
+ * interval chosen while the tab is shown, not while it is hidden or paused, and a tab shown again
+ * reads at once; the variables, which seldom change, only when shown first and by Refresh. Only
+ * the app's thread uses it.
  */
 final class MonitorTab implements Tab {
 
-  /** Why the sessions could not be read, in words for the user. */
+  /** Why the view could not be read, in words for the user. */
   record Problem(String title, String text) {}
+
+  /** What the tab shows of the server. */
+  enum View {
+    SESSIONS("Sessions", "sessions", true),
+    VARIABLES("Variables", "variables", false),
+    STATUS("Status", "status counters", true),
+    LOCKS("Locks", "locks", true);
+
+    final String title;
+    final String what;
+    final boolean repeats; // read again at the interval
+
+    View(String title, String what, boolean repeats) {
+      this.title = title;
+      this.what = what;
+      this.repeats = repeats;
+    }
+  }
+
+  static final List<View> VIEWS = List.of(View.values());
+
+  /** What a read of a view gave. */
+  private sealed interface Got {}
+
+  private record Sessions(List<ServerSession> sessions) implements Got {}
+
+  private record Variables(List<ServerVariable> variables) implements Got {}
+
+  private record Status(List<Counter> counters) implements Got {}
+
+  private record Locks(Optional<List<Block>> blocks) implements Got {}
 
   /** What can be done to a session, after a question. */
   enum Action {
@@ -66,12 +104,20 @@ final class MonitorTab implements Tab {
 
   final UUID id;
   final Refresh refresh = new Refresh();
+  View view = View.SESSIONS;
   List<ServerSession> sessions = List.of();
+  List<ServerVariable> variables; // null until read
+  List<Counter> counters; // null until read
+  Optional<List<Block>> blocks; // null until read; empty where the server does not tell
+  private final Map<View, Long> took = new EnumMap<>(View.class); // nanoseconds of the last read
+  private final Map<View, String> searches = new EnumMap<>(View.class);
   Lane.Asked reading; // the read under way, or null
   Problem problem; // why the last read failed, or null
-  long took = -1; // nanoseconds the last read took, -1 before the first
   String said; // what the tab says for a while in its status line; or null
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.ROWS);
+  final DataGrid.Selection variableSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
+  final DataGrid.Selection statusSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
+  final DataGrid.Selection lockSelection = new DataGrid.Selection(DataGrid.Mode.ROWS);
   final Menu.State intervals = new Menu.State();
   final Menu.State menu = new Menu.State(); // the grid's context menu
   Asked asked; // the question before an action, or null
@@ -115,7 +161,10 @@ final class MonitorTab implements Tab {
     open(s);
   }
 
-  /** Reads the sessions now, unless a read is under way; the next comes at the interval. */
+  /**
+   * Reads the view shown now, unless a read is under way; the next comes at the interval, where
+   * the view repeats.
+   */
   void read(State s) {
     if (closed || lane == null || reading != null) {
       return;
@@ -123,22 +172,34 @@ final class MonitorTab implements Tab {
     due = false;
     refresh.stop();
     var live = s.catalog.live(id);
-    record Read(List<ServerSession> sessions, long took) {}
+    var of = view;
+    record Read(Got got, long took) {}
     reading = lane.ask(
         s.app,
-        "read the sessions",
+        "read the " + of.what,
         Lane.Priority.VIEW,
         link -> {
           long start = System.nanoTime();
-          var read = link.monitor().sessions();
-          return new Read(read, System.nanoTime() - start);
+          var monitor = link.monitor();
+          Got got = switch (of) {
+            case SESSIONS -> new Sessions(monitor.sessions());
+            case VARIABLES -> new Variables(monitor.variables());
+            case STATUS -> new Status(monitor.status());
+            case LOCKS -> new Locks(monitor.locks());
+          };
+          return new Read(got, System.nanoTime() - start);
         },
         read -> {
           reading = null;
           problem = null;
-          took = read.took();
-          show(read.sessions());
-          refresh.next(s.app, () -> tick(s));
+          took.put(of, read.took());
+          switch (read.got()) {
+            case Sessions x -> show(x.sessions());
+            case Variables x -> variables = x.variables();
+            case Status x -> counters = x.counters();
+            case Locks x -> blocks = x.blocks();
+          }
+          next(s);
         },
         error -> {
           reading = null;
@@ -193,13 +254,54 @@ final class MonitorTab implements Tab {
     problem = switch (error) {
       case QueryException q
       when q.failure() == QueryException.Failure.ACCESS_DENIED ->
-        new Problem("Access denied", "The server does not let this user see its sessions.");
+        new Problem(
+            "Access denied",
+            "The server does not let this user see its " + view.what + "."
+                + (detail.isEmpty() ? "" : "\n" + detail));
       case QueryException q
       when q.failure() == QueryException.Failure.CANCELLED ->
         new Problem("Cancelled", "The server cancelled the read.");
       default -> new Problem("Could not be read", detail);
     };
-    refresh.next(s.app, () -> tick(s));
+    next(s);
+  }
+
+  /** The next read at the interval, where the view repeats. */
+  private void next(State s) {
+    if (view.repeats) {
+      refresh.next(s.app, () -> tick(s));
+    }
+  }
+
+  /**
+   * Shows the view, read at once where it repeats or was not read yet; what was read for another
+   * is given up.
+   */
+  void show(State s, View next) {
+    if (next == view) {
+      return;
+    }
+    view = next;
+    refresh.stop();
+    if (reading != null) {
+      reading.cancel();
+      reading = null;
+    }
+    problem = null;
+    if (next.repeats || !took.containsKey(next)) {
+      read(s);
+    }
+  }
+
+  /** Goes to the session in the sessions view, selected, as from the locks. */
+  void goTo(State s, String session) {
+    selected = session;
+    show(s, View.SESSIONS);
+  }
+
+  /** What is searched for in the view. */
+  String search(View of) {
+    return searches.getOrDefault(of, "");
   }
 
   private static String detail(Exception error) {
@@ -237,7 +339,7 @@ final class MonitorTab implements Tab {
   void every(State s, Refresh.Interval interval) {
     refresh.interval = interval;
     if (!refresh.paused() && reading == null && lane != null) {
-      refresh.next(s.app, () -> tick(s));
+      next(s);
     }
   }
 
@@ -392,7 +494,7 @@ final class MonitorTab implements Tab {
 
   // The view
 
-  /** The tab's content: its toolbar, why it cannot read, the sessions, and its status line. */
+  /** The tab's content: its toolbar, why it cannot read, the view, and its status line. */
   El view(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     if (due && shown(s)) {
@@ -402,17 +504,17 @@ final class MonitorTab implements Tab {
     String where = profile == null ? null : State.name(profile);
     boolean can = lane != null;
     var actions = new ArrayList<El>();
-    actions.add(Select.select(
-            Refresh.INTERVALS,
-            refresh.interval,
-            i -> "Every " + i.title(),
-            intervals,
-            i -> every(s, i))
-        .key("interval")
-        .label("Refresh interval")
-        .w(5 * t.size().control()));
-    actions.add(Button.toggle(Symbol.PAUSE, "Pause", refresh.paused(), pause -> pause(s, pause))
-        .key("pause"));
+    actions.add(Segmented.segmented(VIEWS, view, v -> v.title, v -> show(s, v))
+        .key("view")
+        .label("Show"));
+    if (view == View.VARIABLES || view == View.STATUS) {
+      var of = view;
+      actions.add(TextField.withIcon(
+              TextField.textField(search(of), "Search", v -> searches.put(of, v)), Symbol.SEARCH)
+          .key("search")
+          .label("Search " + of.what)
+          .w(8 * t.size().control()));
+    }
     actions.add(button(
             SECONDARY,
             "Refresh",
@@ -421,10 +523,13 @@ final class MonitorTab implements Tab {
                 .icon(Symbol.ARROW_CLOCKWISE)
                 .state(reading != null ? Button.State.BUSY : Button.State.READY))
         .key("refresh"));
-    var chosen = can ? selected() : null;
-    actions.add(action(s, Action.CANCEL, Symbol.STOP, chosen).key("cancel-statement"));
-    actions.add(action(s, Action.END, Symbol.PROHIBITED, chosen).key("end-session"));
-    El top = Card.toolbar("Sessions", where, actions.toArray(El[]::new));
+    if (view == View.SESSIONS) {
+      var chosen = can ? selected() : null;
+      actions.add(action(s, Action.CANCEL, Symbol.STOP, chosen).key("cancel-statement"));
+      actions.add(action(s, Action.END, Symbol.PROHIBITED, chosen).key("end-session"));
+    }
+    // The view's name is on its switch: the toolbar names the connection.
+    El top = Card.toolbar(where == null ? "" : where, null, actions.toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     El content =
         col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
@@ -443,17 +548,18 @@ final class MonitorTab implements Tab {
                   button(SECONDARY, "Dismiss", () -> refused = null))
               .key("refused")));
     }
-    if (took < 0 && reading != null) {
+    long nanos = took.getOrDefault(view, -1L);
+    if (nanos < 0 && reading != null) {
       content.child(col()
           .grow(1)
           .center()
           .gap(t.space().m())
           .role("status")
-          .label("Reading the sessions")
+          .label("Reading the " + view.what)
           .child(Progress.spinner())
-          .child(Label.label(Label.Variant.MUTED, "Reading the sessions…")));
-    } else if (took >= 0) {
-      content.child(grid(s, app));
+          .child(Label.label(Label.Variant.MUTED, "Reading the " + view.what + "…")));
+    } else if (nanos >= 0) {
+      content.child(shown(s, app));
     } else {
       content.child(col().grow(1));
     }
@@ -471,21 +577,95 @@ final class MonitorTab implements Tab {
                 .key("read-status")
             : Label.label(
                     Label.Variant.MUTED,
-                    took < 0 ? "" : "Read in " + Math.round(took / 1e6) + " ms")
+                    nanos < 0 ? "" : "Read in " + Math.round(nanos / 1e6) + " ms")
                 .key("read-status"));
-    end.add(Label.label(
-            Label.Variant.MUTED, refresh.paused() ? "Paused" : "Every " + refresh.interval.title())
-        .key("schedule"));
+    end.add(Label.label(Label.Variant.MUTED, schedule()).key("schedule"));
+    if (view.repeats) {
+      end.add(Select.select(
+              Refresh.INTERVALS,
+              refresh.interval,
+              i -> "Every " + i.title(),
+              intervals,
+              i -> every(s, i))
+          .key("interval")
+          .label("Refresh interval")
+          .w(4 * t.size().control()));
+      end.add(Button.toggleIcon(Symbol.PAUSE, "Pause", refresh.paused(), pause -> pause(s, pause))
+          .key("pause"));
+    }
     El count = Label.label(Label.Variant.MUTED, count()).key("count").ellipsis();
     return content.child(Card.footer(count, end.toArray(El[]::new)));
   }
 
+  /** When the view is read again. */
+  private String schedule() {
+    if (!view.repeats) {
+      return "By Refresh";
+    }
+    return refresh.paused() ? "Paused" : "";
+  }
+
+  /** How many the view shows, as "4 sessions" or "12 of 312 variables". */
   private String count() {
-    if (took < 0) {
+    if (!took.containsKey(view)) {
       return "";
     }
-    int n = sessions.size();
-    return String.format(Locale.ROOT, "%,d %s", n, n == 1 ? "session" : "sessions");
+    return switch (view) {
+      case SESSIONS -> count(sessions.size(), sessions.size(), "session", "sessions");
+      case VARIABLES -> count(shownVariables().size(), variables.size(), "variable", "variables");
+      case STATUS -> count(shownCounters().size(), counters.size(), "counter", "counters");
+      case LOCKS ->
+        blocks.isEmpty() ? "" : count(blocks.get().size(), blocks.get().size(), "wait", "waits");
+    };
+  }
+
+  private static String count(int shown, int all, String one, String many) {
+    var of = shown == all ? "" : String.format(Locale.ROOT, "%,d of ", shown);
+    return of + String.format(Locale.ROOT, "%,d %s", all, all == 1 ? one : many);
+  }
+
+  private List<ServerVariable> shownVariables() {
+    return MonitorGrids.found(
+        variables, search(View.VARIABLES), v -> v.name() + " " + v.value() + " " + v.source());
+  }
+
+  private List<Counter> shownCounters() {
+    return MonitorGrids.found(counters, search(View.STATUS), c -> c.name() + " " + c.value());
+  }
+
+  /** The view as read. */
+  private El shown(State s, App<State> app) {
+    return switch (view) {
+      case SESSIONS ->
+        MonitorGrids.sessions(
+            List.copyOf(sessions),
+            selection,
+            () -> {
+              int row = selection.row();
+              selected = row >= 0 && row < sessions.size() ? sessions.get(row).id() : null;
+            },
+            menu,
+            menuItems(s),
+            app);
+      case VARIABLES -> MonitorGrids.variables(shownVariables(), variableSelection, app);
+      case STATUS -> MonitorGrids.status(shownCounters(), statusSelection, app);
+      case LOCKS -> {
+        if (blocks.isEmpty() || blocks.get().isEmpty()) {
+          yield col()
+              .grow(1)
+              .center()
+              .child(Label.label(
+                      Label.Variant.MUTED,
+                      blocks.isEmpty()
+                          ? "The server does not tell who holds a lock."
+                          : "No session waits for a lock.")
+                  .key("no-locks"));
+        }
+        var shown = blocks.get();
+        yield MonitorGrids.locks(
+            shown, lockSelection, row -> goTo(s, shown.get(row).blocking()), app);
+      }
+    };
   }
 
   /** Why the tab cannot read, with what the user can do; null while it can. */
@@ -494,7 +674,7 @@ final class MonitorTab implements Tab {
       boolean connecting = s.catalog.active(id);
       var lost = s.catalog.lost(id);
       String text = lost != null ? CatalogTree.why(lost) : "Its connection is closed.";
-      if (took >= 0) {
+      if (took.containsKey(view)) {
         text += " What shows was read before, and may have changed since.";
       }
       return Callout.callout(
@@ -593,37 +773,6 @@ final class MonitorTab implements Tab {
 
   static final int BRIEF = 400;
 
-  /** The sessions, a row each; the monitor's own marked. */
-  private El grid(State s, App<State> app) {
-    var shown = List.copyOf(sessions);
-    var columns = new ArrayList<DataGrid.Column>();
-    columns.add(column("ID", 4, DataGrid.DataType.INTEGER, shown, ServerSession::id)
-        .cellIcon(row -> shown.get(row).own()
-            ? DataGrid.CellIcon.before(Symbol.PERSON, Icon.Variant.ACCENT)
-                .tooltip("The monitor's own session")
-            : null));
-    columns.add(column("User", 5, DataGrid.DataType.TEXT, shown, ServerSession::user));
-    columns.add(column("Client", 8, DataGrid.DataType.TEXT, shown, ServerSession::client));
-    columns.add(column("Database", 5, DataGrid.DataType.TEXT, shown, ServerSession::database));
-    columns.add(column("State", 6, DataGrid.DataType.TEXT, shown, ServerSession::state));
-    columns.add(column("Time", 4, DataGrid.DataType.INTERVAL, shown, x -> elapsed(x.elapsed())));
-    columns.add(column("Waiting for", 6, DataGrid.DataType.TEXT, shown, ServerSession::waiting));
-    columns.add(column("Statement", 20, DataGrid.DataType.TEXT, shown, ServerSession::statement));
-    var options = DataGrid.options()
-        .select(selection)
-        .onSelect(() -> {
-          int row = selection.row();
-          selected = row >= 0 && row < shown.size() ? shown.get(row).id() : null;
-        })
-        .copy(app.clipboard())
-        .contextMenu(menu, menuItems(s));
-    return DataGrid.dataGrid(columns, shown.size(), options)
-        .key("sessions")
-        .label("Sessions")
-        .grow(1)
-        .defaultFocus();
-  }
-
   /** The grid's context menu, of the session selected. */
   private List<Menu.Item> menuItems(State s) {
     var session = lane == null || acting != null ? null : selected();
@@ -638,39 +787,5 @@ final class MonitorTab implements Tab {
             .icon(Symbol.PROHIBITED),
         Menu.separator(),
         Menu.item("Refresh", lane == null ? null : () -> read(s)).icon(Symbol.ARROW_CLOCKWISE));
-  }
-
-  private static DataGrid.Column column(
-      String title,
-      float width,
-      DataGrid.DataType type,
-      List<ServerSession> shown,
-      Function<ServerSession, String> text) {
-    Theme t = Theme.CURRENT.get();
-    return new DataGrid.Column(
-            title, width * t.size().control(), type, row -> text.apply(shown.get(row)))
-        .sortable(false);
-  }
-
-  /** How long, as "850 ms", "12 s", "4 min 3 s" or "2 h 5 min"; empty where not known. */
-  static String elapsed(Duration elapsed) {
-    if (elapsed == null) {
-      return "";
-    }
-    long ms = elapsed.toMillis();
-    if (ms < 1000) {
-      return ms + " ms";
-    }
-    long seconds = elapsed.toSeconds();
-    if (seconds < 60) {
-      return seconds + " s";
-    }
-    if (seconds < 3600) {
-      return seconds / 60 + " min " + seconds % 60 + " s";
-    }
-    long hours = seconds / 3600;
-    return hours < 24
-        ? hours + " h " + seconds % 3600 / 60 + " min"
-        : hours / 24 + " d " + hours % 24 + " h";
   }
 }

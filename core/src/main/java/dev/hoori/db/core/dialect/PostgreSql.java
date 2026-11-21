@@ -700,6 +700,61 @@ public final class PostgreSql implements Dialect {
       return "SELECT pg_catalog.pg_terminate_backend(" + Integer.parseInt(id) + ")";
     }
 
+    // The value as SHOW writes it, with its unit.
+    @Override
+    public List<String> variables() {
+      return List.of("SELECT s.name, pg_catalog.current_setting(s.name), s.source"
+          + " FROM pg_catalog.pg_settings s ORDER BY s.name");
+    }
+
+    // pg_stat_database's counters, by the names they show under, summed over the databases.
+    private static final String[][] COUNTERS = {
+      {"backends", "numbackends"},
+      {"commits", "xact_commit"},
+      {"rollbacks", "xact_rollback"},
+      {"blocks read", "blks_read"},
+      {"blocks hit", "blks_hit"},
+      {"rows returned", "tup_returned"},
+      {"rows fetched", "tup_fetched"},
+      {"rows inserted", "tup_inserted"},
+      {"rows updated", "tup_updated"},
+      {"rows deleted", "tup_deleted"},
+      {"conflicts", "conflicts"},
+      {"deadlocks", "deadlocks"},
+      {"temporary files", "temp_files"},
+      {"temporary bytes", "temp_bytes"}
+    };
+
+    @Override
+    public String status() {
+      var sums = new StringBuilder();
+      var rows = new StringBuilder();
+      for (int i = 0; i < COUNTERS.length; i++) {
+        var separator = i == 0 ? "" : ", ";
+        sums.append(separator).append("pg_catalog.sum(d.").append(COUNTERS[i][1]);
+        sums.append(") AS c").append(i);
+        rows.append(separator).append("('").append(COUNTERS[i][0]).append("', ").append(i);
+        rows.append(", s.c").append(i).append("::pg_catalog.text)");
+      }
+      return "SELECT v.name, v.value FROM (SELECT " + sums
+          + " FROM pg_catalog.pg_stat_database d) s"
+          + " CROSS JOIN LATERAL (VALUES " + rows + ") v (name, n, value) ORDER BY v.n";
+    }
+
+    // Each session that waits, beside each that blocks it, with the lock it waits for.
+    @Override
+    public String locks() {
+      return "SELECT a.pid, b.pid,"
+          + " CASE WHEN l.relation IS NOT NULL"
+          + " THEN l.relation::pg_catalog.regclass::pg_catalog.text"
+          + " ELSE pg_catalog.concat_ws(' ', l.locktype, l.transactionid::pg_catalog.text) END,"
+          + " l.mode"
+          + " FROM pg_catalog.pg_stat_activity a"
+          + " CROSS JOIN LATERAL pg_catalog.unnest(pg_catalog.pg_blocking_pids(a.pid)) b (pid)"
+          + " LEFT JOIN pg_catalog.pg_locks l ON l.pid" + EQ + "a.pid AND NOT l.granted"
+          + " ORDER BY a.pid, b.pid";
+    }
+
     // The client's address and port; a port of -1 is a Unix socket, which has no address.
     private static String address(ResultSet row) throws SQLException {
       var host = MonitorRows.text(row, 5);

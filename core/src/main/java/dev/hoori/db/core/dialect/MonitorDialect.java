@@ -3,6 +3,7 @@ package dev.hoori.db.core.dialect;
 import dev.hoori.db.core.monitor.ServerSession;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.List;
 
 /** How a provider's servers tell what their sessions do now. */
 public interface MonitorDialect {
@@ -24,4 +25,20 @@ public interface MonitorDialect {
 
   /** The statement that ends the session of the id, as {@link #cancel} answers. */
   String end(String id);
+
+  /**
+   * The queries of the server's variables, the one that tells most first, each of which gives a
+   * name, a value and, where it tells, a source, by name; a query that fails gives way to the next,
+   * as where performance_schema is off or the user may not read it.
+   */
+  List<String> variables();
+
+  /** The query of the server's status counters, a name and a value each. */
+  String status();
+
+  /**
+   * The query of the sessions that wait for a lock, a row each: the id of the one that waits and
+   * of the one that blocks it, what the lock is on and its mode, by the one that waits.
+   */
+  String locks();
 }

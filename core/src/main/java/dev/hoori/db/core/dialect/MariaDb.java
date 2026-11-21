@@ -77,7 +77,17 @@ public final class MariaDb extends MySqlFamily {
   private final PlanDialect plan = new Plan();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MariaDbRows();
-  private final MonitorDialect monitor = new MySqlFamily.Monitor("TIME_MS / 1000");
+  private final MonitorDialect monitor = new MySqlFamily.Monitor(
+      "TIME_MS / 1000",
+      "SELECT LOWER(VARIABLE_NAME), GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN"
+          + " FROM information_schema.SYSTEM_VARIABLES ORDER BY 1",
+      // InnoDB's row locks; a metadata lock is not among them.
+      "SELECT r.trx_mysql_thread_id, b.trx_mysql_thread_id, l.lock_table, l.lock_mode"
+          + " FROM information_schema.INNODB_LOCK_WAITS w"
+          + " JOIN information_schema.INNODB_TRX r ON r.trx_id = w.requesting_trx_id"
+          + " JOIN information_schema.INNODB_TRX b ON b.trx_id = w.blocking_trx_id"
+          + " LEFT JOIN information_schema.INNODB_LOCKS l ON l.lock_id = w.requested_lock_id"
+          + " ORDER BY 1, 2");
 
   private MariaDb() {}
 

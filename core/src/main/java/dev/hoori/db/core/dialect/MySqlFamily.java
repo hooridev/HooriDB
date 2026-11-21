@@ -408,9 +408,28 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   static final class Monitor implements MonitorDialect {
 
     private final String elapsed; // the seconds in its state, as a column of the list
+    private final String variables; // the query that tells their sources
+    private final String locks;
 
-    Monitor(String elapsed) {
+    Monitor(String elapsed, String variables, String locks) {
       this.elapsed = elapsed;
+      this.variables = variables;
+      this.locks = locks;
+    }
+
+    @Override
+    public List<String> variables() {
+      return List.of(variables, "SHOW GLOBAL VARIABLES");
+    }
+
+    @Override
+    public String status() {
+      return "SHOW GLOBAL STATUS";
+    }
+
+    @Override
+    public String locks() {
+      return locks;
     }
 
     // Without the PROCESS privilege the server lists the user's own threads alone.

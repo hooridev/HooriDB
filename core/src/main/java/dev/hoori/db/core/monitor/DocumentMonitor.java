@@ -6,6 +6,7 @@ import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.query.QueryException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -60,6 +61,33 @@ public record DocumentMonitor(DocumentSession session) implements Monitor {
   @Override
   public boolean end(ServerSession session) {
     throw new IllegalArgumentException("Session " + session.id() + " cannot be ended here");
+  }
+
+  @Override
+  public List<ServerVariable> variables() throws QueryException {
+    var monitor = session.dialect().monitor();
+    try {
+      var reply = session.command(monitor.database(), monitor.variables());
+      return monitor.variables(reply).stream().map(Credentials::mask).toList();
+    } catch (DocumentException e) {
+      throw DocumentSession.query(e);
+    }
+  }
+
+  @Override
+  public List<Counter> status() throws QueryException {
+    var monitor = session.dialect().monitor();
+    try {
+      return List.copyOf(monitor.status(session.command(monitor.database(), monitor.status())));
+    } catch (DocumentException e) {
+      throw DocumentSession.query(e);
+    }
+  }
+
+  /** A server of documents does not say who holds a lock. */
+  @Override
+  public Optional<List<Block>> locks() {
+    return Optional.empty();
   }
 
   // The documents of a command's cursor, all of them; its cursor is freed where reading fails.

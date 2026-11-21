@@ -86,6 +86,13 @@ public final class Credentials {
     };
   }
 
+  /** The variable with its value masked where its name names a credential. */
+  public static ServerVariable mask(ServerVariable variable) {
+    return WORD.matcher(variable.name()).find()
+        ? new ServerVariable(variable.name(), MASK, variable.source())
+        : variable;
+  }
+
   /**
    * The text with each place where it holds the password masked; the password is compared where
    * it is, without a copy as a string, which could not be wiped.
