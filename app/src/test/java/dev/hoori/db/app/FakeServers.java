@@ -452,10 +452,12 @@ final class FakeServers implements Servers {
         try {
           gate.await();
         } catch (InterruptedException _) {
+          // A failure the test set is how the cancel ended, as a connection given up: taken
+          // before the test learns of the interrupt, which may then heal it.
+          var ended = failures.getOrDefault(key, cancelled);
           interrupted.add(key);
           Thread.currentThread().interrupt();
-          // A failure the test set is how the cancel ended, as a connection given up.
-          throw failures.getOrDefault(key, cancelled);
+          throw ended;
         }
       }
     }
