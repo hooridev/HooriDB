@@ -63,6 +63,21 @@ class CredentialsTest {
   }
 
   @Test
+  void aNameWrittenWithUnicodeEscapesLosesAllStrings() {
+    assertEquals(
+        "ALTER USER MAPPING FOR ada SERVER films OPTIONS (SET U&\"\\0070assword\" " + M + ")",
+        Credentials.mask(
+            "ALTER USER MAPPING FOR ada SERVER films OPTIONS (SET U&\"\\0070assword\" 'Pw-1')",
+            Provider.POSTGRESQL));
+    assertEquals(
+        "CREATE USER MAPPING FOR ada SERVER films OPTIONS (u&\"!0070assword\" UESCAPE " + M + " "
+            + M + ")",
+        Credentials.mask(
+            "CREATE USER MAPPING FOR ada SERVER films OPTIONS (u&\"!0070assword\" UESCAPE '!' 'Pw-1')",
+            Provider.POSTGRESQL));
+  }
+
+  @Test
   void aStringCutShortIsMaskedToo() {
     assertEquals(
         "SET PASSWORD = " + M,

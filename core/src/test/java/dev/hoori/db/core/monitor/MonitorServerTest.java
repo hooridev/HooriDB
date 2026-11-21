@@ -145,6 +145,15 @@ class MonitorServerTest {
         assertFalse(other.isClosed());
         assertFalse(sleeping.isDone());
         assertTrue(monitor.cancel(found));
+        sleeping.handle((done, failed) -> null).get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        // Idle now, its statement's start stays as it was: no statement to cancel.
+        long until = System.nanoTime() + TIMEOUT.toNanos();
+        while (!monitor.sessions().stream()
+            .anyMatch(s -> s.id().equals(found.id()) && s.state().equals("idle"))) {
+          assertTrue(System.nanoTime() < until, "Session " + found.id() + " did not go idle");
+          Thread.sleep(50);
+        }
+        assertFalse(monitor.cancel(found));
       } finally {
         sleeping.cancel(true);
       }

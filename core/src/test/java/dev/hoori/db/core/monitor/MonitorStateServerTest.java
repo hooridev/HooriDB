@@ -97,6 +97,61 @@ class MonitorStateServerTest {
   }
 
   @Test
+  void postgreSqlTellsAnOrdinaryRoleWhoBlocksWhomAmongOtherRoles() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var server = TestServer.of(provider);
+    try (var admin = MonitorServerTest.open(server);
+        var statement = admin.createStatement()) {
+      for (var role : List.of("lock_holder", "lock_waiter", "lock_reader")) {
+        statement.execute("DO $$ BEGIN CREATE ROLE " + role + " LOGIN PASSWORD 'Pw-" + role
+            + "'; EXCEPTION WHEN duplicate_object THEN NULL; END $$");
+      }
+      statement.execute("CREATE TABLE IF NOT EXISTS lock_probe (id int PRIMARY KEY)");
+      statement.execute("INSERT INTO lock_probe VALUES (1) ON CONFLICT DO NOTHING");
+      statement.execute("GRANT SELECT, UPDATE ON lock_probe TO lock_holder, lock_waiter");
+    }
+    try (var reader = as(server, "lock_reader");
+        var holder = as(server, "lock_holder");
+        var waiter = as(server, "lock_waiter")) {
+      var holding = String.valueOf(MonitorServerTest.id(holder, provider));
+      var waits = String.valueOf(MonitorServerTest.id(waiter, provider));
+      holder.setAutoCommit(false);
+      var update = "UPDATE lock_probe SET id = id WHERE id = 1";
+      try (var statement = holder.createStatement()) {
+        statement.executeUpdate(update);
+      }
+      var waiting = CompletableFuture.runAsync(() -> {
+        try (var statement = waiter.createStatement()) {
+          statement.executeUpdate(update);
+        } catch (Exception e) {
+          // Rolled back, or the connection closed.
+        }
+      });
+      try {
+        var monitor = new SqlMonitor(reader, provider);
+        long until = System.nanoTime() + TIMEOUT.toNanos();
+        List<Block> blocks;
+        do {
+          Thread.sleep(50);
+          blocks = monitor.locks().orElseThrow();
+        } while (blocks.isEmpty() && System.nanoTime() < until);
+        assertEquals(1, blocks.size(), blocks.toString());
+        assertEquals(holding, blocks.getFirst().blocking());
+        assertEquals(waits, blocks.getFirst().waiting());
+      } finally {
+        holder.rollback();
+        waiting.get(TIMEOUT.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+      }
+    }
+  }
+
+  private static Connection as(TestServer server, String role) throws Exception {
+    return Connector.open(
+            server.profile().withUser(role), ("Pw-" + role).toCharArray(), server.driver(), TIMEOUT)
+        .connection();
+  }
+
+  @Test
   void mongoDbTellsVariablesAndStatusButNoLocks() throws Exception {
     var server = TestServer.of(Provider.MONGODB);
     try (var session = DocumentMonitorServerTest.session(server.profile(), true)) {

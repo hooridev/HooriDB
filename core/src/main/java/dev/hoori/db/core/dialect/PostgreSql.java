@@ -732,12 +732,14 @@ public final class PostgreSql implements Dialect {
     }
 
     // The process id names the session only with its start, as the server uses ids again, and
-    // what it runs only with the statement's start: a session that is gone or runs another gives
-    // no row. The times are compared as the sessions' query wrote them, on the same connection.
+    // what it runs only with the statement's start while it runs, as the start stays after the
+    // statement ends: a session that is gone, idle or runs another gives no row. The times are
+    // compared as the sessions' query wrote them, on the same connection.
     @Override
     public Stop cancel(ServerSession session) {
       return new Stop(
           "SELECT pg_catalog.pg_cancel_backend(a.pid)" + same(session)
+              + " AND (a.state" + EQ + "'active' OR a.state OPERATOR(pg_catalog.~~) 'fastpath%')"
               + " AND a.query_start::pg_catalog.text" + EQ + "?",
           session.started().isEmpty()
               ? List.of(session.operation())
@@ -799,7 +801,9 @@ public final class PostgreSql implements Dialect {
     }
 
     // Each session that waits for a lock, beside each that blocks it, with the lock it waits for;
-    // pg_blocking_pids() is costly, so only those that wait for a lock ask it. A relation
+    // pg_blocking_pids() is costly, so only those that wait for a lock ask it, as pg_locks tells
+    // any user, where pg_stat_activity hides other users' waits without pg_read_all_stats. A
+    // relation
     // has its name only in its own database, or where it is shared; in another, its database and
     // number. An advisory lock is told by its keys.
     @Override
@@ -816,8 +820,8 @@ public final class PostgreSql implements Dialect {
           + " l.objid::pg_catalog.text, l.objsubid::pg_catalog.text)"
           + " ELSE pg_catalog.concat_ws(' ', l.locktype, l.transactionid::pg_catalog.text) END,"
           + " l.mode"
-          + " FROM (SELECT w.pid FROM pg_catalog.pg_stat_activity w"
-          + " WHERE w.wait_event_type" + EQ + "'Lock') a"
+          + " FROM (SELECT DISTINCT w.pid FROM pg_catalog.pg_locks w"
+          + " WHERE NOT w.granted AND w.pid IS NOT NULL) a"
           + " CROSS JOIN LATERAL pg_catalog.unnest(pg_catalog.pg_blocking_pids(a.pid)) b (pid)"
           + " LEFT JOIN pg_catalog.pg_locks l ON l.pid" + EQ + "a.pid AND NOT l.granted"
           + " LEFT JOIN pg_catalog.pg_database o ON o.oid" + EQ + "l.database"

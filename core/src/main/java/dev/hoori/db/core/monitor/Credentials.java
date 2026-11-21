@@ -57,7 +57,9 @@ public final class Credentials {
         }
       }
     }
-    boolean all = names(code.toString());
+    // A name written with Unicode escapes (U&"\0070assword") may spell a credential that its
+    // text does not: all strings go.
+    boolean all = names(code.toString()) || escapesAName(sql, pieces);
     var out = new StringBuilder(sql.length());
     int at = 0;
     for (var piece : pieces) {
@@ -73,6 +75,18 @@ public final class Credentials {
       }
     }
     return out.append(sql, at, sql.length()).toString();
+  }
+
+  // Whether a quoted name of the statement is written with Unicode escapes, after U&.
+  private static boolean escapesAName(String sql, List<Statements.Piece> pieces) {
+    for (var piece : pieces) {
+      if (piece.kind() == Statements.Piece.Kind.QUOTED
+          && piece.start() >= 2
+          && sql.regionMatches(true, piece.start() - 2, "U&", 0, 2)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Whether the piece is a comment that the server runs as code.
