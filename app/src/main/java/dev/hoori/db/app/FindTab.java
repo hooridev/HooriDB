@@ -45,6 +45,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.IntFunction;
 
 /**
  * A search of a database or schema of a connection: the names and definitions of its objects, or
@@ -75,8 +76,16 @@ final class FindTab implements Tab {
   /** Why a call failed: a title and what the server said. */
   record Problem(String title, String text) {}
 
-  /** A row of the results of a search in data: a column's hits, or why a table was not searched. */
-  record Hit(Candidate table, String column, int rows, boolean more, String failure) {}
+  /** A row of the results of a search in data: a column's hits, or a table not searched. */
+  sealed interface Result permits Hit, Skipped {
+    Candidate table();
+  }
+
+  /** A column's hits: the rows counted, and whether the table had more. */
+  record Hit(Candidate table, String column, int rows, boolean more) implements Result {}
+
+  /** A table that was not searched, and why, as the server said. */
+  record Skipped(Candidate table, String why) implements Result {}
 
   final UUID id;
   final Container scope;
@@ -92,7 +101,7 @@ final class FindTab implements Tab {
   boolean searchedOthers;
   List<Candidate> candidates; // the tables to choose from, null until read
   boolean[] chosen = new boolean[0]; // by candidate
-  final List<Hit> hits = new ArrayList<>(); // of the last search in data
+  final List<Result> hits = new ArrayList<>(); // of the last search in data
   List<Candidate> queue = List.of(); // the tables of the search in data under way or last
   int done; // of them searched
   boolean cancelled; // the last search in data was cancelled
@@ -297,8 +306,8 @@ final class FindTab implements Tab {
     if (done >= queue.size()) {
       asked = null;
       int with = (int) hits.stream()
-          .filter(h -> h.failure() == null)
-          .map(Hit::table)
+          .filter(Hit.class::isInstance)
+          .map(Result::table)
           .distinct()
           .count();
       say(s, "Hits in " + tableCount(with) + " of " + queue.size());
@@ -315,7 +324,7 @@ final class FindTab implements Tab {
         link -> link.search(table, search, as),
         got -> {
           for (var hit : got.columns()) {
-            hits.add(new Hit(table, hit.column(), hit.rows(), got.more(), null));
+            hits.add(new Hit(table, hit.column(), hit.rows(), got.more()));
           }
           done++;
           next(s, session);
@@ -329,7 +338,7 @@ final class FindTab implements Tab {
           if (error instanceof QueryException q
               && (q.failure() == QueryException.Failure.ACCESS_DENIED
                   || q.failure() == QueryException.Failure.NOT_FOUND)) {
-            hits.add(new Hit(table, "", 0, false, detail(q)));
+            hits.add(new Skipped(table, detail(q)));
             done++;
             next(s, session);
             return;
@@ -377,8 +386,8 @@ final class FindTab implements Tab {
       if (found != null && row >= 0 && row < found.size()) {
         open(s, found.get(row));
       }
-    } else if (row >= 0 && row < hits.size()) {
-      open(s, hits.get(row));
+    } else if (row >= 0 && row < hits.size() && hits.get(row) instanceof Hit hit) {
+      open(s, hit);
     }
   }
 
@@ -406,7 +415,7 @@ final class FindTab implements Tab {
 
   private void open(State s, Hit hit) {
     var profile = s.profile(id);
-    if (hit.failure() != null || searched == null || profile == null) {
+    if (searched == null || profile == null) {
       return;
     }
     var provider = profile.provider();
@@ -752,11 +761,11 @@ final class FindTab implements Tab {
     var columns = new ArrayList<DataGrid.Column>();
     columns.add(
         column(h, 0, 3, tableTitle(s), 12, i -> name(shown.get(i).table().table())));
-    columns.add(column(h, 1, 3, documents(s) ? "Field" : "Column", 10, i -> {
-          var hit = shown.get(i);
-          return hit.failure() != null ? "Not searched: " + hit.failure() : hit.column();
+    columns.add(column(h, 1, 3, documents(s) ? "Field" : "Column", 10, i -> switch (shown.get(i)) {
+          case Hit hit -> hit.column();
+          case Skipped skipped -> "Not searched: " + skipped.why();
         })
-        .cellIcon(i -> shown.get(i).failure() != null
+        .cellIcon(i -> shown.get(i) instanceof Skipped
             ? DataGrid.CellIcon.before(Symbol.WARNING, Icon.Variant.WARNING)
             : null));
     columns.add(new DataGrid.Column(
@@ -769,11 +778,10 @@ final class FindTab implements Tab {
   }
 
   /** A column's hits, with a + where the table had more matching rows than were counted. */
-  static String hitText(Hit hit) {
-    if (hit.failure() != null) {
-      return "";
-    }
-    return String.format(Locale.ROOT, "%,d", hit.rows()) + (hit.more() ? "+" : "");
+  static String hitText(Result result) {
+    return result instanceof Hit hit
+        ? String.format(Locale.ROOT, "%,d", hit.rows()) + (hit.more() ? "+" : "")
+        : "";
   }
 
   /** The tables chosen, and their estimated size. */
@@ -837,7 +845,7 @@ final class FindTab implements Tab {
     if (searched == null || queue.isEmpty()) {
       return tableCount(candidates.size());
     }
-    long columns = hits.stream().filter(h -> h.failure() == null).count();
+    long columns = hits.stream().filter(Hit.class::isInstance).count();
     return count((int) columns, "column", "columns") + " with hits, " + done + " of "
         + tableCount(queue.size()) + " searched"
         + (cancelled ? ", cancelled" : "");
@@ -889,7 +897,7 @@ final class FindTab implements Tab {
       int columns,
       String title,
       float controls,
-      java.util.function.IntFunction<String> text) {
+      IntFunction<String> text) {
     return new DataGrid.Column(
         title, width(w, index, columns, controls), DataGrid.Align.LEFT, false, false, text);
   }

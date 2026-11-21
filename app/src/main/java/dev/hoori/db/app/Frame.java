@@ -655,9 +655,9 @@ final class Frame {
                     .icon(Symbol.SERVER),
                 Menu.item(
                         "Find…",
-                        find == null
+                        find.isEmpty()
                             ? null
-                            : () -> s.openFind(find.getKey(), find.getValue(), group))
+                            : () -> s.openFind(find.get().id(), find.get().scope(), group))
                     .icon(Symbol.SEARCH)
                     .shortcut(Key.CONTROL | Key.SHIFT, "F"),
                 Menu.item(

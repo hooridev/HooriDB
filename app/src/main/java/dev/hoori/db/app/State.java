@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -976,11 +977,14 @@ final class State {
     return all;
   }
 
+  /** A schema or database of a connection to search. */
+  record FindScope(UUID id, Container scope) {}
+
   /**
    * What Find searches from the window of these tabs: in the main window the schema or database of
-   * the node selected in the tree, else that of the window's active tab; null for none.
+   * the node selected in the tree, else that of the window's active tab; empty for none.
    */
-  Map.Entry<UUID, Container> findScope(TabGroups.Group<Tab> group) {
+  Optional<FindScope> findScope(TabGroups.Group<Tab> group) {
     if (group == tabs.main() && selected != null) {
       var scope = switch (selected) {
         case Node.OfSchema n -> n.schema();
@@ -990,13 +994,13 @@ final class State {
         default -> null;
       };
       if (scope != null) {
-        return Map.entry(selected.id(), scope);
+        return Optional.of(new FindScope(selected.id(), scope));
       }
     }
     return switch (group.activeTab()) {
-      case TableTab x -> Map.entry(x.id, x.table.container());
-      case FindTab x -> Map.entry(x.id, x.scope);
-      case null, default -> null;
+      case TableTab x -> Optional.of(new FindScope(x.id, x.table.container()));
+      case FindTab x -> Optional.of(new FindScope(x.id, x.scope));
+      case null, default -> Optional.empty();
     };
   }
 
