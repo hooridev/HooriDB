@@ -2096,6 +2096,42 @@ class ConsoleTransactionTest {
   }
 
   /**
+   * A give-up's failure names the read it gave up, not a statement asked for after it and
+   * cancelled before its call began.
+   */
+  @Test
+  void aGiveUpsFailureNamesTheReadItGaveUp() throws Exception {
+    servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
+    var app = k.console(SHOP);
+    var tab = k.tab(app);
+    // The session's lane, as the probe after a cancel names it.
+    c.run(app, type(COUNT + ";") + RUN);
+    var counting = "run " + PG + " " + COUNT;
+    var counted = servers.hold(counting);
+    c.run(app, type("\n" + COUNT) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(counting));
+    var probing = servers.hold("transaction " + PG);
+    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    var lane = tab.probing.lane();
+    counted.countDown();
+    probing.countDown();
+    c.run(app, SETTLE + "press #sql\n" + type(";\n" + ORDERS) + RUN);
+    // Something before it on the lane: the statement asked for next waits, and is cancelled.
+    var busy = new CountDownLatch(1);
+    lane.submit(link -> {
+      busy.await();
+      return null;
+    });
+    c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\n");
+    c.run(app, "press role=button label=\"Cancel\"\nframe\n");
+    busy.countDown();
+    c.run(app, SETTLE);
+    assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+    assertTrue(
+        noticed(app).contains(" · " + ORDERS + " · " + Session.ENDED + DUPLICATE), noticed(app));
+  }
+
+  /**
    * 3: a Rollback that the close question ran, and that rolled back only in part, stops the close:
    * the console stays and says so, and the app keeps it.
    */

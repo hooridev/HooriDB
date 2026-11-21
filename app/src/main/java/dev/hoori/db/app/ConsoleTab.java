@@ -266,7 +266,9 @@ final class ConsoleTab implements Tab {
   // The session has the console's mode, as a statement sent on it or a switch confirmed: from then
   // on the mode shown follows the session's, before it the user's choice stands.
   private boolean applied;
-  private String openSql; // the read whose rest is still to be read, or given up
+  // The read whose rest is still to be read, or given up: set on the lane as its call sends it, so
+  // that one asked for and cancelled before its call began is never named. One a session.
+  private AtomicReference<String> openSql = new AtomicReference<>();
   // Why the outcome of what may have ended the transaction is not known, until the user has read
   // it; null for nothing in doubt.
   String doubt;
@@ -557,11 +559,15 @@ final class ConsoleTab implements Tab {
     sent = held;
     var asked = mode;
     recording = new Sent(sql, Instant.now());
+    var label = openSql;
     work = ask(
         s,
         "run a statement",
-        link -> Session.start(
-            link, new Session.Send(sql, statement, asked, lazy, KEPT, planner, on), held),
+        link -> {
+          label.set(sql);
+          return Session.start(
+              link, new Session.Send(sql, statement, asked, lazy, KEPT, planner, on), held);
+        },
         ran -> {
           work = null;
           ran(s, sql, ran);
@@ -571,7 +577,6 @@ final class ConsoleTab implements Tab {
           sendFailed(s, sql, wasEmpty, error);
         });
     open = held; // after ask, which gives up the one open before
-    openSql = sql;
   }
 
   /**
@@ -672,11 +677,11 @@ final class ConsoleTab implements Tab {
       Lane.Call<T> call,
       Consumer<T> done,
       Consumer<Exception> failed) {
-    var leftSql = openSql;
+    var left = openSql;
     open = null; // given up on the lane, also where this call never starts
     leave(); // and its rows end where they are
     var tell = teller;
-    return through(s, what, sql, link -> Session.after(link, tell, leftSql, call), done, failed);
+    return through(s, what, sql, link -> Session.after(link, tell, left.get(), call), done, failed);
   }
 
   /**
@@ -1553,12 +1558,13 @@ final class ConsoleTab implements Tab {
       // rest was not read, and closes the connection, each within a bound. What that says goes
       // to the app's notices. The app counts the session until it has, which a background work
       // waits for, so that Exit can wait for it as for any work.
-      var sql = openSql;
+      var left = openSql;
+      openSql = new AtomicReference<>();
       var tell = teller;
       var reported = new CompletableFuture<Void>();
       lane.close(ended -> {
         try {
-          Session.told(ended, sql, SESSION_ENDED, tell);
+          Session.told(ended, left.get(), SESSION_ENDED, tell);
         } finally {
           tell.wipe();
           reported.complete(null);
