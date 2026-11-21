@@ -66,9 +66,9 @@ class ChangesTest {
   void aNewRowTakesValuesUntilItIsGivenUp() {
     var inserted = changes().insert(Map.of()).edit(0, 0, 3L).edit(0, 2, null);
     assertEquals(List.of(new Change.Insert(values(0, 3L, 2, null))), inserted.changes());
+    var deleted = changes().delete(ROW);
     assertThrows(
-        IllegalArgumentException.class,
-        () -> changes().delete(ROW).edit(0, 2, "a deleted row is no new one"));
+        IllegalArgumentException.class, () -> deleted.edit(0, 2, "a deleted row is no new one"));
     assertEquals(List.of(), inserted.revert(0).changes());
   }
 
@@ -78,22 +78,21 @@ class ChangesTest {
         .map(c -> new Column(c.table(), c.name(), c.type(), c.nullable(), 0))
         .toList();
     assertTrue(Changes.of(TABLE, keyless).isEmpty());
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> new Changes(TABLE, keyless, List.of(new Change.Delete(ROW))));
+    var deletion = List.<Change>of(new Change.Delete(ROW));
+    assertThrows(IllegalArgumentException.class, () -> new Changes(TABLE, keyless, deletion));
   }
 
   @Test
   void whatWasReadOnlyInPartNeitherNamesARowNorIsWritten() {
+    var none = changes();
     var cut = row(1L, new Cut("x", OptionalLong.of(2000)), "old", null);
-    assertThrows(IllegalArgumentException.class, () -> changes().delete(cut));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> changes().edit(ROW, 2, new Cut("x", OptionalLong.empty())));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> changes().insert(Map.of(2, new Binary(new byte[] {1}, 2))));
-    assertThrows(IllegalArgumentException.class, () -> changes().delete(row(1L, null, "", null)));
+    assertThrows(IllegalArgumentException.class, () -> none.delete(cut));
+    var cutText = new Cut("x", OptionalLong.empty());
+    assertThrows(IllegalArgumentException.class, () -> none.edit(ROW, 2, cutText));
+    var cutBinary = Map.<Integer, Object>of(2, new Binary(new byte[] {1}, 2));
+    assertThrows(IllegalArgumentException.class, () -> none.insert(cutBinary));
+    var keyNull = row(1L, null, "", null);
+    assertThrows(IllegalArgumentException.class, () -> none.delete(keyNull));
   }
 
   @Test

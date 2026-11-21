@@ -26,7 +26,9 @@ public record Binary(byte[] bytes, long length) {
 
   @Override
   public boolean equals(Object other) {
-    return other instanceof Binary b && b.length == length && Arrays.equals(b.bytes, bytes);
+    return other instanceof Binary(var data, var size)
+        && size == length
+        && Arrays.equals(data, bytes);
   }
 
   @Override
