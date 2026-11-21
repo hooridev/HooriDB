@@ -12,6 +12,7 @@ import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -60,6 +61,12 @@ public final class PostgreSqlDump extends DumpDialect {
       "IntervalStyle",
       "DateStyle");
 
+  /** How long an export waits for another session to let go of a table it holds. */
+  static final Duration LOCK_WAIT = Duration.ofSeconds(10);
+
+  // The state of a lock that could not be had in time.
+  private static final String LOCKED = "55P03";
+
   public PostgreSqlDump() {
     // Nothing to set up.
   }
@@ -92,6 +99,52 @@ public final class PostgreSqlDump extends DumpDialect {
         }
       });
     }
+  }
+
+  // ACCESS SHARE, as pg_dump takes it: what reads or writes rows goes on, and what changes a
+  // table's definition, drops it or empties it waits for the export. A session that holds one
+  // already gets the bound to let go of it, after which the export fails rather than holding up
+  // everything that waits behind it.
+  @Override
+  void lock(Connection connection, Provider provider, List<Item> tables) throws QueryException {
+    if (tables.isEmpty()) {
+      return;
+    }
+    var names = tables.stream()
+        .map(t -> "ONLY " + qualified(provider, t.container().name(), t.name()))
+        .collect(Collectors.joining(", "));
+    var was = Sql.one(
+        connection,
+        provider,
+        "lock_timeout",
+        "SELECT pg_catalog.current_setting('lock_timeout')",
+        rows -> rows.getString(1));
+    setting(connection, provider, "lock_timeout", LOCK_WAIT.toMillis() + "ms");
+    try {
+      Sql.execute(connection, provider, "LOCK TABLE " + names + " IN ACCESS SHARE MODE");
+    } catch (QueryException e) {
+      if (e.getCause() instanceof SQLException cause && LOCKED.equals(cause.getSQLState())) {
+        throw QueryException.of(
+            QueryException.Failure.OTHER,
+            "Another session holds a table to export, as while it changes the table, and did not"
+                + " let go of it within " + LOCK_WAIT.toSeconds() + " seconds: try again once it"
+                + " has. " + e.detail());
+      }
+      throw e;
+    }
+    setting(connection, provider, "lock_timeout", was);
+  }
+
+  // For the transaction alone.
+  private static void setting(Connection connection, Provider provider, String name, String value)
+      throws QueryException {
+    Sql.rows(
+        connection,
+        provider,
+        "SELECT pg_catalog.set_config(?, ?, true)",
+        rows -> rows.getString(1),
+        name,
+        value);
   }
 
   private static boolean autoCommits(Connection connection) {

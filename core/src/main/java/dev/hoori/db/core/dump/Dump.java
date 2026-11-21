@@ -34,10 +34,12 @@ import java.util.Set;
  *
  * <p>Everything is read in one transaction, read only and in one snapshot, as {@link
  * DumpDialect#begin} says, so that the rows of all tables are those of one moment, where the
- * server keeps transactions for them. The objects go in the order {@link Order} gives; the rows of
- * each table are read in portions and written as they come, so that a table of any size costs no
- * more than a portion here, as {@code INSERT}s of many rows each, their values as literals of the
- * provider's SQL ({@link dev.hoori.db.core.data.RowsDialect#literal}).
+ * server keeps transactions for them; where the server lets it, the tables are kept from being
+ * changed by others until it ends ({@link DumpDialect#lock}). The objects go in the order {@link
+ * Order} gives; the rows of each table are read in portions and written as they come, so that a
+ * table of any size costs no more than a portion here, as {@code INSERT}s of many rows each, up to
+ * {@link #INSERT_SIZE}, their values as literals of the provider's SQL ({@link
+ * dev.hoori.db.core.data.RowsDialect#literal}).
  *
  * <p>The file is written beside the one chosen under another name and takes its place only once it
  * is whole, in one move: a dump that fails or is cancelled leaves the chosen file as it was, and
@@ -54,6 +56,13 @@ public final class Dump {
 
   /** How many rows an {@code INSERT} holds unless chosen otherwise. */
   public static final int ROWS_PER_INSERT = 100;
+
+  /**
+   * The size, in characters, past which an {@code INSERT} takes no more rows, however many it may
+   * hold: well within what the servers take in one statement ({@code max_allowed_packet} of
+   * MariaDB's 16 MiB and MySQL's 64 MiB), unless a row is larger alone.
+   */
+  public static final int INSERT_SIZE = 1 << 20;
 
   /** How many rows are read from the server at a time. */
   static final int PORTION = 1000;
@@ -86,7 +95,8 @@ public final class Dump {
    * @param drop whether each object is dropped, where it exists, before it is created
    * @param create whether the schemas, or the database where the provider has no schemas, are
    *     created where they do not exist, and the database gone to
-   * @param rowsPerInsert how many rows each {@code INSERT} holds, at least 1
+   * @param rowsPerInsert how many rows each {@code INSERT} holds at most, at least 1: fewer where
+   *     they pass {@link #INSERT_SIZE}
    * @param transaction whether the rows go in one transaction, all or none; a table whose engine
    *     keeps no transactions, as MyISAM, keeps what went into it before a failure all the same
    * @param noForeignKeyChecks whether the session that reads the file back checks no foreign keys,
@@ -218,9 +228,9 @@ public final class Dump {
     var part = Files.createTempFile(folder, "." + target.getFileName() + "-", ".part");
     var done = false;
     try {
-      Written written;
+      Writing.Counts written;
       try (var out = Files.newBufferedWriter(part, StandardCharsets.UTF_8)) {
-        written = new Writing(connection, provider, choice, out, progress).write(target);
+        written = new Writing(connection, provider, choice, out, progress).write();
       }
       var bytes = Files.size(part);
       // The snapshot's end goes on after a cancel, which must not then find the file replaced.
@@ -314,10 +324,13 @@ public final class Dump {
       this.delimiter = provider.dialect().syntax().clientDelimiter();
     }
 
-    Written write(Path target) throws QueryException, IOException {
+    // How many objects and rows it wrote.
+    private record Counts(int objects, long rows) {}
+
+    Counts write() throws QueryException, IOException {
       Dump.begin(connection, provider);
       try {
-        return written(target);
+        return written();
       } catch (QueryException e) {
         // What the file did not take, as its disk was full, is no failure of the server's.
         if (e.getCause() instanceof UncheckedIOException io) {
@@ -329,10 +342,15 @@ public final class Dump {
       }
     }
 
-    private Written written(Path target) throws QueryException, IOException {
+    private Counts written() throws QueryException, IOException {
       var content = choice.content();
       var options = choice.options();
-      var sorted = Order.sorted(dialect.define(connection, provider, choice.defined()));
+      var defined = choice.defined();
+      dialect.lock(
+          connection,
+          provider,
+          defined.stream().filter(i -> i.kind() == Item.Kind.TABLE).toList());
+      var sorted = Order.sorted(dialect.define(connection, provider, defined));
       heading();
       statements(dialect.header(options));
       if (options.create()) {
@@ -355,7 +373,7 @@ public final class Dump {
       }
       out.write('\n');
       statements(dialect.footer(options));
-      return new Written(target, 0, objects, rows);
+      return new Counts(objects, rows);
     }
 
     private void heading() throws IOException {
@@ -518,25 +536,31 @@ public final class Dump {
           }));
     }
 
-    // The rows of the result as INSERTs of so many rows each; how many went.
+    // The rows of the result as INSERTs of so many rows each, or fewer where they pass the size;
+    // how many went.
     private long copied(Item item, DumpDialect.Data data, ResultSet result) throws SQLException {
       var literals = provider.dialect().rows();
       var perInsert = choice.options().rowsPerInsert();
       var values = data.reader().values(result.getMetaData());
       var line = new StringBuilder();
       long n = 0;
+      var inInsert = 0; // the rows of the INSERT so far
+      long size = 0; // and its characters
       while (result.next()) {
         line.setLength(0);
         if (n == 0) {
           line.append('\n').append(commented("Rows of " + title(item)));
         }
-        if (n % perInsert != 0) {
-          line.append(",\n(");
-        } else {
-          line.append(n == 0 ? "" : ";\n").append(data.insert()).append("\n(");
+        if (inInsert > 0 && (inInsert >= perInsert || size >= INSERT_SIZE)) {
+          line.append(";\n");
+          inInsert = 0;
+          size = 0;
         }
+        line.append(inInsert == 0 ? data.insert() + "\n(" : ",\n(");
         literals(line, values, literals, result);
         write(line.append(')'));
+        size += line.length();
+        inInsert++;
         n++;
         if (n % perInsert == 0) {
           progress.at(item, n);

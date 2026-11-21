@@ -85,12 +85,18 @@ public final class MySqlFamilyDump extends DumpDialect {
     }
   }
 
+  // A snapshot of these servers locks no table, as the class says.
+  @Override
+  void lock(Connection connection, Provider provider, List<Item> tables) {
+    // Nothing to lock.
+  }
+
   @Override
   void end(Connection connection, Provider provider) throws QueryException {
     try {
       Sql.ending(connection, provider, "ROLLBACK");
     } finally {
-      Sql.ending(connection, provider, ZONE_BACK);
+      Sql.ending(connection, provider, SESSION_BACK);
     }
   }
 

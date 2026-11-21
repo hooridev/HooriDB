@@ -29,6 +29,17 @@ public abstract class DumpDialect {
    */
   abstract void begin(Connection connection, Provider provider) throws QueryException;
 
+  /**
+   * Keeps other sessions, until the snapshot ends, from changing the definitions of the tables or
+   * emptying them, where the server lets a snapshot do so; right after {@link #begin}, before
+   * anything of them is read.
+   *
+   * @throws QueryException {@link QueryException.Failure#NOT_FOUND} where a table no longer exists;
+   *     another failure where another session holds one so that it cannot be kept
+   */
+  abstract void lock(Connection connection, Provider provider, List<Item> tables)
+      throws QueryException;
+
   /** Ends what {@link #begin} began, and puts back what it changed of the session. */
   abstract void end(Connection connection, Provider provider) throws QueryException;
 
