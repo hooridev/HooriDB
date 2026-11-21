@@ -74,7 +74,7 @@ public final class MariaDb extends MySqlFamily {
       RESERVED,
       Words.union(RESERVED, Words.TYPED, Syntax.TYPED, Set.of("SEQUENCE")),
       List.of("/*!", "/*M!"));
-  private final PlanDialect plan = new Plan();
+  private final PlanDialect planning = new Plan();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MariaDbRows();
 
@@ -117,7 +117,7 @@ public final class MariaDb extends MySqlFamily {
 
   @Override
   public PlanDialect plan() {
-    return plan;
+    return planning;
   }
 
   @Override
@@ -141,20 +141,36 @@ public final class MariaDb extends MySqlFamily {
 
     @Override
     public OptionalLong rows(ResultSet rows, String sql, Provider provider) throws SQLException {
-      // Each select's tables, by its id, joined; and the selects of a UNION inside another.
-      var products = new LinkedHashMap<Object, Long>();
-      var unions = new HashSet<Object>();
-      var inner = new HashSet<String>();
-      boolean any = false;
+      var selects = new Selects();
       while (rows.next()) {
+        selects.add(rows);
+      }
+      if (!selects.any) {
+        return OptionalLong.empty();
+      }
+      var limit = Statements.limit(sql, provider);
+      return OptionalLong.of(Math.min(selects.outermost(), limit.orElse(Long.MAX_VALUE)));
+    }
+
+    // Each select's tables, by its id, joined; and the selects of a UNION inside another.
+    private static final class Selects {
+
+      private final Map<Object, Long> products = new LinkedHashMap<>();
+      private final Set<Object> unions = new HashSet<>();
+      private final Set<String> inner = new HashSet<>();
+      // Whether any table has its rows read.
+      private boolean any;
+
+      void add(ResultSet rows) throws SQLException {
         var id = rows.getObject("id");
         var type = rows.getString("select_type");
         if (id == null) {
           var table = String.valueOf(rows.getString("table"));
           if (table.startsWith("<union")) {
-            inner.addAll(List.of(table.replaceAll("[<union>.]", "").split(",")));
+            // The ids in "<union1,2,3>": without the letters of "<union>" and any dots.
+            inner.addAll(List.of(table.replaceAll("[<>.inou]", "").split(",")));
           }
-          continue;
+          return;
         }
         if ("UNION".equals(type)) {
           unions.add(id);
@@ -166,22 +182,22 @@ public final class MariaDb extends MySqlFamily {
         products.put(
             id, read != 0 && product > Long.MAX_VALUE / read ? Long.MAX_VALUE : product * read);
       }
-      if (!any) {
-        return OptionalLong.empty();
-      }
-      var first = products.keySet().iterator().next();
-      // A UNION RESULT that names the first select names the outermost union's selects.
-      boolean outermost = inner.contains(String.valueOf(first));
-      long sum = 0;
-      for (var entry : products.entrySet()) {
-        var id = entry.getKey();
-        if (id.equals(first)
-            || unions.contains(id) && (outermost || !inner.contains(String.valueOf(id)))) {
-          sum = sum > Long.MAX_VALUE - entry.getValue() ? Long.MAX_VALUE : sum + entry.getValue();
+
+      // The rows of the outermost select, or of the selects of the outermost UNION, summed.
+      long outermost() {
+        var first = products.keySet().iterator().next();
+        // A UNION RESULT that names the first select names the outermost union's selects.
+        boolean outermost = inner.contains(String.valueOf(first));
+        long sum = 0;
+        for (var entry : products.entrySet()) {
+          var id = entry.getKey();
+          if (id.equals(first)
+              || unions.contains(id) && (outermost || !inner.contains(String.valueOf(id)))) {
+            sum = sum > Long.MAX_VALUE - entry.getValue() ? Long.MAX_VALUE : sum + entry.getValue();
+          }
         }
+        return sum;
       }
-      var limit = Statements.limit(sql, provider);
-      return OptionalLong.of(Math.min(sum, limit.orElse(Long.MAX_VALUE)));
     }
   }
 
@@ -189,10 +205,11 @@ public final class MariaDb extends MySqlFamily {
 
     // Without deferCertificateValidation=false, verify-full accepts a certificate the trust
     // store does not, against a fingerprint bound to the password and without the host name.
+    private static final String SSL_MODE = "sslMode";
     private static final Map<Tls, Map<String, String>> TLS = Map.of(
-        Tls.OFF, Map.of("sslMode", "disable"),
-        Tls.ENCRYPTED, Map.of("sslMode", "trust"),
-        Tls.VERIFIED, Map.of("sslMode", "verify-full", "deferCertificateValidation", "false"));
+        Tls.OFF, Map.of(SSL_MODE, "disable"),
+        Tls.ENCRYPTED, Map.of(SSL_MODE, "trust"),
+        Tls.VERIFIED, Map.of(SSL_MODE, "verify-full", "deferCertificateValidation", "false"));
 
     @Override
     public String scheme() {
@@ -238,17 +255,20 @@ public final class MariaDb extends MySqlFamily {
     public int status(Connection connection) {
       try {
         return (int) call(call(connection, "getContext"), "getServerStatus");
-      } catch (ReflectiveOperationException | RuntimeException e) {
+      } catch (ReflectiveOperationException | RuntimeException _) {
         return -1;
       }
     }
 
-    // MariaDB Connector/J reads auto-commit from the status itself.
     @Override
-    public void followAutoCommit(Connection connection, int status) {}
+    public void followAutoCommit(Connection connection, int status) {
+      // MariaDB Connector/J reads auto-commit from the status itself.
+    }
 
     @Override
-    public void keepWriteTimeout(Connection connection) {}
+    public void keepWriteTimeout(Connection connection) {
+      // MariaDB Connector/J leaves the session's time limits as they are while it streams rows.
+    }
 
     // MariaDB Connector/J cancels as long as it reads.
     @Override

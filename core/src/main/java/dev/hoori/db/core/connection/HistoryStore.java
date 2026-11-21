@@ -5,8 +5,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
@@ -41,10 +39,12 @@ public final class HistoryStore {
   /** A larger file is refused unread; a save leaves out the oldest entries to stay below it. */
   static final long MAX_SIZE = 64L << 20;
 
-  private final JsonFile file;
+  private static final String OUTCOME = "outcome";
+
+  private final JsonFile json;
 
   public HistoryStore(Path folder) {
-    this.file = new JsonFile(folder, FILE, "history", MAX_SIZE);
+    this.json = new JsonFile(folder, FILE, "history", MAX_SIZE);
   }
 
   /**
@@ -76,42 +76,34 @@ public final class HistoryStore {
    * @throws IOException if it could not be read, with a message as {@link WorkspaceStore#load} gives
    */
   public List<HistoryEntry> load() throws IOException {
-    var bytes = file.load();
+    var bytes = json.load();
     return bytes == null ? List.of() : parse(bytes);
   }
 
   private List<HistoryEntry> parse(byte[] bytes) throws WorkspaceStore.UnreadableException {
-    var list = file.objects(file.root(bytes, VERSION), "entries", "entry");
+    var list = json.objects(json.root(bytes, VERSION), "entries", "entry");
     var entries = new ArrayList<HistoryEntry>();
     for (int i = 0; i < list.size(); i++) {
       var where = "entry " + (i + 1);
       var node = list.get(i);
       entries.add(new HistoryEntry(
-          file.uuid(node, where, "connection"),
-          file.text(node, where, "statement"),
-          started(node, where),
-          Duration.ofMillis(file.count(node, where, "took")),
+          json.uuid(node, where, "connection"),
+          json.text(node, where, "statement"),
+          json.time(node, where, "started"),
+          Duration.ofMillis(json.count(node, where, "took")),
           outcome(node, where)));
     }
     return entries;
   }
 
-  private Instant started(JsonNode node, String where) throws WorkspaceStore.UnreadableException {
-    try {
-      return Instant.parse(file.text(node, where, "started"));
-    } catch (DateTimeParseException notATime) {
-      throw file.unreadable("in " + where + ", \"started\" is not a time");
-    }
-  }
-
   // The names in the file, spelled out so that renaming a record cannot change it.
   private Outcome outcome(JsonNode node, String where) throws WorkspaceStore.UnreadableException {
-    return switch (file.text(node, where, "outcome")) {
+    return switch (json.text(node, where, OUTCOME)) {
       case "rows" -> new Outcome.Rows();
-      case "changed" -> new Outcome.Changed(file.count(node, where, "count"));
-      case "failed" -> new Outcome.Failed(file.text(node, where, "message"));
+      case "changed" -> new Outcome.Changed(json.count(node, where, "count"));
+      case "failed" -> new Outcome.Failed(json.text(node, where, "message"));
       case "cancelled" -> new Outcome.Cancelled();
-      default -> throw file.unreadable("in " + where + ", \"outcome\" is not one HooriDB knows");
+      default -> throw json.unreadable("in " + where + ", \"outcome\" is not one HooriDB knows");
     };
   }
 
@@ -135,15 +127,14 @@ public final class HistoryStore {
     for (; size > MAX_SIZE - (1 << 10); first++) {
       size -= size(nodes.get(first));
     }
-    var root = JsonFile.Json.MAPPER.createObjectNode();
-    root.put("version", VERSION);
+    var root = JsonFile.newRoot(VERSION);
     root.putArray("entries").addAll(nodes.subList(first, nodes.size()));
-    file.save(JsonFile.bytes(root), this::parse);
+    json.save(JsonFile.bytes(root), this::parse);
   }
 
   // What the entry takes in the file, with room for its indentation in the array.
   private static long size(ObjectNode node) {
-    return JsonFile.Json.MAPPER.writeValueAsBytes(node).length + 64;
+    return JsonFile.Json.MAPPER.writeValueAsBytes(node).length + 64L;
   }
 
   private static ObjectNode node(HistoryEntry entry) {
@@ -154,10 +145,11 @@ public final class HistoryStore {
         .put("started", entry.started().toString())
         .put("took", Math.max(0, entry.took().toMillis()));
     switch (entry.outcome()) {
-      case Outcome.Rows r -> node.put("outcome", "rows");
-      case Outcome.Changed c -> node.put("outcome", "changed").put("count", Math.max(0, c.count()));
-      case Outcome.Failed f -> node.put("outcome", "failed").put("message", f.message());
-      case Outcome.Cancelled c -> node.put("outcome", "cancelled");
+      case Outcome.Rows _ -> node.put(OUTCOME, "rows");
+      case Outcome.Changed(var count) ->
+        node.put(OUTCOME, "changed").put("count", Math.max(0, count));
+      case Outcome.Failed(var message) -> node.put(OUTCOME, "failed").put("message", message);
+      case Outcome.Cancelled _ -> node.put(OUTCOME, "cancelled");
     }
     return node;
   }

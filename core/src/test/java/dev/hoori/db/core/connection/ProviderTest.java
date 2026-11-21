@@ -252,13 +252,13 @@ class ProviderTest {
   }
 
   @Test
-  void parametersCannotBeChanged() throws Exception {
+  void parametersCannotBeChanged() {
     var properties = new HashMap<>(Map.of("a", "b"));
     var parameters = new ConnectionParameters("u", properties);
     properties.put("c", "d");
     assertEquals(Map.of("a", "b"), parameters.properties());
-    assertThrows(
-        UnsupportedOperationException.class, () -> parameters.properties().put("x", "y"));
+    var kept = parameters.properties();
+    assertThrows(UnsupportedOperationException.class, () -> kept.put("x", "y"));
   }
 
   @Test

@@ -30,9 +30,12 @@ final class KeyringWorker {
   // Calls whose callers gave up and that have not returned yet.
   private final AtomicInteger abandoned = new AtomicInteger();
 
-  /** Runs the call in its turn and waits for it; an interrupt stops the waiting, not the call. */
+  /**
+   * Runs the call in its turn and waits for it; an interrupt stops the waiting, not the call. It
+   * throws what the call threw, as {@link Callable#call} does.
+   */
   <T> T call(Callable<T> call) throws Exception {
-    return await(CompletableFuture.supplyAsync(
+    var done = CompletableFuture.supplyAsync(
         () -> {
           try {
             return call.call();
@@ -40,27 +43,35 @@ final class KeyringWorker {
             throw new CompletionException(e);
           }
         },
-        thread));
-  }
-
-  private <T> T await(CompletableFuture<T> done) throws Exception {
+        thread);
     try {
       return done.get();
-    } catch (InterruptedException e) {
-      abandoned.incrementAndGet();
-      done.whenComplete((value, error) -> {
-        if (value instanceof Optional<?> o && o.orElse(null) instanceof char[] secret) {
-          Arrays.fill(secret, '\0'); // read for nobody
-        }
-        abandoned.decrementAndGet();
-      });
-      Thread.currentThread().interrupt();
-      throw new InterruptedIOException("gave up waiting for the system keyring");
+    } catch (InterruptedException _) {
+      throw gaveUp(done);
     } catch (ExecutionException e) {
-      throw e.getCause() instanceof CompletionException c && c.getCause() instanceof Exception x
-          ? x
-          : e.getCause() instanceof Exception x ? x : e;
+      throw thrown(e);
     }
+  }
+
+  /** The caller stops waiting, still interrupted; the call runs on, and wipes what it read. */
+  private InterruptedIOException gaveUp(CompletableFuture<?> done) {
+    abandoned.incrementAndGet();
+    done.whenComplete((value, error) -> {
+      if (value instanceof Optional<?> o && o.orElse(null) instanceof char[] secret) {
+        Arrays.fill(secret, '\0'); // read for nobody
+      }
+      abandoned.decrementAndGet();
+    });
+    Thread.currentThread().interrupt();
+    return new InterruptedIOException("gave up waiting for the system keyring");
+  }
+
+  /** What the call threw, out of the wrappers it came back in. */
+  private static Exception thrown(ExecutionException e) {
+    if (e.getCause() instanceof CompletionException c && c.getCause() instanceof Exception x) {
+      return x;
+    }
+    return e.getCause() instanceof Exception x ? x : e;
   }
 
   /** Whether a call that its caller gave up still runs, which what is asked now waits behind. */

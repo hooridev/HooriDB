@@ -88,7 +88,7 @@ public final class Query {
         handle::cancel,
         () -> {
           try (var statement = connection.prepareStatement(sql);
-              var started = handle.start(statement)) {
+              var _ = handle.start(statement)) {
             return work.run(statement);
           }
         },
@@ -108,7 +108,7 @@ public final class Query {
         handle::cancel,
         () -> {
           try (var statement = connection.createStatement();
-              var started = handle.start(statement)) {
+              var _ = handle.start(statement)) {
             statement.setEscapeProcessing(false);
             try (var rows = statement.executeQuery(sql)) {
               return result.read(rows);
@@ -167,7 +167,7 @@ public final class Query {
     var worker = Thread.ofVirtual().name("query").start(() -> {
       try {
         result.complete(step.run());
-      } catch (Throwable e) {
+      } catch (Throwable e) { // any, an Error too, so that the wait for it always ends
         result.completeExceptionally(e);
       }
     });
@@ -175,7 +175,7 @@ public final class Query {
     try {
       // get() does not look at the interrupt when the result is there, hence the checks after it.
       value = result.get();
-    } catch (InterruptedException e) {
+    } catch (InterruptedException _) {
       var failure = stop(connection, provider, stop, result, worker, stopped);
       Thread.currentThread().interrupt();
       throw failure;
@@ -216,7 +216,7 @@ public final class Query {
     var worker = Thread.ofVirtual().name("query within").start(() -> {
       try {
         result.complete(step.run());
-      } catch (Throwable e) {
+      } catch (Throwable e) { // any, an Error too, so that the wait for it always ends
         result.completeExceptionally(e);
       }
     });
@@ -226,11 +226,11 @@ public final class Query {
       while (true) {
         try {
           return result.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
           interrupted = true; // the step ends all the same, within the limit
         } catch (ExecutionException e) {
           throw failure(connection, provider, e.getCause());
-        } catch (TimeoutException e) {
+        } catch (TimeoutException _) {
           passed.run();
           var canceller = Thread.ofVirtual().unstarted(() -> {});
           canceller.start();
@@ -294,7 +294,7 @@ public final class Query {
     var canceller = Thread.ofVirtual().name("query cancel").start(() -> {
       try {
         sent.complete(stop.stop());
-      } catch (Throwable e) {
+      } catch (Throwable e) { // any, an Error too, so that the wait for it always ends
         sent.completeExceptionally(e);
       }
     });
@@ -328,13 +328,14 @@ public final class Query {
         && !Condition.TIME_LIMIT.in(provider, state, code);
   }
 
-  // Whether the future is done by the deadline; a second interrupt gives up the wait.
+  // Whether the future is done by the deadline; a second interrupt gives up the wait. It is taken
+  // here, so that it cuts no wait after it short; run interrupts the caller again.
   private static boolean ended(CompletableFuture<?> future, long deadline) {
     try {
       future.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
-    } catch (ExecutionException e) {
+    } catch (ExecutionException _) {
       // Done all the same.
-    } catch (TimeoutException | InterruptedException e) {
+    } catch (TimeoutException | InterruptedException _) {
       return false;
     }
     return true;
@@ -349,30 +350,37 @@ public final class Query {
     worker.interrupt();
     canceller.interrupt();
     var deadline = System.nanoTime() + GRACE.toNanos();
-    join(worker, deadline);
+    // An interrupt cuts short the one wait that takes it, and the caller is interrupted again after
+    // the last.
+    var interrupted = join(worker, deadline);
     var aborter = Thread.ofVirtual().name("query abort").start(() -> {
       try {
         connection.abort(Runnable::run);
-      } catch (SQLException | RuntimeException e) {
+      } catch (SQLException | RuntimeException _) {
         // The sockets are closed already, or not even an abort is possible.
       }
     });
-    join(aborter, deadline);
-    join(canceller, deadline);
+    interrupted |= join(aborter, deadline);
+    interrupted |= join(canceller, deadline);
+    if (interrupted) {
+      Thread.currentThread().interrupt();
+    }
   }
 
-  private static void join(Thread thread, long deadline) {
+  // Waits for the thread until the deadline or an interrupt, which it takes; whether one came.
+  private static boolean join(Thread thread, long deadline) {
     try {
       thread.join(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())));
-    } catch (InterruptedException e) {
-      // The caller stays interrupted; the wait is bounded either way.
+      return false;
+    } catch (InterruptedException _) {
+      return true;
     }
   }
 
   private static boolean closed(Connection connection) {
     try {
       return connection.isClosed();
-    } catch (SQLException | RuntimeException e) {
+    } catch (SQLException | RuntimeException _) {
       return true;
     }
   }
@@ -397,7 +405,9 @@ public final class Query {
     Started start(Statement statement) throws SQLException {
       try {
         lock.lockInterruptibly();
-      } catch (InterruptedException e) {
+      } catch (InterruptedException _) {
+        // Only a worker given up is interrupted; it stays so for what closes after.
+        Thread.currentThread().interrupt();
         throw new SQLException("Given up before it ran", "08006");
       }
       try {
@@ -412,7 +422,7 @@ public final class Query {
         try {
           lock.lockInterruptibly();
           lock.unlock();
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
           Thread.currentThread().interrupt();
         }
       };

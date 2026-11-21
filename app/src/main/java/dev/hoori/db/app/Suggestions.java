@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
@@ -58,8 +59,8 @@ final class Suggestions {
   List<Completion.Entry> at(State s, Provider provider, String word) {
     var text = tab.text;
     int caret = Math.min(tab.editor.caret(), text.length());
-    if (entries != null && text == madeFor && caret == madeAt && word.equals(madeOf)) {
-      return entries; // each edit hands over a new string
+    if (entries != null && text.equals(madeFor) && caret == madeAt && word.equals(madeOf)) {
+      return entries;
     }
     entries = make(s, provider, word, text, caret);
     made++;
@@ -405,8 +406,8 @@ final class Suggestions {
       }
     }
     var schema = known.tablesIn(last);
-    if (schema != null) {
-      known.tables(schema, into);
+    if (schema.isPresent()) {
+      known.tables(schema.get(), into);
       return;
     }
     var table = known.table(null, last);
@@ -421,21 +422,6 @@ final class Suggestions {
       asked.forEach(catalog::stop);
     }
     asked.clear();
-  }
-
-  /** Reads the node's tables or columns, unless it did already and that is under way or failed. */
-  private void want(State s, CatalogTree.Live live, Node node) {
-    var mine = asked.get(node);
-    if (mine != null && live.scans.get(node) == mine) {
-      return; // a failed read is not tried again from here: the tree and the palette say why
-    }
-    catalog = s.catalog;
-    var scan = node instanceof Node.OfTable t
-        ? catalog.scan(s, t)
-        : catalog.scan(s, (Node.OfDatabase) node);
-    if (scan != null) {
-      asked.put(node, scan);
-    }
   }
 
   /** What the tree has read of the console's connection, and what it asks for of what it lacks. */
@@ -453,9 +439,9 @@ final class Suggestions {
     Known(State s, Provider provider) {
       this.s = s;
       this.provider = provider;
-      var live = s.catalog.live(tab.id);
-      var connected = live != null && live.phase instanceof CatalogTree.Connected c ? c : null;
-      this.live = connected == null ? null : live;
+      var opened = s.catalog.live(tab.id);
+      var connected = opened != null && opened.phase instanceof CatalogTree.Connected c ? c : null;
+      this.live = connected == null ? null : opened;
       schemas = connected != null && connected.schemas();
       var name = !tab.database.isEmpty() || connected == null ? tab.database : connected.database();
       database = name == null ? null : database(name);
@@ -473,13 +459,30 @@ final class Suggestions {
     /** Reads the table's columns, as the tree would. */
     void readColumns(Table table) {
       if (live != null) {
-        Suggestions.this.want(s, live, new Node.OfTable(tab.id, table));
+        want(new Node.OfTable(tab.id, table));
+      }
+    }
+
+    /**
+     * Reads the node's tables or columns, unless it did already and that is under way or failed.
+     */
+    private void want(Node node) {
+      var mine = asked.get(node);
+      if (mine != null && live.scans.get(node) == mine) {
+        return; // a failed read is not tried again from here: the tree and the palette say why
+      }
+      catalog = s.catalog;
+      var scan = node instanceof Node.OfTable t
+          ? catalog.scan(s, t)
+          : catalog.scan(s, (Node.OfDatabase) node);
+      if (scan != null) {
+        asked.put(node, scan);
       }
     }
 
     private List<Node> read(Node node) {
-      return live != null && live.levels.get(node) instanceof CatalogTree.Read r
-          ? r.children()
+      return live != null && live.levels.get(node) instanceof CatalogTree.Read(var children)
+          ? children
           : List.of();
     }
 
@@ -494,15 +497,20 @@ final class Suggestions {
 
     /** The schemas of its database, or where there are none within databases, the databases. */
     void schemas(List<Candidate> into) {
-      var nodes = schemas
-          ? database == null ? List.<Node>of() : read(database)
-          : read(new Node.Connection(tab.id));
+      List<Node> nodes = List.of();
+      if (!schemas) {
+        nodes = read(new Node.Connection(tab.id));
+      } else if (database != null) {
+        nodes = read(database);
+      }
       for (var node : nodes) {
         switch (node) {
           case Node.OfSchema x -> into.add(candidate(x.schema().name(), Symbol.FOLDER, "schema"));
           case Node.OfDatabase d ->
             into.add(candidate(d.database().name(), Symbol.DATABASE, "database"));
-          default -> {}
+          default -> {
+            // Nothing else stands beside schemas and databases.
+          }
         }
       }
     }
@@ -522,22 +530,24 @@ final class Suggestions {
             unread |= CatalogTree.unread(live.levels.get(x));
             read(x).forEach(n -> tables.add(((Node.OfTable) n).table()));
           }
-          default -> {}
+          default -> {
+            // A system schema's tables are not suggested.
+          }
         }
       }
       if (unread) {
-        want(s, live, database);
+        want(database);
       }
       return tables;
     }
 
     /**
-     * The tables of the schema of that name, or where there are no schemas, of the database; null
+     * The tables of the schema of that name, or where there are no schemas, of the database; empty
      * where there is none such.
      */
     // shortcut: a system schema's tables are read only by the tree, as the database's read leaves
     // them out; read them here once completions in pg_catalog are asked for.
-    List<Table> tablesIn(String name) {
+    Optional<List<Table>> tablesIn(String name) {
       Node container = null;
       if (!schemas) {
         container = database(name);
@@ -549,13 +559,14 @@ final class Suggestions {
         }
       }
       if (container == null) {
-        return null;
+        return Optional.empty();
       }
       boolean system = container instanceof Node.OfSchema x && x.schema().system();
       if (!system && CatalogTree.unread(live.levels.get(container))) {
-        want(s, live, container instanceof Node.OfDatabase d ? d : database);
+        want(container instanceof Node.OfDatabase d ? d : database);
       }
-      return read(container).stream().map(n -> ((Node.OfTable) n).table()).toList();
+      return Optional.of(
+          read(container).stream().map(n -> ((Node.OfTable) n).table()).toList());
     }
 
     /**
@@ -574,10 +585,11 @@ final class Suggestions {
         }
         return null;
       }
-      var tables = schema == null ? tables() : tablesIn(schema);
-      if (tables == null) {
+      var in = schema == null ? Optional.of(tables()) : tablesIn(schema);
+      if (in.isEmpty()) {
         return null;
       }
+      var tables = in.get();
       Table found = null;
       for (var table : tables) {
         // An exact match, else one of another case; the first schema that has it.
@@ -599,9 +611,7 @@ final class Suggestions {
     void tables(List<Candidate> into) {
       var qualified = new ArrayList<Candidate>();
       var tables = new ArrayList<>(tables());
-      tables.sort(Comparator.comparingInt(t -> t.container() instanceof Schema x
-          ? path.contains(x.name()) ? path.indexOf(x.name()) : path.size()
-          : 0));
+      tables.sort(Comparator.comparingInt(this::onPath));
       for (var table : tables) {
         if (!(table.container() instanceof Schema x) || path.contains(x.name())) {
           tables(List.of(table), into);
@@ -619,6 +629,14 @@ final class Suggestions {
       into.addAll(qualified);
     }
 
+    /** Where the table's schema stands on the search path: first without one, last off it. */
+    private int onPath(Table table) {
+      if (!(table.container() instanceof Schema x)) {
+        return 0;
+      }
+      return path.contains(x.name()) ? path.indexOf(x.name()) : path.size();
+    }
+
     void tables(List<Table> tables, List<Candidate> into) {
       for (var table : tables) {
         boolean view = table.kind() == Table.Kind.VIEW;
@@ -631,7 +649,7 @@ final class Suggestions {
     void columns(Table table, List<Candidate> into) {
       var columns = s.catalog.columns(tab.id, table);
       if (columns == null) {
-        want(s, live, new Node.OfTable(tab.id, table));
+        want(new Node.OfTable(tab.id, table));
         return;
       }
       for (var column : columns) {

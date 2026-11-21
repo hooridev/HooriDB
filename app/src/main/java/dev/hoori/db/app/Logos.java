@@ -18,12 +18,12 @@ final class Logos {
   private static final float SCALE = 4;
 
   // Read at the first use, on the app's thread: a few small files from the app's own JAR.
-  private static final Map<Provider, Image> LOGOS = read();
+  private static final Map<Provider, Image> BY_PROVIDER = read();
 
   private Logos() {}
 
   static Image of(Provider provider) {
-    return LOGOS.get(provider);
+    return BY_PROVIDER.get(provider);
   }
 
   private static Map<Provider, Image> read() {

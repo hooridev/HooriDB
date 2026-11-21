@@ -24,13 +24,6 @@ public interface Repository {
     }
   }
 
-  /** The repository was reached but answered with an error, such as a server error. */
-  final class Refused extends IOException {
-    public Refused(String message) {
-      super(message);
-    }
-  }
-
   Response open(String path) throws IOException, InterruptedException;
 
   /** When the file was put into the repository, or empty when the repository does not say. */

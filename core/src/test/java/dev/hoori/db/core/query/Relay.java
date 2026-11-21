@@ -57,7 +57,7 @@ public final class Relay implements AutoCloseable {
         var later = accepted++ > 0;
         Thread.ofVirtual().start(() -> pass(client, later));
       }
-    } catch (IOException e) {
+    } catch (IOException _) {
       // The relay is closed.
     }
   }
@@ -74,7 +74,7 @@ public final class Relay implements AutoCloseable {
       sockets.add(upstream);
       Thread.ofVirtual().start(() -> copy(upstream, client));
       copy(client, upstream);
-    } catch (IOException | InterruptedException e) {
+    } catch (IOException | InterruptedException _) {
       close(client);
     }
   }
@@ -92,7 +92,7 @@ public final class Relay implements AutoCloseable {
         out.write(buffer, 0, read);
         out.flush();
       }
-    } catch (IOException | InterruptedException e) {
+    } catch (IOException | InterruptedException _) {
       // One side is gone; closing both ends the other copy.
     }
   }
@@ -100,7 +100,7 @@ public final class Relay implements AutoCloseable {
   private static void close(Socket socket) {
     try {
       socket.close();
-    } catch (IOException e) {
+    } catch (IOException _) {
       // Closed already.
     }
   }

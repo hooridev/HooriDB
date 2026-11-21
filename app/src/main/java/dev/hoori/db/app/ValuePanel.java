@@ -39,6 +39,7 @@ final class ValuePanel {
   record Cell(String column, String type, Kind kind, Object value) {}
 
   private static final Object NOTHING = new Object();
+  private static final String TITLE = "Value"; // of the panel, and of its button
 
   boolean open;
   private Split.Position split; // as the user moved it; null for the first width
@@ -51,7 +52,7 @@ final class ValuePanel {
   /** The button in a status line that opens and closes it. */
   El button() {
     return Tooltip.tooltip(
-        Button.toggleIcon(Symbol.PANEL_RIGHT, "Value", open, on -> open = on).key("value-toggle"),
+        Button.toggleIcon(Symbol.PANEL_RIGHT, TITLE, open, on -> open = on).key("value-toggle"),
         "Value of the cell (Shift+Enter)");
   }
 
@@ -99,7 +100,7 @@ final class ValuePanel {
     El close = Button.icon(Button.Variant.GHOST, Symbol.DISMISS, "Close", () -> open = false)
         .key("value-close");
     El top = Card.toolbar(
-        cell == null ? "Value" : cell.column(), cell == null ? null : cell.type(), close);
+        cell == null ? TITLE : cell.column(), cell == null ? null : cell.type(), close);
     El body;
     if (cell == null) {
       body = EmptyState.emptyState(
@@ -134,7 +135,7 @@ final class ValuePanel {
     return col()
         .grow(1)
         .minSize(0, 0)
-        .label("Value")
+        .label(TITLE)
         .key("value-panel")
         .child(top)
         .child(body.grow(1).minSize(0, 0))

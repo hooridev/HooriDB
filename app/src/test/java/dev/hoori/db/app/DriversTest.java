@@ -981,11 +981,11 @@ class DriversTest {
     assertFalse(block(missing, "role=option label=\"42.7.16\"").contains("recommended"), missing);
     // As while the lookup runs, which a script cannot hold open while the dialog's read comes in.
     var fetch = app.state().dialog.probe.fetch;
-    var found = fetch.lookup;
-    fetch.lookup = new Fetch.Looking(Provider.POSTGRESQL);
+    var found = fetch.known;
+    fetch.known = new Fetch.Looking(Provider.POSTGRESQL);
     app.invalidate();
     run(app, "frame\nsnap pending\n");
-    fetch.lookup = found;
+    fetch.known = found;
     String pending = tree("pending");
     assertTrue(pending.contains("role=status label=\"Looking up the version to use\""), pending);
     assertFalse(block(pending, "role=option label=\"Recommended\"").contains("42.7."), pending);
@@ -1110,7 +1110,7 @@ class DriversTest {
     run(app, SETTLE + "snap after\n");
     assertTrue(tree("after").contains(connected), "the outcome stays: " + tree("after"));
     assertEquals(before + 1, repository.listings(Provider.POSTGRESQL), repository.calls.toString());
-    assertTrue(app.state().dialog.probe.fetch.lookup instanceof Fetch.Found f
+    assertTrue(app.state().dialog.probe.fetch.known instanceof Fetch.Found f
         && f.version().equals(OLD));
   }
 

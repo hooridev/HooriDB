@@ -116,22 +116,27 @@ final class Lane {
       }
       try {
         return call.call(link);
-      } catch (CatalogException e) {
-        if (e.failure() == CatalogException.Failure.CONNECTION_LOST
-            || e.failure() == CatalogException.Failure.ABORTED) {
-          fail(e);
-          lost.accept(e);
-        }
-        throw e;
-      } catch (QueryException e) {
-        if (e.failure() == QueryException.Failure.CONNECTION_LOST
-            || e.failure() == QueryException.Failure.ABORTED) {
+      } catch (CatalogException | QueryException e) {
+        if (gone(e)) {
           fail(e);
           lost.accept(e);
         }
         throw e;
       }
     });
+  }
+
+  /** Whether the failure says that the connection is gone: lost, or given up by core. */
+  private static boolean gone(Exception e) {
+    return switch (e) {
+      case CatalogException c ->
+        c.failure() == CatalogException.Failure.CONNECTION_LOST
+            || c.failure() == CatalogException.Failure.ABORTED;
+      case QueryException q ->
+        q.failure() == QueryException.Failure.CONNECTION_LOST
+            || q.failure() == QueryException.Failure.ABORTED;
+      default -> false;
+    };
   }
 
   private <T> Future<T> run(Priority priority, Callable<T> call) {
@@ -225,7 +230,7 @@ final class Lane {
     @Override
     public int compareTo(Task<?> other) {
       int by = priority.compareTo(other.priority);
-      return by != 0 ? by : Long.compare(order, other.order);
+      return by == 0 ? Long.compare(order, other.order) : by;
     }
   }
 
@@ -253,7 +258,7 @@ final class Lane {
       throw e;
     } catch (ExecutionException e) {
       throw e.getCause() instanceof Exception cause ? cause : e;
-    } catch (CancellationException e) {
+    } catch (CancellationException _) {
       throw new InterruptedException("The lane was closed");
     }
   }
@@ -292,29 +297,37 @@ final class Lane {
       }
       ((Future<?>) dropped).cancel(false);
     }
-    var release = this.release;
+    var letGo = release;
     // Not a daemon: the process does not end while a connection closes and says how.
     return Thread.ofPlatform().daemon(false).name("close a connection").start(() -> {
       try {
-        boolean done;
-        try {
-          done = thread.awaitTermination(ENDS.toNanos(), TimeUnit.NANOSECONDS);
-        } catch (InterruptedException e) {
-          done = false;
-        }
-        var link = this.link;
-        if (link == null) {
+        boolean done = callEnded();
+        var last = link;
+        if (last == null) {
           ended.accept(Abandoned.NOTHING);
         } else if (done) {
-          ended.accept(link.close());
+          ended.accept(last.close());
         } else {
-          link.abort();
+          last.abort();
           ended.accept(new Abandoned(Optional.of(unanswered()), List.of()));
         }
       } finally {
-        release.run();
+        letGo.run();
       }
     });
+  }
+
+  /**
+   * Whether the call that runs, after a shutdown, ended within {@link #ENDS}; an interrupt of the
+   * closing, which nothing asks for, counts as not, and the closing aborts the connection.
+   */
+  private boolean callEnded() {
+    try {
+      return thread.awaitTermination(ENDS.toNanos(), TimeUnit.NANOSECONDS);
+    } catch (InterruptedException _) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
   }
 
   private static Failure unanswered() {

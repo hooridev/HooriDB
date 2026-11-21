@@ -217,7 +217,7 @@ class ExecutionServerTest {
 
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
-  void eachFailureHasItsKindAndCode(Provider provider) throws Exception {
+  void aSyntaxErrorHasItsKindCodeAndPlace(Provider provider) throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     try (var connection = open(provider)) {
       // Characters beyond the BMP count as one on the server and as two in Java.
@@ -238,7 +238,14 @@ class ExecutionServerTest {
         assertEquals("FROM reading", syntax.near());
         assertEquals(0, syntax.position());
       }
+    }
+  }
 
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void eachFailureHasItsKindAndCode(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
       var unknown = failure(run(connection, provider, "SELECT * FROM\n  nothere"));
       assertEquals(Failure.Kind.INVALID, unknown.kind());
       assertEquals(pg ? "42P01" : "42S02", unknown.state());
@@ -263,7 +270,14 @@ class ExecutionServerTest {
         assertEquals(Failure.Kind.ACCESS_DENIED, denied.kind());
         assertEquals(1142, denied.code());
       }
+    }
+  }
 
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aTimeLimitOfTheServerIsATimeout(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(provider)) {
       if (pg) {
         execute(connection, "SET statement_timeout = 100");
       }

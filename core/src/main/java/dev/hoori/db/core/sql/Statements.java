@@ -32,7 +32,7 @@ public final class Statements {
 
   private final String text;
   private final SyntaxDialect syntax;
-  private final List<Statement> statements = new ArrayList<>();
+  private final List<Statement> found = new ArrayList<>();
   // For each statement, the offset after its terminator, or its end if it has none.
   private final List<Integer> afters = new ArrayList<>();
   private String delimiter = ";";
@@ -77,7 +77,7 @@ public final class Statements {
 
   /** The statements of the text, in order. */
   public static List<Statement> split(String text, Provider provider) {
-    return scan(text, provider).statements;
+    return scan(text, provider).found;
   }
 
   /**
@@ -109,22 +109,20 @@ public final class Statements {
 
   /** The statements of the text, in order. */
   public List<Statement> statements() {
-    return Collections.unmodifiableList(statements);
+    return Collections.unmodifiableList(found);
   }
 
   /** The statement that runs for a caret at the offset, as {@link #at(String, Provider, int)}. */
   public Optional<Statement> at(int caret) {
     int at = Math.clamp(caret, 0, text.length());
-    for (int k = 0; k < statements.size(); k++) {
-      var statement = statements.get(k);
+    for (int k = 0; k < found.size(); k++) {
+      var statement = found.get(k);
       if (at <= statement.end()) {
         return Optional.of(
-            at < statement.start() && k > 0 && justEnded(k - 1, at)
-                ? statements.get(k - 1)
-                : statement);
+            at < statement.start() && k > 0 && justEnded(k - 1, at) ? found.get(k - 1) : statement);
       }
     }
-    return statements.isEmpty() ? Optional.empty() : Optional.of(statements.getLast());
+    return found.isEmpty() ? Optional.empty() : Optional.of(found.getLast());
   }
 
   /**
@@ -134,15 +132,15 @@ public final class Statements {
    */
   public static String firstWord(String text, Provider provider) {
     var scan = scan(text, provider);
-    if (scan.statements.isEmpty()) {
+    if (scan.found.isEmpty()) {
       return "";
     }
     if (scan.syntax == null) {
-      var first = scan.statements.getFirst();
+      var first = scan.found.getFirst();
       return Script.method(text.substring(first.start(), first.end()));
     }
     int n = text.length();
-    scan.i = scan.statements.getFirst().start();
+    scan.i = scan.found.getFirst().start();
     while (scan.i < n) {
       char c = text.charAt(scan.i);
       if (whitespace(c) || c == '(') {
@@ -248,7 +246,7 @@ public final class Statements {
    */
   public Statement around(int caret) {
     int at = Math.clamp(caret, 0, text.length());
-    int size = statements.size();
+    int size = found.size();
     // The first statement whose terminator ends after the caret.
     int low = 0;
     int high = size;
@@ -271,8 +269,8 @@ public final class Statements {
 
   /** Whether the text's last statement has no terminator, as one still being written. */
   public boolean open() {
-    int size = statements.size();
-    return size > 0 && afters.get(size - 1) == statements.get(size - 1).end();
+    int size = found.size();
+    return size > 0 && afters.get(size - 1) == found.get(size - 1).end();
   }
 
   private static Statements scan(String text, Provider provider) {
@@ -296,7 +294,7 @@ public final class Statements {
         }
       }
       if (end > piece.start()) {
-        statements.add(new Statement(piece.start(), end));
+        found.add(new Statement(piece.start(), end));
         afters.add(piece.end());
       }
     }
@@ -327,19 +325,16 @@ public final class Statements {
         i += delimiter.length();
         finish(start, end, i);
         start = -1;
-        continue;
-      }
-      char c = text.charAt(i);
-      if (whitespace(c)) {
+      } else if (whitespace(text.charAt(i))) {
         i++;
-        continue;
-      }
-      int from = i;
-      if (token()) {
-        if (start < 0) {
-          start = from;
+      } else {
+        int from = i;
+        if (token()) {
+          if (start < 0) {
+            start = from;
+          }
+          end = i;
         }
-        end = i;
       }
     }
     finish(start, end, end);
@@ -347,7 +342,7 @@ public final class Statements {
 
   private void finish(int start, int end, int after) {
     if (start >= 0) {
-      statements.add(new Statement(start, end));
+      found.add(new Statement(start, end));
       afters.add(after);
     }
   }
@@ -364,25 +359,36 @@ public final class Statements {
       return false;
     }
     if (c == '/' && next == '*') {
-      kind = Piece.Kind.COMMENT;
-      if (syntax.nestedComments()) {
-        skipNestedComment();
-        return false;
-      }
-      // Executable comments are code for the server, but a terminator in them does not count.
-      boolean code = false;
-      for (var opening : syntax.executableComments()) {
-        code |= text.startsWith(opening, i);
-      }
-      int close = text.indexOf("*/", i + 2);
-      open = close < 0;
-      i = close < 0 ? text.length() : close + 2;
-      return code;
+      return skipBlockComment();
     }
     if (c == '#' && syntax.hashComments()) {
       skipLine();
       return false;
     }
+    skipCode(c, next);
+    return true;
+  }
+
+  // Skips a comment that begins with "/*"; whether it is executable, code for the server.
+  private boolean skipBlockComment() {
+    kind = Piece.Kind.COMMENT;
+    if (syntax.nestedComments()) {
+      skipNestedComment();
+      return false;
+    }
+    // Executable comments are code for the server, but a terminator in them does not count.
+    boolean code = false;
+    for (var opening : syntax.executableComments()) {
+      code |= text.startsWith(opening, i);
+    }
+    int close = text.indexOf("*/", i + 2);
+    open = close < 0;
+    i = close < 0 ? text.length() : close + 2;
+    return code;
+  }
+
+  // Skips a string, a quoted identifier or one character of code.
+  private void skipCode(char c, char next) {
     if (c == '\'' || c == '"' && syntax.doubleQuotedStrings()) {
       kind = Piece.Kind.STRING;
       skipQuoted(c, escapes);
@@ -402,7 +408,6 @@ public final class Statements {
         || !skipDollarQuoted()) {
       i++;
     }
-    return true;
   }
 
   private void skipLine() {
@@ -488,31 +493,38 @@ public final class Statements {
         || (j < n && text.charAt(j) != ' ' && text.charAt(j) != '\t' && !lineEnd(text.charAt(j)))) {
       return false;
     }
+    takeDelimiter(j);
+    return true;
+  }
+
+  // Takes the argument of a DELIMITER command from the offset on, and skips its line.
+  private void takeDelimiter(int from) {
+    int n = text.length();
+    int j = from;
     while (j < n && (text.charAt(j) == ' ' || text.charAt(j) == '\t')) {
       j++;
     }
     char quote = charAt(j);
     boolean quoted = quote == '\'' || quote == '"' || quote == '`';
-    int from = quoted ? j + 1 : j;
-    int to = from;
+    int start = quoted ? j + 1 : j;
+    int to = start;
     while (to < n
         && !lineEnd(text.charAt(to))
         && (quoted ? text.charAt(to) != quote : !whitespace(text.charAt(to)))) {
       to++;
     }
     // The clients refuse an empty delimiter and one with a backslash, and keep the old one.
-    boolean valid = to > from;
-    for (int k = from; k < to; k++) {
+    boolean valid = to > start;
+    for (int k = start; k < to; k++) {
       valid &= text.charAt(k) != '\\';
     }
     if (valid) {
-      delimiter = text.substring(from, Math.min(to, from + MAX_DELIMITER));
+      delimiter = text.substring(start, Math.min(to, start + MAX_DELIMITER));
     }
     i = to;
     while (i < n && text.charAt(i) != '\n') {
       i++;
     }
-    return true;
   }
 
   // Whether the character before i belongs to an identifier, so that i does not begin a token.
