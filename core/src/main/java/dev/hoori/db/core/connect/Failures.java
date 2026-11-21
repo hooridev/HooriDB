@@ -45,21 +45,9 @@ final class Failures {
   private static Failure failure(ConnectionProfile profile, Throwable thrown) {
     var depth = 0;
     for (var t = thrown; t != null && depth < MAX_DEPTH; t = t.getCause(), depth++) {
-      if (t instanceof SocketTimeoutException || t instanceof SQLTimeoutException) {
-        return Failure.TIMED_OUT;
-      }
-      if (t instanceof UnknownHostException
-          || t instanceof ConnectException
-          || t instanceof NoRouteToHostException
-          || t instanceof SocketException && fromConnect(t)) {
-        return Failure.UNREACHABLE;
-      }
-      // Under the verified level only, as the others accept any certificate.
-      if (t instanceof CertificateException
-          || t instanceof CertPathValidatorException
-          || t instanceof CertPathBuilderException
-          || t instanceof SSLPeerUnverifiedException) {
-        return Failure.CERTIFICATE_REJECTED;
+      var failure = byType(t);
+      if (failure != null) {
+        return failure;
       }
     }
     if (!(thrown instanceof SQLException e)) {
@@ -74,6 +62,27 @@ final class Failures {
     var tls = profile.tls() != Tls.OFF;
     var message = e.getMessage() == null ? "" : e.getMessage();
     return profile.provider().dialect().connecting().refusal(e, state, message, tls);
+  }
+
+  // What the exception's type alone tells, of one in the chain; null where it tells nothing.
+  private static Failure byType(Throwable t) {
+    if (t instanceof SocketTimeoutException || t instanceof SQLTimeoutException) {
+      return Failure.TIMED_OUT;
+    }
+    if (t instanceof UnknownHostException
+        || t instanceof ConnectException
+        || t instanceof NoRouteToHostException
+        || t instanceof SocketException && fromConnect(t)) {
+      return Failure.UNREACHABLE;
+    }
+    // Under the verified level only, as the others accept any certificate.
+    if (t instanceof CertificateException
+        || t instanceof CertPathValidatorException
+        || t instanceof CertPathBuilderException
+        || t instanceof SSLPeerUnverifiedException) {
+      return Failure.CERTIFICATE_REJECTED;
+    }
+    return null;
   }
 
   // Each text a caller could see of the exception: its causes, suppressed and next exceptions.

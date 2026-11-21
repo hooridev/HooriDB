@@ -69,7 +69,7 @@ public final class MavenRepository implements Repository {
     return client;
   }
 
-  public static MavenRepository central() {
+  public static MavenRepository mavenCentral() {
     return new MavenRepository(CENTRAL);
   }
 
@@ -85,7 +85,7 @@ public final class MavenRepository implements Repository {
     long length;
     try {
       length = response.headers().firstValueAsLong("Content-Length").orElse(-1);
-    } catch (NumberFormatException e) {
+    } catch (NumberFormatException _) {
       length = -2;
     }
     if (length < -1) {
@@ -110,7 +110,7 @@ public final class MavenRepository implements Repository {
           .firstValue("Last-Modified")
           .map(date ->
               ZonedDateTime.parse(date, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant());
-    } catch (DateTimeParseException e) {
+    } catch (DateTimeParseException _) {
       return Optional.empty();
     }
   }
@@ -144,7 +144,7 @@ public final class MavenRepository implements Repository {
   private static IOException failure(String path, int status) {
     return status == 404 || status == 410
         ? new NoSuchFileException(path)
-        : new Repository.Refused("The repository answered " + status + " for " + path);
+        : new Refused("The repository answered " + status + " for " + path);
   }
 
   // The JDK's own stream of a body waits for each part without a limit, so a server that stops
@@ -191,7 +191,6 @@ public final class MavenRepository implements Repository {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public int read(byte[] bytes, int offset, int length) throws IOException {
       if (length == 0) {
         return 0;
@@ -199,32 +198,37 @@ public final class MavenRepository implements Repository {
       while (buffer == null || !buffer.hasRemaining()) {
         if (buffers.hasNext()) {
           buffer = buffers.next();
-          continue;
-        }
-        if (ended || closed) {
+        } else if (ended || closed) {
           return -1;
-        }
-        Object part;
-        try {
-          part = parts.poll(STALL_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          throw new InterruptedIOException();
-        }
-        if (part == null) {
-          throw new HttpTimeoutException("The download stalled");
-        } else if (part == END) {
-          ended = true;
-        } else if (part instanceof Throwable t) {
-          throw t instanceof IOException io ? io : new IOException(t);
         } else {
-          buffers = ((List<ByteBuffer>) part).iterator();
-          subscription.request(1);
+          take();
         }
       }
       int n = Math.min(length, buffer.remaining());
       buffer.get(bytes, offset, n);
       return n;
+    }
+
+    // Waits for the next part of the body, for at most the stall timeout.
+    @SuppressWarnings("unchecked")
+    private void take() throws IOException {
+      Object part;
+      try {
+        part = parts.poll(STALL_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+      } catch (InterruptedException _) {
+        Thread.currentThread().interrupt();
+        throw new InterruptedIOException();
+      }
+      if (part == null) {
+        throw new HttpTimeoutException("The download stalled");
+      } else if (part == END) {
+        ended = true;
+      } else if (part instanceof Throwable t) {
+        throw t instanceof IOException io ? io : new IOException(t);
+      } else {
+        buffers = ((List<ByteBuffer>) part).iterator();
+        subscription.request(1);
+      }
     }
 
     @Override

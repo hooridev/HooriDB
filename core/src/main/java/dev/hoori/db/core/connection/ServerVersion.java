@@ -41,7 +41,7 @@ public record ServerVersion(int major, int minor, int patch) implements Comparab
     try {
       return new ServerVersion(
           Integer.parseInt(matcher.group(1)), part(matcher.group(2)), part(matcher.group(3)));
-    } catch (NumberFormatException tooLarge) {
+    } catch (NumberFormatException _) {
       return UNKNOWN;
     }
   }
