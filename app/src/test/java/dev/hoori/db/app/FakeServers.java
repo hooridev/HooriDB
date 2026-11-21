@@ -34,6 +34,8 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import java.io.IOException;
+import java.io.StringWriter;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -808,6 +810,11 @@ final class FakeServers implements Servers {
 
     @Override
     public Run run(String sql) {
+      return run(sql, Purpose.STATEMENT);
+    }
+
+    // A statement, sent for the purpose given: a console's, or a file's.
+    private Run run(String sql, Purpose purpose) {
       var word = sql.strip().split("\\s+", 2)[0].toUpperCase(Locale.ROOT);
       boolean ends = word.equals("COMMIT") || word.equals("ROLLBACK");
       boolean pg = made.provider() == Provider.POSTGRESQL;
@@ -854,11 +861,7 @@ final class FakeServers implements Servers {
           return started
               ? portion(count)
               : Journal.sql(
-                  made.provider(),
-                  Purpose.STATEMENT,
-                  sql,
-                  Execution::outcome,
-                  () -> portion(count));
+                  made.provider(), purpose, sql, Execution::outcome, () -> portion(count));
         }
 
         private Portion portion(int count) {
@@ -1035,7 +1038,7 @@ final class FakeServers implements Servers {
       return file.run(new FileRun.Target() {
         @Override
         public Optional<Failure> run(String sql) {
-          var running = FakeLink.this.run(sql);
+          var running = FakeLink.this.run(sql, Purpose.FILE);
           try {
             while (true) {
               var portion = running.next(1_000);
@@ -1052,12 +1055,13 @@ final class FakeServers implements Servers {
           }
         }
 
+        // Named whole, as Reader is the fake's own.
         @Override
         public Optional<Failure> copy(String sql, java.io.Reader rows) {
-          var text = new java.io.StringWriter();
+          var text = new StringWriter();
           try {
             rows.transferTo(text);
-          } catch (java.io.IOException _) {
+          } catch (IOException _) {
             return Optional.of(
                 new Failure(Failure.Kind.CANCELLED, "", "57014", 0, 0, "", 0, 0, "", "", "", ""));
           }

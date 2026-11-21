@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.execution.Result;
+import dev.hoori.db.core.log.Purpose;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -95,6 +96,26 @@ class FileRunDialogTest {
         app.state().keeping.history.isEmpty(), app.state().keeping.history.toString());
     c.run(app, "press role=button label=\"Close\"\n" + OPENS + "snap closed\n");
     assertFalse(c.tree("closed").contains("role=dialog"), c.tree("closed"));
+  }
+
+  @Test
+  void theLogKeepsTheStartOfALongStatement() throws Exception {
+    // A dump's extended INSERT, which may run to megabytes, ending in a pair of surrogates cut
+    // where the log cuts it.
+    var head = "INSERT INTO t VALUES " + "(1),".repeat(Recorded.SHOWN);
+    var sql = head.substring(0, Recorded.SHOWN - 1) + "😀" + "(2)".repeat(100_000);
+    c.servers.statement(sql, List.of(new Result.Count(1)));
+    var app = chosen(file("long.sql", sql + ";\n"));
+    c.run(app, "press role=button label=\"Run\"\n" + SETTLE + "snap ran\n");
+    assertTrue(c.tree("ran").contains("Ran to its end"), c.tree("ran"));
+    var logged = app.state().statements.entries().stream()
+        .filter(e -> e.sent().purpose() == Purpose.FILE)
+        .toList();
+    assertEquals(1, logged.size(), logged.toString());
+    var text = logged.getFirst().sent().text();
+    assertEquals(
+        sql.substring(0, Recorded.SHOWN - 1) + "\n/* … " + sql.length() + " characters in all. */",
+        text);
   }
 
   @Test

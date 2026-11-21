@@ -168,6 +168,9 @@ public final class Journal {
   private static void record(Recorder recorder, Entry entry, Outcome outcome) {
     var took = Duration.ofNanos(System.nanoTime() - entry.started());
     try {
+      if (!recorder.taking()) {
+        return;
+      }
       var shown = entry.text().get();
       var ended = shown.masked() && outcome instanceof Outcome.Failed
           ? new Outcome.Failed(Outcome.WITHHELD)

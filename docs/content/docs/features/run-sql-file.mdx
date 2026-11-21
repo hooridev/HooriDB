@@ -25,7 +25,7 @@ The dialog shows how much of the file has run, in bytes and statements. Press **
 
 When the run ends, the dialog says how it went and lists the statements that failed, each with its line in the file and the server's error. Passwords in the listed statements are masked.
 
-The file runs on a session of its own, so it does not hold up the Workspace tree, tables, or consoles. Its statements appear in the statement log, but not in a console's [history](/docs/features/history). Disconnecting, editing, or deleting the connection, or closing HooriDB, cancels the run.
+The file runs on a session of its own, so it does not hold up the Workspace tree, tables, or consoles. Its statements appear in the statement log, each with its first 4,096 characters and its length, as a dump's may run to megabytes, but not in a console's [history](/docs/features/history). Disconnecting, editing, or deleting the connection, or closing HooriDB, cancels the run.
 
 ## Transactions and DDL
 

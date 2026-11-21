@@ -19,6 +19,8 @@ import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.log.Recorder;
 import dev.hoori.db.core.log.Sent;
 import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.query.QueryException;
@@ -31,12 +33,16 @@ import java.util.UUID;
  * Servers whose connections log what they send: each call on a link binds core's {@link Journal}
  * to the statement log, with the connection and the database the call is about, while logging is
  * on. What holds the connection's password, a statement or a server's words, is withheld, as a
- * console withholds it.
+ * console withholds it. Of a statement of a file that runs, the log keeps the start alone, as a
+ * dump's may run to megabytes.
  */
 record Recorded(Servers servers, StatementLog log) implements Servers {
 
   /** What a statement that holds the connection's password is logged as. */
   static final String WITHHELD = "/* Not shown, as it holds the connection's password. */";
+
+  /** How many chars of a statement of a file the log keeps, before a comment with its length. */
+  static final int SHOWN = 4_096;
 
   @Override
   public Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
@@ -90,18 +96,31 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
   }
 
   // The entry as it is logged: on the database it was sent to, and without what holds the
-  // password, in its text, its database or its failure's message.
+  // password, in its text, its database or its failure's message; a file's statement cut short
+  // once the whole of it was looked at for the password.
   private static Sent checked(Sent sent, String database, char[] password) {
     var on = sent.database() != null ? sent.database() : database;
     if (on != null && Probe.contains(on, password)) {
       on = null;
     }
     var text = Probe.contains(sent.text(), password) ? WITHHELD : sent.text();
+    if (sent.purpose() == Purpose.FILE) {
+      text = shortened(text);
+    }
     var outcome =
         sent.outcome() instanceof Outcome.Failed f && Probe.contains(f.message(), password)
             ? new Outcome.Failed(ConnectionException.WITHHELD)
             : sent.outcome();
     return new Sent(sent.at(), sent.purpose(), on, text, sent.took(), outcome);
+  }
+
+  // The first SHOWN chars of the text, not the first of a surrogate pair alone, and its length.
+  static String shortened(String text) {
+    if (text.length() <= SHOWN) {
+      return text;
+    }
+    int end = Character.isHighSurrogate(text.charAt(SHOWN - 1)) ? SHOWN - 1 : SHOWN;
+    return text.substring(0, end) + "\n/* … " + text.length() + " characters in all. */";
   }
 
   /** A link that logs each of its calls; its copy of the password goes when it closes. */
@@ -243,15 +262,24 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     // Recorded whether the log is on or not, as a file runs long and the log may be turned on
-    // meanwhile: the log drops what comes while it is off.
+    // meanwhile; while it is off, what is sent is not made into entries.
     @Override
     public FileRun.Report runFile(FileRun file) throws QueryException {
-      return Journal.recording(
-          sent -> secret.log(log, connection, sent, current), () -> link.runFile(file));
+      var recorder = new Recorder() {
+        @Override
+        public void sent(Sent sent) {
+          secret.log(log, connection, sent, current);
+        }
+
+        @Override
+        public boolean taking() {
+          return log.on();
+        }
+      };
+      return Journal.recording(recorder, () -> link.runFile(file));
     }
 
     // Not logged yet: what the monitor sends runs outside the link's calls.
-
     @Override
     public Monitor monitor() throws QueryException {
       return link.monitor();

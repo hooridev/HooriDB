@@ -8,4 +8,12 @@ package dev.hoori.db.core.log;
 @FunctionalInterface
 public interface Recorder {
   void sent(Sent sent);
+
+  /**
+   * Whether it takes what is sent now, asked as a call ends: where it does not, no entry is made,
+   * and the text is not masked for one.
+   */
+  default boolean taking() {
+    return true;
+  }
 }
