@@ -65,6 +65,19 @@ class DumpServerTest {
 
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void theServersOwnClientReadsItBackAlike(Provider provider) throws Exception {
+    try (var databases = new Databases(provider)) {
+      var file = folder.resolve("client.sql");
+      var options = new Dump.Options(false, false, 3, true, true, true);
+      export(databases, Dump.Content.STRUCTURE_AND_DATA, options, file, l -> true);
+      var ran = TestServer.of(provider).client(file, databases.target);
+      assertEquals(0, ran.getExitCode(), ran.getStdout() + ran.getStderr());
+      databases.assertSame();
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void theStructureAndTheDataGoApartAndTogetherGiveTheSame(Provider provider) throws Exception {
     try (var databases = new Databases(provider)) {
       var structure = folder.resolve("structure.sql");
