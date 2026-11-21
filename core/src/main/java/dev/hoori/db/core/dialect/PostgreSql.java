@@ -173,25 +173,22 @@ public final class PostgreSql implements Dialect {
       };
     }
 
-    // COPY … FROM STDIN, as psql reads it.
     // Only a statement that ends the transaction commits it.
     @Override
     public boolean commitsImplicitly(List<String> words) {
       return false;
     }
 
+    // COPY … FROM STDIN, as psql reads it: the first FROM names the source, and a later one is
+    // of its WHERE.
     @Override
     public boolean copiesFromClient(String first, Supplier<List<String>> words) {
       if (!first.equals("copy")) {
         return false;
       }
       var all = words.get();
-      for (int k = 0; k + 1 < all.size(); k++) {
-        if (all.get(k).equals("from") && all.get(k + 1).equals("stdin")) {
-          return true;
-        }
-      }
-      return false;
+      int from = all.indexOf("from");
+      return from >= 0 && from + 1 < all.size() && all.get(from + 1).equals("stdin");
     }
 
     @Override
