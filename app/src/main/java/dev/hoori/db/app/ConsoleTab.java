@@ -5,6 +5,7 @@ import static com.rethinkj.ui.El.row;
 import static com.rethinkj.ui.kit.Button.Variant.PRIMARY;
 import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
+import static dev.hoori.db.app.Session.failure;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
@@ -47,9 +48,7 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
-import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Failure;
-import dev.hoori.db.core.execution.Message;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
@@ -64,20 +63,13 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -102,11 +94,11 @@ import java.util.regex.Pattern;
  *       and is none; every other statement, and every one in Manual or in a transaction, is read
  *       to its end in its one call, so that none is ever left open inside a transaction.
  *   <li>Each call gives up first what is still open on the session and reads its status fresh
- *       ({@link #after}, {@link #start}); nothing the app's thread believed authorizes it. The
- *       mode is verified, or the statement is not sent: by the server's word on MariaDB and
- *       MySQL, pgjdbc's on PostgreSQL. Auto-commit changes only in {@link
- *       #setMode}, where the server has just said that nothing is open; the mode shown follows the
- *       session's. A driver that cannot say makes Manual unavailable.
+ *       ({@link Session#after}, {@link Session#start}); nothing the app's thread believed
+ *       authorizes it. The mode is verified, or the statement is not sent: by the server's word on
+ *       MariaDB and MySQL, pgjdbc's on PostgreSQL. Auto-commit changes only in {@link
+ *       Session#setMode}, where the server has just said that nothing is open; the mode shown
+ *       follows the session's. A driver that cannot say makes Manual unavailable.
  *   <li>Committed is said only where the server answered so, after it said a transaction was
  *       open; Rolled back only where nothing of the session is in doubt. What may have changed
  *       something and was cut short or lost is in doubt, said until read.
@@ -196,56 +188,10 @@ final class ConsoleTab implements Tab {
   record Check(Lane lane, int at) {}
 
   /**
-   * What a statement's call read: its first portion where it was read lazily, else all of it as
-   * one; for each of the portion's results, how many of its rows were read and not kept.
-   */
-  record Ran(Portion portion, List<Long> dropped, boolean lazy) {}
-
-  /**
-   * Commit's or Rollback's call: the transaction the server said before a COMMIT, null before a
-   * ROLLBACK; the statement's portion, null where the COMMIT was not sent.
-   */
-  record Ended(Transaction before, Portion portion) {}
-
-  /**
    * What is asked before a statement is sent: a read of more rows than the console keeps, or a
    * change of every row, which is a danger.
    */
   record Confirm(String sql, String title, String text, boolean danger) {}
-
-  /** A switch of auto-commit: whether the session has the mode asked for now, and its status. */
-  record Switched(boolean done, Status now) {}
-
-  /**
-   * A statement not sent, as the session's mode is not the one shown, or cannot be known; with what
-   * the session has.
-   */
-  static final class NotRun extends Exception {
-    // Never serialized: it only carries the session's status from the lane to the app's thread.
-    final transient Status status;
-    final boolean unverifiable; // the driver cannot say the server's auto-commit
-
-    NotRun(String why, Status status, boolean unverifiable) {
-      super(why);
-      this.status = status;
-      this.unverifiable = unverifiable;
-    }
-  }
-
-  /**
-   * A read not sent, as the console would read it whole and the planner estimates more rows than
-   * it keeps: the user is asked first. With the session's status, read before anything was sent.
-   */
-  static final class TooMany extends Exception {
-    final long rows;
-    final transient Status status; // never serialized, as NotRun's
-
-    TooMany(long rows, Status status) {
-      super(rows(rows));
-      this.rows = rows;
-      this.status = status;
-    }
-  }
 
   static final String UNVERIFIABLE =
       "The driver of this connection does not report the server's auto-commit, so Manual cannot"
@@ -637,7 +583,8 @@ final class ConsoleTab implements Tab {
     work = ask(
         s,
         "run a statement",
-        link -> start(link, sql, statement, asked, lazy, held, KEPT, planner, on),
+        link -> Session.start(
+            link, new Session.Send(sql, statement, asked, lazy, KEPT, planner, on), held),
         ran -> {
           work = null;
           ran(s, sql, ran);
@@ -655,7 +602,7 @@ final class ConsoleTab implements Tab {
    * one not run says why, and any other failure is said and goes into the history.
    */
   private void sendFailed(State s, String sql, boolean wasEmpty, Exception error) {
-    if (error instanceof TooMany e) {
+    if (error instanceof Session.TooMany e) {
       recording = null; // not sent: it is asked about first
       knew(e.status);
       empty |= wasEmpty; // nothing was sent
@@ -670,7 +617,7 @@ final class ConsoleTab implements Tab {
       return;
     }
     failedRun = true;
-    if (error instanceof NotRun e) {
+    if (error instanceof Session.NotRun e) {
       recording = null;
       notRun(s, sql, e);
       return;
@@ -678,7 +625,7 @@ final class ConsoleTab implements Tab {
     failed(s, sql, error);
     if (error instanceof InterruptedException || closed) {
       remember(s, new Outcome.Cancelled(), null);
-    } else if (error instanceof GaveUp) {
+    } else if (error instanceof Session.GaveUp) {
       recording = null; // not sent
     } else {
       remember(
@@ -752,7 +699,7 @@ final class ConsoleTab implements Tab {
     open = null; // given up on the lane, also where this call never starts
     leave(); // and its rows end where they are
     var tell = teller;
-    return through(s, what, sql, link -> after(link, tell, leftSql, call), done, failed);
+    return through(s, what, sql, link -> Session.after(link, tell, leftSql, call), done, failed);
   }
 
   /**
@@ -809,529 +756,12 @@ final class ConsoleTab implements Tab {
     }
   }
 
-  /**
-   * One call's outcome between the lane and the console: pending, done (the lane has it),
-   * delivered (the console took it), or given up (cancelled, or its session ended). The two
-   * threads meet here atomically, and whichever comes second of the outcome and the giving up
-   * posts what matters of it as a notice ({@link #matters}): the lane where it was given up
-   * before, the app's thread where the outcome was there and not taken.
-   */
-  static final class Delivery {
-    static final int PENDING = 0;
-    private static final int DONE = 1;
-    private static final int DELIVERED = 2;
-    private static final int GIVEN_UP = 3;
-
-    private final Cell state;
-    private final Tell tell;
-    private final String sql; // what a notice names; null for a call whose outcome tells nothing
-    private final boolean plain;
-    private volatile Object outcome; // the value, or the exception
-
-    Delivery(Tell tell, String sql, boolean plain) {
-      this(tell, sql, plain, Cell.of(PENDING));
-    }
-
-    Delivery(Tell tell, String sql, boolean plain, Cell state) {
-      this.tell = tell;
-      this.sql = sql;
-      this.plain = plain;
-      this.state = state;
-    }
-
-    /** The one atomic variable of its state; a test steps the two threads through it. */
-    interface Cell {
-      int get();
-
-      boolean compareAndSet(int expected, int next);
-
-      static Cell of(int initial) {
-        var value = new AtomicInteger(initial);
-        return new Cell() {
-          @Override
-          public int get() {
-            return value.get();
-          }
-
-          @Override
-          public boolean compareAndSet(int expected, int next) {
-            return value.compareAndSet(expected, next);
-          }
-        };
-      }
-    }
-
-    /** On the lane: the call has its outcome. */
-    void done(Object outcome) {
-      this.outcome = outcome;
-      while (true) {
-        int now = state.get();
-        if (now == PENDING && state.compareAndSet(PENDING, DONE)) {
-          return; // the console takes it, or gives it up and posts it
-        }
-        if (now == GIVEN_UP) {
-          post(); // the console gave it up before
-          return;
-        }
-        if (now == DELIVERED) {
-          return; // the lane failed before the call, which the console took as its outcome
-        }
-      }
-    }
-
-    /**
-     * On the app's thread, with the call's result or failure: whether it goes to the console, which
-     * then has it. Also where the lane ended the call without making it, as when it could not open
-     * its connection or was closed: what came instead is the outcome.
-     */
-    boolean deliver() {
-      while (true) {
-        int now = state.get();
-        if (now == GIVEN_UP || now == DELIVERED) {
-          return false;
-        }
-        if (state.compareAndSet(now, DELIVERED)) {
-          return true;
-        }
-      }
-    }
-
-    /** On the app's thread: the console no longer waits for it. */
-    void giveUp() {
-      while (true) {
-        int now = state.get();
-        if (now == PENDING && state.compareAndSet(PENDING, GIVEN_UP)) {
-          return; // the lane posts it, once it has it
-        }
-        if (now == DONE && state.compareAndSet(DONE, GIVEN_UP)) {
-          post(); // there, and not taken
-          return;
-        }
-        if (now == GIVEN_UP || now == DELIVERED) {
-          return;
-        }
-      }
-    }
-
-    /** Whether the lane has the outcome and the console has not taken it yet. */
-    boolean waiting() {
-      return state.get() == DONE;
-    }
-
-    private void post() {
-      if (sql != null && tell != null) {
-        matters(outcome, plain).forEach(m -> tell.tell(sql, m.what(), m.failure()));
-      }
-    }
-  }
-
-  /** What a notice says of an outcome: its words, and whether it is a failure. */
-  record Matter(String what, boolean failure) {}
-
-  /**
-   * What matters of an outcome the console did not take: any failure, and any warning the server
-   * sent with a statement that is not a plain read. Not what the giving up itself made, a cancel,
-   * nor what is said already: a statement not sent, a give-up's failure, Commit's and Rollback's
-   * own outcome ({@link #finish} tells it).
-   */
-  static List<Matter> matters(Object outcome, boolean plain) {
-    return switch (outcome) {
-      case Ran r -> matters(r.portion(), plain);
-      case Portion p -> matters(p, plain);
-      case InterruptedException e -> List.of();
-      case NotRun e -> List.of();
-      case TooMany e -> List.of();
-      case GaveUp e -> List.of();
-      case QueryException e when e.failure() == QueryException.Failure.CANCELLED -> List.of();
-      case ConnectionException e
-      when e.failure() == ConnectionException.Failure.CANCELLED -> List.of();
-      case Exception e -> List.of(new Matter("It failed: " + State.message(e), true));
-      case null, default -> List.of();
-    };
-  }
-
-  private static List<Matter> matters(Portion portion, boolean plain) {
-    var all = new ArrayList<Matter>();
-    var failure = failure(portion);
-    if (failure != null && failure.kind() != Failure.Kind.CANCELLED) {
-      all.add(new Matter("It failed: " + failure.message(), true));
-    }
-    if (!plain) {
-      for (var m : portion.messages()) {
-        all.add(matter(m));
-      }
-    }
-    return all;
-  }
-
-  /** What a notice says of a message of the server's: a rollback in part, or a warning. */
-  private static Matter matter(Message m) {
-    return m.code() == NOT_ROLLED_BACK
-        ? new Matter(PARTLY + ": " + m.text() + ". Those changes stand.", true)
-        : new Matter(warned(m), false);
-  }
-
-  /** A warning of the server's, with its code. */
-  static String warned(Message m) {
-    return "The server warned: " + m.text() + coded(m);
-  }
-
-  /** A message's code in parentheses after a space, its SQLSTATE before the vendor's; or none. */
-  private static String coded(Message m) {
-    String code;
-    if (m.state().isEmpty()) {
-      code = m.code() == 0 ? "" : String.valueOf(m.code());
-    } else {
-      code = m.state();
-    }
-    return code.isEmpty() ? "" : " (" + code + ")";
-  }
-
   /** For a test: whether an outcome is there that the console has not taken. */
   boolean outcomeWaiting() {
     return outstanding.stream().anyMatch(Delivery::waiting);
   }
 
-  /**
-   * The lane call of every console call but a further portion, as one unit: the statement still
-   * open on the session is given up first, whatever the app's thread knew of it, as a step of its
-   * own. Where that fails, as the commit of a read's own transaction does on a deferred
-   * constraint, the failure goes to the app at once ({@link Tell}), from here, and the call is not
-   * made: {@link GaveUp} says why.
-   */
-  static <T> T after(Servers.Link link, Tell tell, String left, Lane.Call<T> call)
-      throws Exception {
-    var ended = link.giveUp();
-    told(ended, left, ENDED, tell);
-    if (ended.failure().isPresent()) {
-      throw new GaveUp(left, ended.failure().get());
-    }
-    return call.call(link);
-  }
-
-  /** What giving up a statement said, its failure and the server's warnings, told as notices. */
-  static void told(Abandoned ended, String sql, String how, Tell tell) {
-    ended.failure().ifPresent(f -> tell.tell(sql, how + f.message() + MAY_NOT_STAND, true));
-    for (var m : ended.messages()) {
-      tell.tell(sql, warned(m), false);
-    }
-  }
-
-  static final String ENDED = "Its end, as the console went on, failed: ";
-  static final String MAY_NOT_STAND = ". What it changed may not stand.";
-
-  /** Giving up what was still open on the session failed: what wanted to run after it did not. */
-  static final class GaveUp extends Exception {
-    final String sql;
-    final transient Failure failure; // never serialized, as NotRun's status
-
-    GaveUp(String sql, Failure failure) {
-      super(failure.message());
-      this.sql = sql;
-      this.failure = failure;
-    }
-  }
-
-  /**
-   * Says what finishing something on a session did, from whichever thread sees it, at once: to the
-   * app's notices ({@link State#notice}), which nothing that can be cancelled, closed or replaced
-   * stands between.
-   */
-  interface Tell {
-    void tell(String sql, String what, boolean failure);
-  }
-
-  /**
-   * The session's {@link Tell}: the server's words checked against its own copy of the password,
-   * which it wipes once the session has closed and said so. A call given up may still answer
-   * after that: a wiped Teller then posts no word of the server's, only that the outcome came too
-   * late to be shown. The check and the wipe hold the same lock, so no text ever goes unchecked.
-   */
-  static final class Teller implements Tell {
-    private final App<State> app;
-    private final State state;
-    private final String connection;
-    private final char[] password; // null where the session has none
-    private final ConsoleTab of;
-    private boolean wiped;
-
-    Teller(App<State> app, State state, String connection, char[] password, ConsoleTab of) {
-      this.app = app;
-      this.state = state;
-      this.connection = connection;
-      this.password = password;
-      this.of = of;
-    }
-
-    App<State> app() {
-      return app;
-    }
-
-    State state() {
-      return state;
-    }
-
-    @Override
-    public void tell(String sql, String what, boolean failure) {
-      String said;
-      synchronized (this) {
-        said = wiped ? TOO_LATE : words(password, what);
-      }
-      var statement = brief(sql == null ? "" : sql);
-      app.post(() -> state.notice(connection, statement, said, failure, of));
-    }
-
-    /** The session has closed and said all it had to: the password goes. */
-    synchronized void wipe() {
-      wiped = true;
-      if (password != null) {
-        Arrays.fill(password, '\0');
-      }
-    }
-  }
-
-  static final String TOO_LATE =
-      "Its outcome arrived after its session had closed, too late to be shown; check what it did.";
-
   static final String SESSION_ENDED = "As its session ended, giving up its rest failed: ";
-
-  // On the lane: what the console's calls do with the session.
-
-  /**
-   * The one place where the session's auto-commit changes, as JDBC commits a transaction that is
-   * open where it is turned on: only where the server says, right before, that none is open, or
-   * where the one open is empty, the server's own begun as the user's Commit or Rollback ended
-   * theirs. Done where the session has the mode afterwards, by the server's word.
-   */
-  static Switched setMode(Servers.Link link, boolean manual, boolean empty) throws QueryException {
-    return setMode(link, manual, empty, link.status());
-  }
-
-  private static Switched setMode(Servers.Link link, boolean manual, boolean empty, Status now)
-      throws QueryException {
-    if (now.autoCommit() != null && now.autoCommit() == !manual) {
-      return new Switched(true, now);
-    }
-    if (now.autoCommit() == null
-        || now.transaction() != Transaction.NONE
-            && !(now.transaction() == Transaction.OPEN && empty)) {
-      return new Switched(false, now);
-    }
-    link.manual(manual);
-    now = link.status();
-    return new Switched(now.autoCommit() != null && now.autoCommit() == !manual, now);
-  }
-
-  /**
-   * A statement on the session, as one lane call. It reads the session's status fresh, by the
-   * server's word on MariaDB and MySQL and by pgjdbc's on PostgreSQL, and is sent only where the
-   * session has the mode shown; a session without it takes it where nothing is open, else the
-   * statement is not sent. Auto runs also where the driver cannot say, as nothing then stays open
-   * that the console would not ask about. A plain read asked for lazily, in Auto with nothing open
-   * by the server's word, gives its first portion and the rest as the grid scrolls; any other
-   * statement is read to its end here, so that no execution is ever left open inside a
-   * transaction or of anything that may change data, keeping at most {@code keep} rows a result.
-   * Such a read is not sent where the planner estimates more rows than that on {@code planner}, a
-   * connection of the app's own, or null for no estimate, with its names read on {@code database}:
-   * {@link TooMany}.
-   */
-  static Ran start(
-      Servers.Link link,
-      String sql,
-      Script.Parsed parsed,
-      Mode mode,
-      boolean lazy,
-      AtomicReference<Servers.Run> held,
-      int keep,
-      Lane planner,
-      String database)
-      throws QueryException, NotRun, TooMany, InterruptedException {
-    var now = link.status();
-    if (now.autoCommit() == null && mode == Mode.MANUAL) {
-      throw new NotRun(UNVERIFIABLE, now, true);
-    }
-    // Read whole, as it is unless it is a lazy read with nothing open, once the session has the
-    // mode; estimated before anything is sent on the session, which then stays as it was.
-    if (planner != null
-        && !(lazy && now.transaction() == Transaction.NONE && now.autoCommit() != null)) {
-      long rows = estimate(planner, database, sql);
-      if (rows > keep) {
-        throw new TooMany(rows, now);
-      }
-    }
-    now = inMode(link, mode, now);
-    var run = parsed != null ? link.run(parsed) : link.run(sql);
-    held.set(run); // sent: cut short now, what it did is in doubt; and the rest as the grid scrolls
-    var first = run.next(PORTION);
-    if (lazy && Boolean.TRUE.equals(now.autoCommit()) && now.transaction() == Transaction.NONE) {
-      return new Ran(first, Collections.nCopies(first.results().size(), 0L), true);
-    }
-    return drained(run, first, keep);
-  }
-
-  /**
-   * The session in the mode asked for, by the server's word: where it says another, it takes the
-   * mode where nothing is open, else the statement is not sent. Where it cannot say, it is left.
-   */
-  private static Status inMode(Servers.Link link, Mode mode, Status now)
-      throws QueryException, NotRun {
-    if (now.autoCommit() == null || now.autoCommit() == (mode == Mode.AUTO)) {
-      return now;
-    }
-    var switched = setMode(link, mode == Mode.MANUAL, false, now);
-    if (!switched.done()) {
-      throw new NotRun(
-          "The session's auto-commit is "
-              + (Boolean.TRUE.equals(switched.now().autoCommit()) ? "on" : "off")
-              + " with a transaction open, so it was not sent in "
-              + mode.title
-              + ". The console shows the session's mode now.",
-          switched.now(),
-          false);
-    }
-    return switched.now();
-  }
-
-  /**
-   * The planner's estimate of the read's rows, asked on the app's own connection to the database,
-   * so that nothing of it touches the session or its transaction; 0 where it has none, so that the
-   * read runs without a question. An interrupt gives it up there too.
-   */
-  // shortcut: that connection does not see the session's uncommitted DDL, temporary tables or
-  // settings such as search_path or a USE run in the console: there the EXPLAIN fails or plans
-  // something else, and no question or another is asked. Plan on the session once that misleads.
-  private static long estimate(Lane planner, String database, String sql)
-      throws InterruptedException {
-    Future<OptionalLong> asked;
-    try {
-      asked = planner.submit(link -> link.estimate(database, sql));
-    } catch (RejectedExecutionException _) {
-      return 0; // its lane has closed
-    }
-    try {
-      return asked.get().orElse(0);
-    } catch (InterruptedException e) {
-      asked.cancel(true);
-      throw e;
-    } catch (ExecutionException | CancellationException _) {
-      return 0;
-    }
-  }
-
-  /**
-   * Reads the statement to its end: rows of a result that go on joined as they come, at most
-   * {@code keep} of each result kept and those beyond dropped as they arrive, counted. An interrupt
-   * ends it, as core cancels the statement on the server and gives no more.
-   */
-  static Ran drained(Servers.Run run, Portion first, int keep) throws InterruptedException {
-    var results = new ArrayList<Result>();
-    var dropped = new ArrayList<Long>();
-    var documents = new ArrayList<List<Document>>(); // those kept of each result's rows, or null
-    var messages = new ArrayList<Message>();
-    var took = Duration.ZERO;
-    var portion = first;
-    while (true) {
-      took = took.plus(portion.elapsed());
-      messages.addAll(portion.messages());
-      for (var result : portion.results()) {
-        if (result instanceof Result.Rows r) {
-          join(r, results, dropped, documents, keep);
-        } else {
-          results.add(result);
-          dropped.add(0L);
-          documents.add(null);
-        }
-      }
-      if (!portion.more()) {
-        break;
-      }
-      if (Thread.currentThread().isInterrupted()) {
-        throw new InterruptedException(); // Cancel, also where core did not notice it
-      }
-      portion = run.next(PORTION);
-    }
-    // A server of documents' rows keep their documents, as many as the rows kept.
-    for (int i = 0; i < results.size(); i++) {
-      if (results.get(i) instanceof Result.Rows r
-          && documents.get(i) != null
-          && !documents.get(i).isEmpty()) {
-        results.set(i, new Result.Rows(r.fields(), 0, r.rows(), documents.get(i)));
-      }
-    }
-    return new Ran(
-        new Portion(results, messages, false, took, portion.transaction(), portion.autoCommit()),
-        dropped,
-        false);
-  }
-
-  /**
-   * Rows of a portion, kept as a result of their own where they begin one, else joined to the
-   * result before: at most {@code keep} of a result, those beyond counted as dropped.
-   */
-  private static void join(
-      Result.Rows r,
-      List<Result> results,
-      List<Long> dropped,
-      List<List<Document>> documents,
-      int keep) {
-    int at = results.size() - 1;
-    if (r.from() == 0 || at < 0 || !(results.get(at) instanceof Result.Rows)) {
-      results.add(new Result.Rows(r.fields(), 0, new ArrayList<>()));
-      dropped.add(0L);
-      documents.add(new ArrayList<>());
-      at++;
-    }
-    var kept = ((Result.Rows) results.get(at)).rows();
-    int room = Math.clamp(keep - (long) kept.size(), 0, r.rows().size());
-    kept.addAll(r.rows().subList(0, room));
-    if (!r.documents().isEmpty()) {
-      documents.get(at).addAll(r.documents().subList(0, room));
-    }
-    dropped.set(at, dropped.get(at) + r.rows().size() - room);
-  }
-
-  /**
-   * Commit or Rollback. A COMMIT is sent only where the server says, right before, that a
-   * transaction is open: PostgreSQL answers one in a failed transaction by rolling it back, without
-   * an error, and MariaDB and MySQL roll one back by themselves, as after a deadlock.
-   */
-  static Ended finish(Servers.Link link, String sql, Tell tell) throws QueryException {
-    Transaction before = null;
-    if (sql.equals(COMMIT)) {
-      var now = link.status();
-      before = now.transaction();
-      if (before != Transaction.OPEN) {
-        return new Ended(before, null);
-      }
-    }
-    var run = link.run(sql);
-    Portion portion;
-    try {
-      portion = run.next(1);
-    } finally {
-      run.close();
-    }
-    told(portion, sql, tell);
-    return new Ended(before, portion);
-  }
-
-  /**
-   * What Commit's or Rollback's statement came back with beyond its plain outcome, its failure or
-   * the server's warnings, goes to the app's notices at once, from the lane.
-   */
-  private static void told(Portion portion, String sql, Tell tell) {
-    var failure = failure(portion);
-    if (failure != null) {
-      tell.tell(
-          sql,
-          (sql.equals(COMMIT) ? "Commit failed: " : "Rollback failed: ") + failure.message(),
-          true);
-    }
-    for (var m : portion.messages()) {
-      var matter = matter(m);
-      tell.tell(sql, matter.what(), matter.failure());
-    }
-  }
 
   // First words of statements that only read, the same on every provider; anything else may change
   // data or the transaction, by itself, inside or with an implicit commit, and is treated as such.
@@ -1396,7 +826,7 @@ final class ConsoleTab implements Tab {
     reading = null;
   }
 
-  private void ran(State s, String sql, Ran ran) {
+  private void ran(State s, String sql, Session.Ran ran) {
     var portion = ran.portion();
     var used = used(s, sql, portion);
     if (used != null) {
@@ -1444,7 +874,7 @@ final class ConsoleTab implements Tab {
   }
 
   /** A statement not sent: the console says why, and takes what the session has. */
-  private void notRun(State s, String sql, NotRun e) {
+  private void notRun(State s, String sql, Session.NotRun e) {
     queue.clear();
     problem = new Problem(
         NOT_RUN,
@@ -1466,7 +896,7 @@ final class ConsoleTab implements Tab {
    * session's is in doubt; a connection lost during a COMMIT leaves its outcome in doubt. A way
    * out that waited for it goes on only where it succeeded.
    */
-  private void ended(State s, String sql, Ended ended) {
+  private void ended(State s, String sql, Session.Ended ended) {
     var portion = ended.portion();
     if (portion == null) { // a COMMIT not sent: nothing it could commit was open
       notCommitted(s, sql, ended.before());
@@ -1678,7 +1108,7 @@ final class ConsoleTab implements Tab {
     if (learned != asked.at() || lane != asked.lane() || error instanceof InterruptedException) {
       return;
     }
-    if (lost(error) || error instanceof GaveUp) {
+    if (lost(error) || error instanceof Session.GaveUp) {
       failed(s, "Transaction", error);
     } else {
       transaction = Transaction.UNKNOWN;
@@ -1738,7 +1168,7 @@ final class ConsoleTab implements Tab {
 
   private void messages(Portion portion) {
     for (var m : portion.messages()) {
-      heard(Level.WARNING, null, null, m.text() + coded(m));
+      heard(Level.WARNING, null, null, m.text() + Delivery.coded(m));
     }
   }
 
@@ -1753,15 +1183,6 @@ final class ConsoleTab implements Tab {
   /** What the results area says went wrong, the server's part checked whole for the password. */
   private Problem heard(String title, String said) {
     return new Problem(title, words(said));
-  }
-
-  private static Failure failure(Portion portion) {
-    for (var result : portion.results()) {
-      if (result instanceof Failure f) {
-        return f;
-      }
-    }
-    return null;
   }
 
   /**
@@ -1839,7 +1260,7 @@ final class ConsoleTab implements Tab {
     if (closed || error instanceof InterruptedException) {
       return; // the session closed under it, which says why where it says anything
     }
-    if (error instanceof GaveUp g) {
+    if (error instanceof Session.GaveUp g) {
       gaveUp(s, sql, g);
       return;
     }
@@ -1862,7 +1283,7 @@ final class ConsoleTab implements Tab {
    * What was still open could not be given up, so the call was not made: the console stops, and
    * an act that waited too. Where that lost the connection, the session is over.
    */
-  private void gaveUp(State s, String sql, GaveUp g) {
+  private void gaveUp(State s, String sql, Session.GaveUp g) {
     s.drop(this);
     failedRun = true;
     if (g.failure.kind() == Failure.Kind.CONNECTION_LOST) {
@@ -1881,7 +1302,7 @@ final class ConsoleTab implements Tab {
     problem = heard(
         NOT_RUN,
         brief(g.sql) + " could not be ended, so " + brief(sql) + " was not sent and nothing"
-            + " more runs: " + g.failure.message() + MAY_NOT_STAND);
+            + " more runs: " + g.failure.message() + Session.MAY_NOT_STAND);
     log.add(new Logged(Level.ERROR, brief(sql), null, NOT_RUN));
     transaction = Transaction.UNKNOWN;
     learned++;
@@ -2085,12 +1506,12 @@ final class ConsoleTab implements Tab {
    */
   private void stop() {
     if (recording != null && teller != null) { // none comes from here on
-      switch (work.delivery().waiting() ? work.delivery().outcome : null) {
-        case Ran r -> // it ran to its end before the cancel
+      switch (work.delivery().untaken()) {
+        case Session.Ran r -> // it ran to its end before the cancel
           remember(teller.state(), outcomeOf(r.portion()), r.portion().elapsed());
-        case TooMany e -> recording = null; // not sent, as in run's own outcome
-        case NotRun e -> recording = null;
-        case GaveUp e -> recording = null;
+        case Session.TooMany _ -> recording = null; // not sent, as in run's own outcome
+        case Session.NotRun _ -> recording = null;
+        case Session.GaveUp _ -> recording = null;
         case null, default -> remember(teller.state(), new Outcome.Cancelled(), null);
       }
     }
@@ -2155,7 +1576,7 @@ final class ConsoleTab implements Tab {
       var reported = new CompletableFuture<Void>();
       lane.close(ended -> {
         try {
-          told(ended, sql, SESSION_ENDED, tell);
+          Session.told(ended, sql, SESSION_ENDED, tell);
         } finally {
           tell.wipe();
           reported.complete(null);
@@ -2267,7 +1688,7 @@ final class ConsoleTab implements Tab {
     work = ask(
         s,
         "switch auto-commit",
-        link -> setMode(link, mode == Mode.MANUAL, wasEmpty),
+        link -> Session.setMode(link, mode == Mode.MANUAL, wasEmpty),
         switched -> {
           work = null;
           firm = false;
@@ -2320,7 +1741,7 @@ final class ConsoleTab implements Tab {
     work = ask(
         s,
         sql.equals(COMMIT) ? "commit" : "roll back",
-        link -> finish(link, sql, tell),
+        link -> Session.finish(link, sql, tell),
         ended -> {
           work = null;
           firm = false;
@@ -2469,7 +1890,7 @@ final class ConsoleTab implements Tab {
   }
 
   /** The server's words, or that they were withheld where they hold the password. */
-  private static String words(char[] password, String words) {
+  static String words(char[] password, String words) {
     return password == null || Probe.contains(words, password)
         ? ConnectionException.WITHHELD
         : words;

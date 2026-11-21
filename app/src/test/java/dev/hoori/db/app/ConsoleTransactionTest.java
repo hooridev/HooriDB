@@ -554,7 +554,7 @@ class ConsoleTransactionTest {
     link.run(PAY).next(1);
     link.run(MISSING).next(1);
     assertEquals(Transaction.FAILED, link.status().transaction());
-    var ended = ConsoleTab.finish(link, ConsoleTab.COMMIT, (sql, what, failure) -> {});
+    var ended = Session.finish(link, ConsoleTab.COMMIT, (sql, what, failure) -> {});
     assertEquals(Transaction.FAILED, ended.before());
     assertEquals(null, ended.portion());
     assertFalse(servers.calls.contains(COMMITTING), servers.calls.toString());
@@ -1530,9 +1530,9 @@ class ConsoleTransactionTest {
     assertTrue(line(c.tree("given"), "#problem").contains("Not run"), c.tree("given"));
     c.run(app, "press role=tab label=\"Messages\"\nframe\n" + OPENED + "snap messages\n");
     assertTrue(
-        c.tree("messages").contains(ConsoleTab.ENDED + "the commit at give-up failed"),
+        c.tree("messages").contains(Session.ENDED + "the commit at give-up failed"),
         c.tree("messages"));
-    assertTrue(noticed(app).contains(ConsoleTab.ENDED + "the commit at give-up failed"));
+    assertTrue(noticed(app).contains(Session.ENDED + "the commit at give-up failed"));
   }
 
   /**
@@ -1829,14 +1829,14 @@ class ConsoleTransactionTest {
       }
     }
     var whole = new Endless(0);
-    var ran = ConsoleTab.drained(whole, whole.next(200), 1000);
+    var ran = Session.drained(whole, whole.next(200), 1000);
     var rows = (Result.Rows) ran.portion().results().getFirst();
     assertEquals(1000, rows.rows().size());
     assertEquals(List.of(50L * 200 - 1000), ran.dropped());
     assertEquals(50, whole.portions);
     var cut = new Endless(3);
     try {
-      ConsoleTab.drained(cut, cut.next(200), 1000);
+      Session.drained(cut, cut.next(200), 1000);
       throw new AssertionError("not stopped");
     } catch (InterruptedException _) {
       assertEquals(3, cut.portions, "no portion after the interrupt");
@@ -2089,7 +2089,7 @@ class ConsoleTransactionTest {
       c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\nframe\n");
       eventually(() -> servers.calls.contains("close " + PG + " " + ORDERS));
       c.run(app, after + OPENED + SETTLE + "snap after\n");
-      assertTrue(noticed(app).contains(ConsoleTab.ENDED + DUPLICATE), after + noticed(app));
+      assertTrue(noticed(app).contains(Session.ENDED + DUPLICATE), after + noticed(app));
       assertTrue(near(c.tree("after"), "#notice-1").contains(DUPLICATE), c.tree("after"));
       servers.calls.clear();
     }
@@ -2587,13 +2587,13 @@ class ConsoleTransactionTest {
   @Test
   void aTellerWipedPostsNoUncheckedWords() throws Exception {
     var app = k.console(SHOP);
-    var teller = new ConsoleTab.Teller(
-        app, app.state(), "shop-prod", ConnectionsTest.PASSWORD.toCharArray(), null);
+    var teller =
+        new Teller(app, app.state(), "shop-prod", ConnectionsTest.PASSWORD.toCharArray(), null);
     teller.wipe();
     teller.tell(PAY, "password authentication failed for " + ConnectionsTest.PASSWORD, true);
     c.run(app, SETTLE);
     assertFalse(noticed(app).contains(ConnectionsTest.PASSWORD), noticed(app));
-    assertTrue(noticed(app).contains(ConsoleTab.TOO_LATE), noticed(app));
+    assertTrue(noticed(app).contains(Teller.TOO_LATE), noticed(app));
   }
 
   /**
