@@ -104,18 +104,7 @@ final class State {
   private UUID placing; // the folder the new connection's dialog puts it in, or null for the top
   boolean about; // whether the About dialog is open
   Pending pending; // the one act that waits, or null
-  // Its deletion runs: it waits for the keyring to be found, then for its password to go.
-  boolean removing;
-  boolean removingSlow; // the keyring has not answered for a while: Cancel gives up waiting
-  private Work removal; // the removal of the password, while it runs
-  private int removals; // counted, so that a late patience is dropped
-  String removeError; // why its password could not be removed, or null
-  // The connections a deletion takes out, one after another; the act that locks their consoles;
-  // the folder it deletes once all are out, or null for one connection; and those that stayed.
-  private final List<ConnectionProfile> doomed = new ArrayList<>();
-  private Act removalAct;
-  private UUID removalFolder;
-  final List<ConnectionProfile> kept = new ArrayList<>();
+  final Removal removal = new Removal(); // the deletion of connections, out of the keyring first
   // What finishing something on a console's session did, failures and warnings, in the order they
   // came, each until the user dismisses it: the app's from the moment it exists.
   final List<Notice> notices = new ArrayList<>();
@@ -563,8 +552,8 @@ final class State {
       dialog.probe.keyringFound(this);
     }
     catalog.keyringFound(this);
-    if (removing) {
-      removeNext();
+    if (removal.running) {
+      removal.next(this);
     }
   }
 
@@ -713,15 +702,15 @@ final class State {
     if (folder.entries().isEmpty()) {
       dissolveFolder(id);
     } else {
-      kept.clear();
-      removeError = null;
+      removal.kept.clear();
+      removal.error = null;
       folderDialog = FolderDialog.delete(id, folder.name());
     }
   }
 
   /** Deletes the folder, and what it held takes its place, one level up. */
   void dissolveFolder(UUID id) {
-    if (removing) {
+    if (removal.running) {
       return;
     }
     folderDialog = null;
@@ -864,7 +853,7 @@ final class State {
   /** Asks before the connection is deleted. */
   void askDelete(ConnectionProfile profile) {
     deleting = profile;
-    removeError = null;
+    removal.error = null;
   }
 
   /**
@@ -874,7 +863,7 @@ final class State {
   void delete() {
     var profile = deleting;
     if (profile == null
-        || removing
+        || removal.running
         || asks(
             deleteAct(profile),
             name(profile) + " is deleted",
@@ -901,7 +890,7 @@ final class State {
       drop(deleteFolderAct(id)); // gone while a console's question waited
       return;
     }
-    if (removing) {
+    if (removal.running) {
       return;
     }
     var held = folder.connections();
@@ -923,71 +912,11 @@ final class State {
     if (!lock(act, what, ids)) {
       return;
     }
-    removing = true;
-    removeError = null;
-    removalAct = act;
-    removalFolder = folder;
-    doomed.clear();
-    doomed.addAll(profiles);
-    kept.clear();
-    removeNext();
-  }
-
-  /** Deletes the password of the next connection, and then the connection; once the keyring is. */
-  private void removeNext() {
-    if (doomed.isEmpty()) {
-      removed();
-      return;
-    }
-    var profile = doomed.getFirst();
-    // Patience from the start, also while the keyring is still being found.
-    int at = ++removals;
-    app.after(KEYRING_SECONDS, () -> {
-      if (removing && removals == at) {
-        removingSlow = true;
-        if (quitting()) {
-          giveUpDelete(); // closing never waits for a keyring that does not answer
-        }
-      }
-    });
-    if (keyring == null) {
-      return; // keyringFound goes on
-    }
-    var secrets = secrets();
-    if (secrets == null) {
-      var names = String.join(", ", doomed.stream().map(State::name).toList());
-      doomed.forEach(this::discard);
-      doomed.clear();
-      removed();
-      tell("Without the system keyring, a password saved for " + names + " could not be removed.");
-      return;
-    }
-    var id = profile.id();
-    removal = app.background(
-        "delete a password",
-        () -> {
-          secrets.delete(id);
-          return id;
-        },
-        done -> {
-          removal = null;
-          removingSlow = false;
-          doomed.removeFirst();
-          discard(profile);
-          removeNext();
-        },
-        error -> {
-          removal = null;
-          removingSlow = false;
-          doomed.removeFirst();
-          kept.add(profile); // and the next ones are tried
-          removeError = message(error);
-          removeNext();
-        });
+    removal.start(this, act, profiles, folder);
   }
 
   /** Its password is out of the keyring: the connection goes, with its tabs and its history. */
-  private void discard(ConnectionProfile profile) {
+  void discard(ConnectionProfile profile) {
     forgetPassword(profile.id());
     catalog.drop(this, profile.id());
     closeTabs(profile.id()); // its consoles, and with them their texts
@@ -1007,59 +936,25 @@ final class State {
   }
 
   /**
-   * The deletion is over: its consoles start again, and its dialog closes, or stays and says which
-   * connections stayed. A folder goes only with nothing left in it.
+   * The deletion is over, and nothing stayed: its dialog closes. A folder goes only with nothing
+   * left in it.
+   *
+   * @param id the folder deleted with what it held, or null for one connection
    */
-  private void removed() {
-    removing = false;
-    removingSlow = false;
-    drop(removalAct);
-    if (!kept.isEmpty()) {
-      keyringFailed();
-      return;
-    }
-    if (removalFolder == null) {
+  void deleted(UUID id) {
+    if (id == null) {
       deleting = null;
       return;
     }
     folderDialog = null;
-    var folder = folder(removalFolder);
+    var folder = folder(id);
     if (folder != null && folder.connections().isEmpty()) {
-      change(workspace.remove(removalFolder));
-      if (selected instanceof Node.Folder(var id) && folder(id) == null) {
+      change(workspace.remove(id));
+      if (selected instanceof Node.Folder(var at) && folder(at) == null) {
         selected = null;
       }
       persist();
     }
-  }
-
-  static final String DELETE_GAVE_UP =
-      "The system keyring did not answer, and the deletion was given up: whether the password is"
-          + " still in it is not known. The connection was not deleted. What is asked of the"
-          + " keyring next waits until it has answered this.";
-
-  static final String FOLDER_GAVE_UP =
-      "The system keyring did not answer, and the deletion was given up: whether the password it"
-          + " was deleting is still in it is not known. What is asked of the keyring next waits"
-          + " until it has answered this.";
-
-  /**
-   * Cancel once the keyring has not answered for a while: the removal of the password is given
-   * up, whatever it did, and so is the deletion; the dialog stays and says what that leaves.
-   */
-  private void giveUpDelete() {
-    if (removal != null) {
-      removal.cancel(); // stops waiting; the removal itself runs on, before any later call
-      removal = null;
-    }
-    removals++;
-    removing = false;
-    removingSlow = false;
-    removeError = removalFolder == null ? DELETE_GAVE_UP : FOLDER_GAVE_UP;
-    kept.addAll(doomed);
-    doomed.clear();
-    drop(removalAct);
-    keyringFailed();
   }
 
   /**
@@ -1067,11 +962,11 @@ final class State {
    * once the keyring has kept it waiting.
    */
   void cancelDelete() {
-    if (removing && removingSlow) {
-      giveUpDelete();
+    if (removal.running && removal.slow) {
+      removal.giveUp(this);
       return;
     }
-    if (deleting != null && !removing) {
+    if (deleting != null && !removal.running) {
       drop(deleteAct(deleting)); // and the way out it asked for
       deleting = null;
     }
@@ -1079,11 +974,11 @@ final class State {
 
   /** Cancel or Escape in the question before a folder's delete, as {@link #cancelDelete}. */
   void cancelFolderDialog() {
-    if (removing && removingSlow) {
-      giveUpDelete();
+    if (removal.running && removal.slow) {
+      removal.giveUp(this);
       return;
     }
-    if (folderDialog != null && !removing) {
+    if (folderDialog != null && !removal.running) {
       drop(deleteFolderAct(folderDialog.folder));
       folderDialog = null;
     }
@@ -1163,7 +1058,7 @@ final class State {
 
   /** Whether a change of the keyring runs, which no one may leave halfway. */
   private boolean keyringBusy() {
-    return removing || dialog != null && dialog.changing;
+    return removal.running || dialog != null && dialog.changing;
   }
 
   /**
@@ -1205,8 +1100,8 @@ final class State {
       dialog.giveUp(this);
       return;
     }
-    if (removingSlow) {
-      giveUpDelete();
+    if (removal.slow) {
+      removal.giveUp(this);
       return;
     }
     if (!lock(EXIT, "HooriDB is closing", null)) {
