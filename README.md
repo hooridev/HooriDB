@@ -63,10 +63,10 @@ mvn -Pbundle verify                       # build the release bundle for this pl
 | `core/` | `hooridb-core` | Connections, metadata, and queries (no UI dependencies). |
 | `app/` | `hooridb-app` | Desktop app: state, views, and windows (`dev.hoori.db.app.HooriDb`). |
 
-The website and documentation live in `docs/` (requires Node.js 24 or later):
+The website and documentation live in `docs/` (requires [Bun](https://bun.com) 1.4.5 and Node.js 24 or later):
 
 ```sh
-cd docs && npm ci && npm run dev
+cd docs && bun install && bun run dev
 ```
 
 ## Contributing

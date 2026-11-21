@@ -25,24 +25,50 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       NEXT_TELEMETRY_DISABLED: '1'
+      # The budget of the job from its first step to its last, in seconds.
+      BUDGET: 35
     defaults:
       run:
         working-directory: docs
     steps:
+      - run: echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+        working-directory: .
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          filter: blob:none
+          sparse-checkout: docs
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: docs/package-lock.json
-      - run: npm ci
-      - run: npm run build
+          node-version: 24.22.3
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+          # Downloading it is as fast as restoring it, and saves nothing afterwards.
+          no-cache: true
+      # No cache of node_modules either: bun installs it in a second, and restoring it took three.
+      - run: bun install --frozen-lockfile
+      - run: bun run build
       - if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/out
+      # Fails a slow run, but only warns where it would hold back the deployment.
+      - if: ${{ !cancelled() }}
+        working-directory: .
+        run: |
+          took=$(( $(date +%s) - STARTED ))
+          if (( took <= BUDGET )); then
+            echo "Took ${took} s of its ${BUDGET} s."
+          elif [[ "$DEPLOYS" == true ]]; then
+            echo "::warning::Took ${took} s, over its budget of ${BUDGET} s."
+          else
+            echo "::error::Took ${took} s, over its budget of ${BUDGET} s."
+            exit 1
+          fi
+        env:
+          DEPLOYS: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request' }}
 
   deploy:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
