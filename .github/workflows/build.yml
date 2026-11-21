@@ -43,6 +43,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+          # Without it every run downloads all of Maven Central's artifacts, which Central
+          # answers with HTTP 429 when several runs do so at once.
+          cache: maven
       - name: Set the version
         if: inputs.version
         env:
