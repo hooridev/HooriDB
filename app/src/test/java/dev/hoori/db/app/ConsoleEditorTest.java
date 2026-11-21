@@ -38,6 +38,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 /** A console's editor: where an error is, and what it suggests at the caret. */
 class ConsoleEditorTest {
 
+  private static final Pattern CARET = Pattern.compile(" caret (\\d+)");
+  private static final Pattern OPTION = Pattern.compile(" label=\"((?:[^\"\\\\]|\\\\.)*+)\"");
+
   static final String WRONG = "SELECT id\nFROM orders\nWHERE WHERE id = 1";
   static final String ITEMS = "SELECT count(*) FROM items";
   static final String MARIA_WRONG = "SELECT sku,\n  name\nFROM items\nWHERE sku IN ('a',, 'b')";
@@ -105,7 +108,8 @@ class ConsoleEditorTest {
   }
 
   static String caret(String tree) {
-    return line(tree, "#sql").replaceAll(".* caret (\\d+).*", "$1");
+    var l = line(tree, "#sql");
+    return CARET.matcher(l).results().map(r -> r.group(1)).findFirst().orElse(l);
   }
 
   @Test
@@ -252,7 +256,13 @@ class ConsoleEditorTest {
     return tree.lines()
         .dropWhile(l -> !l.contains("#completions"))
         .filter(l -> l.contains("role=option"))
-        .map(l -> l.replaceAll(".* label=\"((?:[^\"\\\\]|\\\\.)*)\".*", "$1").replace("\\\"", "\""))
+        .map(l -> OPTION
+            .matcher(l)
+            .results()
+            .map(r -> r.group(1))
+            .findFirst()
+            .orElse(l)
+            .replace("\\\"", "\""))
         .toList();
   }
 
@@ -432,10 +442,18 @@ class ConsoleEditorTest {
         open("audited") + SETTLE + type("SELECT  FROM orders o") + "key Home\n"
             + "key ArrowRight\n".repeat(7) + "type \"o.\"\n" + READ + "snap columns\n");
     assertEquals(List.of("id", "total"), options(console.c.tree("columns")));
-    console.c.run(
-        app,
-        "key Escape\nkey A control\ntype \"SELECT * FROM e\"\ntype \"v\"\nframe\nadvance 1\n"
-            + "frame\nsnap events\nkey Enter\nframe\n");
+    console.c.run(app, """
+            key Escape
+            key A control
+            type "SELECT * FROM e"
+            type "v"
+            frame
+            advance 1
+            frame
+            snap events
+            key Enter
+            frame
+            """);
     assertEquals(List.of("audit.events"), options(console.c.tree("events")));
     assertEquals("SELECT * FROM audit.events", console.tab(app).text);
   }

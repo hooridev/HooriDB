@@ -128,7 +128,7 @@ class ConnectionColorsTest {
     assertEquals(1, marks(c.tree("orange"), "orange"), c.tree("orange"));
     String saved = c.tree("saved");
     assertFalse(saved.contains("role=dialog"), saved);
-    assertTrue(marks(row(saved, "shop-prod"), "red") == 1, saved);
+    assertEquals(1, marks(row(saved, "shop-prod"), "red"), saved);
     assertEquals(
         Color.RED,
         new WorkspaceStore(dir.resolve("config"))
@@ -138,7 +138,7 @@ class ConnectionColorsTest {
             .color());
 
     c.run(restart(), START + "snap restarted\n");
-    assertTrue(marks(row(c.tree("restarted"), "shop-prod"), "red") == 1);
+    assertEquals(1, marks(row(c.tree("restarted"), "shop-prod"), "red"));
   }
 
   /** A color alone is a change: Cancel asks first; None takes the color away. */
@@ -167,7 +167,7 @@ class ConnectionColorsTest {
         """ + SETTLE
             + "snap saved\n");
     assertTrue(c.tree("asked").contains("Discard changes?"), c.tree("asked"));
-    assertTrue(marks(row(c.tree("discarded"), "shop-prod"), "red") == 1, c.tree("discarded"));
+    assertEquals(1, marks(row(c.tree("discarded"), "shop-prod"), "red"), c.tree("discarded"));
     String none = c.tree("none");
     assertTrue(line(none, "role=button label=\"Color\"").contains("value=\"None\""), none);
     var dialog = none.substring(none.indexOf("role=dialog label=\"Edit connection\""));
@@ -193,7 +193,7 @@ class ConnectionColorsTest {
             + table("orders") + SETTLE + "snap red\n");
     String red = c.tree("red");
     assertTrue(line(red, "role=tab label=\"orders\"").contains("value=\"red\""), red);
-    assertTrue(marks(row(red, "shop-prod"), "red") == 1, red);
+    assertEquals(1, marks(row(red, "shop-prod"), "red"), red);
     // The row's mark and the line under the tab's header.
     assertEquals(2, marks(red, "red"), red);
 

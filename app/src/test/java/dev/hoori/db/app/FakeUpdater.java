@@ -83,7 +83,7 @@ final class FakeUpdater implements Updater {
     if (gate != null) {
       try {
         gate.await();
-      } catch (InterruptedException e) {
+      } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
         throw new InterruptedIOException();
       }
@@ -117,7 +117,7 @@ final class FakeUpdater implements Updater {
     if (gate != null) {
       try {
         gate.await();
-      } catch (InterruptedException e) {
+      } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
         throw new InterruptedIOException();
       }

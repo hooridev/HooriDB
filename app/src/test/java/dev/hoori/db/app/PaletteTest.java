@@ -28,6 +28,7 @@ import dev.hoori.db.core.connection.Provider;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** The command palette, Go to table and the shortcuts: everything from the keyboard. */
 class PaletteTest {
+
+  private static final Pattern LABEL = Pattern.compile("label=\"([^\"]*)\"");
 
   @TempDir
   Path dir;
@@ -79,7 +82,7 @@ class PaletteTest {
   static List<String> options(String tree) {
     return tree.lines()
         .filter(l -> l.contains("role=option"))
-        .map(l -> l.replaceAll(".*label=\"([^\"]*)\".*", "$1"))
+        .map(l -> LABEL.matcher(l).results().map(r -> r.group(1)).findFirst().orElse(l))
         .toList();
   }
 
@@ -330,10 +333,16 @@ class PaletteTest {
     assertTrue(line(built, "role=grid").contains("customers"), built);
     assertTrue(focused(built).contains("role=grid"), focused(built));
     // Where the focus was last in the tab, not its grid.
-    c.run(
-        app,
-        "focus role=button label=\"Refresh\"\nframe\nkey 0 control\nframe\nsnap tree\n"
-            + "key 1 control\nframe\nsnap back\n");
+    c.run(app, """
+            focus role=button label="Refresh"
+            frame
+            key 0 control
+            frame
+            snap tree
+            key 1 control
+            frame
+            snap back
+            """);
     assertTrue(focused(c.tree("tree")).contains("role=tree "), focused(c.tree("tree")));
     assertTrue(focused(c.tree("back")).contains("label=\"Refresh\""), focused(c.tree("back")));
   }
@@ -748,7 +757,7 @@ class PaletteTest {
   static String active(String tree) {
     return tree.lines()
         .filter(l -> l.contains("role=tab ") && l.contains(" selected"))
-        .map(l -> l.replaceAll(".*label=\"([^\"]*)\".*", "$1"))
+        .map(l -> LABEL.matcher(l).results().map(r -> r.group(1)).findFirst().orElse(l))
         .findFirst()
         .orElse("");
   }

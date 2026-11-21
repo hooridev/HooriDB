@@ -81,11 +81,7 @@ final class Frame {
             s.message == null ? null : StatusBar.text(s.message).key("message"),
             List.of(StatusBar.item(null, s.version, modal ? null : () -> s.about = true)
                 .key("version"))));
-    // The window closes once what was begun has ended and the connections are written.
-    Windows.Handle window = s.app == null ? null : s.app.windows().of(s.app);
-    if (window != null) {
-      window.onCloseRequest(s::requestClose);
-    }
+    closeOnRequest(s);
     if (s.dialog != null) {
       root.overlay(s.dialog.view(s))
           .overlay(s.dialog.driverDialog(s))
@@ -102,6 +98,14 @@ final class Frame {
       root.overlay(s.driverList.view(s)).overlay(s.driverList.question(s));
     }
     return root.overlay(modal ? null : palette(s, main, menus));
+  }
+
+  /** The window closes once what was begun has ended and the connections are written. */
+  private static void closeOnRequest(State s) {
+    Windows.Handle window = s.app == null ? null : s.app.windows().of(s.app);
+    if (window != null) {
+      window.onCloseRequest(s::requestClose);
+    }
   }
 
   /**
