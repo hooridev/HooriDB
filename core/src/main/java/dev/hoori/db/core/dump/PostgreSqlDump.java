@@ -824,8 +824,15 @@ public final class PostgreSqlDump extends DumpDialect {
       var table = qualified(provider, item.container().name(), item.table());
       var statements = new ArrayList<String>();
       statements.add(trigger.definition());
-      if (trigger.enabled().equals("D")) {
-        statements.add("ALTER TABLE " + table + " DISABLE TRIGGER " + quote(item.name()));
+      // Created enabled in origin mode, as the catalog's O.
+      var mode = switch (trigger.enabled()) {
+        case "D" -> " DISABLE TRIGGER ";
+        case "R" -> " ENABLE REPLICA TRIGGER ";
+        case "A" -> " ENABLE ALWAYS TRIGGER ";
+        default -> "";
+      };
+      if (!mode.isEmpty()) {
+        statements.add("ALTER TABLE " + table + mode + quote(item.name()));
       }
       var needs = new HashSet<Item>();
       var function = known.routines.get(trigger.function());

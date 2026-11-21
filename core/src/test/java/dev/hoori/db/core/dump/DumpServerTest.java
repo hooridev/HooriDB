@@ -715,6 +715,14 @@ class DumpServerTest {
             + " AS $$ BEGIN NEW.name := upper(NEW.name); RETURN NEW; END $$",
         "CREATE TRIGGER parent_upper BEFORE INSERT ON parent FOR EACH ROW"
             + " EXECUTE FUNCTION upper_name()",
+        // Triggers in each mode but origin's.
+        "CREATE FUNCTION kept() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$",
+        "CREATE TRIGGER scratch_replica BEFORE INSERT ON scratch FOR EACH ROW EXECUTE FUNCTION kept()",
+        "ALTER TABLE scratch ENABLE REPLICA TRIGGER scratch_replica",
+        "CREATE TRIGGER scratch_always BEFORE UPDATE ON scratch FOR EACH ROW EXECUTE FUNCTION kept()",
+        "ALTER TABLE scratch ENABLE ALWAYS TRIGGER scratch_always",
+        "CREATE TRIGGER scratch_off BEFORE DELETE ON scratch FOR EACH ROW EXECUTE FUNCTION kept()",
+        "ALTER TABLE scratch DISABLE TRIGGER scratch_off",
         "CREATE PROCEDURE touch() LANGUAGE plpgsql AS $$ BEGIN PERFORM 1; END $$",
         "INSERT INTO parent (name) VALUES ('ada'), ('it''s \\ quoted'), ('Grüße ✓')",
         "INSERT INTO child (parent_id, note) VALUES (1, 'first'), (2, NULL), (2, E'line\\nbreak')",
