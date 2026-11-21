@@ -192,6 +192,27 @@ class FileRunServerTest {
     }
   }
 
+  @Test
+  void oneTransactionRollsBackWhatRanBeforeACompoundStatementThatCommits() throws Exception {
+    var table = "file_run_compound";
+    try (var writer = open(MARIADB)) {
+      execute(writer, "DROP TABLE IF EXISTS " + table, "CREATE TABLE " + table + " (id integer)");
+    }
+    var text = "INSERT INTO " + table + " VALUES (1);\n"
+        + "DELIMITER //\nBEGIN NOT ATOMIC COMMIT; END//\nDELIMITER ;\n"
+        + "INSERT INTO " + table + " VALUES (2);\n";
+    try (var connection = open(MARIADB)) {
+      var report =
+          run(connection, MARIADB, file("compound.sql", text), new FileRun.Options(false, true));
+      assertEquals(FileRun.Ending.STOPPED, report.ending());
+      assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
+      assertEquals(3, report.failures().getFirst().line());
+    }
+    try (var check = open(MARIADB)) {
+      assertEquals(0, selectLong(check, "SELECT count(*) FROM " + table));
+    }
+  }
+
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aReadOnlyConnectionRefusesTheWrites(Provider provider) throws Exception {

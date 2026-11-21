@@ -33,7 +33,7 @@ PostgreSQL rolls back everything a transaction ran, including `CREATE`, `ALTER`,
 
 In one transaction, a statement of the file that begins or ends a transaction, such as `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`, or MySQL's `SET autocommit`, stops the run with an error at its line, and what ran is rolled back: it would have committed what ran before it. So does MariaDB's `BEGIN NOT ATOMIC … END` where its body holds such a statement. Run such a file without **In one transaction**, so that it keeps its own.
 
-Without **In one transaction**, each statement commits on its own, and what ran before an error or a cancel stays. A file that opens a transaction of its own, with `BEGIN` or `START TRANSACTION`, is the exception: what runs after that is committed by a `COMMIT` in the file, and on MySQL and MariaDB also by any DDL, which commits it with the work before it; what is not committed when a run stops or is cancelled stays uncommitted, so that the server rolls it back as the run's session closes.
+Without **In one transaction**, each statement commits on its own, and what ran before an error or a cancel stays. A file that opens a transaction of its own, with `BEGIN` or `START TRANSACTION`, is the exception: what runs after that is committed by a `COMMIT` in the file, and on MySQL and MariaDB also by most DDL, which commits it with the work before it (`CREATE TEMPORARY TABLE` and `DROP TEMPORARY TABLE` do not, but are not rolled back either); what is not committed when a run stops or is cancelled stays uncommitted, so that the server rolls it back as the run's session closes, apart from such statements that no rollback undoes.
 
 ## Dumps and client commands
 
