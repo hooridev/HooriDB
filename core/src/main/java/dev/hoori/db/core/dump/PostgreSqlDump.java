@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -29,13 +30,17 @@ import java.util.stream.Collectors;
  * functions where it has them ({@code pg_get_viewdef}, {@code pg_get_functiondef}, {@code
  * pg_get_triggerdef}, {@code pg_get_constraintdef}, {@code pg_get_indexdef}), and what each needs
  * from {@code pg_depend}. Objects of extensions are left to their extension, an identity column's
- * sequence to its column, a partition's inherited constraints, indexes and triggers to its table.
- * A materialized view is refreshed from its tables once their rows are in, as {@code pg_dump} does.
+ * sequence to its column, a partition's inherited constraints and triggers to its table, whose
+ * indexes its own are attached to. A child's columns that it inherits keep the defaults and NOT
+ * NULL of their own. A materialized view is refreshed from its tables once their rows are in, as
+ * {@code pg_dump} does.
  *
  * <p>The snapshot's search path is empty, so that the server names every object with its schema,
  * and nothing a user created under the name of a function or operator of {@code pg_catalog} runs.
  * It reads without row security, so that a table whose policies would hide rows from the user
- * fails the export rather than leaving them out.
+ * fails the export rather than leaving them out. The tables exported are locked as it begins, so
+ * that no other session changes their definitions or empties them until it ends, as the functions
+ * that write definitions read the catalog as it is then, not as of the snapshot.
  */
 public final class PostgreSqlDump extends DumpDialect {
 
@@ -372,6 +377,7 @@ public final class PostgreSqlDump extends DumpDialect {
         }
       }
       var lines = new ArrayList<String>();
+      var overrides = new ArrayList<String>();
       var comments = new ArrayList<String>();
       var restore = new ArrayList<String>();
       for (var column : columns()) {
@@ -381,11 +387,14 @@ public final class PostgreSqlDump extends DumpDialect {
         }
         if (column.local()) {
           lines.add(column(column, restore));
+        } else {
+          overrides.addAll(overridden(column));
         }
       }
       var constraints = constraints(relation.kind().equals("p") ? "" : "ONLY ");
       var statements = new ArrayList<String>();
       statements.add(created(relation, parents, lines, constraints.inline()));
+      statements.addAll(overrides);
       if (relation.comment() != null) {
         statements.add("COMMENT ON TABLE " + name + " IS " + literal(relation.comment()));
       }
@@ -503,6 +512,26 @@ public final class PostgreSqlDump extends DumpDialect {
       return line.toString();
     }
 
+    // What a column that the table inherits has of its own, which its table's gives it otherwise:
+    // another default, or none, and NOT NULL. Identity and generation come with the column.
+    private List<String> overridden(Column column) {
+      if (!column.identity().isEmpty() || !column.generated().isEmpty()) {
+        return List.of();
+      }
+      var alter = "ALTER TABLE ONLY " + name + " ALTER COLUMN " + quote(column.name());
+      var statements = new ArrayList<String>();
+      if (!Objects.equals(column.expression(), column.inheritedDefault())) {
+        statements.add(
+            column.expression() == null
+                ? alter + " DROP DEFAULT"
+                : alter + " SET DEFAULT " + column.expression());
+      }
+      if (column.notNull() && !column.inheritedNotNull()) {
+        statements.add(alter + " SET NOT NULL");
+      }
+      return statements;
+    }
+
     private String identityOptions(String sequence) throws QueryException {
       return one("""
           SELECT %s FROM pg_catalog.pg_sequence s
@@ -537,8 +566,12 @@ public final class PostgreSqlDump extends DumpDialect {
         String collation,
         String comment,
         boolean local,
-        String sequence) {}
+        String sequence,
+        boolean inheritedNotNull,
+        String inheritedDefault) {}
 
+    // Of a column the table inherits, also whether a table it inherits it from has it NOT NULL,
+    // and the default it has there, one that has one first.
     private List<Column> columns() throws QueryException {
       return rows(
           """
@@ -552,7 +585,19 @@ public final class PostgreSqlDump extends DumpDialect {
               WHERE co.oid = a.attcollation) END,
             pg_catalog.col_description(a.attrelid, a.attnum), a.attislocal,
             CASE WHEN a.attidentity <> '' THEN pg_catalog.pg_get_serial_sequence(
-              a.attrelid::pg_catalog.regclass::pg_catalog.text, a.attname) END
+              a.attrelid::pg_catalog.regclass::pg_catalog.text, a.attname) END,
+            CASE WHEN NOT a.attislocal THEN EXISTS (SELECT FROM pg_catalog.pg_inherits h
+              JOIN pg_catalog.pg_attribute pa
+                ON pa.attrelid = h.inhparent AND pa.attname = a.attname
+              WHERE h.inhrelid = a.attrelid AND pa.attnotnull) END,
+            CASE WHEN NOT a.attislocal THEN (
+              SELECT pg_catalog.pg_get_expr(pd.adbin, pd.adrelid) FROM pg_catalog.pg_inherits h
+              JOIN pg_catalog.pg_attribute pa
+                ON pa.attrelid = h.inhparent AND pa.attname = a.attname
+              LEFT JOIN pg_catalog.pg_attrdef pd
+                ON pd.adrelid = pa.attrelid AND pd.adnum = pa.attnum
+              WHERE h.inhrelid = a.attrelid
+              ORDER BY pd.adbin IS NULL, h.inhseqno LIMIT 1) END
           FROM pg_catalog.pg_attribute a
           JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
           LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
@@ -568,19 +613,53 @@ public final class PostgreSqlDump extends DumpDialect {
               rows.getString(7),
               rows.getString(8),
               rows.getBoolean(9),
-              rows.getString(10)));
+              rows.getString(10),
+              rows.getBoolean(11),
+              rows.getString(12)));
     }
 
-    // The indexes that no constraint makes, nor a partitioned table's for its partition.
+    // An index as its table has it; of a partition, the index of its table's it is a partition
+    // of, and that table, or null and 0.
+    private record Index(String definition, String name, String parent, long parentTable) {}
+
+    // The indexes that no constraint makes. A partitioned table's is created on it alone, and is
+    // valid once each partition's is attached to it, as pg_dump does: a partition's that is one of
+    // its table's is attached where that table goes too, and where it does not, the partition gets
+    // it from the table it is created on.
     private List<String> indexes() throws QueryException {
-      return rows("""
-          SELECT pg_catalog.pg_get_indexdef(i.indexrelid) FROM pg_catalog.pg_index i
+      var indexes = rows(
+          """
+          SELECT pg_catalog.pg_get_indexdef(i.indexrelid),
+            pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(ic.relname),
+            (SELECT pg_catalog.quote_ident(pn.nspname) || '.' || pg_catalog.quote_ident(pc.relname)
+              FROM pg_catalog.pg_inherits h
+              JOIN pg_catalog.pg_class pc ON pc.oid = h.inhparent
+              JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace
+              WHERE h.inhrelid = i.indexrelid),
+            (SELECT pi.indrelid FROM pg_catalog.pg_inherits h
+              JOIN pg_catalog.pg_index pi ON pi.indexrelid = h.inhparent
+              WHERE h.inhrelid = i.indexrelid)
+          FROM pg_catalog.pg_index i
           JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
-          WHERE i.indrelid = %s AND NOT ic.relispartition
+          JOIN pg_catalog.pg_namespace n ON n.oid = ic.relnamespace
+          WHERE i.indrelid = %s
           AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint co
             WHERE co.conindid = i.indexrelid AND co.conrelid = i.indrelid
             AND co.contype IN ('p', 'u', 'x'))
-          ORDER BY ic.relname""".formatted(oid), rows -> rows.getString(1));
+          ORDER BY ic.relname""".formatted(oid),
+          rows ->
+              new Index(rows.getString(1), rows.getString(2), rows.getString(3), rows.getLong(4)));
+      var statements = new ArrayList<String>();
+      for (var index : indexes) {
+        if (index.parent() == null) {
+          statements.add(index.definition());
+        } else if (known.relations.containsKey(index.parentTable())
+            && chosen.contains(known.relations.get(index.parentTable()))) {
+          statements.add(index.definition());
+          statements.add("ALTER INDEX " + index.parent() + " ATTACH PARTITION " + index.name());
+        }
+      }
+      return statements;
     }
 
     private record View(String kind, String options, String definition, String comment) {}
