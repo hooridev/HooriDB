@@ -20,6 +20,7 @@ import static dev.hoori.db.app.ConsoleTest.type;
 import static dev.hoori.db.app.TableTabTest.tabs;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -1377,6 +1378,49 @@ class ConsoleTransactionTest {
         app.state(), probe, FakeServers.queryFailure(QueryException.Failure.CONNECTION_LOST));
     assertEquals(Transaction.OPEN, tab.transaction);
     assertTrue(tab.connected());
+  }
+
+  /**
+   * A probe's answer asked before a change was sent, and taken after it, does not make the
+   * transaction the change leaves open the server's empty one: the switch to Auto still asks,
+   * whether the change's outcome came, or a Cancel gave it up once it had run.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void aChangeSentBehindTheProbeIsNotTakenForAnEmptyTransaction(boolean cancel) throws Exception {
+    var app = open(INVENTORY);
+    var tab = k.tab(app);
+    c.run(app, "press #rollback\nframe\n" + SETTLE);
+    assertEquals(Transaction.NONE, tab.transaction);
+    var key = "run " + MARIA + " " + ORDERS;
+    servers.hold(key);
+    var held = servers.hold("transaction " + MARIA, 1); // past the statement's own
+    c.run(app, type(";\n" + ORDERS) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    // The cancel asks the server what it left; the question is held.
+    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    var probe = tab.probing;
+    assertNotNull(probe);
+    servers.dead = true; // the change, held, runs once its gate opens, cancelled or not
+    var change = "run " + MARIA + " " + PAY;
+    var paying = servers.hold(change);
+    c.run(app, type(";\n" + PAY) + "key Enter control\nframe\n");
+    // The probe's answer, read before the change ran, reaches the app's thread only now.
+    tab.probed(probe, new Status(Transaction.NONE, false));
+    held.countDown();
+    if (cancel) {
+      eventually(() -> servers.calls.contains(change));
+      c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    }
+    paying.countDown();
+    c.run(app, SETTLE + "snap settled\n");
+    if (c.tree("settled").contains("#doubt")) {
+      c.run(app, "press role=button label=\"Acknowledge\"\nframe\n" + OPENED);
+    }
+    assertEquals(Transaction.OPEN, tab.transaction);
+    c.run(app, "press role=radio label=\"Auto\"\nframe\n" + OPENED + "snap asked\n");
+    assertTrue(c.tree("asked").contains("before it switches to Auto."), c.tree("asked"));
+    assertFalse(servers.calls.contains("commit by auto-commit " + MARIA), servers.calls.toString());
   }
 
   // The third review's findings, each as it was met.

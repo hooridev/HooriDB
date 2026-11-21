@@ -274,6 +274,9 @@ final class ConsoleTab implements Tab {
   // The calls whose outcomes have not reached the console yet, given up when the session ends.
   private final List<Delivery> outstanding = new ArrayList<>();
   Check probing; // which one it is
+  // The probe asked before a statement sent since: its answer cannot say that what is open holds
+  // nothing, as the statement may have run in it.
+  private Check overtaken;
   private int learned; // what was learned of it, counted: an answer that comes late is dropped
   // The user's statement sent and not yet ended, for the history; null for none.
   private Sent recording;
@@ -553,6 +556,7 @@ final class ConsoleTab implements Tab {
     // trigger, or hold locks on purpose, which no first word tells.
     boolean wasEmpty = empty;
     empty = false;
+    overtaken = probing;
     var held = new AtomicReference<Servers.Run>();
     sent = held;
     var asked = mode;
@@ -1067,6 +1071,9 @@ final class ConsoleTab implements Tab {
     }
     if (learned == asked.at() && lane == asked.lane()) {
       knew(now);
+      if (asked == overtaken) {
+        empty = false; // what the statement sent since leaves open is at stake
+      }
       if (now.autoCommit() == null) {
         unavailable = UNVERIFIABLE; // the driver cannot say: Manual could not be made sure of
       }
