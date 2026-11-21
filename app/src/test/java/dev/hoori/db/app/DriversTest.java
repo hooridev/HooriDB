@@ -707,10 +707,7 @@ class DriversTest {
     Files.writeString(jarFolder(OLD).resolve(FakeDrivers.HOLD), "");
     // The lookup decides on the version; its load then waits at the hold.
     run(app, CatalogTreeTest.open("shop-prod") + "await\nframe\n");
-    for (int i = 0; !app.state().drivers.loading(FakeDrivers.DRIVER, OLD); i++) {
-      assertTrue(i < 500, "the load began");
-      Thread.sleep(10);
-    }
+    CatalogTreeTest.eventually(() -> app.state().drivers.loading(FakeDrivers.DRIVER, OLD));
     // An await would wait for the load, so the Drivers dialog cannot show its rows meanwhile;
     // it asks the same question.
     assertEquals(List.of("shop-prod"), app.state().users(FakeDrivers.DRIVER, OLD));
