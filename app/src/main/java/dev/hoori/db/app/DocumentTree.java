@@ -119,7 +119,9 @@ final class DocumentTree {
               children.add(child(node, i, "[" + i + "]", list.get(i)));
             }
           }
-          case null, default -> {}
+          case null, default -> {
+            // A value of its own has no children.
+          }
         }
         return Tree.ready(children);
       }

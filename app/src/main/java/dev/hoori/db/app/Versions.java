@@ -34,7 +34,7 @@ final class Versions {
   record Read(Map<String, Long> sizes, DriverStore.Choices choices, DriverException error) {}
 
   final Provider provider;
-  Read read; // the last that was read, null before the first read
+  Read last; // the last that was read, null before the first read
   Exception failed; // the drivers folder could not be read, or null
   private Work work; // the read under way, or null
   private Clock clock = Clock.systemUTC(); // what ages count from: the drivers' clock
@@ -69,7 +69,7 @@ final class Versions {
     }
     var store = s.drivers.store;
     var driver = Driver.of(provider);
-    var clock = this.clock = s.drivers.clock;
+    var driverClock = this.clock = s.drivers.clock;
     var known = lookedUp.get();
     // shortcut: what is downloaded shows only once the repository answered or failed, which takes
     // as long as its timeout without a network; read the folder first if that is felt.
@@ -82,7 +82,7 @@ final class Versions {
           }
           try {
             return new Read(
-                sizes, known != null ? known : store.choices(driver, clock.instant()), null);
+                sizes, known != null ? known : store.choices(driver, driverClock.instant()), null);
           } catch (DriverException e) {
             if (e.failure() == DriverException.Failure.CANCELLED) {
               throw e;
@@ -92,7 +92,7 @@ final class Versions {
         },
         done -> {
           work = null;
-          read = done;
+          last = done;
         },
         error -> {
           work = null;
@@ -124,7 +124,7 @@ final class Versions {
           date.ifPresent(d -> dates.put(version, d));
         },
         // Without a date the version is not said to be too new, which the list shows as unknown.
-        error -> {
+        _ -> {
           datingWork = null;
           dating = null;
         });
@@ -162,7 +162,10 @@ final class Versions {
   /** What the repository offers, the lookup's first, or null while that is not known. */
   DriverStore.Choices choices() {
     var known = lookedUp.get();
-    return known != null ? known : read == null ? null : read.choices();
+    if (known != null) {
+      return known;
+    }
+    return last == null ? null : last.choices();
   }
 
   /** The recommended version, or null while it is not known. */
@@ -176,8 +179,8 @@ final class Versions {
    */
   List<String> values(String chosen) {
     var versions = new TreeSet<String>(Maven.NEWEST_FIRST);
-    if (read != null) {
-      versions.addAll(read.sizes().keySet());
+    if (last != null) {
+      versions.addAll(last.sizes().keySet());
     }
     var choices = choices();
     if (choices != null) {
@@ -206,7 +209,7 @@ final class Versions {
     if (age != null) {
       notes.add(age);
     }
-    if (read != null && read.sizes().containsKey(version)) {
+    if (last != null && last.sizes().containsKey(version)) {
       notes.add("downloaded");
     }
     return ComboBox.item(version).detail(notes.isEmpty() ? null : String.join(", ", notes));
@@ -229,7 +232,10 @@ final class Versions {
       return null;
     }
     long days = Math.max(0, Duration.between(published, clock.instant()).toDays());
-    return days == 0 ? "out since today" : days == 1 ? "1 day old" : days + " days old";
+    if (days == 0) {
+      return "out since today";
+    }
+    return days == 1 ? "1 day old" : days + " days old";
   }
 
   /** What keeps the repository's list from showing, in words, or null. */
@@ -239,8 +245,8 @@ final class Versions {
           + (failed instanceof DriverException e ? Fetch.why(e) : "")
           + ". Check that HooriDB may read it, then try again.";
     }
-    if (lookedUp.get() == null && read != null && read.error() != null) {
-      return "Its versions could not be read. " + Fetch.text(read.error(), drivers);
+    if (lookedUp.get() == null && last != null && last.error() != null) {
+      return "Its versions could not be read. " + Fetch.text(last.error(), drivers);
     }
     return null;
   }

@@ -1218,7 +1218,7 @@ final class CatalogTree {
       return s.drivers.version(live.driver);
     }
     var fetch = fetches.get(Want.of(live.profile));
-    return live.phase instanceof ForDriver && fetch != null && fetch.lookup instanceof Fetch.Found f
+    return live.phase instanceof ForDriver && fetch != null && fetch.known instanceof Fetch.Found f
         ? f.version()
         : null;
   }

@@ -572,7 +572,7 @@ interface Servers {
           Connector.close(connection);
           return null;
         });
-      } catch (QueryException e) {
+      } catch (QueryException _) {
         // Given up: what mattered, the statement's end, is said already.
       }
       return ended;
@@ -583,13 +583,13 @@ interface Servers {
       var aborter = Thread.ofVirtual().name("abort a connection").start(() -> {
         try {
           connection.abort(Runnable::run);
-        } catch (SQLException | RuntimeException e) {
+        } catch (SQLException | RuntimeException _) {
           // Not even an abort is possible; the connection is given up all the same.
         }
       });
       try {
         aborter.join(Query.GRACE);
-      } catch (InterruptedException e) {
+      } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
       }
     }

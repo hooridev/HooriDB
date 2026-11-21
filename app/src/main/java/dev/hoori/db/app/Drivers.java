@@ -27,7 +27,7 @@ final class Drivers {
 
   final DriverStore store;
   final String source; // the repository as the user knows it, such as "Maven Central"
-  final URI address; // where its files are
+  private final URI files; // where its files are
   final Clock clock; // what the age of a release counts from
 
   private record Version(Driver driver, String version) {}
@@ -55,7 +55,7 @@ final class Drivers {
   Drivers(Path folder, Repository repository, String source, URI address, Clock clock) {
     this.store = new DriverStore(folder, repository);
     this.source = source;
-    this.address = address;
+    this.files = address;
     this.clock = clock;
   }
 
@@ -82,10 +82,10 @@ final class Drivers {
       return;
     }
     loading.put(key, new ArrayList<>(List.of(new Waiter(then, failed))));
-    var store = this.store;
+    var from = store; // the value alone, as background work gets no state
     app.background(
         "load a driver",
-        () -> store.load(driver, version),
+        () -> from.load(driver, version),
         result -> {
           loaded.put(key, result);
           loading.remove(key).forEach(w -> w.then().accept(result));
@@ -160,6 +160,6 @@ final class Drivers {
 
   /** Where the version's file is downloaded from. */
   URI address(Driver driver, String version) {
-    return address.resolve(store.address(driver, version));
+    return files.resolve(store.address(driver, version));
   }
 }
