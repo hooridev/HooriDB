@@ -48,8 +48,14 @@ class ConsoleHistoryTest {
 
   static final String SAVED = "frame\nadvance 1.5\nframe\n" + SETTLE; // past the pause after typing
   static final String HISTORY = "press role=button label=\"History\"\nframe\nadvance 1\nframe\n";
-  static final String EXIT = "press role=menuitem label=\"File\"\nframe\nadvance 0.3\nframe\n"
-      + "press role=menuitem label=\"Exit\"\nframe\n";
+  static final String EXIT = """
+      press role=menuitem label="File"
+      frame
+      advance 0.3
+      frame
+      press role=menuitem label="Exit"
+      frame
+      """;
 
   static final String CLEAR = "press #sql\nkey A control\nkey Delete\n";
 

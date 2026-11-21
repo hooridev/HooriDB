@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,10 +27,15 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class ConnectionsTest {
+
+  private static final Pattern TREE_ITEM = Pattern.compile("role=treeitem label=\"([^\"]*)\"");
+  private static final Pattern ERROR = Pattern.compile("error=\"([^\"]*)\"");
+  private static final Pattern LEFT = Pattern.compile(" (\\d+),\\d+ \\d+x\\d+");
 
   static final String PASSWORD = "hunter2";
 
@@ -85,7 +91,7 @@ class ConnectionsTest {
           try {
             hold.await();
             break;
-          } catch (InterruptedException e) {
+          } catch (InterruptedException _) {
             interrupted = true;
           }
         }
@@ -697,7 +703,7 @@ class ConnectionsTest {
     var copy = saved.connections().get(2);
     assertEquals("crm (copy)", copy.name());
     assertEquals(crm.host(), copy.host(), "made before the edit");
-    assertFalse(copy.id().equals(crm.id()));
+    assertNotEquals(crm.id(), copy.id());
     assertEquals(
         new Workspace(List.of(
             shop.withColor(Color.GREEN),
@@ -717,7 +723,8 @@ class ConnectionsTest {
   static List<String> roots(String tree) {
     return tree.lines()
         .filter(l -> l.contains("role=treeitem"))
-        .map(l -> l.replaceAll(".*role=treeitem label=\"([^\"]*)\".*", "$1"))
+        .map(
+            l -> TREE_ITEM.matcher(l).results().map(r -> r.group(1)).findFirst().orElse(l))
         .toList();
   }
 
@@ -766,7 +773,7 @@ class ConnectionsTest {
     var left = stored();
     assertEquals(1, left.size());
     var copy = left.getFirst();
-    assertFalse(copy.id().equals(shop.id()));
+    assertNotEquals(shop.id(), copy.id());
     assertEquals(
         shop.withName("shop-prod (copy)"),
         new ConnectionProfile(
@@ -1172,18 +1179,24 @@ class ConnectionsTest {
     var port = line(both, "#port");
     assertTrue(host.contains("invalid") && host.contains("error=\""), host);
     assertTrue(port.contains("invalid") && port.contains("error=\""), port);
-    var hostError = host.replaceAll(".*error=\"([^\"]*)\".*", "$1");
-    var portError = port.replaceAll(".*error=\"([^\"]*)\".*", "$1");
+    var hostError = error(host);
+    var portError = error(port);
     float hostText = TestConnectionTest.top(both, "text \"" + hostError);
     float portText = TestConnectionTest.top(both, "text \"" + portError);
     // Under the row, one below the other, each on a line of the row's width.
     assertTrue(TestConnectionTest.top(both, "#port") < hostText && hostText < portText, both);
     assertTrue(portText < TestConnectionTest.top(both, "#database"), both);
     // At the start of the host's field.
-    var start = " " + host.replaceAll(".* (\\d+),\\d+ \\d+x\\d+.*", "$1") + ",";
+    var start =
+        " " + LEFT.matcher(host).results().map(r -> r.group(1)).findFirst().orElse(host) + ",";
     for (var error : List.of(hostError, portError)) {
       assertTrue(line(both, "text \"" + error).contains(start), start + " " + both);
     }
+  }
+
+  /** The field's error, from its line of the tree. */
+  private static String error(String line) {
+    return ERROR.matcher(line).results().map(r -> r.group(1)).findFirst().orElse(line);
   }
 
   /** Text typed into the port counts as set by hand and as a change, also when it is no port. */

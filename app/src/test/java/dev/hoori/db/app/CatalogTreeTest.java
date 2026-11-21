@@ -28,6 +28,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BooleanSupplier;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,6 +37,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 /** The catalog: connections that open onto what their servers hold. */
 class CatalogTreeTest {
+
+  private static final Pattern LEVEL = Pattern.compile(" level=(\\d+)");
 
   static final String PG = "pg.example.com";
   static final String MARIA = "maria.example.com";
@@ -192,7 +195,7 @@ class CatalogTreeTest {
       for (var earlier : apps) {
         earlier.await(Duration.ofSeconds(10));
       }
-    } catch (InterruptedException e) {
+    } catch (InterruptedException _) {
       Thread.currentThread().interrupt();
       throw new java.io.InterruptedIOException();
     }
@@ -268,7 +271,8 @@ class CatalogTreeTest {
         .map(l -> {
           var label = l.substring(l.indexOf("label=\"") + 7);
           label = label.substring(0, label.indexOf('"'));
-          var level = l.replaceAll(".* level=(\\d+).*", "$1");
+          var level =
+              LEVEL.matcher(l).results().map(r -> r.group(1)).findFirst().orElse(l);
           return "  ".repeat(Integer.parseInt(level) - 1) + label;
         })
         .toList();

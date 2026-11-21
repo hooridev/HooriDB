@@ -310,11 +310,17 @@ class ConsoleTest {
     c.run(app, type(COUNT + ";\n" + ORDERS) + "key ArrowUp\nkey End\nframe\n");
     var tab = tab(app);
     int caret = tab.editor.caret();
-    c.run(
-        app,
-        "press #tab-0 right\nframe\nadvance 1\nframe\n"
-            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
-            + "snap torn\n");
+    c.run(app, """
+            press #tab-0 right
+            frame
+            advance 1
+            frame
+            press role=menuitem label="Move to new window"
+            frame
+            advance 1
+            frame
+            snap torn
+            """);
     assertEquals(caret, tab.editor.caret());
     String window = c.tree("shop-prod-shop-torn"); // the window's title, as a file name
     assertTrue(line(window, "#sql").contains(COUNT + ";\\n" + ORDERS), window);
@@ -508,10 +514,14 @@ class ConsoleTest {
     assertTrue(line(window, "#cancel").contains("disabled"), window);
     assertFalse(status(window).contains("Ran"), window);
     // Its window says it: the tree's callout does not say it again.
-    c.run(
-        app,
-        "window main\npress role=treeitem label=\"shop-prod\"\nframe\nadvance 1\nframe\n"
-            + "snap main\n");
+    c.run(app, """
+            window main
+            press role=treeitem label="shop-prod"
+            frame
+            advance 1
+            frame
+            snap main
+            """);
     String main = c.tree("main");
     assertTrue(line(main, "role=treeitem").contains("selected"), main);
     assertFalse(main.contains("role=note label=\"Login refused\""), main);
@@ -570,10 +580,17 @@ class ConsoleTest {
     c.run(app, type(COUNT) + RUN);
     var key = "use " + MARIA + " inventory";
     servers.hold(key);
-    c.run(
-        app,
-        "press #database\nframe\nadvance 1\nframe\n"
-            + "press role=menuitem label=\"inventory\"\nframe\nadvance 1\nframe\nsnap switching\n");
+    c.run(app, """
+            press #database
+            frame
+            advance 1
+            frame
+            press role=menuitem label="inventory"
+            frame
+            advance 1
+            frame
+            snap switching
+            """);
     eventually(() -> servers.calls.contains(key));
     String switching = c.tree("switching");
     assertTrue(status(switching).contains("\"Switching to inventory…\""), switching);

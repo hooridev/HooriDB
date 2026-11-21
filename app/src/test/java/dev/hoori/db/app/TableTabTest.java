@@ -29,6 +29,7 @@ import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
 import java.util.OptionalLong;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,6 +39,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** A table's rows in a tab: read in pages, late, on the lane of its connection. */
 class TableTabTest {
+
+  private static final Pattern LABEL = Pattern.compile("label=\"([^\"]*)\"");
+  private static final Pattern READ = Pattern.compile("\"Read 200 rows in \\d+ ms\"");
 
   static final String OUTLINE = """
       shop
@@ -148,7 +152,8 @@ class TableTabTest {
         ",",
         tree.lines()
             .filter(l -> l.contains("role=tab "))
-            .map(l -> l.replaceAll(".*label=\"([^\"]*)\".*", "$1"))
+            .map(
+                l -> LABEL.matcher(l).results().map(r -> r.group(1)).findFirst().orElse(l))
             .toList());
   }
 
@@ -187,7 +192,7 @@ class TableTabTest {
     // NULL, every seventh row of a column that may hold it.
     assertTrue(cell(opened, 6, 3).contains("\"NULL\""), opened);
     assertTrue(status(opened).contains("\"1,000 rows\""), opened);
-    assertTrue(line(opened, "#read-status").matches(".*\"Read 200 rows in \\d+ ms\".*"), opened);
+    assertTrue(READ.matcher(line(opened, "#read-status")).find(), opened);
     // A second open goes to the same tab.
     c.run(app, table("kinds") + SETTLE + table("orders") + SETTLE + "snap again\n");
     String again = c.tree("again");
@@ -601,11 +606,17 @@ class TableTabTest {
     servers.hold(key);
     c.run(app, scroll(800));
     eventually(() -> servers.calls.contains(key));
-    c.run(
-        app,
-        "press #tab-1 right\nframe\nadvance 1\nframe\n"
-            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
-            + "snap torn\n");
+    c.run(app, """
+            press #tab-1 right
+            frame
+            advance 1
+            frame
+            press role=menuitem label="Move to new window"
+            frame
+            advance 1
+            frame
+            snap torn
+            """);
     assertEquals("orders", tabs(c.tree("torn")));
     String window = c.tree("big-torn");
     assertEquals("big", tabs(window));
@@ -616,11 +627,19 @@ class TableTabTest {
     window = c.tree("big-arrived");
     assertTrue(cell(window, 800, 0).contains("\"801\""), window);
     assertTrue(line(window, "#rows-status").contains("\"1,000 rows\""), window);
-    c.run(
-        app,
-        "window \"big\"\npress #tab-0 right\nframe\nadvance 1\nframe\n"
-            + "press role=menuitem label=\"Move back to main window\"\nframe\nadvance 1\nframe\n"
-            + "frame\nsnap back\n");
+    c.run(app, """
+            window "big"
+            press #tab-0 right
+            frame
+            advance 1
+            frame
+            press role=menuitem label="Move back to main window"
+            frame
+            advance 1
+            frame
+            frame
+            snap back
+            """);
     String back = c.tree("back");
     assertEquals("orders,big", tabs(back));
     assertTrue(cell(back, 800, 0).contains("\"801\""), back);
