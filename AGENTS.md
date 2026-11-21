@@ -70,7 +70,7 @@ from and clears; Save query keeps the selection, or else the whole text, under a
 (`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. The
 statement log, a panel below the tabs that starts collapsed and that the status line, the View menu
 and the palette open, lists what every connection sent, from the tree, a table's grid, the
-estimates, the transactions and the consoles, with its time, connection, part, duration and
+estimates, the transactions, the consoles and the files run, with its time, connection, part, duration and
 outcome, and the chosen statement whole in its dialect's colors; it filters by connection, part
 and outcome, searches, copies a statement, clears, and can be turned off. A password in a statement
 or a MongoDB command is masked before it is logged, and the log is kept beside the workspace
@@ -94,7 +94,18 @@ connection's menu, the File menu or the palette, opens a tab with the server's s
 status counters and who blocks whom, read on a session of its own at an interval that can be
 changed and paused, and not while the tab is hidden; a session's statement is cancelled and a
 session ended after a question, never the monitor's own, and credentials in other sessions'
-statements are masked. Run from its app image,
+statements are masked. "Run SQL file…", in a connection's and a database's menu, the File menu or
+the palette, runs a file chosen in the system's dialog against a connection of SQL and a database,
+on a session of its own: the file is read as it runs, never held whole, as UTF-8, and split by the
+console's rules, with the `DELIMITER` lines and `/*!…*/` comments of MySQL's and MariaDB's dumps;
+the rows after PostgreSQL's `COPY … FROM stdin` go through the driver's copy API as they are read,
+psql's `\restrict` and `\unrestrict` are skipped and its other backslash commands refused, which
+stops the run. On an error it stops or goes on, optionally in one transaction, which an error or a
+cancel rolls back and which the dialog says does not cover DDL where the server commits it by
+itself; it shows the bytes and statements run, cancels at any point, can be hidden behind the
+status line, and ends with the failed statements and their lines, passwords masked. Its statements
+go into the statement log, not the history; disconnecting, changing or deleting its connection and
+Exit cancel it. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Help chooses, Stable or
 Nightly (at first that of its own version), downloads it and restarts into it through its own Exit
 when asked; the new version confirms once its window has shown its first frame, and the updater's
@@ -212,6 +223,11 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   maps its tokens to `Theme.Code`), laying out (`Layout`, which Control+Alt+L runs) and completing
   (`Suggestions`) all go by its tokens. A console reads each statement once, as a `Script.Parsed`,
   when it takes it to run; the constructors of values are named once, in `Shell`.
+- A file of SQL is split by the same rules as the console's text: core's `sql.StatementReader`
+  scans a window of it at a time with `Statements`, and what the server's own client reads beyond
+  SQL, psql's backslash commands and the rows of a `COPY … FROM STDIN`, the dialect's `client()`
+  says, whose `copyIn` reaches pgjdbc's copy API by reflection. `execution.FileRun` runs it on a
+  `FileRun.Target`, over JDBC in core and through `Link.runFile` in the app.
 - No MongoDB driver is on the class path. Core compiles its bridge,
   `dev.hoori.db.core.document.mongo`, against the driver as a provided dependency, and `DriverStore`
   defines that package's classes from core's file in the downloaded driver's class loader, where
@@ -305,6 +321,14 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `locks` give what a host's server has, besides the monitor's own session, numbered as its link;
   the reads are keyed `sessions <host>`, `variables <host>`, `status <host>` and `locks <host>`,
   a cancel `cancel <host> <operation>` and an end `end <host> <id>`.
+- A file run's statements run against `FakeServers` as a console's do, keyed `run <host> <sql>` on
+  the run's own link, its transaction's end as the statements `COMMIT` and `ROLLBACK`, and a copy
+  notes `copy <host> <sql> <rows>`, failing where `statement` gives its text a failure. The file is
+  chosen by answering the system's dialog in the script, `dialog "<path>"` before the press that
+  opens it. Core's `StatementReaderTest` cuts files into windows of every size from one char,
+  `FileRunTest` runs them on a made-up session, and `FileRunServerTest` runs hand-written dumps of
+  `pg_dump`'s and `mysqldump`'s forms (`core/src/test/resources/sql-files`) on the `TestServer`s,
+  whose MySQL lets its user create triggers and routines (`log_bin_trust_function_creators`).
 - Updates run against `FakeUpdater`: releases published by version, the helper's result given,
   downloads and restarts recorded, each failable and the download held at its gate `downloading`.
   `State.shown()`, which `main` hands the window's `onShown`, stands for the first frame shown,

@@ -31,6 +31,12 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 - You cannot copy rows from the **Messages** tab.
 - There is no SQL formatter, data import/export, or visual query plan viewer.
 
+## Run SQL file
+
+- Files are read as UTF-8; a file in another encoding stops at the first line that is not UTF-8.
+- Of psql's backslash commands only `\restrict` and `\unrestrict` are understood (and skipped); any other, such as `\connect` or `\set`, stops the run. A backslash command written after the start of a statement, such as `SELECT 1 \gexec`, is sent to the server. Of the `mysql` client's commands only `DELIMITER` is understood.
+- Files of MongoDB shell statements cannot be run this way.
+
 ## MongoDB
 
 Some of these limits are tracked in [issue #57](https://github.com/hooridev/HooriDB/issues/57).

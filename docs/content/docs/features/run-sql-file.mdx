@@ -1,0 +1,42 @@
+---
+title: Run SQL file
+description: Run a file of SQL, such as a dump, against a connection without opening it in a console.
+---
+
+**Run SQL file** runs a file of SQL statements against a PostgreSQL, MySQL, or MariaDB connection, for example a dump written by `pg_dump`, `mysqldump`, or `mariadb-dump`. The file is read while it runs and never loaded whole, so files of several gigabytes run too.
+
+## Open Run SQL file
+
+The connection must be connected. Open the dialog in any of these ways:
+
+- Right-click a connection in Workspace and choose **Run SQL file…**.
+- Right-click a database in Workspace and choose **Run SQL file…**; the file then runs on that database.
+- Choose **File > Run SQL file…**, or run it from the [command palette](/docs/features/command-palette).
+
+## Run a file
+
+1. Press **Choose…** and pick the file.
+2. Check the **Connection** and the **Database** the file runs on.
+3. Under **On an error**, choose **Stop** to end the run at the first error, or **Go on** to run the rest of the file.
+4. Check **In one transaction** to run the whole file in a single transaction: HooriDB commits it at the end of the file, and rolls it back on an error or when you cancel. In one transaction an error always stops the run.
+5. Press **Run**.
+
+The dialog shows how much of the file has run, in bytes and statements. Press **Cancel run** to stop it at any point, also in the middle of a statement, or **Hide** to keep working while it runs; the status line then shows its progress, and pressing it shows the dialog again.
+
+When the run ends, the dialog says how it went and lists the statements that failed, each with its line in the file and the server's error. Passwords in the listed statements are masked.
+
+The file runs on a session of its own, so it does not hold up the Workspace tree, tables, or consoles. Its statements appear in the statement log, but not in a console's [history](/docs/features/history). Disconnecting, editing, or deleting the connection, or closing HooriDB, cancels the run.
+
+## Transactions and DDL
+
+PostgreSQL rolls back everything a transaction ran, including `CREATE`, `ALTER`, and `DROP`. MySQL and MariaDB commit such statements (DDL) on their own, together with what ran before them, so **In one transaction** does not undo them; the dialog says so for these connections.
+
+Without **In one transaction**, each statement commits on its own, and what ran before an error or a cancel stays.
+
+## Dumps and client commands
+
+- **MySQL and MariaDB dumps**: `DELIMITER` lines are handled as the `mysql` client handles them, so triggers and routines run whole, and version comments such as `/*!40101 … */` are sent to the server as they are.
+- **PostgreSQL plain dumps**: the rows after `COPY … FROM stdin`, up to the line `\.`, are sent through the driver's copy interface as they are read.
+- **psql commands**: `\restrict` and `\unrestrict`, which newer versions of `pg_dump` write, are skipped. Every other backslash command, such as `\connect`, stops the run with an error that names its line, because the statements after it may depend on it. To run a dump made with `pg_dump --create`, remove its `CREATE DATABASE` and `\connect` lines and choose the database in the dialog.
+
+Read-only connections run the file as a console would: the server refuses the statements that write.
