@@ -12,7 +12,9 @@ public final class MariaDbRows extends MySqlFamilyRows {
   private static final DateTimeFormatter DATE_TIME =
       DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSSSSS");
 
-  public MariaDbRows() {}
+  public MariaDbRows() {
+    // Nothing to set up.
+  }
 
   @Override
   String tabularExplain() {
@@ -33,7 +35,7 @@ public final class MariaDbRows extends MySqlFamilyRows {
       try {
         var local = rows.getObject(index, LocalDateTime.class);
         return local == null ? rows.getString(index) : DATE_TIME.format(local);
-      } catch (SQLException e) {
+      } catch (SQLException _) {
         return rows.getString(index);
       }
     };

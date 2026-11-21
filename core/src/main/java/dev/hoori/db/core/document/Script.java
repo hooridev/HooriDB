@@ -1,10 +1,14 @@
 package dev.hoori.db.core.document;
 
+import static java.util.Map.entry;
+
 import dev.hoori.db.core.document.Request.Shape;
 import dev.hoori.db.core.sql.EveryRow;
+import java.io.Serial;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -56,54 +60,149 @@ public final class Script {
     }
   }
 
+  // The names of commands and of their fields that the methods share.
+  private static final String ADMIN = "admin";
+  private static final String AGGREGATE = "aggregate";
+  private static final String BYPASS_DOCUMENT_VALIDATION = "bypassDocumentValidation";
+  private static final String COLLATION = "collation";
+  private static final String COMMENT = "comment";
+  private static final String COUNT = "count";
+  private static final String CURSOR = "cursor";
+  private static final String EXPLAIN = "explain";
+  private static final String FILTER = "filter";
+  private static final String LIMIT = "limit";
+  private static final String MAX_TIME_MS = "maxTimeMS";
+  private static final String NAME_ONLY = "nameOnly";
+  private static final String PIPELINE = "pipeline";
+  private static final String PROJECTION = "projection";
+  private static final String QUERY = "query";
+  private static final String UPSERT = "upsert";
+  private static final String WRITE_CONCERN = "writeConcern";
+
+  // The options that findOneAndUpdate, findOneAndReplace and findOneAndDelete know.
+  private static final List<String> FIND_AND_MODIFY = List.of(
+      "returnDocument",
+      "returnNewDocument",
+      PROJECTION,
+      "sort",
+      UPSERT,
+      "arrayFilters",
+      COLLATION,
+      "hint",
+      MAX_TIME_MS,
+      "let",
+      COMMENT,
+      WRITE_CONCERN,
+      BYPASS_DOCUMENT_VALIDATION);
+
+  /**
+   * A call of a method: the reader after its arguments, what it is called on (the collection, or
+   * for a method of db the database, null for the console's), its name, its arguments and where
+   * its name starts.
+   */
+  private record Call(Shell.Reader r, String on, String method, List<Object> args, int at) {
+
+    boolean has(int index) {
+      return args.size() > index;
+    }
+
+    int at(int index) {
+      return Script.at(args, index, r);
+    }
+
+    Document document(int index) throws SyntaxException {
+      return Script.document(args, index, method, r);
+    }
+
+    String string(int index) throws SyntaxException {
+      return Script.string(args, index, method, r);
+    }
+
+    // The document of options at the index, of the names that the method knows.
+    Document known(int index, List<String> names) throws SyntaxException {
+      var options = document(index);
+      Script.known(options, names, method, at(index));
+      return options;
+    }
+
+    // The options of the names at the index, where it has them, put into the document.
+    Document options(Document into, int index, List<String> names) throws SyntaxException {
+      return has(index) ? Script.options(into, known(index, names), names) : into;
+    }
+
+    SyntaxException error(String message) {
+      return new SyntaxException(message, at);
+    }
+  }
+
+  /** What a method of the shell sends. */
+  @FunctionalInterface
+  private interface Method {
+    Request request(Call call) throws SyntaxException;
+  }
+
+  // The collection methods that only read.
+  private static final Map<String, Method> READING = Map.ofEntries(
+      entry("find", Script::find),
+      entry("findOne", Script::findOne),
+      entry(AGGREGATE, Script::aggregate),
+      entry("countDocuments", Script::countDocuments),
+      entry("estimatedDocumentCount", Script::estimatedDocumentCount),
+      entry(COUNT, Script::count),
+      entry("distinct", Script::distinct),
+      entry(
+          "getIndexes",
+          c -> ended(
+              c.r(),
+              Request.of(
+                  Document.of("listIndexes", c.on(), CURSOR, Document.EMPTY), Shape.CURSOR))),
+      entry("stats", c -> reply(c.r(), Document.of("collStats", c.on()))));
+
+  // The collection methods that write.
+  private static final Map<String, Method> WRITING = Map.ofEntries(
+      entry("insertOne", Script::insertOne),
+      entry("insertMany", Script::insertMany),
+      entry("insert", Script::insertMany),
+      entry("updateOne", Script::update),
+      entry("updateMany", Script::update),
+      entry("replaceOne", Script::update),
+      entry("deleteOne", Script::delete),
+      entry("deleteMany", Script::delete),
+      entry("findOneAndUpdate", Script::findAndModify),
+      entry("findOneAndReplace", Script::findAndModify),
+      entry("findOneAndDelete", Script::findAndModify),
+      entry("createIndex", Script::createIndex),
+      entry("createIndexes", Script::createIndexes),
+      entry("dropIndex", Script::dropIndexes),
+      entry("dropIndexes", Script::dropIndexes),
+      entry("drop", c -> reply(c.r(), Document.of("drop", c.on()))));
+
+  // The methods of db itself.
+  private static final Map<String, Method> DATABASE = Map.ofEntries(
+      entry("runCommand", c -> Request.of(command(c), Shape.REPLY)),
+      entry("adminCommand", c -> new Request(ADMIN, command(c), Shape.REPLY, null)),
+      entry(AGGREGATE, Script::aggregateDatabase),
+      entry("getCollectionNames", Script::listCollections),
+      entry("getCollectionInfos", Script::listCollections),
+      entry("createCollection", Script::createCollection),
+      entry("createView", Script::createView),
+      entry("dropDatabase", _ -> Request.of(Document.of("dropDatabase", 1), Shape.REPLY)),
+      entry("stats", _ -> Request.of(Document.of("dbStats", 1), Shape.REPLY)),
+      entry("getName", _ -> Request.name()),
+      entry("version", _ -> new Request(ADMIN, Document.of("buildInfo", 1), Shape.REPLY, null)),
+      entry("serverStatus", _ -> Request.of(Document.of("serverStatus", 1), Shape.REPLY)),
+      entry("hello", _ -> Request.of(Document.of("hello", 1), Shape.REPLY)),
+      entry("getCollection", c -> collection(c.r(), c.on(), c.string(0))),
+      entry("getSiblingDB", c -> database(c.r(), c.string(0))));
+
   /** The collection methods that only read. */
-  public static final Set<String> READING_METHODS = Set.of(
-      "find",
-      "findOne",
-      "aggregate",
-      "countDocuments",
-      "estimatedDocumentCount",
-      "count",
-      "distinct",
-      "getIndexes",
-      "stats");
+  public static final Set<String> READING_METHODS = Set.copyOf(READING.keySet());
 
   /** The collection methods that write. */
-  public static final Set<String> WRITING_METHODS = Set.of(
-      "insertOne",
-      "insertMany",
-      "insert",
-      "updateOne",
-      "updateMany",
-      "replaceOne",
-      "deleteOne",
-      "deleteMany",
-      "findOneAndUpdate",
-      "findOneAndReplace",
-      "findOneAndDelete",
-      "createIndex",
-      "createIndexes",
-      "dropIndex",
-      "dropIndexes",
-      "drop");
+  public static final Set<String> WRITING_METHODS = Set.copyOf(WRITING.keySet());
 
   /** The methods of {@code db} itself. */
-  public static final Set<String> DATABASE_METHODS = Set.of(
-      "runCommand",
-      "adminCommand",
-      "aggregate",
-      "getCollectionNames",
-      "getCollectionInfos",
-      "createCollection",
-      "createView",
-      "dropDatabase",
-      "stats",
-      "getName",
-      "version",
-      "serverStatus",
-      "hello",
-      "getCollection",
-      "getSiblingDB");
+  public static final Set<String> DATABASE_METHODS = Set.copyOf(DATABASE.keySet());
 
   private Script() {}
 
@@ -114,15 +213,43 @@ public final class Script {
    * out.
    */
   public static List<Piece> split(String text) {
-    var tokens = Lexer.tokens(text);
-    var pieces = new ArrayList<Piece>();
-    int depth = 0;
-    int start = -1; // where the statement's code starts, or -1 before it has any
-    int end = 0; // where its last code ends
-    int broken = -1; // the first line break after that code, between tokens, or -1
-    int before = 0; // where the token before ends
-    for (int k = 0; k < tokens.size(); k++) {
-      var token = tokens.get(k);
+    return new Splitter(text).pieces();
+  }
+
+  // Goes through the tokens of a text, and ends a statement where split says.
+  private static final class Splitter {
+    private final String text;
+    private final List<Lexer.Token> tokens;
+    private final List<Piece> pieces = new ArrayList<>();
+    private int depth;
+    private int start = -1; // where the statement's code starts, or -1 before it has any
+    private int end; // where its last code ends
+    private int broken = -1; // the first line break after that code, between tokens, or -1
+    private int before; // where the token before ends
+
+    Splitter(String text) {
+      this.text = text;
+      this.tokens = Lexer.tokens(text);
+    }
+
+    List<Piece> pieces() {
+      for (int k = 0; k < tokens.size(); k++) {
+        var token = tokens.get(k);
+        lineBefore(k, token);
+        if (token.kind() != Lexer.Kind.COMMENT) {
+          code(token);
+        } else if (start >= 0 && token.open() && block(text, token)) {
+          end = token.end(); // not closed: the statement keeps it, which the parser refuses
+        }
+      }
+      if (start >= 0) {
+        add(false);
+      }
+      return pieces;
+    }
+
+    // A line break before the token ends the statement, unless the next line goes on with a dot.
+    private void lineBefore(int k, Lexer.Token token) {
       if (start >= 0 && broken < 0) {
         broken = lineBreak(text, before, token.start());
       }
@@ -131,70 +258,68 @@ public final class Script {
         if (continues(text, tokens, k, broken)) {
           broken = -1; // past this break: only one after the comments before the dot ends it
         } else {
-          add(pieces, text, start, end, false);
-          start = -1;
+          add(false);
         }
       }
-      if (token.kind() == Lexer.Kind.COMMENT) {
-        if (start >= 0 && token.open() && text.startsWith("/*", token.start())) {
-          end = token.end(); // not closed: the statement keeps it, which the parser refuses
-        }
-        continue;
-      }
+    }
+
+    private void code(Lexer.Token token) {
       if (start < 0) {
         start = token.start();
       }
       end = token.end();
       broken = -1;
       char c = token.kind() == Lexer.Kind.PUNCTUATION ? text.charAt(token.start()) : 0;
-      if (c == '(' || c == '[' || c == '{') {
-        depth++;
-      } else if (c == ')' || c == ']' || c == '}') {
-        depth = Math.max(0, depth - 1);
-      } else if (c == ';' && depth == 0) {
-        add(pieces, text, start, end, true);
-        start = -1;
+      depth = switch (c) {
+        case '(', '[', '{' -> depth + 1;
+        case ')', ']', '}' -> Math.max(0, depth - 1);
+        default -> depth;
+      };
+      if (c == ';' && depth == 0) {
+        add(true);
       }
     }
-    if (start >= 0) {
-      add(pieces, text, start, end, false);
-    }
-    return pieces;
-  }
 
-  // Whether the line after the break goes on with a dot, as in a chain of calls, also after a
-  // block comment: the token at k is the first after the break.
-  private static boolean continues(String text, List<Lexer.Token> tokens, int k, int broken) {
-    int from = broken + 1;
-    for (int j = k; j < tokens.size(); j++) {
-      var token = tokens.get(j);
-      if (lineBreak(text, from, token.start()) >= 0) {
-        return false;
+    private void add(boolean terminated) {
+      if (!text.startsWith(";", start) || end - start > 1) {
+        pieces.add(new Piece(start, end, text.substring(start, end), terminated));
       }
-      if (token.kind() != Lexer.Kind.COMMENT) {
-        return token.is(text, '.');
-      }
-      if (token.open() || !text.startsWith("/*", token.start())) {
-        return false;
-      }
-      from = token.end();
+      start = -1;
     }
-    return false;
-  }
 
-  // The first line break from the one offset to the other, or -1.
-  private static int lineBreak(String text, int from, int to) {
-    for (int i = from; i < to; i++) {
-      if (text.charAt(i) == '\n') {
-        return i;
+    // Whether the line after the break goes on with a dot, as in a chain of calls, also after a
+    // block comment: the token at k is the first after the break.
+    private static boolean continues(String text, List<Lexer.Token> tokens, int k, int broken) {
+      int from = broken + 1;
+      for (int j = k; j < tokens.size(); j++) {
+        var token = tokens.get(j);
+        if (lineBreak(text, from, token.start()) >= 0) {
+          return false;
+        }
+        if (token.kind() != Lexer.Kind.COMMENT) {
+          return token.is(text, '.');
+        }
+        if (token.open() || !block(text, token)) {
+          return false;
+        }
+        from = token.end();
       }
+      return false;
     }
-    return -1;
-  }
 
-  private static void add(List<Piece> pieces, String text, int start, int end, boolean terminated) {
-    if (!text.startsWith(";", start) || end - start > 1) {
-      pieces.add(new Piece(start, end, text.substring(start, end), terminated));
+    // Whether the comment is a block comment, not one to the end of its line.
+    private static boolean block(String text, Lexer.Token comment) {
+      return text.startsWith("/*", comment.start());
+    }
+
+    // The first line break from the one offset to the other, or -1.
+    private static int lineBreak(String text, int from, int to) {
+      for (int i = from; i < to; i++) {
+        if (text.charAt(i) == '\n') {
+          return i;
+        }
+      }
+      return -1;
     }
   }
 
@@ -217,61 +342,51 @@ public final class Script {
     if (word == null) {
       throw r.error("A statement starts with db, use or show");
     }
-    switch (word) {
-      case "use" -> {
-        r.space();
-        int at = r.at;
-        String name;
-        if (r.peek() == '\'' || r.peek() == '"') {
-          name = r.string();
-        } else {
-          while (r.at < r.text.length()
-              && !Lexer.whitespace(r.text.charAt(r.at))
-              && r.text.charAt(r.at) != ';'
-              && !r.text.startsWith("//", r.at)
-              && !r.text.startsWith("/*", r.at)) {
-            r.at++;
-          }
-          name = r.text.substring(at, r.at);
-        }
-        if (name.isEmpty()) {
-          throw r.error("use needs the name of a database");
-        }
-        return Request.use(name);
-      }
-      case "show" -> {
-        int at = r.at;
-        var what = r.identifier();
-        if (what == null) {
-          throw r.error("show needs dbs or collections");
-        }
-        return switch (what) {
-          case "dbs", "databases" ->
-            new Request(
-                "admin", Document.of("listDatabases", 1, "nameOnly", false), Shape.DATABASES, null);
-          case "collections", "tables" ->
-            Request.of(
-                Document.of(
-                    "listCollections",
-                    1,
-                    "nameOnly",
-                    true,
-                    "authorizedCollections",
-                    true,
-                    "cursor",
-                    Document.EMPTY),
-                Shape.CURSOR);
-          default -> throw new SyntaxException("show takes dbs or collections, not " + what, at);
-        };
-      }
-      case "db" -> {
-        return database(r, null);
-      }
-      default -> {
+    return switch (word) {
+      case "use" -> use(r);
+      case "show" -> show(r);
+      case "db" -> database(r, null);
+      default ->
         throw new SyntaxException(
             "Unknown name " + word + ": a statement starts with db, use or show", start);
-      }
+    };
+  }
+
+  private static Request use(Shell.Reader r) throws SyntaxException {
+    r.space();
+    var name = r.peek() == '\'' || r.peek() == '"' ? r.string() : unquoted(r);
+    if (name.isEmpty()) {
+      throw r.error("use needs the name of a database");
     }
+    return Request.use(name);
+  }
+
+  // A name without quotes: up to a space, a semicolon or a comment.
+  private static String unquoted(Shell.Reader r) {
+    int at = r.at;
+    while (r.at < r.text.length()
+        && !Lexer.whitespace(r.text.charAt(r.at))
+        && r.text.charAt(r.at) != ';'
+        && !r.text.startsWith("//", r.at)
+        && !r.text.startsWith("/*", r.at)) {
+      r.at++;
+    }
+    return r.text.substring(at, r.at);
+  }
+
+  private static Request show(Shell.Reader r) throws SyntaxException {
+    int at = r.at;
+    var what = r.identifier();
+    if (what == null) {
+      throw r.error("show needs dbs or collections");
+    }
+    return switch (what) {
+      case "dbs", "databases" ->
+        new Request(
+            ADMIN, Document.of("listDatabases", 1, NAME_ONLY, false), Shape.DATABASES, null);
+      case "collections", "tables" -> Request.of(listCollections(null, true), Shape.CURSOR);
+      default -> throw new SyntaxException("show takes dbs or collections, not " + what, at);
+    };
   }
 
   // After db, or db.getSiblingDB('…'): a method of the database, or a collection.
@@ -291,100 +406,94 @@ public final class Script {
       if (r.peek() == '(') {
         return databaseMethod(r, database, name, at);
       }
-      collection = name;
-      // db.system.users: a name with dots, up to the method.
-      while (true) {
-        int dot = r.at;
-        r.space();
-        if (r.peek() != '.') {
-          break;
-        }
-        r.at++;
-        var part = r.identifier();
-        if (part == null) {
-          throw r.error("A name is needed after the dot");
-        }
-        r.space();
-        if (r.peek() == '(') {
-          r.at = dot;
-          break;
-        }
-        collection += "." + part;
-      }
+      collection = dotted(r, name);
     }
     return collection(r, database, collection);
+  }
+
+  // db.system.users: a name with dots, up to the method.
+  private static String dotted(Shell.Reader r, String name) throws SyntaxException {
+    var collection = new StringBuilder(name);
+    while (true) {
+      int dot = r.at;
+      r.space();
+      if (r.peek() != '.') {
+        return collection.toString();
+      }
+      r.at++;
+      var part = r.identifier();
+      if (part == null) {
+        throw r.error("A name is needed after the dot");
+      }
+      r.space();
+      if (r.peek() == '(') {
+        r.at = dot;
+        return collection.toString();
+      }
+      collection.append('.').append(part);
+    }
   }
 
   private static Request databaseMethod(Shell.Reader r, String database, String method, int at)
       throws SyntaxException {
     var args = arguments(r);
-    var request = switch (method) {
-      case "getSiblingDB", "getSisterDB" -> {
-        var name = string(args, 0, method, r);
-        yield database(r, name);
-      }
-      case "getCollection" -> collection(r, database, string(args, 0, method, r));
-      case "runCommand" -> Request.of(command(args, method, r), Shape.REPLY);
-      case "adminCommand" -> new Request("admin", command(args, method, r), Shape.REPLY, null);
-      case "aggregate" -> {
-        var command = Document.of(
-            "aggregate", 1, "pipeline", pipeline(args, method, r), "cursor", Document.EMPTY);
-        if (args.size() > 1
-            && args.get(0) instanceof List<?>
-            && args.get(1) instanceof Document o) {
-          command = merged(command, notReplacing(o, command, method, at(args, 1, r)));
-        }
-        yield aggregate(r, command);
-      }
-      case "getCollectionNames", "getCollectionInfos" ->
-        Request.of(
-            Document.of(
-                "listCollections",
-                1,
-                "filter",
-                args.isEmpty() ? Document.EMPTY : document(args, 0, method, r),
-                "nameOnly",
-                method.equals("getCollectionNames"),
-                "authorizedCollections",
-                true,
-                "cursor",
-                Document.EMPTY),
-            Shape.CURSOR);
-      case "createCollection" -> {
-        var command = Document.of("create", string(args, 0, method, r));
-        if (args.size() > 1) {
-          command = merged(command, document(args, 1, method, r));
-        }
-        yield Request.of(command, Shape.REPLY);
-      }
-      case "createView" -> {
-        var command = Document.of(
-            "create",
-            string(args, 0, method, r),
-            "viewOn",
-            string(args, 1, method, r),
-            "pipeline",
-            pipeline(args.subList(Math.min(2, args.size()), Math.min(3, args.size())), method, r));
-        if (args.size() > 3) {
-          var options = document(args, 3, method, r);
-          known(options, List.of("collation"), method, at(args, 3, r));
-          command = options(command, options, List.of("collation"));
-        }
-        yield Request.of(command, Shape.REPLY);
-      }
-      case "dropDatabase" -> Request.of(Document.of("dropDatabase", 1), Shape.REPLY);
-      case "stats" -> Request.of(Document.of("dbStats", 1), Shape.REPLY);
-      case "serverStatus" -> Request.of(Document.of("serverStatus", 1), Shape.REPLY);
-      case "hello" -> Request.of(Document.of("hello", 1), Shape.REPLY);
-      case "version" -> new Request("admin", Document.of("buildInfo", 1), Shape.REPLY, null);
-      case "getName" -> Request.name();
-      default ->
-        throw new SyntaxException(
-            "db has no method " + method + " that a console runs; as a collection, write"
-                + " db.getCollection('" + method + "')",
-            at);
-    };
+    // getSisterDB is the older name of getSiblingDB, which completions do not offer.
+    var known = DATABASE.get(method.equals("getSisterDB") ? "getSiblingDB" : method);
+    if (known == null) {
+      throw new SyntaxException(
+          "db has no method " + method + " that a console runs; as a collection, write"
+              + " db.getCollection('" + method + "')",
+          at);
+    }
+    var request = known.request(new Call(r, database, method, args, at));
     return database == null || request.database() != null ? request : request.on(database);
+  }
+
+  private static Request aggregateDatabase(Call c) throws SyntaxException {
+    var command = aggregation(1, pipeline(c.args(), c.method(), c.r()));
+    if (c.has(1) && c.args().get(0) instanceof List<?> && c.args().get(1) instanceof Document o) {
+      command = merged(command, notReplacing(o, command, c.method(), c.at(1)));
+    }
+    return aggregate(c.r(), command);
+  }
+
+  private static Request listCollections(Call c) throws SyntaxException {
+    var filter = c.has(0) ? c.document(0) : Document.EMPTY;
+    return Request.of(
+        listCollections(filter, c.method().equals("getCollectionNames")), Shape.CURSOR);
+  }
+
+  // The collections of the database that the user may read, with the filter where it has one.
+  private static Document listCollections(Document filter, boolean nameOnly) {
+    var command = Document.of("listCollections", 1);
+    if (filter != null) {
+      command = command.with(FILTER, filter);
+    }
+    return command
+        .with(NAME_ONLY, nameOnly)
+        .with("authorizedCollections", true)
+        .with(CURSOR, Document.EMPTY);
+  }
+
+  private static Request createCollection(Call c) throws SyntaxException {
+    var command = Document.of("create", c.string(0));
+    if (c.has(1)) {
+      command = merged(command, c.document(1));
+    }
+    return Request.of(command, Shape.REPLY);
+  }
+
+  private static Request createView(Call c) throws SyntaxException {
+    var args = c.args();
+    var command = Document.of(
+        "create",
+        c.string(0),
+        "viewOn",
+        c.string(1),
+        PIPELINE,
+        pipeline(
+            args.subList(Math.min(2, args.size()), Math.min(3, args.size())), c.method(), c.r()));
+    return Request.of(c.options(command, 3, List.of(COLLATION)), Shape.REPLY);
   }
 
   // After the collection: its method, and calls on the cursor it gives.
@@ -396,7 +505,7 @@ public final class Script {
     if (method == null) {
       throw r.error("A method is needed after the dot");
     }
-    if (method.equals("explain")) {
+    if (method.equals(EXPLAIN)) {
       var verbosity = arguments(r);
       var explained = collection(r, null, collection);
       return explain(explained, verbosity, r).on(database);
@@ -406,326 +515,285 @@ public final class Script {
       throw r.error("( is missing after " + method);
     }
     var args = arguments(r);
-    var request = method(r, collection, method, args, at);
+    var known = READING.getOrDefault(method, WRITING.get(method));
+    if (known == null) {
+      throw new SyntaxException(
+          "A collection has no method " + method + " that a console runs", at);
+    }
+    var request = known.request(new Call(r, collection, method, args, at));
     return database == null ? request : request.on(database);
   }
 
-  private static Request method(
-      Shell.Reader r, String collection, String method, List<Object> args, int at)
-      throws SyntaxException {
-    return switch (method) {
-      case "find" -> {
-        var command = Document.of("find", collection);
-        if (!args.isEmpty()) {
-          command = command.with("filter", document(args, 0, method, r));
+  // Collection methods
+
+  private static Request find(Call c) throws SyntaxException {
+    var command = found(c);
+    if (c.has(2)) {
+      command = merged(command, c.document(2));
+    }
+    return cursor(c.r(), command);
+  }
+
+  private static Request findOne(Call c) throws SyntaxException {
+    var names = List.of("sort", "skip", "hint", MAX_TIME_MS, COLLATION, COMMENT, "let");
+    var command = c.options(found(c), 2, names).with(LIMIT, 1).with("singleBatch", true);
+    return ended(c.r(), Request.of(command, Shape.ONE));
+  }
+
+  // The find of a filter and a projection, where the call has them.
+  private static Document found(Call c) throws SyntaxException {
+    var command = Document.of("find", c.on());
+    if (c.has(0)) {
+      command = command.with(FILTER, c.document(0));
+    }
+    if (c.has(1)) {
+      command = command.with(PROJECTION, c.document(1));
+    }
+    return command;
+  }
+
+  private static Request aggregate(Call c) throws SyntaxException {
+    var command = aggregation(c.on(), pipeline(c.args(), c.method(), c.r()));
+    if (c.has(1) && c.args().get(1) instanceof Document options) {
+      command = merged(command, notReplacing(options, command, c.method(), c.at(1)));
+    }
+    return aggregate(c.r(), command);
+  }
+
+  // An aggregate of the collection, or of the database for 1, whose cursor is read.
+  private static Document aggregation(Object on, List<Object> pipeline) {
+    return Document.of(AGGREGATE, on, PIPELINE, pipeline, CURSOR, Document.EMPTY);
+  }
+
+  private static Request countDocuments(Call c) throws SyntaxException {
+    var stages = new ArrayList<Object>();
+    stages.add(Document.of("$match", c.has(0) ? c.document(0) : Document.EMPTY));
+    Document counted = Document.EMPTY;
+    if (c.has(1)) {
+      var options = c.known(1, List.of("skip", LIMIT, "hint", MAX_TIME_MS, COLLATION, COMMENT));
+      counted = options(counted, options, List.of("hint", MAX_TIME_MS, COLLATION, COMMENT));
+      for (var stage : List.of("skip", LIMIT)) {
+        if (options.get(stage) != null) {
+          stages.add(Document.of("$" + stage, options.get(stage)));
         }
-        if (args.size() > 1) {
-          command = command.with("projection", document(args, 1, method, r));
-        }
-        if (args.size() > 2) {
-          command = merged(command, document(args, 2, method, r));
-        }
-        yield cursor(r, command);
       }
-      case "findOne" -> {
-        var command = Document.of("find", collection);
-        if (!args.isEmpty()) {
-          command = command.with("filter", document(args, 0, method, r));
+    }
+    stages.add(Document.of("$group", Document.of("_id", 1, "n", Document.of("$sum", 1))));
+    var command = merged(aggregation(c.on(), Document.array(stages)), counted);
+    return ended(c.r(), Request.of(command, Shape.COUNT));
+  }
+
+  private static Request estimatedDocumentCount(Call c) throws SyntaxException {
+    var command = c.options(Document.of(COUNT, c.on()), 0, List.of(MAX_TIME_MS, COMMENT));
+    return ended(c.r(), Request.of(command, Shape.ESTIMATE));
+  }
+
+  private static Request count(Call c) throws SyntaxException {
+    var command = Document.of(COUNT, c.on());
+    if (c.has(0)) {
+      command = command.with(QUERY, c.document(0));
+    }
+    return ended(c.r(), Request.of(command, Shape.ESTIMATE));
+  }
+
+  private static Request distinct(Call c) throws SyntaxException {
+    var command = Document.of("distinct", c.on(), "key", c.string(0));
+    if (c.has(1)) {
+      command = command.with(QUERY, c.document(1));
+    }
+    return ended(c.r(), Request.of(command, Shape.VALUES));
+  }
+
+  private static Request insertOne(Call c) throws SyntaxException {
+    return insert(c, Document.array(withId(c.document(0))));
+  }
+
+  private static Request insertMany(Call c) throws SyntaxException {
+    var documents = new ArrayList<Object>();
+    if (c.has(0) && c.args().getFirst() instanceof List<?> list) {
+      for (var item : list) {
+        if (!(item instanceof Document d)) {
+          throw c.error(c.method() + " needs an array of documents");
         }
-        if (args.size() > 1) {
-          command = command.with("projection", document(args, 1, method, r));
-        }
-        if (args.size() > 2) {
-          var options = document(args, 2, method, r);
-          var names = List.of("sort", "skip", "hint", "maxTimeMS", "collation", "comment", "let");
-          known(options, names, method, at(args, 2, r));
-          command = options(command, options, names);
-        }
-        command = command.with("limit", 1).with("singleBatch", true);
-        yield ended(r, Request.of(command, Shape.ONE));
+        documents.add(withId(d));
       }
-      case "aggregate" -> {
-        var command = Document.of(
-            "aggregate",
-            collection,
-            "pipeline",
-            pipeline(args, method, r),
-            "cursor",
-            Document.EMPTY);
-        if (args.size() > 1 && args.get(1) instanceof Document options) {
-          command = merged(command, notReplacing(options, command, method, at(args, 1, r)));
-        }
-        yield aggregate(r, command);
+    } else if (c.method().equals("insertMany")) {
+      throw c.error("insertMany needs an array of documents");
+    } else {
+      documents.add(withId(c.document(0)));
+    }
+    return insert(c, Document.array(documents));
+  }
+
+  // An insert of the documents, with the options it knows.
+  private static Request insert(Call c, List<Object> documents) throws SyntaxException {
+    var command = Document.of("insert", c.on(), "documents", documents);
+    var names = List.of("ordered", WRITE_CONCERN, BYPASS_DOCUMENT_VALIDATION, COMMENT);
+    return write(c.r(), c.options(command, 1, names));
+  }
+
+  // updateOne, updateMany and replaceOne.
+  private static Request update(Call c) throws SyntaxException {
+    var filter = c.document(0);
+    var update = c.method().equals("replaceOne") ? replacement(c) : operatorUpdate(c);
+    var statement = Document.of(
+        "q", filter, "u", update, "multi", c.method().equals("updateMany"), UPSERT, false);
+    var command = Document.of("update", c.on());
+    if (c.has(2)) {
+      var each = List.of(UPSERT, "arrayFilters", COLLATION, "hint", "sort");
+      var all = List.of("let", COMMENT, WRITE_CONCERN, BYPASS_DOCUMENT_VALIDATION);
+      var names = new ArrayList<>(each);
+      names.addAll(all);
+      var options = c.known(2, names);
+      statement = options(statement, options, each);
+      command = options(command, options, all);
+    }
+    return write(c.r(), command.with("updates", Document.array(statement)));
+  }
+
+  private static Document replacement(Call c) throws SyntaxException {
+    var replacement = c.document(1);
+    if (operators(replacement)) {
+      throw new SyntaxException(
+          "replaceOne takes a document without operators; to change fields, use updateOne",
+          c.at(1));
+    }
+    return replacement;
+  }
+
+  private static Object operatorUpdate(Call c) throws SyntaxException {
+    var update = second(c);
+    if (!changes(update)) {
+      throw new SyntaxException(
+          c.method() + " needs an update of operators, such as { $set: { … } }, or a pipeline",
+          c.at(1));
+    }
+    return update;
+  }
+
+  // The second argument, which an update needs.
+  private static Object second(Call c) throws SyntaxException {
+    if (!c.has(1)) {
+      throw c.error(c.method() + " needs a filter and an update");
+    }
+    return c.args().get(1);
+  }
+
+  // Whether it is an update of operators, such as { $set: … }, or a pipeline.
+  private static boolean changes(Object update) {
+    return update instanceof Document d && !d.isEmpty() && d.first().startsWith("$")
+        || update instanceof List<?>;
+  }
+
+  private static boolean operators(Document document) {
+    return document.names().stream().anyMatch(name -> name.startsWith("$"));
+  }
+
+  // deleteOne and deleteMany.
+  private static Request delete(Call c) throws SyntaxException {
+    var statement = Document.of("q", c.document(0), LIMIT, c.method().equals("deleteOne") ? 1 : 0);
+    var command = Document.of("delete", c.on());
+    if (c.has(1)) {
+      var options = c.known(1, List.of(COLLATION, "hint", "let", COMMENT, WRITE_CONCERN));
+      statement = options(statement, options, List.of(COLLATION, "hint"));
+      command = options(command, options, List.of("let", COMMENT, WRITE_CONCERN));
+    }
+    return write(c.r(), command.with("deletes", Document.array(statement)));
+  }
+
+  // findOneAndUpdate, findOneAndReplace and findOneAndDelete.
+  private static Request findAndModify(Call c) throws SyntaxException {
+    var command = Document.of("findAndModify", c.on(), QUERY, c.document(0));
+    Document options;
+    if (c.method().equals("findOneAndDelete")) {
+      command = command.with("remove", true);
+      options = c.has(1) ? c.document(1) : Document.EMPTY;
+    } else {
+      command = command.with("update", modification(c));
+      options = c.has(2) ? c.document(2) : Document.EMPTY;
+    }
+    known(options, FIND_AND_MODIFY, c.method(), c.at(c.args().size() - 1));
+    for (var entry : options.entries()) {
+      command = switch (entry.name()) {
+        case "returnDocument" -> command.with("new", "after".equals(entry.value()));
+        case "returnNewDocument" -> command.with("new", entry.value());
+        case PROJECTION -> command.with("fields", entry.value());
+        default -> command.with(entry.name(), entry.value());
+      };
+    }
+    return reply(c.r(), command);
+  }
+
+  // The update of findOneAndUpdate, or the document of findOneAndReplace.
+  private static Object modification(Call c) throws SyntaxException {
+    var update = second(c);
+    if (c.method().equals("findOneAndUpdate") && !changes(update)) {
+      throw new SyntaxException(
+          c.method() + " needs an update of operators, such as { $set: { … } }, or a pipeline;"
+              + " findOneAndReplace replaces the document",
+          c.at(1));
+    }
+    if (c.method().equals("findOneAndReplace")
+        && !(update instanceof Document d && !operators(d))) {
+      throw new SyntaxException(c.method() + " needs a document without operators", c.at(1));
+    }
+    return update;
+  }
+
+  private static Request createIndex(Call c) throws SyntaxException {
+    var index = index(c.document(0));
+    if (c.has(1)) {
+      index = merged(index, c.document(1));
+    }
+    return indexes(c, Document.array(index));
+  }
+
+  private static Request createIndexes(Call c) throws SyntaxException {
+    if (!c.has(0) || !(c.args().getFirst() instanceof List<?> list)) {
+      throw c.error("createIndexes needs an array of keys");
+    }
+    var indexes = new ArrayList<Object>();
+    for (var keys : list) {
+      if (!(keys instanceof Document d)) {
+        throw c.error("createIndexes needs an array of keys");
       }
-      case "countDocuments" -> {
-        var stages = new ArrayList<Object>();
-        stages.add(
-            Document.of("$match", args.isEmpty() ? Document.EMPTY : document(args, 0, method, r)));
-        Document counted = Document.EMPTY;
-        if (args.size() > 1) {
-          var options = document(args, 1, method, r);
-          known(
-              options,
-              List.of("skip", "limit", "hint", "maxTimeMS", "collation", "comment"),
-              method,
-              at(args, 1, r));
-          counted = options(counted, options, List.of("hint", "maxTimeMS", "collation", "comment"));
-          if (options.get("skip") != null) {
-            stages.add(Document.of("$skip", options.get("skip")));
-          }
-          if (options.get("limit") != null) {
-            stages.add(Document.of("$limit", options.get("limit")));
-          }
-        }
-        stages.add(Document.of("$group", Document.of("_id", 1, "n", Document.of("$sum", 1))));
-        yield ended(
-            r,
-            Request.of(
-                merged(
-                    Document.of(
-                        "aggregate",
-                        collection,
-                        "pipeline",
-                        Document.array(stages),
-                        "cursor",
-                        Document.EMPTY),
-                    counted),
-                Shape.COUNT));
+      var index = index(d);
+      // The options, such as unique, are each index's, as the shell gives them.
+      if (c.has(1)) {
+        index = merged(index, c.document(1));
       }
-      case "estimatedDocumentCount" -> {
-        var command = Document.of("count", collection);
-        if (!args.isEmpty()) {
-          var options = document(args, 0, method, r);
-          known(options, List.of("maxTimeMS", "comment"), method, at(args, 0, r));
-          command = options(command, options, List.of("maxTimeMS", "comment"));
-        }
-        yield ended(r, Request.of(command, Shape.ESTIMATE));
-      }
-      case "count" -> {
-        var command = Document.of("count", collection);
-        if (!args.isEmpty()) {
-          command = command.with("query", document(args, 0, method, r));
-        }
-        yield ended(r, Request.of(command, Shape.ESTIMATE));
-      }
-      case "distinct" -> {
-        var command = Document.of("distinct", collection, "key", string(args, 0, method, r));
-        if (args.size() > 1) {
-          command = command.with("query", document(args, 1, method, r));
-        }
-        yield ended(r, Request.of(command, Shape.VALUES));
-      }
-      case "getIndexes" ->
-        ended(
-            r,
-            Request.of(
-                Document.of("listIndexes", collection, "cursor", Document.EMPTY), Shape.CURSOR));
-      case "stats" -> ended(r, Request.of(Document.of("collStats", collection), Shape.REPLY));
-      case "insertOne" -> {
-        var command = Document.of(
-            "insert",
-            collection,
-            "documents",
-            Document.array(withId(document(args, 0, method, r))));
-        yield write(r, insertOptions(command, args, 1, method, r));
-      }
-      case "insertMany", "insert" -> {
-        var documents = new ArrayList<Object>();
-        if (!args.isEmpty() && args.getFirst() instanceof List<?> list) {
-          for (int i = 0; i < list.size(); i++) {
-            if (!(list.get(i) instanceof Document d)) {
-              throw new SyntaxException(method + " needs an array of documents", at);
-            }
-            documents.add(withId(d));
-          }
-        } else if (method.equals("insertMany")) {
-          throw new SyntaxException("insertMany needs an array of documents", at);
-        } else {
-          documents.add(withId(document(args, 0, method, r)));
-        }
-        var command = Document.of("insert", collection, "documents", Document.array(documents));
-        yield write(r, insertOptions(command, args, 1, method, r));
-      }
-      case "updateOne", "updateMany", "replaceOne" -> {
-        var filter = document(args, 0, method, r);
-        Object update;
-        if (method.equals("replaceOne")) {
-          var replacement = document(args, 1, method, r);
-          if (replacement.names().stream().anyMatch(name -> name.startsWith("$"))) {
-            throw new SyntaxException(
-                "replaceOne takes a document without operators; to change fields, use updateOne",
-                at(args, 1, r));
-          }
-          update = replacement;
-        } else {
-          if (args.size() < 2) {
-            throw new SyntaxException(method + " needs a filter and an update", at);
-          }
-          update = args.get(1);
-          if (!(update instanceof Document d && !d.isEmpty() && d.first().startsWith("$"))
-              && !(update instanceof List<?>)) {
-            throw new SyntaxException(
-                method + " needs an update of operators, such as { $set: { … } }, or a pipeline",
-                at(args, 1, r));
-          }
-        }
-        var statement = Document.of(
-            "q", filter, "u", update, "multi", method.equals("updateMany"), "upsert", false);
-        var command = Document.of("update", collection);
-        if (args.size() > 2) {
-          var options = document(args, 2, method, r);
-          var each = List.of("upsert", "arrayFilters", "collation", "hint", "sort");
-          var all = List.of("let", "comment", "writeConcern", "bypassDocumentValidation");
-          var names = new ArrayList<>(each);
-          names.addAll(all);
-          known(options, names, method, at(args, 2, r));
-          statement = options(statement, options, each);
-          command = options(command, options, all);
-        }
-        yield write(r, command.with("updates", Document.array(statement)));
-      }
-      case "deleteOne", "deleteMany" -> {
-        var statement = Document.of(
-            "q", document(args, 0, method, r), "limit", method.equals("deleteOne") ? 1 : 0);
-        var command = Document.of("delete", collection);
-        if (args.size() > 1) {
-          var options = document(args, 1, method, r);
-          known(
-              options,
-              List.of("collation", "hint", "let", "comment", "writeConcern"),
-              method,
-              at(args, 1, r));
-          statement = options(statement, options, List.of("collation", "hint"));
-          command = options(command, options, List.of("let", "comment", "writeConcern"));
-        }
-        yield write(r, command.with("deletes", Document.array(statement)));
-      }
-      case "findOneAndUpdate", "findOneAndReplace", "findOneAndDelete" -> {
-        var command =
-            Document.of("findAndModify", collection, "query", document(args, 0, method, r));
-        Document options = Document.EMPTY;
-        if (method.equals("findOneAndDelete")) {
-          command = command.with("remove", true);
-          if (args.size() > 1) {
-            options = document(args, 1, method, r);
-          }
-        } else {
-          if (args.size() < 2) {
-            throw new SyntaxException(method + " needs a filter and an update", at);
-          }
-          var update = args.get(1);
-          if (method.equals("findOneAndUpdate")
-              && !(update instanceof Document d && !d.isEmpty() && d.first().startsWith("$"))
-              && !(update instanceof List<?>)) {
-            throw new SyntaxException(
-                method + " needs an update of operators, such as { $set: { … } }, or a pipeline;"
-                    + " findOneAndReplace replaces the document",
-                at(args, 1, r));
-          }
-          if (method.equals("findOneAndReplace")
-              && !(update instanceof Document d
-                  && d.names().stream().noneMatch(n -> n.startsWith("$")))) {
-            throw new SyntaxException(
-                method + " needs a document without operators", at(args, 1, r));
-          }
-          command = command.with("update", update);
-          if (args.size() > 2) {
-            options = document(args, 2, method, r);
-          }
-        }
-        known(
-            options,
-            List.of(
-                "returnDocument",
-                "returnNewDocument",
-                "projection",
-                "sort",
-                "upsert",
-                "arrayFilters",
-                "collation",
-                "hint",
-                "maxTimeMS",
-                "let",
-                "comment",
-                "writeConcern",
-                "bypassDocumentValidation"),
-            method,
-            at(args, args.size() - 1, r));
-        for (var entry : options.entries()) {
-          switch (entry.name()) {
-            case "returnDocument" -> command = command.with("new", "after".equals(entry.value()));
-            case "returnNewDocument" -> command = command.with("new", entry.value());
-            case "projection" -> command = command.with("fields", entry.value());
-            default -> command = command.with(entry.name(), entry.value());
-          }
-        }
-        yield ended(r, Request.of(command, Shape.REPLY));
-      }
-      case "createIndex" -> {
-        var keys = document(args, 0, method, r);
-        var index = Document.of("key", keys, "name", indexName(keys));
-        if (args.size() > 1) {
-          index = merged(index, document(args, 1, method, r));
-        }
-        yield ended(
-            r,
-            Request.of(
-                Document.of("createIndexes", collection, "indexes", Document.array(index)),
-                Shape.REPLY));
-      }
-      case "createIndexes" -> {
-        if (args.isEmpty() || !(args.getFirst() instanceof List<?> list)) {
-          throw new SyntaxException("createIndexes needs an array of keys", at);
-        }
-        var indexes = new ArrayList<Object>();
-        for (var keys : list) {
-          if (!(keys instanceof Document d)) {
-            throw new SyntaxException("createIndexes needs an array of keys", at);
-          }
-          var index = Document.of("key", d, "name", indexName(d));
-          // The options, such as unique, are each index's, as the shell gives them.
-          if (args.size() > 1) {
-            index = merged(index, document(args, 1, method, r));
-          }
-          indexes.add(index);
-        }
-        yield ended(
-            r,
-            Request.of(
-                Document.of("createIndexes", collection, "indexes", Document.array(indexes)),
-                Shape.REPLY));
-      }
-      case "dropIndex", "dropIndexes" -> {
-        // One index by its name or keys; all but _id's only as dropIndexes asks.
-        if (method.equals("dropIndex")
-            && (args.isEmpty()
-                || "*".equals(args.getFirst())
-                || !(args.getFirst() instanceof String || args.getFirst() instanceof Document))) {
-          throw new SyntaxException(
-              "dropIndex needs the name or the keys of an index; dropIndexes() drops all", at);
-        }
-        Object index = args.isEmpty() ? "*" : args.getFirst();
-        if (index instanceof Document keys) {
-          index = keys;
-        }
-        yield ended(
-            r, Request.of(Document.of("dropIndexes", collection, "index", index), Shape.REPLY));
-      }
-      case "drop" -> ended(r, Request.of(Document.of("drop", collection), Shape.REPLY));
-      default ->
-        throw new SyntaxException(
-            "A collection has no method " + method + " that a console runs", at);
-    };
+      indexes.add(index);
+    }
+    return indexes(c, Document.array(indexes));
+  }
+
+  private static Request indexes(Call c, List<Object> indexes) throws SyntaxException {
+    return reply(c.r(), Document.of("createIndexes", c.on(), "indexes", indexes));
+  }
+
+  // An index of the keys, with the name the server would give it.
+  private static Document index(Document keys) {
+    return Document.of("key", keys, "name", indexName(keys));
+  }
+
+  // dropIndex drops one index by its name or keys; dropIndexes all but _id's, or those given.
+  private static Request dropIndexes(Call c) throws SyntaxException {
+    var args = c.args();
+    if (c.method().equals("dropIndex")
+        && (args.isEmpty()
+            || "*".equals(args.getFirst())
+            || !(args.getFirst() instanceof String || args.getFirst() instanceof Document))) {
+      throw c.error("dropIndex needs the name or the keys of an index; dropIndexes() drops all");
+    }
+    Object index = args.isEmpty() ? "*" : args.getFirst();
+    return reply(c.r(), Document.of("dropIndexes", c.on(), "index", index));
   }
 
   // A find or aggregate, and the calls on its cursor: sort, limit, skip and the like.
   private static Request cursor(Shell.Reader r, Document command) throws SyntaxException {
     boolean find = command.first().equals("find");
-    while (true) {
-      int dot = r.at;
-      if (!r.take('.')) {
-        break;
-      }
+    int dot = r.at;
+    while (r.take('.')) {
       int at = r.at;
       var call = r.identifier();
       if (call == null) {
@@ -733,68 +801,37 @@ public final class Script {
       }
       var args = arguments(r);
       switch (call) {
-        case "pretty", "toArray", "readPref", "noCursorTimeout" -> {}
+        case "pretty", "toArray", "readPref", "noCursorTimeout", "batchSize" -> {
+          // Nothing that the console sends: it reads the cursor in portions of its own.
+        }
         case "sort" -> {
           findOnly(find, call, at);
           command = command.with("sort", document(args, 0, call, r));
         }
-        case "limit" -> {
+        case LIMIT -> {
           findOnly(find, call, at);
-          var limit = whole(args, call, r);
-          // A negative limit is that many in one batch, as the shell has it; find wants it so.
-          if (limit instanceof Number n && n.longValue() < 0) {
-            if (n.longValue() == Long.MIN_VALUE) {
-              throw new SyntaxException("limit is out of range", at);
-            }
-            long magnitude = -n.longValue();
-            command = command
-                .with(
-                    "limit",
-                    magnitude <= Integer.MAX_VALUE ? (Object) (int) magnitude : (Object) magnitude)
-                .with("singleBatch", true);
-          } else {
-            command = command.with("limit", limit);
-          }
+          command = limit(command, whole(args, call, r), at);
         }
         case "skip" -> {
           findOnly(find, call, at);
           command = command.with("skip", whole(args, call, r));
         }
-        case "projection", "project" -> {
+        case PROJECTION, "project" -> {
           findOnly(find, call, at);
-          command = command.with("projection", document(args, 0, call, r));
+          command = command.with(PROJECTION, document(args, 0, call, r));
         }
-        case "hint" -> command = command.with("hint", args.isEmpty() ? null : args.getFirst());
-        case "maxTimeMS" -> command = command.with("maxTimeMS", whole(args, call, r));
-        case "collation" -> command = command.with("collation", document(args, 0, call, r));
-        case "comment" ->
-          command = command.with("comment", args.isEmpty() ? null : args.getFirst());
+        case "hint" -> command = command.with("hint", first(args));
+        case MAX_TIME_MS -> command = command.with(MAX_TIME_MS, whole(args, call, r));
+        case COLLATION -> command = command.with(COLLATION, document(args, 0, call, r));
+        case COMMENT -> command = command.with(COMMENT, first(args));
         case "allowDiskUse" ->
           command =
               command.with("allowDiskUse", args.isEmpty() || Boolean.TRUE.equals(args.get(0)));
-        case "batchSize" -> {}
-        case "count", "size", "itcount" -> {
+        case COUNT, "size", "itcount" -> {
           findOnly(find, call, at);
-          var count = Document.of("count", command.get("find"));
-          if (command.get("filter") != null) {
-            count = count.with("query", command.get("filter"));
-          }
-          if (!call.equals("count")) {
-            for (var option : List.of("skip", "limit")) {
-              if (command.has(option)) {
-                count = count.with(option, command.get(option));
-              }
-            }
-          }
-          // What the cursor compares and reads by, which the count command takes too.
-          for (var option : List.of("collation", "hint", "maxTimeMS", "comment")) {
-            if (command.has(option)) {
-              count = count.with(option, command.get(option));
-            }
-          }
-          return ended(r, Request.of(count, Shape.ESTIMATE));
+          return ended(r, Request.of(counted(command, call), Shape.ESTIMATE));
         }
-        case "explain" -> {
+        case EXPLAIN -> {
           return ended(r, explain(Request.of(command, Shape.CURSOR), args, r));
         }
         default -> {
@@ -802,8 +839,36 @@ public final class Script {
           throw new SyntaxException("A cursor has no method " + call + " that a console runs", at);
         }
       }
+      dot = r.at;
     }
     return Request.of(command, Shape.CURSOR);
+  }
+
+  // A negative limit is that many in one batch, as the shell has it; find wants it so.
+  private static Document limit(Document command, Object limit, int at) throws SyntaxException {
+    if (!(limit instanceof Number n) || n.longValue() >= 0) {
+      return command.with(LIMIT, limit);
+    }
+    if (n.longValue() == Long.MIN_VALUE) {
+      throw new SyntaxException("limit is out of range", at);
+    }
+    long magnitude = -n.longValue();
+    return command
+        .with(LIMIT, magnitude <= Integer.MAX_VALUE ? (Object) (int) magnitude : (Object) magnitude)
+        .with("singleBatch", true);
+  }
+
+  // The count of a find's documents: skip and limit as the cursor has them, but for count(); and
+  // what the cursor compares and reads by, which the count command takes too.
+  private static Document counted(Document find, String call) {
+    var count = Document.of(COUNT, find.get("find"));
+    if (find.get(FILTER) != null) {
+      count = count.with(QUERY, find.get(FILTER));
+    }
+    if (!call.equals(COUNT)) {
+      count = options(count, find, List.of("skip", LIMIT));
+    }
+    return options(count, find, List.of(COLLATION, "hint", MAX_TIME_MS, COMMENT));
   }
 
   private static void findOnly(boolean find, String call, int at) throws SyntaxException {
@@ -830,36 +895,21 @@ public final class Script {
     }
   }
 
-  // An insert's options, which it knows.
-  private static Document insertOptions(
-      Document command, List<Object> args, int index, String method, Shell.Reader r)
-      throws SyntaxException {
-    if (args.size() <= index) {
-      return command;
-    }
-    var options = document(args, index, method, r);
-    var names = List.of("ordered", "writeConcern", "bypassDocumentValidation", "comment");
-    known(options, names, method, at(args, index, r));
-    return options(command, options, names);
-  }
-
   // An aggregate, whose cursor is read, or with explain set the plan, which has none.
   private static Request aggregate(Shell.Reader r, Document command) throws SyntaxException {
-    return Boolean.TRUE.equals(command.get("explain"))
-        ? ended(r, Request.of(command, Shape.REPLY))
-        : cursor(r, command);
+    return Boolean.TRUE.equals(command.get(EXPLAIN)) ? reply(r, command) : cursor(r, command);
   }
 
   // Options that would replace what the command is, as its pipeline, are refused; a cursor of
   // its own is a document.
   private static Document notReplacing(Document options, Document command, String method, int at)
       throws SyntaxException {
-    for (var name : List.of(command.first(), "pipeline")) {
+    for (var name : List.of(command.first(), PIPELINE)) {
       if (options.has(name)) {
         throw new SyntaxException(method + " takes no option " + name, at);
       }
     }
-    if (options.has("cursor") && !(options.get("cursor") instanceof Document)) {
+    if (options.has(CURSOR) && !(options.get(CURSOR) instanceof Document)) {
       throw new SyntaxException(method + " takes a document as its cursor", at);
     }
     return options;
@@ -889,22 +939,40 @@ public final class Script {
     return ended(r, Request.of(command, Shape.WRITE));
   }
 
+  private static Request reply(Shell.Reader r, Document command) throws SyntaxException {
+    return ended(r, Request.of(command, Shape.REPLY));
+  }
+
   private static Request explain(Request explained, List<Object> args, Shell.Reader r)
       throws SyntaxException {
-    var verbosity = args.isEmpty()
-        ? "queryPlanner"
-        : args.getFirst() instanceof Boolean b
-            ? b ? "allPlansExecution" : "queryPlanner"
-            : string(args, 0, "explain", r);
     return new Request(
         explained.database(),
-        Document.of("explain", explained.command(), "verbosity", verbosity),
+        Document.of(EXPLAIN, explained.command(), "verbosity", verbosity(args, r)),
         Shape.REPLY,
         null);
   }
 
+  // As explain(true) or explain(false), or explain('executionStats'): queryPlanner without one.
+  private static String verbosity(List<Object> args, Shell.Reader r) throws SyntaxException {
+    if (args.isEmpty()) {
+      return "queryPlanner";
+    }
+    if (args.getFirst() instanceof Boolean all) {
+      return all.booleanValue() ? "allPlansExecution" : "queryPlanner";
+    }
+    return string(args, 0, EXPLAIN, r);
+  }
+
+  // The first argument, or null where there is none.
+  private static Object first(List<Object> args) {
+    return args.isEmpty() ? null : args.getFirst();
+  }
+
   // The arguments of a call, with where each starts and where the call closes.
   private static final class Args extends ArrayList<Object> {
+    @Serial
+    private static final long serialVersionUID = 1L;
+
     private final transient List<Integer> starts = new ArrayList<>();
     private transient int end;
 
@@ -970,14 +1038,13 @@ public final class Script {
     return String.join("_", parts);
   }
 
-  private static Document command(List<Object> args, String method, Shell.Reader r)
-      throws SyntaxException {
-    if (!args.isEmpty() && args.getFirst() instanceof String name) {
+  private static Document command(Call c) throws SyntaxException {
+    if (c.has(0) && c.args().getFirst() instanceof String name) {
       return Document.of(name, 1);
     }
-    var command = document(args, 0, method, r);
+    var command = c.document(0);
     if (command.isEmpty()) {
-      throw r.error(method + " needs a command, such as { ping: 1 }");
+      throw c.r().error(c.method() + " needs a command, such as { ping: 1 }");
     }
     return command;
   }

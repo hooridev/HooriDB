@@ -21,11 +21,12 @@ Early development. Only nightly builds are published so far as pre-releases on [
 
 - **Workspace**: Organize connections in nested folders, mark tree rows and tabs with one of ten colors, store passwords in the system keyring, and move items without disconnecting open connections.
 - **Schema browser**: Connect to multiple servers at once and expand databases, schemas (PostgreSQL), tables, views, and columns on demand.
-- **Table data**: Read table and view rows in pages as you scroll or use paging buttons, and inspect cells in a side value panel that formats and colors JSON, marks syntax errors, and loads shortened table values whole by primary key when the table has one.
+- **Table data**: Read table and view rows in pages as you scroll or use paging buttons, with columns sized to their content when a table, view, collection, or console result opens, and inspect cells in a side value panel that formats and colors JSON, marks syntax errors, and loads shortened table values whole by primary key when the table has one.
 - **SQL console**: Run the statement at the caret, a selection, or all statements on a dedicated connection with keyword and object completions, inline error underlines, pinned result tabs, and a Messages log; open consoles are restored unconnected on the next start.
 - **MongoDB**: Browse databases, collections, and sampled document fields, view documents as a grid, Relaxed Extended JSON, or a tree, and run shell statements (`find`, `aggregate`, write methods, indexes, `runCommand`, and more) in a console with completions; connections can be set to read-only so HooriDB sends only read commands.
 - **Transactions**: Switch each SQL console between Auto and Manual commit, commit or roll back open transactions, and get prompted before closing tabs, switching databases, disconnecting, exiting, or running an `UPDATE` or `DELETE` without `WHERE` (or `LIMIT` on MySQL and MariaDB).
 - **Statement history**: Keep up to 1,000 recent statements per connection, search them, insert them back into a console, or clear them.
+- **Saved queries**: Save the selection or a console's whole text under a name for its connection, search the saved queries, insert one into a console, or delete it.
 - **Command palette**: Run menu commands from the keyboard (`Ctrl+Shift+P` or `F1`) and jump to tables and views by name (`Ctrl+P`, or `@` in the palette), loading unread databases on demand.
 - **Tabs and windows**: Reorder tabs, drag them out or move them into separate windows, and switch between dark and light themes.
 - **Driver management**: Download official PostgreSQL, MySQL, and MariaDB JDBC drivers and the MongoDB Java driver from Maven Central after confirmation, verify checksums, and list or delete downloaded versions in **File > Drivers…**.
@@ -62,11 +63,13 @@ mvn -Pbundle verify                       # build the release bundle for this pl
 | `core/` | `hooridb-core` | Connections, metadata, and queries (no UI dependencies). |
 | `app/` | `hooridb-app` | Desktop app: state, views, and windows (`dev.hoori.db.app.HooriDb`). |
 
-The website and documentation live in `docs/` (requires Node.js 24 or later):
+The website and documentation live in `docs/` (requires [Bun](https://bun.com) 1.4.5 and Node.js 24 or later):
 
 ```sh
-cd docs && npm ci && npm run dev
+cd docs && bun install && bun run dev
 ```
+
+`bun install` also puts the Bun that the website's scripts run into `docs/node_modules`: the canary `1.4.5-canary.20261120.1`, pinned in `package.json` and `bun.lock`, as the first Bun with a linter. In `docs/`, `bun run lint` (rules in `.oxlintrc.json`), `bun run fmt` (settings in `bunfig.toml`) and `bun run check` (types) run it by its path, as the website's workflow does; a plain `bun fmt` or `bun check` runs the Bun on the `PATH` instead.
 
 ## Contributing
 

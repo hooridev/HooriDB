@@ -1,4 +1,3 @@
-import { source } from '@/lib/source';
 import {
   DocsBody,
   DocsDescription,
@@ -7,18 +6,22 @@ import {
   MarkdownCopyButton,
   ViewOptionsPopover,
 } from 'fumadocs-ui/layouts/docs/page';
-import { notFound } from 'next/navigation';
-import { getMDXComponents } from '@/components/mdx';
-import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
+import type { Metadata } from 'next';
+import { notFound } from 'next/navigation';
+
+import { getMDXComponents } from '@/components/mdx';
 import { markdownUrl, repository } from '@/lib/shared';
+import { source } from '@/lib/source';
 
 export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
   const params = await props.params;
   const page = source.getPage(params.slug);
-  if (!page) notFound();
+  if (!page) {
+    notFound();
+  }
 
-  const MDX = page.data.body;
+  const Body = page.data.body;
   const markdown = markdownUrl(page);
 
   return (
@@ -33,7 +36,7 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
         />
       </div>
       <DocsBody>
-        <MDX
+        <Body
           components={getMDXComponents({
             a: createRelativeLink(source, page),
           })}
@@ -43,14 +46,16 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
   );
 }
 
-export async function generateStaticParams() {
+export function generateStaticParams() {
   return source.generateParams();
 }
 
 export async function generateMetadata(props: PageProps<'/docs/[[...slug]]'>): Promise<Metadata> {
   const params = await props.params;
   const page = source.getPage(params.slug);
-  if (!page) notFound();
+  if (!page) {
+    notFound();
+  }
 
   return {
     title: page.data.title,

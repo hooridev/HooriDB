@@ -114,6 +114,8 @@ final class TableTab implements Tab {
     }
   }
 
+  private static final String DISCONNECTED = "Disconnected";
+
   /** The most rows a grid shows: it counts them in an int. */
   static final int GRID_ROWS = Integer.MAX_VALUE;
 
@@ -121,6 +123,8 @@ final class TableTab implements Tab {
   Table table; // its kind may change, as a table replaced by a view of its name
   List<Column> columns; // as the catalog read them; null until then
   float[] widths; // of the columns, which the user may change
+  // Fits the columns once they show rows, and again when their names change.
+  final DataGrid.Fit fit = new DataGrid.Fit();
   private List<Field> fields; // as the last read gave them, which each page has to match
   long rows; // known to be there, or as estimated
   private boolean more; // a row more in the grid, whose read says whether there are more
@@ -181,11 +185,7 @@ final class TableTab implements Tab {
     pages.clear();
     documents.clear();
     if (columns == null) {
-      columns = s.catalog.columns(id, table);
-      if (columns != null) {
-        shape(columns);
-        rows = PAGE; // loading rows until the estimate comes
-      }
+      treeColumns(s);
     }
     var live = s.catalog.live(id);
     var known = anew ? null : columns;
@@ -193,7 +193,6 @@ final class TableTab implements Tab {
     var of = table;
     // The page in view: of the grid, or of the documents JSON and Tree show.
     long from = showing == Shown.GRID ? (long) first / PAGE * PAGE : documentPage * PAGE;
-    record Opened(List<Column> columns, OptionalLong estimate, Page page, long took) {}
     opening = lane.ask(
         s.app,
         "open " + table.name(),
@@ -205,31 +204,7 @@ final class TableTab implements Tab {
           var page = link.read(of, read, from, from + PAGE);
           return new Opened(read, estimate, page, System.nanoTime() - start);
         },
-        opened -> {
-          opening = null;
-          if (!opened.columns().equals(columns)) {
-            shape(opened.columns());
-            s.catalog.columnsRead(id, table, opened.columns());
-          }
-          columns = opened.columns();
-          fields = opened.page().fields();
-          var estimate = opened.estimate();
-          if (!countedFirst) {
-            // Without an estimate the place in view stands until its page says more.
-            rows = estimate.orElse(from);
-            more = false;
-            counted = estimate.isPresent() ? Counted.ESTIMATED : Counted.AT_LEAST;
-          }
-          arrived(s, from / PAGE, opened.page(), opened.took());
-          want(s, first, last);
-          if (showing != Shown.GRID) {
-            turn(s, documentPage); // as it was turned to while it opened
-          }
-          if (counted != Counted.EXACT
-              && (recount || estimate.isPresent() && estimate.getAsLong() < COUNT_BELOW)) {
-            counted(s);
-          }
-        },
+        opened -> opened(s, from, recount, opened),
         error -> {
           opening = null;
           // Columns the tree read may be old; those read just now are not worth a second try.
@@ -237,8 +212,53 @@ final class TableTab implements Tab {
         });
   }
 
-  /** The widths of new columns: those of the same name keep theirs. */
+  /** The columns as the tree read them, if it has: they show while the rows are on their way. */
+  private void treeColumns(State s) {
+    columns = s.catalog.columns(id, table);
+    if (columns != null) {
+      shape(columns);
+      rows = PAGE; // loading rows until the estimate comes
+    }
+  }
+
+  /** What opening the table read in one call: its columns, the estimate, the page in view. */
+  private record Opened(List<Column> columns, OptionalLong estimate, Page page, long took) {}
+
+  /**
+   * The table opened at the page from the row: its columns, the estimate unless a count came first,
+   * and that page; then the pages in view, and a count where it is cheap or a refresh asks for one.
+   */
+  private void opened(State s, long from, boolean recount, Opened opened) {
+    opening = null;
+    if (!opened.columns().equals(columns)) {
+      shape(opened.columns());
+      s.catalog.columnsRead(id, table, opened.columns());
+    }
+    columns = opened.columns();
+    fields = opened.page().fields();
+    var estimate = opened.estimate();
+    if (!countedFirst) {
+      // Without an estimate the place in view stands until its page says more.
+      rows = estimate.orElse(from);
+      more = false;
+      counted = estimate.isPresent() ? Counted.ESTIMATED : Counted.AT_LEAST;
+    }
+    arrived(s, from / PAGE, opened.page(), opened.took());
+    want(s, first, last);
+    if (showing != Shown.GRID) {
+      turn(s, documentPage); // as it was turned to while it opened
+    }
+    if (counted != Counted.EXACT
+        && (recount || estimate.isPresent() && estimate.getAsLong() < COUNT_BELOW)) {
+      counted(s);
+    }
+  }
+
+  /** The widths of new columns: those of the same name keep theirs, until the fit is redone. */
   private void shape(List<Column> next) {
+    if (columns != null && !names(columns).equals(names(next))) {
+      fit.reset();
+    }
     var old = new HashMap<String, Float>();
     for (int i = 0; columns != null && widths != null && i < columns.size(); i++) {
       old.put(columns.get(i).name(), widths[i]);
@@ -247,6 +267,10 @@ final class TableTab implements Tab {
     for (int i = 0; i < widths.length; i++) {
       widths[i] = old.getOrDefault(next.get(i).name(), -1f);
     }
+  }
+
+  private static List<String> names(List<Column> columns) {
+    return columns.stream().map(Column::name).toList();
   }
 
   /** The rows the grid shows: those known, and the one more that asks whether there are more. */
@@ -344,30 +368,39 @@ final class TableTab implements Tab {
       documents.remove(page);
     }
     if (n < PAGE) {
-      var before = pages.get(page - 1);
-      if (n > 0 || page == 0 || before != null && before.size() == PAGE) {
-        rows = from + n;
-        counted = Counted.EXACT;
-        more = false;
-      } else {
-        // Empty, and what is before it not read: the end is somewhere before.
-        rows = Math.min(rows, from);
-        more = false;
-        ending = true;
-        counted(s);
-      }
-      pages.keySet().removeIf(p -> p * PAGE >= rows);
-      documents.keySet().retainAll(pages.keySet());
-      giveUp(p -> ending || p * PAGE >= rows);
-      if (showing != Shown.GRID && !ending && documentPage > 0 && documentPage * PAGE >= rows) {
-        turn(s, Math.max(0, (rows - 1) / PAGE));
-      }
+      endsIn(s, page, n);
     } else if (from + PAGE > rows || from + PAGE == rows && counted != Counted.EXACT) {
       rows = from + PAGE;
       counted = Counted.AT_LEAST;
       more = true;
     }
     keep();
+  }
+
+  /**
+   * A page of n rows ended before it was full: the table ends in it, or, where it is empty and the
+   * page before it is not read, somewhere before, which the count finds.
+   */
+  private void endsIn(State s, long page, int n) {
+    long from = page * PAGE;
+    var before = pages.get(page - 1);
+    if (n > 0 || page == 0 || before != null && before.size() == PAGE) {
+      rows = from + n;
+      counted = Counted.EXACT;
+      more = false;
+    } else {
+      // Empty, and what is before it not read: the end is somewhere before.
+      rows = Math.min(rows, from);
+      more = false;
+      ending = true;
+      counted(s);
+    }
+    pages.keySet().removeIf(p -> p * PAGE >= rows);
+    documents.keySet().retainAll(pages.keySet());
+    giveUp(p -> ending || p * PAGE >= rows);
+    if (showing != Shown.GRID && !ending && documentPage > 0 && documentPage * PAGE >= rows) {
+      turn(s, Math.max(0, (rows - 1) / PAGE));
+    }
   }
 
   /**
@@ -462,20 +495,51 @@ final class TableTab implements Tab {
       return;
     }
     if (error instanceof InterruptedException) {
-      if (s.catalog.connected(id)) {
-        if (columns == null || fields == null) {
-          open(s, false);
-        } else if (ending) {
-          counted(s); // the end was being found: no page past it is read until the count says
-        } else if (showing == Shown.GRID) {
-          want(s, first, last);
-        } else {
-          turn(s, documentPage);
-        }
-      }
+      askAgain(s);
       return;
     }
-    var problem = switch (error) {
+    var problem = problem(error);
+    if (again && (problem == Problem.GONE || problem == Problem.CHANGED)) {
+      open(s, true);
+      return;
+    }
+    var detail = CatalogTree.words(live, detail(error));
+    if (error instanceof ConnectionException e) {
+      detail = CatalogTree.join(unopened(s, e), detail);
+    }
+    failure = new Failure(problem, detail);
+    if (problem == Problem.LOST || problem == Problem.DISCARDED) {
+      s.catalog.lost(s, live, detail, problem == Problem.DISCARDED);
+    }
+  }
+
+  /** A lane closed under a read while connected, as by a refresh in the tree: it is asked again. */
+  private void askAgain(State s) {
+    if (!s.catalog.connected(id)) {
+      return;
+    }
+    if (columns == null || fields == null) {
+      open(s, false);
+    } else if (ending) {
+      counted(s); // the end was being found: no page past it is read until the count says
+    } else if (showing == Shown.GRID) {
+      want(s, first, last);
+    } else {
+      turn(s, documentPage);
+    }
+  }
+
+  /** What the user can do where the table's database could not be opened, or null. */
+  private String unopened(State s, ConnectionException e) {
+    var profile = s.profile(id);
+    return profile == null
+        ? null
+        : Words.note(
+            e.failure(), profile.withDatabase(table.container().database().name()), true);
+  }
+
+  private static Problem problem(Exception error) {
+    return switch (error) {
       case QueryException e ->
         switch (e.failure()) {
           case NOT_FOUND -> Problem.GONE;
@@ -495,26 +559,9 @@ final class TableTab implements Tab {
           case CANCELLED -> Problem.CANCELLED;
           case WRONG_DATABASE, OTHER -> Problem.OTHER;
         };
-      case ConnectionException e -> Problem.UNOPENED;
+      case ConnectionException _ -> Problem.UNOPENED;
       default -> Problem.OTHER;
     };
-    if (again && (problem == Problem.GONE || problem == Problem.CHANGED)) {
-      open(s, true);
-      return;
-    }
-    var detail = CatalogTree.words(live, detail(error));
-    if (error instanceof ConnectionException e) {
-      var profile = s.profile(id);
-      var note = profile == null
-          ? null
-          : Words.note(
-              e.failure(), profile.withDatabase(table.container().database().name()), true);
-      detail = note == null ? detail : detail.isEmpty() ? note : note + "\n" + detail;
-    }
-    failure = new Failure(problem, detail);
-    if (problem == Problem.LOST || problem == Problem.DISCARDED) {
-      s.catalog.lost(s, live, detail, problem == Problem.DISCARDED);
-    }
   }
 
   private static String detail(Exception error) {
@@ -632,28 +679,7 @@ final class TableTab implements Tab {
     var profile = s.profile(id);
     String where = profile == null ? null : State.name(profile);
     boolean ofDocuments = profile != null && profile.provider().keepsDocuments();
-    var actions = new ArrayList<El>();
-    if (ofDocuments) {
-      actions.add(
-          Segmented.segmented(List.of(Shown.values()), showing, v -> v.title, v -> show(s, v))
-              .key("shown")
-              .label("Show documents as"));
-    }
-    actions.add(button(
-            SECONDARY,
-            Symbol.CALCULATOR,
-            counting == null ? ofDocuments ? "Count documents" : "Count rows" : "Stop counting",
-            connected && columns != null && !ending ? () -> count(s) : null)
-        .key("count"));
-    actions.add(button(
-            SECONDARY,
-            "Refresh",
-            connected ? () -> open(s, true) : null,
-            Button.options()
-                .icon(Symbol.ARROW_CLOCKWISE)
-                .state(opening != null && connected ? Button.State.BUSY : Button.State.READY))
-        .key("refresh"));
-    El top = Card.toolbar(path(), where, actions.toArray(El[]::new));
+    El top = Card.toolbar(path(), where, actions(s, connected, ofDocuments).toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     El content =
         col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
@@ -664,23 +690,71 @@ final class TableTab implements Tab {
     // Loading cells only while something is read, or was: not for a table that failed at once.
     boolean readable = columns != null && (fields != null || failure == null);
     boolean grid = readable && !(ofDocuments && showing != Shown.GRID);
+    content.child(body(s, app, readable, grid));
+    El rowsStatus = Label.label(Label.Variant.MUTED, rowsText(ofDocuments))
+        .key("rows-status")
+        .ellipsis();
+    return content.child(
+        Card.footer(rowsStatus, footer(s, readable, grid, ofDocuments).toArray(El[]::new)));
+  }
+
+  /** The toolbar's actions: how documents show, Count rows, and Refresh. */
+  private List<El> actions(State s, boolean connected, boolean ofDocuments) {
+    var actions = new ArrayList<El>();
+    if (ofDocuments) {
+      actions.add(
+          Segmented.segmented(List.of(Shown.values()), showing, v -> v.title, v -> show(s, v))
+              .key("shown")
+              .label("Show documents as"));
+    }
+    actions.add(button(
+            SECONDARY,
+            Symbol.CALCULATOR,
+            countLabel(ofDocuments),
+            connected && columns != null && !ending ? () -> count(s) : null)
+        .key("count"));
+    actions.add(button(
+            SECONDARY,
+            "Refresh",
+            connected ? () -> open(s, true) : null,
+            Button.options()
+                .icon(Symbol.ARROW_CLOCKWISE)
+                .state(opening != null && connected ? Button.State.BUSY : Button.State.READY))
+        .key("refresh"));
+    return actions;
+  }
+
+  private String countLabel(boolean ofDocuments) {
+    if (counting != null) {
+      return "Stop counting";
+    }
+    return ofDocuments ? "Count documents" : "Count rows";
+  }
+
+  /** What is read: the grid with its value panel, the documents whole, or that it is read. */
+  private El body(State s, App<State> app, boolean readable, boolean grid) {
+    Theme t = Theme.CURRENT.get();
     if (readable) {
-      content.child(
-          grid
-              ? withValue(s, app, grid(s, app))
-              : col().grow(1).minSize(0, 0).child(documents(s, app)));
-    } else if (opening != null) {
-      content.child(col()
+      return grid
+          ? withValue(s, app, grid(s, app))
+          : col().grow(1).minSize(0, 0).child(documents(s, app));
+    }
+    if (opening != null) {
+      return col()
           .grow(1)
           .center()
           .gap(t.space().m())
           .role("status")
           .label("Reading " + table.name())
           .child(Progress.spinner())
-          .child(Label.label(Label.Variant.MUTED, "Reading " + path() + "…")));
-    } else {
-      content.child(col().grow(1));
+          .child(Label.label(Label.Variant.MUTED, "Reading " + path() + "…"));
     }
+    return col().grow(1);
+  }
+
+  /** The status line after the number of rows: what it says, the last read, and the paging. */
+  private List<El> footer(State s, boolean readable, boolean grid, boolean ofDocuments) {
+    Theme t = Theme.CURRENT.get();
     El read = busy()
         ? row()
             .gap(t.space().s())
@@ -689,9 +763,6 @@ final class TableTab implements Tab {
             .child(Label.label(Label.Variant.MUTED, "Reading rows…"))
             .key("read-status")
         : Label.label(Label.Variant.MUTED, readText(ofDocuments)).key("read-status");
-    El rowsStatus = Label.label(Label.Variant.MUTED, rowsText(ofDocuments))
-        .key("rows-status")
-        .ellipsis();
     var end = new ArrayList<El>();
     if (said != null) {
       end.add(Label.label(Label.Variant.MUTED, said).key("said"));
@@ -706,7 +777,7 @@ final class TableTab implements Tab {
       end.add(Label.label(Label.Variant.MUTED, documentsText()).key("rows-in-view"));
       end.add(documentPaging(s));
     }
-    return content.child(Card.footer(rowsStatus, end.toArray(El[]::new)));
+    return end;
   }
 
   /**
@@ -715,61 +786,83 @@ final class TableTab implements Tab {
    * cell or closes.
    */
   private El withValue(State s, App<State> app, El grid) {
-    int row = selection.row();
-    int column = selection.column();
-    ValuePanel.Cell cell = null;
-    String note = null;
-    boolean waiting = false;
-    boolean wanted = false; // the whole value, by the row's key
-    if (value.open
-        && fields != null
-        && row >= 0
-        && row < gridRows()
-        && column >= 0
-        && column < columns.size()) {
-      var c = columns.get(column);
-      Object v = null;
-      if (loaded(row)) {
-        var values = pages.get((long) row / PAGE).get(row % PAGE);
-        v = values.get(column);
-        if (v instanceof Cut && !Changes.names(columns, values)) {
-          note = Cells.icon(v).tooltip() + "; without a primary key the rest cannot be read";
-        } else if (v instanceof Cut) {
-          wanted = true;
-          // The row as read: a page read again may hold another value of the same start.
-          if (whole == null || whole.row() != values || whole.column() != column) {
-            ask(s, values, column);
-          }
-          if (whole == null) {
-            note = Cells.icon(v).tooltip();
-          } else if (whole.asked() != null) {
-            waiting = true;
-          } else if (whole.failure() != null) {
-            note = whole.failure();
-          } else {
-            v = whole.text();
-          }
-        }
-      } else {
-        // Out of the pages held, as after a refresh far from it: read as a page in view.
-        long page = row / PAGE;
-        if (!closed && failure == null && opening == null && !ending) {
-          read(s, page, Lane.Priority.VIEW);
-        }
-        waiting = opening != null || reading.containsKey(page);
-      }
-      cell = loaded(row) || waiting
-          ? new ValuePanel.Cell(c.name(), c.type(), fields.get(column).kind(), v)
-          : null;
-    }
+    var shows = inPanel(s);
     // What was asked for a cell the panel no longer shows is given up.
-    if (!wanted && whole != null) {
+    if (!shows.wanted() && whole != null) {
       if (whole.asked() != null) {
         whole.asked().cancel();
       }
       whole = null;
     }
-    return value.around(app, s.zone, grid, cell, note, waiting);
+    return value.around(app, s.zone, grid, shows.cell(), shows.note(), shows.waiting());
+  }
+
+  /**
+   * What the value panel shows of the current cell: the cell or none, a note, whether it waits for
+   * a read, and whether it wants the cell's whole value, by the row's key.
+   */
+  private record InPanel(ValuePanel.Cell cell, String note, boolean waiting, boolean wanted) {
+    static final InPanel NONE = new InPanel(null, null, false, false);
+  }
+
+  /** What the open value panel shows of the current cell, read where its page is not held. */
+  private InPanel inPanel(State s) {
+    int row = selection.row();
+    int column = selection.column();
+    if (!value.open
+        || fields == null
+        || row < 0
+        || row >= gridRows()
+        || column < 0
+        || column >= columns.size()) {
+      return InPanel.NONE;
+    }
+    if (!loaded(row)) {
+      // Out of the pages held, as after a refresh far from it: read as a page in view.
+      long page = row / PAGE;
+      if (!closed && failure == null && opening == null && !ending) {
+        read(s, page, Lane.Priority.VIEW);
+      }
+      boolean waiting = opening != null || reading.containsKey(page);
+      return new InPanel(waiting ? cell(column, null) : null, null, waiting, false);
+    }
+    var values = pages.get((long) row / PAGE).get(row % PAGE);
+    var v = values.get(column);
+    if (!(v instanceof Cut)) {
+      return new InPanel(cell(column, v), null, false, false);
+    }
+    if (!Changes.names(columns, values)) {
+      return new InPanel(
+          cell(column, v),
+          Cells.icon(v).tooltip() + "; without a primary key the rest cannot be read",
+          false,
+          false);
+    }
+    return partial(s, values, column, v);
+  }
+
+  /** A value the row as read holds in part: its whole value, asked for by the row's key. */
+  private InPanel partial(State s, List<Object> values, int column, Object v) {
+    // The row as read: a page read again may hold another value of the same start.
+    if (whole == null || whole.row() != values || whole.column() != column) {
+      ask(s, values, column);
+    }
+    if (whole == null) {
+      return new InPanel(cell(column, v), Cells.icon(v).tooltip(), false, true);
+    }
+    if (whole.asked() != null) {
+      return new InPanel(cell(column, v), null, true, true);
+    }
+    if (whole.failure() != null) {
+      return new InPanel(cell(column, v), whole.failure(), false, true);
+    }
+    return new InPanel(cell(column, whole.text()), null, false, true);
+  }
+
+  /** The value panel's cell of the column, with the value. */
+  private ValuePanel.Cell cell(int column, Object v) {
+    var c = columns.get(column);
+    return new ValuePanel.Cell(c.name(), c.type(), fields.get(column).kind(), v);
   }
 
   /**
@@ -846,9 +939,9 @@ final class TableTab implements Tab {
         bottom >= 0 && bottom < gridRows() - 1,
         () -> selection.scrollToRow(0),
         () -> {
-          int first = selection.firstRowInView();
-          int last = selection.lastRowInView();
-          selection.scrollToRow(Math.max(0, first - (last - first + 1)));
+          int from = selection.firstRowInView();
+          int to = selection.lastRowInView();
+          selection.scrollToRow(Math.max(0, from - (to - from + 1)));
         },
         () -> selection.scrollToRow(selection.lastRowInView() + 1),
         // As Control+End: an estimate too high shows the end once the reads there correct it.
@@ -969,7 +1062,7 @@ final class TableTab implements Tab {
       text += " What shows was read before, and may have changed since.";
       return Callout.callout(
           Callout.Kind.WARNING,
-          connecting ? "Connecting…" : "Disconnected",
+          connecting ? "Connecting…" : DISCONNECTED,
           text,
           connecting
               ? new El[0]
@@ -987,20 +1080,18 @@ final class TableTab implements Tab {
         new String[] {"Columns changed", "The columns of " + name + " changed while it was read."};
       case LOST ->
         new String[] {
-          "Disconnected",
+          DISCONNECTED,
           "The connection was lost: the server closed it, or the network to it" + " failed."
         };
       case DISCARDED ->
         new String[] {
-          "Disconnected", "The connection was closed, as the server did not stop a cancelled read."
+          DISCONNECTED, "The connection was closed, as the server did not stop a cancelled read."
         };
       case UNOPENED -> new String[] {"The database could not be opened", null};
       case CANCELLED -> new String[] {"Cancelled", "The server cancelled the read."};
       case OTHER -> new String[] {"Could not be read", "The server could not read " + name + "."};
     };
-    var text = words[1] == null
-        ? failure.detail()
-        : failure.detail().isEmpty() ? words[1] : words[1] + "\n" + failure.detail();
+    var text = CatalogTree.join(words[1], failure.detail());
     return Callout.callout(
         Callout.Kind.DANGER, words[0], text, button(SECONDARY, "Try again", () -> open(s, true)));
   }
@@ -1035,15 +1126,16 @@ final class TableTab implements Tab {
     var options = DataGrid.options()
         .select(selection)
         .onResize((c, w) -> widths[c] = w)
+        .fitColumns(fit)
         .rowNumbers()
         .copy(app.clipboard())
         .copyLimit(
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
         .contextMenu(
             menu, List.of(Menu.item("Refresh", () -> open(s, true)).icon(Symbol.ARROW_CLOCKWISE)))
-        .loading(this::loaded, (first, last) -> want(s, first, last))
+        .loading(this::loaded, (from, to) -> want(s, from, to))
         // Nothing to do: the build it causes brings the footer's rows in view along.
-        .onRowsInView((first, last) -> {});
+        .onRowsInView((from, to) -> {});
     return DataGrid.dataGrid(shown, gridRows(), options)
         .key("grid")
         .label("Rows of " + table.name())

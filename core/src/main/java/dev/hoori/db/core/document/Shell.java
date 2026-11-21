@@ -45,6 +45,8 @@ public final class Shell {
   /** Where {@link #pretty} writes a document or array on one line. */
   static final int LINE = 72;
 
+  private static final String INFINITY = "Infinity";
+
   private static final Pattern NAME = Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*");
   private static final DateTimeFormatter MILLIS =
       DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
@@ -120,70 +122,54 @@ public final class Shell {
   // indent < 0: on one line.
   private static void write(StringBuilder out, Object value, int indent, int column) {
     switch (value) {
-      case null -> out.append("null");
       case Document d -> {
-        if (d.isEmpty()) {
-          out.append("{}");
-          return;
-        }
-        if (indent >= 0) {
-          var line = compact(d);
-          if (column + line.length() <= LINE) {
-            out.append(line);
-            return;
-          }
-          out.append("{\n");
-          var entries = d.entries();
-          for (int i = 0; i < entries.size(); i++) {
-            var entry = entries.get(i);
-            var head = "  ".repeat(indent + 1) + name(entry.name()) + ": ";
-            out.append(head);
-            write(out, entry.value(), indent + 1, head.length());
-            out.append(i < entries.size() - 1 ? ",\n" : "\n");
-          }
-          out.append("  ".repeat(indent)).append('}');
-          return;
-        }
-        out.append("{ ");
-        var entries = d.entries();
-        for (int i = 0; i < entries.size(); i++) {
-          var entry = entries.get(i);
-          out.append(name(entry.name())).append(": ");
-          write(out, entry.value(), -1, 0);
-          out.append(i < entries.size() - 1 ? ", " : " ");
-        }
-        out.append('}');
+        var items = d.entries().stream()
+            .map(entry -> new Item(name(entry.name()) + ": ", entry.value()))
+            .toList();
+        nested(out, d, "{}", items, indent, column);
       }
       case List<?> list -> {
-        if (list.isEmpty()) {
-          out.append("[]");
-          return;
-        }
-        if (indent >= 0) {
-          var line = compact(list);
-          if (column + line.length() <= LINE) {
-            out.append(line);
-            return;
-          }
-          out.append("[\n");
-          for (int i = 0; i < list.size(); i++) {
-            var head = "  ".repeat(indent + 1);
-            out.append(head);
-            write(out, list.get(i), indent + 1, head.length());
-            out.append(i < list.size() - 1 ? ",\n" : "\n");
-          }
-          out.append("  ".repeat(indent)).append(']');
-          return;
-        }
-        out.append("[ ");
-        for (int i = 0; i < list.size(); i++) {
-          write(out, list.get(i), -1, 0);
-          out.append(i < list.size() - 1 ? ", " : " ");
-        }
-        out.append(']');
+        var items = list.stream().map(item -> new Item("", item)).toList();
+        nested(out, list, "[]", items, indent, column);
       }
-      default -> out.append(scalar(value));
+      case null, default -> out.append(scalar(value));
     }
+  }
+
+  // A field of a document, as its name and a colon before its value, or a value of an array.
+  private record Item(String head, Object value) {}
+
+  // A document or an array, in its brackets: on one line where it fits, or else each item on a
+  // line of its own.
+  private static void nested(
+      StringBuilder out, Object value, String brackets, List<Item> items, int indent, int column) {
+    if (items.isEmpty()) {
+      out.append(brackets);
+      return;
+    }
+    if (indent < 0) {
+      out.append(brackets.charAt(0)).append(' ');
+      for (int i = 0; i < items.size(); i++) {
+        out.append(items.get(i).head());
+        write(out, items.get(i).value(), -1, 0);
+        out.append(i < items.size() - 1 ? ", " : " ");
+      }
+      out.append(brackets.charAt(1));
+      return;
+    }
+    var line = compact(value);
+    if (column + line.length() <= LINE) {
+      out.append(line);
+      return;
+    }
+    out.append(brackets.charAt(0)).append('\n');
+    for (int i = 0; i < items.size(); i++) {
+      var head = "  ".repeat(indent + 1) + items.get(i).head();
+      out.append(head);
+      write(out, items.get(i).value(), indent + 1, head.length());
+      out.append(i < items.size() - 1 ? ",\n" : "\n");
+    }
+    out.append("  ".repeat(indent)).append(brackets.charAt(1));
   }
 
   /** A value that is not a document or an array, as the shell writes it. */
@@ -203,13 +189,14 @@ public final class Shell {
             ? "UUID('" + b.uuid() + "')"
             : "Binary.createFromBase64('" + Base64.getEncoder().encodeToString(b.bytes()) + "', "
                 + b.subtype() + ")";
-      case Bson.Timestamp t -> "Timestamp({ t: " + t.seconds() + ", i: " + t.increment() + " })";
+      case Bson.Timestamp(var seconds, var increment) ->
+        "Timestamp({ t: " + seconds + ", i: " + increment + " })";
       case Bson.Regex r -> regex(r);
-      case Bson.Code c ->
-        c.scope() == null
-            ? "Code(" + quote(c.code()) + ")"
-            : "Code(" + quote(c.code()) + ", " + compact(c.scope()) + ")";
-      case Bson.Symbol s -> "Symbol(" + quote(s.symbol()) + ")";
+      case Bson.Code(var code, var scope) ->
+        scope == null
+            ? "Code(" + quote(code) + ")"
+            : "Code(" + quote(code) + ", " + compact(scope) + ")";
+      case Bson.Symbol(var symbol) -> "Symbol(" + quote(symbol) + ")";
       case Bson.Special s ->
         switch (s) {
           case MIN_KEY -> "MinKey()";
@@ -236,7 +223,7 @@ public final class Shell {
       return "NaN";
     }
     if (Double.isInfinite(value)) {
-      return value > 0 ? "Infinity" : "-Infinity";
+      return value > 0 ? INFINITY : "-" + INFINITY;
     }
     if (value == Math.rint(value) && Math.abs(value) < 1e15) {
       return (value == 0 && 1 / value < 0 ? "-" : "") + (long) value + ".0";
@@ -371,22 +358,7 @@ public final class Shell {
         if (take('}')) {
           return new Document(entries);
         }
-        String name;
-        char c = peek();
-        if (c == '\'' || c == '"') {
-          name = string();
-        } else if (c >= '0' && c <= '9') {
-          int start = at;
-          while (at < text.length() && Character.isDigit(text.charAt(at))) {
-            at++;
-          }
-          name = text.substring(start, at);
-        } else {
-          name = identifier();
-          if (name == null) {
-            throw error("A field's name is needed here");
-          }
-        }
+        var name = fieldName();
         expect(':', ": is missing after the name " + name);
         put(entries, new Document.Entry(name, value()));
         if (!take(',')) {
@@ -397,6 +369,26 @@ public final class Shell {
           return new Document(entries);
         }
       }
+    }
+
+    // A name in quotes, of digits alone, or as JavaScript writes one.
+    private String fieldName() throws SyntaxException {
+      char c = peek();
+      if (c == '\'' || c == '"') {
+        return string();
+      }
+      if (c >= '0' && c <= '9') {
+        int start = at;
+        while (at < text.length() && Character.isDigit(text.charAt(at))) {
+          at++;
+        }
+        return text.substring(start, at);
+      }
+      var name = identifier();
+      if (name == null) {
+        throw error("A field's name is needed here");
+      }
+      return name;
     }
 
     // As in JavaScript, a name given twice keeps its first place and its last value.
@@ -452,40 +444,41 @@ public final class Shell {
           out.append(c);
           continue;
         }
-        char e = text.charAt(at++);
-        switch (e) {
-          case 'n' -> out.append('\n');
-          case 'r' -> out.append('\r');
-          case 't' -> out.append('\t');
-          case 'b' -> out.append('\b');
-          case 'f' -> out.append('\f');
-          case 'v' -> out.append('\u000b');
-          case '0' -> out.append('\0');
-          case '\n' -> {} // a line continued
-          case 'u' -> {
-            if (at + 4 > text.length()) {
-              throw error("\\u needs four hexadecimal digits");
-            }
-            try {
-              out.append((char) Integer.parseInt(text.substring(at, at + 4), 16));
-            } catch (NumberFormatException x) {
-              throw error("\\u needs four hexadecimal digits");
-            }
-            at += 4;
-          }
-          case 'x' -> {
-            if (at + 2 > text.length()) {
-              throw error("\\x needs two hexadecimal digits");
-            }
-            try {
-              out.append((char) Integer.parseInt(text.substring(at, at + 2), 16));
-            } catch (NumberFormatException x) {
-              throw error("\\x needs two hexadecimal digits");
-            }
-            at += 2;
-          }
-          default -> out.append(e);
+        escape(out);
+      }
+    }
+
+    // The character after a backslash, and what it stands for.
+    private void escape(StringBuilder out) throws SyntaxException {
+      char e = text.charAt(at++);
+      switch (e) {
+        case 'n' -> out.append('\n');
+        case 'r' -> out.append('\r');
+        case 't' -> out.append('\t');
+        case 'b' -> out.append('\b');
+        case 'f' -> out.append('\f');
+        case 'v' -> out.append('\u000b');
+        case '0' -> out.append('\0');
+        case '\n' -> {
+          // A line continued: the break is not in the string.
         }
+        case 'u' -> out.append(escaped(4, "\\u needs four hexadecimal digits"));
+        case 'x' -> out.append(escaped(2, "\\x needs two hexadecimal digits"));
+        default -> out.append(e);
+      }
+    }
+
+    // The character of the hexadecimal digits that follow.
+    private char escaped(int digits, String missing) throws SyntaxException {
+      if (at + digits > text.length()) {
+        throw error(missing);
+      }
+      try {
+        char c = (char) Integer.parseInt(text.substring(at, at + digits), 16);
+        at += digits;
+        return c;
+      } catch (NumberFormatException _) {
+        throw error(missing);
       }
     }
 
@@ -521,36 +514,74 @@ public final class Shell {
         at++;
         space();
       }
-      var name = Character.isLetter(peek()) ? identifier() : null;
-      if (name != null) {
-        if (name.equals("Infinity")) {
-          return negative ? Double.NEGATIVE_INFINITY : Double.POSITIVE_INFINITY;
-        }
-        if (name.equals("NaN")) {
-          return Double.NaN;
-        }
+      if (Character.isLetter(peek())) {
+        return namedNumber(start, negative);
+      }
+      if (text.startsWith("0x", at) || text.startsWith("0X", at)) {
+        return hexadecimal(negative);
+      }
+      return decimal(start, negative);
+    }
+
+    // Infinity or NaN, after a sign.
+    private Object namedNumber(int start, boolean negative) throws SyntaxException {
+      var name = identifier();
+      if (name.equals(INFINITY)) {
+        return negative ? Double.NEGATIVE_INFINITY : Double.POSITIVE_INFINITY;
+      }
+      if (name.equals("NaN")) {
+        return Double.NaN;
+      }
+      at = start;
+      throw error("A number is needed here");
+    }
+
+    // 0x and up to 64 bits of hexadecimal digits.
+    private Object hexadecimal(boolean negative) throws SyntaxException {
+      int digits = at;
+      at += 2;
+      int hex = at;
+      while (at < text.length() && HexFormat.isHexDigit(text.charAt(at))) {
+        at++;
+      }
+      if (at == hex) {
+        throw error("Hexadecimal digits are missing after 0x");
+      }
+      try {
+        long value = Long.parseUnsignedLong(text.substring(hex, at), 16);
+        return whole(negative ? -value : value);
+      } catch (NumberFormatException _) {
+        at = digits;
+        throw error("The number is too large for 64 bits");
+      }
+    }
+
+    // Digits, with a point or an exponent a double, without them a whole number.
+    private Object decimal(int start, boolean negative) throws SyntaxException {
+      int digits = at;
+      boolean fraction = digits(digits);
+      var written = text.substring(digits, at).replace("_", "");
+      if (written.isEmpty() || written.equals(".")) {
         at = start;
         throw error("A number is needed here");
       }
-      int digits = at;
-      if (text.startsWith("0x", at) || text.startsWith("0X", at)) {
-        at += 2;
-        int hex = at;
-        while (at < text.length() && HexFormat.isHexDigit(text.charAt(at))) {
-          at++;
-        }
-        if (at == hex) {
-          throw error("Hexadecimal digits are missing after 0x");
-        }
-        long value;
-        try {
-          value = Long.parseUnsignedLong(text.substring(hex, at), 16);
-        } catch (NumberFormatException e) {
-          at = digits;
-          throw error("The number is too large for 64 bits");
-        }
-        return whole(negative ? -value : value);
+      if (!end() && Character.isJavaIdentifierStart(peek())) {
+        throw error("A number cannot run into a name");
       }
+      try {
+        if (fraction) {
+          double value = Double.parseDouble(written);
+          return negative ? -value : value;
+        }
+        return whole(written, negative);
+      } catch (NumberFormatException _) {
+        at = start;
+        throw error("Not a number");
+      }
+    }
+
+    // Goes over the digits, a point and an exponent; whether it met either.
+    private boolean digits(int digits) {
       boolean fraction = false;
       while (at < text.length()) {
         char c = text.charAt(at);
@@ -566,34 +597,22 @@ public final class Shell {
             at++;
           }
         } else {
-          break;
+          return fraction;
         }
       }
-      var written = text.substring(digits, at).replace("_", "");
-      if (written.isEmpty() || written.equals(".")) {
-        at = start;
-        throw error("A number is needed here");
-      }
-      if (!end() && Character.isJavaIdentifierStart(peek())) {
-        throw error("A number cannot run into a name");
+      return fraction;
+    }
+
+    // A whole number as an int or a long where it fits, or else as a double.
+    private static Object whole(String written, boolean negative) {
+      var whole = new BigDecimal(written);
+      if (negative) {
+        whole = whole.negate();
       }
       try {
-        if (!fraction) {
-          var whole = new BigDecimal(written);
-          if (negative) {
-            whole = whole.negate();
-          }
-          try {
-            return whole(whole.longValueExact());
-          } catch (ArithmeticException tooLarge) {
-            return whole.doubleValue();
-          }
-        }
-        double value = Double.parseDouble(written);
-        return negative ? -value : value;
-      } catch (NumberFormatException e) {
-        at = start;
-        throw error("Not a number");
+        return whole(whole.longValueExact());
+      } catch (ArithmeticException _) {
+        return whole.doubleValue();
       }
     }
 
@@ -605,60 +624,71 @@ public final class Shell {
 
     /** What a name begins: a constant, or a constructor such as ObjectId('…'). */
     Object named(String name, int start) throws SyntaxException {
-      switch (name) {
-        case "true" -> {
-          return true;
-        }
-        case "false" -> {
-          return false;
-        }
-        case "null" -> {
-          return null;
-        }
-        case "undefined" -> {
-          return Bson.Special.UNDEFINED;
-        }
-        case "NaN" -> {
-          return Double.NaN;
-        }
-        case "Infinity" -> {
-          return Double.POSITIVE_INFINITY;
-        }
+      return switch (name) {
+        case "true" -> true;
+        case "false" -> false;
+        case "null" -> null;
+        case "undefined" -> Bson.Special.UNDEFINED;
+        case "NaN" -> Double.NaN;
+        case INFINITY -> Double.POSITIVE_INFINITY;
         case "new" -> {
-          int at = this.at;
+          int typeAt = at;
           var type = identifier();
           if (type == null) {
             throw error("A type is needed after new, such as Date");
           }
-          return constructed(type, at);
+          yield constructed(type, typeAt);
         }
-        default -> {
-          return constructed(name, start);
-        }
+        default -> constructed(name, start);
+      };
+    }
+
+    private Object constructed(String name, int start) throws SyntaxException {
+      var type = qualified(name);
+      space();
+      if (!take('(')) {
+        return constant(type, start);
+      }
+      var starts = new ArrayList<Integer>();
+      var args = arguments(starts);
+      var constructor = MAKERS.get(type);
+      if (constructor == null) {
+        throw new SyntaxException("Unknown name " + type + ": a value is needed here", start);
+      }
+      try {
+        return constructor.maker().make(args);
+      } catch (IllegalArgumentException | DateTimeParseException e) {
+        var message = e.getMessage() == null ? "Not a valid " + type : e.getMessage();
+        throw new SyntaxException(message, starts.isEmpty() ? start : starts.getFirst());
       }
     }
 
-    private Object constructed(String type, int start) throws SyntaxException {
+    // Binary and BSON with the method after them, as Binary.createFromBase64.
+    private String qualified(String type) throws SyntaxException {
       if (type.equals("Binary") || type.equals("BSON")) {
         space();
         if (take('.')) {
-          var method = identifier();
-          type = type + "." + method;
+          return type + "." + identifier();
         }
       }
-      space();
-      if (!take('(')) {
-        if (type.equals("MinKey")) {
-          return Bson.Special.MIN_KEY;
+      return type;
+    }
+
+    // A type that is a value without parentheses.
+    private Object constant(String type, int start) throws SyntaxException {
+      return switch (type) {
+        case "MinKey" -> Bson.Special.MIN_KEY;
+        case "MaxKey" -> Bson.Special.MAX_KEY;
+        default -> {
+          at = start;
+          throw error("Unknown name " + type + ": a value is needed here");
         }
-        if (type.equals("MaxKey")) {
-          return Bson.Special.MAX_KEY;
-        }
-        at = start;
-        throw error("Unknown name " + type + ": a value is needed here");
-      }
+      };
+    }
+
+    // The arguments up to the closing parenthesis, and where each starts.
+    private List<Object> arguments(List<Integer> starts) throws SyntaxException {
       var args = new ArrayList<Object>();
-      var starts = new ArrayList<Integer>();
       while (!take(')')) {
         space();
         starts.add(at);
@@ -670,16 +700,7 @@ public final class Shell {
           break;
         }
       }
-      var constructor = MAKERS.get(type);
-      if (constructor == null) {
-        throw new SyntaxException("Unknown name " + type + ": a value is needed here", start);
-      }
-      try {
-        return constructor.maker().make(args);
-      } catch (IllegalArgumentException | DateTimeParseException e) {
-        var message = e.getMessage() == null ? "Not a valid " + type : e.getMessage();
-        throw new SyntaxException(message, starts.isEmpty() ? start : starts.getFirst());
-      }
+      return args;
     }
 
     /** Makes a value of what a constructor was given. */
@@ -866,16 +887,16 @@ public final class Shell {
       var iso = text.replace(' ', 'T');
       try {
         return OffsetDateTime.parse(iso).toInstant();
-      } catch (DateTimeParseException withoutOffset) {
+      } catch (DateTimeParseException _) { // without an offset: UTC
         return LocalDateTime.parse(iso).toInstant(ZoneOffset.UTC);
       }
     }
-  }
 
-  // The options of a regular expression in order, as the server keeps them.
-  private static String sorted(String options) {
-    var chars = options.toCharArray();
-    java.util.Arrays.sort(chars);
-    return new String(chars);
+    // The options of a regular expression in order, as the server keeps them.
+    private static String sorted(String options) {
+      var chars = options.toCharArray();
+      java.util.Arrays.sort(chars);
+      return new String(chars);
+    }
   }
 }

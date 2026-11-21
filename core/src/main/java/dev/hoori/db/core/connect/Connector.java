@@ -38,12 +38,21 @@ public final class Connector {
    * Opens a connection to the profile's server as its user, with the password, and reads which
    * server it is and which database it is on. The time limit applies to reaching the server,
    * logging in and those reads, which the driver may answer with a query; the connection has none
-   * afterwards.
+   * afterwards. A read-only profile's connection is read-only at the server: the dialect's {@link
+   * dev.hoori.db.core.dialect.ConnectDialect#readOnly} makes every later transaction of the
+   * session read-only, so that the server refuses what writes.
    */
   public static Opened open(
       ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout)
       throws ConnectionException {
     return connect(profile, password, driver, timeout, connection -> {
+      // Not JDBC's setReadOnly, with which MySQL Connector/J refuses by its own reading of the
+      // text, in place of the server's error.
+      if (profile.readOnly()) {
+        try (var statement = connection.createStatement()) {
+          statement.execute(profile.provider().dialect().connecting().readOnly());
+        }
+      }
       var metadata = connection.getMetaData();
       var opened = new Opened(
           connection,
@@ -75,7 +84,7 @@ public final class Connector {
     var interrupted = Thread.interrupted();
     try {
       connection.close();
-    } catch (SQLException | RuntimeException e) {
+    } catch (SQLException | RuntimeException _) {
       // Nothing is left to do with a connection that cannot even be closed.
     } finally {
       if (interrupted) {
@@ -121,6 +130,8 @@ public final class Connector {
           connection = null;
         }
       } catch (Throwable e) {
+        // Throwable, not Exception: an Error of the driver, such as a LinkageError of its classes,
+        // would end the worker silently and leave the caller waiting out the time limit.
         result.completeExceptionally(e);
       } finally {
         properties.remove("password");
@@ -148,11 +159,11 @@ public final class Connector {
     try {
       // get() does not look at the interrupt when the result is there, hence the checks after it.
       value = result.get(limit.toMillis(), TimeUnit.MILLISECONDS);
-    } catch (InterruptedException e) {
+    } catch (InterruptedException _) {
       abandon(result, worker);
       Thread.currentThread().interrupt();
       throw cancelled();
-    } catch (TimeoutException e) {
+    } catch (TimeoutException _) {
       abandon(result, worker);
       throw new ConnectionException(Failure.TIMED_OUT, "", null);
     } catch (ExecutionException e) {

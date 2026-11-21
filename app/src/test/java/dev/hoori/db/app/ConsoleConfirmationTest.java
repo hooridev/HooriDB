@@ -15,10 +15,10 @@ import static dev.hoori.db.app.ConsoleTest.PAY;
 import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.RUN_ALL;
 import static dev.hoori.db.app.ConsoleTest.type;
-import static dev.hoori.db.app.ConsoleTransactionTest.CHAIN;
-import static dev.hoori.db.app.ConsoleTransactionTest.MANUAL;
-import static dev.hoori.db.app.ConsoleTransactionTest.OPENED;
-import static dev.hoori.db.app.ConsoleTransactionTest.badge;
+import static dev.hoori.db.app.ConsoleTransactions.CHAIN;
+import static dev.hoori.db.app.ConsoleTransactions.MANUAL;
+import static dev.hoori.db.app.ConsoleTransactions.OPENED;
+import static dev.hoori.db.app.ConsoleTransactions.badge;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -56,7 +56,7 @@ class ConsoleConfirmationTest {
   @TempDir
   Path dir;
 
-  final ConsoleTransactionTest t = new ConsoleTransactionTest();
+  final ConsoleTransactions t = new ConsoleTransactions() {};
   CatalogTreeTest c;
   FakeServers servers;
 

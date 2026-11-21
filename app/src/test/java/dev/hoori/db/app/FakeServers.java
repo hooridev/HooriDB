@@ -408,7 +408,7 @@ final class FakeServers implements Servers {
           try {
             gate.await();
             break;
-          } catch (InterruptedException e) {
+          } catch (InterruptedException _) {
             interrupt = true;
           }
         }
@@ -418,7 +418,7 @@ final class FakeServers implements Servers {
       } else {
         try {
           gate.await();
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
           interrupted.add(key);
           Thread.currentThread().interrupt();
           // A failure the test set is how the cancel ended, as a connection given up.
@@ -646,7 +646,7 @@ final class FakeServers implements Servers {
           call(key, queryFailure(QueryException.Failure.CANCELLED));
         } catch (QueryException e) {
           throw e;
-        } catch (Exception e) {
+        } catch (Exception _) {
           throw queryFailure(QueryException.Failure.OTHER);
         }
         if (table == null) {
@@ -697,7 +697,7 @@ final class FakeServers implements Servers {
         call(key, queryFailure(QueryException.Failure.CANCELLED));
       } catch (QueryException e) {
         throw e;
-      } catch (Exception e) {
+      } catch (Exception _) {
         throw queryFailure(QueryException.Failure.OTHER);
       }
       done.add(key);
@@ -818,7 +818,7 @@ final class FakeServers implements Servers {
             try {
               note(key);
               call(key, queryFailure(QueryException.Failure.CANCELLED));
-            } catch (Exception e) {
+            } catch (Exception _) {
               over = true;
               var cancelled =
                   new Failure(Failure.Kind.CANCELLED, "", "57014", 0, 0, "", 0, 0, "", "", "", "");
@@ -832,8 +832,8 @@ final class FakeServers implements Servers {
                 !answer.results().isEmpty() && answer.results().getLast() instanceof Failure f
                     ? f
                     : null;
-            boolean failed = failure != null;
-            lost = failed && failure.kind() == Failure.Kind.CONNECTION_LOST;
+            boolean fails = failure != null;
+            lost = fails && failure.kind() == Failure.Kind.CONNECTION_LOST;
             if (key.startsWith("run ") && !lost) {
               transaction = after(word, setting, sql, failure, pg);
             }
@@ -866,7 +866,7 @@ final class FakeServers implements Servers {
             }
             done.add(key);
             var messages = key.startsWith("run ") ? answer.messages() : List.<Message>of();
-            return new Portion(out, messages, more, TOOK, said(more, failed), mode(more, failed));
+            return new Portion(out, messages, more, TOOK, said(more, fails), mode(more, fails));
           } finally {
             busy.decrementAndGet();
           }
@@ -897,8 +897,8 @@ final class FakeServers implements Servers {
     // The transaction as the server leaves it after the statement, with its auto-commit.
     private Transaction after(
         String word, String setting, String sql, Failure failure, boolean pg) {
-      boolean failed = failure != null;
-      if (!failed && !pg) {
+      boolean fails = failure != null;
+      if (!fails && !pg) {
         seen = manual; // the driver follows the server's status after what ended well
       }
       if (beginning.contains(sql)) {
@@ -908,26 +908,26 @@ final class FakeServers implements Servers {
         manual = false; // behind the driver's back, also where the statement then fails
         return Transaction.NONE; // turned on from off, it commits
       }
-      if (!failed && setting.startsWith("setautocommit=")) {
+      if (!fails && setting.startsWith("setautocommit=")) {
         boolean on = setting.endsWith("1");
         boolean was = manual;
         manual = !on;
         seen = manual;
         return on && was ? Transaction.NONE : transaction; // turned on from off, it commits
       }
-      if (!failed && setting.startsWith("setcompletion_type=")) {
+      if (!fails && setting.startsWith("setcompletion_type=")) {
         chain = setting.endsWith("1");
         return transaction;
       }
       switch (word) {
         case "BEGIN", "START" -> {
-          return failed ? transaction : Transaction.OPEN;
+          return fails ? transaction : Transaction.OPEN;
         }
         case "COMMIT", "ROLLBACK" -> {
-          if (!failed && sql.toUpperCase(Locale.ROOT).matches("ROLLBACK\\b.*\\bTO\\b.*")) {
+          if (!fails && sql.toUpperCase(Locale.ROOT).matches("ROLLBACK\\b.*\\bTO\\b.*")) {
             return transaction; // to a savepoint: what came before it stays
           }
-          if (!failed) {
+          if (!fails) {
             return chain ? Transaction.OPEN : Transaction.NONE;
           }
           return pg && word.equals("COMMIT") || rolledBack(failure)
@@ -939,9 +939,11 @@ final class FakeServers implements Servers {
             return Transaction.NONE; // committed before it runs, also where it fails
           }
         }
-        default -> {}
+        default -> {
+          // Every other statement goes on below.
+        }
       }
-      if (failed) {
+      if (fails) {
         if (pg) {
           return manual || transaction == Transaction.OPEN ? Transaction.FAILED : transaction;
         }
@@ -993,7 +995,7 @@ final class FakeServers implements Servers {
         call(key, queryFailure(QueryException.Failure.CANCELLED));
       } catch (QueryException e) {
         throw e;
-      } catch (Exception e) {
+      } catch (Exception _) {
         throw queryFailure(QueryException.Failure.OTHER);
       }
       done.add(key);
@@ -1116,7 +1118,7 @@ final class FakeServers implements Servers {
         call(key, queryFailure(QueryException.Failure.CANCELLED));
       } catch (QueryException e) {
         throw e;
-      } catch (Exception e) {
+      } catch (Exception _) {
         throw queryFailure(QueryException.Failure.OTHER);
       }
       done.add(key);

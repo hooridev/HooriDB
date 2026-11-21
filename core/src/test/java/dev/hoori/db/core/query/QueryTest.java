@@ -45,8 +45,10 @@ class QueryTest {
     void read() throws SQLException {
       if (Thread.currentThread().isVirtual()) {
         try {
-          while (closed.getCount() > 0 && !answer.await(10, TimeUnit.MILLISECONDS)) {}
-        } catch (InterruptedException e) {
+          while (closed.getCount() > 0 && !answer.await(10, TimeUnit.MILLISECONDS)) {
+            // Waits on, until there is an answer or the socket is closed.
+          }
+        } catch (InterruptedException _) {
           close();
         }
       } else {
@@ -82,7 +84,9 @@ class QueryTest {
     final AtomicInteger executions = new AtomicInteger();
     final AtomicBoolean aborted = new AtomicBoolean();
 
-    void prepare() throws SQLException {}
+    void prepare() throws SQLException {
+      // Nothing, unless a test makes preparing fail or wait.
+    }
 
     // The statement waits for the server's answer.
     Object execute() throws SQLException {
@@ -102,7 +106,9 @@ class QueryTest {
       executor.execute(socket::close);
     }
 
-    void closeStatement() throws SQLException {}
+    void closeStatement() throws SQLException {
+      // Nothing, unless a test makes closing fail or wait.
+    }
 
     Connection connection() {
       var statement = fake(PreparedStatement.class, name -> switch (name) {
@@ -178,7 +184,7 @@ class QueryTest {
         aborted.set(true);
         try {
           hung.await();
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
           // Ends the test's thread.
         }
         socket.close();
@@ -306,11 +312,97 @@ class QueryTest {
   }
 
   @Test
+  void anInterruptWhileAStepPastItsLimitIsGivenUpStays() throws Exception {
+    var aborting = new CountDownLatch(1);
+    var hung = new CountDownLatch(1);
+    var driver = new Driver() {
+      @Override
+      void abort(Executor executor) {
+        aborting.countDown();
+        try {
+          hung.await();
+        } catch (InterruptedException _) {
+          // Ends the test's thread.
+        }
+      }
+    };
+    var connection = driver.connection();
+    var failure = new QueryException[1];
+    var interrupted = new boolean[1];
+    var caller = Thread.ofPlatform().start(() -> {
+      failure[0] = assertThrows(
+          QueryException.class,
+          () -> Query.within(connection, Provider.MARIADB, Duration.ofMillis(100), () -> {
+            driver.socket.read(); // a server that no longer answers
+            return null;
+          }));
+      interrupted[0] = Thread.currentThread().isInterrupted();
+    });
+    try {
+      assertTrue(aborting.await(GIVING_UP.toMillis(), TimeUnit.MILLISECONDS));
+      caller.interrupt();
+      caller.join(GIVING_UP);
+      assertFalse(caller.isAlive(), "The call did not end in time");
+      assertEquals(Failure.ABORTED, failure[0].failure());
+      assertTrue(interrupted[0]);
+    } finally {
+      hung.countDown();
+    }
+  }
+
+  @Test
+  void anInterruptBeforeAStepPastItsLimitIsGivenUpAbortsAtOnce() throws Exception {
+    // A step that only the abort ends, as a driver that ignores the interrupt.
+    var released = new CountDownLatch(1);
+    var driver = new Driver() {
+      @Override
+      void abort(Executor executor) {
+        aborted.set(true);
+        released.countDown();
+      }
+    };
+    var connection = driver.connection();
+    var failure = new QueryException[1];
+    var interrupted = new boolean[1];
+    var took = new Duration[1];
+    var caller = Thread.ofPlatform().start(() -> {
+      var started = System.nanoTime();
+      failure[0] = assertThrows(
+          QueryException.class,
+          () -> Query.within(
+              connection,
+              Provider.MARIADB,
+              Duration.ofMillis(100),
+              () -> {
+                while (true) {
+                  try {
+                    released.await();
+                    return null;
+                  } catch (InterruptedException _) {
+                    // Ignored, as such a call does.
+                  }
+                }
+              },
+              () -> Thread.currentThread().interrupt()));
+      took[0] = Duration.ofNanos(System.nanoTime() - started);
+      interrupted[0] = Thread.currentThread().isInterrupted();
+    });
+    caller.join(GIVING_UP);
+    assertFalse(caller.isAlive(), "The call did not end in time");
+    assertEquals(Failure.ABORTED, failure[0].failure());
+    assertTrue(driver.aborted.get());
+    assertTrue(took[0].compareTo(Query.GRACE) < 0, "took " + took[0]);
+    assertTrue(interrupted[0]);
+  }
+
+  @Test
   void anInterruptAsTheResultArrivesStillCancels() throws Exception {
     // A cancel that finds the statement over, which an interrupt just before the result sends.
     var driver = new Driver() {
       @Override
-      void cancel() {}
+      void cancel() {
+        // The statement is over by the time the cancel comes.
+      }
     };
     var connection = driver.connection();
     for (var i = 0; i < 300; i++) {
@@ -422,7 +514,7 @@ class QueryTest {
   private static void sleep(long millis) {
     try {
       Thread.sleep(millis);
-    } catch (InterruptedException e) {
+    } catch (InterruptedException _) {
       Thread.currentThread().interrupt();
     }
   }

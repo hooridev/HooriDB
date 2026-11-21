@@ -19,6 +19,7 @@ import dev.hoori.db.core.driver.DriverException;
 import dev.hoori.db.core.driver.DriverStore;
 import dev.hoori.db.core.driver.LoadedDriver;
 import java.nio.file.AccessDeniedException;
+import java.time.Instant;
 import java.util.function.BiConsumer;
 
 /**
@@ -71,7 +72,7 @@ final class Fetch {
 
   private final BiConsumer<State, LoadedDriver> then; // gets the driver once it is loaded
   private String chosen; // the version looked up, or null for the recommended one
-  Lookup lookup; // null without drivers, as in a script run
+  Lookup known; // null without drivers, as in a script run
   // What the repository offered when the recommended version was last looked up, or null: the one
   // source of the recommended version and its list, which the list of versions shows.
   DriverStore.Choices choices;
@@ -97,7 +98,7 @@ final class Fetch {
       looking.cancel();
       looking = null;
     }
-    if (lookup == null || lookup.provider() != provider) {
+    if (known == null || known.provider() != provider) {
       choices = null; // another kind's driver
     }
     var drivers = s.drivers;
@@ -107,55 +108,65 @@ final class Fetch {
     var driver = Driver.of(provider);
     var store = drivers.store;
     var clock = drivers.clock;
-    lookup = new Looking(provider);
+    known = new Looking(provider);
     looking = s.app.background(
         "look up a driver",
-        () -> {
-          // The one place that decides the recommended version, with its fallback offline.
-          var recommended = chosen != null ? null : store.recommended(driver, clock.instant());
-          var read = recommended == null ? null : recommended.choices();
-          if (recommended != null && recommended.version() == null) {
-            // None of the newest releases has waited long enough: the list read stays all the same.
-            return new Looked(
-                new Missing(provider, new DriverException(NO_RECOMMENDATION, driver.artifact())),
-                read);
-          }
-          var version = chosen == null ? recommended.version() : chosen;
-          boolean offline = recommended != null && recommended.offline();
-          boolean there = store.downloaded(driver).contains(version);
-          long size = there || offline ? -1 : size(store, driver, version);
-          return new Looked(new Found(provider, version, offline, there, size), read);
-        },
-        looked -> {
-          looking = null;
-          lookup = looked.lookup();
-          if (looked.choices() != null) {
-            choices = looked.choices();
-          }
-          switch (looked.lookup()) {
-            case Found found -> {
-              if (chosen == null) {
-                drivers.recommend(driver, found.version());
-              }
-              if (step instanceof Waiting) {
-                start(s);
-              }
-            }
-            case Missing missing -> {
-              if (step instanceof Waiting) {
-                step = new Failed(Stage.LOOK_UP, missing.error());
-              }
-            }
-            case Looking ignored -> {}
-          }
-        },
+        () -> look(store, driver, provider, chosen, clock.instant()),
+        looked -> looked(s, drivers, driver, chosen, looked),
         error -> {
           looking = null;
-          lookup = new Missing(provider, error);
+          known = new Missing(provider, error);
           if (step instanceof Waiting) {
             step = new Failed(Stage.LOOK_UP, error);
           }
         });
+  }
+
+  /**
+   * The one place that decides the recommended version, with its fallback offline, and whether
+   * the version is downloaded.
+   *
+   * @param chosen the version to use, or null for the recommended one
+   */
+  private static Looked look(
+      DriverStore store, Driver driver, Provider provider, String chosen, Instant now)
+      throws DriverException {
+    var recommended = chosen != null ? null : store.recommended(driver, now);
+    var read = recommended == null ? null : recommended.choices();
+    if (recommended != null && recommended.version() == null) {
+      // None of the newest releases has waited long enough: the list read stays all the same.
+      return new Looked(
+          new Missing(provider, new DriverException(NO_RECOMMENDATION, driver.artifact())), read);
+    }
+    var version = chosen == null ? recommended.version() : chosen;
+    boolean offline = recommended != null && recommended.offline();
+    boolean there = store.downloaded(driver).contains(version);
+    long size = there || offline ? -1 : size(store, driver, version);
+    return new Looked(new Found(provider, version, offline, there, size), read);
+  }
+
+  /** The lookup's answer: what waited for it goes on, or fails. */
+  private void looked(State s, Drivers drivers, Driver driver, String chosen, Looked looked) {
+    looking = null;
+    known = looked.lookup();
+    if (looked.choices() != null) {
+      choices = looked.choices();
+    }
+    switch (looked.lookup()) {
+      case Found found -> {
+        if (chosen == null) {
+          drivers.recommend(driver, found.version());
+        }
+        if (step instanceof Waiting) {
+          start(s);
+        }
+      }
+      case Missing missing
+      when step instanceof Waiting -> step = new Failed(Stage.LOOK_UP, missing.error());
+      case Missing _, Looking _ -> {
+        // Nothing waits for it, and a lookup never answers that it is looking.
+      }
+    }
   }
 
   /** What a lookup found, or that none qualifies, with what the repository offered where read. */
@@ -163,8 +174,8 @@ final class Fetch {
 
   /** Gets the driver, as far as is needed: asks before a download. */
   void start(State s) {
-    switch (lookup) {
-      case Looking looking -> step = new Waiting();
+    switch (known) {
+      case Looking _ -> step = new Waiting();
       case Missing missing -> {
         step = new Waiting();
         lookUp(s, missing.provider(), chosen);
@@ -193,7 +204,7 @@ final class Fetch {
 
   /** Downloads the driver, then loads it; asks first unless the user agreed since the last stop. */
   void download(State s) {
-    if (!(lookup instanceof Found found)) {
+    if (!(known instanceof Found found)) {
       return;
     }
     if (!agreed) {
@@ -230,8 +241,8 @@ final class Fetch {
         },
         downloaded -> {
           work = null;
-          if (lookup instanceof Found f && f.provider() == downloaded.provider()) {
-            lookup = downloaded;
+          if (known instanceof Found f && f.provider() == downloaded.provider()) {
+            known = downloaded;
           }
           load(s, downloaded);
         },
@@ -263,8 +274,8 @@ final class Fetch {
             // Deleted since it was looked up: it is downloaded again, after asking.
             var missing =
                 new Found(found.provider(), found.version(), found.offline(), false, found.size());
-            if (lookup instanceof Found f && f.equals(found)) {
-              lookup = missing;
+            if (known instanceof Found f && f.equals(found)) {
+              known = missing;
             }
             agreed = false;
             step = new Asking(missing);
@@ -369,28 +380,32 @@ final class Fetch {
       return "A script run downloads no drivers, so connections cannot be tested.";
     }
     var source = s.drivers.source;
-    return switch (lookup) {
-      case Looking l -> name(l.provider()) + ", looking up the version to use…";
+    return switch (known) {
+      case Looking(var provider) -> name(provider) + ", looking up the version to use…";
       case Found f
       when f.downloaded() && f.offline() ->
         name(f.provider()) + " " + f.version() + ", downloaded (" + source
             + " cannot be reached to look for a newer one)";
       case Found f when f.downloaded() -> name(f.provider()) + " " + f.version() + ", downloaded";
       case Found f ->
-        name(f.provider()) + " " + f.version() + ", not downloaded yet ("
-            + (f.size() >= 0 ? size(f.size()) + ", " : "") + "from " + source + ")";
-      case Missing m
-      when m.error() instanceof DriverException e
-          && e.failure() == DriverException.Failure.NO_NETWORK ->
-        name(m.provider()) + ", not downloaded yet (" + source + " cannot be reached)";
-      case Missing m
-      when m.error() instanceof DriverException e
-          && e.failure() == DriverException.Failure.UNAVAILABLE ->
-        name(m.provider()) + ", not downloaded yet (" + source + " is not answering)";
-      case Missing m ->
-        name(m.provider()) + " could not be looked up. " + text(m.error(), s.drivers);
+        notDownloaded(
+            name(f.provider()) + " " + f.version(),
+            (f.size() >= 0 ? size(f.size()) + ", " : "") + "from " + source);
+      case Missing(var provider, DriverException e)
+      when e.failure() == DriverException.Failure.NO_NETWORK ->
+        notDownloaded(name(provider), source + " cannot be reached");
+      case Missing(var provider, DriverException e)
+      when e.failure() == DriverException.Failure.UNAVAILABLE ->
+        notDownloaded(name(provider), source + " is not answering");
+      case Missing(var provider, var error) ->
+        name(provider) + " could not be looked up. " + text(error, s.drivers);
       case null -> null;
     };
+  }
+
+  /** The driver, not downloaded yet, and why in brackets. */
+  private static String notDownloaded(String driver, String why) {
+    return driver + ", not downloaded yet (" + why + ")";
   }
 
   /**
@@ -401,17 +416,16 @@ final class Fetch {
    */
   El view(State s, Runnable stop) {
     return switch (step) {
-      case Asking a -> question(s, a.found(), stop);
-      case Downloading d ->
-        downloading("Downloading " + name(d.found().provider()), d.done(), d.total(), stop);
-      case Failed f ->
+      case Asking(var found) -> question(s, found, stop);
+      case Downloading(var found, var done, var total) ->
+        downloading("Downloading " + name(found.provider()), done, total, stop);
+      case Failed(var stage, var error) ->
         Callout.callout(
             Callout.Kind.DANGER,
-            title(f.stage()),
-            text(f.error(), s.drivers),
-            button(SECONDARY, "Try again", () -> again(s, f.stage())));
-      case Waiting w -> null;
-      case Loading l -> null;
+            title(stage),
+            text(error, s.drivers),
+            button(SECONDARY, "Try again", () -> again(s, stage)));
+      case Waiting _, Loading _ -> null;
       case null -> null;
     };
   }
@@ -451,7 +465,7 @@ final class Fetch {
   private static long size(DriverStore store, Driver driver, String version) {
     try {
       return store.size(driver, version);
-    } catch (DriverException e) {
+    } catch (DriverException _) {
       return -1;
     }
   }

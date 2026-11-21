@@ -13,6 +13,8 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.UUID;
 import java.util.function.Predicate;
 import tools.jackson.core.JacksonException;
@@ -21,6 +23,7 @@ import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * A JSON file of HooriDB's in a folder, read whole and replaced whole: what the stores of the
@@ -41,6 +44,8 @@ final class JsonFile {
         .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
         .enable(SerializationFeature.INDENT_OUTPUT)
         .build();
+
+    private Json() {}
   }
 
   /** What a save checks an old file with before it replaces it: it throws where it cannot read it. */
@@ -82,7 +87,7 @@ final class JsonFile {
     }
   }
 
-  // The file's bytes, or null when there is no file.
+  // The file's bytes, or null when there is no file: an empty array would be a file that is empty.
   private byte[] read() throws IOException {
     try {
       // Checked first, as a file of any size would be read into memory whole.
@@ -90,7 +95,7 @@ final class JsonFile {
         throw unreadable("it is larger than " + (maxSize >> 20) + " MB");
       }
       return Files.readAllBytes(file);
-    } catch (NoSuchFileException missing) {
+    } catch (NoSuchFileException _) {
       return null;
     }
   }
@@ -146,6 +151,11 @@ final class JsonFile {
     return list;
   }
 
+  /** A root to save, of the version given, for the store to fill. */
+  static ObjectNode newRoot(int version) {
+    return Json.MAPPER.createObjectNode().put("version", version);
+  }
+
   /** The root as bytes to save. */
   static ByteBuffer bytes(JsonNode root) {
     return ByteBuffer.wrap(Json.MAPPER.writeValueAsBytes(root));
@@ -183,7 +193,7 @@ final class JsonFile {
       if (old != null) {
         check.parse(old);
       }
-    } catch (UnreadableException unreadable) {
+    } catch (UnreadableException _) {
       var copy = folder.resolve(setAside(name));
       if (old == null) { // too large to have been read
         replace(copy, channel -> {
@@ -279,10 +289,19 @@ final class JsonFile {
       if (id.toString().equalsIgnoreCase(value)) {
         return id;
       }
-    } catch (IllegalArgumentException notAUuid) {
+    } catch (IllegalArgumentException _) {
       // Reported below.
     }
     throw unreadable("in " + where + ", \"" + field + "\" is not a UUID");
+  }
+
+  /** A moment, as {@link Instant#toString} writes it. */
+  Instant time(JsonNode object, String where, String field) throws UnreadableException {
+    try {
+      return Instant.parse(text(object, where, field));
+    } catch (DateTimeParseException _) {
+      throw unreadable("in " + where + ", \"" + field + "\" is not a time");
+    }
   }
 
   /**
@@ -303,8 +322,8 @@ final class JsonFile {
     }
     if (why == null) {
       why = switch (e) {
-        case AccessDeniedException denied -> "access was denied";
-        case NoSuchFileException missing -> "its folder does not exist";
+        case AccessDeniedException _ -> "access was denied";
+        case NoSuchFileException _ -> "its folder does not exist";
         default ->
           full(needed)
               ? "the disk is full"
@@ -318,7 +337,7 @@ final class JsonFile {
   private boolean full(long needed) {
     try {
       return needed > 0 && Files.getFileStore(folder).getUsableSpace() < needed;
-    } catch (IOException unknown) {
+    } catch (IOException _) {
       return false;
     }
   }

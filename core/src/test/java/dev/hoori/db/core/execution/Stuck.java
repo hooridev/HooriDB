@@ -76,7 +76,7 @@ public final class Stuck {
               try {
                 released.await();
                 break;
-              } catch (InterruptedException e) {
+              } catch (InterruptedException _) {
                 // Ignored, as such a call does.
               }
             }

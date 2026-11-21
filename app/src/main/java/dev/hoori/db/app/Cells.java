@@ -8,6 +8,7 @@ import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Rows;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -26,7 +27,7 @@ import java.util.HexFormat;
  * How the values of a table show in its grid: as a database writes them, not as a locale would.
  * Numbers without grouping and with all their digits, dates and times in ISO 8601's form with their
  * seconds, a moment in the computer's time zone with the offset it has there at that moment, NULL
- * as the grid's muted NULL.
+ * as the grid's muted NULL, and a field a document does not have as an empty cell.
  */
 final class Cells {
 
@@ -83,12 +84,14 @@ final class Cells {
   }
 
   /**
-   * The text of a value as core read it, or null for NULL; a moment in the zone. A value that its
+   * The text of a value as core read it, or null for NULL and empty for a field a document does not
+   * have; a moment in the zone. A value that its
    * kind's type could not hold came as the server's own text, which shows as it is.
    */
   static String text(Object value, ZoneId zone) {
     return switch (value) {
       case null -> null;
+      case Missing.FIELD -> "";
       case String s -> s;
       case Cut c -> c.start();
       case Long n -> n.toString();
@@ -109,13 +112,12 @@ final class Cells {
 
   /** The icon of a value that is cut short, which says how long it is; null for any other. */
   static CellIcon icon(Object value) {
-    return value instanceof Cut c
-        ? CellIcon.before(Symbol.MORE_HORIZONTAL, Icon.Variant.WARNING)
-            .tooltip("Cut short: the first " + Rows.LIMIT + " characters"
-                + (c.length().isPresent()
-                    ? " of " + Format.BYTES.text(c.length().getAsLong())
-                    : ""))
-        : null;
+    if (!(value instanceof Cut c)) {
+      return null;
+    }
+    var of = c.length().isPresent() ? " of " + Format.BYTES.text(c.length().getAsLong()) : "";
+    return CellIcon.before(Symbol.MORE_HORIZONTAL, Icon.Variant.WARNING)
+        .tooltip("Cut short: the first " + Rows.LIMIT + " characters" + of);
   }
 
   /** The start in hex, and the size. */

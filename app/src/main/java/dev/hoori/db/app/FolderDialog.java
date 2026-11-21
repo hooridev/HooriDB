@@ -49,6 +49,14 @@ final class FolderDialog {
     return new FolderDialog(Kind.DELETE, folder, name);
   }
 
+  /** What a folder holds of its connections, its folders' included. */
+  private static String holds(int n) {
+    if (n == 0) {
+      return "It holds folders, and no connections.";
+    }
+    return "It holds " + n + (n == 1 ? " connection" : " connections") + ", its folders included.";
+  }
+
   El view(State s) {
     return kind == Kind.DELETE ? deleting(s) : naming(s, () -> s.folderDialog = null);
   }
@@ -56,9 +64,10 @@ final class FolderDialog {
   private El naming(State s, Runnable close) {
     Theme t = Theme.CURRENT.get();
     boolean create = kind == Kind.CREATE;
-    Runnable done = name.isBlank()
-        ? null
-        : create ? () -> s.createFolder(folder, name) : () -> s.renameFolder(folder, name);
+    Runnable done = null;
+    if (!name.isBlank()) {
+      done = create ? () -> s.createFolder(folder, name) : () -> s.renameFolder(folder, name);
+    }
     El ok = button(PRIMARY, create ? "Create" : "Rename", done);
     El field =
         TextField.textField(Prop.of(() -> name, v -> name = v)).key("name").wFull();
@@ -81,7 +90,7 @@ final class FolderDialog {
     Theme t = Theme.CURRENT.get();
     var held = s.folder(folder);
     int n = held == null ? 0 : held.connections().size();
-    boolean busy = s.removing;
+    boolean busy = s.removal.running;
     El up = button(PRIMARY, "Move contents up", busy ? null : () -> s.dissolveFolder(folder));
     El contents = button(
         SECONDARY,
@@ -90,26 +99,20 @@ final class FolderDialog {
         Button.options()
             .tone(Button.Tone.DANGER)
             .state(busy ? Button.State.BUSY : Button.State.READY));
-    El cancel = button(SECONDARY, "Cancel", busy && !s.removingSlow ? null : s::cancelFolderDialog);
+    El cancel = button(SECONDARY, "Cancel", busy && !s.removal.slow ? null : s::cancelFolderDialog);
     // As wide as the connection dialog, as its questions are, so that the text wraps below.
     El content = col()
         .w(ConnectionDialog.width())
         .gap(t.space().m())
         .child(Label.label("Delete the folder " + name + "?").wrapText())
-        .child(Label.label(
-                Label.Variant.MUTED,
-                n == 0
-                    ? "It holds folders, and no connections."
-                    : "It holds " + n + (n == 1 ? " connection" : " connections")
-                        + ", its folders included.")
-            .wrapText())
+        .child(Label.label(Label.Variant.MUTED, holds(n)).wrapText())
         .child(Label.label(
                 Label.Variant.MUTED,
                 "Move contents up puts what it holds where the folder is, and connections stay"
                     + " connected. Delete contents deletes them with their passwords in the system"
                     + " keyring, their consoles and their history.")
             .wrapText());
-    if (s.removingSlow) {
+    if (s.removal.slow) {
       content.child(Callout.callout(
           Callout.Kind.WARNING,
           "The system keyring does not answer",
@@ -117,12 +120,12 @@ final class FolderDialog {
               + " not, and the connections not deleted yet stay."
               + (s.keyringWorker.behind() ? ConnectionDialog.BEHIND : "")));
     }
-    if (!s.kept.isEmpty()) {
-      var names = String.join(", ", s.kept.stream().map(State::name).toList());
+    if (!s.removal.kept.isEmpty()) {
+      var names = String.join(", ", s.removal.kept.stream().map(State::name).toList());
       content.child(Callout.callout(
           Callout.Kind.DANGER,
           "Not all connections were deleted",
-          "These stayed, and the folder with them: " + names + ".\n" + s.removeError));
+          "These stayed, and the folder with them: " + names + ".\n" + s.removal.error));
     }
     return Dialog.dialog(
         "Delete folder", content, List.of(cancel, contents, up), up, s::cancelFolderDialog);

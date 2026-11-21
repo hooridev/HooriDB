@@ -6,6 +6,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /** How a provider's driver is told where and how to connect, and why it could not. */
 public interface ConnectDialect {
@@ -38,4 +39,18 @@ public interface ConnectDialect {
 
   /** Whether the server opens the database named after the user where none is given. */
   boolean defaultDatabaseIsUser();
+
+  /**
+   * The statement that makes every later transaction of the session read-only at the server, run
+   * as a read-only connection opens.
+   */
+  String readOnly();
+
+  /**
+   * What turns a read-only session back to read-write, in lower case with one space between words:
+   * the names of its settings, and the words of a statement that does so, such as {@code read
+   * write}. A read-only connection does not send a statement that holds one, as {@link
+   * dev.hoori.db.core.sql.ReadWrite} reads it.
+   */
+  Set<String> readWrite();
 }

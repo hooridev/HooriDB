@@ -188,11 +188,7 @@ public final class Rows {
     if (from < 0 || to < from) {
       throw new IllegalArgumentException("Rows from " + from + " to " + to);
     }
-    for (var column : columns) {
-      if (!column.table().equals(table)) {
-        throw new IllegalArgumentException(column.name() + " is not a column of " + table.name());
-      }
-    }
+    requireColumnsOf(table, columns);
     requireConnectedTo(connection, provider, table);
     var dialect = provider.dialect().rows();
     var described = dialect.describe(connection, provider, table, columns);
@@ -205,9 +201,12 @@ public final class Rows {
         !places.isEmpty() && key && dialect.children(connection, provider, described.table());
     var witness = dialect.witness();
     var selected = reads.stream().flatMap(r -> r.sql().stream()).toList();
+    var expressions = new ArrayList<>(selected);
+    if (witness) {
+      expressions.add(WITNESS + ".*");
+    }
     var sql = "SELECT "
-        + String.join(", ", selected)
-        + (witness ? (selected.isEmpty() ? "" : ", ") + WITNESS + ".*" : "")
+        + String.join(", ", expressions)
         + " FROM " + qualified(provider, table) + " AS " + ALIAS
         + (witness
             ? " LEFT JOIN (SELECT * FROM " + qualified(provider, table) + " LIMIT 0) AS " + WITNESS
@@ -407,7 +406,7 @@ public final class Rows {
           }
           try {
             return parse.apply(read);
-          } catch (RuntimeException e) {
+          } catch (RuntimeException _) {
             return read;
           }
         });
@@ -496,7 +495,7 @@ public final class Rows {
     try {
       var parsed = value.apply(matcher);
       return parsed == null ? text : parsed;
-    } catch (DateTimeException e) {
+    } catch (DateTimeException _) {
       return text;
     }
   }
@@ -564,6 +563,14 @@ public final class Rows {
 
   static String qualified(Provider provider, Table table) {
     return provider.quote(table.container().name()) + "." + provider.quote(table.name());
+  }
+
+  static void requireColumnsOf(Table table, List<Column> columns) {
+    for (var column : columns) {
+      if (!column.table().equals(table)) {
+        throw new IllegalArgumentException(column.name() + " is not a column of " + table.name());
+      }
+    }
   }
 
   // A connection to one database would read a table of the same name in its own.

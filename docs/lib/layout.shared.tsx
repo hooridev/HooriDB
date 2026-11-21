@@ -1,4 +1,5 @@
 import type { BaseLayoutProps, LinkItemType } from 'fumadocs-ui/layouts/shared';
+
 import { appName, download, repository } from './shared';
 
 export const downloadLink: LinkItemType = { text: 'Download', url: download, external: true };

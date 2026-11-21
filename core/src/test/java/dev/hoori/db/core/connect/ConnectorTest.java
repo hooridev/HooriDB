@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
@@ -14,6 +13,7 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConnectionProfile.Problem;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.reflect.Proxy;
@@ -28,6 +28,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -57,15 +58,15 @@ class ConnectorTest {
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aClosedPortIsUnreachable(Provider provider) throws Exception {
-    int port;
-    try (var socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
-      port = socket.getLocalPort();
+    // Bound and not listening, on the address it connects to, so that nothing listens there.
+    try (var socket = new Socket()) {
+      socket.bind(new InetSocketAddress(InetAddress.getByName(Gate.HOST), 0));
+      var profile = local(provider).withPort(socket.getLocalPort());
+      assertFailure(
+          Failure.UNREACHABLE,
+          () -> Connector.test(
+              profile, TestServer.password(), TestServer.driver(provider), Duration.ofSeconds(5)));
     }
-    var profile = local(provider).withPort(port);
-    assertFailure(
-        Failure.UNREACHABLE,
-        () -> Connector.test(
-            profile, TestServer.password(), TestServer.driver(provider), Duration.ofSeconds(5)));
   }
 
   @ParameterizedTest
@@ -124,16 +125,9 @@ class ConnectorTest {
     try (var listener = new ServerSocket(0, 1, InetAddress.getByName(Gate.HOST))) {
       // Linux drops what comes beyond a full queue, and the next connect waits for an answer.
       var address = new InetSocketAddress(Gate.HOST, listener.getLocalPort());
-      try {
-        while (queued.size() < 64) {
-          var socket = new Socket();
-          queued.add(socket);
-          socket.connect(address, 200);
-        }
-        fail("The queue does not fill");
-      } catch (SocketTimeoutException full) {
-        // The next connect waits.
-      }
+      // Then the next connect waits.
+      assertThrows(
+          SocketTimeoutException.class, () -> fill(queued, address), "The queue does not fill");
       var attempt =
           Attempt.start(local(provider).withPort(listener.getLocalPort()), Duration.ofSeconds(30));
       Thread.sleep(300);
@@ -147,8 +141,17 @@ class ConnectorTest {
     }
   }
 
+  // Connects one socket after another, each kept in the list, until one waits or 64 are queued.
+  private static void fill(List<Socket> queued, InetSocketAddress address) throws IOException {
+    while (queued.size() < 64) {
+      var socket = new Socket();
+      queued.add(socket);
+      socket.connect(address, 200);
+    }
+  }
+
   @Test
-  void anInterruptWinsOverAConnectionThatIsThereAlready() throws Exception {
+  void anInterruptWinsOverAConnectionThatIsThereAlready() {
     var closes = new AtomicInteger();
     var connection = (Connection) Proxy.newProxyInstance(
         getClass().getClassLoader(), new Class<?>[] {Connection.class}, (proxy, method, args) -> {

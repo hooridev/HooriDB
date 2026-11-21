@@ -7,6 +7,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.query.QueryException;
@@ -33,6 +34,9 @@ public final class DocumentSession implements AutoCloseable {
 
   /** Documents a collection's fields are read from, at random where the server can. */
   public static final int SAMPLE = 100;
+
+  private static final String CURSOR = "cursor";
+  private static final String BATCH_SIZE = "batchSize";
 
   private final DocumentClient client;
   private final DocumentDialect dialect;
@@ -115,7 +119,7 @@ public final class DocumentSession implements AutoCloseable {
               true,
               "authorizedCollections",
               true,
-              "cursor",
+              CURSOR,
               Document.EMPTY));
       var tables = new ArrayList<Table>();
       for (var d : documents) {
@@ -170,8 +174,8 @@ public final class DocumentSession implements AutoCloseable {
             collection.name(),
             "pipeline",
             pipeline,
-            "cursor",
-            Document.of("batchSize", SAMPLE)));
+            CURSOR,
+            Document.of(BATCH_SIZE, SAMPLE)));
   }
 
   /** The fields that the documents have, as {@link #fields(Table)} says. */
@@ -195,14 +199,19 @@ public final class DocumentSession implements AutoCloseable {
       }
       var held = new ArrayList<>(field.getValue());
       boolean nullable = held.remove("null") || present.getOrDefault(name, 0) < documents.size();
-      var type =
-          held.isEmpty() ? name.equals("_id") ? "objectId" : "null" : String.join(" | ", held);
-      if (nullable && !held.isEmpty()) {
-        type += " | null";
-      }
-      columns.add(new Column(collection, name, type, nullable, name.equals("_id") ? 1 : 0));
+      columns.add(new Column(
+          collection, name, type(name, held, nullable), nullable, name.equals("_id") ? 1 : 0));
     }
     return columns;
+  }
+
+  // The types a field held, with null where it is nullable; null for none, objectId for the key.
+  private static String type(String name, List<String> held, boolean nullable) {
+    if (held.isEmpty()) {
+      return name.equals("_id") ? "objectId" : "null";
+    }
+    var type = String.join(" | ", held);
+    return nullable ? type + " | null" : type;
   }
 
   // Reading documents
@@ -235,7 +244,7 @@ public final class DocumentSession implements AutoCloseable {
               collection.name(),
               "pipeline",
               Document.array(Document.of("$count", "n")),
-              "cursor",
+              CURSOR,
               Document.EMPTY));
       return documents.isEmpty() || !(documents.getFirst().get("n") instanceof Number n)
           ? 0
@@ -258,7 +267,7 @@ public final class DocumentSession implements AutoCloseable {
     if (from > 0) {
       command = command.with("skip", from);
     }
-    command = command.with("limit", to - from).with("batchSize", (int)
+    command = command.with("limit", to - from).with(BATCH_SIZE, (int)
         Math.min(to - from, Integer.MAX_VALUE));
     try {
       var documents = all(database(collection), command);
@@ -326,13 +335,14 @@ public final class DocumentSession implements AutoCloseable {
     try {
       return switch (cell) {
         case null -> throw new IllegalArgumentException("The row's _id is null");
-        case Cut c -> throw new IllegalArgumentException("The row's _id was read in part");
+        case Missing.FIELD -> throw new IllegalArgumentException("The row has no _id");
+        case Cut _ -> throw new IllegalArgumentException("The row's _id was read in part");
         case String s when kind == Kind.TEXT -> s;
         case String s -> Shell.parse(s); // the shell's text of it, or its Extended JSON
         case OffsetDateTime t -> t.toInstant();
         case BigDecimal d -> new Bson.Decimal128(d.toString());
         case Binary b when b.length() == b.bytes().length -> new Bson.Binary(0, b.bytes());
-        case Binary b -> throw new IllegalArgumentException("The row's _id was read in part");
+        case Binary _ -> throw new IllegalArgumentException("The row's _id was read in part");
         default -> cell;
       };
     } catch (SyntaxException e) {
@@ -355,7 +365,7 @@ public final class DocumentSession implements AutoCloseable {
 
     Cursor(String database, Document reply) throws DocumentException {
       this.database = database;
-      var cursor = reply.get("cursor") instanceof Document c ? c : Document.EMPTY;
+      var cursor = reply.get(CURSOR) instanceof Document c ? c : Document.EMPTY;
       this.id = cursor.get("id") instanceof Number n ? n.longValue() : 0;
       var ns = cursor.get("ns") instanceof String s ? s : "";
       int dot = ns.indexOf('.');
@@ -378,9 +388,8 @@ public final class DocumentSession implements AutoCloseable {
           }
           var reply = command(
               database,
-              Document.of(
-                  "getMore", id, "collection", collection, "batchSize", count - got.size()));
-          var cursor = reply.get("cursor") instanceof Document c ? c : Document.EMPTY;
+              Document.of("getMore", id, "collection", collection, BATCH_SIZE, count - got.size()));
+          var cursor = reply.get(CURSOR) instanceof Document c ? c : Document.EMPTY;
           id = cursor.get("id") instanceof Number n ? n.longValue() : 0;
           batch = documents(cursor.get("nextBatch"));
           if (batch.isEmpty()) {
@@ -476,14 +485,14 @@ public final class DocumentSession implements AutoCloseable {
             DocumentException.Kind.TIMED_OUT,
             "The server did not answer within " + GRACE.toSeconds() + " seconds");
       }
-    } catch (InterruptedException e) {
+    } catch (InterruptedException _) {
       worker.interrupt();
       interrupted = true;
       try {
         if (!worker.join(Duration.ofMillis(100))) {
           retired = true;
         }
-      } catch (InterruptedException again) {
+      } catch (InterruptedException _) {
         retired = true;
       }
       throw DocumentException.of(DocumentException.Kind.CANCELLED, "");
@@ -493,7 +502,9 @@ public final class DocumentSession implements AutoCloseable {
       }
     }
     switch (failure.get()) {
-      case null -> {}
+      case null -> {
+        // The call ended as it should.
+      }
       case DocumentException e -> throw e;
       case RuntimeException e -> throw e;
       default -> throw new IllegalStateException(failure.get());
@@ -523,7 +534,7 @@ public final class DocumentSession implements AutoCloseable {
   public void close() {
     try {
       bounded("close a connection", client::close);
-    } catch (DocumentException | RuntimeException e) {
+    } catch (DocumentException | RuntimeException _) {
       // Given up: the driver's threads end the connection as they can.
     }
   }

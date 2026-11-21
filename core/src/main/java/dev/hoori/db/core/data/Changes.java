@@ -9,6 +9,7 @@ import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -49,25 +50,21 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   public Changes {
     columns = List.copyOf(columns);
     changes = List.copyOf(changes);
-    for (var column : columns) {
-      if (!column.table().equals(table)) {
-        throw new IllegalArgumentException(column.name() + " is not a column of " + table.name());
-      }
-    }
+    Rows.requireColumnsOf(table, columns);
     if (columns.stream().noneMatch(column -> column.keyPosition() > 0)) {
       throw new IllegalArgumentException(table.name() + " has no primary key");
     }
     for (var change : changes) {
       switch (change) {
-        case Change.Update update -> {
-          requireRow(columns, update.row());
-          requireValues(columns, update.values());
-          if (update.values().isEmpty()) {
+        case Change.Update(var row, var values) -> {
+          requireRow(columns, row);
+          requireValues(columns, values);
+          if (values.isEmpty()) {
             throw new IllegalArgumentException("An update without values");
           }
         }
-        case Change.Insert insert -> requireValues(columns, insert.values());
-        case Change.Delete delete -> requireRow(columns, delete.row());
+        case Change.Insert(var values) -> requireValues(columns, values);
+        case Change.Delete(var row) -> requireRow(columns, row);
       }
     }
   }
@@ -96,22 +93,12 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     var key = key(row);
     var changed = new ArrayList<>(changes);
     for (var i = 0; i < changed.size(); i++) {
-      if (changed.get(i) instanceof Change.Delete delete && key(delete.row()).equals(key)) {
+      if (changed.get(i) instanceof Change.Delete(var deleted) && key(deleted).equals(key)) {
         throw new IllegalStateException("The row is to be deleted");
       }
-      if (changed.get(i) instanceof Change.Update update && key(update.row()).equals(key)) {
-        var values = new TreeMap<>(update.values());
-        if (Objects.equals(update.row().get(column), value)) {
-          values.remove(column);
-        } else {
-          values.put(column, value);
-        }
-        if (values.isEmpty()) {
-          changed.remove(i);
-        } else {
-          changed.set(i, new Change.Update(update.row(), values));
-        }
-        return new Changes(table, columns, changed);
+      if (changed.get(i) instanceof Change.Update(var updated, var values)
+          && key(updated).equals(key)) {
+        return edit(changed, i, updated, values, column, value);
       }
     }
     if (Objects.equals(row.get(column), value)) {
@@ -120,6 +107,29 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     var values = new TreeMap<Integer, Object>();
     values.put(column, value);
     changed.add(new Change.Update(row, values));
+    return new Changes(table, columns, changed);
+  }
+
+  // With the update of the row at the index given the cell's value, and without it where that
+  // takes back its last.
+  private Changes edit(
+      List<Change> changed,
+      int index,
+      List<Object> row,
+      Map<Integer, Object> values,
+      int column,
+      Object value) {
+    var edited = new TreeMap<>(values);
+    if (Objects.equals(row.get(column), value)) {
+      edited.remove(column);
+    } else {
+      edited.put(column, value);
+    }
+    if (edited.isEmpty()) {
+      changed.remove(index);
+    } else {
+      changed.set(index, new Change.Update(row, edited));
+    }
     return new Changes(table, columns, changed);
   }
 
@@ -136,10 +146,10 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
    * @throws IllegalArgumentException if the change is no new row
    */
   public Changes edit(int change, int column, Object value) {
-    if (!(changes.get(change) instanceof Change.Insert insert)) {
+    if (!(changes.get(change) instanceof Change.Insert(var inserted))) {
       throw new IllegalArgumentException("Change " + change + " is no new row");
     }
-    var values = new TreeMap<>(insert.values());
+    var values = new TreeMap<>(inserted);
     values.put(column, value);
     var changed = new ArrayList<>(changes);
     changed.set(change, new Change.Insert(values));
@@ -153,7 +163,9 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     var changed = new ArrayList<Change>();
     for (var change : changes) {
       switch (change) {
-        case Change.Update update when key(update.row()).equals(key) -> {}
+        case Change.Update update when key(update.row()).equals(key) -> {
+          // The deletion takes its place.
+        }
         case Change.Delete delete
         when key(delete.row()).equals(key) -> {
           return this;
@@ -268,60 +280,22 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       return new Outcome.Committed();
     }
     Rows.requireConnectedTo(connection, provider, table);
-    var status = Status.of(connection, provider);
-    if (status.transaction() == Transaction.OPEN
-        || status.transaction() == Transaction.FAILED
-        || Boolean.FALSE.equals(status.autoCommit())
-        || !Query.run(connection, provider, connection::getAutoCommit)) {
-      throw new IllegalStateException("A transaction is open on the connection");
-    }
+    requireNoTransaction(connection, provider);
     var dialect = provider.dialect().rows();
     var values = statements.stream().flatMap(s -> s.values().stream()).toList();
     if (!dialect.changeable(connection, provider, table, values)) {
       return new Outcome.Refused();
     }
-    // Locked only where an update could move a row to a key that a later statement names, as
-    // PostgreSQL grants a lock only with UPDATE privilege.
-    var lock = statements.stream().anyMatch(s -> s.change() instanceof Change.Update);
-    var checks = new ArrayList<Statement>();
-    for (var statement : statements) {
-      switch (statement.change()) {
-        case Change.Update update -> checks.add(check(provider, update, update.row(), lock));
-        case Change.Delete delete -> checks.add(check(provider, delete, delete.row(), lock));
-        case Change.Insert insert -> {}
-      }
-    }
-    Outcome outcome = new Outcome.Committed();
+    var checks = checks(provider, statements);
+    var all = new ArrayList<>(checks);
+    all.addAll(statements);
+    Outcome outcome;
     try {
       Query.within(connection, provider, Execution.ENDING, () -> {
         connection.setAutoCommit(false);
         return null;
       });
-      var all = new ArrayList<>(checks);
-      all.addAll(statements);
-      for (var i = 0; i < all.size(); i++) {
-        var statement = all.get(i);
-        var check = i < checks.size();
-        var rows = Query.run(connection, provider, statement.sql(), prepared -> {
-          for (var v = 0; v < statement.values().size(); v++) {
-            dialect.bind(prepared, v + 1, statement.values().get(v));
-          }
-          if (!check) {
-            return prepared.executeLargeUpdate();
-          }
-          var read = 0L;
-          try (var result = prepared.executeQuery()) {
-            while (result.next()) {
-              read++;
-            }
-          }
-          return read;
-        });
-        if (rows != 1) {
-          outcome = new Outcome.Missed(statement.change(), rows);
-          break;
-        }
-      }
+      outcome = run(connection, provider, all, checks.size());
     } catch (QueryException | RuntimeException e) {
       try {
         end(connection, provider, false);
@@ -332,6 +306,76 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     }
     end(connection, provider, outcome instanceof Outcome.Committed);
     return outcome;
+  }
+
+  private static void requireNoTransaction(Connection connection, Provider provider)
+      throws QueryException {
+    var status = Status.of(connection, provider);
+    if (status.transaction() == Transaction.OPEN
+        || status.transaction() == Transaction.FAILED
+        || Boolean.FALSE.equals(status.autoCommit())
+        || !Boolean.TRUE.equals(Query.run(connection, provider, connection::getAutoCommit))) {
+      throw new IllegalStateException("A transaction is open on the connection");
+    }
+  }
+
+  // The statements that read each row an update or deletion names, in their order.
+  private List<Statement> checks(Provider provider, List<Statement> statements) {
+    // Locked only where an update could move a row to a key that a later statement names, as
+    // PostgreSQL grants a lock only with UPDATE privilege.
+    var lock = statements.stream().anyMatch(s -> s.change() instanceof Change.Update);
+    var checks = new ArrayList<Statement>();
+    for (var statement : statements) {
+      switch (statement.change()) {
+        case Change.Update(var row, var _) ->
+          checks.add(check(provider, statement.change(), row, lock));
+        case Change.Delete(var row) -> checks.add(check(provider, statement.change(), row, lock));
+        case Change.Insert _ -> {
+          // A new row has no row to read before.
+        }
+      }
+    }
+    return checks;
+  }
+
+  // Runs the statements one after another, of which the first checks read their row: missed at the
+  // first that meets not exactly one row.
+  private static Outcome run(
+      Connection connection, Provider provider, List<Statement> statements, int checks)
+      throws QueryException {
+    var dialect = provider.dialect().rows();
+    for (var i = 0; i < statements.size(); i++) {
+      var statement = statements.get(i);
+      var check = i < checks;
+      var rows = Query.run(
+          connection,
+          provider,
+          statement.sql(),
+          prepared -> execute(dialect, prepared, statement, check));
+      if (rows != 1) {
+        return new Outcome.Missed(statement.change(), rows);
+      }
+    }
+    return new Outcome.Committed();
+  }
+
+  // The rows the statement met, or that the check read.
+  private static long execute(
+      RowsDialect dialect, PreparedStatement prepared, Statement statement, boolean check)
+      throws SQLException {
+    for (var v = 0; v < statement.values().size(); v++) {
+      dialect.bind(prepared, v + 1, statement.values().get(v));
+    }
+    if (!check) {
+      return prepared.executeLargeUpdate();
+    }
+    var read = 0L;
+    try (var result = prepared.executeQuery()) {
+      while (result.next()) {
+        read++;
+      }
+    }
+    return read;
   }
 
   // Ends the transaction within a bound, an interrupt or not: commits or rolls back, and turns
@@ -349,43 +393,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
           provider,
           Execution.ENDING,
           () -> {
-            if (connection.getAutoCommit()) {
-              return null; // never begun
-            }
-            SQLException failed = null;
-            if (commit) {
-              try {
-                if (givenUp.get()) {
-                  throw new SQLException("Given up before the commit", "08006");
-                }
-                connection.commit();
-                ended.set(true);
-              } catch (SQLException e) {
-                failed = e;
-              }
-            }
-            if (!ended.get()) {
-              try {
-                connection.rollback();
-                ended.set(!commit);
-              } catch (SQLException e) {
-                // pgjdbc would commit as auto-commit is turned on.
-                abort(connection);
-                if (failed != null) {
-                  failed.addSuppressed(e);
-                  throw failed;
-                }
-                throw e;
-              }
-            }
-            try {
-              connection.setAutoCommit(true);
-            } catch (SQLException e) {
-              abort(connection);
-            }
-            if (failed != null) {
-              throw failed;
-            }
+            finish(connection, commit, ended, givenUp);
             return null;
           },
           () -> givenUp.set(true));
@@ -396,10 +404,63 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     }
   }
 
+  private static void finish(
+      Connection connection, boolean commit, AtomicBoolean ended, AtomicBoolean givenUp)
+      throws SQLException {
+    if (connection.getAutoCommit()) {
+      return; // never begun
+    }
+    var failed = commit ? commit(connection, ended, givenUp) : null;
+    if (!ended.get()) {
+      rollBack(connection, commit, ended, failed);
+    }
+    try {
+      connection.setAutoCommit(true);
+    } catch (SQLException _) {
+      abort(connection);
+    }
+    if (failed != null) {
+      throw failed;
+    }
+  }
+
+  // The commit's failure, or null where it committed.
+  private static SQLException commit(
+      Connection connection, AtomicBoolean ended, AtomicBoolean givenUp) {
+    if (givenUp.get()) {
+      return new SQLException("Given up before the commit", "08006");
+    }
+    try {
+      connection.commit();
+      ended.set(true);
+      return null;
+    } catch (SQLException e) {
+      return e;
+    }
+  }
+
+  // Rolls back, after the commit failed where it did, which fails in its place.
+  private static void rollBack(
+      Connection connection, boolean commit, AtomicBoolean ended, SQLException failed)
+      throws SQLException {
+    try {
+      connection.rollback();
+      ended.set(!commit);
+    } catch (SQLException e) {
+      // pgjdbc would commit as auto-commit is turned on.
+      abort(connection);
+      if (failed != null) {
+        failed.addSuppressed(e);
+        throw failed;
+      }
+      throw e;
+    }
+  }
+
   private static void abort(Connection connection) {
     try {
       connection.abort(Runnable::run);
-    } catch (SQLException | RuntimeException e) {
+    } catch (SQLException | RuntimeException _) {
       // Not even an abort is possible; the connection is given up all the same.
     }
   }
@@ -408,22 +469,19 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       Provider provider, Change change, String equal, Function<Object, String> value) {
     var table = Rows.qualified(provider, this.table);
     return switch (change) {
-      case Change.Update update -> {
+      case Change.Update(var row, var values) -> {
         var set = new StringJoiner(", ");
-        update
-            .values()
-            .forEach((column, v) -> set.add(name(provider, column) + " = " + value.apply(v)));
-        yield "UPDATE " + table + " SET " + set + where(provider, update.row(), equal, value);
+        values.forEach((column, v) -> set.add(name(provider, column) + " = " + value.apply(v)));
+        yield "UPDATE " + table + " SET " + set + where(provider, row, equal, value);
       }
-      case Change.Delete delete ->
-        "DELETE FROM " + table + where(provider, delete.row(), equal, value);
-      case Change.Insert insert
-      when insert.values().isEmpty() ->
+      case Change.Delete(var row) -> "DELETE FROM " + table + where(provider, row, equal, value);
+      case Change.Insert(var inserted)
+      when inserted.isEmpty() ->
         "INSERT INTO " + table + " (" + name(provider, 0) + ") VALUES (DEFAULT)";
-      case Change.Insert insert -> {
+      case Change.Insert(var inserted) -> {
         var names = new StringJoiner(", ");
         var values = new StringJoiner(", ");
-        insert.values().forEach((column, v) -> {
+        inserted.forEach((column, v) -> {
           names.add(name(provider, column));
           values.add(value.apply(v));
         });
@@ -492,7 +550,11 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   public static boolean names(List<Column> columns, List<Object> row) {
     var keys = keys(columns);
     return !keys.isEmpty()
-        && keys.stream().allMatch(i -> i < row.size() && row.get(i) != null && whole(row.get(i)));
+        && keys.stream()
+            .allMatch(i -> i < row.size()
+                && row.get(i) != null
+                && row.get(i) != Missing.FIELD
+                && whole(row.get(i)));
   }
 
   private static void requireValues(List<Column> columns, Map<Integer, Object> values) {

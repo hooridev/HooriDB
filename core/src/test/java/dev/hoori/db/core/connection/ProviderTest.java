@@ -85,11 +85,21 @@ class ProviderTest {
             "dbname",
             "shop",
             "processEscapeCodesForPrepStmts",
+            "false",
+            "readOnlyPropagatesToServer",
             "false"),
         parameters(MYSQL, "db.example", "shop", Tls.OFF));
     assertParameters(
         "jdbc:mysql://db.example:3306/",
-        Map.of("sslMode", "REQUIRED", "dbname", "shop", "processEscapeCodesForPrepStmts", "false"),
+        Map.of(
+            "sslMode",
+            "REQUIRED",
+            "dbname",
+            "shop",
+            "processEscapeCodesForPrepStmts",
+            "false",
+            "readOnlyPropagatesToServer",
+            "false"),
         parameters(MYSQL, "db.example", "shop", Tls.ENCRYPTED));
     assertParameters(
         "jdbc:mysql://db.example:3306/",
@@ -99,6 +109,8 @@ class ProviderTest {
             "dbname",
             "shop",
             "processEscapeCodesForPrepStmts",
+            "false",
+            "readOnlyPropagatesToServer",
             "false"),
         parameters(MYSQL, "db.example", "shop", Tls.VERIFIED));
   }
@@ -147,6 +159,8 @@ class ProviderTest {
             "allowPublicKeyRetrieval",
             "true",
             "processEscapeCodesForPrepStmts",
+            "false",
+            "readOnlyPropagatesToServer",
             "false"),
         parameters(MYSQL, "h", "", Tls.OFF));
   }
@@ -238,13 +252,13 @@ class ProviderTest {
   }
 
   @Test
-  void parametersCannotBeChanged() throws Exception {
+  void parametersCannotBeChanged() {
     var properties = new HashMap<>(Map.of("a", "b"));
     var parameters = new ConnectionParameters("u", properties);
     properties.put("c", "d");
     assertEquals(Map.of("a", "b"), parameters.properties());
-    assertThrows(
-        UnsupportedOperationException.class, () -> parameters.properties().put("x", "y"));
+    var kept = parameters.properties();
+    assertThrows(UnsupportedOperationException.class, () -> kept.put("x", "y"));
   }
 
   @Test

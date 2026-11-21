@@ -71,47 +71,56 @@ public record Failure(
   }
 
   static Failure cancelled() {
-    return new Failure(Kind.CANCELLED, "", "", 0, 0, "", 0, 0, "", "", "", "");
+    return of(Kind.CANCELLED, "");
   }
 
   static Failure connectionLost() {
-    return new Failure(Kind.CONNECTION_LOST, "", "", 0, 0, "", 0, 0, "", "", "", "");
+    return of(Kind.CONNECTION_LOST, "");
+  }
+
+  // A failure of HooriDB's own words, without any of the server's parts.
+  static Failure of(Kind kind, String message) {
+    return new Failure(kind, message, "", 0, 0, "", 0, 0, "", "", "", "");
   }
 
   /** The failure that the driver's exception means, from a statement that was not cancelled. */
   static Failure of(Connection connection, Provider provider, Throwable thrown) {
     var message = thrown.getMessage() == null ? thrown.getClass().getName() : thrown.getMessage();
     if (!(thrown instanceof SQLException e)) {
-      return new Failure(Kind.OTHER, message, "", 0, 0, "", 0, 0, "", "", "", "");
+      return of(Kind.OTHER, message);
     }
     var state = e.getSQLState() == null ? "" : e.getSQLState();
     var code = e.getErrorCode();
-    var kind = transport(e)
-        ? Kind.CONNECTION_LOST
-        : switch (Query.failure(connection, provider, e).failure()) {
-          case CONNECTION_LOST, ABORTED -> Kind.CONNECTION_LOST;
-          case ACCESS_DENIED -> Kind.ACCESS_DENIED;
-          // Query.failure never says that columns changed, which only a read of a table finds.
-          case NOT_FOUND, COLUMNS_CHANGED -> Kind.INVALID;
-          // Not by the caller: PostgreSQL's statement timeout, or MariaDB's, which shares the state
-          // of
-          // an interrupted statement.
-          case CANCELLED ->
-            Condition.TIMEOUT.in(provider, state, code) ? Kind.TIMEOUT : Kind.CANCELLED;
-          case OTHER -> {
-            if (state.startsWith("23") || Condition.CONSTRAINT.in(provider, state, code)) {
-              yield Kind.CONSTRAINT;
-            } else if (Condition.ROUTINE_DENIED.in(provider, state, code)) {
-              yield Kind.ACCESS_DENIED;
-            } else if (state.startsWith("42") || state.startsWith("3D") || state.startsWith("3F")) {
-              yield Kind.INVALID;
-            } else if (Condition.TIMEOUT.in(provider, state, code)) {
-              yield Kind.TIMEOUT;
-            }
-            yield Kind.OTHER;
-          }
-        };
+    var kind = transport(e) ? Kind.CONNECTION_LOST : kind(connection, provider, e, state, code);
     return provider.dialect().errors().failure(kind, e, message, state, code);
+  }
+
+  private static Kind kind(
+      Connection connection, Provider provider, SQLException e, String state, int code) {
+    return switch (Query.failure(connection, provider, e).failure()) {
+      case CONNECTION_LOST, ABORTED -> Kind.CONNECTION_LOST;
+      case ACCESS_DENIED -> Kind.ACCESS_DENIED;
+      // Query.failure never says that columns changed, which only a read of a table finds.
+      case NOT_FOUND, COLUMNS_CHANGED -> Kind.INVALID;
+      // Not by the caller: PostgreSQL's statement timeout, or MariaDB's, which shares the state of
+      // an interrupted statement.
+      case CANCELLED -> Condition.TIMEOUT.in(provider, state, code) ? Kind.TIMEOUT : Kind.CANCELLED;
+      case OTHER -> other(provider, state, code);
+    };
+  }
+
+  // What a failure that is none of Query's kinds is, by its SQLSTATE and the provider's codes.
+  private static Kind other(Provider provider, String state, int code) {
+    if (state.startsWith("23") || Condition.CONSTRAINT.in(provider, state, code)) {
+      return Kind.CONSTRAINT;
+    } else if (Condition.ROUTINE_DENIED.in(provider, state, code)) {
+      return Kind.ACCESS_DENIED;
+    } else if (state.startsWith("42") || state.startsWith("3D") || state.startsWith("3F")) {
+      return Kind.INVALID;
+    } else if (Condition.TIMEOUT.in(provider, state, code)) {
+      return Kind.TIMEOUT;
+    }
+    return Kind.OTHER;
   }
 
   /** A range of a statement's text, in {@code char}s from {@code start} up to {@code end}. */
@@ -136,27 +145,15 @@ public record Failure(
           : sql.length();
       return Optional.of(token(sql, at, Statements.pieces(sql, provider)));
     }
-    if (line <= 0) {
+    int from = line <= 0 ? -1 : lineStart(sql, line);
+    if (from < 0) {
       return Optional.empty();
-    }
-    int from = 0;
-    for (int n = 1; n < line; n++) {
-      int end = sql.indexOf('\n', from);
-      if (end < 0) {
-        return Optional.empty();
-      }
-      from = end + 1;
     }
     var pieces = Statements.pieces(sql, provider);
     if (near.isEmpty()) {
       return Optional.of(token(sql, sql.length(), pieces));
     }
-    int found = -1;
-    for (int at = sql.indexOf(near, from); at >= 0; at = sql.indexOf(near, at + 1)) {
-      if (!quoted(pieces, at)) {
-        found = at;
-      }
-    }
+    int found = lastOccurrence(sql, near, from, pieces);
     if (found > 0 && Character.isWhitespace(near.charAt(0))) {
       // MariaDB's lexer may have read the token it failed on already: the text is after it.
       return Optional.of(before(sql, found, pieces));
@@ -167,6 +164,32 @@ public record Failure(
     int to = sql.indexOf('\n', from);
     to = to < 0 ? sql.length() : to;
     return to > from ? Optional.of(new Place(from, to)) : Optional.empty();
+  }
+
+  // Where the line, from 1, begins; -1 where the text has fewer lines.
+  private static int lineStart(String sql, int line) {
+    int from = 0;
+    for (int n = 1; n < line; n++) {
+      int end = sql.indexOf('\n', from);
+      if (end < 0) {
+        return -1;
+      }
+      from = end + 1;
+    }
+    return from;
+  }
+
+  // Where the text last occurs from the offset on outside strings and comments; -1 where it does
+  // not.
+  private static int lastOccurrence(
+      String sql, String text, int from, List<Statements.Piece> pieces) {
+    int found = -1;
+    for (int at = sql.indexOf(text, from); at >= 0; at = sql.indexOf(text, at + 1)) {
+      if (!quoted(pieces, at)) {
+        found = at;
+      }
+    }
+    return found;
   }
 
   // Whether the offset is inside a string or a comment, past its first character.
@@ -186,11 +209,7 @@ public record Failure(
   private static Place token(String sql, int at, List<Statements.Piece> pieces) {
     int n = sql.length();
     if (at >= n) {
-      int end = n;
-      while (end > 0 && Character.isWhitespace(sql.charAt(end - 1))) {
-        end--;
-      }
-      return end == 0 ? new Place(0, 0) : before(sql, end, pieces);
+      return lastToken(sql, pieces);
     }
     for (var piece : pieces) {
       if (piece.start() == at && piece.kind() != Statements.Piece.Kind.CODE) {
@@ -207,6 +226,15 @@ public record Failure(
       }
     }
     return new Place(at, end);
+  }
+
+  // The last word, string or quoted name, or character of the text.
+  private static Place lastToken(String sql, List<Statements.Piece> pieces) {
+    int end = sql.length();
+    while (end > 0 && Character.isWhitespace(sql.charAt(end - 1))) {
+      end--;
+    }
+    return end == 0 ? new Place(0, 0) : before(sql, end, pieces);
   }
 
   // The word, the string or quoted name, or the character that ends at the offset.

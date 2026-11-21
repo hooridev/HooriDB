@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,10 +27,15 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class ConnectionsTest {
+
+  private static final Pattern TREE_ITEM = Pattern.compile("role=treeitem label=\"([^\"]*)\"");
+  private static final Pattern ERROR = Pattern.compile("error=\"([^\"]*)\"");
+  private static final Pattern LEFT = Pattern.compile(" (\\d+),\\d+ \\d+x\\d+");
 
   static final String PASSWORD = "hunter2";
 
@@ -45,6 +51,9 @@ class ConnectionsTest {
     final Set<UUID> refused = ConcurrentHashMap.newKeySet(); // their deletes fail
     volatile CountDownLatch gate;
     volatile CountDownLatch late; // holds the next call alone, which ignores its interrupt
+    // The gates calls took, which the test's teardown opens, as a failed test may not have.
+    private final List<CountDownLatch> taken = new java.util.concurrent.CopyOnWriteArrayList<>();
+    final List<String> calls = new java.util.concurrent.CopyOnWriteArrayList<>(); // as asked
     final List<char[]> given =
         new java.util.concurrent.CopyOnWriteArrayList<>(); // the passwords read
     final List<char[]> received =
@@ -53,12 +62,14 @@ class ConnectionsTest {
     @Override
     public void store(UUID key, char[] secret) throws IOException {
       received.add(secret);
+      calls.add("store");
       check();
       stored.put(key, new String(secret));
     }
 
     @Override
     public Optional<char[]> read(UUID key) throws IOException {
+      calls.add("read");
       check();
       var password = Optional.ofNullable(stored.get(key)).map(String::toCharArray);
       password.ifPresent(given::add);
@@ -67,6 +78,7 @@ class ConnectionsTest {
 
     @Override
     public void delete(UUID key) throws IOException {
+      calls.add("delete");
       check();
       if (refused.contains(key)) {
         throw new IOException("The keyring refused to delete it");
@@ -80,12 +92,13 @@ class ConnectionsTest {
         // As a native call that takes no cancellation: it waits on, and then does what it was
         // asked, however long ago its caller gave up.
         late = null;
+        taken.add(hold);
         boolean interrupted = false;
         while (true) {
           try {
             hold.await();
             break;
-          } catch (InterruptedException e) {
+          } catch (InterruptedException _) {
             interrupted = true;
           }
         }
@@ -103,6 +116,15 @@ class ConnectionsTest {
       if (fails) {
         throw new IOException("The keyring is locked");
       }
+    }
+
+    /** Opens every gate a test gave it, taken or not, so that no call stays held after it. */
+    void release() {
+      var hold = late;
+      if (hold != null) {
+        hold.countDown();
+      }
+      taken.forEach(CountDownLatch::countDown);
     }
   }
 
@@ -250,24 +272,17 @@ class ConnectionsTest {
     assertTrue(secrets.stored.isEmpty(), "nothing saved");
   }
 
-  /** A connection to MongoDB may be read-only; a server of SQL does not offer it. */
+  /** Every connection may be read-only, and switching its type keeps that. */
   @Test
-  void aMongoDbConnectionCanBeReadOnly() throws IOException {
+  void aConnectionCanBeReadOnly() throws IOException {
     App<State> app = app();
-    run(
-        app,
-        NEW_SHOP + provider("MongoDB") + """
+    run(app, NEW_SHOP + provider("MongoDB") + """
         snap mongo
         press role=checkbox label="Read-only"
         frame
         snap checked
         """ + provider("PostgreSQL") + """
         snap sql
-        """ + provider("MongoDB")
-            + """
-        snap again
-        press role=checkbox label="Read-only"
-        frame
         press role=button label="Save"
         frame
         """ + SETTLE + """
@@ -281,12 +296,12 @@ class ConnectionsTest {
     String checked = tree("checked");
     assertFalse(
         line(checked, "role=checkbox label=\"Read-only\"").contains("checked=false"), checked);
-    assertFalse(tree("sql").contains("label=\"Read-only\""), tree("sql"));
-    String again = tree("again");
-    assertTrue(line(again, "role=checkbox label=\"Read-only\"").contains("checked=false"), again);
+    String sql = tree("sql");
+    assertFalse(line(sql, "role=checkbox label=\"Read-only\"").contains("checked=false"), sql);
+    assertTrue(sql.contains("The server keeps the session read-only"), sql);
     assertFalse(tree("saved").contains("role=dialog"), tree("saved"));
     var saved = stored().getFirst();
-    assertEquals(Provider.MONGODB, saved.provider());
+    assertEquals(Provider.POSTGRESQL, saved.provider());
     assertTrue(saved.readOnly());
   }
 
@@ -704,7 +719,7 @@ class ConnectionsTest {
     var copy = saved.connections().get(2);
     assertEquals("crm (copy)", copy.name());
     assertEquals(crm.host(), copy.host(), "made before the edit");
-    assertFalse(copy.id().equals(crm.id()));
+    assertNotEquals(crm.id(), copy.id());
     assertEquals(
         new Workspace(List.of(
             shop.withColor(Color.GREEN),
@@ -724,7 +739,8 @@ class ConnectionsTest {
   static List<String> roots(String tree) {
     return tree.lines()
         .filter(l -> l.contains("role=treeitem"))
-        .map(l -> l.replaceAll(".*role=treeitem label=\"([^\"]*)\".*", "$1"))
+        .map(
+            l -> TREE_ITEM.matcher(l).results().map(r -> r.group(1)).findFirst().orElse(l))
         .toList();
   }
 
@@ -773,7 +789,7 @@ class ConnectionsTest {
     var left = stored();
     assertEquals(1, left.size());
     var copy = left.getFirst();
-    assertFalse(copy.id().equals(shop.id()));
+    assertNotEquals(shop.id(), copy.id());
     assertEquals(
         shop.withName("shop-prod (copy)"),
         new ConnectionProfile(
@@ -1078,7 +1094,10 @@ class ConnectionsTest {
     String waiting = tree("waiting");
     assertTrue(line(waiting, "#host").contains("\"db.example.com\""), waiting);
     assertTrue(line(waiting, "#host").contains("disabled"), waiting);
-    assertTrue(line(waiting, "role=checkbox").endsWith("disabled checked"), "keeps its tick");
+    assertTrue(
+        line(waiting, "role=checkbox label=\"Save in system keyring\"")
+            .endsWith("disabled checked"),
+        "keeps its tick");
     secrets.gate.countDown();
     more(app, SETTLE);
     assertEquals("db.example.com", stored().getFirst().host());
@@ -1176,18 +1195,24 @@ class ConnectionsTest {
     var port = line(both, "#port");
     assertTrue(host.contains("invalid") && host.contains("error=\""), host);
     assertTrue(port.contains("invalid") && port.contains("error=\""), port);
-    var hostError = host.replaceAll(".*error=\"([^\"]*)\".*", "$1");
-    var portError = port.replaceAll(".*error=\"([^\"]*)\".*", "$1");
+    var hostError = error(host);
+    var portError = error(port);
     float hostText = TestConnectionTest.top(both, "text \"" + hostError);
     float portText = TestConnectionTest.top(both, "text \"" + portError);
     // Under the row, one below the other, each on a line of the row's width.
     assertTrue(TestConnectionTest.top(both, "#port") < hostText && hostText < portText, both);
     assertTrue(portText < TestConnectionTest.top(both, "#database"), both);
     // At the start of the host's field.
-    var start = " " + host.replaceAll(".* (\\d+),\\d+ \\d+x\\d+.*", "$1") + ",";
+    var start =
+        " " + LEFT.matcher(host).results().map(r -> r.group(1)).findFirst().orElse(host) + ",";
     for (var error : List.of(hostError, portError)) {
       assertTrue(line(both, "text \"" + error).contains(start), start + " " + both);
     }
+  }
+
+  /** The field's error, from its line of the tree. */
+  private static String error(String line) {
+    return ERROR.matcher(line).results().map(r -> r.group(1)).findFirst().orElse(line);
   }
 
   /** Text typed into the port counts as set by hand and as a change, also when it is no port. */

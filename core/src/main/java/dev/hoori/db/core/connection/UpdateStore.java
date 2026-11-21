@@ -23,10 +23,17 @@ public final class UpdateStore {
   private static final int VERSION = 1;
   private static final long MAX_SIZE = 1L << 20;
 
-  private final JsonFile file;
+  // The names of the file's fields, and of where a value is, in messages.
+  private static final String CHANNEL = "channel";
+  private static final String SKIPPED = "skipped";
+  private static final String ATTEMPT = "attempt";
+  private static final String THE_FILE = "the file";
+  private static final String THE_ATTEMPT = "the attempt";
+
+  private final JsonFile json;
 
   public UpdateStore(Path folder) {
-    this.file = new JsonFile(folder, FILE, "update settings", MAX_SIZE);
+    this.json = new JsonFile(folder, FILE, "update settings", MAX_SIZE);
   }
 
   /**
@@ -37,49 +44,49 @@ public final class UpdateStore {
    */
   public StoredUpdates load() throws IOException {
     try {
-      var bytes = file.load();
+      var bytes = json.load();
       return bytes == null ? StoredUpdates.NONE : parse(bytes);
-    } catch (WorkspaceStore.UnreadableException unreadable) {
+    } catch (WorkspaceStore.UnreadableException _) {
       return StoredUpdates.NONE;
     }
   }
 
   private StoredUpdates parse(byte[] bytes) throws WorkspaceStore.UnreadableException {
-    var root = file.root(bytes, VERSION);
-    Channel channel = null;
-    if (root.has("channel")) {
-      var name = file.text(root, "the file", "channel");
-      channel = switch (name) {
-        case "stable" -> Channel.STABLE;
-        case "nightly" -> Channel.NIGHTLY;
-        default -> throw file.unreadable("its \"channel\" is neither stable nor nightly");
-      };
-    }
-    var skipped = root.has("skipped") ? version(root, "the file", "skipped") : null;
-    StoredUpdates.Attempt attempt = null;
-    if (root.has("attempt")) {
-      var node = root.get("attempt");
-      if (!node.isObject()) {
-        throw file.unreadable("its \"attempt\" is not a JSON object");
-      }
-      Path path;
-      try {
-        path = Path.of(file.text(node, "the attempt", "file"));
-      } catch (InvalidPathException notAPath) {
-        throw file.unreadable("in the attempt, \"file\" is not a path");
-      }
-      attempt = new StoredUpdates.Attempt(
-          version(node, "the attempt", "version"), path, file.text(node, "the attempt", "sha256"));
-    }
+    var root = json.root(bytes, VERSION);
+    var channel = root.has(CHANNEL) ? channel(root) : null;
+    var skipped = root.has(SKIPPED) ? version(root, THE_FILE, SKIPPED) : null;
+    var attempt = root.has(ATTEMPT) ? attempt(root.get(ATTEMPT)) : null;
     return new StoredUpdates(channel, skipped, attempt);
+  }
+
+  private Channel channel(JsonNode root) throws WorkspaceStore.UnreadableException {
+    return switch (json.text(root, THE_FILE, CHANNEL)) {
+      case "stable" -> Channel.STABLE;
+      case "nightly" -> Channel.NIGHTLY;
+      default -> throw json.unreadable("its \"channel\" is neither stable nor nightly");
+    };
+  }
+
+  private StoredUpdates.Attempt attempt(JsonNode node) throws WorkspaceStore.UnreadableException {
+    if (!node.isObject()) {
+      throw json.unreadable("its \"attempt\" is not a JSON object");
+    }
+    Path path;
+    try {
+      path = Path.of(json.text(node, THE_ATTEMPT, "file"));
+    } catch (InvalidPathException _) {
+      throw json.unreadable("in the attempt, \"file\" is not a path");
+    }
+    return new StoredUpdates.Attempt(
+        version(node, THE_ATTEMPT, "version"), path, json.text(node, THE_ATTEMPT, "sha256"));
   }
 
   private Version version(JsonNode node, String where, String field)
       throws WorkspaceStore.UnreadableException {
     try {
-      return Version.parse(file.text(node, where, field));
-    } catch (IllegalArgumentException notAVersion) {
-      throw file.unreadable("in " + where + ", \"" + field + "\" is not a version");
+      return Version.parse(json.text(node, where, field));
+    } catch (IllegalArgumentException _) {
+      throw json.unreadable("in " + where + ", \"" + field + "\" is not a version");
     }
   }
 
@@ -89,21 +96,20 @@ public final class UpdateStore {
    * @throws IOException if it could not be written
    */
   public void save(StoredUpdates updates) throws IOException {
-    var root = JsonFile.Json.MAPPER.createObjectNode();
-    root.put("version", VERSION);
+    var root = JsonFile.newRoot(VERSION);
     if (updates.channel() != null) {
-      root.put("channel", updates.channel().name().toLowerCase(Locale.ROOT));
+      root.put(CHANNEL, updates.channel().name().toLowerCase(Locale.ROOT));
     }
     if (updates.skipped() != null) {
-      root.put("skipped", updates.skipped().toString());
+      root.put(SKIPPED, updates.skipped().toString());
     }
     if (updates.attempt() != null) {
       var attempt = updates.attempt();
-      root.putObject("attempt")
+      root.putObject(ATTEMPT)
           .put("version", attempt.version().toString())
           .put("file", attempt.file().toString())
           .put("sha256", attempt.sha256());
     }
-    file.save(JsonFile.bytes(root), this::parse);
+    json.save(JsonFile.bytes(root), this::parse);
   }
 }
