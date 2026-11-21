@@ -58,6 +58,7 @@ public final class PostgreSql implements Dialect {
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new PostgreSqlRows();
   private final MonitorDialect monitor = new Monitor();
+  private final FindDialect find = new Find();
 
   private PostgreSql() {}
 
@@ -129,6 +130,11 @@ public final class PostgreSql implements Dialect {
   @Override
   public MonitorDialect monitor() {
     return monitor;
+  }
+
+  @Override
+  public FindDialect find() {
+    return find;
   }
 
   // pgjdbc.
@@ -841,6 +847,152 @@ public final class PostgreSql implements Dialect {
       }
       var shown = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
       return none ? shown : shown + ":" + port;
+    }
+  }
+
+  static final class Find implements FindDialect {
+
+    private static final String EQ = Catalog.EQ;
+    private static final String NE = " OPERATOR(pg_catalog.<>) ";
+
+    // Every text operator says whether case counts.
+    @Override
+    public boolean caseByCollation() {
+      return false;
+    }
+
+    // The schema n, by the parameter or as one that is not the system's, as schemas() tells them.
+    private static String in(Scope scope) {
+      return switch (scope) {
+        case CONTAINER -> "n.nspname" + EQ + "?";
+        case USER_SCHEMAS ->
+          "pg_catalog.left(n.nspname, 3)" + NE + "'pg_' AND n.nspname" + NE
+              + "'information_schema'";
+      };
+    }
+
+    // The relation c is one the catalog lists, in the schema n of the scope.
+    private static String relations(Scope scope) {
+      return " FROM pg_catalog.pg_class c" + Catalog.JOIN_SCHEMA + " WHERE c.relkind"
+          + Catalog.PG_KINDS + " AND " + in(scope);
+    }
+
+    // A size of what holds rows: a table, also a partition, and a materialized view; never
+    // analyzed, as reltuples says with -1 or, before PostgreSQL 14, with 0 pages, none.
+    @Override
+    public String tables(Scope scope) {
+      return "SELECT n.nspname, c.relname, c.relkind,"
+          + " CASE WHEN c.relkind" + EQ + "ANY ('{r,p,m}'::pg_catalog.\"char\"[])"
+          + " AND c.reltuples OPERATOR(pg_catalog.>=) 0 AND c.relpages OPERATOR(pg_catalog.>) 0"
+          + " THEN CAST(c.reltuples AS pg_catalog.int8) END,"
+          + " CASE WHEN c.relkind" + EQ + "ANY ('{r,m}'::pg_catalog.\"char\"[])"
+          + " THEN pg_catalog.pg_table_size(c.oid) END"
+          + relations(scope)
+          + " ORDER BY n.nspname, c.relname";
+    }
+
+    @Override
+    public String columns(Scope scope) {
+      return "SELECT n.nspname, c.relname, a.attname,"
+          + " pg_catalog.format_type(a.atttypid, a.atttypmod)"
+          + " FROM pg_catalog.pg_class c" + Catalog.JOIN_SCHEMA
+          + " JOIN pg_catalog.pg_attribute a ON a.attrelid" + EQ + "c.oid"
+          + " WHERE c.relkind" + Catalog.PG_KINDS + " AND " + in(scope)
+          + " AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
+          + " ORDER BY n.nspname, c.relname, a.attnum";
+    }
+
+    @Override
+    public String views(Scope scope) {
+      return "SELECT n.nspname, c.relname, pg_catalog.pg_get_viewdef(c.oid)"
+          + " FROM pg_catalog.pg_class c" + Catalog.JOIN_SCHEMA
+          + " WHERE c.relkind" + EQ + "ANY ('{v,m}'::pg_catalog.\"char\"[]) AND " + in(scope)
+          + " ORDER BY n.nspname, c.relname";
+    }
+
+    // Functions and procedures, not aggregates or window functions, which have no text of their
+    // own; those an extension made are the extension's.
+    @Override
+    public String routines(Scope scope) {
+      return "SELECT n.nspname, p.proname, p.prokind, pg_catalog.pg_get_functiondef(p.oid)"
+          + " FROM pg_catalog.pg_proc p"
+          + " JOIN pg_catalog.pg_namespace n ON n.oid" + EQ + "p.pronamespace"
+          + " WHERE p.prokind" + EQ + "ANY ('{f,p}'::pg_catalog.\"char\"[]) AND " + in(scope)
+          + " AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d"
+          + " WHERE d.classid" + EQ + "'pg_catalog.pg_proc'::pg_catalog.regclass"
+          + " AND d.objid" + EQ + "p.oid AND d.deptype" + EQ + "'e')"
+          + " ORDER BY n.nspname, p.proname, p.oid";
+    }
+
+    @Override
+    public String triggers(Scope scope) {
+      return "SELECT n.nspname, c.relname, t.tgname, pg_catalog.pg_get_triggerdef(t.oid, true)"
+          + " FROM pg_catalog.pg_trigger t"
+          + " JOIN pg_catalog.pg_class c ON c.oid" + EQ + "t.tgrelid" + Catalog.JOIN_SCHEMA
+          + " WHERE NOT t.tgisinternal AND " + in(scope)
+          + " ORDER BY n.nspname, c.relname, t.tgname";
+    }
+
+    private static final Set<String> TEXTS = Set.of(
+        "text",
+        "character varying",
+        "character",
+        "name",
+        "\"char\"",
+        "citext",
+        "bpchar",
+        "varchar");
+    private static final Set<String> NUMBERS =
+        Set.of("smallint", "integer", "bigint", "numeric", "real", "double precision", "oid");
+
+    // As format_type writes it, with a length or precision in parentheses; an array is other.
+    @Override
+    public Holds holds(String type) {
+      if (type.endsWith("]")) {
+        return Holds.OTHER;
+      }
+      int at = type.indexOf('(');
+      var base = (at < 0 ? type : type.substring(0, at)).strip();
+      if (TEXTS.contains(base)) {
+        return Holds.TEXT;
+      }
+      return NUMBERS.contains(base) ? Holds.NUMBER : Holds.OTHER;
+    }
+
+    @Override
+    public String asText(String column) {
+      return "CAST(" + column + " AS pg_catalog.text)";
+    }
+
+    // LIKE and ILIKE as their operators, which take a backslash before a character that is meant
+    // as itself.
+    @Override
+    public String contains(String column, boolean caseSensitive) {
+      return asText(column)
+          + (caseSensitive ? " OPERATOR(pg_catalog.~~) ?" : " OPERATOR(pg_catalog.~~*) ?");
+    }
+
+    @Override
+    public String contained(String text) {
+      return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+    }
+
+    @Override
+    public String equal(String column, boolean caseSensitive) {
+      return caseSensitive
+          ? asText(column) + EQ + "?"
+          : "pg_catalog.lower(" + asText(column) + ")" + EQ + "pg_catalog.lower(?)";
+    }
+
+    @Override
+    public String matches(String column, boolean caseSensitive) {
+      return asText(column)
+          + (caseSensitive ? " OPERATOR(pg_catalog.~) ?" : " OPERATOR(pg_catalog.~*) ?");
+    }
+
+    @Override
+    public String equalNumber(String column) {
+      return column + EQ + "?";
     }
   }
 }

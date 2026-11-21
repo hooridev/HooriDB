@@ -31,4 +31,7 @@ public non-sealed interface Dialect extends Traits {
 
   /** How its servers tell what their sessions do. */
   MonitorDialect monitor();
+
+  /** How its objects and data are searched. */
+  FindDialect find();
 }

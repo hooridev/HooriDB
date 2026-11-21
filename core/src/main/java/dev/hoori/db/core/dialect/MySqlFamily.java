@@ -23,6 +23,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
 
   private final CatalogDialect catalog = new Catalog();
   private final ErrorDialect errors = new Errors();
+  private final FindDialect find = new Find();
 
   @Override
   public int defaultPort() {
@@ -37,6 +38,11 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   @Override
   public ErrorDialect errors() {
     return errors;
+  }
+
+  @Override
+  public FindDialect find() {
+    return find;
   }
 
   static final class Errors implements ErrorDialect {
@@ -492,6 +498,122 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           MonitorRows.text(row, 8),
           MonitorRows.seconds(row, 9),
           waits ? stage : "");
+    }
+  }
+
+  // A database holds the tables itself: every query takes its name.
+  static final class Find implements FindDialect {
+
+    private static String in(Scope scope, String column) {
+      if (scope != Scope.CONTAINER) {
+        throw new UnsupportedOperationException("No schemas");
+      }
+      return column + " = ?";
+    }
+
+    // MariaDB's sequences are tables to the server, as the catalog leaves them out.
+    @Override
+    public String tables(Scope scope) {
+      return "SELECT TABLE_SCHEMA, TABLE_NAME,"
+          + " CASE WHEN TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') THEN 'v' ELSE 'r' END,"
+          + " TABLE_ROWS, DATA_LENGTH"
+          + " FROM information_schema.TABLES"
+          + " WHERE " + in(scope, "TABLE_SCHEMA") + " AND TABLE_TYPE <> 'SEQUENCE'"
+          + " ORDER BY TABLE_NAME";
+    }
+
+    @Override
+    public String columns(Scope scope) {
+      return "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE"
+          + " FROM information_schema.COLUMNS WHERE " + in(scope, "TABLE_SCHEMA")
+          + " ORDER BY TABLE_NAME, ORDINAL_POSITION";
+    }
+
+    @Override
+    public String views(Scope scope) {
+      return "SELECT TABLE_SCHEMA, TABLE_NAME, VIEW_DEFINITION FROM information_schema.VIEWS"
+          + " WHERE " + in(scope, "TABLE_SCHEMA") + " ORDER BY TABLE_NAME";
+    }
+
+    @Override
+    public String routines(Scope scope) {
+      return "SELECT ROUTINE_SCHEMA, ROUTINE_NAME,"
+          + " CASE WHEN ROUTINE_TYPE = 'PROCEDURE' THEN 'p' ELSE 'f' END, ROUTINE_DEFINITION"
+          + " FROM information_schema.ROUTINES WHERE " + in(scope, "ROUTINE_SCHEMA")
+          + " AND ROUTINE_TYPE IN ('FUNCTION', 'PROCEDURE') ORDER BY ROUTINE_NAME";
+    }
+
+    @Override
+    public String triggers(Scope scope) {
+      return "SELECT TRIGGER_SCHEMA, EVENT_OBJECT_TABLE, TRIGGER_NAME, ACTION_STATEMENT"
+          + " FROM information_schema.TRIGGERS WHERE " + in(scope, "TRIGGER_SCHEMA")
+          + " ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME";
+    }
+
+    // LIKE and = compare by the column's collation, which says whether case counts.
+    @Override
+    public boolean caseByCollation() {
+      return true;
+    }
+
+    private static final Set<String> TEXTS =
+        Set.of("char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set");
+    private static final Set<String> NUMBERS = Set.of(
+        "tinyint",
+        "smallint",
+        "mediumint",
+        "int",
+        "integer",
+        "bigint",
+        "decimal",
+        "numeric",
+        "float",
+        "double",
+        "real");
+
+    // As COLUMN_TYPE writes it, with a length, the values of an enum or unsigned after the name.
+    @Override
+    public Holds holds(String type) {
+      int end = 0;
+      while (end < type.length() && Character.isLetter(type.charAt(end))) {
+        end++;
+      }
+      var base = type.substring(0, end).toLowerCase(java.util.Locale.ROOT);
+      if (TEXTS.contains(base)) {
+        return Holds.TEXT;
+      }
+      return NUMBERS.contains(base) ? Holds.NUMBER : Holds.OTHER;
+    }
+
+    @Override
+    public String asText(String column) {
+      return "CAST(" + column + " AS CHAR)";
+    }
+
+    // With an escape of its own, as a backslash is none where NO_BACKSLASH_ESCAPES is set.
+    @Override
+    public String contains(String column, boolean caseSensitive) {
+      return column + " LIKE ? ESCAPE '!'";
+    }
+
+    @Override
+    public String contained(String text) {
+      return "%" + text.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+    }
+
+    @Override
+    public String equal(String column, boolean caseSensitive) {
+      return column + " = ?";
+    }
+
+    @Override
+    public String matches(String column, boolean caseSensitive) {
+      return column + " REGEXP ?";
+    }
+
+    @Override
+    public String equalNumber(String column) {
+      return column + " = ?";
     }
   }
 }
