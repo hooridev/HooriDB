@@ -15,6 +15,7 @@ import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Label;
+import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
@@ -36,6 +37,7 @@ import java.util.function.Predicate;
 final class ConsoleView {
 
   private final ConsoleTab tab;
+  private final Menu.State databases = new Menu.State(); // the database switch's menu
 
   ConsoleView(ConsoleTab tab) {
     this.tab = tab;
@@ -186,7 +188,7 @@ final class ConsoleView {
             List.copyOf(names),
             tab.database,
             n -> n.isEmpty() ? "No database" : n,
-            tab.databases,
+            databases,
             n -> tab.use(s, n))
         .key("database")
         .label("Database")

@@ -34,6 +34,7 @@ import java.util.List;
 final class ResultsArea {
 
   private final ConsoleTab tab;
+  private final DataGrid.Selection logSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
 
   ResultsArea(ConsoleTab tab) {
     this.tab = tab;
@@ -382,7 +383,7 @@ final class ResultsArea {
               case ERROR -> CellIcon.before(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
             }));
     return DataGrid.dataGrid(
-            columns, tab.log.size(), DataGrid.options().select(tab.logSelection).rowNumbers())
+            columns, tab.log.size(), DataGrid.options().select(logSelection).rowNumbers())
         .key("messages")
         .label("Messages")
         .grow(1);

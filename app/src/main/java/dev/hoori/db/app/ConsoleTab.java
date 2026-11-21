@@ -12,7 +12,6 @@ import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Divider;
-import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.sql.Sql;
@@ -204,7 +203,6 @@ final class ConsoleTab implements Tab {
   private final ResultsArea area = new ResultsArea(this);
   private final ConsoleView ui = new ConsoleView(this);
   Split.Position split = FIRST_SPLIT;
-  final Menu.State databases = new Menu.State();
   private Lane lane; // the session, or null until it is needed
   // Tells the app what finishing something on the session did, from the thread that sees it.
   private Teller teller;
@@ -231,7 +229,6 @@ final class ConsoleTab implements Tab {
   final List<Output> outputs = new ArrayList<>(); // the pinned results first
   Output shown; // the results tab shown; null for Messages
   final List<Logged> log = new ArrayList<>();
-  final DataGrid.Selection logSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   final ValuePanel value = new ValuePanel(); // of the result shown
   Problem problem; // of the last run, or null
   private int results; // numbered so far
