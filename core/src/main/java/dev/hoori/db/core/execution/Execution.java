@@ -190,6 +190,9 @@ public final class Execution implements AutoCloseable {
   /** How long ending a statement that is given up may take before its connection is. */
   public static final Duration ENDING = Duration.ofSeconds(10);
 
+  // ENDING but where a test of a server that stops answering waits out a shorter one.
+  static volatile Duration giveUpBound = ENDING;
+
   /**
    * Ends the statement where it is not over, giving up what is left of its rows; where it ran in a
    * transaction of its own, that is committed, as auto-commit would have. Its failure, if any: of
@@ -207,7 +210,11 @@ public final class Execution implements AutoCloseable {
     Failure failure;
     try {
       failure = Query.within(
-          connection, provider, ENDING, () -> end(Ending.GAVE_UP, -1, said), () -> aborted = true);
+          connection,
+          provider,
+          giveUpBound,
+          () -> end(Ending.GAVE_UP, -1, said),
+          () -> aborted = true);
     } catch (QueryException e) {
       over = true;
       failure = Failure.of(

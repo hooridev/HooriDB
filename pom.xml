@@ -27,6 +27,9 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- How many JVMs a module's tests run in at once, as Surefire's forkCount; each starts its
+         own database servers in Docker as its tests ask for them, up to seven containers. -->
+    <test.forks>4</test.forks>
     <maven.compiler.release>25</maven.compiler.release>
     <!-- The UI framework, https://ui.rethinkj.com, and rethinkj Updater, its core and its helper,
          have no release yet. Each artifact is a SNAPSHOT that changes with each push to its main
@@ -183,9 +186,18 @@
           <artifactId>maven-surefire-plugin</artifactId>
           <version>3.6.1</version>
           <configuration>
+            <!-- The test classes run in test.forks JVMs at once, each with its own servers,
+                 driver store and natives cache, and in an order of chance, so that what one
+                 class leaves behind for another shows. The log names the order's seed;
+                 -Dsurefire.runOrder.random.seed= with it gives the same order again, though
+                 which JVM takes which class depends on timing (AGENTS.md, "Testing"). -->
+            <forkCount>${test.forks}</forkCount>
+            <reuseForks>true</reuseForks>
+            <runOrder>random</runOrder>
             <!-- For the tests against real servers, which load the drivers the way the app does. -->
             <systemPropertyVariables>
               <hooridb.test.drivers>${project.build.directory}/jdbc-drivers</hooridb.test.drivers>
+              <hooridb.test.store>${project.build.directory}/test-driver-store-${surefire.forkNumber}</hooridb.test.store>
               <hooridb.test.postgresql.version>${test.postgresql.version}</hooridb.test.postgresql.version>
               <hooridb.test.mariadb.version>${test.mariadb.version}</hooridb.test.mariadb.version>
               <hooridb.test.mysql.version>${test.mysql.version}</hooridb.test.mysql.version>

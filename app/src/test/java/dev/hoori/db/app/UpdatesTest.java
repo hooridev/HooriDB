@@ -159,7 +159,7 @@ class UpdatesTest {
       k.c.version = "0.2.0";
       var app = k.console(SHOP);
       k.c.run(
-          app, ConsoleTransactionTest.MANUAL + ConsoleTest.type(ConsoleTest.PAY) + ConsoleTest.RUN);
+          app, ConsoleTransactions.MANUAL + ConsoleTest.type(ConsoleTest.PAY) + ConsoleTest.RUN);
       assertEquals(Transaction.OPEN, k.tab(app).transaction);
       assertTrue(app.state().updates.ready != null, "the update was downloaded meanwhile");
       k.c.run(app, "press #update-act\nframe\n" + OPENED + "snap asked\n");
@@ -170,7 +170,7 @@ class UpdatesTest {
       // Exit asks again, as the console still holds the change; Rollback lets it go.
       k.c.run(
           app,
-          ConsoleTransactionTest.EXIT + "press #answer-rollback\nframe\n" + OPENED
+          ConsoleTransactions.EXIT + "press #answer-rollback\nframe\n" + OPENED
               + CatalogTreeTest.SETTLE);
       assertTrue(app.windows().all().isEmpty());
       assertEquals(List.of(), updater.restarts, "a plain Exit does not restart");

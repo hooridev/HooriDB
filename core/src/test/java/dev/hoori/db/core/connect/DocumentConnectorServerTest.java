@@ -12,7 +12,8 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.DocumentException;
 import java.net.InetAddress;
-import java.net.ServerSocket;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -94,17 +95,18 @@ class DocumentConnectorServerTest {
   @Test
   void aPortWhereNothingListensIsUnreachable() throws Exception {
     var server = TestServer.of(Provider.MONGODB);
-    int port;
-    try (var free = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
-      port = free.getLocalPort();
+    // Bound and not listening, on the address it connects to, so that nothing listens there.
+    var host = "127.0.0.1";
+    try (var free = new Socket()) {
+      free.bind(new InetSocketAddress(InetAddress.getByName(host), 0));
+      var profile = server.profile().withHost(host).withPort(free.getLocalPort());
+      var e = assertThrows(
+          ConnectionException.class,
+          () -> DocumentConnector.test(
+              profile, TestServer.password(), server.driver(), Duration.ofSeconds(2)));
+      assertTrue(
+          e.failure() == Failure.UNREACHABLE || e.failure() == Failure.TIMED_OUT, e.getMessage());
     }
-    var profile = server.profile().withHost("127.0.0.1").withPort(port);
-    var e = assertThrows(
-        ConnectionException.class,
-        () -> DocumentConnector.test(
-            profile, TestServer.password(), server.driver(), Duration.ofSeconds(2)));
-    assertTrue(
-        e.failure() == Failure.UNREACHABLE || e.failure() == Failure.TIMED_OUT, e.getMessage());
   }
 
   @Test

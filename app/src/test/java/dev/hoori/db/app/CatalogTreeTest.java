@@ -140,6 +140,7 @@ class CatalogTreeTest {
   @AfterEach
   void tearDown() throws Exception {
     servers.openAll();
+    secrets.release();
     for (var app : apps) {
       app.await(Duration.ofSeconds(10));
       app.state().catalog.closeAll();
