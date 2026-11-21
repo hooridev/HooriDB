@@ -67,7 +67,7 @@ public final class Layout {
       try {
         uses[i] = Script.parse(piece.text()).use() != null;
       } catch (SyntaxException e) {
-        throw new SyntaxException(e.getMessage(), piece.start() + e.offset());
+        throw new SyntaxException(e.getMessage(), piece.start() + e.offset(), e.tooLarge());
       }
     }
     var tokens = Lexer.tokens(text);

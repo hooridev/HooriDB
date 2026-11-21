@@ -357,6 +357,18 @@ class ScriptTest {
     assertWhere(19, "db.a.updateOne({}, { x: 1 })");
   }
 
+  @Test
+  void excessiveNestingIsARecoverableSyntaxError() {
+    int deep = 201;
+    var arrays = "[".repeat(deep) + "0" + "]".repeat(deep);
+    var parsed = Script.Parsed.of("db.c.find({ a: " + arrays + " })");
+    assertNull(parsed.request());
+    assertEquals(
+        "A value cannot be nested more than 200 levels deep",
+        assertInstanceOf(SyntaxException.class, parsed.error()).getMessage());
+    assertTrue(parsed.error().tooLarge());
+  }
+
   private static void assertWhere(int offset, String statement) {
     var e = assertThrows(SyntaxException.class, () -> Script.parse(statement));
     assertEquals(offset, e.offset(), e.getMessage());

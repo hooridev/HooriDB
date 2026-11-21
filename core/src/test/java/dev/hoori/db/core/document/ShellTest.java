@@ -194,6 +194,26 @@ class ShellTest {
     }
   }
 
+  @Test
+  void aValueCannotNestBeyondTheServersLimit() throws Exception {
+    int maximum = 200;
+    Object value = Shell.parse("[".repeat(maximum) + "0" + "]".repeat(maximum));
+    for (int i = 0; i < maximum; i++) {
+      value = assertInstanceOf(List.class, value).getFirst();
+    }
+    assertEquals(0, value);
+
+    assertTooDeep("[".repeat(maximum + 1) + "0" + "]".repeat(maximum + 1));
+    assertTooDeep("{ a: ".repeat(maximum + 1) + "0" + " }".repeat(maximum + 1));
+    assertTooDeep("Code('x', ".repeat(maximum + 1) + "{}" + ")".repeat(maximum + 1));
+  }
+
+  private static void assertTooDeep(String text) {
+    var e = assertThrows(SyntaxException.class, () -> Shell.parse(text));
+    assertEquals("A value cannot be nested more than 200 levels deep", e.getMessage());
+    assertTrue(e.tooLarge());
+  }
+
   private static void assertOffset(int offset, String text) {
     var e = assertThrows(SyntaxException.class, () -> Shell.parse(text));
     if (offset != e.offset() && !(offset == 0 && e.offset() == text.length())) {
