@@ -67,19 +67,18 @@ final class Tokens {
       Reading reading,
       int depth) {
     var pieces = Statements.pieces(sql.substring(from, to), provider, reading.escapes());
-    for (int k = 0; k < pieces.size(); k++) {
+    int k = 0;
+    while (k < pieces.size()) {
       var piece = pieces.get(k);
       int start = from + piece.start();
+      int next = k + 1;
       switch (piece.kind()) {
-        case STRING -> {}
+        case STRING -> {
+          // left out
+        }
         case COMMENT -> {
-          int body = reading.code() ? executable(sql, start, provider) : 0;
-          if (body > 0) {
-            int end = from + piece.end() - (piece.open() ? 0 : 2);
-            while (body < end && sql.charAt(body) >= '0' && sql.charAt(body) <= '9') {
-              body++; // the version from which the server runs it
-            }
-            depth = add(tokens, sql, body, Math.max(body, end), provider, reading, depth);
+          if (reading.code()) {
+            depth = comment(tokens, sql, from, piece, provider, reading, depth);
           }
         }
         case QUOTED ->
@@ -90,26 +89,61 @@ final class Tokens {
           if (c == ')') {
             depth = Math.max(0, depth - 1);
           }
-          int end = from + piece.end();
-          boolean word = word(c, provider);
-          if (word) {
-            while (k + 1 < pieces.size()
-                && pieces.get(k + 1).kind() == Statements.Piece.Kind.CODE
-                && from + pieces.get(k + 1).start() == end
-                && word(sql.charAt(end), provider)) {
-              end = from + pieces.get(++k).end();
-            }
-          }
-          var before = tokens.isEmpty() ? null : tokens.getLast();
-          boolean afterPeriod = word && before != null && before.is(".");
-          tokens.add(new Token(sql.substring(start, end), start, end, depth, afterPeriod));
+          next = code(tokens, sql, from, pieces, k, provider, depth);
           if (c == '(') {
             depth++;
           }
         }
       }
+      k = next;
     }
     return depth;
+  }
+
+  // Adds the code of the comment where it is executable; the depth after it.
+  private static int comment(
+      List<Token> tokens,
+      String sql,
+      int from,
+      Statements.Piece piece,
+      Provider provider,
+      Reading reading,
+      int depth) {
+    int body = executable(sql, from + piece.start(), provider);
+    if (body == 0) {
+      return depth;
+    }
+    int close = from + piece.end() - (piece.open() ? 0 : 2);
+    while (body < close && sql.charAt(body) >= '0' && sql.charAt(body) <= '9') {
+      body++; // the version from which the server runs it
+    }
+    return add(tokens, sql, body, Math.max(body, close), provider, reading, depth);
+  }
+
+  // Adds the token of code that begins at piece k, a word joined from its characters; the index of
+  // the piece after it.
+  private static int code(
+      List<Token> tokens,
+      String sql,
+      int from,
+      List<Statements.Piece> pieces,
+      int k,
+      Provider provider,
+      int depth) {
+    int start = from + pieces.get(k).start();
+    boolean word = word(sql.charAt(start), provider);
+    int last = k;
+    while (word
+        && last + 1 < pieces.size()
+        && pieces.get(last + 1).kind() == Statements.Piece.Kind.CODE
+        && pieces.get(last + 1).start() == pieces.get(last).end()
+        && word(sql.charAt(from + pieces.get(last).end()), provider)) {
+      last++;
+    }
+    int end = from + pieces.get(last).end();
+    boolean afterPeriod = word && !tokens.isEmpty() && tokens.getLast().is(".");
+    tokens.add(new Token(sql.substring(start, end), start, end, depth, afterPeriod));
+    return last + 1;
   }
 
   // Where the code of an executable comment at the offset begins, or 0 where it is none.
