@@ -80,8 +80,8 @@ class SavedQueriesTest {
     assertTrue(line(asked, "#query-name").contains(ORDERS), asked);
     c.run(app, named("All orders") + "snap saved\n");
     assertFalse(c.tree("saved").contains("role=dialog label=\"Save query\""), c.tree("saved"));
-    assertEquals(1, app.state().queries.size());
-    var saved = app.state().queries.getFirst();
+    assertEquals(1, app.state().keeping.queries.size());
+    var saved = app.state().keeping.queries.getFirst();
     assertEquals("All orders", saved.name());
     assertEquals(ORDERS, saved.text());
     assertEquals(SHOP.id(), saved.connection());
@@ -101,9 +101,9 @@ class SavedQueriesTest {
     assertTrue(
         c.tree("again").contains("A saved query of this name is replaced."), c.tree("again"));
     c.run(app, "press role=button label=\"Replace\"\nframe\nadvance 1\nframe\n" + SETTLE);
-    assertEquals(1, app.state().queries.size());
-    assertEquals("SELECT 2", app.state().queries.getFirst().text());
-    assertEquals(saved.id(), app.state().queries.getFirst().id());
+    assertEquals(1, app.state().keeping.queries.size());
+    assertEquals("SELECT 2", app.state().keeping.queries.getFirst().text());
+    assertEquals(saved.id(), app.state().keeping.queries.getFirst().id());
 
     c.run(app, CLEAR + SAVED + "snap listed\n");
     var listed = c.tree("listed");
@@ -116,7 +116,7 @@ class SavedQueriesTest {
   void theQueriesOfAConnectionTheWorkspaceLacksAreDeletedFromTheFile() throws Exception {
     var app = k.console(SHOP);
     c.run(app, SETTLE);
-    assertEquals(List.of(KEPT), app.state().queries);
+    assertEquals(List.of(KEPT), app.state().keeping.queries);
     CatalogTreeTest.eventually(() -> {
       try {
         return new QueryStore(dir.resolve("config")).load().equals(List.of(KEPT));
@@ -136,7 +136,7 @@ class SavedQueriesTest {
     assertTrue(
         c.tree("asking").contains("label=\"Delete the saved query Orders?\""), c.tree("asking"));
     c.run(app, "press #delete-query-confirm\nframe\nadvance 1\nframe\n" + SETTLE + "snap gone\n");
-    assertTrue(app.state().queries.isEmpty());
+    assertTrue(app.state().keeping.queries.isEmpty());
     assertTrue(c.tree("gone").contains("No saved queries yet"), c.tree("gone"));
   }
 }

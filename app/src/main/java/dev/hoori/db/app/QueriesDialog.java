@@ -73,16 +73,16 @@ final class QueriesDialog {
 
   /** The queries of the console's connection that hold the search, by name. */
   List<SavedQuery> shown(State s, ConsoleTab console) {
-    if (s.queries != of || !search.equals(found)) { // each change hands over a new list
+    if (s.keeping.queries != of || !search.equals(found)) { // each change hands over a new list
       var chosen = chosen();
       var part = search.toLowerCase(Locale.ROOT);
-      shown = s.queries.stream()
+      shown = s.keeping.queries.stream()
           .filter(q -> q.connection().equals(console.id)
               && (q.name().toLowerCase(Locale.ROOT).contains(part)
                   || q.text().toLowerCase(Locale.ROOT).contains(part)))
           .sorted((a, b) -> a.name().compareToIgnoreCase(b.name()))
           .toList();
-      of = s.queries;
+      of = s.keeping.queries;
       found = search;
       int at = 0;
       for (int i = 0; chosen != null && i < shown.size(); i++) {
@@ -112,8 +112,9 @@ final class QueriesDialog {
       triedToSave = true;
       return;
     }
-    boolean replaced = QueryStore.named(s.queries, console.id, name);
-    s.saveQuery(new SavedQuery(UUID.randomUUID(), console.id, name.strip(), text, Instant.now()));
+    boolean replaced = QueryStore.named(s.keeping.queries, console.id, name);
+    s.keeping.saveQuery(
+        new SavedQuery(UUID.randomUUID(), console.id, name.strip(), text, Instant.now()));
     console.queries = null;
     s.tell((replaced ? "Replaced the saved query " : "Saved the query ") + name.strip());
   }
@@ -133,7 +134,7 @@ final class QueriesDialog {
 
   private El saveView(State s, ConsoleTab console) {
     Theme t = Theme.CURRENT.get();
-    boolean replaces = !name.isBlank() && QueryStore.named(s.queries, console.id, name);
+    boolean replaces = !name.isBlank() && QueryStore.named(s.keeping.queries, console.id, name);
     var field = Form.field(
             "Name",
             TextField.textField(name, "Name of the query", v -> {
@@ -166,7 +167,7 @@ final class QueriesDialog {
   private El listView(State s, ConsoleTab console, App<State> app) {
     Theme t = Theme.CURRENT.get();
     var queries = shown(s, console);
-    boolean any = s.queries.stream().anyMatch(q -> q.connection().equals(console.id));
+    boolean any = s.keeping.queries.stream().anyMatch(q -> q.connection().equals(console.id));
     float unit = t.size().control();
     El list;
     if (queries.isEmpty()) {
@@ -259,7 +260,7 @@ final class QueriesDialog {
                         PRIMARY,
                         "Delete",
                         () -> {
-                          s.deleteQuery(query.id());
+                          s.keeping.deleteQuery(query.id());
                           deleting = null;
                           s.tell("Deleted the saved query " + query.name());
                         },

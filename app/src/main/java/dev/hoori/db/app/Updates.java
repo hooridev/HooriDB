@@ -27,7 +27,7 @@ final class Updates {
   final Updater updater; // null for none
   private final Version installed; // the version that runs, parsed; or null
   private final UpdateStore store;
-  final State.Kept kept;
+  final Kept kept;
   StoredUpdates stored = StoredUpdates.NONE; // as loaded, and changed since
   private Channel chosen; // a channel chosen before the settings were loaded, or null
   Notice notice; // the one notice of updates, or null
@@ -78,7 +78,7 @@ final class Updates {
    */
   Updates(Path folder, Updater updater, String version) {
     this.store = new UpdateStore(folder);
-    this.kept = new State.Kept("update settings", () -> State.writing(stored, store::save));
+    this.kept = new Kept("update settings", () -> Kept.writing(stored, store::save));
     this.updater = updater;
     Version parsed;
     try {
@@ -175,7 +175,7 @@ final class Updates {
     }
     kept.canSave = true;
     if (!stored.equals(loaded) || kept.unsaved) {
-      s.persist(kept);
+      s.keeping.persist(kept);
     }
     // Not again at once after an update that failed: the same update would fail the same way.
     if (result == null || result.status() == Installation.Result.Status.APPLIED) {
@@ -328,8 +328,8 @@ final class Updates {
         error -> {
           work = null;
           downloading = null;
-          notice =
-              warning(named(release.version()) + " could not be downloaded", State.messageOf(error));
+          notice = warning(
+              named(release.version()) + " could not be downloaded", State.messageOf(error));
         });
   }
 
@@ -357,7 +357,7 @@ final class Updates {
     var was = channel();
     chosen = channel;
     stored = stored.withChannel(channel);
-    s.persist(kept);
+    s.keeping.persist(kept);
     if (was == Channel.NIGHTLY
         && channel == Channel.STABLE
         && installed != null

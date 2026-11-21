@@ -303,7 +303,7 @@ class FoldersTest {
     }
     c.ready(app, SHOP);
     c.run(app, START + menu("shop-prod", "New console") + SETTLE + type(COUNT) + RUN + SAVED);
-    assertEquals(1, app.state().history.size());
+    assertEquals(1, app.state().keeping.history.size());
     c.run(app, menu("prod", "Delete…") + "snap asked\n" + DELETE_CONTENTS + SETTLE + "snap end\n");
     var asked = c.tree("asked");
     assertTrue(line(asked, "role=dialog").contains("label=\"Delete folder\""), asked);
@@ -314,7 +314,7 @@ class FoldersTest {
     assertEquals(List.of("legacy"), rows(end));
     assertEquals(Set.of(LEGACY.id()), c.secrets.stored.keySet());
     assertEquals(List.of(), app.state().consoles(null));
-    assertEquals(List.of(), app.state().history);
+    assertEquals(List.of(), app.state().keeping.history);
     assertEquals(new Workspace(List.of(LEGACY)), saved());
   }
 

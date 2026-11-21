@@ -346,7 +346,7 @@ final class ConsoleTab implements Tab {
         entry.started(),
         time.truncatedTo(ChronoUnit.MILLIS), // as it is kept
         outcome);
-    s.ran(recorded);
+    s.keeping.ran(recorded);
   }
 
   /** How the first part of a statement's outcome ended, its failure first. */
@@ -483,7 +483,7 @@ final class ConsoleTab implements Tab {
     if (lane == null && database.isEmpty() && !chosen) {
       database = s.catalog.onlyDatabase(id);
       if (!database.isEmpty()) {
-        s.edited(); // kept, so that it opens there next time too
+        s.keeping.edited(); // kept, so that it opens there next time too
       }
     }
   }
@@ -853,7 +853,7 @@ final class ConsoleTab implements Tab {
     var used = used(s, sql, portion);
     if (used != null) {
       database = used; // the shell's use: the console runs on there from now on
-      s.edited();
+      s.keeping.edited();
     }
     var failure = failure(portion);
     remember(s, outcomeOf(portion), portion.elapsed());
@@ -1142,7 +1142,8 @@ final class ConsoleTab implements Tab {
           Level.WARNING,
           "",
           null,
-          words("The server did not say whether a transaction is open: " + State.messageOf(error))));
+          words(
+              "The server did not say whether a transaction is open: " + State.messageOf(error))));
     }
   }
 
@@ -1402,7 +1403,7 @@ final class ConsoleTab implements Tab {
               var was = recorded;
               recorded = new HistoryEntry(
                   was.connection(), was.statement(), was.started(), was.took(), outcomeOf(portion));
-              s.ranAgain(was, recorded);
+              s.keeping.ranAgain(was, recorded);
             }
             // Where the server says, also in its later rows.
             help.failed(sql, failure, provider(s), words(failure.message()));
@@ -1491,7 +1492,7 @@ final class ConsoleTab implements Tab {
     var version = s.catalog.version(id);
     if (lane == null || profile == null) {
       database = name; // the next session opens on it
-      s.edited();
+      s.keeping.edited();
       return;
     }
     if (s.asks(
@@ -1505,7 +1506,7 @@ final class ConsoleTab implements Tab {
         || profile.provider().supports(Capability.CONNECTION_PER_DATABASE, version)) {
       closeSession();
       database = name;
-      s.edited();
+      s.keeping.edited();
       return;
     }
     leave();
@@ -1526,7 +1527,7 @@ final class ConsoleTab implements Tab {
           activity = new Idle();
           switching = null;
           database = done;
-          s.edited();
+          s.keeping.edited();
           log.add(new Logged(Level.RAN, switched, null, "Switched"));
         },
         error -> {
@@ -2042,7 +2043,7 @@ final class ConsoleTab implements Tab {
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
     El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
           text = v;
-          s.edited();
+          s.keeping.edited();
         })
         .key("sql")
         .label(Language.of(provider).label())

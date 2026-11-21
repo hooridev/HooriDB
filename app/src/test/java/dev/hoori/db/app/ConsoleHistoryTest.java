@@ -139,7 +139,7 @@ class ConsoleHistoryTest {
             + SETTLE + "snap deleted\n");
     assertEquals(List.of(), consoles());
     assertEquals(List.of(), new HistoryStore(config()).load());
-    assertEquals(List.of(), app.state().history);
+    assertEquals(List.of(), app.state().keeping.history);
   }
 
   /** The History dialog's part of the tree, whose cells are not the console's. */
@@ -176,7 +176,7 @@ class ConsoleHistoryTest {
         entries.stream().map(e -> e.outcome()).toList());
     assertTrue(entries.stream().allMatch(e -> e.connection().equals(SHOP.id())));
     assertEquals(4, entries.getFirst().took().toMillis(), "the server's time");
-    assertEquals(entries, app.state().history);
+    assertEquals(entries, app.state().keeping.history);
   }
 
   @Test
@@ -408,7 +408,7 @@ class ConsoleHistoryTest {
     c.run(app, type("\n" + PAY) + "key Enter control\nframe\nframe\n");
     eventually(tab::outcomeWaiting);
     c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE);
-    assertEquals(new Outcome.Changed(3), app.state().history.getLast().outcome());
+    assertEquals(new Outcome.Changed(3), app.state().keeping.history.getLast().outcome());
   }
 
   @Test
@@ -421,11 +421,12 @@ class ConsoleHistoryTest {
             FakeServers.serverError(Failure.Kind.OTHER, "division by zero")));
     var app = k.console(SHOP);
     c.run(app, type(sql) + RUN);
-    assertEquals(new Outcome.Rows(), app.state().history.getLast().outcome());
+    assertEquals(new Outcome.Rows(), app.state().keeping.history.getLast().outcome());
     c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE);
     assertEquals(
-        new Outcome.Failed("division by zero"), app.state().history.getLast().outcome());
-    assertEquals(1, app.state().history.size());
+        new Outcome.Failed("division by zero"),
+        app.state().keeping.history.getLast().outcome());
+    assertEquals(1, app.state().keeping.history.size());
   }
 
   @Test
@@ -437,7 +438,7 @@ class ConsoleHistoryTest {
     c.run(app, "frame\n" + RUN + "snap long\n");
     // Sent, and the made-up server does not know it: short, it would be kept as failed.
     assertTrue(line(c.tree("long"), "#run-status").contains("Failed after"), c.tree("long"));
-    assertEquals(List.of(), app.state().history);
+    assertEquals(List.of(), app.state().keeping.history);
   }
 
   /**
