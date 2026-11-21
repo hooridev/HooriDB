@@ -18,12 +18,8 @@ import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.DataGrid;
-import com.rethinkj.ui.kit.DataGrid.CellIcon;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Divider;
-import com.rethinkj.ui.kit.EmptyState;
-import com.rethinkj.ui.kit.Format;
-import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
@@ -31,7 +27,6 @@ import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Symbol;
-import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.sql.Sql;
@@ -42,9 +37,7 @@ import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.StoredConsole;
-import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
-import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
@@ -223,6 +216,7 @@ final class ConsoleTab implements Tab {
   String text = "";
   final CodeEditor.State editor = new CodeEditor.State();
   final ConsoleEditor help = new ConsoleEditor(this); // the error's place, completions
+  private final ResultsArea area = new ResultsArea(this);
   Split.Position split = FIRST_SPLIT;
   final Menu.State databases = new Menu.State();
   private Lane lane; // the session, or null until it is needed
@@ -390,7 +384,7 @@ final class ConsoleTab implements Tab {
     return profile == null ? null : profile.provider();
   }
 
-  private boolean keepsDocuments(State s) {
+  boolean keepsDocuments(State s) {
     var provider = provider(s);
     return provider != null && provider.keepsDocuments();
   }
@@ -1156,6 +1150,11 @@ final class ConsoleTab implements Tab {
       finished();
       open = null; // over: nothing is left to close
     }
+  }
+
+  /** Whether the next rows of the result are being read. */
+  boolean readsOn(Output o) {
+    return o == reading && work != null;
   }
 
   /** The result whose rows it read has ended, as another came after it or the statement ended. */
@@ -1963,7 +1962,7 @@ final class ConsoleTab implements Tab {
             p -> split = p,
             code,
             3 * t.size().control(),
-            results(s, app),
+            area.view(s, app),
             4 * t.size().control())
         .grow(1);
     return col()
@@ -2161,344 +2160,6 @@ final class ConsoleTab implements Tab {
     };
     code.onKey(code.onKey() == null ? keys : keys.or(code.onKey()));
     return help.editor(s, app, provider, code);
-  }
-
-  /** The results of the last runs in tabs, with Messages; what went wrong above them. */
-  private El results(State s, App<State> app) {
-    Theme t = Theme.CURRENT.get();
-    El note = note(s);
-    boolean none = outputs.isEmpty() && log.isEmpty();
-    if (none && working()) {
-      return col()
-          .grow(1)
-          .center()
-          .gap(t.space().m())
-          .label("Results")
-          .child(Progress.spinner())
-          .child(Label.label(Label.Variant.MUTED, waiting ? "Connecting…" : "Running…"));
-    }
-    El body = none
-        ? EmptyState.emptyState(
-            Symbol.PLAY,
-            "Nothing run yet",
-            "Control+Enter runs the statement at the caret, Control+Shift+Enter all of them.",
-            null)
-        : tabs(s, app);
-    return col()
-        .grow(1)
-        .minSize(0, 0)
-        .label("Results")
-        .child(note == null ? null : col().padding(t.space().m()).shrink(0).child(note))
-        .child(body);
-  }
-
-  /** A tab for each result and one for Messages, with the one shown. */
-  private El tabs(State s, App<State> app) {
-    var tabs = new ArrayList<Tabs.Tab>();
-    for (var o : outputs) {
-      tabs.add(new Tabs.Tab("Result " + o.number, false, false, icon(o)));
-    }
-    tabs.add(new Tabs.Tab("Messages", false, false, Symbol.TEXT_BULLET_LIST_LTR));
-    int at = shown == null ? -1 : outputs.indexOf(shown);
-    El content = at < 0 ? messages() : output(s, app, shown);
-    return Tabs.tabs(
-            tabs,
-            at < 0 ? outputs.size() : at,
-            i -> shown = i < outputs.size() ? outputs.get(i) : null,
-            i -> {},
-            content,
-            Tabs.options().switchKeys(false))
-        .key("results")
-        .grow(1);
-  }
-
-  /** A result's tab's icon: pinned, a count, or rows. */
-  private static Symbol icon(Output o) {
-    if (o.pinned) {
-      return Symbol.PIN;
-    }
-    return o.fields == null ? Symbol.CHECKMARK_CIRCLE : Symbol.TABLE;
-  }
-
-  /** Why nothing runs or what failed, with what the user can do; null for nothing. */
-  private El note(State s) {
-    Theme t = Theme.CURRENT.get();
-    if (stranded) {
-      return strandedNote(s);
-    }
-    // An outcome in doubt stays said, also over later runs, until the user has read it.
-    // The act that holds the connection, as a save of it: nothing runs until it is done.
-    var locked = s.locked(this);
-    El lock = locked == null
-        ? null
-        : Callout.callout(
-                Callout.Kind.INFO,
-                locked,
-                "Nothing runs on this console until that is done or given up.")
-            .key("locked");
-    El manual = unavailable == null || mode != Mode.AUTO
-        ? null
-        : Callout.callout(Callout.Kind.WARNING, "Manual is unavailable", unavailable)
-            .key("manual-unavailable");
-    El doubted = doubt == null
-        ? null
-        : Callout.callout(
-                Callout.Kind.DANGER,
-                UNSURE,
-                doubt,
-                button(SECONDARY, "Acknowledge", () -> acknowledge(s)).key("acknowledge"))
-            .key("doubt");
-    El failed = transaction == Transaction.FAILED ? failedNote(s) : null;
-    El reported = problem == null
-        ? null
-        : Callout.callout(Callout.Kind.DANGER, problem.title(), problem.text()).key("problem");
-    var notes = new ArrayList<El>();
-    for (var note : new El[] {lock, doubted, reported, manual, failed}) {
-      if (note != null) {
-        notes.add(note);
-      }
-    }
-    if (notes.size() <= 1) {
-      return notes.isEmpty() ? null : notes.getFirst();
-    }
-    return col().gap(t.space().s()).children(notes.toArray(El[]::new));
-  }
-
-  /** The tree's connection failed while the console waited for it: why, with Try again. */
-  private El strandedNote(State s) {
-    var trouble = s.catalog.problem(s, new Node.Connection(id));
-    var actions = new ArrayList<El>();
-    if (trouble != null && trouble.password()) {
-      actions.add(button(SECONDARY, "Enter password…", () -> retry(s, true)));
-    }
-    actions.add(button(SECONDARY, "Try again", () -> retry(s, false)).key("try-again"));
-    return Callout.callout(
-            Callout.Kind.DANGER,
-            trouble == null ? "Not connected" : trouble.title(),
-            trouble == null ? null : trouble.text(),
-            actions.toArray(El[]::new))
-        .key("unconnected");
-  }
-
-  /** The transaction failed: the server takes nothing more in it but a rollback. */
-  private El failedNote(State s) {
-    return Callout.callout(
-            Callout.Kind.WARNING,
-            "The transaction failed",
-            "The server ignores every statement in it until it is rolled back; its changes are"
-                + " lost.",
-            button(SECONDARY, ROLLBACK_BUTTON, canRollback() ? () -> rollBackTransaction(s) : null)
-                .key("roll-back"))
-        .key("failed");
-  }
-
-  /** A result: its rows in the grid, or the number of rows it changed; whether it is pinned. */
-  private El output(State s, App<State> app, Output o) {
-    El pin = Button.toggleIcon(
-            Symbol.PIN, o.pinned ? "Unpin" : "Pin", o.pinned, on -> o.pinned = on)
-        .key("pin");
-    if (o.fields == null) {
-      return changed(s, o, pin);
-    }
-    String about = about(o);
-    if (o.documents.isEmpty()) {
-      return col()
-          .grow(1)
-          .minSize(0, 0)
-          .child(withValue(s, app, o, grid(s, app, o)))
-          .child(Card.footer(
-              Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
-              value.button(),
-              pin));
-    }
-    return documents(s, app, o, about, pin);
-  }
-
-  /** A count: the number of rows, or documents, the statement changed. */
-  private El changed(State s, Output o, El pin) {
-    return col()
-        .grow(1)
-        .minSize(0, 0)
-        .child(EmptyState.emptyState(
-                Symbol.CHECKMARK_CIRCLE, rows(o.count, keepsDocuments(s)) + CHANGED, null, null)
-            .key("changed"))
-        .child(Card.footer(Label.label(Label.Variant.MUTED, brief(o.statement)).ellipsis(), pin));
-  }
-
-  /** What a result's status line says: its statement, and how many of its rows it holds. */
-  private static String about(Output o) {
-    boolean whole = !o.documents.isEmpty();
-    String count = rows(o.rows.size(), whole);
-    String held;
-    if (o.more) {
-      held = count + " so far, more as it scrolls";
-    } else if (o.cut) {
-      held = "the first " + count + "; the rest was not read";
-    } else if (o.dropped > 0) {
-      held = "the first " + count + " of " + rows(o.rows.size() + o.dropped, whole)
-          + "; the rest was read and not kept";
-    } else {
-      held = count;
-    }
-    return brief(o.statement) + " · " + held;
-  }
-
-  /** Documents: as a grid, or whole, a page of those read so far, with the table's pager. */
-  private El documents(State s, App<State> app, Output o, String about, El pin) {
-    var footer = new ArrayList<El>();
-    footer.add(Segmented.segmented(
-            List.of(TableTab.Shown.values()), o.shown, v -> v.title, v -> o.shown = v)
-        .key("result-shown")
-        .label("Show documents as"));
-    El body;
-    if (o.shown == TableTab.Shown.GRID) {
-      footer.add(value.button());
-      body = withValue(s, app, o, grid(s, app, o));
-    } else {
-      body = page(s, app, o, footer);
-    }
-    footer.add(pin);
-    return col()
-        .grow(1)
-        .minSize(0, 0)
-        .child(body.grow(1))
-        .child(Card.footer(
-            Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
-            footer.toArray(El[]::new)));
-  }
-
-  /** The page of the documents shown whole; its range and pager go into the footer. */
-  private El page(State s, App<State> app, Output o, List<El> footer) {
-    int last = Math.max(0, (o.documents.size() - 1) / PORTION);
-    if (o.page > last && (o != reading || work == null)) {
-      o.page = last; // the next page did not come: nothing was left, or the read stopped
-    }
-    int from = o.page * PORTION;
-    int to = Math.min(from + PORTION, o.documents.size());
-    footer.add(Label.label(
-            Label.Variant.MUTED, to <= from ? "No documents" : TableTab.range(from + 1L, to, true))
-        .key("rows-in-view"));
-    footer.add(TableTab.paging(
-        o.page > 0,
-        (o.page + 1) * PORTION < o.documents.size() || o.more,
-        () -> turn(s, o, 0),
-        () -> turn(s, o, o.page - 1),
-        () -> turn(s, o, o.page + 1),
-        o.more ? null : () -> turn(s, o, last))); // the last is known once all is read
-    if (to <= from) {
-      return col()
-          .center()
-          .child(Label.label(Label.Variant.MUTED, o.more ? "Reading documents…" : "No documents")
-              .key("no-documents"));
-    }
-    o.whole.show("p" + o.page, o.documents, from, to);
-    return o.whole.view(app, o.shown, s.zone, "Documents of result " + o.number);
-  }
-
-  /**
-   * Shows the page of the result's documents, reading the next portion where it is not full: not
-   * past one that is not, which shows what comes first.
-   */
-  private void turn(State s, Output o, int page) {
-    int at = o.documents.size();
-    o.page = Math.clamp(page, 0, at / PORTION);
-    if ((o.page + 1) * PORTION > at) {
-      want(s, o, at + PORTION - 1);
-    }
-  }
-
-  /**
-   * The result's grid with the value panel, which shows the current cell's value as the result
-   * holds it: a text cut short stays so, as the statement may not name a row to read it by.
-   */
-  private El withValue(State s, App<State> app, Output o, El grid) {
-    int row = o.selection.row();
-    int column = o.selection.column();
-    ValuePanel.Cell cell = null;
-    String note = null;
-    // A row beyond those read is the one that asks for more.
-    if (value.open
-        && row >= 0
-        && row < o.rows.size() + (o.more ? 1 : 0)
-        && column >= 0
-        && column < o.fields.size()) {
-      var field = o.fields.get(column);
-      var v = row < o.rows.size() ? o.rows.get(row).get(column) : null;
-      cell = new ValuePanel.Cell(field.name(), field.type(), field.kind(), v);
-      if (v instanceof Cut) {
-        note = Cells.icon(v).tooltip() + "; a result keeps no more";
-      }
-    }
-    return value.around(app, s.zone, grid, cell, note, cell != null && row >= o.rows.size());
-  }
-
-  /** The result's rows, read-only, with the table tab's cells. */
-  private El grid(State s, App<State> app, Output o) {
-    Theme t = Theme.CURRENT.get();
-    var zone = s.zone;
-    var columns = new ArrayList<DataGrid.Column>();
-    for (int c = 0; c < o.fields.size(); c++) {
-      var field = o.fields.get(c);
-      var kind = field.kind();
-      int at = c;
-      if (o.widths[c] < 0) {
-        o.widths[c] = Cells.width(kind) * t.size().control();
-      }
-      var column = new DataGrid.Column(
-              field.name(),
-              o.widths[c],
-              Cells.type(kind),
-              row -> Cells.text(o.rows.get(row).get(at), zone))
-          .typeName(field.type())
-          .sortable(false);
-      if (kind == Kind.TEXT || kind == Kind.JSON || kind == Kind.OTHER) {
-        column = column.cellIcon(row -> Cells.icon(o.rows.get(row).get(at)));
-      }
-      columns.add(column);
-    }
-    var options = DataGrid.options()
-        .select(o.selection)
-        .onResize((c, w) -> o.widths[c] = w)
-        .fitColumns(o.fit)
-        .rowNumbers()
-        .copy(app.clipboard())
-        .loading(row -> row < o.rows.size(), (_, last) -> want(s, o, last));
-    int count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), TableTab.GRID_ROWS);
-    return DataGrid.dataGrid(columns, count, options)
-        .key("grid")
-        .label("Rows of result " + o.number);
-  }
-
-  /** What ran, how long it took, what it gave, and what the server said along the way. */
-  private El messages() {
-    Theme t = Theme.CURRENT.get();
-    float unit = t.size().control();
-    var columns = List.of(
-        new DataGrid.Column(
-                "Statement",
-                16 * unit,
-                DataGrid.DataType.TEXT,
-                row -> log.get(row).statement())
-            .sortable(false),
-        new DataGrid.Column(
-                "Took",
-                4 * unit,
-                Format.DURATION.type(),
-                row -> Format.DURATION.text(log.get(row).took()))
-            .sortable(false),
-        new DataGrid.Column(
-                "Result", 20 * unit, DataGrid.DataType.TEXT, row -> log.get(row).text())
-            .sortable(false)
-            .cellIcon(row -> switch (log.get(row).level()) {
-              case RAN -> null;
-              case WARNING -> CellIcon.before(Symbol.WARNING, Icon.Variant.WARNING);
-              case ERROR -> CellIcon.before(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
-            }));
-    return DataGrid.dataGrid(
-            columns, log.size(), DataGrid.options().select(logSelection).rowNumbers())
-        .key("messages")
-        .label("Messages")
-        .grow(1);
   }
 
   /** The last run's time and rows, or that it runs. */
