@@ -628,8 +628,7 @@ final class ConsoleTab implements Tab {
    */
   private boolean gate(State s, String sql) {
     var why = s.locked(this);
-    var pending = s.pending;
-    if (why == null && pending != null && !pending.armed() && pending.console() == this) {
+    if (why == null && asked(s) != null) {
       why = "A question about this console waits for its answer";
     }
     if (why == null) {
@@ -1784,9 +1783,10 @@ final class ConsoleTab implements Tab {
   }
 
   /** The act that waits for this console's question, or null. */
-  State.Pending asked(State s) {
-    var pending = s.pending;
-    return pending != null && !pending.armed() && pending.console() == this ? pending : null;
+  State.Pending.Question asked(State s) {
+    return s.pending instanceof State.Pending.Question question && question.console() == this
+        ? question
+        : null;
   }
 
   /**

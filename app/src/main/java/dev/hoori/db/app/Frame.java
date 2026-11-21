@@ -243,13 +243,16 @@ final class Frame {
 
   /** What a console of the window asks about what may be open in it, or null. */
   private static El question(State s, TabGroups.Group<Tab> group) {
-    return questioned(s, group) ? s.pending.console().question(s) : null;
+    var questioned = questioned(s, group);
+    return questioned != null ? questioned.console().question(s) : null;
   }
 
-  /** Whether a console of the window asks about what may be open in it. */
-  private static boolean questioned(State s, TabGroups.Group<Tab> group) {
-    var pending = s.pending;
-    return pending != null && !pending.armed() && s.tabs.groupOf(pending.console()) == group;
+  /** The question a console of the window asks about what may be open in it, or null. */
+  private static State.Pending.Question questioned(State s, TabGroups.Group<Tab> group) {
+    return s.pending instanceof State.Pending.Question question
+            && s.tabs.groupOf(question.console()) == group
+        ? question
+        : null;
   }
 
   /**
@@ -258,7 +261,7 @@ final class Frame {
    * catalog asks there.
    */
   private static boolean asks(State s, TabGroups.Group<Tab> group) {
-    return questioned(s, group)
+    return questioned(s, group) != null
         || group.activeTab() instanceof ConsoleTab console
             && (console.confirming != null || console.history != null || console.queries != null)
         || s.catalog.asks(s, group);

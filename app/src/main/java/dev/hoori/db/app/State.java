@@ -1325,17 +1325,24 @@ final class State {
   }
 
   /**
-   * The one act in the app that waits: what owns it, what it is, the console whose question it
-   * waits on and how it goes on once that is settled, or, once armed, which consoles it locks: those
-   * of a connection, or all of them for null.
+   * The one act in the app that waits, with what owns it and what it is: a {@link Question} while a
+   * console asks, or {@link Locked} once it is armed.
    */
-  record Pending(
-      Object owner,
-      String what,
-      Runnable then,
-      ConsoleTab console,
-      boolean armed,
-      Set<UUID> scope) {}
+  sealed interface Pending {
+    Object owner();
+
+    String what();
+
+    /** The act waits on the question of a console, and goes on by {@code then} once it is settled. */
+    record Question(Object owner, String what, ConsoleTab console, Runnable then)
+        implements Pending {}
+
+    /**
+     * The act is armed and locks the consoles of a scope until it is done: those of these
+     * connections, or all of them for null.
+     */
+    record Locked(Object owner, String what, Set<UUID> scope) implements Pending {}
+  }
 
   /**
    * An act that may wait, as the owner of {@link Pending}: what it does, and to what. Two are the
@@ -1357,7 +1364,7 @@ final class State {
     var asking = consoles.stream().filter(ConsoleTab::atStake).findFirst().orElse(null);
     boolean mine = pending != null && Objects.equals(pending.owner(), owner);
     if (asking == null) {
-      if (mine && !pending.armed()) {
+      if (mine && pending instanceof Pending.Question) {
         pending = null;
       }
       return false;
@@ -1366,7 +1373,7 @@ final class State {
       refuse();
       return true;
     }
-    pending = new Pending(owner, what, then, asking, false, null);
+    pending = new Pending.Question(owner, what, asking, then);
     asking.show(this);
     return true;
   }
@@ -1383,22 +1390,25 @@ final class State {
       refuse();
       return false;
     }
-    pending = new Pending(owner, what, null, null, true, scope);
+    pending = new Pending.Locked(owner, what, scope);
     return true;
   }
 
   private void refuse() {
-    if (pending.armed()) {
-      tell(pending.what() + ": that comes first.");
-    } else {
-      tell("A question about a console's transaction waits for its answer.");
-      pending.console().show(this);
+    switch (pending) {
+      case Pending.Locked locked -> tell(locked.what() + ": that comes first.");
+      case Pending.Question question -> {
+        tell("A question about a console's transaction waits for its answer.");
+        question.console().show(this);
+      }
     }
   }
 
   /** The act is done, or given up: with what owns it, or with the console it waited on. */
   void drop(Object owner) {
-    if (pending != null && (Objects.equals(pending.owner(), owner) || pending.console() == owner)) {
+    if (pending != null
+        && (Objects.equals(pending.owner(), owner)
+            || pending instanceof Pending.Question question && question.console() == owner)) {
       pending = null;
     }
   }
@@ -1410,15 +1420,14 @@ final class State {
 
   /** Why the console may start nothing now, or null. */
   String locked(ConsoleTab console) {
-    return pending != null
-            && pending.armed()
-            && (pending.scope() == null || pending.scope().contains(console.id))
-        ? pending.what()
+    return pending instanceof Pending.Locked locked
+            && (locked.scope() == null || locked.scope().contains(console.id))
+        ? locked.what()
         : null;
   }
 
   boolean quitting() {
-    return pending != null && pending.owner() == EXIT && pending.armed();
+    return pending instanceof Pending.Locked locked && locked.owner() == EXIT;
   }
 
   /** Whether Exit, or Restart now, asks or is under way: nothing comes between. */
