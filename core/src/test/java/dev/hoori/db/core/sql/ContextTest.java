@@ -4,6 +4,7 @@ import static dev.hoori.db.core.connection.Provider.MARIADB;
 import static dev.hoori.db.core.connection.Provider.MYSQL;
 import static dev.hoori.db.core.connection.Provider.POSTGRESQL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.sql.Context.Asked;
@@ -139,7 +140,10 @@ class ContextTest {
     assertEquals(Asked.ANY, at("SELECT co| FROM `", MARIADB).asked());
   }
 
-  /** Every prefix and many cuts of real statements, with every caret: nothing throws. */
+  /**
+   * Every prefix and many cuts of real statements, with every caret: nothing throws, what is typed
+   * ends at the caret, and the part around it lies in the text.
+   */
   @Test
   void whateverIsTypedNothingThrows() {
     var statements = List.of(
@@ -165,8 +169,15 @@ class ContextTest {
           Context.tables(text, provider);
           var split = Statements.of(text, provider);
           for (int caret = -1; caret <= text.length() + 1; caret++) {
-            Context.at(text, provider, caret);
-            split.around(caret);
+            var before = text.substring(0, Math.clamp(caret, 0, text.length()));
+            var typed = Context.at(text, provider, caret).typed();
+            assertTrue(before.endsWith(typed), () -> provider + ": " + text);
+            var around = split.around(caret);
+            assertTrue(
+                0 <= around.start()
+                    && around.start() <= around.end()
+                    && around.end() <= text.length(),
+                () -> provider + ": " + text);
           }
         }
       }

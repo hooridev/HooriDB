@@ -140,9 +140,8 @@ class ChangesServerTest {
         var columns = columns(connection, provider, table);
         assertTrue(Changes.of(table, columns).isEmpty());
         var row = Rows.read(connection, provider, table, columns, 0, 10).rows().getFirst();
-        assertThrows(
-            IllegalArgumentException.class,
-            () -> new Changes(table, columns, List.of(new Change.Delete(row))));
+        var deletion = List.<Change>of(new Change.Delete(row));
+        assertThrows(IllegalArgumentException.class, () -> new Changes(table, columns, deletion));
         assertEquals(List.of(row(1L, "one")), rows(provider, table));
       } finally {
         dropAfter(provider, "DROP TABLE " + qualified(provider, name));
@@ -239,7 +238,7 @@ class ChangesServerTest {
     try (var connection = open(provider)) {
       try {
         execute(connection, "SET SESSION time_zone = 'Europe/Berlin'");
-      } catch (SQLException e) {
+      } catch (SQLException _) {
         assumeTrue(false, "The server has no named time zones");
       }
       execute(

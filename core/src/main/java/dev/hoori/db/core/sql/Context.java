@@ -81,6 +81,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
       "WITH",
       "AS");
   private static final Set<String> INTRODUCERS = Set.of("FROM", "JOIN", "INTO", "UPDATE");
+  private static final Context NOTHING = new Context(Asked.NOTHING, List.of(), "", List.of());
 
   /**
    * What the caret, an offset in the statement's text, asks for. The text may hold comments
@@ -89,18 +90,13 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
   public static Context at(String statement, Provider provider, int caret) {
     int at = Math.clamp(caret, 0, statement.length());
     var pieces = Statements.pieces(statement, provider);
-    for (var piece : pieces) {
-      if (piece.kind() != Piece.Kind.CODE && piece.holds(at)) {
-        return new Context(Asked.NOTHING, List.of(), "", List.of());
-      }
+    if (pieces.stream().anyMatch(piece -> piece.kind() != Piece.Kind.CODE && piece.holds(at))) {
+      return NOTHING;
     }
     var tokens = tokens(statement, pieces, provider);
     boolean readable = readable(tokens);
-    var tables = readable ? tables(tokens, provider) : List.<Reference>of();
-    int from = at;
-    while (from > 0 && word(statement.codePointBefore(from))) {
-      from -= Character.charCount(statement.codePointBefore(from));
-    }
+    var tables = readable ? tables(tokens) : List.<Reference>of();
+    int from = wordStart(statement, at);
     var typed = statement.substring(from, at);
     // The tokens before the word that is typed.
     int n = 0;
@@ -113,18 +109,25 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
       n -= 2;
     }
     if (!path.isEmpty()) {
-      return readable
-          ? new Context(Asked.MEMBER, List.copyOf(path), typed, tables)
-          : new Context(Asked.NOTHING, List.of(), "", List.of());
+      return readable ? new Context(Asked.MEMBER, List.copyOf(path), typed, tables) : NOTHING;
     }
     boolean table = n > 0 && INTRODUCERS.contains(tokens.get(n - 1).upper());
     return new Context(table ? Asked.TABLE : Asked.ANY, List.of(), typed, tables);
   }
 
+  // Where the word that ends at the offset begins.
+  private static int wordStart(String statement, int at) {
+    int from = at;
+    while (from > 0 && word(statement.codePointBefore(from))) {
+      from -= Character.charCount(statement.codePointBefore(from));
+    }
+    return from;
+  }
+
   /** The tables the statement names, in order; none in a statement with a CTE or a subquery. */
   public static List<Reference> tables(String statement, Provider provider) {
     var tokens = tokens(statement, Statements.pieces(statement, provider), provider);
-    return readable(tokens) ? tables(tokens, provider) : List.of();
+    return readable(tokens) ? tables(tokens) : List.of();
   }
 
   // Whether it is no statement with a CTE, WITH at its start, or a subquery, "(" before SELECT.
@@ -140,49 +143,60 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     return true;
   }
 
-  private static List<Reference> tables(List<Token> tokens, Provider provider) {
+  private static List<Reference> tables(List<Token> tokens) {
     var found = new ArrayList<Reference>();
     for (int i = 0; i < tokens.size(); i++) {
       var introducer = tokens.get(i).upper();
-      if (!INTRODUCERS.contains(introducer)) {
-        continue;
-      }
-      int j = i + 1;
-      while (j < tokens.size() && tokens.get(j).name()) {
-        var names = new ArrayList<String>();
-        names.add(tokens.get(j++).identifier());
-        while (j + 1 < tokens.size()
-            && tokens.get(j).kind() == Kind.DOT
-            && tokens.get(j + 1).name()) {
-          names.add(tokens.get(j + 1).identifier());
-          j += 2;
-        }
-        if (j < tokens.size() && tokens.get(j).kind() == Kind.DOT) {
-          break; // a name still being written, such as "public." before the caret
-        }
-        if (j < tokens.size() && tokens.get(j).upper().equals("AS")) {
-          j++;
-        }
-        String alias = null;
-        if (j < tokens.size()
-            && tokens.get(j).name()
-            && (tokens.get(j).kind() == Kind.QUOTED
-                || !CLAUSES.contains(tokens.get(j).upper()))) {
-          alias = tokens.get(j++).identifier();
-        }
-        var name = names.getLast();
-        var schema = names.size() > 1 ? names.get(names.size() - 2) : null;
-        found.add(new Reference(schema, name, alias));
-        // FROM a x, b y: the list goes on after a comma.
-        if (!introducer.equals("FROM")
-            || j + 1 >= tokens.size()
-            || tokens.get(j).kind() != Kind.COMMA) {
-          break;
-        }
-        j++;
+      if (INTRODUCERS.contains(introducer)) {
+        introduced(tokens, i + 1, introducer.equals("FROM"), found);
       }
     }
     return List.copyOf(found);
+  }
+
+  // Adds the tables named from the index on, after an introducer; a list goes on after a comma.
+  private static void introduced(
+      List<Token> tokens, int from, boolean list, List<Reference> found) {
+    int j = from;
+    while (j < tokens.size() && tokens.get(j).name()) {
+      j = reference(tokens, j, found);
+      // FROM a x, b y: the list goes on after a comma.
+      if (j < 0 || !list || j + 1 >= tokens.size() || tokens.get(j).kind() != Kind.COMMA) {
+        return;
+      }
+      j++;
+    }
+  }
+
+  // Adds the table named at the index, with its alias; the index after it, or -1 for a name still
+  // being written, such as "public." before the caret.
+  private static int reference(List<Token> tokens, int from, List<Reference> found) {
+    var names = new ArrayList<String>();
+    int j = from;
+    names.add(tokens.get(j++).identifier());
+    while (j + 1 < tokens.size()
+        && tokens.get(j).kind() == Kind.DOT
+        && tokens.get(j + 1).name()) {
+      names.add(tokens.get(j + 1).identifier());
+      j += 2;
+    }
+    if (j < tokens.size() && tokens.get(j).kind() == Kind.DOT) {
+      return -1;
+    }
+    if (j < tokens.size() && tokens.get(j).upper().equals("AS")) {
+      j++;
+    }
+    String alias = null;
+    if (j < tokens.size()
+        && tokens.get(j).name()
+        && (tokens.get(j).kind() == Kind.QUOTED
+            || !CLAUSES.contains(tokens.get(j).upper()))) {
+      alias = tokens.get(j++).identifier();
+    }
+    var name = names.getLast();
+    var schema = names.size() > 1 ? names.get(names.size() - 2) : null;
+    found.add(new Reference(schema, name, alias));
+    return j;
   }
 
   /** Whether the code point belongs to a word as the kit's completion takes it. */
@@ -218,47 +232,64 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
   private static List<Token> tokens(String text, List<Piece> pieces, Provider provider) {
     var tokens = new ArrayList<Token>();
     boolean folds = provider.dialect().syntax().foldsNamesToLowerCase();
-    for (int k = 0; k < pieces.size(); k++) {
+    int k = 0;
+    while (k < pieces.size()) {
       var piece = pieces.get(k);
+      int next = k + 1;
       switch (piece.kind()) {
-        case COMMENT -> {}
-        case STRING -> tokens.add(new Token(Kind.OTHER, "", null, piece.end()));
-        case QUOTED -> {
-          var quoted = text.substring(piece.start(), piece.end());
-          String name = null;
-          if (!piece.open() && quoted.length() >= 2) {
-            var quote = quoted.substring(0, 1);
-            name = quoted.substring(1, quoted.length() - 1).replace(quote + quote, quote);
-          }
-          tokens.add(new Token(Kind.QUOTED, quoted, name, piece.end()));
+        case COMMENT -> {
+          // left out
         }
+        case STRING -> tokens.add(new Token(Kind.OTHER, "", null, piece.end()));
+        case QUOTED -> tokens.add(quoted(text, piece));
         case CODE -> {
           char c = text.charAt(piece.start());
           if (part(c)) {
-            // A word: the characters of code that follow each other without a gap.
-            int end = piece.end();
-            while (k + 1 < pieces.size()
-                && pieces.get(k + 1).kind() == Piece.Kind.CODE
-                && pieces.get(k + 1).start() == end
-                && part(text.charAt(end))) {
-              end = pieces.get(++k).end();
-            }
+            next = wordEnd(text, pieces, k);
+            int end = pieces.get(next - 1).end();
             var word = text.substring(piece.start(), end);
             var name = folds ? word.toLowerCase(Locale.ROOT) : word;
             tokens.add(new Token(Kind.WORD, word, name, end));
           } else {
-            var kind = switch (c) {
-              case '.' -> Kind.DOT;
-              case ',' -> Kind.COMMA;
-              case '(' -> Kind.OPEN;
-              default -> Kind.OTHER;
-            };
-            tokens.add(new Token(kind, String.valueOf(c), null, piece.end()));
+            tokens.add(new Token(kind(c), String.valueOf(c), null, piece.end()));
           }
         }
       }
+      k = next;
     }
     return tokens;
+  }
+
+  private static Token quoted(String text, Piece piece) {
+    var quoted = text.substring(piece.start(), piece.end());
+    String name = null;
+    if (!piece.open() && quoted.length() >= 2) {
+      var quote = quoted.substring(0, 1);
+      name = quoted.substring(1, quoted.length() - 1).replace(quote + quote, quote);
+    }
+    return new Token(Kind.QUOTED, quoted, name, piece.end());
+  }
+
+  // The index after the last piece of the word that begins at piece k: the characters of code
+  // that follow each other without a gap.
+  private static int wordEnd(String text, List<Piece> pieces, int k) {
+    int last = k;
+    while (last + 1 < pieces.size()
+        && pieces.get(last + 1).kind() == Piece.Kind.CODE
+        && pieces.get(last + 1).start() == pieces.get(last).end()
+        && part(text.charAt(pieces.get(last).end()))) {
+      last++;
+    }
+    return last + 1;
+  }
+
+  private static Kind kind(char c) {
+    return switch (c) {
+      case '.' -> Kind.DOT;
+      case ',' -> Kind.COMMA;
+      case '(' -> Kind.OPEN;
+      default -> Kind.OTHER;
+    };
   }
 
   // A character of a word or a name: letters, digits, "_", "$", and both halves of a character

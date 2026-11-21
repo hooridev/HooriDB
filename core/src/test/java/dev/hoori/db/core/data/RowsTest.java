@@ -21,16 +21,15 @@ class RowsTest {
   void positionsGoForwardFromZeroAndColumnsAreTheTables() {
     var table = new Table(HOORI, "t", Table.Kind.TABLE);
     var other = new Table(HOORI, "u", Table.Kind.TABLE);
-    var column = new Column(other, "id", "int", false, 1);
+    var none = List.<Column>of();
+    var others = List.of(new Column(other, "id", "int", false, 1));
+    assertThrows(
+        IllegalArgumentException.class, () -> Rows.read(null, Provider.MYSQL, table, none, -1, 10));
+    assertThrows(
+        IllegalArgumentException.class, () -> Rows.read(null, Provider.MYSQL, table, none, 10, 9));
     assertThrows(
         IllegalArgumentException.class,
-        () -> Rows.read(null, Provider.MYSQL, table, List.of(), -1, 10));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Rows.read(null, Provider.MYSQL, table, List.of(), 10, 9));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Rows.read(null, Provider.MYSQL, table, List.of(column), 0, 10));
+        () -> Rows.read(null, Provider.MYSQL, table, others, 0, 10));
   }
 
   @Test
