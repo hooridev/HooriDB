@@ -279,7 +279,7 @@ public final class Rows {
     // can name the other moment's row, as Changes.write refuses; check it if such keys show up.
     var sql = "SELECT " + provider.quote(columns.get(column).name()) + " FROM "
         + qualified(provider, table)
-        + keyed.where(provider, row, dialect.equal(), Changes.parameters(dialect, values));
+        + keyed.where(provider, row, dialect.keyEquality(), Changes.parameters(dialect, values));
     var texts = Journal.sql(
         provider,
         Purpose.ROWS,

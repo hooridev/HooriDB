@@ -219,7 +219,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       for (var change : changes) {
         if (kind.isInstance(change)) {
           var values = new ArrayList<Object>();
-          var sql = sql(provider, change, dialect.equal(), parameters(dialect, values));
+          var sql = sql(provider, change, dialect.keyEquality(), parameters(dialect, values));
           var preview = sql(provider, change, "=", dialect::literal);
           statements.add(new Statement(change, sql, values, preview));
         }
@@ -495,7 +495,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     var dialect = provider.dialect().rows();
     var values = new ArrayList<Object>();
     var sql = "SELECT 1 FROM " + Rows.qualified(provider, table)
-        + where(provider, row, dialect.equal(), parameters(dialect, values))
+        + where(provider, row, dialect.keyEquality(), parameters(dialect, values))
         + (lock ? " FOR UPDATE" : "");
     return new Statement(change, sql, values, sql);
   }

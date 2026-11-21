@@ -230,7 +230,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
   }
 
   @Override
-  String equal() {
+  String keyEquality() {
     return "=";
   }
 

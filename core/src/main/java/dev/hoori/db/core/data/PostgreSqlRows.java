@@ -232,7 +232,7 @@ public final class PostgreSqlRows extends RowsDialect {
   }
 
   @Override
-  String equal() {
+  String keyEquality() {
     return "OPERATOR(pg_catalog.=)";
   }
 
