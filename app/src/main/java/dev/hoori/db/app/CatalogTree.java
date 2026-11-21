@@ -814,7 +814,7 @@ final class CatalogTree {
    */
   record Session(Lane lane, LoadedDriver driver, char[] password) {
 
-    // The password's content counts, as for any record; its text never shows.
+    // The password's content counts, as for any record; it never shows.
     @Override
     public boolean equals(Object o) {
       return o instanceof Session(var l, var d, var p)
@@ -830,7 +830,7 @@ final class CatalogTree {
 
     @Override
     public String toString() {
-      return "Session[lane=" + lane + ", driver=" + driver + ", password=(withheld)]";
+      return "Session[lane=" + lane + ", driver=" + driver + "]";
     }
   }
 
@@ -1280,10 +1280,10 @@ final class CatalogTree {
     return switch (node) {
       case Node.Folder(var id) -> s.folder(id).name();
       case Node.Connection(var id) -> State.name(s.profile(id));
-      case Node.OfDatabase(var _, var database) -> database.name();
-      case Node.OfSchema(var _, var schema) -> schema.name();
-      case Node.OfTable(var _, var table) -> table.name();
-      case Node.OfColumn(var _, var column) -> column.name();
+      case Node.OfDatabase n -> n.database().name();
+      case Node.OfSchema n -> n.schema().name();
+      case Node.OfTable n -> n.table().name();
+      case Node.OfColumn n -> n.column().name();
       case Node.Problem(var of) -> name(s, of);
     };
   }
@@ -1301,7 +1301,7 @@ final class CatalogTree {
   /** The muted text after a node's name: a column's type, a connection's kind of server. */
   String detail(State s, Node node) {
     return switch (node) {
-      case Node.OfColumn(var _, var column) -> column.type();
+      case Node.OfColumn n -> n.column().type();
       case Node.Connection(var id) -> s.profile(id).provider().displayName();
       default -> null;
     };
