@@ -476,7 +476,7 @@ final class Frame {
         s::delete,
         Button.options()
             .tone(Button.Tone.DANGER)
-            .state(s.removing ? Button.State.BUSY : Button.State.READY));
+            .state(s.removal.running ? Button.State.BUSY : Button.State.READY));
     El content = col()
         .gap(t.space().m())
         .child(label("Delete the connection " + State.name(s.deleting) + "?"))
@@ -487,7 +487,7 @@ final class Frame {
         .child(label(
             Label.Variant.MUTED,
             "If its password is saved in the system keyring, it is deleted there too."));
-    if (s.removingSlow) {
+    if (s.removal.slow) {
       content.child(Callout.callout(
           Callout.Kind.WARNING,
           "The system keyring does not answer",
@@ -495,9 +495,9 @@ final class Frame {
               + " connection is not deleted."
               + (s.keyringWorker.behind() ? ConnectionDialog.BEHIND : "")));
     }
-    if (s.removeError != null) {
-      content.child(
-          Callout.callout(Callout.Kind.DANGER, "The password could not be deleted", s.removeError));
+    if (s.removal.error != null) {
+      content.child(Callout.callout(
+          Callout.Kind.DANGER, "The password could not be deleted", s.removal.error));
     }
     return Dialog.dialog(
         "Delete connection",
@@ -506,7 +506,7 @@ final class Frame {
             button(
                 Button.Variant.SECONDARY,
                 "Cancel",
-                s.removing && !s.removingSlow ? null : s::cancelDelete),
+                s.removal.running && !s.removal.slow ? null : s::cancelDelete),
             delete),
         s::cancelDelete);
   }
