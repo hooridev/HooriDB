@@ -123,7 +123,7 @@ final class ConsoleView {
 
   /** Busy while Commit's or Rollback's own statement runs. */
   private Button.State busyWith(String sql) {
-    return tab.firm && sql.equals(tab.running) ? Button.State.BUSY : Button.State.READY;
+    return tab.firm() && sql.equals(tab.running) ? Button.State.BUSY : Button.State.READY;
   }
 
   /** Run, Run all and Cancel. */
@@ -132,12 +132,12 @@ final class ConsoleView {
         button(
                 PRIMARY,
                 "Run",
-                tab.firm || locked != null ? null : () -> tab.run(s),
+                tab.firm() || locked != null ? null : () -> tab.run(s),
                 Button.options()
                     .icon(Symbol.PLAY)
                     // Off, not busy, while a change of its connection is saved or deleted.
                     .state(
-                        tab.working() && !tab.firm && locked == null
+                        tab.working() && !tab.firm() && locked == null
                             ? Button.State.BUSY
                             : Button.State.READY))
             .key("run")
@@ -145,7 +145,10 @@ final class ConsoleView {
         button(SECONDARY, "Run all", busy || locked != null ? null : () -> tab.runAll(s))
             .key("run-all")
             .keepFocus(),
-        button(SECONDARY, ConsoleTab.CANCEL_BUTTON, busy && !tab.firm ? () -> tab.cancel(s) : null)
+        button(
+                SECONDARY,
+                ConsoleTab.CANCEL_BUTTON,
+                busy && !tab.firm() ? () -> tab.cancel(s) : null)
             .key("cancel")
             .keepFocus());
   }
@@ -227,13 +230,13 @@ final class ConsoleView {
 
   /** What runs or waits, as the status line says it. */
   private String underWay() {
-    if (tab.waiting) {
+    if (tab.activity instanceof ConsoleTab.Waiting) {
       return "Connecting…";
     }
     if (tab.switching != null) {
       return "Switching to " + (tab.switching.isEmpty() ? "no database" : tab.switching) + "…";
     }
-    if (!tab.firm) {
+    if (!tab.firm()) {
       return tab.writes ? "Running; rows show once all are read…" : "Running…";
     }
     if (ConsoleTab.COMMIT.equals(tab.running)) {
@@ -292,11 +295,11 @@ final class ConsoleView {
     var buttons = new ArrayList<El>();
     buttons.add(button(SECONDARY, ConsoleTab.CANCEL_BUTTON, () -> tab.answer(s, null))
         .key("answer-cancel"));
-    boolean waits = tab.firm || tab.work != null && tab.changes();
+    boolean waits = tab.waits();
     var wording = wording(s, s.title(tab), asked.what(), waits);
     buttons.addAll(wording.buttons());
     var body = wording.text();
-    if (tab.endFailed && !tab.firm && tab.work == null && tab.doubt == null) {
+    if (tab.endFailed && !tab.firm() && tab.work() == null && tab.doubt == null) {
       body += " Or end the connection: it is closed, and the server rolls back what was not"
           + " committed.";
       buttons.add(1, endIt(s));
@@ -332,8 +335,8 @@ final class ConsoleView {
           List.of(button(PRIMARY, "Continue", () -> tab.answer(s, ConsoleTab.CONTINUE))
               .key("answer-continue")));
     }
-    if (tab.firm) {
-      return waitingForEnd(s, name, before);
+    if (tab.firm()) {
+      return waitingForEnd(s, name, before, tab.firm.overdue());
     }
     if (waits) {
       // What it promises nothing of: no Rollback, which could not say what it undid.
@@ -351,7 +354,7 @@ final class ConsoleView {
                   Button.options().tone(Button.Tone.DANGER))
               .key("answer-go-on")));
     }
-    if (tab.work != null) {
+    if (tab.work() != null) {
       return rollBackFirst(
           s,
           "A statement still runs on " + name + ", and a transaction may be open. Roll back,"
@@ -384,7 +387,7 @@ final class ConsoleView {
   }
 
   /** Commit, Rollback or a switch of auto-commit runs: the question waits for it. */
-  private Wording waitingForEnd(State s, String name, String before) {
+  private Wording waitingForEnd(State s, String name, String before, boolean overdue) {
     String title;
     if (ConsoleTab.COMMIT.equals(tab.running)) {
       title = "Waiting for the commit";
@@ -394,7 +397,7 @@ final class ConsoleView {
       title = "Waiting for the server";
     }
     var body = name + " waits for the server's answer. Once nothing is left open, " + before + ".";
-    if (!tab.overdue) {
+    if (!overdue) {
       return new Wording(title, body, List.of());
     }
     return new Wording(

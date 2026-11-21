@@ -169,6 +169,31 @@ final class ConsoleTab implements Tab {
    */
   record Confirm(String sql, String title, String text, boolean danger) {}
 
+  /** What the console does on its session, one thing at a time. */
+  sealed interface Activity {}
+
+  /** Nothing runs or waits. */
+  record Idle() implements Activity {}
+
+  /** For the tree's connection, which the session is opened from. */
+  record Waiting() implements Activity {}
+
+  /** The tree's connection failed while it waited: Try again goes on. */
+  record Stranded() implements Activity {}
+
+  /**
+   * A call on the session: a statement, the read of its further rows, a switch of the database
+   * ({@link ConsoleTab#switching}), or Commit, Rollback or a switch of auto-commit ({@link
+   * ConsoleTab#firm}).
+   */
+  record Running(Asking work) implements Activity {}
+
+  /**
+   * Commit, Rollback or a switch of auto-commit runs, which nothing stops; overdue once it has not
+   * answered for {@link ConsoleTab#FIRM_SECONDS}.
+   */
+  record Firm(boolean overdue) {}
+
   static final String UNVERIFIABLE =
       "The driver of this connection does not report the server's auto-commit, so Manual cannot"
           + " be made sure of: choose a newer driver version in the connection's Driver field.";
@@ -214,14 +239,16 @@ final class ConsoleTab implements Tab {
   private AtomicReference<Servers.Run> sent = new AtomicReference<>();
   private Output reading; // the result whose rows it has
   private final ArrayDeque<String> queue = new ArrayDeque<>(); // the run's statements still to run
-  Asking work; // the statement, the rows or the switch under way, or null
-  String running; // the statement under way, or the one whose rows are read
+  Activity activity = new Idle(); // what it does on its session
+  // The last call's statement, which Messages and notices name it by also after it ended, as the
+  // read of its further rows and the way out after a failed Commit or Rollback do.
+  String running;
   // The shell's statement under way as it was read once, on taking it from the queue; null for SQL.
   private Script.Parsed parsed;
-  boolean waiting; // for the tree's connection, which the session is opened from
   private boolean chosen; // the user chose the database: none is taken for them
-  boolean stranded; // the tree's connection failed while it waited: Try again goes on
-  String switching; // the database it switches to, while it does; the old one shows meanwhile
+  // The database it switches to, while it does; the old one shows meanwhile. Beside the activity,
+  // as a late outcome of a statement sent by Run anyway during a Commit ends the activity alone.
+  String switching;
   private Statements scanned; // the statements of the text it was made from, as the caret moves
   private String scannedText;
   private Provider scannedProvider; // whose rules split it: the connection may change
@@ -237,7 +264,8 @@ final class ConsoleTab implements Tab {
   private boolean cancelled; // the last run was cancelled
   private boolean failedRun; // a statement of the last run failed, or could not be run
   private boolean closed;
-  // The statement held before it is sent until the user says whether it runs, or null.
+  // The statement held before it is sent until the user says whether it runs, or null. Beside the
+  // activity, as the transaction's question may commit or roll back while it is asked.
   Confirm confirming;
   String said; // what the tab says for a while in its status line, or null
   private int says;
@@ -249,17 +277,20 @@ final class ConsoleTab implements Tab {
   // What is open is the server's own, begun as the user's Commit or Rollback ended theirs, as with
   // MySQL's completion_type=1: no statement ran in it, and it holds nothing.
   boolean empty;
-  boolean firm; // the call is Commit, Rollback or a switch of auto-commit: none stops it
-  // The call under way may change data or the transaction: a statement not on the read list, read
-  // to its end, or Commit, Rollback, a switch of auto-commit or of the database. Cut short or
-  // lost, what it did is not known.
+  // The last call may change data or the transaction: a statement not on the read list, read to
+  // its end, or Commit, Rollback, a switch of auto-commit or of the database. Cut short or lost,
+  // what it did is not known. Of the last call, not the activity: its outcome is taken after it.
   boolean writes;
-  boolean overdue; // the Commit, Rollback or switch under way has not answered for long
+  // The Commit, Rollback or switch of auto-commit under way, or null. Beside the activity, as Run
+  // anyway may send a statement while the question's Commit runs, and either outcome comes first.
+  Firm firm;
   private int firms; // counted, so that a late patience is dropped
-  // The last Commit or Rollback failed, the connection still there: ending it is a way out.
+  // The last Commit or Rollback failed, the connection still there: ending it is a way out, also
+  // while other statements run after it, until the next ends or the session closes.
   boolean endFailed;
-  // The call is a plain read ({@link #reads}): read whole in a transaction, and at stake while it
-  // runs there, but what it did, cut short, is the transaction's, which the server says.
+  // The last call is a plain read ({@link #reads}): read whole in a transaction, and at stake while
+  // it runs there, but what it did, cut short, is the transaction's, which the server says. Of the
+  // last call, as {@link #writes} is.
   private boolean plain;
   String unavailable; // why Manual is not to be had on this session, or null
   // The session has the console's mode, as a statement sent on it or a switch confirmed: from then
@@ -271,10 +302,12 @@ final class ConsoleTab implements Tab {
   // Why the outcome of what may have ended the transaction is not known, until the user has read
   // it; null for nothing in doubt.
   String doubt;
-  private Asking probe; // the question to the server about the transaction, or null
+  // The question to the server about the transaction, or null; beside the activity, as it is asked
+  // while a statement waits behind it on the lane.
+  private Asking probe;
   // The calls whose outcomes have not reached the console yet, given up when the session ends.
   private final List<Delivery> outstanding = new ArrayList<>();
-  Check probing; // which one it is
+  Check probing; // which one it is, set and cleared with it
   // The probe asked before a statement sent since: its answer cannot say that what is open holds
   // nothing, as the statement may have run in it.
   private Check overtaken;
@@ -392,7 +425,7 @@ final class ConsoleTab implements Tab {
       s.catalog.connect(s, id); // as the tree connects: the driver, the password, the server
       askHere(s);
     }
-    stranded = false;
+    activity = new Idle(); // from stranded: busy() lets it start from nothing else
     outputs.removeIf(o -> !o.pinned);
     if (!outputs.contains(shown)) {
       shown = null;
@@ -413,31 +446,35 @@ final class ConsoleTab implements Tab {
     if (lane != null || s.catalog.connected(id) && !picks(s)) {
       next(s);
     } else if (s.catalog.active(id)) {
-      waiting = true;
+      activity = new Waiting();
     } else {
-      stranded = true;
+      activity = new Stranded();
     }
   }
 
   /** The tree's connection connected: what waited for it runs; what was stranded is let go. */
   void connected(State s) {
-    stranded = false;
-    if (waiting) {
-      if (picks(s)) {
-        return; // the databases are read right behind the connection
+    switch (activity) {
+      case Waiting _ -> {
+        if (picks(s)) {
+          return; // the databases are read right behind the connection
+        }
+        activity = new Idle();
+        next(s);
       }
-      waiting = false;
-      next(s);
-    } else {
-      queue.clear();
+      case Stranded _ -> {
+        activity = new Idle();
+        queue.clear();
+      }
+      case Idle _, Running _ -> queue.clear();
     }
   }
 
   /** The tree read the connection's databases, or could not: what waited for them goes on. */
   void databasesRead(State s) {
     take(s);
-    if (waiting) {
-      waiting = false;
+    if (activity instanceof Waiting) {
+      activity = new Idle();
       follow(s);
     }
   }
@@ -459,15 +496,16 @@ final class ConsoleTab implements Tab {
 
   /** The tree's connection failed while the console waited for it: it says so, with Try again. */
   void unconnected() {
-    if (waiting) {
-      waiting = false;
-      stranded = true;
+    if (activity instanceof Waiting) {
+      activity = new Stranded();
     }
   }
 
   /** Try again, or Enter password…: connects the tree's connection again, and goes on. */
   void retry(State s, boolean password) {
-    stranded = false;
+    if (activity instanceof Stranded) {
+      activity = new Idle();
+    }
     var live = s.catalog.live(id);
     if (password && live != null) {
       s.catalog.askPassword(s, live);
@@ -563,7 +601,7 @@ final class ConsoleTab implements Tab {
     var asked = mode;
     recording = new Sent(sql, Instant.now());
     var label = openSql;
-    work = ask(
+    activity = new Running(ask(
         s,
         "run a statement",
         link -> {
@@ -572,13 +610,13 @@ final class ConsoleTab implements Tab {
               link, new Session.Send(sql, statement, asked, lazy, KEPT, planner, on), held);
         },
         ran -> {
-          work = null;
+          activity = new Idle();
           ran(s, sql, ran);
         },
         error -> {
-          work = null;
+          activity = new Idle();
           sendFailed(s, sql, wasEmpty, error);
-        });
+        }));
     open = held; // after ask, which gives up the one open before
   }
 
@@ -1147,7 +1185,7 @@ final class ConsoleTab implements Tab {
 
   /** Whether the next rows of the result are being read. */
   boolean readsOn(Output o) {
-    return o == reading && work != null;
+    return o == reading && work() != null;
   }
 
   /** The result whose rows it read has ended, as another came after it or the statement ended. */
@@ -1328,7 +1366,7 @@ final class ConsoleTab implements Tab {
   void want(State s, Output output, int last) {
     if (output != reading
         || !output.more
-        || work != null
+        || work() != null
         || last < output.rows.size() - 50
         || !gate(s, null)) {
       return; // asked again once the grid builds these rows anew
@@ -1342,13 +1380,13 @@ final class ConsoleTab implements Tab {
     writes = false; // only a plain read in Auto, with nothing open, is read so
     plain = true;
     // Not through ask, as the read goes on rather than being given up.
-    work = through(
+    activity = new Running(through(
         s,
         "read rows",
         sql,
         link -> held.get().next(PORTION),
         portion -> {
-          work = null;
+          activity = new Idle();
           if (!portion.more()) {
             open = null; // over: nothing is left to give up
           }
@@ -1378,9 +1416,9 @@ final class ConsoleTab implements Tab {
           }
         },
         error -> {
-          work = null;
+          activity = new Idle();
           failed(s, sql, error);
-        });
+        }));
   }
 
   /**
@@ -1395,14 +1433,21 @@ final class ConsoleTab implements Tab {
       decline();
       return;
     }
-    if (waiting) {
-      waiting = false;
-      queue.clear();
-      say(s, NOT_RUN);
-      return;
-    }
-    if (work == null || firm) {
-      return;
+    switch (activity) {
+      case Waiting _ -> {
+        activity = new Idle();
+        queue.clear();
+        say(s, NOT_RUN);
+        return;
+      }
+      case Idle _, Stranded _ -> {
+        return; // nothing runs
+      }
+      case Running _ -> {
+        if (firm != null) {
+          return; // nothing stops what runs
+        }
+      }
     }
     stop();
     queue.clear();
@@ -1416,7 +1461,7 @@ final class ConsoleTab implements Tab {
     cancelled = true;
     log.add(new Logged(Level.WARNING, brief(running), null, CANCELLED_TEXT));
     // Not where it was never sent, as one cancelled while the session opened.
-    if (changes() && !firm && sent.get() != null) {
+    if (changes() && sent.get() != null) {
       doubt(running, "it was cancelled");
     }
     if (lane != null) {
@@ -1470,7 +1515,7 @@ final class ConsoleTab implements Tab {
     writes = true;
     plain = false;
     sent = new AtomicReference<>(); // no statement of the user's
-    work = ask(
+    activity = new Running(ask(
         s,
         "switch the database",
         link -> {
@@ -1478,17 +1523,17 @@ final class ConsoleTab implements Tab {
           return name;
         },
         done -> {
-          work = null;
+          activity = new Idle();
           switching = null;
           database = done;
           s.edited();
           log.add(new Logged(Level.RAN, switched, null, "Switched"));
         },
         error -> {
-          work = null;
+          activity = new Idle();
           switching = null;
           failed(s, switched, error);
-        });
+        }));
   }
 
   /**
@@ -1497,6 +1542,7 @@ final class ConsoleTab implements Tab {
    * leave it to run.
    */
   private void stop() {
+    var work = work();
     if (recording != null && teller != null) { // none comes from here on
       switch (work.delivery().untaken()) {
         case Session.Ran r -> // it ran to its end before the cancel
@@ -1509,8 +1555,8 @@ final class ConsoleTab implements Tab {
     }
     work.cancel(); // its outcome, if the lane has it already, becomes a notice
     outstanding.remove(work.delivery());
-    work = null;
-    firm = false;
+    activity = new Idle();
+    firm = null;
   }
 
   /**
@@ -1520,12 +1566,11 @@ final class ConsoleTab implements Tab {
    */
   void end() {
     boolean stake = atStake();
-    if (work != null) {
+    if (work() != null) {
       stop();
     }
     queue.clear();
-    waiting = false;
-    stranded = false;
+    activity = new Idle();
     switching = null;
     confirming = null;
     if (stake) {
@@ -1542,7 +1587,7 @@ final class ConsoleTab implements Tab {
     transaction = Transaction.NONE;
     inTransaction = 0;
     empty = true;
-    firm = false;
+    firm = null;
     learned++;
     unavailable = null; // a new session, perhaps with another driver, says it anew
     applied = false;
@@ -1552,7 +1597,6 @@ final class ConsoleTab implements Tab {
       probing = null;
     }
     endFailed = false;
-    overdue = false;
     // What the session still owes the console it owes the app now.
     outstanding.forEach(Delivery::giveUp);
     outstanding.clear();
@@ -1608,7 +1652,31 @@ final class ConsoleTab implements Tab {
 
   /** Whether something runs or waits for its connection, as a spinner shows: not a question. */
   boolean working() {
-    return work != null || waiting;
+    return switch (activity) {
+      case Idle _, Stranded _ -> false;
+      case Waiting _, Running _ -> true;
+    };
+  }
+
+  /** The call under way on the session, or null. */
+  Asking work() {
+    return switch (activity) {
+      case Idle _, Waiting _, Stranded _ -> null;
+      case Running(var work) -> work;
+    };
+  }
+
+  /** Whether Commit, Rollback or a switch of auto-commit runs, which nothing stops. */
+  boolean firm() {
+    return firm != null;
+  }
+
+  /**
+   * Whether the question about what may be open waits for the call under way, which no Rollback
+   * may come between: Commit, Rollback or a switch of auto-commit, or a call that may change data.
+   */
+  boolean waits() {
+    return firm != null || work() != null && changes();
   }
 
   /** Whether the session is open. */
@@ -1631,7 +1699,7 @@ final class ConsoleTab implements Tab {
     if (lane == null) {
       return false;
     }
-    if (work != null && writes || probe != null) {
+    if (work() != null && writes || probe != null) {
       return true;
     }
     return switch (transaction) {
@@ -1643,7 +1711,7 @@ final class ConsoleTab implements Tab {
 
   /** Whether Commit is offered: only where the server said that a transaction is open. */
   boolean canCommit() {
-    return work == null && probe == null && transaction == Transaction.OPEN && !empty;
+    return work() == null && probe == null && transaction == Transaction.OPEN && !empty;
   }
 
   /**
@@ -1651,7 +1719,7 @@ final class ConsoleTab implements Tab {
    * also while the server is asked.
    */
   boolean canRollback() {
-    return work == null && lane != null && atStake();
+    return work() == null && lane != null && atStake();
   }
 
   /** Auto or Manual; asks first where something is at stake. */
@@ -1673,18 +1741,17 @@ final class ConsoleTab implements Tab {
       return;
     }
     boolean wasEmpty = empty;
-    firm = true;
     watchFirm(s);
     writes = true;
     plain = false;
     running = AUTO_COMMIT;
-    work = ask(
+    activity = new Running(ask(
         s,
         "switch auto-commit",
         link -> Session.setMode(link, mode == Mode.MANUAL, wasEmpty),
         switched -> {
-          work = null;
-          firm = false;
+          activity = new Idle();
+          firm = null;
           applied |= switched.done();
           knew(switched.now());
           empty = wasEmpty || transaction == Transaction.NONE;
@@ -1701,10 +1768,10 @@ final class ConsoleTab implements Tab {
           }
         },
         error -> {
-          work = null;
-          firm = false;
+          activity = new Idle();
+          firm = null;
           failed(s, AUTO_COMMIT, error);
-        });
+        }));
   }
 
   /** Commit: as the statement COMMIT, on the session's lane, where the server said one is open. */
@@ -1725,27 +1792,26 @@ final class ConsoleTab implements Tab {
     leave();
     queue.clear();
     problem = null;
-    firm = true;
     watchFirm(s);
     writes = true;
     plain = false;
     running = sql;
     var tell = teller;
-    work = ask(
+    activity = new Running(ask(
         s,
         sql.equals(COMMIT) ? "commit" : "roll back",
         link -> Session.finish(link, sql, tell),
         ended -> {
-          work = null;
-          firm = false;
+          activity = new Idle();
+          firm = null;
           ended(s, sql, ended);
         },
         error -> {
-          work = null;
-          firm = false;
+          activity = new Idle();
+          firm = null;
           failed(s, sql, error);
           endFailed = lane != null; // it failed, and the connection is still there
-        });
+        }));
   }
 
   /**
@@ -1754,10 +1820,10 @@ final class ConsoleTab implements Tab {
    */
   private void watchFirm(State s) {
     int at = ++firms;
-    overdue = false;
+    firm = new Firm(false);
     s.app.after(FIRM_SECONDS, () -> {
-      if (firm && firms == at) {
-        overdue = true;
+      if (firm != null && firms == at) {
+        firm = new Firm(true);
       }
     });
   }
@@ -1823,10 +1889,10 @@ final class ConsoleTab implements Tab {
       }
       case COMMIT -> commitTransaction(s);
       case ROLLBACK -> {
-        if (firm || work != null && changes()) {
+        if (waits()) {
           return;
         }
-        if (work != null) {
+        if (work() != null) {
           stop();
           queue.clear();
           leave();
