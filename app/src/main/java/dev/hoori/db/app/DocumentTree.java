@@ -1,15 +1,11 @@
 package dev.hoori.db.app;
 
-import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
-import com.rethinkj.ui.json.Json;
-import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.document.Bson;
 import dev.hoori.db.core.document.Document;
-import dev.hoori.db.core.document.ExtendedJson;
 import dev.hoori.db.core.document.Shell;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -20,9 +16,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Documents as a tree and as text: each document a root, whose fields and the items of its arrays
- * open below it, each with its value or how many it holds; and the documents as an array of
- * Relaxed Extended JSON, formatted, for a read-only editor. Its nodes go by the place of their value, so that
+ * Documents as a tree: each document a root, whose fields and the items of its arrays open below
+ * it, each with its value or how many it holds. Its nodes go by the place of their value, so that
  * what is open stays open while the same documents are shown. Only the app's thread uses it.
  */
 final class DocumentTree {
@@ -47,49 +42,30 @@ final class DocumentTree {
   Node selected;
   private String scope = ""; // the documents shown, such as a page; what is open is theirs
   private List<Document> of = List.of(); // what they are a part of
+  private int from;
   private List<Document> documents = List.of();
-  private String text; // the documents as text, made once for them
-  final CodeEditor.State editor = new CodeEditor.State().readOnly(true);
 
   /**
-   * Shows the documents from to before to of these, which only grow, as the scope: what was open
-   * stays open where the scope is the same, and the text is made anew where the documents changed.
+   * Shows the documents from {@code from} to before {@code to} of {@code of}, which only grow, as
+   * the scope: what was open stays open where the scope is the same.
    */
   void show(String scope, List<Document> of, int from, int to) {
     boolean other = !scope.equals(this.scope);
     if (other) {
       open.clear();
       selected = null;
-      editor.select(0, 0);
     }
-    if (other || of != this.of || to - from != documents.size()) {
-      text = null;
+    if (other || of != this.of || from != this.from || to - from != documents.size()) {
       documents = List.copyOf(of.subList(from, to));
     }
     this.scope = scope;
     this.of = of;
+    this.from = from;
   }
 
-  /** The documents as a JSON array of Relaxed Extended JSON, formatted. */
-  String text() {
-    if (text == null) {
-      var json = ExtendedJson.array(documents);
-      var formatted = Json.format(json);
-      text = formatted.valid() ? formatted.text() : json;
-    }
-    return text;
-  }
-
-  /**
-   * The documents shown as JSON, in an editor that only shows them, or as a tree, with dates in
-   * the zone.
-   */
-  El view(App<State> app, TableTab.Shown shown, ZoneId zone, String label) {
-    return shown == TableTab.Shown.JSON
-        ? CodeEditor.embedded(CodeEditor.codeEditor(app, text(), editor, Json.of(), null)
-            .key("json")
-            .label(label))
-        : tree(zone).key("documents").label(label);
+  /** The tree of the documents, with dates in the zone. */
+  El view(ZoneId zone, String label) {
+    return tree(zone).key("documents").label(label);
   }
 
   /** The tree of the documents, with dates in the zone. */
