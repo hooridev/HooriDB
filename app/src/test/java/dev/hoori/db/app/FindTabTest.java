@@ -19,9 +19,11 @@ import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.ConsoleStore;
+import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.find.Found;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -122,6 +124,20 @@ class FindTabTest {
     var tree = c.tree("column");
     assertTrue(line(tree, "role=treeitem label=\"orders\"").contains("expanded"), tree);
     assertTrue(line(tree, "role=treeitem label=\"customer_id\"").contains("selected"), tree);
+  }
+
+  @Test
+  void aTableInAClosedFolderOpensItsFolder() throws Exception {
+    var team = new Workspace.Folder(UUID.randomUUID(), "team", true, List.of(SHOP));
+    var app = c.app(new Workspace(List.of(team)));
+    c.ready(app, SHOP);
+    c.run(app, START + open("shop-prod") + SETTLE + open("shop") + SETTLE);
+    c.run(app, menu("public", "Find…") + SETTLE);
+    app.state().openFolder(team.id(), false);
+    c.run(app, search("cust") + "press #cell-0-0 clicks 2\nframe\n" + SETTLE + "snap table\n");
+    var tree = c.tree("table");
+    assertTrue(line(tree, "role=treeitem label=\"team\"").contains("expanded"), tree);
+    assertTrue(line(tree, "role=treeitem label=\"customers\"").contains("selected"), tree);
   }
 
   @Test

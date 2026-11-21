@@ -1390,13 +1390,17 @@ final class CatalogTree {
   }
 
   /**
-   * Selects the table or view in the tree, opening the nodes above it and reading what they hold
-   * where it is not read yet; with a column, the column once the table's columns are read.
+   * Selects the table or view in the tree, opening the folders and nodes above it and reading what
+   * they hold where it is not read yet; with a column, the column once the table's columns are
+   * read.
    */
   void reveal(State s, Node.OfTable node, String column) {
     var live = lives.get(node.id());
     if (live == null || !(live.phase instanceof Live.Connected)) {
       return;
+    }
+    for (var folder : s.workspace().path(node.id())) {
+      s.openFolder(folder.id(), true);
     }
     var above = new ArrayList<Node>();
     for (Node n = node.parent(); n != null; n = n.parent()) {
