@@ -6,9 +6,10 @@
     "docs:prepare": "node scripts/docs.mjs prepare",
     "dev": "node scripts/docs.mjs prepare && next dev",
     "build": "node scripts/docs.mjs prepare && next build && node scripts/docs.mjs check",
-    "fmt": "bun fmt",
+    "fmt": "./node_modules/bun/bin/bun.exe fmt",
+    "lint": "next typegen && ./node_modules/bun/bin/bun.exe lint --type-aware",
     "shots": "node scripts/shots.mjs",
-    "check": "next typegen && bun check"
+    "check": "next typegen && ./node_modules/bun/bin/bun.exe check"
   },
   "dependencies": {
     "fumadocs-core": "16.19.0",
@@ -25,6 +26,7 @@
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "bun": "1.4.5-canary.20261120.1",
     "postcss": "^8.5.32",
     "sharp": "0.35.5",
     "tailwindcss": "^4.3.5",
@@ -34,5 +36,5 @@
     "bun": ">=1.4.5",
     "node": ">=24"
   },
-  "packageManager": "bun@1.4.5"
+  "packageManager": "bun@1.4.5-canary.20261120.1"
 }

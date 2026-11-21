@@ -1,7 +1,8 @@
 import { llms, loader } from 'fumadocs-core/source';
-import { docsRoute, markdownUrl, site } from './shared';
-import { defineDocs } from 'fumadocs-mdx/macro';
 import { metaSchema, pageSchema } from 'fumadocs-core/source/schema';
+import { defineDocs } from 'fumadocs-mdx/macro';
+
+import { docsRoute, markdownUrl, site } from './shared';
 
 const docs = defineDocs({
   dir: 'content/docs',
@@ -22,9 +23,9 @@ export const source = loader({
 });
 
 export const docsLlms = llms(source, {
-  // agents read the Markdown of each page, which lies beside the page
+  // Agents read the Markdown of each page, which lies beside the page
   renderUrl: (item) => {
-    const url = item.url.replace(/\/$/, '');
+    const url = item.url.replace(/\/$/u, '');
     return url === docsRoute ? `${docsRoute}/index.md` : `${url}.md`;
   },
   renderPage: async (page) => `# ${page.data.title}

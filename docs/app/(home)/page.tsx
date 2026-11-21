@@ -1,6 +1,7 @@
+import { Database, Download, Monitor } from 'lucide-react';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
-import { Database, Download, Monitor } from 'lucide-react';
+
 import { Shot } from '@/components/shot';
 import { download, repository } from '@/lib/shared';
 
@@ -203,12 +204,12 @@ export default function HomePage() {
 
         <section className="mx-auto max-w-[1200px] px-4 py-20 md:px-8 md:py-28">
           <div className="flex flex-col gap-20 md:gap-28">
-            {features.map((feature, i) => (
+            {features.map((feature, index) => (
               <article
                 key={feature.href}
                 className="grid items-center gap-8 md:grid-cols-12 md:gap-12"
               >
-                <div className={`md:col-span-5 ${i % 2 ? 'md:order-2' : ''}`}>
+                <div className={`md:col-span-5 ${index % 2 ? 'md:order-2' : ''}`}>
                   <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
                     {feature.title}
                   </h2>
@@ -227,7 +228,7 @@ export default function HomePage() {
                     {feature.link}
                   </Link>
                 </div>
-                <div className={`md:col-span-7 ${i % 2 ? 'md:order-1' : ''}`}>
+                <div className={`md:col-span-7 ${index % 2 ? 'md:order-1' : ''}`}>
                   <Shot name={feature.shot} alt={feature.alt} className="my-0" />
                 </div>
               </article>
@@ -239,8 +240,8 @@ export default function HomePage() {
           <div className="mx-auto max-w-[1200px] px-4 py-16 md:px-8 md:py-20">
             <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">{about.title}</h2>
             <div className="mt-10 grid gap-10 md:grid-cols-3 md:gap-0 md:divide-x">
-              {about.items.map((item, i) => (
-                <div key={item.title} className={i ? 'md:pl-8' : 'md:pr-8'}>
+              {about.items.map((item, index) => (
+                <div key={item.title} className={index ? 'md:pl-8' : 'md:pr-8'}>
                   <h3 className="font-semibold">{item.title}</h3>
                   <p className="mt-2 text-sm leading-relaxed text-fd-muted-foreground">
                     {item.text}

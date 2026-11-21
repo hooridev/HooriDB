@@ -19,5 +19,7 @@ export function getPageMarkdownUrl(page: { slugs: string[]; locale?: string }) {
 
 /** A page's Markdown beside the page: /docs/concepts/sources/ has /docs/concepts/sources.md. */
 export function markdownUrl(page: { slugs: string[] }) {
-  return page.slugs.length ? `${docsRoute}/${page.slugs.join('/')}.md` : `${docsRoute}/index.md`;
+  return page.slugs.length > 0
+    ? `${docsRoute}/${page.slugs.join('/')}.md`
+    : `${docsRoute}/index.md`;
 }
