@@ -143,6 +143,41 @@ class StatementLogStoreTest {
     assertEquals(entries.get(4), recent.get(recent.size() - 2));
   }
 
+  // The entry's line as the store writes it, with its line break.
+  private byte[] lineOf(Logged entry) throws Exception {
+    var other = Files.createTempDirectory(folder, "line");
+    new StatementLogStore(other).append(List.of(entry));
+    return Files.readAllBytes(other.resolve(StatementLogStore.FILE));
+  }
+
+  @Test
+  void theLineBreakAfterALineCutShortCountsTowardsTheLimit() throws Exception {
+    var entry = entry(0, Outcome.DONE);
+    var line = lineOf(entry);
+    var file = folder.resolve("log");
+    var store = new StatementLogStore(file);
+    Files.createDirectories(file);
+    // Cut short, without its line break: the line would fit exactly, but not with the break.
+    Files.write(
+        file.resolve(StatementLogStore.FILE),
+        "x".repeat((int) StatementLogStore.LIMIT - line.length).getBytes(StandardCharsets.UTF_8));
+    store.append(List.of(entry));
+    assertEquals(line.length, Files.size(file.resolve(StatementLogStore.FILE)));
+    assertTrue(Files.exists(file.resolve(StatementLogStore.OLDER)));
+  }
+
+  @Test
+  void aFileThatGrewPastTheLimitElsewhereIsReadFromItsEnd() throws Exception {
+    var entry = entry(0, Outcome.DONE);
+    var line = lineOf(entry);
+    var file = folder.resolve("log");
+    Files.createDirectories(file);
+    var path = file.resolve(StatementLogStore.FILE);
+    Files.writeString(path, "x".repeat((int) StatementLogStore.LIMIT + 100) + "\n");
+    Files.write(path, line, StandardOpenOption.APPEND);
+    assertEquals(List.of(entry), new StatementLogStore(file).recent(10));
+  }
+
   @Test
   void entriesComeBackInTheOrderTheyWereSent() throws Exception {
     var store = new StatementLogStore(folder);
@@ -184,6 +219,23 @@ class StatementLogStoreTest {
         "rw-------",
         PosixFilePermissions.toString(
             Files.getPosixFilePermissions(folder.resolve(StatementLogStore.FILE))));
+    // A file restored with wider permissions is the owner's again before it becomes the older one.
+    Files.setPosixFilePermissions(
+        folder.resolve(StatementLogStore.FILE), PosixFilePermissions.fromString("rw-r--r--"));
+    var big = entry(2, Outcome.DONE).sent();
+    store.append(List.of(new Logged(
+        ONE,
+        new Sent(
+            big.at(),
+            big.purpose(),
+            big.database(),
+            "x".repeat((int) StatementLogStore.LIMIT - 1000),
+            big.took(),
+            big.outcome()))));
+    assertEquals(
+        "rw-------",
+        PosixFilePermissions.toString(
+            Files.getPosixFilePermissions(folder.resolve(StatementLogStore.OLDER))));
     // A file restored with wider permissions is made the owner's again before it grows.
     Files.setPosixFilePermissions(
         folder.resolve(StatementLogStore.FILE), PosixFilePermissions.fromString("rw-r--r--"));

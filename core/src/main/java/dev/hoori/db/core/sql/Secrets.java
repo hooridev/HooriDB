@@ -36,7 +36,7 @@ public final class Secrets {
     for (var reading : Tokens.readings(provider)) {
       int after = Integer.MAX_VALUE;
       for (var token : Tokens.of(sql, provider, reading)) {
-        if (words.stream().anyMatch(token::is)) {
+        if (words.stream().anyMatch(token::is) || namesOption(sql, token, words)) {
           after = token.start();
           break;
         }
@@ -46,9 +46,15 @@ public final class Secrets {
         if (piece.kind() == Statements.Piece.Kind.STRING
             && (piece.start() >= after || namesPassword(text, words) || givesUriPassword(text))) {
           any |= hide(hidden, piece.start(), piece.end());
-        } else if (piece.kind() == Statements.Piece.Kind.COMMENT && piece.end() > after) {
-          any |= hideQuoted(
-              sql, hidden, Math.max(after, piece.start()), piece.end(), reading.escapes());
+        } else if (piece.kind() == Statements.Piece.Kind.COMMENT) {
+          // A comment that gives a password itself, as a URI in one the server runs, is hidden
+          // whole; another from the first word a password follows.
+          int from = givesUriPassword(text) || namesPassword(text, words)
+              ? piece.start()
+              : Math.max(after, piece.start());
+          if (piece.end() > from) {
+            any |= hideQuoted(sql, hidden, from, piece.end(), reading.escapes());
+          }
         }
       }
     }
@@ -65,6 +71,26 @@ public final class Secrets {
       }
     }
     return false;
+  }
+
+  // Whether the token is a quoted name of a password that a string follows, as an option of a
+  // user mapping is in OPTIONS ("password" '…'); a column of that name is not.
+  private static boolean namesOption(String sql, Tokens.Token token, Set<String> words) {
+    if (!token.ident() || token.text().length() < 3) {
+      return false;
+    }
+    var name = token.text().substring(1, token.text().length() - 1);
+    if (words.stream().noneMatch(name::equalsIgnoreCase)) {
+      return false;
+    }
+    int i = token.end();
+    while (i < sql.length() && Character.isWhitespace(sql.charAt(i))) {
+      i++;
+    }
+    if (i < sql.length() - 1 && (sql.charAt(i) == 'E' || sql.charAt(i) == 'e')) {
+      i++;
+    }
+    return i < sql.length() && (sql.charAt(i) == '\'' || sql.charAt(i) == '$');
   }
 
   // Whether a string names a password and gives it, as password=secret in a connection string.

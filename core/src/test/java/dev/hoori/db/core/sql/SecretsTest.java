@@ -58,6 +58,14 @@ class SecretsTest {
         "SELECT dblink_connect(" + MASK + ")",
         Secrets.masked(
             "SELECT dblink_connect('postgresql://app:hunter2@db/example')", Provider.POSTGRESQL));
+    // A user mapping's quoted option, as its plain one; a quoted column of that name is no option.
+    assertEquals(
+        "CREATE USER MAPPING FOR app SERVER remote OPTIONS (\"password\" " + MASK + ")",
+        Secrets.masked(
+            "CREATE USER MAPPING FOR app SERVER remote OPTIONS (\"password\" 'remote-secret')",
+            Provider.POSTGRESQL));
+    var column = "SELECT \"password\" FROM t WHERE name = 'ada'";
+    assertEquals(column, Secrets.masked(column, Provider.POSTGRESQL));
     // A URI without a password is kept.
     var plain = "SELECT dblink_connect('postgresql://app@db/example')";
     assertSame(plain, Secrets.masked(plain, Provider.POSTGRESQL));
@@ -85,6 +93,11 @@ class SecretsTest {
     assertEquals(
         "GRANT ALL ON *.* TO app IDENTIFIED BY " + MASK,
         Secrets.masked("GRANT ALL ON *.* TO app IDENTIFIED BY 'hunter2'", provider));
+    assertEquals(
+        "CHANGE REPLICATION SOURCE TO SOURCE_HOST = 'db', SOURCE_PASSWORD = " + MASK,
+        Secrets.masked(
+            "CHANGE REPLICATION SOURCE TO SOURCE_HOST = 'db', SOURCE_PASSWORD = 'hunter2'",
+            provider));
     // Without NO_BACKSLASH_ESCAPES, and with it: masked to the end either way.
     var escaped = Secrets.masked("CREATE USER app IDENTIFIED BY 'a\\'b' -- 'c'", provider);
     assertFalse(escaped.contains("b'"), escaped);
@@ -100,6 +113,12 @@ class SecretsTest {
         "CREATE USER app /*!80000 IDENTIFIED BY 'a\\', other IDENTIFIED BY 'hunter2' */",
         Provider.MYSQL);
     assertFalse(two.contains("hunter2"), two);
+    // A URI in a comment the server runs, without a word a password follows.
+    var uri = Secrets.masked(
+        "INSERT INTO c(uri) VALUES (/*!80000 'mysql://app:hunter2@db/example' */)", Provider.MYSQL);
+    assertFalse(uri.contains("hunter2"), uri);
+    var plain = "SELECT 1 /*!80000 , 'ada' */";
+    assertSame(plain, Secrets.masked(plain, Provider.MYSQL));
     var mariaDb = Secrets.masked(
         "CREATE USER app IDENTIFIED VIA ed25519 USING PASSWORD('hunter2')", Provider.MARIADB);
     assertEquals("CREATE USER app IDENTIFIED VIA ed25519 USING PASSWORD(" + MASK + ")", mariaDb);

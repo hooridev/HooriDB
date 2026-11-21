@@ -342,10 +342,13 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return offered;
     }
 
-    /** As in {@code CREATE USER u IDENTIFIED BY …, SET PASSWORD = …}. */
+    /**
+     * As in {@code CREATE USER u IDENTIFIED BY …, SET PASSWORD = …} and a replica's {@code CHANGE
+     * REPLICATION SOURCE TO SOURCE_PASSWORD = …}, once {@code MASTER_PASSWORD}.
+     */
     @Override
     public Set<String> passwordWords() {
-      return Set.of("PASSWORD", "IDENTIFIED");
+      return Set.of("PASSWORD", "IDENTIFIED", "SOURCE_PASSWORD", "MASTER_PASSWORD");
     }
   }
 

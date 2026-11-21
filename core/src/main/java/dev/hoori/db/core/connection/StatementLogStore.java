@@ -68,41 +68,62 @@ public final class StatementLogStore {
   /**
    * Adds the entries at the end, the oldest first, beginning a new file first where the next of
    * them would take the file past {@link #LIMIT}. An entry that alone would is kept without its
-   * text, as {@link #TOO_LONG}. A file that is there already is made its owner's alone first.
+   * text, as {@link #TOO_LONG}. A file that is there already is made its owner's alone first. Each
+   * entry is encoded as it is written, so that at most a file's worth waits in memory.
    *
-   * @throws IOException if they could not be written, with a message as {@link WorkspaceStore#load}
-   *     gives
+   * @throws Unwritten if not all of them could be written, with how many were, and a message as
+   *     {@link WorkspaceStore#load} gives
    */
-  public synchronized void append(List<Logged> entries) throws IOException {
-    if (entries.isEmpty()) {
-      return;
-    }
-    var lines = new ArrayList<byte[]>(entries.size());
+  public synchronized void append(List<Logged> entries) throws Unwritten {
+    int written = 0;
     long total = 0;
-    for (var entry : entries) {
-      var line = line(entry);
-      lines.add(line);
-      total += line.length;
-    }
+    var path = file.file;
+    byte[] line = entries.isEmpty() ? null : line(entries.getFirst());
     try {
       Files.createDirectories(folder);
-      var path = file.file;
       int next = 0;
-      while (next < lines.size()) {
+      while (line != null) {
+        ownerOnly(path);
         long size = Files.exists(path) ? Files.size(path) : 0;
-        if (size > 0 && size + lines.get(next).length > LIMIT) {
+        // A line cut short, as by a crash, ends before the new ones, which it would spoil.
+        boolean cut = cutShort(path);
+        if (size > 0 && size + (cut ? 1 : 0) + line.length > LIMIT) {
           Files.move(path, folder.resolve(OLDER), StandardCopyOption.REPLACE_EXISTING);
           size = 0;
+          cut = false;
         }
+        long room = LIMIT - size - (cut ? 1 : 0);
         var chunk = new ByteArrayOutputStream();
-        while (next < lines.size()
-            && (chunk.size() == 0 || size + chunk.size() + lines.get(next).length <= LIMIT)) {
-          chunk.writeBytes(lines.get(next++));
-        }
-        write(path, chunk.toByteArray());
+        int count = 0;
+        do {
+          chunk.writeBytes(line);
+          total += line.length;
+          count++;
+          next++;
+          line = next < entries.size() ? line(entries.get(next)) : null;
+        } while (line != null && chunk.size() + line.length <= room);
+        write(path, chunk.toByteArray(), cut);
+        written += count;
       }
     } catch (IOException e) {
-      throw file.failed("save", e, total);
+      throw new Unwritten(
+          file.failed("save", e, total + (line == null ? 0 : line.length)), written);
+    }
+  }
+
+  /** The entries an {@link #append} wrote before it failed, the first ones of those it was given. */
+  public static final class Unwritten extends IOException {
+
+    private final int written;
+
+    Unwritten(IOException failed, int written) {
+      super(failed.getMessage(), failed.getCause());
+      this.written = written;
+    }
+
+    /** How many of the entries were written, all of them whole. */
+    public int written() {
+      return written;
     }
   }
 
@@ -124,21 +145,23 @@ public final class StatementLogStore {
   }
 
   private static byte[] encoded(Logged entry) {
-    var json = LINE.writeValueAsBytes(node(entry));
+    var json = Lines.LINE.writeValueAsBytes(node(entry));
     var line = Arrays.copyOf(json, json.length + 1);
     line[json.length] = '\n';
     return line;
   }
 
-  // Appends the bytes to the file, owner-only, after a line break where a line was cut short.
-  private void write(Path path, byte[] bytes) throws IOException {
+  // Makes the file, where it is there, its owner's alone: the permissions of a new one are given as
+  // it is made, and one restored from elsewhere may be wider.
+  private void ownerOnly(Path path) throws IOException {
     if (Files.exists(path)
         && folder.getFileSystem().supportedFileAttributeViews().contains("posix")) {
-      // The permissions given below are for a new file; one restored from elsewhere may be wider.
       Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
     }
-    // A line cut short, as by a crash, ends before the new ones, which it would spoil.
-    boolean cut = cutShort(path);
+  }
+
+  // Appends the bytes to the file, owner-only, after a line break where a line was cut short.
+  private void write(Path path, byte[] bytes, boolean cut) throws IOException {
     try (var channel = FileChannel.open(
         path,
         Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND),
@@ -183,7 +206,7 @@ public final class StatementLogStore {
       }
       byte[] bytes;
       try {
-        bytes = Files.readAllBytes(folder.resolve(name));
+        bytes = tail(folder.resolve(name));
       } catch (NoSuchFileException none) {
         continue;
       } catch (IOException e) {
@@ -207,6 +230,28 @@ public final class StatementLogStore {
     // Written in batches as they ended, which may not be the order they were sent in.
     last.sort(Comparator.comparing(e -> e.sent().at()));
     return List.copyOf(last);
+  }
+
+  // The file's last LIMIT bytes, from a line's start: all of a file HooriDB wrote, and the end of
+  // one that grew past it elsewhere.
+  private static byte[] tail(Path path) throws IOException {
+    try (var channel = FileChannel.open(path, StandardOpenOption.READ)) {
+      long size = channel.size();
+      long from = Math.max(0, size - LIMIT);
+      var buffer = ByteBuffer.allocate((int) (size - from));
+      while (buffer.hasRemaining() && channel.read(buffer, from + buffer.position()) >= 0) {
+        // read on
+      }
+      var bytes = Arrays.copyOf(buffer.array(), buffer.position());
+      if (from == 0) {
+        return bytes;
+      }
+      int start = 0;
+      while (start < bytes.length && bytes[start] != '\n') {
+        start++;
+      }
+      return Arrays.copyOfRange(bytes, Math.min(bytes.length, start + 1), bytes.length);
+    }
   }
 
   // The line's text, or null where it is not UTF-8.
@@ -252,9 +297,12 @@ public final class StatementLogStore {
     settings.save(JsonFile.bytes(root), bytes -> settings.root(bytes, VERSION));
   }
 
-  // One line each, without the indentation of the other files.
-  private static final ObjectWriter LINE =
-      JsonFile.Json.MAPPER.writer().without(SerializationFeature.INDENT_OUTPUT);
+  // One line each, without the indentation of the other files; made with the first line, off the
+  // thread that makes the store, as the mapper takes a while.
+  private static final class Lines {
+    static final ObjectWriter LINE =
+        JsonFile.Json.MAPPER.writer().without(SerializationFeature.INDENT_OUTPUT);
+  }
 
   // The names in the file, spelled out so that renaming a record cannot change it.
   private static ObjectNode node(Logged entry) {
