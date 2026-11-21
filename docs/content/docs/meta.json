@@ -2,10 +2,5 @@
   "title": "HooriDB",
   "description": "A desktop database manager for PostgreSQL, MySQL, MariaDB and MongoDB.",
   "root": true,
-  "pages": [
-    "index",
-    "get-started",
-    "features",
-    "reference"
-  ]
+  "pages": ["index", "get-started", "features", "reference"]
 }

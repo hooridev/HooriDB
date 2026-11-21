@@ -6,6 +6,7 @@
     "docs:prepare": "node scripts/docs.mjs prepare",
     "dev": "node scripts/docs.mjs prepare && next dev",
     "build": "node scripts/docs.mjs prepare && next build && node scripts/docs.mjs check",
+    "fmt": "bun fmt",
     "shots": "node scripts/shots.mjs",
     "types:check": "next typegen && tsc --noEmit"
   },

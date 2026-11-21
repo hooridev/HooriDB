@@ -14,7 +14,15 @@ function size(file: string) {
  * A screenshot of HooriDB in the reader's theme: public/shots/<name>-light.webp in light mode and
  * <name>-dark.webp in dark mode, zoomed on a press.
  */
-export function Shot({ name, alt, className = 'my-6' }: { name: string; alt: string; className?: string }) {
+export function Shot({
+  name,
+  alt,
+  className = 'my-6',
+}: {
+  name: string;
+  alt: string;
+  className?: string;
+}) {
   return (
     <figure className={`not-prose ${className}`}>
       {(['light', 'dark'] as const).map((theme) => {
