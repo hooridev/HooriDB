@@ -1,4 +1,4 @@
-// `npm run shots` turns the PNGs that DocsShotsTest writes into public/shots/ into lossless WebP,
+// `bun run shots` turns the PNGs that DocsShotsTest writes into public/shots/ into lossless WebP,
 // about a quarter of their size with every pixel kept, and removes the PNGs.
 import fs from 'node:fs';
 import path from 'node:path';

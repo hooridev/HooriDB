@@ -72,7 +72,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <pre>
  * mvn -pl app -am verify -Dshots -Dtest=DocsShotsTest -Dsurefire.failIfNoSpecifiedTests=false
- * npm --prefix docs run shots
+ * bun --cwd=docs run shots
  * </pre>
  */
 @EnabledIfSystemProperty(named = "shots", matches = ".*")
