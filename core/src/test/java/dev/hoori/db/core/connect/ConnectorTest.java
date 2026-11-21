@@ -58,15 +58,15 @@ class ConnectorTest {
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aClosedPortIsUnreachable(Provider provider) throws Exception {
-    int port;
-    try (var socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
-      port = socket.getLocalPort();
+    // Bound and not listening, on the address it connects to, so that nothing listens there.
+    try (var socket = new Socket()) {
+      socket.bind(new InetSocketAddress(InetAddress.getByName(Gate.HOST), 0));
+      var profile = local(provider).withPort(socket.getLocalPort());
+      assertFailure(
+          Failure.UNREACHABLE,
+          () -> Connector.test(
+              profile, TestServer.password(), TestServer.driver(provider), Duration.ofSeconds(5)));
     }
-    var profile = local(provider).withPort(port);
-    assertFailure(
-        Failure.UNREACHABLE,
-        () -> Connector.test(
-            profile, TestServer.password(), TestServer.driver(provider), Duration.ofSeconds(5)));
   }
 
   @ParameterizedTest

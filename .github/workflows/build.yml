@@ -43,12 +43,16 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+          # Without it every run downloads all of Maven Central's artifacts, which Central
+          # answers with HTTP 429 when several runs do so at once.
+          cache: maven
       - name: Set the version
         if: inputs.version
         env:
           VERSION: ${{ inputs.version }}
         run: mvn -B -q org.codehaus.mojo:versions-maven-plugin:2.25.2:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
-      - run: mvn -B -Pbundle verify
+      # -U: with the cache, a framework SNAPSHOT could otherwise be up to a day old.
+      - run: mvn -B -U -Pbundle verify
       - name: Smoke test
         # Without a window: the launcher, the runtime and the native libraries, which load from
         # the app's folder and are not unpacked into the user's cache.

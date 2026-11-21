@@ -1,6 +1,7 @@
 package dev.hoori.db.core.connect;
 
 import dev.hoori.db.core.connection.ConnectionProfile.Problem;
+import java.io.Serial;
 import java.util.Set;
 
 /**
@@ -9,6 +10,8 @@ import java.util.Set;
  * might quote hold none, and where a server quotes it, nothing of what the driver said is kept.
  */
 public final class ConnectionException extends Exception {
+  @Serial
+  private static final long serialVersionUID = 1L;
 
   /**
    * The detail in place of the driver's message when any message of the driver or the server, down

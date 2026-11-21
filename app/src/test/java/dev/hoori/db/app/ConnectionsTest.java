@@ -51,6 +51,9 @@ class ConnectionsTest {
     final Set<UUID> refused = ConcurrentHashMap.newKeySet(); // their deletes fail
     volatile CountDownLatch gate;
     volatile CountDownLatch late; // holds the next call alone, which ignores its interrupt
+    // The gates calls took, which the test's teardown opens, as a failed test may not have.
+    private final List<CountDownLatch> taken = new java.util.concurrent.CopyOnWriteArrayList<>();
+    final List<String> calls = new java.util.concurrent.CopyOnWriteArrayList<>(); // as asked
     final List<char[]> given =
         new java.util.concurrent.CopyOnWriteArrayList<>(); // the passwords read
     final List<char[]> received =
@@ -59,12 +62,14 @@ class ConnectionsTest {
     @Override
     public void store(UUID key, char[] secret) throws IOException {
       received.add(secret);
+      calls.add("store");
       check();
       stored.put(key, new String(secret));
     }
 
     @Override
     public Optional<char[]> read(UUID key) throws IOException {
+      calls.add("read");
       check();
       var password = Optional.ofNullable(stored.get(key)).map(String::toCharArray);
       password.ifPresent(given::add);
@@ -73,6 +78,7 @@ class ConnectionsTest {
 
     @Override
     public void delete(UUID key) throws IOException {
+      calls.add("delete");
       check();
       if (refused.contains(key)) {
         throw new IOException("The keyring refused to delete it");
@@ -86,6 +92,7 @@ class ConnectionsTest {
         // As a native call that takes no cancellation: it waits on, and then does what it was
         // asked, however long ago its caller gave up.
         late = null;
+        taken.add(hold);
         boolean interrupted = false;
         while (true) {
           try {
@@ -109,6 +116,15 @@ class ConnectionsTest {
       if (fails) {
         throw new IOException("The keyring is locked");
       }
+    }
+
+    /** Opens every gate a test gave it, taken or not, so that no call stays held after it. */
+    void release() {
+      var hold = late;
+      if (hold != null) {
+        hold.countDown();
+      }
+      taken.forEach(CountDownLatch::countDown);
     }
   }
 

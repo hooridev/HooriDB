@@ -12,14 +12,12 @@ import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Abandoned;
-import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Plan;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
-import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.sql.Statements;
@@ -1151,8 +1149,8 @@ class ServersServerTest {
       assertEquals(0L, count(watcher, "seam_after"), "not sent after the failed commit");
       assertEquals(0L, count(watcher, "seam_once"), "rolled back");
       assertTrue(
-          ConsoleTransactionTest.noticed(app).contains(Session.ENDED),
-          ConsoleTransactionTest.noticed(app));
+          ConsoleTransactions.noticed(app).contains(Session.ENDED),
+          ConsoleTransactions.noticed(app));
       assertTrue(app.state().notices.getFirst().failure());
     } finally {
       if (c != null) {
@@ -1187,16 +1185,16 @@ class ServersServerTest {
       var app = apps.getFirst();
       c.run(
           app,
-          ConsoleTransactionTest.MANUAL
+          ConsoleTransactions.MANUAL
               + ConsoleTest.type(
                   "INSERT INTO seam_kept VALUES (1);\nINSERT INTO seam_plain VALUES (1);")
-              + ConsoleTest.RUN_ALL + "press #close-0\nframe\n" + ConsoleTransactionTest.OPENED
-              + "press #answer-rollback\nframe\n" + ConsoleTransactionTest.OPENED
+              + ConsoleTest.RUN_ALL + "press #close-0\nframe\n" + ConsoleTransactions.OPENED
+              + "press #answer-rollback\nframe\n" + ConsoleTransactions.OPENED
               + CatalogTreeTest.SETTLE);
       assertEquals(1, app.state().consoles(null).size(), "the close stopped");
       assertTrue(
-          ConsoleTransactionTest.noticed(app).contains(ConsoleTab.PARTLY),
-          ConsoleTransactionTest.noticed(app));
+          ConsoleTransactions.noticed(app).contains(ConsoleTab.PARTLY),
+          ConsoleTransactions.noticed(app));
       assertEquals(0L, count(watcher, "seam_kept"));
       assertEquals(1L, count(watcher, "seam_plain"), "MyISAM keeps it");
     } finally {
@@ -1218,7 +1216,8 @@ class ServersServerTest {
   @org.junit.jupiter.params.provider.MethodSource("dev.hoori.db.core.TestServer#sql")
   void closingASessionWhoseServerStoppedAnsweringEnds(Provider provider) throws Exception {
     var server = TestServer.of(provider);
-    try (var relay = new dev.hoori.db.core.query.Relay(server.host(), server.port())) {
+    try (var _ = new dev.hoori.db.core.execution.ShortEnding();
+        var relay = new dev.hoori.db.core.query.Relay(server.host(), server.port())) {
       var lane = new Lane(e -> {});
       lane.open(
           Servers.SERVER,
@@ -1238,10 +1237,13 @@ class ServersServerTest {
       relay.freeze();
       var ended = new java.util.concurrent.CompletableFuture<Abandoned>();
       var closing = lane.close(ended::complete);
-      var bound = Lane.ENDS.plus(Execution.ENDING).plus(Query.GRACE.multipliedBy(4));
+      var bound = dev.hoori.db.core.execution.ShortEnding.CLOSES;
       assertTrue(closing.join(bound), "the closing thread ended within " + bound);
       var failure = ended.getNow(null).failure().orElseThrow();
       assertEquals(Failure.Kind.CONNECTION_LOST, failure.kind());
+      assertTrue(
+          failure.message().contains(dev.hoori.db.core.execution.ShortEnding.CUT_OFF),
+          failure.message());
     }
   }
 
@@ -1275,12 +1277,11 @@ class ServersServerTest {
               + ConsoleTest.RUN
               + "scroll #grid row 180\nframe\nframe\n");
       eventually(tab::outcomeWaiting);
-      c.run(
-          app, "press #close-0\nframe\n" + ConsoleTransactionTest.OPENED + CatalogTreeTest.SETTLE);
+      c.run(app, "press #close-0\nframe\n" + ConsoleTransactions.OPENED + CatalogTreeTest.SETTLE);
       assertTrue(app.state().consoles(null).isEmpty(), "nothing asked");
       assertTrue(
-          ConsoleTransactionTest.noticed(app).contains("duplicate key"),
-          ConsoleTransactionTest.noticed(app));
+          ConsoleTransactions.noticed(app).contains("duplicate key"),
+          ConsoleTransactions.noticed(app));
       assertEquals(0L, count(watcher, "seam_once"), "rolled back");
     } finally {
       if (c != null) {
@@ -1316,7 +1317,7 @@ class ServersServerTest {
       var tab = app.state().consoles(null).getFirst();
       c.run(
           app,
-          ConsoleTransactionTest.MANUAL
+          ConsoleTransactions.MANUAL
               + ConsoleTest.type(
                   "INSERT INTO seam_kept VALUES (1);\nINSERT INTO seam_plain VALUES (1);")
               + ConsoleTest.RUN_ALL
@@ -1325,8 +1326,8 @@ class ServersServerTest {
       eventually(tab::outcomeWaiting);
       c.run(app, "press role=button label=\"Cancel\"\nframe\n" + CatalogTreeTest.SETTLE);
       assertTrue(
-          ConsoleTransactionTest.noticed(app).contains(ConsoleTab.PARTLY),
-          ConsoleTransactionTest.noticed(app));
+          ConsoleTransactions.noticed(app).contains(ConsoleTab.PARTLY),
+          ConsoleTransactions.noticed(app));
       assertEquals(1L, count(watcher, "seam_plain"), "MyISAM keeps it");
     } finally {
       if (c != null) {

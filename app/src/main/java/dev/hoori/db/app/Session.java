@@ -10,6 +10,7 @@ import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
+import java.io.Serial;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -49,6 +50,9 @@ final class Session {
    * the session has.
    */
   static final class NotRun extends Exception {
+    @Serial
+    private static final long serialVersionUID = 1L;
+
     // Never serialized: it only carries the session's status from the lane to the app's thread.
     final transient Status status;
     final boolean unverifiable; // the driver cannot say the server's auto-commit
@@ -65,6 +69,9 @@ final class Session {
    * it keeps: the user is asked first. With the session's status, read before anything was sent.
    */
   static final class TooMany extends Exception {
+    @Serial
+    private static final long serialVersionUID = 1L;
+
     final long rows;
     final transient Status status; // never serialized, as NotRun's
 
@@ -105,6 +112,9 @@ final class Session {
 
   /** Giving up what was still open on the session failed: what wanted to run after it did not. */
   static final class GaveUp extends Exception {
+    @Serial
+    private static final long serialVersionUID = 1L;
+
     final String sql;
     final transient Failure failure; // never serialized, as NotRun's status
 

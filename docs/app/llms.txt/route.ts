@@ -2,9 +2,9 @@ import { docsLlms, source } from '@/lib/source';
 
 export const revalidate = false;
 
-export async function GET() {
+export function GET() {
   const tree = source.getPageTree();
-  const sections = await Promise.all(tree.children.map((node) => docsLlms.indexNode(node)));
+  const sections = tree.children.map((node) => docsLlms.indexNode(node));
   return new Response(`# HooriDB
 
 > A desktop database manager for PostgreSQL, MySQL, MariaDB and MongoDB on Windows 11 and Linux (x64): connect to databases, browse their schemas and collections, look at table data and documents, and run SQL or MongoDB shell statements in consoles. It is early, free and MIT-licensed. These pages are its user guide.

@@ -1,0 +1,141 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "plugins": [
+    "eslint",
+    "typescript",
+    "unicorn",
+    "react",
+    "react-perf",
+    "jsx-a11y",
+    "nextjs",
+    "import",
+    "promise",
+    "node",
+    "oxc"
+  ],
+  "env": { "builtin": true, "browser": true, "node": true },
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "pedantic": "error",
+    "perf": "error",
+    "style": "error",
+    "restriction": "error",
+    "nursery": "error"
+  },
+  "rules": {
+    "bun/axios-no-unbounded-requests": "error",
+    "bun/consistent-directive-prefix": "error",
+    "bun/fast-check-no-unseeded-random": "error",
+    "bun/format": "error",
+    "bun/jsx-no-forbidden-nesting": "error",
+    "bun/no-array-just-to-count": "error",
+    "bun/no-cast-to-brand": "error",
+    "bun/no-console-window-flash": "error",
+    "bun/no-cwd-dependent-path": "error",
+    "bun/no-eager-dynamic-import": "error",
+    "bun/no-eager-native-addon": "error",
+    "bun/no-env-at-module-scope": "error",
+    "bun/no-literal-temp-dir": "error",
+    "bun/no-negative-repeat-count": "error",
+    "bun/no-redundant-catch-type": "error",
+    "bun/no-restricted-text": "error",
+    "bun/no-side-effects-on-import": "error",
+    "bun/no-unhandled-emitter-errors": "error",
+    "bun/no-unportable-commands": "error",
+    "bun/no-useless-spread-fallback": "error",
+    "bun/prefer-builtin-sleep": "error",
+    "bun/prefer-local-module": "error",
+    "bun/prefer-timeout-signal": "error",
+    "bun/prefer-url-for-sibling-files": "error",
+    "bun/react-no-latest-value-ref": "error",
+    "bun/react-no-local-render-helpers": "error",
+    "bun/react-no-namespace-hooks": "error",
+    "bun/react-prefer-updater-function": "error",
+    "bun/zod-prefer-lazy-schema": "error",
+
+    "eslint/capitalized-comments": [
+      "error",
+      "always",
+      { "ignoreConsecutiveComments": true, "ignorePattern": "shortcut" }
+    ],
+    "eslint/func-style": ["error", "declaration"],
+    // Short property names are the APIs', as MDX's a for a link.
+    "eslint/id-length": ["error", { "properties": "never" }],
+    // One declaration per statement, as everywhere else in the code.
+    "eslint/one-var": ["error", "never"],
+    "eslint/no-duplicate-imports": ["error", { "allowSeparateTypeImports": true }],
+    "import/no-unassigned-import": ["error", { "allow": ["**/*.css"] }],
+    "react/jsx-filename-extension": ["error", { "extensions": [".tsx"] }],
+    "react/no-multi-comp": ["error", { "ignoreStateless": true }],
+    "react/only-export-components": [
+      "error",
+      { "allowExportNames": ["metadata", "generateMetadata", "generateStaticParams"] }
+    ],
+
+    // Next.js reads a default export from pages and layouts and named ones (GET, metadata) beside it.
+    "import/no-default-export": "off",
+    "import/no-named-export": "off",
+    "import/prefer-default-export": "off",
+    // Each export stays at its declaration, where Next.js's own examples put it.
+    "import/exports-last": "off",
+    "import/group-exports": "off",
+    // The site is rendered at build time on Node.js, which reads the pages and images from disk.
+    "import/no-nodejs-modules": "off",
+    // bun fmt sorts the imports (sortImports in bunfig.toml), in an order this rule does not accept.
+    "eslint/sort-imports": "off",
+    // The automatic JSX runtime (jsx: react-jsx) needs no React in scope.
+    "react/react-in-jsx-scope": "off",
+    // The components of fumadocs and of the site are styled by the className they are given.
+    "react/forbid-component-props": "off",
+    // MDX components forward the props they are given.
+    "react/jsx-props-no-spreading": "off",
+    // JSX renders conditionally with a ternary.
+    "eslint/no-ternary": "off",
+    // A page's markup and a script's steps are as long and as deep as what they show or check.
+    "eslint/max-lines-per-function": "off",
+    "eslint/max-statements": "off",
+    "react/jsx-max-depth": "off",
+    // Keys follow their meaning, as a page's title before its description.
+    "eslint/sort-keys": "off",
+    // Sizes in markup and units in scripts read best where they are used.
+    "eslint/no-magic-numbers": "off",
+    // Return types are inferred, and bun check checks each use; a component's would repeat JSX.Element.
+    "typescript/explicit-function-return-type": "off",
+    "typescript/explicit-module-boundary-types": "off",
+    // The props of React and fumadocs are not deeply readonly, so no component could satisfy it.
+    "typescript/prefer-readonly-parameter-types": "off",
+    // The site targets current browsers (ESNext), which have these natively.
+    "oxc/no-async-await": "off",
+    "oxc/no-optional-chaining": "off",
+    "oxc/no-rest-spread-properties": "off"
+  },
+  "overrides": [
+    {
+      // The scripts are plain JavaScript run once from the command line.
+      "files": ["scripts/**"],
+      "rules": {
+        // Plain JavaScript has no types, so to these rules each of its values is any.
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off",
+        "typescript/strict-boolean-expressions": "off",
+        "typescript/prefer-nullish-coalescing": "off",
+        // Reading files, logging, exiting and running at once are what a command-line script does.
+        "node/no-sync": "off",
+        "eslint/no-console": "off",
+        "unicorn/no-process-exit": "off",
+        "node/no-top-level-await": "off",
+        "bun/no-side-effects-on-import": "off",
+        // The scripts run as they are, never bundled.
+        "bun/prefer-url-for-sibling-files": "off",
+        // One image at a time, as converting them all at once would hold every one in memory.
+        "eslint/no-await-in-loop": "off",
+        // TypeScript types a regular expression's groups as always matched.
+        "typescript/no-unnecessary-condition": "off"
+      }
+    }
+  ]
+}
