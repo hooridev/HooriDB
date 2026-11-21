@@ -185,7 +185,7 @@ final class Mongo {
     public void close() {
       try {
         session.close();
-      } catch (RuntimeException e) {
+      } catch (RuntimeException _) {
         // Ended with the client either way.
       }
       client.close();
@@ -228,34 +228,40 @@ final class Mongo {
 
   // Why a server could not be reached, from the causes, or the words that say them.
   private static Kind kind(Throwable thrown, String detail) {
+    var chain = chain(thrown);
     // A certificate refused is one also inside the handshake's failure that wraps it.
-    int depth = 0;
-    for (var t = thrown; t != null && depth < 32; t = t.getCause(), depth++) {
-      if (t instanceof CertificateException
-          || t instanceof CertPathValidatorException
-          || t instanceof CertPathBuilderException
-          || t instanceof SSLPeerUnverifiedException) {
-        return Kind.CERTIFICATE_REJECTED;
+    if (chain.stream().anyMatch(Mongo::certificate)) {
+      return Kind.CERTIFICATE_REJECTED;
+    }
+    for (var t : chain) {
+      var kind = cause(t);
+      if (kind != null) {
+        return kind;
       }
     }
-    depth = 0;
-    for (var t = thrown; t != null && depth < 32; t = t.getCause(), depth++) {
-      if (t instanceof MongoSecurityException) {
-        return Kind.LOGIN_REFUSED;
-      }
-      if (t instanceof SSLException) {
-        return Kind.TLS_UNAVAILABLE;
-      }
-      if (t instanceof UnknownHostException
-          || t instanceof ConnectException
-          || t instanceof NoRouteToHostException) {
-        return Kind.UNREACHABLE;
-      }
-      if (t instanceof SocketTimeoutException) {
-        return Kind.TIMED_OUT;
-      }
-    }
-    // A timeout of server selection names the monitor's failure only in its words.
+    return words(detail);
+  }
+
+  private static boolean certificate(Throwable t) {
+    return t instanceof CertificateException
+        || t instanceof CertPathValidatorException
+        || t instanceof CertPathBuilderException
+        || t instanceof SSLPeerUnverifiedException;
+  }
+
+  // Why a server could not be reached, as one cause says it, or null where it says nothing.
+  private static Kind cause(Throwable t) {
+    return switch (t) {
+      case MongoSecurityException _ -> Kind.LOGIN_REFUSED;
+      case SSLException _ -> Kind.TLS_UNAVAILABLE;
+      case UnknownHostException _, ConnectException _, NoRouteToHostException _ -> Kind.UNREACHABLE;
+      case SocketTimeoutException _ -> Kind.TIMED_OUT;
+      default -> null;
+    };
+  }
+
+  // A timeout of server selection names the monitor's failure only in its words.
+  private static Kind words(String detail) {
     if (detail.contains("MongoSecurityException")) {
       return Kind.LOGIN_REFUSED;
     }
@@ -275,13 +281,21 @@ final class Mongo {
 
   private static String causes(Throwable thrown) {
     var words = new ArrayList<String>();
-    int depth = 0;
-    for (var t = thrown; t != null && depth < 32; t = t.getCause(), depth++) {
+    for (var t : chain(thrown)) {
       if (t.getMessage() != null && !t.getMessage().isBlank() && !words.contains(t.getMessage())) {
         words.add(t.getMessage());
       }
     }
     return String.join(": ", words);
+  }
+
+  // The throwable and its causes, at most 32 of them.
+  private static List<Throwable> chain(Throwable thrown) {
+    var chain = new ArrayList<Throwable>();
+    for (var t = thrown; t != null && chain.size() < 32; t = t.getCause()) {
+      chain.add(t);
+    }
+    return chain;
   }
 
   /** Core's document as the driver's. */
@@ -305,13 +319,14 @@ final class Mongo {
       case Instant i -> new BsonDateTime(i.toEpochMilli());
       case Bson.ObjectId id -> new BsonObjectId(new ObjectId(id.hex()));
       case Bson.Binary b -> new BsonBinary((byte) b.subtype(), b.bytes());
-      case Bson.Timestamp t -> new BsonTimestamp((int) t.seconds(), (int) t.increment());
-      case Bson.Regex r -> new BsonRegularExpression(r.pattern(), r.options());
-      case Bson.Code c ->
-        c.scope() == null
-            ? new BsonJavaScript(c.code())
-            : new BsonJavaScriptWithScope(c.code(), document(c.scope()));
-      case Bson.Symbol s -> new BsonSymbol(s.symbol());
+      case Bson.Timestamp(var seconds, var increment) ->
+        new BsonTimestamp((int) seconds, (int) increment);
+      case Bson.Regex(var pattern, var options) -> new BsonRegularExpression(pattern, options);
+      case Bson.Code(var code, var scope) ->
+        scope == null
+            ? new BsonJavaScript(code)
+            : new BsonJavaScriptWithScope(code, document(scope));
+      case Bson.Symbol(var symbol) -> new BsonSymbol(symbol);
       case Bson.Special s ->
         switch (s) {
           case MIN_KEY -> new BsonMinKey();
