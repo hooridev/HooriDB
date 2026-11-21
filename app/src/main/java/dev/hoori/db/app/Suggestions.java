@@ -117,7 +117,7 @@ final class Suggestions {
     private final boolean exact;
     private final CatalogTree.Live live; // null while not connected
     private final String named; // the console's database, or null
-    private Node.OfDatabase database; // the node of that name, or null, once looked up
+    private Node.OfDatabase console; // the node of that name, or null, once looked up
     private boolean looked;
 
     private Known(State s, Provider provider, boolean exact) {
@@ -174,9 +174,9 @@ final class Suggestions {
     private Node.OfDatabase database() {
       if (!looked) {
         looked = true;
-        database = named == null ? null : database(named);
+        console = named == null ? null : database(named);
       }
-      return database;
+      return console;
     }
 
     /**
