@@ -71,7 +71,7 @@ final class Frame {
                 Split.cards(
                     Split.Direction.ROW,
                     s.sidebar,
-                    State.SIDEBAR,
+                    State.DEFAULT_SIDEBAR,
                     p -> s.sidebar = p,
                     catalog,
                     160,

@@ -44,7 +44,8 @@ import java.util.concurrent.Callable;
 /** The app's state, which only the handlers change, on the app's thread. */
 final class State {
 
-  static final Split.Position SIDEBAR = Split.Position.first(320); // room for a column and its type
+  // The sidebar at the start and where resetting it puts it: room for a column and its type.
+  static final Split.Position DEFAULT_SIDEBAR = Split.Position.first(320);
   static final double MESSAGE_SECONDS = 5; // how long a message stays in the status line
   // How long a change of the keyring may keep its dialog waiting before Cancel gives it up.
   static final double KEYRING_SECONDS = 5;
@@ -52,7 +53,7 @@ final class State {
   App<State> app; // runs the clock and the windows, and says whether the window is maximized
   Theme theme = Theme.DARK;
   ZoneId zone = ZoneId.systemDefault(); // the computer's, in which moments show
-  Split.Position sidebar = SIDEBAR;
+  Split.Position sidebar = DEFAULT_SIDEBAR;
   final MenuBar.State bar = new MenuBar.State();
   // The tabs of every window: the first window's, and those torn off into windows of their own.
   final TabGroups<Tab> tabs = new TabGroups<Tab>(List.of(), this::openWindow)
