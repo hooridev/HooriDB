@@ -653,7 +653,7 @@ final class Frame {
                     .icon(Symbol.SERVER),
                 Menu.item(
                         "Run SQL file…",
-                        console != null && s.canRunFile(console)
+                        free && console != null && s.canRunFile(console)
                             ? inMain(s, () -> s.openFileRun(console, ""))
                             : null)
                     .icon(Symbol.DOCUMENT),

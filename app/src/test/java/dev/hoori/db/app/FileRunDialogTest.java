@@ -13,7 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import com.rethinkj.ui.kit.Menu;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.execution.FileRun;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.log.Purpose;
 import java.nio.file.Files;
@@ -134,7 +136,44 @@ class FileRunDialogTest {
     var stopped = c.tree("stopped");
     assertTrue(stopped.contains("Stopped at an error"), stopped);
     assertTrue(stopped.contains("It stopped at line 1, after 1 statement."), stopped);
+    // What a transaction of the file's own ran is not said to stay; the tree has the text's end.
+    assertTrue(stopped.contains("is rolled back as the session closes.\""), stopped);
     assertFalse(c.servers.calls.contains("run " + PG + " INSERT INTO t VALUES (1)"));
+  }
+
+  @Test
+  void aStopBeyondTheListedFailuresNamesNoLine() throws Exception {
+    // The command it stops at comes after the failures the report lists.
+    var app = chosen(file("many.sql", "SELEC 1;\n".repeat(FileRun.LISTED) + "\\connect x\n"));
+    c.run(
+        app,
+        "press label=\"Go on\"\n" + OPENS + "press role=button label=\"Run\"\n" + SETTLE
+            + "snap stopped\n");
+    var stopped = c.tree("stopped");
+    assertTrue(stopped.contains("Stopped at an error"), stopped);
+    assertTrue(stopped.contains("After 1001 statements."), stopped);
+    assertFalse(stopped.contains("It stopped at line"), stopped);
+  }
+
+  @Test
+  void theFileMenuWaitsForAQuestionOfTheMainWindow() throws Exception {
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(app, START + open("shop-prod") + SETTLE + menu("shop-prod", "New console") + SETTLE);
+    assertTrue(runFile(app).isEnabled());
+    // Asked in the main window, which another window's File menu does not see.
+    c.run(app, ConsoleTest.type(ConsoleConfirmationTest.WIPE) + ConsoleTest.RUN + "snap asked\n");
+    assertTrue(c.tree("asked").contains(ConsoleConfirmationTest.EVERY), c.tree("asked"));
+    assertFalse(runFile(app).isEnabled());
+  }
+
+  // File, Run SQL file… as another window has it, with no dialog of its own open.
+  private static Menu.Item runFile(App<State> app) {
+    var file = Frame.menus(app.state(), app.state().tabs.main(), false).getFirst();
+    return file.submenu().stream()
+        .filter(item -> "Run SQL file…".equals(item.label()))
+        .findFirst()
+        .orElseThrow();
   }
 
   @Test

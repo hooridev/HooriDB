@@ -536,7 +536,10 @@ final class FileRunDialog {
         switch (report.ending()) {
           case RAN -> statements(p.statements()) + " ran in " + took(report.took()) + ".";
           case STOPPED -> {
-            var line = failed.isEmpty() ? 0 : failed.getLast().line();
+            // The failure it stopped at is the last listed, where none was left out.
+            var line = failed.isEmpty() || failed.size() < p.failed()
+                ? 0
+                : failed.getLast().line();
             yield (line > 0
                     ? "It stopped at line " + Format.LONG.text(line) + ", after "
                     : "After ")
@@ -550,7 +553,11 @@ final class FileRunDialog {
     switch (report.transaction()) {
       case NONE ->
         text.append(
-            stopped ? " What ran before stays, as each statement committed by itself." : "");
+            stopped
+                ? " What ran before stays, as each statement committed by itself, but for what"
+                    + " ran in a transaction the file began and did not end, which is rolled back"
+                    + " as the session closes."
+                : "");
       case COMMITTED -> text.append(" The transaction was committed.");
       case ROLLED_BACK -> text.append(rolledBack());
       case IN_DOUBT ->
