@@ -1376,8 +1376,9 @@ final class CatalogTree {
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
             refresh,
             copy);
-      case Node.OfDatabase n -> exportable(s, n.id(), n.database(), connected, refresh, copy);
-      case Node.OfSchema n -> exportable(s, n.id(), n.schema(), connected, refresh, copy);
+      case Node.OfDatabase(var id, var database) ->
+        exportable(s, id, database, connected, refresh, copy);
+      case Node.OfSchema(var id, var schema) -> exportable(s, id, schema, connected, refresh, copy);
       default -> List.of(refresh, copy);
     };
   }

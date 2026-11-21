@@ -934,14 +934,14 @@ final class State {
    */
   Exported exportFor(TabGroups.Group<Tab> group) {
     var node = group == tabs.main() ? selected : null;
-    if (node instanceof Node.Problem p) {
-      node = p.of();
+    if (node instanceof Node.Problem(var of)) {
+      node = of;
     }
     Exported found = switch (node) {
-      case Node.OfDatabase n -> new Exported(n.id(), n.database());
-      case Node.OfSchema n -> new Exported(n.id(), n.schema());
-      case Node.OfTable n -> new Exported(n.id(), n.table().container());
-      case Node.OfColumn n -> new Exported(n.id(), n.column().table().container());
+      case Node.OfDatabase(var id, var database) -> new Exported(id, database);
+      case Node.OfSchema(var id, var schema) -> new Exported(id, schema);
+      case Node.OfTable(var id, var table) -> new Exported(id, table.container());
+      case Node.OfColumn(var id, var column) -> new Exported(id, column.table().container());
       case null, default ->
         group.activeTab() instanceof TableTab x ? new Exported(x.id, x.table.container()) : null;
     };

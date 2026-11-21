@@ -106,10 +106,15 @@ final class Frame {
     if (s.dialogs.driverList != null && !ownDialog(s) && asked == null) {
       root.overlay(s.dialogs.driverList.view(s)).overlay(s.dialogs.driverList.question(s));
     }
-    if (s.dialogs.export != null && !ownDialog(s) && asked == null) {
-      root.overlay(s.dialogs.export.view(s));
-    }
+    root.overlay(exportDialog(s, asked));
     return root.overlay(modal ? null : palette(s, main, menus));
+  }
+
+  // Export to SQL, while neither the window's own dialog nor what the catalog asks is open.
+  private static El exportDialog(State s, El asked) {
+    return s.dialogs.export != null && !ownDialog(s) && asked == null
+        ? s.dialogs.export.view(s)
+        : null;
   }
 
   /** The window closes once what was begun has ended and the connections are written. */
