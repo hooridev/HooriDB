@@ -678,7 +678,7 @@ final class TableTab implements Tab {
     var connected = s.catalog.connected(id);
     var profile = s.profile(id);
     String where = profile == null ? null : State.name(profile);
-    boolean ofDocuments = profile != null && profile.provider().keepsDocuments();
+    boolean ofDocuments = profile != null && Language.of(profile.provider()).documents();
     El top = Card.toolbar(path(), where, actions(s, connected, ofDocuments).toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     El content =

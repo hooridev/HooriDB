@@ -1506,13 +1506,12 @@ final class State {
 
   // The database the server opens where none is given.
   static String database(ConnectionProfile p) {
-    // A server of documents takes any name it is given, also one of spaces alone.
-    if (p.provider().keepsDocuments() ? !p.database().isEmpty() : !p.database().isBlank()) {
-      return p.database();
-    }
+    var database = p.database();
     return switch (p.provider().traits()) {
-      case Dialect d -> d.connecting().defaultDatabaseIsUser() ? p.user() : p.database();
-      case DocumentDialect d -> d.defaultDatabase();
+      case Dialect d ->
+        database.isBlank() && d.connecting().defaultDatabaseIsUser() ? p.user() : database;
+      // A server of documents takes any name it is given, also one of spaces alone.
+      case DocumentDialect d -> database.isEmpty() ? d.defaultDatabase() : database;
     };
   }
 
