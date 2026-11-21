@@ -174,7 +174,7 @@ public final class Dump {
       throws QueryException {
     requireConnectedTo(connection, provider, container.database());
     var dialect = provider.dialect().dump();
-    dialect.begin(connection, provider);
+    Dump.begin(connection, provider);
     try {
       return dialect.list(connection, provider, container);
     } finally {
@@ -192,7 +192,7 @@ public final class Dump {
     for (var item : items) {
       requireConnectedTo(connection, provider, item.container().database());
     }
-    dialect.begin(connection, provider);
+    Dump.begin(connection, provider);
     try {
       return Order.sorted(dialect.define(connection, provider, items));
     } finally {
@@ -248,6 +248,22 @@ public final class Dump {
     }
   }
 
+  // The snapshot begins on a connection in auto-commit, as Connector opens it, and nowhere else:
+  // where it fails, its dialect undoes it by ending the transaction, which would end one that
+  // the caller had open.
+  private static void begin(Connection connection, Provider provider) throws QueryException {
+    boolean autoCommits;
+    try {
+      autoCommits = connection.getAutoCommit();
+    } catch (SQLException e) {
+      throw Query.failure(connection, provider, e);
+    }
+    if (!autoCommits) {
+      throw new IllegalArgumentException("An export on a connection with a transaction open");
+    }
+    provider.dialect().dump().begin(connection, provider);
+  }
+
   static void requireConnectedTo(Connection connection, Provider provider, Database database)
       throws QueryException {
     if (provider.keepsDocuments()) {
@@ -299,7 +315,7 @@ public final class Dump {
     }
 
     Written write(Path target) throws QueryException, IOException {
-      dialect.begin(connection, provider);
+      Dump.begin(connection, provider);
       try {
         return written(target);
       } catch (QueryException e) {
