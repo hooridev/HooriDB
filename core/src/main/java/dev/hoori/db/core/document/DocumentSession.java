@@ -113,6 +113,14 @@ public final class DocumentSession implements AutoCloseable {
       return new Outcome.Rows(batch.size(), more);
     }
     if (WRITES.contains(command.first())) {
+      // A write the server took may still have failed, in part or whole: ok, with its errors.
+      var failed = reply.get("writeErrors") instanceof List<?> errors && !errors.isEmpty()
+          ? errors.getFirst()
+          : reply.get("writeConcernError");
+      if (failed instanceof Document error) {
+        var message = error.get("errmsg") instanceof String s && !s.isBlank() ? s : "Write error";
+        return new Outcome.Failed(message);
+      }
       var changed = reply.get("nModified") instanceof Number m ? m : reply.get("n");
       return changed instanceof Number n ? new Outcome.Changed(n.longValue()) : Outcome.DONE;
     }

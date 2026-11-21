@@ -146,6 +146,37 @@ class JournalTest {
   }
 
   @Test
+  void theFailureOfAStatementThatCarriesAPasswordIsWithheld() {
+    assertThrows(
+        SQLException.class,
+        () -> Journal.recording(
+            recorder,
+            () -> Journal.sql(
+                Provider.POSTGRESQL,
+                Purpose.STATEMENT,
+                "ALTER ROLE app PASSWORD 'hunter2' VALID",
+                v -> Outcome.DONE,
+                () -> {
+                  throw new SQLException("syntax error at or near \"'hunter2'\"", "42601");
+                })));
+    assertEquals(new Outcome.Failed(Outcome.WITHHELD), sent.getFirst().outcome());
+    assertThrows(
+        IllegalStateException.class,
+        () -> Journal.recording(
+            recorder,
+            () -> Journal.command(
+                Provider.MONGODB.documents(),
+                Purpose.STATEMENT,
+                "admin",
+                Document.of("updateUser", "app", "pwd", "hunter2"),
+                reply -> Outcome.DONE,
+                () -> {
+                  throw new IllegalStateException("bad pwd hunter2");
+                })));
+    assertEquals(new Outcome.Failed(Outcome.WITHHELD), sent.getLast().outcome());
+  }
+
+  @Test
   void aCommandIsRecordedAsTheShellSendsItWithItsDatabaseAndWithoutItsPassword() throws Exception {
     var command = Document.of("createUser", "app", "pwd", "hunter2", "roles", Document.array());
     Journal.recording(

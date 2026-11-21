@@ -8,16 +8,21 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -61,8 +66,9 @@ public final class StatementLogStore {
   }
 
   /**
-   * Adds the entries at the end, the oldest first, beginning a new file first where they would take
-   * the file past {@link #LIMIT}.
+   * Adds the entries at the end, the oldest first, beginning a new file first where the next of
+   * them would take the file past {@link #LIMIT}. An entry that alone would is kept without its
+   * text, as {@link #TOO_LONG}. A file that is there already is made its owner's alone first.
    *
    * @throws IOException if they could not be written, with a message as {@link WorkspaceStore#load}
    *     gives
@@ -71,33 +77,79 @@ public final class StatementLogStore {
     if (entries.isEmpty()) {
       return;
     }
-    var lines = new ByteArrayOutputStream();
+    var lines = new ArrayList<byte[]>(entries.size());
+    long total = 0;
     for (var entry : entries) {
-      lines.writeBytes(LINE.writeValueAsBytes(node(entry)));
-      lines.write('\n');
+      var line = line(entry);
+      lines.add(line);
+      total += line.length;
     }
-    var bytes = ByteBuffer.wrap(lines.toByteArray());
     try {
       Files.createDirectories(folder);
       var path = file.file;
-      if (Files.exists(path) && Files.size(path) + bytes.remaining() > LIMIT) {
-        Files.move(path, folder.resolve(OLDER), StandardCopyOption.REPLACE_EXISTING);
-      }
-      // A line cut short, as by a crash, ends before the new ones, which it would spoil.
-      boolean cut = cutShort(path);
-      try (var channel = FileChannel.open(
-          path,
-          Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND),
-          JsonFile.ownerOnly(folder))) {
-        if (cut) {
-          channel.write(ByteBuffer.wrap(new byte[] {'\n'}));
+      int next = 0;
+      while (next < lines.size()) {
+        long size = Files.exists(path) ? Files.size(path) : 0;
+        if (size > 0 && size + lines.get(next).length > LIMIT) {
+          Files.move(path, folder.resolve(OLDER), StandardCopyOption.REPLACE_EXISTING);
+          size = 0;
         }
-        while (bytes.hasRemaining()) {
-          channel.write(bytes);
+        var chunk = new ByteArrayOutputStream();
+        while (next < lines.size()
+            && (chunk.size() == 0 || size + chunk.size() + lines.get(next).length <= LIMIT)) {
+          chunk.writeBytes(lines.get(next++));
         }
+        write(path, chunk.toByteArray());
       }
     } catch (IOException e) {
-      throw file.failed("save", e, bytes.capacity());
+      throw file.failed("save", e, total);
+    }
+  }
+
+  /** What an entry's text becomes where it alone would take a file past the limit. */
+  public static final String TOO_LONG = "/* Not kept: longer than the statement log keeps. */";
+
+  // The entry's line, with its line break; without its text, or its message, where it is too long.
+  private static byte[] line(Logged entry) {
+    var line = encoded(entry);
+    if (line.length <= LIMIT) {
+      return line;
+    }
+    var sent = entry.sent();
+    var outcome =
+        sent.outcome() instanceof Outcome.Failed ? new Outcome.Failed(TOO_LONG) : sent.outcome();
+    return encoded(new Logged(
+        entry.connection(),
+        new Sent(sent.at(), sent.purpose(), sent.database(), TOO_LONG, sent.took(), outcome)));
+  }
+
+  private static byte[] encoded(Logged entry) {
+    var json = LINE.writeValueAsBytes(node(entry));
+    var line = Arrays.copyOf(json, json.length + 1);
+    line[json.length] = '\n';
+    return line;
+  }
+
+  // Appends the bytes to the file, owner-only, after a line break where a line was cut short.
+  private void write(Path path, byte[] bytes) throws IOException {
+    if (Files.exists(path)
+        && folder.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+      // The permissions given below are for a new file; one restored from elsewhere may be wider.
+      Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
+    }
+    // A line cut short, as by a crash, ends before the new ones, which it would spoil.
+    boolean cut = cutShort(path);
+    try (var channel = FileChannel.open(
+        path,
+        Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND),
+        JsonFile.ownerOnly(folder))) {
+      if (cut) {
+        channel.write(ByteBuffer.wrap(new byte[] {'\n'}));
+      }
+      var buffer = ByteBuffer.wrap(bytes);
+      while (buffer.hasRemaining()) {
+        channel.write(buffer);
+      }
     }
   }
 
@@ -117,34 +169,58 @@ public final class StatementLogStore {
   }
 
   /**
-   * The last entries, at most {@code most}, the oldest first: of the file, and of the older one
-   * where the file has fewer.
+   * The last entries, at most {@code most}, the oldest first by when they were sent: of the file,
+   * and of the older one where the file has fewer.
    *
    * @throws IOException if they could not be read, with a message as {@link WorkspaceStore#load}
    *     gives
    */
   public synchronized List<Logged> recent(int most) throws IOException {
-    var last = new ArrayDeque<Logged>();
+    var last = new ArrayList<Logged>();
     for (var name : List.of(FILE, OLDER)) {
       if (last.size() >= most) {
         break;
       }
-      List<String> lines;
+      byte[] bytes;
       try {
-        lines = Files.readAllLines(folder.resolve(name), StandardCharsets.UTF_8);
+        bytes = Files.readAllBytes(folder.resolve(name));
       } catch (NoSuchFileException none) {
         continue;
       } catch (IOException e) {
         throw file.failed("read", e, 0);
       }
-      for (int i = lines.size() - 1; i >= 0 && last.size() < most; i--) {
-        var entry = parse(lines.get(i));
-        if (entry != null) {
-          last.addFirst(entry);
+      // Line by line from the end, each decoded alone, so that one cut short in a character
+      // spoils itself only.
+      int end = bytes.length;
+      while (end > 0 && last.size() < most) {
+        int start = end;
+        while (start > 0 && bytes[start - 1] != '\n') {
+          start--;
         }
+        var entry = parse(decoded(bytes, start, end));
+        if (entry != null) {
+          last.add(entry);
+        }
+        end = start - 1;
       }
     }
+    // Written in batches as they ended, which may not be the order they were sent in.
+    last.sort(Comparator.comparing(e -> e.sent().at()));
     return List.copyOf(last);
+  }
+
+  // The line's text, or null where it is not UTF-8.
+  private static String decoded(byte[] bytes, int from, int to) {
+    try {
+      return StandardCharsets.UTF_8
+          .newDecoder()
+          .onMalformedInput(CodingErrorAction.REPORT)
+          .onUnmappableCharacter(CodingErrorAction.REPORT)
+          .decode(ByteBuffer.wrap(bytes, from, to - from))
+          .toString();
+    } catch (CharacterCodingException e) {
+      return null;
+    }
   }
 
   /** Deletes the log, both files. */
@@ -206,7 +282,7 @@ public final class StatementLogStore {
 
   // The entry of a line, or null where it cannot be understood.
   private Logged parse(String line) {
-    if (line.isBlank()) {
+    if (line == null || line.isBlank()) {
       return null;
     }
     try {

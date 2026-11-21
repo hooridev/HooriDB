@@ -10,7 +10,7 @@ import java.util.Set;
  * CREATE ROLE r PASSWORD 'secret'} or {@code ALTER USER u IDENTIFIED BY 'secret'}, every string is
  * masked, also one that is not the password, such as a user's name in {@code SET PASSWORD FOR
  * 'u'@'h' = '…'}; and so is every string that names a password itself, as a connection string's
- * {@code password=…} does.
+ * {@code password=…} does, or a URI's user and password, as {@code postgresql://u:secret@h}.
  *
  * <p>A string is masked wherever the server could read one: by each way of reading backslashes, and
  * within comments, which MariaDB and MySQL may run.
@@ -28,7 +28,7 @@ public final class Secrets {
       return sql;
     }
     var words = provider.dialect().syntax().passwordWords();
-    if (words.isEmpty() || !mentions(sql, words)) {
+    if (!givesUriPassword(sql) && (words.isEmpty() || !mentions(sql, words))) {
       return sql;
     }
     var hidden = new boolean[sql.length()];
@@ -44,10 +44,11 @@ public final class Secrets {
       for (var piece : Statements.pieces(sql, provider, reading.escapes())) {
         var text = sql.substring(piece.start(), piece.end());
         if (piece.kind() == Statements.Piece.Kind.STRING
-            && (piece.start() >= after || namesPassword(text, words))) {
+            && (piece.start() >= after || namesPassword(text, words) || givesUriPassword(text))) {
           any |= hide(hidden, piece.start(), piece.end());
         } else if (piece.kind() == Statements.Piece.Kind.COMMENT && piece.end() > after) {
-          any |= hideQuoted(sql, hidden, Math.max(after, piece.start()), piece.end());
+          any |= hideQuoted(
+              sql, hidden, Math.max(after, piece.start()), piece.end(), reading.escapes());
         }
       }
     }
@@ -84,6 +85,35 @@ public final class Secrets {
     return false;
   }
 
+  // Whether the text holds a URI with a user and a password before its host, as
+  // scheme://user:secret@host does; in one pass over the text, however long it is.
+  private static boolean givesUriPassword(String text) {
+    for (int at = text.indexOf("://"); at >= 0; at = text.indexOf("://", at + 3)) {
+      if (at == 0 || !scheme(text.charAt(at - 1))) {
+        continue;
+      }
+      boolean colon = false;
+      for (int i = at + 3; i < text.length(); i++) {
+        char c = text.charAt(i);
+        if (c == '@') {
+          if (colon) {
+            return true;
+          }
+          break;
+        } else if (c == ':') {
+          colon = true;
+        } else if (Character.isWhitespace(c) || "/?#'\"".indexOf(c) >= 0) {
+          break;
+        }
+      }
+    }
+    return false;
+  }
+
+  private static boolean scheme(char c) {
+    return (c < 128 && Character.isLetterOrDigit(c)) || c == '+' || c == '.' || c == '-';
+  }
+
   private static boolean hide(boolean[] hidden, int from, int to) {
     for (int i = from; i < to; i++) {
       hidden[i] = true;
@@ -92,8 +122,9 @@ public final class Secrets {
   }
 
   // The quoted runs between the offsets, as a comment that the server may run holds them, each up
-  // to its closing quote or the end.
-  private static boolean hideQuoted(String sql, boolean[] hidden, int from, int to) {
+  // to its closing quote or the end, with a backslash escaping where it does.
+  private static boolean hideQuoted(
+      String sql, boolean[] hidden, int from, int to, boolean escapes) {
     boolean any = false;
     for (int i = from; i < to; i++) {
       char quote = sql.charAt(i);
@@ -103,7 +134,7 @@ public final class Secrets {
       int end = i + 1;
       while (end < to) {
         char c = sql.charAt(end);
-        if (c == '\\' && end + 1 < to) {
+        if (escapes && c == '\\' && end + 1 < to) {
           end += 2;
         } else if (c == quote && end + 1 < to && sql.charAt(end + 1) == quote) {
           end += 2;

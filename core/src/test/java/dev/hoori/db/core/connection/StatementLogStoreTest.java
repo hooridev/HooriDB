@@ -17,6 +17,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -103,6 +104,51 @@ class StatementLogStoreTest {
         StandardOpenOption.APPEND);
     store.append(List.of(entry(1, Outcome.DONE)));
     assertEquals(List.of(entry(0, Outcome.DONE), entry(1, Outcome.DONE)), store.recent(10));
+    // Cut short inside a character, which is no UTF-8: that line alone is lost.
+    var cut = "{\"text\": \"\u00e4".getBytes(StandardCharsets.UTF_8);
+    Files.write(
+        folder.resolve(StatementLogStore.FILE),
+        Arrays.copyOf(cut, cut.length - 1),
+        StandardOpenOption.APPEND);
+    assertEquals(List.of(entry(0, Outcome.DONE), entry(1, Outcome.DONE)), store.recent(10));
+    store.append(List.of(entry(2, Outcome.DONE)));
+    assertEquals(3, store.recent(10).size());
+  }
+
+  @Test
+  void aBatchIsSplitAtTheLimitAndAnEntryPastItAloneLosesItsText() throws Exception {
+    var store = new StatementLogStore(folder);
+    var big = "x".repeat(3 << 20);
+    var entries = new ArrayList<Logged>();
+    for (int i = 0; i < 5; i++) {
+      var e = entry(i, Outcome.DONE).sent();
+      entries.add(new Logged(
+          ONE, new Sent(e.at(), e.purpose(), e.database(), i + big, e.took(), e.outcome())));
+    }
+    var e = entry(5, Outcome.DONE).sent();
+    entries.add(new Logged(
+        ONE,
+        new Sent(
+            e.at(),
+            e.purpose(),
+            e.database(),
+            "x".repeat((int) StatementLogStore.LIMIT),
+            e.took(),
+            e.outcome())));
+    store.append(entries);
+    assertTrue(Files.size(folder.resolve(StatementLogStore.FILE)) <= StatementLogStore.LIMIT);
+    assertTrue(Files.size(folder.resolve(StatementLogStore.OLDER)) <= StatementLogStore.LIMIT);
+    var recent = store.recent(100);
+    assertEquals(StatementLogStore.TOO_LONG, recent.getLast().sent().text());
+    assertEquals(entries.get(4), recent.get(recent.size() - 2));
+  }
+
+  @Test
+  void entriesComeBackInTheOrderTheyWereSent() throws Exception {
+    var store = new StatementLogStore(folder);
+    store.append(List.of(entry(2, Outcome.DONE)));
+    store.append(List.of(entry(1, Outcome.DONE)));
+    assertEquals(List.of(entry(1, Outcome.DONE), entry(2, Outcome.DONE)), store.recent(10));
   }
 
   @Test
@@ -134,6 +180,14 @@ class StatementLogStoreTest {
     assumeTrue(folder.getFileSystem().supportedFileAttributeViews().contains("posix"));
     var store = new StatementLogStore(folder);
     store.append(List.of(entry(0, Outcome.DONE)));
+    assertEquals(
+        "rw-------",
+        PosixFilePermissions.toString(
+            Files.getPosixFilePermissions(folder.resolve(StatementLogStore.FILE))));
+    // A file restored with wider permissions is made the owner's again before it grows.
+    Files.setPosixFilePermissions(
+        folder.resolve(StatementLogStore.FILE), PosixFilePermissions.fromString("rw-r--r--"));
+    store.append(List.of(entry(1, Outcome.DONE)));
     assertEquals(
         "rw-------",
         PosixFilePermissions.toString(

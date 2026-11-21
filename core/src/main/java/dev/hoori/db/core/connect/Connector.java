@@ -131,23 +131,26 @@ public final class Connector {
       properties.setProperty("password", secret);
     }
     var result = new CompletableFuture<T>();
-    var worker = Thread.ofVirtual().name("connect " + provider.displayName()).start(() -> {
-      Connection connection = null;
-      try {
-        connection = driver.connect(url, properties);
-        if (result.complete(step.apply(connection))) {
-          connection = null;
-        }
-      } catch (Throwable e) {
-        result.completeExceptionally(e);
-      } finally {
-        properties.remove("password");
-        // The caller has given up, or the step failed.
-        if (connection != null) {
-          close(connection);
-        }
-      }
-    });
+    // What the step sends is recorded where the caller records, as the read-only statement.
+    var worker = Thread.ofVirtual()
+        .name("connect " + provider.displayName())
+        .start(Journal.carried(() -> {
+          Connection connection = null;
+          try {
+            connection = driver.connect(url, properties);
+            if (result.complete(step.apply(connection))) {
+              connection = null;
+            }
+          } catch (Throwable e) {
+            result.completeExceptionally(e);
+          } finally {
+            properties.remove("password");
+            // The caller has given up, or the step failed.
+            if (connection != null) {
+              close(connection);
+            }
+          }
+        }));
     return await(
         result, worker, timeout.plus(GRACE), thrown -> Failures.of(profile, secret, thrown));
   }

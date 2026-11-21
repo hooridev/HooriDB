@@ -67,7 +67,15 @@ public final class Journal {
     if (!RECORDER.isBound()) {
       return call.call();
     }
-    return send(purpose, null, () -> Secrets.masked(sql, provider), outcome, call);
+    return send(
+        purpose,
+        null,
+        () -> {
+          var masked = Secrets.masked(sql, provider);
+          return new Shown(masked, !masked.equals(sql));
+        },
+        outcome,
+        call);
   }
 
   /**
@@ -85,7 +93,18 @@ public final class Journal {
     if (!RECORDER.isBound()) {
       return call.call();
     }
-    return send(purpose, database, () -> dialect.shown(command), outcome, call);
+    return send(
+        purpose,
+        database,
+        // A secret is there where two masks make two texts.
+        () -> new Shown(
+            dialect.shown(command),
+            !command
+                .masked(dialect.secretFields(), "a")
+                .toString()
+                .equals(command.masked(dialect.secretFields(), "b").toString())),
+        outcome,
+        call);
   }
 
   /**
@@ -97,7 +116,7 @@ public final class Journal {
     if (!RECORDER.isBound()) {
       return call.call();
     }
-    return send(purpose, null, () -> called, value -> Outcome.DONE, call);
+    return send(purpose, null, () -> new Shown(called, false), value -> Outcome.DONE, call);
   }
 
   /** The call that switches auto-commit, by what it is called. */
@@ -113,7 +132,7 @@ public final class Journal {
   private static <T, E extends Exception> T send(
       Purpose purpose,
       String database,
-      Supplier<String> text,
+      Supplier<Shown> text,
       Function<? super T, Outcome> outcome,
       Call<T, E> call)
       throws E {
@@ -139,14 +158,22 @@ public final class Journal {
 
   // What is known of a send before it ends.
   private record Entry(
-      Instant at, long started, Purpose purpose, String database, Supplier<String> text) {}
+      Instant at, long started, Purpose purpose, String database, Supplier<Shown> text) {}
 
-  // A recorder that fails loses its entry, never the call's result.
+  // The text as it is recorded, and whether a secret was masked in it.
+  private record Shown(String text, boolean masked) {}
+
+  // A recorder that fails loses its entry, never the call's result. A failure of what carried a
+  // secret may repeat it, as a syntax error quotes where it is: its message is withheld.
   private static void record(Recorder recorder, Entry entry, Outcome outcome) {
     var took = Duration.ofNanos(System.nanoTime() - entry.started());
     try {
-      recorder.sent(new Sent(
-          entry.at(), entry.purpose(), entry.database(), entry.text().get(), took, outcome));
+      var shown = entry.text().get();
+      var ended = shown.masked() && outcome instanceof Outcome.Failed
+          ? new Outcome.Failed(Outcome.WITHHELD)
+          : outcome;
+      recorder.sent(
+          new Sent(entry.at(), entry.purpose(), entry.database(), shown.text(), took, ended));
     } catch (RuntimeException e) {
       // Dropped: the log is for looking at, and the call went through.
     }

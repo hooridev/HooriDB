@@ -11,6 +11,9 @@ public sealed interface Outcome {
   /** It ended without rows or a count. */
   Outcome DONE = new Done();
 
+  /** The message of a failure that is not shown, as what failed carried a password. */
+  String WITHHELD = "The message is not shown, as the statement holds a password.";
+
   /** It gave rows: as many as were read with it, and whether it has more. */
   record Rows(long count, boolean more) implements Outcome {}
 

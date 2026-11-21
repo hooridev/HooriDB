@@ -567,7 +567,10 @@ public final class Execution implements AutoCloseable {
   private boolean drain() {
     if (rows != null && ahead) {
       try {
-        session.cancel(connection, statement);
+        Journal.call(Purpose.STATEMENT, Journal.CANCEL, () -> {
+          session.cancel(connection, statement);
+          return null;
+        });
       } catch (SQLException e) {
         // Then the rows are read to their end.
       }

@@ -54,6 +54,13 @@ class SecretsTest {
         "SELECT dblink_connect(" + MASK + ")",
         Secrets.masked(
             "SELECT dblink_connect('host=db user=app password=hunter2')", Provider.POSTGRESQL));
+    assertEquals(
+        "SELECT dblink_connect(" + MASK + ")",
+        Secrets.masked(
+            "SELECT dblink_connect('postgresql://app:hunter2@db/example')", Provider.POSTGRESQL));
+    // A URI without a password is kept.
+    var plain = "SELECT dblink_connect('postgresql://app@db/example')";
+    assertSame(plain, Secrets.masked(plain, Provider.POSTGRESQL));
   }
 
   @ParameterizedTest
@@ -88,6 +95,11 @@ class SecretsTest {
     var masked =
         Secrets.masked("CREATE USER app /*!80000 IDENTIFIED BY 'hunter2' */", Provider.MYSQL);
     assertFalse(masked.contains("hunter2"), masked);
+    // With NO_BACKSLASH_ESCAPES the backslash ends the first string, and a second one follows.
+    var two = Secrets.masked(
+        "CREATE USER app /*!80000 IDENTIFIED BY 'a\\', other IDENTIFIED BY 'hunter2' */",
+        Provider.MYSQL);
+    assertFalse(two.contains("hunter2"), two);
     var mariaDb = Secrets.masked(
         "CREATE USER app IDENTIFIED VIA ed25519 USING PASSWORD('hunter2')", Provider.MARIADB);
     assertEquals("CREATE USER app IDENTIFIED VIA ed25519 USING PASSWORD(" + MASK + ")", mariaDb);
