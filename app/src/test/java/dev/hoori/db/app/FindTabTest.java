@@ -18,6 +18,7 @@ import com.rethinkj.ui.App;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.find.Found;
 import java.nio.file.Path;
 import java.util.List;
@@ -137,6 +138,19 @@ class FindTabTest {
     assertTrue(editor.contains("readonly"), editor);
     // The match selected.
     assertTrue(editor.endsWith("caret 71 (3:21) anchor 77"), editor);
+    // It cannot run, not by its buttons nor by Control+Enter.
+    assertTrue(line(tree, "role=button label=\"Run\"").contains("disabled"), tree);
+    assertTrue(line(tree, "role=button label=\"Run all\"").contains("disabled"), tree);
+    c.run(app, "key Enter control\nframe\nkey Enter control shift\nframe\n" + SETTLE);
+    c.run(app, "snap ran\n");
+    assertTrue(c.tree("ran").contains("A definition to read is not run"), c.tree("ran"));
+    assertFalse(
+        c.servers.calls.stream().anyMatch(x -> x.startsWith("run ")), c.servers.calls.toString());
+    // Nor is it kept for the next start.
+    var s = app.state();
+    s.keeping.persist(s.keeping.consolesKept);
+    c.run(app, SETTLE);
+    assertEquals(List.of(), new ConsoleStore(dir.resolve("config")).load());
     // The view's text is found too, where its name does not match.
     c.run(app, "press role=tab label=\"" + TAB + "\"\nframe\nadvance 1\nframe\n");
     c.run(app, "press #find-text\nkey A control\ntype \"sum(\"\nkey Enter\nframe\n" + SETTLE);
@@ -202,6 +216,22 @@ class FindTabTest {
     assertFalse(c.servers.calls.contains("search " + PG + "/shop.public.orders"));
     assertTrue(cancelled.contains("0 of 2 tables searched, cancelled"), cancelled);
     assertTrue(cancelled.contains("role=button label=\"Find\""), cancelled);
+  }
+
+  @Test
+  void aSearchInDataCancelledFromTheObjectsIsCancelledToo() throws Exception {
+    var app = find();
+    c.run(app, "press role=radio label=\"Data\"\nframe\n" + SETTLE);
+    var key = "search " + PG + "/shop.public.customers";
+    var gate = c.servers.hold(key);
+    c.run(app, "press #find-text\ntype \"42\"\nkey Enter\nframe\nadvance 1\nframe\n");
+    c.run(app, "press role=radio label=\"Objects\"\nframe\nadvance 1\nframe\n");
+    c.run(app, "press role=button label=\"Cancel\"\nframe\n");
+    gate.countDown();
+    c.run(app, SETTLE + "press role=radio label=\"Data\"\nframe\nadvance 1\nframe\nsnap data\n");
+    var data = c.tree("data");
+    assertTrue(c.servers.interrupted.contains(key), c.servers.interrupted.toString());
+    assertTrue(data.contains("0 of 2 tables searched, cancelled"), data);
   }
 
   @Test

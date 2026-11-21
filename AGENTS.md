@@ -100,9 +100,10 @@ pattern, Java's or, in data of SQL, the server's, case sensitive or not: in its 
 names of its tables, views and columns, read
 anew for the search, and of its routines and triggers, and the texts of its views, routines and
 triggers, of which opening one selects it in the tree or shows its definition, read-only, at the
-match in a console; or in its data, whose tables it lists first with the server's estimates of
-their rows and size, the views not chosen, and then searches one after another, in one query each
-over the columns that can hold the value, text for a text, numbers for a number and the others as
+match in a console that neither runs it nor is kept; or in its data, whose tables it lists first
+with the server's estimates of their rows and size, a partition within its table, the views not
+chosen, and then searches one after another, in one query each over the columns that can hold
+the value, text for a text, numbers for a number, compared in the column's type, and the others as
 their text where chosen, with its progress and a cancel, counting at most 1,000 matching rows of a
 table, which shows as "1,000+"; opening a column's hits opens a console with the query of its rows,
 which runs. On MariaDB and MySQL each column's collation decides the case of a text; on MongoDB it

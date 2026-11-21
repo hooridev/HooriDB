@@ -1002,7 +1002,8 @@ final class State {
 
   /**
    * Opens a console on the database with a definition to read, the part from {@code start} up to
-   * {@code end} selected and the caret there; its text cannot be edited.
+   * {@code end} selected and the caret there; its text cannot be edited or run, and it is not
+   * kept.
    */
   void openDefinition(UUID id, String database, String text, int start, int end) {
     if (profile(id) == null) {
@@ -1010,9 +1011,9 @@ final class State {
     }
     var console = new ConsoleTab(id, database);
     console.text = text;
+    console.definition = true;
     console.editor.readOnly(true).select(start, end);
     tabs.add(tabs.main(), tabs.main().tabs().size(), console);
-    keeping.persist(keeping.consolesKept);
   }
 
   /** Opens a console on the database with the statement, and runs it. */

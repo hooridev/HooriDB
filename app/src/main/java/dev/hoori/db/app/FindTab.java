@@ -97,6 +97,7 @@ final class FindTab implements Tab {
   int done; // of them searched
   boolean cancelled; // the last search in data was cancelled
   Lane.Asked asked; // the call under way, or null
+  private Lane.Asked searching; // the last call that searched a table, which may be the one asked
   private String asking; // what it is, as the status line says it
   Problem problem; // why the last call failed, or null
   boolean tried; // the user tried to search with what cannot be searched for
@@ -307,7 +308,7 @@ final class FindTab implements Tab {
     var search = searched;
     boolean as = searchedOthers;
     asking = "Searching " + name(table.table());
-    asked = session.ask(
+    asked = searching = session.ask(
         s.app,
         "search " + table.table().name(),
         Lane.Priority.VIEW,
@@ -342,9 +343,10 @@ final class FindTab implements Tab {
     if (asked == null) {
       return;
     }
+    boolean data = asked == searching;
     asked.cancel();
     asked = null;
-    if (searched != null && in == In.DATA && done < queue.size()) {
+    if (data) {
       cancelled = true;
       say(s, "Cancelled after " + done + " of " + tableCount(queue.size()));
     }
@@ -431,11 +433,9 @@ final class FindTab implements Tab {
    */
   void end(State s) {
     if (asked != null) {
+      cancelled |= asked == searching;
       asked.cancel();
       asked = null;
-      if (in == In.DATA && searched != null && done < queue.size()) {
-        cancelled = true;
-      }
     }
     closeSession(s);
   }

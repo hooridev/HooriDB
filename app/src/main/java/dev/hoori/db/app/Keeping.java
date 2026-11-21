@@ -67,7 +67,7 @@ final class Keeping {
     this.queryStore = new QueryStore(folder);
     consolesKept = new Kept("consoles", () -> {
       var list = new ArrayList<StoredConsole>();
-      s.consoles(null).forEach(x -> list.add(x.stored()));
+      s.consoles(null).stream().filter(x -> !x.definition).forEach(x -> list.add(x.stored()));
       list.addAll(unseen);
       return Kept.writing(list, consoleStore::save);
     });

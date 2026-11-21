@@ -131,7 +131,7 @@ final class ConsoleView {
         button(
                 PRIMARY,
                 "Run",
-                tab.firm() || locked != null ? null : () -> tab.run(s),
+                tab.definition || tab.firm() || locked != null ? null : () -> tab.run(s),
                 Button.options()
                     .icon(Symbol.PLAY)
                     // Off, not busy, while a change of its connection is saved or deleted.
@@ -141,7 +141,10 @@ final class ConsoleView {
                             : Button.State.READY))
             .key("run")
             .keepFocus(),
-        button(SECONDARY, "Run all", busy || locked != null ? null : () -> tab.runAll(s))
+        button(
+                SECONDARY,
+                "Run all",
+                tab.definition || busy || locked != null ? null : () -> tab.runAll(s))
             .key("run-all")
             .keepFocus(),
         button(
