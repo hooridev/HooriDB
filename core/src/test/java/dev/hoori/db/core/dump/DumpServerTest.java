@@ -377,11 +377,11 @@ class DumpServerTest {
       try (var connection = databases.open(databases.source)) {
         var written = executor.submit(
             () -> Dump.write(connection, provider, choice, file, (item, rows) -> {}));
-        // Committed once the export waits for the table, before its snapshot.
+        // Committed once the export waits for the table, before its snapshot; each look is a
+        // round trip to the server.
         var until = System.nanoTime() + TIMEOUT.toNanos();
         while (!waitsForALock(other)) {
           assertTrue(System.nanoTime() < until, "The export never waited for the table");
-          Thread.sleep(20);
         }
         execute(other, "COMMIT");
         assertEquals(1, written.get(TIMEOUT.toSeconds(), TimeUnit.SECONDS).rows());
