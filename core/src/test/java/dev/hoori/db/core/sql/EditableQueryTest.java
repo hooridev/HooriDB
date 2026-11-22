@@ -72,6 +72,7 @@ class EditableQueryTest {
       subqueries(p, "SELECT *, (SELECT 1) FROM customer", 1);
       subqueries(p, "SELECT id, id * 2, (SELECT 1), name FROM customer", 2);
       subqueries(p, "SELECT c.*, (SELECT 1) FROM customer c", 1);
+      subqueries(p, "SELECT (TABLE purchase), id FROM customer", 0);
       assertEquals(
           3,
           EditableQuery.singleTable("SELECT id * '2', (SELECT 1), name FROM customer", p)
@@ -93,6 +94,7 @@ class EditableQueryTest {
       refused(p, "SELECT offset.id FROM customer offset JOIN purchase p ON p.customer_id = 1");
       refused(p, "SELECT offset.id FROM customer offset, purchase p");
       refused(p, "SELECT window.id FROM customer window NATURAL JOIN purchase");
+      refused(p, "SELECT offset.id FROM customer offset USE INDEX (PRIMARY), purchase p");
     }
   }
 
@@ -238,6 +240,7 @@ class EditableQueryTest {
       temp(p, "SELECT 1; CREATE TEMPORARY TABLE customer (id int)");
       temp(p, "CALL make_tables()");
       temp(p, "EXECUTE stmt");
+      temp(p, "SELECT 1; CALL make_tables()");
       notTemp(p, "CREATE TABLE customer (id int)");
       notTemp(p, "DROP TEMPORARY TABLE customer");
       notTemp(p, "CREATE TEMPORARY SEQUENCE s");

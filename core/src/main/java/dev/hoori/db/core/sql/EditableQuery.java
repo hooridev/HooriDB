@@ -110,7 +110,7 @@ public final class EditableQuery {
     for (var token : list) {
       if (token.is("[") || token.is("]")) {
         brackets += token.is("[") ? 1 : -1;
-      } else if (token.depth() > 0 && token.is("SELECT")) {
+      } else if (token.depth() > 0 && (token.is("SELECT") || token.is("TABLE"))) {
         subqueries.add(item);
       } else if (token.depth() == 0 && brackets == 0 && token.is(",")) {
         item++;
@@ -168,12 +168,23 @@ public final class EditableQuery {
     if (k == n || (k == n - 1 && tokens.get(k).is(";"))) {
       return true;
     }
-    // An alias spelled as a clause, as MySQL's offset, takes a join or comma after it for one.
-    return tokens.get(k).depth() == 0
-        && afterFrom(tokens.get(k))
-        && !(k + 1 < n && tokens.get(k + 1).is(","))
-        && tokens.subList(start, n).stream()
-            .noneMatch(t -> t.depth() == 0 && (t.is("JOIN") || t.is("STRAIGHT_JOIN")));
+    // An alias spelled as a clause, as MySQL's offset, takes a join, an index hint or a comma
+    // after it for one.
+    if (!top(tokens, k)
+        || !afterFrom(tokens.get(k))
+        || k + 1 < n && tokens.get(k + 1).is(",")) {
+      return false;
+    }
+    for (int i = start; i < n; i++) {
+      var token = tokens.get(i);
+      boolean hint = (token.is("USE") || token.is("FORCE") || token.is("IGNORE"))
+          && i + 1 < n
+          && (tokens.get(i + 1).is("INDEX") || tokens.get(i + 1).is("KEY"));
+      if (top(tokens, i) && (token.is("JOIN") || token.is("STRAIGHT_JOIN") || hint)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // The index after the table's name and alias from the index on; -1 where no name begins there.
@@ -210,11 +221,11 @@ public final class EditableQuery {
   }
 
   private static boolean createsTemporaryTable(List<Tokens.Token> tokens) {
-    if (!tokens.isEmpty() && (tokens.getFirst().is("CALL") || tokens.getFirst().is("EXECUTE"))) {
-      return true;
-    }
     for (int i = 0; i < tokens.size(); i++) {
-      if (tokens.get(i).is("CREATE") && temporaryTable(tokens, i + 1)) {
+      var token = tokens.get(i);
+      boolean first = i == 0 || tokens.get(i - 1).is(";");
+      if (first && (token.is("CALL") || token.is("EXECUTE"))
+          || token.is("CREATE") && temporaryTable(tokens, i + 1)) {
         return true;
       }
     }
