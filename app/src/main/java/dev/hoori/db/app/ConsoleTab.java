@@ -333,6 +333,8 @@ final class ConsoleTab implements Tab {
   QueriesDialog queries; // Save query or Saved queries, null while closed
   // Whether this console session has sent a statement that may create a temporary table.
   boolean createdTemporaryTable;
+  // The tree's connection the session was opened from: a result edits only through it.
+  Live sessionLive;
   ResultEdits.Preview preview; // the DML Preview dialog before committing result edits, or null
 
   /** A statement of the user's on its way to the server, and since when. */
@@ -748,6 +750,7 @@ final class ConsoleTab implements Tab {
         return null;
       }
       lane = session.lane();
+      sessionLive = s.catalog.live(id);
       driver = session.driver();
       password = session.password();
       teller = new Teller(
@@ -1658,6 +1661,7 @@ final class ConsoleTab implements Tab {
 
   private void closeSession() {
     createdTemporaryTable = false;
+    sessionLive = null;
     transaction = Transaction.NONE;
     inTransaction = 0;
     empty = true;

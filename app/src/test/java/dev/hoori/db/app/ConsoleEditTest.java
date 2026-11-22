@@ -411,10 +411,21 @@ class ConsoleEditTest {
     assertTrue(app.state().catalog.connected(SHOP.id()));
     String again = c.tree("again");
     assertTrue(line(again, "#edit-status").contains(ResultEdits.CONNECTION_CHANGED), again);
-    assertFalse(again.contains("#commit-changes"), again);
+    assertTrue(line(again, "#commit-changes").contains("disabled"), again);
     c.run(app, "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n");
     assertEquals(0, k.tab(app).pendingChanges(false));
     assertEquals(0, writeCount());
+  }
+
+  @Test
+  void oneLongCellOfAnEditableResultCopiesWhole() throws Exception {
+    var name = "n".repeat(3000);
+    servers.values(
+        CUSTOMERS_PATH,
+        List.of(List.of(1L, name, "alice@example.com"), List.of(2L, "Bob", "bob@example.com")));
+    var app = openCustomers();
+    c.run(app, "press #cell-0-1\nkey C control\nframe\n");
+    assertEquals(name, app.clipboard().read());
   }
 
   @Test

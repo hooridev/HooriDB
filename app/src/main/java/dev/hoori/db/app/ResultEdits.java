@@ -185,12 +185,17 @@ final class ResultEdits {
 
   private static void askEditable(
       State s, ConsoleTab tab, ConsoleTab.Output o, boolean temp, boolean retry) {
+    // A session that outlived the tree's connection may be on another server than its writer.
+    if (tab.sessionLive == null || tab.sessionLive != s.catalog.live(tab.id)) {
+      o.edits.readOnlyReason = CONNECTION_CHANGED;
+      return;
+    }
     var lane = s.catalog.writer(s, tab.id, tab.database);
     if (lane == null) {
       o.edits.readOnlyReason = "Read-only: not connected";
       return;
     }
-    o.edits.live = s.catalog.live(tab.id);
+    o.edits.live = tab.sessionLive;
     o.edits.database = tab.database;
     var sql = o.statement;
     var fields = o.fields;

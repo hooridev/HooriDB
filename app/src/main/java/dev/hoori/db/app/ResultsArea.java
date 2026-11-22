@@ -253,13 +253,9 @@ final class ResultsArea {
           .key("cancel-write"));
       return;
     }
-    if (o.edits.editable != null && !ResultEdits.current(s, tab, o)) {
-      footer.add(Label.label(Label.Variant.MUTED, ResultEdits.CONNECTION_CHANGED)
-          .key("edit-status")
-          .ellipsis());
-      return;
-    }
-    String status = editStatus(o);
+    boolean current = ResultEdits.current(s, tab, o);
+    String status =
+        o.edits.editable != null && !current ? ResultEdits.CONNECTION_CHANGED : editStatus(o);
     if (status != null) {
       footer.add(Label.label(Label.Variant.MUTED, status).key("edit-status").ellipsis());
     }
@@ -289,7 +285,7 @@ final class ResultsArea {
                 count > 0 && !locked ? () -> ResultEdits.revertAll(o) : null)
             .key("revert-all"),
         "Revert all pending changes"));
-    boolean canCommit = (count > 0 || o.selection.isEditing()) && !locked;
+    boolean canCommit = (count > 0 || o.selection.isEditing()) && !locked && current;
     footer.add(button(PRIMARY, "Commit…", canCommit ? () -> ResultEdits.askCommit(s, tab, o) : null)
         .key("commit-changes"));
   }
@@ -447,6 +443,31 @@ final class ResultsArea {
     return wholeValue;
   }
 
+  // shortcut: an editable result keeps the kit's copy limit for paste and clear, so Control+C of
+  // one
+  // cell copies it whole here; drop this once they have a limit of their own (rethinkj/ui#511).
+  private static boolean copiesOneWhole(
+      App<State> app, ConsoleTab.Output o, Key k, ZoneId zone, String nullText) {
+    boolean copy =
+        k.modifiers() == Key.CONTROL && (k.name().equals("C") || k.name().equals("Insert"));
+    int row = o.selection.row();
+    int column = o.selection.column();
+    var at = new DataGrid.Range(row, column, row, column);
+    var ranges = o.selection.ranges();
+    boolean one = ranges.isEmpty() || ranges.equals(List.of(at));
+    if (!copy
+        || !one
+        || o.selection.isEditing()
+        || row < 0
+        || row >= o.rows.size()
+        || column < 0
+        || column >= o.fields.size()) {
+      return false;
+    }
+    copy(app, o, new DataGrid.Copy(List.of(at), false, 1), zone, nullText);
+    return true;
+  }
+
   /** The cell's whole value: from the document where the result holds documents, else the row's. */
   private static Object cellValue(ConsoleTab.Output o, int row, int column) {
     return !o.documents.isEmpty() && row < o.documents.size()
@@ -458,10 +479,12 @@ final class ResultsArea {
   private El grid(State s, App<State> app, ConsoleTab.Output o) {
     var zone = s.zone;
     var nullText = Cells.nullText(s.settings.copyNull());
-    var editable = ResultEdits.current(s, tab, o) ? o.edits.editable : null;
+    var editable = o.edits.editable;
     var changes = o.edits.changes;
-    // While a write runs or an act holds the console, no edit, paste, undo or redo comes between.
-    BooleanSupplier free = () -> o.edits.writing == null && s.guard.locked(tab) == null;
+    // While a write runs, an act holds the console or its connection was opened again, no edit,
+    // paste, undo or redo comes between; the changes staged stay shown.
+    BooleanSupplier free = () ->
+        o.edits.writing == null && s.guard.locked(tab) == null && ResultEdits.current(s, tab, o);
     var columns = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < o.fields.size(); c++) {
       int at = c;
@@ -532,7 +555,8 @@ final class ResultsArea {
     El grid =
         DataGrid.dataGrid(columns, count, options).key("grid").label("Rows of result " + o.number);
     if (editable != null && changes != null) {
-      Predicate<Key> guard = k -> ResultEdits.rejectUnloadedKey(app, o, k);
+      Predicate<Key> guard = k ->
+          ResultEdits.rejectUnloadedKey(app, o, k) || copiesOneWhole(app, o, k, zone, nullText);
       grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
     }
     return grid;
