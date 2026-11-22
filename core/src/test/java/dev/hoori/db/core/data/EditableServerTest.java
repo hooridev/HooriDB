@@ -25,6 +25,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -66,8 +67,9 @@ class EditableServerTest {
               column(lineColumns, "purchase_id")),
           line.edited());
 
-      // Expressions stay read-only while real columns stay editable.
-      var exprSql = "SELECT id, upper(name) AS up, 1 AS one, id + 0 AS orders, name"
+      // Expressions and scalar subqueries stay read-only while real columns stay editable.
+      var exprSql = "SELECT id, upper(name) AS up, 1 AS one,"
+          + " (SELECT count(*) FROM purchase p WHERE p.customer_id = c.id) AS orders, name"
           + " FROM customer c WHERE c.id IN (SELECT customer_id FROM purchase)";
       var expr = decide(console, writer, provider, exprSql, false).orElseThrow();
       assertEquals(expectedTable, expr.table());
@@ -76,6 +78,18 @@ class EditableServerTest {
       assertNull(expr.edited().get(2));
       assertNull(expr.edited().get(3));
       assertEquals(column(expectedColumns, "name"), expr.edited().get(4));
+
+      // A subquery's column has no origin, even where MariaDB and MySQL report the outer one's.
+      var sub = decide(
+              console,
+              writer,
+              provider,
+              "SELECT (SELECT c.id) AS sub, id, name FROM customer c",
+              false)
+          .orElseThrow();
+      assertEquals(
+          Arrays.asList(null, column(expectedColumns, "id"), column(expectedColumns, "name")),
+          sub.edited());
 
       // Table pages keep null origins.
       var page = Rows.read(writer, provider, expectedTable, expectedColumns, 0, 5);

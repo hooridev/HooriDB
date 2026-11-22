@@ -4,20 +4,31 @@ import static dev.hoori.db.core.connection.Provider.MARIADB;
 import static dev.hoori.db.core.connection.Provider.MONGODB;
 import static dev.hoori.db.core.connection.Provider.MYSQL;
 import static dev.hoori.db.core.connection.Provider.POSTGRESQL;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.Provider;
+import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class EditableQueryTest {
 
   private static void allowed(Provider provider, String sql) {
-    assertTrue(EditableQuery.singleTable(sql, provider), provider + ": " + sql);
+    assertEquals(
+        Optional.of(Set.of()), EditableQuery.singleTable(sql, provider), provider + ": " + sql);
+  }
+
+  private static void subqueries(Provider provider, String sql, Integer... items) {
+    assertEquals(
+        Optional.of(Set.of(items)),
+        EditableQuery.singleTable(sql, provider),
+        provider + ": " + sql);
   }
 
   private static void refused(Provider provider, String sql) {
-    assertFalse(EditableQuery.singleTable(sql, provider), provider + ": " + sql);
+    assertEquals(Optional.empty(), EditableQuery.singleTable(sql, provider), provider + ": " + sql);
   }
 
   private static void temp(Provider provider, String sql) {
@@ -38,9 +49,15 @@ class EditableQueryTest {
       allowed(p, "SELECT DISTINCT id, name FROM customer GROUP BY id, name HAVING count(*) > 0");
       allowed(p, "SELECT id, name FROM customer WINDOW w AS (ORDER BY id) ORDER BY id OFFSET 5");
       allowed(p, "SELECT id, name FROM customer FETCH FIRST 10 ROWS ONLY");
-      refused(
-          p, "SELECT id, (SELECT count(*) FROM purchase WHERE customer_id = c.id) FROM customer c");
-      refused(p, "SELECT (SELECT c.id) AS id, name FROM customer c");
+      subqueries(
+          p,
+          "SELECT id, (SELECT count(*) FROM purchase WHERE customer_id = c.id) FROM customer c",
+          1);
+      subqueries(
+          p, "SELECT (SELECT c.id) AS id, name, coalesce((SELECT 1), 0) FROM customer c", 0, 2);
+      subqueries(p, "SELECT DISTINCT id, name, (SELECT max(x) FROM t) FROM customer", 2);
+      refused(p, "SELECT *, (SELECT 1) FROM customer");
+      refused(p, "SELECT c.*, (SELECT 1) FROM customer c");
       allowed(p, "SELECT id, name IS NOT DISTINCT FROM 'x' AS same FROM customer");
       allowed(p, "SELECT id, name IS DISTINCT FROM 'x' FROM customer WHERE id > 0");
       refused(p, "SELECT c.id FROM customer c JOIN offset ON offset.id = c.id");

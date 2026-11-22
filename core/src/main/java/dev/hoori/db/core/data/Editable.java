@@ -65,16 +65,20 @@ public record Editable(Table table, List<Column> columns, List<Column> edited) {
       List<Field> fields,
       boolean createdTemporaryTable)
       throws QueryException {
-    if (!EditableQuery.singleTable(sql, provider)) {
+    var subqueries = EditableQuery.singleTable(sql, provider).orElse(null);
+    if (subqueries == null) {
       return Optional.empty();
+    }
+    var origins = new ArrayList<Origin>(fields.size());
+    for (var i = 0; i < fields.size(); i++) {
+      origins.add(subqueries.contains(i) ? null : fields.get(i).origin());
     }
     var dialect = provider.dialect().rows();
     if (createdTemporaryTable && dialect.temporaryTablesShadow()) {
       return Optional.empty();
     }
     Origin sample = null;
-    for (var field : fields) {
-      var origin = field.origin();
+    for (var origin : origins) {
       if (origin == null) {
         continue;
       }
@@ -123,7 +127,7 @@ public record Editable(Table table, List<Column> columns, List<Column> edited) {
     var seen = new int[columns.size()];
     var columnName = resolved.get().columnName();
     for (var i = 0; i < fields.size(); i++) {
-      var origin = fields.get(i).origin();
+      var origin = origins.get(i);
       if (origin == null) {
         continue;
       }

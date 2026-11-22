@@ -1,7 +1,9 @@
 package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -26,21 +28,26 @@ public final class EditableQuery {
   private EditableQuery() {}
 
   /**
-   * Whether the text is a single {@code SELECT} statement reading directly from one named table,
-   * with no {@code WITH}, subquery in {@code FROM}, join, set operation, {@code INTO} or locking
-   * clause. Subqueries in {@code WHERE} are allowed; one in the select list is not, as MariaDB and
-   * MySQL report the origin of a column it selects as if the outer query did.
+   * Where the text is a single {@code SELECT} statement reading directly from one named table, with
+   * no {@code WITH}, subquery in {@code FROM}, join, set operation, {@code INTO} or locking clause:
+   * the positions, from 0, of the select list's items that hold a subquery, whose columns have no
+   * origin, as MariaDB and MySQL report the origin of a column such a subquery selects as if the
+   * outer query did. Subqueries in {@code WHERE} are allowed; one in a select list with a {@code *}
+   * is not, as its position is not known.
    */
-  public static boolean singleTable(String sql, Provider provider) {
+  public static Optional<Set<Integer>> singleTable(String sql, Provider provider) {
     if (provider.keepsDocuments() || Statements.split(sql, provider).size() != 1) {
-      return false;
+      return Optional.empty();
     }
+    var subqueries = new HashSet<Integer>();
     for (var reading : Tokens.readings(provider)) {
-      if (!singleTable(Tokens.of(sql, provider, reading))) {
-        return false;
+      var found = singleTable(Tokens.of(sql, provider, reading));
+      if (found == null) {
+        return Optional.empty();
       }
+      subqueries.addAll(found);
     }
-    return true;
+    return Optional.of(Set.copyOf(subqueries));
   }
 
   /**
@@ -62,37 +69,46 @@ public final class EditableQuery {
     return false;
   }
 
-  private static boolean singleTable(List<Tokens.Token> tokens) {
+  // The positions of the select list's items that hold a subquery; null where it is no such
+  // statement.
+  private static Set<Integer> singleTable(List<Tokens.Token> tokens) {
     int n = tokens.size();
     if (n == 0 || !tokens.getFirst().is("SELECT")) {
-      return false;
+      return null;
     }
     int from = -1;
     int parens = 0;
+    int item = 0;
+    boolean star = false;
+    var subqueries = new HashSet<Integer>();
     for (int i = 0; i < n; i++) {
       var token = tokens.get(i);
       if (token.is("(")) {
         parens++;
       } else if (token.is(")")) {
         if (--parens < 0) {
-          return false;
+          return null;
         }
       } else if (token.is(";")) {
         if (i != n - 1 || token.depth() != 0) {
-          return false;
+          return null;
         }
       } else if (forbidden(tokens, i)) {
-        return false;
+        return null;
       } else if (from < 0 && token.depth() > 0 && token.is("SELECT")) {
-        return false;
+        subqueries.add(item);
+      } else if (from < 0 && token.depth() == 0 && token.is(",")) {
+        item++;
+      } else if (from < 0 && token.depth() == 0 && token.is("*")) {
+        star = true; // or a product, which is as unclear
       } else if (from < 0 && token.depth() == 0 && token.is("FROM") && !distinct(tokens, i)) {
         from = i;
       }
     }
-    if (parens != 0 || from < 0) {
-      return false;
+    if (parens != 0 || from < 0 || star && !subqueries.isEmpty()) {
+      return null;
     }
-    return singleTableFrom(tokens, from + 1);
+    return singleTableFrom(tokens, from + 1) ? subqueries : null;
   }
 
   // Whether the FROM at the index ends IS [NOT] DISTINCT FROM.
