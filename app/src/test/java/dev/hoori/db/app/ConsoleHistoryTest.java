@@ -30,6 +30,8 @@ import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.execution.Failure;
@@ -471,6 +473,37 @@ class ConsoleHistoryTest {
     c.run(app, "frame\nsnap ny\n");
     assertTrue(
         cell(dialog(c.tree("ny")), 0, 1).contains("2026-01-15 05:30:00"), dialog(c.tree("ny")));
+  }
+
+  /** With keepHistory off, running statements leaves history.json unchanged and keeps what was there. */
+  @Test
+  void keepHistoryOffRecordsNothingNewAndKeepsExistingHistory() throws Exception {
+    var existing = new HistoryEntry(
+        SHOP.id(),
+        "SELECT 0",
+        Instant.parse("2026-01-15T10:30:00Z"),
+        Duration.ofMillis(4),
+        new Outcome.Rows());
+    new HistoryStore(config()).save(List.of(existing));
+    new SettingsStore(config()).save(Settings.DEFAULT.withKeepHistory(false));
+    var file = config().resolve(HistoryStore.FILE);
+    String before = Files.readString(file);
+
+    var app = c.again(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START
+            + menu(SHOP.name(), "New console")
+            + SETTLE
+            + type(COUNT)
+            + RUN
+            + CLEAR
+            + type(PAY)
+            + RUN
+            + SAVED);
+    assertEquals(before, Files.readString(file));
+    assertEquals(List.of(existing), app.state().keeping.history);
   }
 
   /**

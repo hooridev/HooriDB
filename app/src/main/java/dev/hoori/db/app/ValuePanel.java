@@ -23,6 +23,7 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * The value of a grid's current cell in a panel beside the grid, which follows the cell as the
@@ -47,6 +48,7 @@ final class ValuePanel {
   // The value the text was made of, compared by identity: a value of a row, or a whole text.
   private Object made = NOTHING;
   private Kind madeKind;
+  private ZoneId madeZone;
   private String text = "";
 
   /** The button in a status line that opens and closes it. */
@@ -69,6 +71,7 @@ final class ValuePanel {
     El shown = grid;
     if (!open && made != NOTHING) { // what it showed, which may be long, goes with it
       made = NOTHING;
+      madeZone = null;
       text = "";
       editor = new CodeEditor.State().readOnly(true);
     }
@@ -144,11 +147,12 @@ final class ValuePanel {
 
   /** The text of the value, made anew only where it changed: JSON formatted where it is valid. */
   private void make(Object value, Kind kind, ZoneId zone) {
-    if (value == made && kind == madeKind) {
+    if (value == made && kind == madeKind && Objects.equals(zone, madeZone)) {
       return;
     }
     made = value;
     madeKind = kind;
+    madeZone = zone;
     editor.noDiagnostics();
     editor.select(0, 0);
     if (kind == Kind.JSON && value instanceof String json) {

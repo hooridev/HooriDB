@@ -48,7 +48,8 @@ class ValuePanelServerTest {
       try {
         var profile = server.profile();
         // The app's tests load made-up drivers; its connections go through the real one.
-        Servers real = (p, password, driver) -> Servers.SERVER.open(p, password, server.driver());
+        Servers real = (p, password, driver, timeout) ->
+            Servers.SERVER.open(p, password, server.driver(), timeout);
         var app = c.app(real, () -> new Keyring.Available(c.secrets), profile);
         c.ready(app, profile);
         app.state().rememberPassword(profile.id(), TestServer.password());

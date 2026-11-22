@@ -408,6 +408,7 @@ final class Keeping {
     }
     settingsKept.canSave = true;
     s.updates.settingsReady(s);
+    restore();
   }
 
   private void settingsFailed(Exception error) {
@@ -416,6 +417,7 @@ final class Keeping {
     // A file not understood is set aside by the next save; one not read at all stays as it is.
     settingsKept.canSave = error instanceof WorkspaceStore.UnreadableException;
     s.updates.settingsReady(s);
+    restore();
   }
 
   private void loadFailed(Kept kept, Exception error) {
@@ -436,14 +438,14 @@ final class Keeping {
    * a save would drop them all.
    */
   void restore() {
-    if (restoring == null || !s.loaded || s.loadError != null) {
+    if (restoring == null || !s.loaded || s.loadError != null || settingsLoading) {
       return;
     }
     var main = s.tabs.main();
     var hidden = new ArrayList<StoredConsole>();
     for (var stored : restoring) {
       if (s.profile(stored.connection()) != null) {
-        var console = new ConsoleTab(stored.connection(), stored.database());
+        var console = ConsoleTab.of(s, stored.connection(), stored.database());
         console.text = stored.text();
         s.tabs.add(main, main.tabs().size(), console);
       } else if (forgotten.contains(stored.connection())) {

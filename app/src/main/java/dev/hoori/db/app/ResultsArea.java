@@ -352,6 +352,7 @@ final class ResultsArea {
   /** The result's rows, read-only, with the table tab's cells. */
   private El grid(State s, App<State> app, ConsoleTab.Output o) {
     var zone = s.zone;
+    var nullText = Cells.nullText(s.settings.copyNull());
     var columns = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < o.fields.size(); c++) {
       int at = c;
@@ -364,7 +365,8 @@ final class ResultsArea {
         .fitColumns(o.fit)
         .rowNumbers()
         .copy(app.clipboard())
-        .copyLimit(0, copy -> copy(app, o, copy, zone))
+        .nullText(nullText)
+        .copyLimit(0, copy -> copy(app, o, copy, zone, nullText))
         .loading(row -> row < o.rows.size(), (_, last) -> tab.want(s, o, last));
     int count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), DocumentPresentation.GRID_ROWS);
     return DataGrid.dataGrid(columns, count, options)
@@ -377,7 +379,8 @@ final class ResultsArea {
    * long text; more cells as the grid shows them, which bounds the text of a large selection.
    */
   // shortcut: the grid copies what it shows (rethinkj/ui#414); drop this once it copies it whole.
-  private static void copy(App<State> app, ConsoleTab.Output o, DataGrid.Copy copy, ZoneId zone) {
+  private static void copy(
+      App<State> app, ConsoleTab.Output o, DataGrid.Copy copy, ZoneId zone, String nullText) {
     if (copy.cells() > COPY_LIMIT) {
       return;
     }
@@ -399,7 +402,7 @@ final class ResultsArea {
               ? Cells.text(cellValue(o, row, at), zone)
               : Cells.cell(o.rows.get(row).get(at), zone)));
     }
-    app.clipboard().write(DataGrid.copyText(whole, copy.ranges(), copy.headers(), ""));
+    app.clipboard().write(DataGrid.copyText(whole, copy.ranges(), copy.headers(), nullText));
   }
 
   /** What ran, how long it took, what it gave, and what the server said along the way. */

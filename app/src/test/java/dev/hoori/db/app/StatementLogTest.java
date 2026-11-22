@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.StatementLogStore;
 import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
@@ -33,6 +34,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -383,5 +385,29 @@ class StatementLogTest {
     assertTrue(log.contains("\"Monitor\""), log);
     assertTrue(log.contains("\"end " + PG + " 102\""), log);
     assertFalse(log.contains("\"Tree\""), log);
+  }
+
+  /** Changing the time zone setting updates the times shown in the statement log. */
+  @Test
+  void timeZoneSettingUpdatesStatementLogTimes() throws Exception {
+    var app = c.app(SHOP);
+    c.run(app, START);
+    app.state()
+        .statements
+        .add(new Logged(
+            SHOP.id(),
+            new Sent(
+                Instant.parse("2026-01-15T10:30:00Z"),
+                Purpose.STATEMENT,
+                "shop",
+                COUNT,
+                Duration.ofMillis(4),
+                Outcome.rows(1))));
+    c.run(app, SETTLE + TOGGLE + "snap berlin\n");
+    assertTrue(panel(c.tree("berlin")).contains("\"11:30:00.000\""), panel(c.tree("berlin")));
+
+    app.post(() -> app.state().choose(Settings.DEFAULT.withTimeZone(ZoneId.of("UTC"))));
+    c.run(app, "await\nframe\nsnap utc\n");
+    assertTrue(panel(c.tree("utc")).contains("\"10:30:00.000\""), panel(c.tree("utc")));
   }
 }

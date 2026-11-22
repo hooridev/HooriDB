@@ -1,18 +1,28 @@
 package dev.hoori.db.app;
 
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
 import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.CatalogTreeTest.open;
+import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.ConsoleEditorTest.COMPLETE;
 import static dev.hoori.db.app.ConsoleEditorTest.options;
+import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.TableTabTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
+import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.Values;
+import dev.hoori.db.core.execution.Result;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
@@ -171,5 +181,75 @@ class DocumentConsoleTest {
 
   ConsoleTab tab(App<State> app) {
     return app.state().consoles(null).getFirst();
+  }
+
+  /**
+   * The documentView setting sets the first view of a MongoDB collection tab and of a MongoDB
+   * console result, leaves SQL tables in Grid, and MongoDB consoles stay Auto even when Manual is
+   * configured.
+   */
+  @Test
+  void documentViewSetsTheFirstViewOfCollectionsAndResultsAndMongoStaysAuto() throws Exception {
+    var orderDocs = List.of(Document.of("_id", 1, "customer", "Ada", "total", 12.5));
+    var customerDocs = List.of(Document.of("_id", 2, "name", "Grace"));
+    c.servers.documents(MONGO + "/hoori.orders", orderDocs);
+    c.servers.documents(MONGO + "/hoori.customers", customerDocs);
+    var fields = Values.found(orderDocs);
+    var rows = orderDocs.stream().map(d -> Values.row(fields, d)).toList();
+    var query = "db.orders.find()";
+    c.servers.statement(query, List.of(new Result.Rows(fields, 0, rows, orderDocs)));
+
+    new SettingsStore(dir.resolve("config"))
+        .save(Settings.DEFAULT
+            .withDocumentView(Settings.DocumentView.JSON)
+            .withCommitMode(Settings.CommitMode.MANUAL));
+    var app = c.app(DOCS, SHOP);
+    c.ready(app, DOCS, SHOP);
+    c.run(
+        app,
+        START + open(DOCS.name()) + SETTLE + open("hoori") + SETTLE + table("orders") + SETTLE
+            + "snap collection-json\n");
+    var collectionJson = c.tree("collection-json");
+    assertTrue(
+        line(collectionJson, "role=radio label=\"JSON\"").contains("checked"), collectionJson);
+    assertTrue(
+        line(collectionJson, "#json").contains("\\\"customer\\\": \\\"Ada\\\""), collectionJson);
+
+    // SQL tables still open in Grid even when documentView is JSON.
+    c.run(
+        app,
+        open(SHOP.name()) + SETTLE + open("shop") + SETTLE + open("public") + SETTLE
+            + "press role=treeitem label=\"orders\" level=4\nkey Enter\nframe\n" + SETTLE
+            + "snap sql-grid\n");
+    var sqlGrid = c.tree("sql-grid");
+    assertTrue(sqlGrid.contains("#grid"), sqlGrid);
+    assertFalse(sqlGrid.contains("#json"), sqlGrid);
+    assertEquals(
+        DocumentPresentation.Mode.GRID,
+        app.state().tables(SHOP.id()).getFirst().presentation.mode());
+
+    // Switching documentView to TREE opens the next collection in Tree mode.
+    app.post(() ->
+        app.state().choose(app.state().settings.withDocumentView(Settings.DocumentView.TREE)));
+    c.run(
+        app,
+        "await\nframe\npress role=treeitem label=\"customers\" level=3\nkey Enter\nframe\n" + SETTLE
+            + "snap collection-tree\n");
+    var collectionTree = c.tree("collection-tree");
+    assertTrue(
+        line(collectionTree, "role=radio label=\"Tree\"").contains("checked"), collectionTree);
+    assertTrue(collectionTree.contains("#documents"), collectionTree);
+
+    // MongoDB console stays Auto even when commitMode is MANUAL, and results use documentView.
+    app.post(() ->
+        app.state().choose(app.state().settings.withDocumentView(Settings.DocumentView.JSON)));
+    c.run(
+        app,
+        "await\nframe\n" + menu(DOCS.name(), "New console") + SETTLE + type(query) + RUN
+            + "snap result-json\n");
+    assertEquals(ConsoleTab.Mode.AUTO, tab(app).mode);
+    var resultJson = c.tree("result-json");
+    assertTrue(line(resultJson, "role=radio label=\"JSON\"").contains("checked"), resultJson);
+    assertTrue(line(resultJson, "#json").contains("\\\"customer\\\": \\\"Ada\\\""), resultJson);
   }
 }

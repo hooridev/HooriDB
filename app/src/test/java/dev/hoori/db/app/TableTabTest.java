@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.query.QueryException;
@@ -26,6 +27,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
@@ -1177,6 +1179,34 @@ class TableTabTest {
     servers.rows(ORDERS, 10, OptionalLong.of(10));
     c.run(app, table("orders") + SETTLE + "press #cell-1-2\nframe\nkey C control\nframe\n");
     assertEquals("2026-01-01 10:01:00+01", app.clipboard().read());
+  }
+
+  @Test
+  void timeZoneSettingUpdatesMomentsInTheGridAndCopies() throws Exception {
+    var app = shop();
+    servers.rows(ORDERS, 10, OptionalLong.of(10));
+    c.run(app, table("orders") + SETTLE);
+    app.post(() -> app.state().choose(app.state().settings.withTimeZone(ZoneId.of("UTC"))));
+    c.run(app, "await\nframe\nsnap utc\npress #cell-1-2\nframe\nkey C control\nframe\n");
+    assertTrue(cell(c.tree("utc"), 1, 2).contains("\"2026-01-01 09:01:00+00\""), c.tree("utc"));
+    assertEquals("2026-01-01 09:01:00+00", app.clipboard().read());
+  }
+
+  @Test
+  void copyNullSettingControlsHowNullCellsAreCopied() throws Exception {
+    var app = shop();
+    servers.rows(ORDERS, 10, OptionalLong.of(10));
+    c.run(app, table("orders") + SETTLE + "press #cell-6-3\nframe\nkey C control\nframe\n");
+    assertEquals("\"\"", app.clipboard().read(), "default copies NULL as empty");
+
+    app.post(() -> app.state().choose(app.state().settings.withCopyNull(Settings.CopyNull.NULL)));
+    c.run(app, "await\nframe\nkey C control\nframe\n");
+    assertEquals("NULL", app.clipboard().read());
+
+    app.post(
+        () -> app.state().choose(app.state().settings.withCopyNull(Settings.CopyNull.BACKSLASH_N)));
+    c.run(app, "await\nframe\nkey C control\nframe\n");
+    assertEquals("\\N", app.clipboard().read());
   }
 
   String snapped(App<State> app, String name) throws Exception {

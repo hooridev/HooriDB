@@ -15,6 +15,8 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.driver.Driver;
@@ -1101,5 +1103,20 @@ class CatalogTreeTest {
     assertEquals(List.of("shop-prod", "  Disconnected"), rows(tree("end")));
     assertFalse(servers.calls.contains("columns " + PG + "/shop.public.orders"), "used again");
     eventually(() -> servers.closed.contains(PG + "/shop"));
+  }
+
+  /** A held open fails after the configured connect timeout, and the note names it. */
+  @Test
+  void aHeldOpenFailsAfterTheConfiguredConnectTimeout() throws Exception {
+    new SettingsStore(dir.resolve("config"))
+        .save(Settings.DEFAULT.withConnectTimeout(Duration.ofSeconds(1)));
+    var app = app(SHOP);
+    ready(app, SHOP);
+    servers.hold("open " + PG + "/shop");
+    run(app, START + open("shop-prod") + SETTLE + "snap timed\n");
+    String timed = tree("timed");
+    assertTrue(timed.contains("No answer in time"), timed);
+    assertTrue(timed.contains("did not answer on port 5432 within 1 second."), timed);
+    assertEquals(List.of(Duration.ofSeconds(1)), servers.timeouts);
   }
 }

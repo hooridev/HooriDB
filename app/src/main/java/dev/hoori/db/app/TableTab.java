@@ -110,7 +110,7 @@ final class TableTab implements Tab {
   final Map<Long, List<List<Object>>> pages = new HashMap<>(); // the rows read, by page
   // A collection's documents of the pages read, whole; none for a table.
   final Map<Long, List<Document>> documents = new HashMap<>();
-  final DocumentPresentation presentation = new DocumentPresentation();
+  final DocumentPresentation presentation;
   final Map<Long, Lane.Asked> reading = new HashMap<>(); // the pages asked for
   Lane.Asked opening; // the columns, the estimate and the first page, or null
   Lane.Asked counting; // the exact count, or null
@@ -139,9 +139,19 @@ final class TableTab implements Tab {
   private record Whole(
       List<Object> row, int column, Lane.Asked asked, String text, String failure) {}
 
-  TableTab(UUID id, Table table) {
+  TableTab(UUID id, Table table, DocumentPresentation.Mode initial) {
     this.id = id;
     this.table = table;
+    this.presentation = new DocumentPresentation(initial);
+  }
+
+  /** A tab for the table or collection, starting in the configured view for documents. */
+  static TableTab of(State s, UUID id, Table table) {
+    var profile = s.profile(id);
+    var initial = profile != null && Language.of(profile.provider()).documents()
+        ? DocumentPresentation.of(s.settings.documentView())
+        : DocumentPresentation.Mode.GRID;
+    return new TableTab(id, table, initial);
   }
 
   /**
@@ -442,7 +452,7 @@ final class TableTab implements Tab {
       return;
     }
     var lane = separate
-        ? s.catalog.counter(id, table.container().database().name())
+        ? s.catalog.counter(s, id, table.container().database().name())
         : s.catalog.lane(s, id, table);
     if (lane == null) {
       return;
@@ -536,7 +546,10 @@ final class TableTab implements Tab {
     return profile == null
         ? null
         : Words.note(
-            e.failure(), profile.withDatabase(table.container().database().name()), true);
+            e.failure(),
+            profile.withDatabase(table.container().database().name()),
+            true,
+            s.settings.connectTimeout());
   }
 
   private static Problem problem(Exception error) {
@@ -1058,6 +1071,7 @@ final class TableTab implements Tab {
         .fitColumns(fit)
         .rowNumbers()
         .copy(app.clipboard())
+        .nullText(Cells.nullText(s.settings.copyNull()))
         .copyLimit(
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
         .contextMenu(

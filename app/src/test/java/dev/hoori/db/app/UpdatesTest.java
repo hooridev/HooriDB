@@ -498,7 +498,7 @@ class UpdatesTest {
     app.state().choose(app.state().settings.withCheckForUpdates(true));
     assertEquals(0, updater.looks.get());
     updater.reading.countDown();
-    run(app, START);
+    run(app, START + "await\n"); // the settings' save, before the folder goes
     assertEquals(1, updater.looks.get());
   }
 
@@ -518,7 +518,7 @@ class UpdatesTest {
     app.state().choose(app.state().settings.withCheckForUpdates(true));
     app.state().choose(app.state().settings.withCheckForUpdates(false));
     updater.reading.countDown();
-    run(app, START);
+    run(app, START + "await\n"); // the settings' save, before the folder goes
     assertEquals(0, updater.looks.get());
   }
 

@@ -26,7 +26,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
+import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
@@ -89,6 +93,29 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     assertEquals(
         2, servers.calls.stream().filter(x -> x.equals("run " + PG + " COMMIT")).count());
     assertFalse(servers.overlapped, "two calls ran at once on one connection");
+  }
+
+  /** With Manual configured, both restored and new SQL consoles start in Manual. */
+  @Test
+  void aNewAndARestoredSqlConsoleStartInManualWhenConfigured() throws Exception {
+    var config = dir.resolve("config");
+    new SettingsStore(config).save(Settings.DEFAULT.withCommitMode(Settings.CommitMode.MANUAL));
+    new ConsoleStore(config).save(List.of(new StoredConsole(SHOP.id(), "shop", COUNT)));
+    var app = c.again(SHOP);
+    c.ready(app, SHOP);
+    c.run(app, CatalogTreeTest.START + "snap restored\n");
+    String restored = c.tree("restored");
+    assertTrue(line(restored, "role=radio label=\"Manual\"").contains("checked"), restored);
+    assertTrue(badge(restored).contains("No transaction"), restored);
+
+    c.run(app, menu("shop-prod", "New console") + SETTLE + "snap opened\n");
+    String opened = c.tree("opened");
+    assertTrue(line(opened, "role=radio label=\"Manual\"").contains("checked"), opened);
+    assertTrue(badge(opened).contains("No transaction"), opened);
+
+    c.run(app, type(PAY) + RUN + "snap ran\n");
+    assertTrue(servers.calls.contains("autocommit " + PG + " off"), servers.calls.toString());
+    assertTrue(badge(c.tree("ran")).contains("Transaction open · 1 statement"), c.tree("ran"));
   }
 
   @Test
@@ -268,7 +295,8 @@ class ConsoleTransactionTest extends ConsoleTransactions {
   /** 2: on the lane too, a COMMIT goes only into a transaction the server says is open. */
   @Test
   void aCommitIsNotSentIntoAFailedTransaction() throws Exception {
-    var link = servers.open(SHOP, ConnectionsTest.PASSWORD.toCharArray(), null);
+    var link = servers.open(
+        SHOP, ConnectionsTest.PASSWORD.toCharArray(), null, java.time.Duration.ofSeconds(10));
     link.manual(true);
     link.run(PAY).next(1);
     link.run(MISSING).next(1);

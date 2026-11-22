@@ -14,6 +14,8 @@ import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
+import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
@@ -50,6 +52,7 @@ import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -123,11 +126,13 @@ final class FakeServers implements Servers {
   final List<String> closed = new CopyOnWriteArrayList<>(); // the links closed, by database
   final List<String> interrupted = new CopyOnWriteArrayList<>();
   final List<String> failed = new CopyOnWriteArrayList<>(); // the calls that failed as set
+  final List<Duration> timeouts = new CopyOnWriteArrayList<>(); // the timeouts given to open
   volatile boolean overlapped; // two calls ran at once on one connection
   volatile boolean dead; // a gate ignores interrupts, as a server that no longer answers
   private final Map<String, Long> counts = new ConcurrentHashMap<>();
   private final Map<String, OptionalLong> estimates = new ConcurrentHashMap<>();
   private final Map<String, List<List<Object>>> values = new ConcurrentHashMap<>();
+  private final Map<String, List<Document>> documents = new ConcurrentHashMap<>();
   private final Map<String, String> wholes = new ConcurrentHashMap<>();
   private final Map<String, Answer> statements = new ConcurrentHashMap<>();
 
@@ -373,6 +378,12 @@ final class FakeServers implements Servers {
     return rows(path, rows.size(), OptionalLong.of(rows.size()));
   }
 
+  /** The collection at the path has these documents, which the server estimates right. */
+  FakeServers documents(String path, List<Document> docs) {
+    documents.put(path, List.copyOf(docs));
+    return rows(path, docs.size(), OptionalLong.of(docs.size()));
+  }
+
   /**
    * The whole text of the column of the table at the path, for the row whose key has the values,
    * joined by commas; a row without one is not found.
@@ -404,10 +415,15 @@ final class FakeServers implements Servers {
         key,
         connecting
             ? ConnectionException.of(ConnectionException.Failure.CANCELLED, "")
-            : CatalogException.of(CatalogException.Failure.CANCELLED, ""));
+            : CatalogException.of(CatalogException.Failure.CANCELLED, ""),
+        null);
   }
 
   private void call(String key, Exception cancelled) throws Exception {
+    call(key, cancelled, null);
+  }
+
+  private void call(String key, Exception cancelled, Duration timeout) throws Exception {
     calls.add(key);
     var gate = gates.get(key);
     var passing = passes.get(key);
@@ -430,7 +446,15 @@ final class FakeServers implements Servers {
         }
       } else {
         try {
-          gate.await();
+          if (timeout != null) {
+            if (!gate.await(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
+              throw ConnectionException.of(
+                  ConnectionException.Failure.TIMED_OUT,
+                  "timed out after " + timeout.toSeconds() + " s");
+            }
+          } else {
+            gate.await();
+          }
         } catch (InterruptedException _) {
           interrupted.add(key);
           Thread.currentThread().interrupt();
@@ -447,18 +471,20 @@ final class FakeServers implements Servers {
   }
 
   @Override
-  public Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
+  public Link open(
+      ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout)
       throws ConnectionException {
     var made = servers.get(profile.host());
     if (made == null) {
       throw ConnectionException.of(ConnectionException.Failure.UNREACHABLE, "no such host");
     }
     passwords.add(new String(password));
+    timeouts.add(timeout);
     boolean perDatabase = made.provider() == Provider.POSTGRESQL;
     var database = profile.database().isBlank() ? profile.user() : profile.database();
     var key = "open " + profile.host() + (perDatabase ? "/" + database : "");
     try {
-      call(key, true);
+      call(key, ConnectionException.of(ConnectionException.Failure.CANCELLED, ""), timeout);
     } catch (ConnectionException e) {
       throw e;
     } catch (Exception e) {
@@ -763,13 +789,22 @@ final class FakeServers implements Servers {
         if (!now.equals(asked)) {
           return null;
         }
-        var fields = columns.stream()
-            .map(c -> new Field(c.name(), c.type(), kind(c.type())))
-            .toList();
+        var docs = documents.get(path);
+        var fields = docs != null
+            ? Values.fields(columns)
+            : columns.stream()
+                .map(c -> new Field(c.name(), c.type(), kind(c.type())))
+                .toList();
         var given = values.get(path);
-        long count = given != null ? given.size() : counts.getOrDefault(path, 3L);
+        long count = docs != null
+            ? docs.size()
+            : given != null ? given.size() : counts.getOrDefault(path, 3L);
         var rows = new ArrayList<List<Object>>();
         for (long i = from; i < Math.min(to, count); i++) {
+          if (docs != null) {
+            rows.add(Values.row(fields, docs.get((int) i)));
+            continue;
+          }
           if (given != null) {
             rows.add(given.get((int) i));
             continue;
@@ -780,7 +815,12 @@ final class FakeServers implements Servers {
           }
           rows.add(Collections.unmodifiableList(Arrays.asList(row)));
         }
-        return new Page(List.copyOf(fields), List.copyOf(rows));
+        return docs != null
+            ? new Page(
+                List.copyOf(fields),
+                List.copyOf(rows),
+                docs.subList((int) Math.min(from, count), (int) Math.min(to, count)))
+            : new Page(List.copyOf(fields), List.copyOf(rows));
       });
     }
 

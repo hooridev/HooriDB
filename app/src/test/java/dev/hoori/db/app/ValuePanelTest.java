@@ -18,6 +18,7 @@ import com.rethinkj.ui.json.Json;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
@@ -29,6 +30,8 @@ import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.execution.Result;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
@@ -340,6 +343,54 @@ class ValuePanelTest {
     assertTrue(missing.contains("\"No such field\""), missing);
     String nulled = t.c.tree("null");
     assertFalse(nulled.contains("No such field"), nulled);
+  }
+
+  /** Changing the time zone setting updates a moment already shown in the value panel. */
+  @Test
+  void changingTimeZoneUpdatesTheValuePanel() throws Exception {
+    var row = new Object[12];
+    row[0] = 1L;
+    row[9] = OffsetDateTime.of(2026, 11, 13, 13, 30, 0, 0, ZoneOffset.UTC);
+    var app = kinds(List.of(Arrays.asList(row)));
+    t.c.run(app, "press #cell-0-9\nkey Enter shift\nadvance 1\nframe\nsnap berlin\n");
+    assertTrue(
+        editor(t.c.tree("berlin")).contains("\"2026-11-13 14:30:00+01\""), t.c.tree("berlin"));
+
+    app.post(() -> app.state().choose(app.state().settings.withTimeZone(ZoneId.of("UTC"))));
+    t.c.run(app, "await\nframe\nsnap utc\n");
+    assertTrue(editor(t.c.tree("utc")).contains("\"2026-11-13 13:30:00+00\""), t.c.tree("utc"));
+  }
+
+  /** Copy NULL setting controls single-cell and multi-cell copies in console results. */
+  @Test
+  void copyNullSettingControlsHowConsoleResultNullsAreCopied() throws Exception {
+    var sql = "SELECT a, b FROM kinds";
+    t.servers.statement(
+        sql,
+        List.of(new Result.Rows(
+            List.of(new Field("a", "string", Kind.TEXT), new Field("b", "string", Kind.TEXT)),
+            0,
+            List.of(Arrays.asList(Missing.FIELD, null)))));
+    var app = t.c.app(SHOP);
+    t.c.ready(app, SHOP);
+    t.c.run(
+        app,
+        START + menu(SHOP.name(), "New console") + SETTLE + ConsoleTest.type(sql) + ConsoleTest.RUN
+            + "press #cell-0-1\nframe\nkey C control\nframe\n");
+    assertEquals("\"\"", app.clipboard().read(), "default copies NULL as empty");
+
+    app.post(() -> app.state().choose(app.state().settings.withCopyNull(Settings.CopyNull.NULL)));
+    t.c.run(app, "await\nframe\nkey C control\nframe\n");
+    assertEquals("NULL", app.clipboard().read());
+
+    // Multi-cell copy: missing field stays empty, NULL becomes NULL, then \N.
+    t.c.run(app, "press #cell-0-0\nframe\nkey ArrowRight shift\nframe\nkey C control\nframe\n");
+    assertEquals("\tNULL", app.clipboard().read());
+
+    app.post(
+        () -> app.state().choose(app.state().settings.withCopyNull(Settings.CopyNull.BACKSLASH_N)));
+    t.c.run(app, "await\nframe\nkey C control\nframe\n");
+    assertEquals("\t\\N", app.clipboard().read());
   }
 
   @Test
