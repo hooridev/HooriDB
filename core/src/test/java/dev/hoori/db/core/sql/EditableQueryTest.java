@@ -73,6 +73,8 @@ class EditableQueryTest {
       subqueries(p, "SELECT id, id * 2, (SELECT 1), name FROM customer", 2);
       subqueries(p, "SELECT c.*, (SELECT 1) FROM customer c", 1);
       subqueries(p, "SELECT (TABLE purchase), id FROM customer", 0);
+      refused(p, "SELECT (id FROM customer");
+      refused(p, "SELECT id) FROM customer");
       assertEquals(
           3,
           EditableQuery.singleTable("SELECT id * '2', (SELECT 1), name FROM customer", p)
@@ -80,9 +82,15 @@ class EditableQueryTest {
               .items());
     }
     subqueries(POSTGRESQL, "SELECT ARRAY[1,2], (SELECT 1), id, name FROM customer", 1);
+    allowed(POSTGRESQL, "SELECT c.*, XMLELEMENT(NAME table, c.name) FROM customer c");
+    allowed(POSTGRESQL, "SELECT id, name FROM force index WHERE id = 1");
     for (var p : new Provider[] {MARIADB, MYSQL}) {
       refused(p, "SELECT /*!99999 0, */ /*! 1, */ (SELECT c.id) AS k, 2, name FROM customer c");
       refused(p, "SELECT /*!99999 0 */ /*! , */ (SELECT c.id) AS k, name FROM customer c");
+      refused(
+          p,
+          "SELECT c.id FROM customer c /*!99999 WHERE ( */"
+              + " /*!80000 JOIN purchase p ON p.customer_id = c.id */");
     }
   }
 
@@ -240,7 +248,6 @@ class EditableQueryTest {
       temp(p, "SELECT 1; CREATE TEMPORARY TABLE customer (id int)");
       temp(p, "CALL make_tables()");
       temp(p, "EXECUTE stmt");
-      temp(p, "SELECT 1; CALL make_tables()");
       notTemp(p, "CREATE TABLE customer (id int)");
       notTemp(p, "DROP TEMPORARY TABLE customer");
       notTemp(p, "CREATE TEMPORARY SEQUENCE s");

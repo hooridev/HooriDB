@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.function.Function;
@@ -195,16 +196,25 @@ public final class PostgreSqlRows extends RowsDialect {
         + " AND a.attnum OPERATOR(pg_catalog.>) 0"
         + " AND NOT a.attisdropped";
     var catalog = provider.dialect().catalog();
-    return Optional.ofNullable(Journal.sql(
+    var found = Journal.sql(
         provider,
         Purpose.CATALOG,
         sql,
-        found -> Outcome.rows(found == null ? 0 : 1),
-        () -> Query.query(connection, provider, sql, rows -> resolved(rows, catalog))));
+        columns -> Outcome.rows(columns == null ? 0 : columns.names().size()),
+        () -> Query.query(connection, provider, sql, rows -> found(rows, catalog)));
+    if (found == null) {
+      return Optional.empty();
+    }
+    var names = found.names();
+    return Optional.of(new Resolved(
+        found.table(),
+        origin -> origin instanceof Origin.Oid col ? names.get(col.position()) : null));
   }
 
+  private record Found(Table table, Map<Integer, String> names) {}
+
   // The table of the rows, one per column, with its columns' names by position; null without rows.
-  private static Resolved resolved(ResultSet rows, CatalogDialect catalog) throws SQLException {
+  private static Found found(ResultSet rows, CatalogDialect catalog) throws SQLException {
     Table table = null;
     var names = new HashMap<Integer, String>();
     while (rows.next()) {
@@ -216,10 +226,7 @@ public final class PostgreSqlRows extends RowsDialect {
       }
       names.put(rows.getInt(5), rows.getString(6));
     }
-    return table == null
-        ? null
-        : new Resolved(
-            table, origin -> origin instanceof Origin.Oid col ? names.get(col.position()) : null);
+    return table == null ? null : new Found(table, Map.copyOf(names));
   }
 
   // pgjdbc's own field of the result has the OIDs of the column's type and table, which JDBC does

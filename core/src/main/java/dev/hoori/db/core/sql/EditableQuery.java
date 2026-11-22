@@ -70,9 +70,10 @@ public final class EditableQuery {
   private record Shape(List<String> code, SelectList list) {}
 
   /**
-   * Whether any reading of the SQL text may create a temporary table: {@code CREATE … TEMPORARY
-   * TABLE}, including {@code CREATE OR REPLACE TEMPORARY TABLE} and {@code CREATE TEMP TABLE}, or a
-   * {@code CALL} or {@code EXECUTE}, whose procedure or prepared statement may.
+   * Whether any reading of the text of one statement, as the console runs each on its own, may
+   * create a temporary table: {@code CREATE … TEMPORARY TABLE}, including {@code CREATE OR REPLACE
+   * TEMPORARY TABLE} and {@code CREATE TEMP TABLE}, or a {@code CALL} or {@code EXECUTE}, whose
+   * procedure or prepared statement may.
    */
   // shortcut: a stored function or trigger that creates one is not seen; make the server tell, if
   // it ever can, from the console's session.
@@ -91,7 +92,7 @@ public final class EditableQuery {
   // The select list's shape; null where it is no such statement.
   private static Shape singleTable(List<Tokens.Token> tokens) {
     int n = tokens.size();
-    if (n == 0 || !tokens.getFirst().is("SELECT")) {
+    if (n == 0 || !tokens.getFirst().is("SELECT") || !balanced(tokens)) {
       return null;
     }
     for (int i = 0; i < n; i++) {
@@ -107,10 +108,12 @@ public final class EditableQuery {
     int brackets = 0;
     var subqueries = new HashSet<Integer>();
     var list = tokens.subList(0, from);
-    for (var token : list) {
+    for (int i = 0; i < from; i++) {
+      var token = list.get(i);
       if (token.is("[") || token.is("]")) {
         brackets += token.is("[") ? 1 : -1;
-      } else if (token.depth() > 0 && (token.is("SELECT") || token.is("TABLE"))) {
+      } else if (token.depth() > 0
+          && (token.is("SELECT") || token.is("TABLE") && list.get(i - 1).is("("))) {
         subqueries.add(item);
       } else if (token.depth() == 0 && brackets == 0 && token.is(",")) {
         item++;
@@ -118,6 +121,19 @@ public final class EditableQuery {
     }
     var code = list.stream().map(Tokens.Token::text).toList();
     return new Shape(code, new SelectList(item + 1, Set.copyOf(subqueries)));
+  }
+
+  // Whether the parentheses pair up, as the depths of the tokens cannot tell where a reading leaves
+  // an opening one out, as in an executable comment the server skips.
+  private static boolean balanced(List<Tokens.Token> tokens) {
+    int depth = 0;
+    for (var token : tokens) {
+      depth += token.is("(") ? 1 : token.is(")") ? -1 : 0;
+      if (depth < 0) {
+        return false;
+      }
+    }
+    return depth == 0;
   }
 
   // The index of the FROM at the top level that ends the select list, or -1.
@@ -177,7 +193,8 @@ public final class EditableQuery {
     }
     for (int i = start; i < n; i++) {
       var token = tokens.get(i);
-      boolean hint = (token.is("USE") || token.is("FORCE") || token.is("IGNORE"))
+      boolean hint = i >= k
+          && (token.is("USE") || token.is("FORCE") || token.is("IGNORE"))
           && i + 1 < n
           && (tokens.get(i + 1).is("INDEX") || tokens.get(i + 1).is("KEY"));
       if (top(tokens, i) && (token.is("JOIN") || token.is("STRAIGHT_JOIN") || hint)) {
@@ -221,11 +238,11 @@ public final class EditableQuery {
   }
 
   private static boolean createsTemporaryTable(List<Tokens.Token> tokens) {
+    if (!tokens.isEmpty() && (tokens.getFirst().is("CALL") || tokens.getFirst().is("EXECUTE"))) {
+      return true;
+    }
     for (int i = 0; i < tokens.size(); i++) {
-      var token = tokens.get(i);
-      boolean first = i == 0 || tokens.get(i - 1).is(";");
-      if (first && (token.is("CALL") || token.is("EXECUTE"))
-          || token.is("CREATE") && temporaryTable(tokens, i + 1)) {
+      if (tokens.get(i).is("CREATE") && temporaryTable(tokens, i + 1)) {
         return true;
       }
     }
