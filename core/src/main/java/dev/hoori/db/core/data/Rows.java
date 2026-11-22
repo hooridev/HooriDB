@@ -505,12 +505,10 @@ public final class Rows {
         + rest;
   }
 
-  // A name for the rows' number that is none of the table's columns.
+  // A name for the rows' number that is none of the table's columns, as the server compares names.
   private static String orderColumn(List<Column> columns) {
-    var names =
-        columns.stream().map(column -> column.name().toLowerCase(Locale.ROOT)).toList();
     var name = new StringBuilder("__hoori_order");
-    while (names.contains(name.toString())) {
+    while (columns.stream().anyMatch(column -> column.name().equalsIgnoreCase(name.toString()))) {
       name.append('_');
     }
     return name.toString();
