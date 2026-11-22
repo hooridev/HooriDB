@@ -450,20 +450,21 @@ final class ResultsArea {
       App<State> app, ConsoleTab.Output o, Key k, ZoneId zone, String nullText) {
     boolean copy =
         k.modifiers() == Key.CONTROL && (k.name().equals("C") || k.name().equals("Insert"));
-    int row = o.selection.row();
-    int column = o.selection.column();
-    var at = new DataGrid.Range(row, column, row, column);
-    var ranges = o.selection.ranges();
-    boolean one = ranges.isEmpty() || ranges.equals(List.of(at));
-    if (!copy
-        || !one
-        || o.selection.isEditing()
-        || row < 0
-        || row >= o.rows.size()
-        || column < 0
-        || column >= o.fields.size()) {
+    if (!copy || o.selection.isEditing()) {
       return false;
     }
+    var ranges = o.selection.ranges();
+    var only = ranges.size() == 1 ? ranges.getFirst() : null;
+    if (!ranges.isEmpty()
+        && (only == null || only.top() != only.bottom() || only.left() != only.right())) {
+      return false;
+    }
+    int row = only == null ? o.selection.row() : only.top();
+    int column = only == null ? o.selection.column() : only.left();
+    if (row < 0 || row >= o.rows.size() || column < 0 || column >= o.fields.size()) {
+      return false;
+    }
+    var at = new DataGrid.Range(row, column, row, column);
     copy(app, o, new DataGrid.Copy(List.of(at), false, 1), zone, nullText);
     return true;
   }

@@ -180,23 +180,24 @@ final class ResultEdits {
       o.edits.readOnlyReason = NOT_EDITABLE_RESULT;
       return;
     }
+    // The result is of the session's connection and database, also when it is checked again.
+    o.edits.live = tab.sessionLive;
+    o.edits.database = tab.database;
     askEditable(s, tab, o, temp, true);
   }
 
   private static void askEditable(
       State s, ConsoleTab tab, ConsoleTab.Output o, boolean temp, boolean retry) {
     // A session that outlived the tree's connection may be on another server than its writer.
-    if (tab.sessionLive == null || tab.sessionLive != s.catalog.live(tab.id)) {
+    if (!current(s, tab, o)) {
       o.edits.readOnlyReason = CONNECTION_CHANGED;
       return;
     }
-    var lane = s.catalog.writer(s, tab.id, tab.database);
+    var lane = s.catalog.writer(s, tab.id, o.edits.database);
     if (lane == null) {
       o.edits.readOnlyReason = "Read-only: not connected";
       return;
     }
-    o.edits.live = tab.sessionLive;
-    o.edits.database = tab.database;
     var sql = o.statement;
     var fields = o.fields;
     o.edits.checking = lane.ask(

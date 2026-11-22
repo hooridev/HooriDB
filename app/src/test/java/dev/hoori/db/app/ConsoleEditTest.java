@@ -424,7 +424,8 @@ class ConsoleEditTest {
         CUSTOMERS_PATH,
         List.of(List.of(1L, name, "alice@example.com"), List.of(2L, "Bob", "bob@example.com")));
     var app = openCustomers();
-    c.run(app, "press #cell-0-1\nkey C control\nframe\n");
+    // A fresh grid takes keys before any cell is chosen.
+    c.run(app, "focus #grid\nkey ArrowDown\nframe\npress #cell-0-1\nkey C control\nframe\n");
     assertEquals(name, app.clipboard().read());
   }
 
