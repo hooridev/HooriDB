@@ -44,6 +44,14 @@ public record Editable(Table table, List<Column> columns, List<Column> edited) {
   }
 
   /**
+   * Whether a session's temporary table can shadow a permanent table of the same name on this
+   * provider, so that another connection cannot tell them apart.
+   */
+  public static boolean temporaryTablesShadow(Provider provider) {
+    return !provider.keepsDocuments() && provider.dialect().rows().temporaryTablesShadow();
+  }
+
+  /**
    * Decides whether the result with the given fields, produced by {@code sql}, can be edited
    * through {@code writer}.
    *

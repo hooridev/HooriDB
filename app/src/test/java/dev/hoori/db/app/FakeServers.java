@@ -11,8 +11,12 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Binary;
+import dev.hoori.db.core.data.Change;
+import dev.hoori.db.core.data.Changes;
+import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Origin;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
@@ -36,6 +40,7 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sql.EditableQuery;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -45,9 +50,12 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
@@ -55,6 +63,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 /**
  * Made-up servers, by host: what they hold is written as an outline, each call can be held at a
@@ -136,6 +146,8 @@ final class FakeServers implements Servers {
   private final Map<String, List<Document>> documents = new ConcurrentHashMap<>();
   private final Map<String, String> wholes = new ConcurrentHashMap<>();
   private final Map<String, Answer> statements = new ConcurrentHashMap<>();
+  private final Map<String, Supplier<Answer>> dynamicStatements = new ConcurrentHashMap<>();
+  private final java.util.Set<String> refused = ConcurrentHashMap.newKeySet();
 
   /** How long each portion of a statement took, as the server would say. */
   static final Duration TOOK = Duration.ofMillis(4);
@@ -145,13 +157,43 @@ final class FakeServers implements Servers {
 
   /** The statement, as written, gives these results, and the server says these messages. */
   FakeServers statement(String sql, List<Result> results, Message... messages) {
+    dynamicStatements.remove(sql);
     statements.put(sql, new Answer(List.copyOf(results), List.of(messages)));
+    return this;
+  }
+
+  /** The statement, as written, computes its answer on each run (e.g. reading live table rows). */
+  FakeServers statement(String sql, Supplier<Answer> answer) {
+    statements.remove(sql);
+    dynamicStatements.put(sql, answer);
     return this;
   }
 
   /** The statement no longer gives what {@link #statement} said, as the server changed. */
   void forget(String sql) {
     statements.remove(sql);
+    dynamicStatements.remove(sql);
+  }
+
+  /** The current rows stored for the table at {@code path}, or null if none were set. */
+  List<List<Object>> rowsOf(String path) {
+    return values.get(path);
+  }
+
+  /** Makes {@link Link#write} for {@code key} return {@link Changes.Outcome.Refused}. */
+  FakeServers refuse(String key) {
+    refused.add(key);
+    return this;
+  }
+
+  /** Clears a refusal set by {@link #refuse}. */
+  void allow(String key) {
+    refused.remove(key);
+  }
+
+  /** A result field carrying a table column origin for fake editable results. */
+  static Field originField(String name, String type, String catalog, String table, String column) {
+    return new Field(name, type, kind(type), new Origin.Named(catalog, table, column));
   }
 
   private final java.util.Set<String> beginning = ConcurrentHashMap.newKeySet();
@@ -857,6 +899,248 @@ final class FakeServers implements Servers {
           .orElseThrow(() -> queryFailure(QueryException.Failure.NOT_FOUND));
     }
 
+    @Override
+    public Optional<Editable> editable(
+        String sql, List<Field> fields, boolean createdTemporaryTable) throws QueryException {
+      var key = "editable " + host + " " + sql;
+      return Journal.sql(
+          made.provider(),
+          Purpose.CATALOG,
+          key,
+          found -> Outcome.rows(found.isPresent() ? 1 : 0),
+          () -> resolveEditable(key, sql, fields, createdTemporaryTable));
+    }
+
+    private Optional<Editable> resolveEditable(
+        String key, String sql, List<Field> fields, boolean createdTemporaryTable)
+        throws QueryException {
+      if (busy.incrementAndGet() > 1) {
+        overlapped = true;
+      }
+      try {
+        try {
+          note(key);
+          call(key, queryFailure(QueryException.Failure.CANCELLED));
+        } catch (QueryException e) {
+          throw e;
+        } catch (Exception _) {
+          throw queryFailure(QueryException.Failure.OTHER);
+        }
+        var list = EditableQuery.singleTable(sql, made.provider()).orElse(null);
+        if (list == null
+            || !list.subqueries().isEmpty() && list.items() != fields.size()
+            || createdTemporaryTable && Editable.temporaryTablesShadow(made.provider())) {
+          done.add(key);
+          return Optional.empty();
+        }
+        var origins = new ArrayList<Origin>(fields.size());
+        for (int i = 0; i < fields.size(); i++) {
+          origins.add(list.subqueries().contains(i) ? null : fields.get(i).origin());
+        }
+        Origin.Named sample = null;
+        for (var origin : origins) {
+          if (origin == null) {
+            continue;
+          }
+          if (!(origin instanceof Origin.Named named)) {
+            done.add(key);
+            return Optional.empty();
+          }
+          if (sample == null) {
+            sample = named;
+          } else if (!sample.sameTable(named)) {
+            done.add(key);
+            return Optional.empty();
+          }
+        }
+        if (sample == null) {
+          done.add(key);
+          return Optional.empty();
+        }
+        var resolved = findTable(sample.catalog(), sample.table());
+        if (resolved == null) {
+          done.add(key);
+          return Optional.empty();
+        }
+        var cols = tableColumns(resolved.table(), resolved.outline());
+        if (cols.stream().noneMatch(c -> c.keyPosition() > 0)) {
+          done.add(key);
+          return Optional.empty();
+        }
+        var byName = new HashMap<String, Column>();
+        cols.forEach(c -> byName.put(c.name(), c));
+        var named = new ArrayList<Column>(fields.size());
+        for (var origin : origins) {
+          named.add(origin instanceof Origin.Named n ? byName.get(n.column()) : null);
+        }
+        boolean mysqlFamily = made.provider() != Provider.POSTGRESQL;
+        var edited = new ArrayList<Column>(fields.size());
+        for (int i = 0; i < fields.size(); i++) {
+          var col = named.get(i);
+          boolean timestamp = mysqlFamily
+              && col != null
+              && col.type().toLowerCase(Locale.ROOT).startsWith("timestamp");
+          boolean ok = col != null && Collections.frequency(named, col) == 1 && !timestamp;
+          edited.add(ok ? col : null);
+        }
+        boolean keyed = cols.stream().filter(c -> c.keyPosition() > 0).allMatch(edited::contains);
+        done.add(key);
+        return keyed ? Optional.of(new Editable(resolved.table(), cols, edited)) : Optional.empty();
+      } finally {
+        busy.decrementAndGet();
+      }
+    }
+
+    private record ResolvedOutline(Table table, Outline outline) {}
+
+    private ResolvedOutline findTable(String catalog, String tableName) {
+      if (made.provider() == Provider.POSTGRESQL) {
+        String dbName;
+        String schemaName;
+        int dot = catalog.indexOf('.');
+        if (dot >= 0) {
+          dbName = catalog.substring(0, dot);
+          schemaName = catalog.substring(dot + 1);
+        } else {
+          dbName = database != null ? database : catalog;
+          schemaName = dot < 0 && database != null ? catalog : "public";
+        }
+        if (database != null && !dbName.equals(database)) {
+          return null;
+        }
+        var dbOutline = find(root(), dbName);
+        if (dbOutline == null) {
+          return null;
+        }
+        var schemaOutline = find(dbOutline, schemaName);
+        if (schemaOutline == null) {
+          return null;
+        }
+        var tableOutline = find(schemaOutline, tableName);
+        if (tableOutline == null || tableOutline.text().startsWith("@")) {
+          return null;
+        }
+        var db = new Database(dbName, dbOutline.text().startsWith("~"));
+        var schema = new Schema(db, schemaName, schemaOutline.text().startsWith("~"));
+        return new ResolvedOutline(new Table(schema, tableName, Table.Kind.TABLE), tableOutline);
+      }
+      var dbOutline = find(root(), catalog);
+      if (dbOutline == null) {
+        return null;
+      }
+      var tableOutline = find(dbOutline, tableName);
+      if (tableOutline == null || tableOutline.text().startsWith("@")) {
+        return null;
+      }
+      var db = new Database(catalog, dbOutline.text().startsWith("~"));
+      return new ResolvedOutline(new Table(db, tableName, Table.Kind.TABLE), tableOutline);
+    }
+
+    private static List<Column> tableColumns(Table t, Outline table) {
+      var list = new ArrayList<Column>();
+      int key = 0;
+      for (var line : table.children()) {
+        var text = line.text();
+        boolean inKey = text.startsWith("*");
+        var parts = (inKey ? text.substring(1) : text).split(": ", 2);
+        list.add(new Column(t, parts[0], parts[1], !inKey, inKey ? ++key : 0));
+      }
+      return list;
+    }
+
+    @Override
+    public Changes.Outcome write(Changes changes) throws QueryException {
+      if (busy.incrementAndGet() > 1) {
+        overlapped = true;
+      }
+      try {
+        var path = path(changes.table());
+        var key = "write " + path;
+        try {
+          note(key);
+          call(key, queryFailure(QueryException.Failure.CANCELLED));
+        } catch (QueryException e) {
+          throw e;
+        } catch (Exception _) {
+          throw queryFailure(QueryException.Failure.OTHER);
+        }
+        if (refused.contains(key)) {
+          done.add(key);
+          return new Changes.Outcome.Refused();
+        }
+        var statements = changes.statements(made.provider());
+        for (var st : statements) {
+          Journal.sql(
+              made.provider(), Purpose.CHANGES, st.sql(), _ -> new Outcome.Changed(1), () -> null);
+        }
+        var tableOutline = container(changes.table().container()) == null
+            ? null
+            : find(container(changes.table().container()), changes.table().name());
+        if (tableOutline == null) {
+          throw queryFailure(QueryException.Failure.NOT_FOUND);
+        }
+        var current = materializeRows(path, changes.columns());
+        var next = new ArrayList<>(current);
+        var keyCols = IntStream.range(0, changes.columns().size())
+            .filter(i -> changes.columns().get(i).keyPosition() > 0)
+            .boxed()
+            .sorted(Comparator.comparingInt(i -> changes.columns().get(i).keyPosition()))
+            .toList();
+        for (var change : changes.changes()) {
+          if (change instanceof Change.Update(var origRow, var newVals)) {
+            int matched = -1;
+            long count = 0;
+            for (int r = 0; r < next.size(); r++) {
+              var row = next.get(r);
+              boolean keyOk =
+                  keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)));
+              boolean valsOk = keyOk
+                  && newVals.keySet().stream()
+                      .allMatch(c -> Objects.equals(row.get(c), origRow.get(c)));
+              if (valsOk) {
+                matched = r;
+                count++;
+              }
+            }
+            if (count != 1) {
+              done.add(key);
+              return new Changes.Outcome.Missed(change, count);
+            }
+            var updated = new ArrayList<>(next.get(matched));
+            newVals.forEach(updated::set);
+            next.set(matched, Collections.unmodifiableList(updated));
+          }
+        }
+        values.put(path, List.copyOf(next));
+        counts.put(path, (long) next.size());
+        estimates.put(path, OptionalLong.of(next.size()));
+        done.add(key);
+        return new Changes.Outcome.Committed();
+      } finally {
+        busy.decrementAndGet();
+      }
+    }
+
+    private List<List<Object>> materializeRows(String path, List<Column> columns) {
+      var given = values.get(path);
+      if (given != null) {
+        return given;
+      }
+      long count = counts.getOrDefault(path, 3L);
+      var fields = columns.stream()
+          .map(c -> new Field(c.name(), c.type(), kind(c.type())))
+          .toList();
+      var rows = new ArrayList<List<Object>>();
+      for (long i = 0; i < count; i++) {
+        var row = new Object[fields.size()];
+        for (int c = 0; c < row.length; c++) {
+          row[c] = columns.get(c).nullable() && i % 7 == 6 ? null : value(fields.get(c), i);
+        }
+        rows.add(Collections.unmodifiableList(Arrays.asList(row)));
+      }
+      return rows;
+    }
+
     private Outline container(Container c) {
       return switch (c) {
         case Database d -> find(root(), d.name());
@@ -874,6 +1158,7 @@ final class FakeServers implements Servers {
           || word.equals("BEGIN")
           || word.equals("START")
           || setting.matches("setautocommit=[01]|setcompletion_type=[01]");
+      var dynamic = dynamicStatements.get(sql);
       var answer = pg && transaction == Transaction.FAILED && !ends
           ? new Answer(
               List.of(new Failure(
@@ -891,15 +1176,17 @@ final class FakeServers implements Servers {
                   "",
                   "")),
               List.of())
-          : statements.getOrDefault(
-              sql,
-              known
-                  ? new Answer(List.of(new Result.Count(0)), List.of())
-                  : new Answer(
-                      List.of(serverError(
-                          Failure.Kind.INVALID,
-                          "syntax error at or near \"" + sql.split("\\s+", 2)[0] + "\"")),
-                      List.of()));
+          : dynamic != null
+              ? dynamic.get()
+              : statements.getOrDefault(
+                  sql,
+                  known
+                      ? new Answer(List.of(new Result.Count(0)), List.of())
+                      : new Answer(
+                          List.of(serverError(
+                              Failure.Kind.INVALID,
+                              "syntax error at or near \"" + sql.split("\\s+", 2)[0] + "\"")),
+                          List.of()));
       return new Run() {
         private int result; // of the answer, the one read next
         private long position; // in its rows

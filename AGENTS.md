@@ -111,7 +111,12 @@ rows' density, whether a console marks the word at the caret, the case of SQL ke
 and whether the start looks for an update. File, Settings… (Control+,, or the palette) opens or
 raises a modeless settings window over the shared state, with pages General, Appearance, Editor,
 Databases and History & log, where every change applies at once, a changed row can be reset and
-each page has Restore defaults. Nothing can be edited, filtered or sorted yet.
+each page has Restore defaults. An SQL console's result of a SELECT on one table that core finds
+editable can be edited inline (UPDATE only): changed cells are marked, Revert reverts the selection
+or all pending changes, Commit… always opens a DML Preview with the generated statements in the
+dialect's colors, and Commit writes them all or nothing on a write lane of its own (in Manual mode,
+after the console's transaction question); rows cannot yet be inserted or deleted, and table tabs
+cannot yet be edited, filtered or sorted.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it
@@ -285,7 +290,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   cancelled failure, as core's does. A console opens its own connection behind the tree's, so a
   server's `open` key is called twice, and once more where the first estimate of a read runs, on the
   connection that only estimates use, and once more where a table's rows are counted other than at
-  its opening, on the connection that only such counts use. Each fake connection keeps a
+  its opening, on the connection that only such counts use, and once more where a console's result
+  is checked for editability or committed, on the writer connection (`editable <host> <sql>` and
+  `write <host>/<path>`). Each fake connection keeps a
   transaction and auto-commit as the servers do: `BEGIN`, `COMMIT` and `ROLLBACK` are known
   statements, and on MariaDB and MySQL `SET autocommit=0` or `=1` and `SET completion_type=1`;
   auto-commit off opens a transaction with any other statement, as `begins` does with one; an error fails PostgreSQL's, a failed COMMIT ends

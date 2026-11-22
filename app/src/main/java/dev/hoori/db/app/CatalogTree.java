@@ -690,6 +690,17 @@ final class CatalogTree {
     return auxiliary(s, id, database, live -> live.counters);
   }
 
+  /**
+   * The connection for deciding whether a result is editable and writing its changes, opened the
+   * first time it is asked for, and anew where it could not be or is gone; null while the tree's
+   * connection is not connected. Nothing else runs on it, so that a write waiting on a lock holds
+   * up neither the tree nor a console's reads: on PostgreSQL one per database, else one, as {@link
+   * #planner} does.
+   */
+  Lane writer(State s, UUID id, String database) {
+    return auxiliary(s, id, database, live -> live.writers);
+  }
+
   private Lane auxiliary(State s, UUID id, String database, Function<Live, Map<String, Lane>> map) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected c) || live.password == null) {
@@ -1105,6 +1116,8 @@ final class CatalogTree {
     live.planners.clear();
     live.counters.values().forEach(Lane::close);
     live.counters.clear();
+    live.writers.values().forEach(Lane::close);
+    live.writers.clear();
     if (live.password != null) {
       Arrays.fill(live.password, '\0');
       live.password = null;

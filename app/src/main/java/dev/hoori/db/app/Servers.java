@@ -13,6 +13,9 @@ import dev.hoori.db.core.connect.DocumentConnector;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.data.Changes;
+import dev.hoori.db.core.data.Editable;
+import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.DocumentRun;
@@ -37,6 +40,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -136,6 +140,16 @@ interface Servers {
     /** The whole text of a column of the row its key names, as {@link Rows#whole}. */
     String whole(Table table, List<Column> columns, List<Object> row, int column)
         throws QueryException;
+
+    /**
+     * Whether a console result with these fields can be edited on this connection, as {@link
+     * Editable#of}.
+     */
+    Optional<Editable> editable(String sql, List<Field> fields, boolean createdTemporaryTable)
+        throws QueryException;
+
+    /** Writes pending changes in one transaction on this connection, as {@link Changes#write}. */
+    Changes.Outcome write(Changes changes) throws QueryException;
 
     /**
      * A statement to run, as {@link Execution} runs it; nothing runs before its first next.
@@ -345,6 +359,18 @@ interface Servers {
       }
     }
 
+    @Override
+    public Optional<Editable> editable(
+        String sql, List<Field> fields, boolean createdTemporaryTable) {
+      return Optional.empty();
+    }
+
+    @Override
+    public Changes.Outcome write(Changes changes) throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of documents does not take SQL row changes");
+    }
+
     /** A statement of the MongoDB shell, on the database the link is on now. */
     @Override
     public Run run(String sql) throws QueryException {
@@ -548,6 +574,19 @@ interface Servers {
         throws QueryException {
       usable();
       return Rows.whole(connection, provider, table, columns, row, column);
+    }
+
+    @Override
+    public Optional<Editable> editable(
+        String sql, List<Field> fields, boolean createdTemporaryTable) throws QueryException {
+      usable();
+      return Editable.of(connection, provider, sql, fields, createdTemporaryTable);
+    }
+
+    @Override
+    public Changes.Outcome write(Changes changes) throws QueryException {
+      usable();
+      return changes.write(connection, provider);
     }
 
     @Override

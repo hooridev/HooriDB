@@ -14,6 +14,16 @@ final class Guard {
 
   Pending pending; // the one act that waits, or null
 
+  /** What a question protects: both pending grid changes and the transaction, or one of them. */
+  enum Scope {
+    /** Pending result edits first, then the console's transaction if still at stake. */
+    BOTH,
+    /** The console's transaction alone, keeping pending result edits (for Commit…). */
+    TRANSACTION,
+    /** Pending edits in unpinned results alone, leaving the transaction open (for Run). */
+    CHANGES
+  }
+
   /**
    * The one act in the app that waits, with what owns it and what it is: a {@link Question} while a
    * console asks, or {@link Locked} once it is armed.
@@ -24,7 +34,7 @@ final class Guard {
     String what();
 
     /** The act waits on the question of a console, and goes on by {@code then} once it is settled. */
-    record Question(Object owner, String what, ConsoleTab console, Runnable then)
+    record Question(Object owner, String what, ConsoleTab console, Runnable then, Scope scope)
         implements Pending {}
 
     /**
@@ -52,7 +62,16 @@ final class Guard {
    * visibly, instead of taking its place.
    */
   boolean asks(State s, Object owner, String what, List<ConsoleTab> consoles, Runnable then) {
-    var asking = consoles.stream().filter(ConsoleTab::atStake).findFirst().orElse(null);
+    return asks(s, owner, what, consoles, then, Scope.BOTH);
+  }
+
+  /**
+   * As {@link #asks(State, Object, String, List, Runnable)}, asking only for what {@code scope}
+   * covers.
+   */
+  boolean asks(
+      State s, Object owner, String what, List<ConsoleTab> consoles, Runnable then, Scope scope) {
+    var asking = consoles.stream().filter(c -> c.atStake(scope)).findFirst().orElse(null);
     boolean mine = pending != null && Objects.equals(pending.owner(), owner);
     if (asking == null) {
       if (mine && pending instanceof Pending.Question) {
@@ -64,7 +83,7 @@ final class Guard {
       refuse(s);
       return true;
     }
-    pending = new Pending.Question(owner, what, asking, then);
+    pending = new Pending.Question(owner, what, asking, then, scope);
     asking.show(s);
     return true;
   }
