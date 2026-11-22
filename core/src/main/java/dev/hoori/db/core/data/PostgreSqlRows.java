@@ -4,6 +4,7 @@ import static dev.hoori.db.core.data.Rows.ALIAS;
 import static dev.hoori.db.core.data.Rows.LIMIT;
 
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.log.Journal;
@@ -23,8 +24,11 @@ import java.sql.Types;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 
 /** How PostgreSQL's tables and results are read, with pgjdbc. */
@@ -155,6 +159,68 @@ public final class PostgreSqlRows extends RowsDialect {
   @Override
   Rows.Read read(Rows.Source source, ResultSetMetaData metadata, int column) throws SQLException {
     return read(source, field(metadata, column, "getOID"), metadata.getColumnType(column));
+  }
+
+  // pgjdbc's Field holds the table OID and column position without querying the server; a position
+  // of 0 or below marks an expression or a system column such as ctid.
+  @Override
+  Origin origin(ResultSetMetaData metadata, int column) {
+    var table = Integer.toUnsignedLong(field(metadata, column, "getTableOid"));
+    var position = field(metadata, column, "getPositionInTable");
+    return table == 0 || position <= 0 ? null : new Origin.Oid(table, position);
+  }
+
+  // PostgreSQL tells temporary tables apart by relpersistence on the OID itself.
+  @Override
+  boolean temporaryTablesShadow() {
+    return false;
+  }
+
+  @Override
+  Optional<Resolved> resolve(Connection connection, Provider provider, Origin sample)
+      throws QueryException {
+    if (!(sample instanceof Origin.Oid oid)) {
+      return Optional.empty();
+    }
+    var sql = "SELECT d.datname, d.datistemplate, n.nspname, c.relname, a.attnum, a.attname"
+        + " FROM pg_catalog.pg_class c"
+        + " JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace"
+        + " JOIN pg_catalog.pg_database d"
+        + " ON d.datname OPERATOR(pg_catalog.=) pg_catalog.current_database()"
+        + " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid"
+        + " WHERE c.oid OPERATOR(pg_catalog.=) '" + oid.table() + "'::pg_catalog.oid"
+        + " AND c.relkind OPERATOR(pg_catalog.=) ANY ('{r,p}'::pg_catalog.\"char\"[])"
+        + " AND c.relpersistence OPERATOR(pg_catalog.<>) 't'"
+        + " AND a.attnum OPERATOR(pg_catalog.>) 0"
+        + " AND NOT a.attisdropped";
+    var catalog = provider.dialect().catalog();
+    record Found(Table table, Map<Integer, String> names) {}
+    var found = Journal.sql(
+        provider,
+        Purpose.CATALOG,
+        sql,
+        result -> Outcome.rows(result == null ? 0 : result.names().size()),
+        () -> Query.query(connection, provider, sql, rows -> {
+          Table table = null;
+          var names = new HashMap<Integer, String>();
+          while (rows.next()) {
+            if (table == null) {
+              var database = catalog.database(rows);
+              var schemaName = rows.getString(3);
+              var schema = new Schema(database, schemaName, catalog.systemSchema(schemaName));
+              table = new Table(schema, rows.getString(4), Table.Kind.TABLE);
+            }
+            names.put(rows.getInt(5), rows.getString(6));
+          }
+          return table == null ? null : new Found(table, Map.copyOf(names));
+        }));
+    if (found == null) {
+      return Optional.empty();
+    }
+    var names = found.names();
+    return Optional.of(new Resolved(
+        found.table(),
+        origin -> origin instanceof Origin.Oid col ? names.get(col.position()) : null));
   }
 
   // pgjdbc's own field of the result has the OIDs of the column's type and table, which JDBC does
