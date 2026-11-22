@@ -239,6 +239,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           + " ON k.TABLE_SCHEMA = CAST(c.TABLE_SCHEMA AS BINARY)"
           + " AND k.TABLE_NAME = CAST(c.TABLE_NAME AS BINARY)"
           + " AND k.CONSTRAINT_NAME = CAST('PRIMARY' AS BINARY)"
+          + " AND k.REFERENCED_TABLE_NAME IS NULL" // MySQL lets a foreign key take the name
           + " AND k.COLUMN_NAME = CAST(c.COLUMN_NAME AS BINARY)"
           + " WHERE c.TABLE_SCHEMA = CAST(? AS BINARY) AND c.TABLE_NAME = CAST(? AS BINARY)"
           + " ORDER BY c.ORDINAL_POSITION";

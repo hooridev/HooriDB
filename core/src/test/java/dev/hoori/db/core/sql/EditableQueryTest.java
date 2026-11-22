@@ -16,14 +16,13 @@ import org.junit.jupiter.api.Test;
 class EditableQueryTest {
 
   private static void allowed(Provider provider, String sql) {
-    assertEquals(
-        Optional.of(Set.of()), EditableQuery.singleTable(sql, provider), provider + ": " + sql);
+    subqueries(provider, sql);
   }
 
   private static void subqueries(Provider provider, String sql, Integer... items) {
     assertEquals(
         Optional.of(Set.of(items)),
-        EditableQuery.singleTable(sql, provider),
+        EditableQuery.singleTable(sql, provider).map(EditableQuery.SelectList::subqueries),
         provider + ": " + sql);
   }
 
@@ -56,9 +55,14 @@ class EditableQueryTest {
       subqueries(
           p, "SELECT (SELECT c.id) AS id, name, coalesce((SELECT 1), 0) FROM customer c", 0, 2);
       subqueries(p, "SELECT DISTINCT id, name, (SELECT max(x) FROM t) FROM customer", 2);
-      refused(p, "SELECT *, (SELECT 1) FROM customer");
+      subqueries(p, "SELECT *, (SELECT 1) FROM customer", 1);
       subqueries(p, "SELECT id, id * 2, (SELECT 1), name FROM customer", 2);
-      refused(p, "SELECT c.*, (SELECT 1) FROM customer c");
+      subqueries(p, "SELECT c.*, (SELECT 1) FROM customer c", 1);
+      assertEquals(
+          3,
+          EditableQuery.singleTable("SELECT id * '2', (SELECT 1), name FROM customer", p)
+              .orElseThrow()
+              .items());
       allowed(p, "SELECT id, name IS NOT DISTINCT FROM 'x' AS same FROM customer");
       allowed(p, "SELECT id, name IS DISTINCT FROM 'x' FROM customer WHERE id > 0");
       refused(p, "SELECT c.id FROM customer c JOIN offset ON offset.id = c.id");
@@ -71,6 +75,7 @@ class EditableQueryTest {
     subqueries(POSTGRESQL, "SELECT ARRAY[1,2], (SELECT 1), id, name FROM customer", 1);
     for (var p : new Provider[] {MARIADB, MYSQL}) {
       refused(p, "SELECT /*!99999 0, */ /*! 1, */ (SELECT c.id) AS k, 2, name FROM customer c");
+      refused(p, "SELECT /*!99999 0 */ /*! , */ (SELECT c.id) AS k, name FROM customer c");
       allowed(p, "SELECT /*!40001 SQL_NO_CACHE */ id, name FROM customer");
     }
   }

@@ -65,13 +65,14 @@ public record Editable(Table table, List<Column> columns, List<Column> edited) {
       List<Field> fields,
       boolean createdTemporaryTable)
       throws QueryException {
-    var subqueries = EditableQuery.singleTable(sql, provider).orElse(null);
-    if (subqueries == null) {
+    var list = EditableQuery.singleTable(sql, provider).orElse(null);
+    // A * that stands for several columns moves the subqueries' columns from their positions.
+    if (list == null || !list.subqueries().isEmpty() && list.items() != fields.size()) {
       return Optional.empty();
     }
     var origins = new ArrayList<Origin>(fields.size());
     for (var i = 0; i < fields.size(); i++) {
-      origins.add(subqueries.contains(i) ? null : fields.get(i).origin());
+      origins.add(list.subqueries().contains(i) ? null : fields.get(i).origin());
     }
     var dialect = provider.dialect().rows();
     if (createdTemporaryTable && dialect.temporaryTablesShadow()) {

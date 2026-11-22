@@ -1,6 +1,7 @@
 package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -28,32 +29,45 @@ public final class EditableQuery {
   private EditableQuery() {}
 
   /**
-   * Where the text is a single {@code SELECT} statement reading directly from one named table, with
-   * no {@code WITH}, subquery in {@code FROM}, join, set operation, {@code INTO} or locking clause:
-   * the positions, from 0, of the select list's items that hold a subquery, whose columns have no
-   * origin, as MariaDB and MySQL report the origin of a column such a subquery selects as if the
-   * outer query did. Subqueries in {@code WHERE} are allowed; one in a select list with a {@code *}
-   * is not, as its position is not known.
+   * The select list of a single {@code SELECT} statement that reads directly from one named table.
+   *
+   * @param items the number of its items, which is the number of the result's columns where no
+   *     {@code *} stands for more than one
+   * @param subqueries the positions, from 0, of the items that hold a subquery, whose columns have
+   *     no origin, as MariaDB and MySQL report the origin of a column such a subquery selects as if
+   *     the outer query did
    */
-  public static Optional<Set<Integer>> singleTable(String sql, Provider provider) {
+  public record SelectList(int items, Set<Integer> subqueries) {}
+
+  /**
+   * The select list where the text is a single {@code SELECT} statement reading directly from one
+   * named table, with no {@code WITH}, subquery in {@code FROM}, join, set operation, {@code INTO}
+   * or locking clause; subqueries in {@code WHERE} and in the select list are allowed.
+   */
+  public static Optional<SelectList> singleTable(String sql, Provider provider) {
     if (provider.keepsDocuments() || Statements.split(sql, provider).size() != 1) {
       return Optional.empty();
     }
-    // Every reading must find the same items: a server may run some executable comments and not
-    // others, which no single reading shows, and a comma or subquery in one would move the rest.
-    Shape shape = null;
+    var shapes = new ArrayList<Shape>();
     for (var reading : Tokens.readings(provider)) {
       var found = singleTable(Tokens.of(sql, provider, reading));
-      if (found == null || shape != null && !shape.equals(found)) {
+      if (found == null) {
         return Optional.empty();
       }
-      shape = found;
+      shapes.add(found);
     }
-    return Optional.of(Set.copyOf(shape.subqueries()));
+    // Positions of subqueries hold only where every reading finds the same select list: a server
+    // may run some executable comments and not others, which no single reading shows.
+    var first = shapes.getFirst();
+    if (shapes.stream().anyMatch(shape -> !shape.list().subqueries().isEmpty())
+        && shapes.stream().anyMatch(shape -> !shape.equals(first))) {
+      return Optional.empty();
+    }
+    return Optional.of(first.list());
   }
 
-  // The number of the select list's items, and the positions of those that hold a subquery.
-  private record Shape(int items, Set<Integer> subqueries) {}
+  // The select list, and the code before the FROM it ends at.
+  private record Shape(List<String> code, SelectList list) {}
 
   /**
    * Whether any reading of the SQL text may create a temporary table: {@code CREATE … TEMPORARY
@@ -84,7 +98,6 @@ public final class EditableQuery {
     int parens = 0;
     int brackets = 0;
     int item = 0;
-    boolean star = false;
     var subqueries = new HashSet<Integer>();
     for (int i = 0; i < n; i++) {
       var token = tokens.get(i);
@@ -108,23 +121,15 @@ public final class EditableQuery {
         subqueries.add(item);
       } else if (from < 0 && token.depth() == 0 && brackets == 0 && token.is(",")) {
         item++;
-      } else if (from < 0 && token.depth() == 0 && star(tokens, i)) {
-        star = true;
       } else if (from < 0 && token.depth() == 0 && token.is("FROM") && !distinct(tokens, i)) {
         from = i;
       }
     }
-    if (parens != 0 || from < 0 || star && !subqueries.isEmpty()) {
+    if (parens != 0 || from < 0 || !singleTableFrom(tokens, from + 1)) {
       return null;
     }
-    return singleTableFrom(tokens, from + 1) ? new Shape(item + 1, subqueries) : null;
-  }
-
-  // Whether the token is a * that stands for columns, which ends its item, unlike a product's.
-  private static boolean star(List<Tokens.Token> tokens, int i) {
-    return tokens.get(i).is("*")
-        && i + 1 < tokens.size()
-        && (tokens.get(i + 1).is(",") || tokens.get(i + 1).is("FROM"));
+    var code = tokens.subList(0, from).stream().map(Tokens.Token::text).toList();
+    return new Shape(code, new SelectList(item + 1, Set.copyOf(subqueries)));
   }
 
   // Whether the FROM at the index ends IS [NOT] DISTINCT FROM.

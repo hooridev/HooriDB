@@ -91,6 +91,22 @@ class EditableServerTest {
           Arrays.asList(null, column(expectedColumns, "id"), column(expectedColumns, "name")),
           sub.edited());
 
+      // Beside a * that stands for several columns, a subquery's position is not known.
+      assertEquals(
+          Optional.empty(),
+          decide(
+              console, writer, provider, "SELECT c.*, (SELECT c.id) AS k FROM customer c", false));
+      var product = decide(
+              console,
+              writer,
+              provider,
+              "SELECT id * '2' AS twice, (SELECT c.id) AS k, id, name FROM customer c",
+              false)
+          .orElseThrow();
+      assertEquals(
+          Arrays.asList(null, null, column(expectedColumns, "id"), column(expectedColumns, "name")),
+          product.edited());
+
       // Table pages keep null origins.
       var page = Rows.read(writer, provider, expectedTable, expectedColumns, 0, 5);
       for (var field : page.fields()) {
@@ -244,7 +260,10 @@ class EditableServerTest {
       execute(
           writer,
           "CREATE TABLE editable_parent (id integer PRIMARY KEY) DEFAULT CHARSET utf8mb4",
-          "CREATE TABLE editable_child (id integer, name varchar(20), CONSTRAINT `prímary`"
+          // MariaDB takes the name for PRIMARY when it compares names, MySQL lets a foreign key
+          // have the very name.
+          "CREATE TABLE editable_child (id integer, name varchar(20), KEY child_id (id),"
+              + " CONSTRAINT `" + (provider == Provider.MARIADB ? "prímary" : "PRIMARY") + "`"
               + " FOREIGN KEY (id) REFERENCES editable_parent (id)) DEFAULT CHARSET utf8mb4",
           "INSERT INTO editable_parent VALUES (1)",
           "INSERT INTO editable_child VALUES (1, 'a'), (1, 'b')");
