@@ -31,6 +31,7 @@ import com.rethinkj.ui.kit.TitleBar;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.update.Channel;
 import java.util.Arrays;
 import java.util.List;
@@ -668,8 +669,9 @@ final class Frame {
                     .icon(Symbol.TEXT_BULLET_LIST_LTR)
                     .checked(s.logPanel.open),
                 Menu.separator(),
-                themeItem(s, Theme.DARK, "Dark theme"),
-                themeItem(s, Theme.LIGHT, "Light theme"))),
+                themeItem(s, Settings.Look.SYSTEM, "System theme"),
+                themeItem(s, Settings.Look.LIGHT, "Light theme"),
+                themeItem(s, Settings.Look.DARK, "Dark theme"))),
         Menu.submenu(
             "&Go",
             List.of(
@@ -777,7 +779,12 @@ final class Frame {
         .checked(s.updates.channel() == channel);
   }
 
-  private static Menu.Item themeItem(State s, Theme theme, String name) {
-    return Menu.item(name, () -> s.useTheme(theme, name)).checked(s.theme == theme);
+  private static Menu.Item themeItem(State s, Settings.Look look, String name) {
+    Runnable choose = () -> {
+      s.settings(s.settings.withLook(look));
+      s.tell(name + " on");
+    };
+    return Menu.item(name, s.keeping.settingsLoading ? null : choose)
+        .checked(s.settings.look() == look);
   }
 }

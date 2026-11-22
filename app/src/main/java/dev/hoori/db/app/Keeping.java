@@ -1,11 +1,17 @@
 package dev.hoori.db.app;
 
+import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.window.SystemAppearance;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.QueryStore;
 import dev.hoori.db.core.connection.SavedQuery;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.StoredConsole;
+import dev.hoori.db.core.connection.UiState;
+import dev.hoori.db.core.connection.UiStateStore;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -14,24 +20,35 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 
 /**
- * The files kept beside the workspace, a part of the state: the consoles, the history and the saved
- * queries, each a {@link Kept}, read at the start and saved as they change; and what Exit waits for
- * of them and of the update settings. Only the app's thread uses it.
+ * The files kept beside the workspace, a part of the state: the consoles, the history, the saved
+ * queries and the settings, each a {@link Kept}, read at the start and saved as they change; and
+ * what Exit waits for of them and of the update settings. Only the app's thread uses it.
  */
 final class Keeping {
 
-  // How long after the last edit of a console its text is saved.
+  // How long after the last edit of a console or a setting it is saved.
   static final double EDIT_SECONDS = 1;
+
+  /** What a window's start reads before the first frame: settings (or its error) and UI state. */
+  record Start(SettingsStore.Loaded settings, Exception settingsError, UiState uiState) {}
 
   private final State s;
   private final ConsoleStore consoleStore;
   private final HistoryStore historyStore;
   private final QueryStore queryStore;
+  private final SettingsStore settingsStore;
+  private final UiStateStore uiStateStore;
   final Kept consolesKept;
   final Kept historyKept;
   final Kept queriesKept;
+  final Kept settingsKept;
+  private boolean preloaded; // settings and UI state were already read before the first frame
+  // Until the file is read no setting changes, so that none replaces the file's others.
+  boolean settingsLoading = true;
   // The queries saved on purpose, of every connection, in the order they were first saved.
   List<SavedQuery> queries = List.of();
   // Until the file is read nothing is saved or deleted, so that each name and id is the file's.
@@ -54,17 +71,18 @@ final class Keeping {
   private List<StoredConsole> restoring;
   // The consoles kept of connections not known, saved along with the others and not shown.
   private List<StoredConsole> unseen = List.of();
-  private int edits; // counted, so that a late patience is dropped
 
   /**
    * @param folder where the workspace is kept
-   * @param s the state, whose consoles it saves
+   * @param s the state, whose consoles and settings it saves
    */
   Keeping(Path folder, State s) {
     this.s = s;
     this.consoleStore = new ConsoleStore(folder);
     this.historyStore = new HistoryStore(folder);
     this.queryStore = new QueryStore(folder);
+    this.settingsStore = new SettingsStore(folder);
+    this.uiStateStore = new UiStateStore(folder);
     consolesKept = new Kept("consoles", () -> {
       var list = new ArrayList<StoredConsole>();
       s.consoles(null).forEach(x -> list.add(x.stored()));
@@ -73,10 +91,97 @@ final class Keeping {
     });
     historyKept = new Kept("history", () -> Kept.writing(history, historyStore::save));
     queriesKept = new Kept("saved queries", () -> Kept.writing(queries, queryStore::save));
+    settingsKept = new Kept("settings", () -> Kept.writing(s.settings, settingsStore::save));
   }
 
-  /** Loads the consoles, the history and the saved queries. */
+  /**
+   * Starts reading {@code settings.json} and {@code ui-state.json} on a thread of their own, so
+   * that a window's start overlaps them with the GPU's.
+   */
+  static FutureTask<Start> startReading(Path folder) {
+    var task = new FutureTask<>(() -> readStart(folder));
+    Thread.ofPlatform().daemon(true).name("hooridb-settings").start(task);
+    return task;
+  }
+
+  private static Start readStart(Path folder) {
+    var uiState = new UiStateStore(folder).load();
+    try {
+      return new Start(new SettingsStore(folder).load(), null, uiState);
+    } catch (Exception e) {
+      return new Start(null, e, uiState);
+    }
+  }
+
+  /** Takes what {@link #startReading} read before the window opens, skipping the background read. */
+  void takeStart(FutureTask<Start> initial) {
+    Start loaded;
+    try {
+      loaded = initial.get();
+    } catch (InterruptedException _) {
+      Thread.currentThread().interrupt();
+      return;
+    } catch (ExecutionException e) {
+      if (e.getCause() instanceof Error error) {
+        throw error;
+      }
+      loaded = new Start(null, (Exception) e.getCause(), UiState.EMPTY);
+    }
+    preloaded = true;
+    s.uiState = loaded.uiState();
+    if (loaded.settingsError() != null) {
+      settingsFailed(loaded.settingsError());
+    } else {
+      settingsLoaded(loaded.settings());
+    }
+  }
+
+  /** Resolves the theme from the settings and the operating system's appearance. */
+  static Theme theme(Settings settings, SystemAppearance appearance) {
+    boolean light = switch (settings.look()) {
+      case LIGHT -> true;
+      case DARK -> false;
+      case SYSTEM -> appearance != null && appearance.scheme() == SystemAppearance.Scheme.LIGHT;
+    };
+    Theme resolved = light ? Theme.LIGHT : Theme.DARK;
+    if (settings.accent() != Settings.DEFAULT.accent()) {
+      resolved = resolved.withAccent(ConnectionColors.hue(settings.accent()));
+    }
+    var g = resolved.grid();
+    float rowHeight = switch (settings.density()) {
+      case COMPACT -> g.rowHeight() - resolved.space().xs();
+      case DEFAULT -> g.rowHeight();
+      case COMFORTABLE -> g.rowHeight() + resolved.space().xs();
+    };
+    if (rowHeight != g.rowHeight()) {
+      resolved = resolved.withGrid(new Theme.Grid(
+          rowHeight,
+          g.minColumn(),
+          g.maxColumn(),
+          g.handle(),
+          g.mark(),
+          g.header(),
+          g.row(),
+          g.stripe(),
+          g.selected(),
+          g.selectedInactive(),
+          g.cursor(),
+          g.cursorWidth(),
+          g.changed(),
+          g.added(),
+          g.deleted(),
+          g.error()));
+    }
+    return resolved;
+  }
+
+  /** Loads the consoles, the history, the saved queries, and where not preloaded, the settings. */
   void start() {
+    if (!preloaded) {
+      s.app.background(
+          "load settings", settingsStore::load, this::settingsLoaded, this::settingsFailed);
+      s.app.background("load UI state", uiStateStore::load, loaded -> s.uiState = loaded, e -> {});
+    }
     var consoles = consoleStore;
     s.app.background(
         "load consoles",
@@ -177,6 +282,32 @@ final class Keeping {
     }
   }
 
+  private void settingsLoaded(SettingsStore.Loaded loaded) {
+    settingsLoading = false;
+    s.applySettings(loaded.settings());
+    var fellBack = loaded.fellBack();
+    if (!fellBack.isEmpty()) {
+      s.notice(
+          settingsKept.title(),
+          "defaults used",
+          fellBack.size() == 1
+              ? "The setting " + fellBack.getFirst() + " could not be read, so its default is used."
+              : "The settings "
+                  + String.join(", ", fellBack)
+                  + " could not be read, so their defaults are used.",
+          false,
+          null);
+    }
+    settingsKept.canSave = true;
+  }
+
+  private void settingsFailed(Exception error) {
+    settingsLoading = false;
+    loadFailed(settingsKept, error);
+    // A file not understood is set aside by the next save; one not read at all stays as it is.
+    settingsKept.canSave = error instanceof WorkspaceStore.UnreadableException;
+  }
+
   private void loadFailed(Kept kept, Exception error) {
     s.notice(kept.title(), "not read", State.messageOf(error), true, null);
   }
@@ -221,14 +352,23 @@ final class Keeping {
 
   /** A console's text or database changed: it is saved once it has not changed for a while. */
   void edited() {
+    edited(consolesKept);
+  }
+
+  /** A setting changed: it is saved once nothing else changes for a while. */
+  void settingsChanged() {
+    edited(settingsKept);
+  }
+
+  private void edited(Kept kept) {
     if (!s.guard.quitting()) {
-      consolesKept.quitAnyway = false; // a change since: the next Exit tries to save it
+      kept.quitAnyway = false; // a change since: the next Exit tries to save it
     }
-    consolesKept.unsaved = true;
-    int at = ++edits;
+    kept.unsaved = true;
+    int at = ++kept.edits;
     s.app.after(EDIT_SECONDS, () -> {
-      if (edits == at && !consolesKept.quitAnyway) { // the last Exit went without it
-        save(consolesKept);
+      if (kept.edits == at && kept.unsaved && !kept.quitAnyway) { // the last Exit went without it
+        save(kept);
       }
     });
   }
@@ -287,7 +427,7 @@ final class Keeping {
     } catch (Exception e) {
       throw new IllegalStateException(e); // it only reads the state
     }
-    int at = edits; // an edit after this is not in what it writes, and saves after its pause
+    int at = kept.edits; // an edit after this is not in what it writes, and saves after its pause
     kept.saving = s.app.background(
         "save " + kept.what, save, done -> saved(kept, at), error -> saveFailed(kept, error));
   }
@@ -301,7 +441,7 @@ final class Keeping {
       save(kept);
       return;
     }
-    kept.unsaved = kept == consolesKept && edits != edit;
+    kept.unsaved = kept.edits != edit;
     s.settled();
   }
 
@@ -318,19 +458,20 @@ final class Keeping {
       s.stay("HooriDB stayed open, as the " + kept.what + " could not be saved. Close it again"
           + " to quit without "
           + State.them(kept == historyKept));
-    } else if (kept == s.updates.kept) {
-      s.tell("The update settings could not be saved: " + kept.saveError);
+    } else if (kept == s.updates.kept || kept == settingsKept) {
+      s.tell("The " + kept.what + " could not be saved: " + kept.saveError);
     } else if (first) {
       s.notice(kept.title(), "not saved", kept.saveError, true, null);
     }
   }
 
   /**
-   * Whether Exit waits for the consoles, the history or the saved queries to be saved; a save due
-   * begins. Changes that cannot be saved, as the file was not read, stop it once.
+   * Whether Exit waits for the consoles, the history, the saved queries, the settings or the
+   * update settings to be saved; a save due begins. Changes that cannot be saved, as the file was
+   * not read, stop it once.
    */
   boolean waits() {
-    for (var each : List.of(consolesKept, historyKept, queriesKept, s.updates.kept)) {
+    for (var each : List.of(consolesKept, historyKept, queriesKept, settingsKept, s.updates.kept)) {
       if (each.waits()) {
         if (each.saving == null) {
           save(each);

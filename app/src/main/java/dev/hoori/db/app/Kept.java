@@ -18,6 +18,7 @@ final class Kept {
   String saveError; // why the last save failed, or null
   Work saving;
   boolean again;
+  int edits; // counted for delayed saves, so that a late patience is dropped
   boolean quitAnyway; // the last Exit stopped for it, and the next goes without it
 
   Kept(String what, Callable<Callable<?>> next) {

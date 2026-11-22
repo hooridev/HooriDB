@@ -7,11 +7,14 @@ import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.window.SystemAppearance;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.UiState;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.dialect.Dialect;
@@ -28,6 +31,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -41,6 +45,9 @@ final class State {
   static final double KEYRING_SECONDS = 5;
 
   App<State> app; // runs the clock and the windows, and says whether the window is maximized
+  Settings settings = Settings.DEFAULT;
+  UiState uiState = UiState.EMPTY;
+  SystemAppearance appearance = new SystemAppearance(SystemAppearance.Scheme.UNKNOWN, 0, false);
   Theme theme = Theme.DARK;
   ZoneId zone = ZoneId.systemDefault(); // the computer's, in which moments show
   Split.Position sidebar = DEFAULT_SIDEBAR;
@@ -1214,10 +1221,48 @@ final class State {
     return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
   }
 
-  /** Switches to a theme and says so in the status line. */
-  void useTheme(Theme theme, String name) {
-    this.theme = theme;
-    tell(name + " on");
+  /**
+   * Replaces the user's settings, re-resolving what derives from them and saving the file a moment
+   * later; an equal value does nothing.
+   */
+  void settings(Settings next) {
+    if (applySettings(next)) {
+      keeping.settingsChanged();
+    }
+  }
+
+  /**
+   * Applies loaded settings without saving; an equal value does nothing, so loading the defaults
+   * leaves any {@link #theme} or {@link #zone} a test set directly.
+   */
+  boolean applySettings(Settings next) {
+    if (Objects.requireNonNull(next, "settings").equals(settings)) {
+      return false;
+    }
+    var was = settings;
+    settings = next;
+    if (next.look() != was.look()
+        || next.accent() != was.accent()
+        || next.density() != was.density()) {
+      theme = Keeping.theme(next, appearance);
+    }
+    if (!Objects.equals(next.timeZone(), was.timeZone())) {
+      zone = next.timeZone() != null ? next.timeZone() : ZoneId.systemDefault();
+    }
+    return true;
+  }
+
+  /** The operating system's appearance changed: re-resolves the theme where it follows it. */
+  void appearance(SystemAppearance next) {
+    var now = next == null ? new SystemAppearance(SystemAppearance.Scheme.UNKNOWN, 0, false) : next;
+    if (now.equals(appearance)) {
+      return;
+    }
+    var was = appearance;
+    appearance = now;
+    if (settings.look() == Settings.Look.SYSTEM && now.scheme() != was.scheme()) {
+      theme = Keeping.theme(settings, appearance);
+    }
   }
 
   /** Shows a message in the status line for {@link #MESSAGE_SECONDS}, on the app's clock. */
