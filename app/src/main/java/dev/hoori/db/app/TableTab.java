@@ -28,6 +28,7 @@ import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.query.QueryException;
 import java.util.ArrayList;
@@ -701,11 +702,14 @@ final class TableTab implements Tab {
         Card.footer(rowsStatus, footer(ofDocuments, presented).toArray(El[]::new)));
   }
 
-  /** The toolbar's actions: how documents show, and Refresh. */
+  /** The toolbar's actions: how documents show, Open in console for SQL, and Refresh. */
   private List<El> actions(State s, boolean connected, boolean ofDocuments) {
     var actions = new ArrayList<El>();
     if (ofDocuments) {
       actions.add(presentation.switcher("shown", v -> show(s, v)));
+    } else {
+      actions.add(Button.icon(GHOST, Symbol.CODE, "Open in console", () -> openInConsole(s))
+          .key("open-in-console"));
     }
     actions.add(Button.icon(
             GHOST,
@@ -716,6 +720,17 @@ final class TableTab implements Tab {
                 .state(opening != null && connected ? Button.State.BUSY : Button.State.READY))
         .key("refresh"));
     return actions;
+  }
+
+  /** Opens a console on this table's connection and database with its SELECT and caret at end. */
+  private void openInConsole(State s) {
+    var profile = s.profile(id);
+    var group = s.tabs.groupOf(this);
+    if (profile == null || group == null) {
+      return;
+    }
+    var sql = "SELECT * FROM " + Rows.qualified(profile.provider(), table);
+    s.openConsole(id, group, table.container().database().name(), sql);
   }
 
   /** Placeholder body before columns are known: spinner while opening, else empty. */

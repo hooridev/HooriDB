@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.query.QueryException;
@@ -82,5 +83,14 @@ class RowsTest {
     var empty = new Rows.Filter(null, "  ");
     assertEquals(true, empty.empty());
     assertEquals("", empty.where());
+  }
+
+  @Test
+  void qualifiedQuotesContainerAndTableForTheProvider() {
+    var pgTable = new Table(new Schema(HOORI, "public", false), "orders", Table.Kind.TABLE);
+    var mariaTable = new Table(HOORI, "items", Table.Kind.TABLE);
+    assertEquals("\"public\".\"orders\"", Rows.qualified(Provider.POSTGRESQL, pgTable));
+    assertEquals("`hoori`.`items`", Rows.qualified(Provider.MARIADB, mariaTable));
+    assertEquals("`hoori`.`items`", Rows.qualified(Provider.MYSQL, mariaTable));
   }
 }

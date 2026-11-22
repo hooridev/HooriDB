@@ -772,7 +772,8 @@ public final class Rows {
     return eras && date.getYear() <= 0 ? " BC" : "";
   }
 
-  static String qualified(Provider provider, Table table) {
+  /** The table's qualified SQL name: its container and name, each quoted for the provider. */
+  public static String qualified(Provider provider, Table table) {
     return provider.quote(table.container().name()) + "." + provider.quote(table.name());
   }
 
