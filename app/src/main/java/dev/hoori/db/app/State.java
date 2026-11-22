@@ -1248,6 +1248,9 @@ final class State {
     if (!Objects.equals(next.timeZone(), was.timeZone())) {
       zone = next.timeZone() != null ? next.timeZone() : ZoneId.systemDefault();
     }
+    if (!was.checkForUpdates() && next.checkForUpdates()) {
+      updates.check(this);
+    }
     return true;
   }
 

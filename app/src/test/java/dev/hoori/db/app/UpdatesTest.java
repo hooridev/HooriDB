@@ -4,12 +4,14 @@ import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.updater.Installation;
 import com.rethinkj.updater.Version;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.StoredUpdates;
 import dev.hoori.db.core.connection.UpdateStore;
 import dev.hoori.db.core.execution.Transaction;
@@ -18,6 +20,7 @@ import dev.hoori.db.core.update.Channel;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.Test;
@@ -441,5 +444,99 @@ class UpdatesTest {
     app.state().updates.shown(app.state());
     run(app, "await\nframe\n");
     assertEquals(1, updater.confirms);
+  }
+
+  /**
+   * With checkForUpdates off in settings.json, the start does not look for releases; turning it on
+   * looks once, and toggling while work runs does not double-look.
+   */
+  @Test
+  void checkForUpdatesOffDoesNotLookAtStartAndTurningItOnLooksOnce() throws Exception {
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"checkForUpdates":false}
+        """);
+    var updater = updater().publish("0.3.0");
+    var app = app(updater, "0.2.0");
+    run(app, START);
+    assertEquals(0, updater.looks.get());
+    assertEquals(List.of(), updater.downloaded);
+    assertNull(app.state().updates.notice);
+
+    updater.downloading = new CountDownLatch(1);
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    run(app, "await\nframe\n");
+    assertEquals(1, updater.looks.get());
+    // Turning off and back on while the download is in flight does not look a second time.
+    app.state().choose(app.state().settings.withCheckForUpdates(false));
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    updater.downloading.countDown();
+    run(app, "await\nframe\n".repeat(2) + OPENED);
+    assertEquals(1, updater.looks.get());
+    assertEquals(List.of("0.3.0"), updater.downloaded);
+    // Nor once the update is ready: Restart now keeps the download it offers.
+    app.state().choose(app.state().settings.withCheckForUpdates(false));
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    run(app, "await\nframe\n");
+    assertEquals(1, updater.looks.get());
+    assertEquals(List.of("0.3.0"), updater.downloaded);
+  }
+
+  /** Turning checking on before updates have started looks once they have. */
+  @Test
+  void checkForUpdatesTurnedOnDuringTheStartLooksOnce() throws Exception {
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"checkForUpdates":false}
+        """);
+    var updater = updater().publish("0.3.0");
+    updater.reading = new CountDownLatch(1);
+    var app = app(updater, "0.2.0");
+    run(app, "size 1200 760\nframe\n");
+    app.await("load settings", Duration.ofSeconds(5));
+    run(app, "frame\n");
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    assertEquals(0, updater.looks.get());
+    updater.reading.countDown();
+    run(app, START);
+    assertEquals(1, updater.looks.get());
+  }
+
+  /**
+   * With checkForUpdates off, the start skips looking even when settings finish loading before
+   * updates' own start.
+   */
+  @Test
+  void checkForUpdatesOffSkipsLookWhenSettingsFinishBeforeUpdates() throws Exception {
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"checkForUpdates":false}
+        """);
+    var updater = updater().publish("0.3.0");
+    updater.reading = new CountDownLatch(1);
+    var app = app(updater, "0.2.0");
+    run(app, "size 1200 760\nframe\n");
+    app.await("load settings", Duration.ofSeconds(5));
+    run(app, "frame\n");
+    assertFalse(app.state().keeping.settingsLoading);
+    assertFalse(app.state().settings.checkForUpdates());
+    updater.reading.countDown();
+    run(app, START);
+    assertEquals(0, updater.looks.get());
+    assertEquals(List.of(), updater.downloaded);
+  }
+
+  /** Default settings (and an unreadable settings.json falling back to defaults) look once. */
+  @Test
+  void defaultAndUnreadableSettingsLookOnceAtStart() throws Exception {
+    var defaultUpdater = updater().publish("0.3.0");
+    run(app(defaultUpdater, "0.2.0"), START);
+    assertEquals(1, defaultUpdater.looks.get());
+
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), "{");
+    var brokenUpdater = updater().publish("0.3.0");
+    run(app(brokenUpdater, "0.2.0"), START);
+    assertEquals(1, brokenUpdater.looks.get());
   }
 }

@@ -38,6 +38,8 @@ final class Updates {
   private Work restarting; // the save of the attempt and the start of the helper, or null
   private boolean confirmed; // whether shown() ran
   private Work beginning; // the start of updates, which may hold the helper's report, or null
+  private boolean startLooks; // the start looks once the settings are read, where they say so
+  private boolean asked; // a check asked for before updates had started
 
   /** An update downloaded and verified: its version and its file. */
   record Ready(Version version, Download download) {}
@@ -178,10 +180,26 @@ final class Updates {
       s.keeping.persist(kept);
     }
     // Not again at once after an update that failed: the same update would fail the same way.
-    if (result == null || result.status() == Installation.Result.Status.APPLIED) {
+    startLooks = result == null || result.status() == Installation.Result.Status.APPLIED;
+    settingsReady(s);
+    s.settled(); // an Exit waited for the report to be taken
+  }
+
+  /**
+   * The settings were read, or kept their defaults, or updates have started: once both are done,
+   * runs the start's check where the settings or a request meanwhile ask for it.
+   */
+  void settingsReady(State s) {
+    if (!kept.canSave || s.keeping.settingsLoading) {
+      return;
+    }
+    // Not even one asked for after an update that failed: its notice may still offer the download.
+    boolean look = startLooks && (asked || s.settings.checkForUpdates());
+    asked = false;
+    startLooks = false;
+    if (look) {
       check(s);
     }
-    s.settled(); // an Exit waited for the report to be taken
   }
 
   /** Tells what the helper reported of the last update, and keeps what it means for the next. */
@@ -269,10 +287,20 @@ final class Updates {
 
   /**
    * Looks for an update in the channel, and downloads it where HooriDB can replace itself; a
-   * check that fails, as without a network, shows nothing.
+   * check that fails, as without a network, shows nothing. Not while one is ready or HooriDB
+   * closes; one asked for before updates have started runs once they have.
    */
-  private void check(State s) {
-    if (updater == null || installed == null || !kept.canSave || work != null) {
+  void check(State s) {
+    if (updater == null
+        || installed == null
+        || work != null
+        || ready != null
+        || restarting != null
+        || s.guard.exiting()) {
+      return;
+    }
+    if (!kept.canSave) {
+      asked = true;
       return;
     }
     work = s.app.background(

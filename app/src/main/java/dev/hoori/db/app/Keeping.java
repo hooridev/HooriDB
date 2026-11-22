@@ -158,9 +158,9 @@ final class Keeping {
     }
     var g = resolved.grid();
     float rowHeight = switch (settings.density()) {
-      case COMPACT -> g.rowHeight() - resolved.space().xs();
+      case COMPACT -> g.rowHeight() - resolved.space().s();
       case DEFAULT -> g.rowHeight();
-      case COMFORTABLE -> g.rowHeight() + resolved.space().xs();
+      case COMFORTABLE -> g.rowHeight() + resolved.space().s();
     };
     if (rowHeight != g.rowHeight()) {
       resolved = resolved.withGrid(new Theme.Grid(
@@ -407,6 +407,7 @@ final class Keeping {
           null);
     }
     settingsKept.canSave = true;
+    s.updates.settingsReady(s);
   }
 
   private void settingsFailed(Exception error) {
@@ -414,6 +415,7 @@ final class Keeping {
     loadFailed(settingsKept, error);
     // A file not understood is set aside by the next save; one not read at all stays as it is.
     settingsKept.canSave = error instanceof WorkspaceStore.UnreadableException;
+    s.updates.settingsReady(s);
   }
 
   private void loadFailed(Kept kept, Exception error) {
