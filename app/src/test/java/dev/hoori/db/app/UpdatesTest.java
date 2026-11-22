@@ -83,9 +83,10 @@ class UpdatesTest {
     Script.run(
         "await\nframe\n".repeat(2) + OPENED + "snap ready-dark\n" + HELP + "snap help-dark\n"
             + "key Escape\nframe\n" + OPENED
-            + "press role=menuitem label=\"View\"\nframe\n" + OPENED
-            + "press role=menuitem label=\"Light theme\"\nframe\n" + OPENED + "advance 5\nframe\n"
-            + "snap ready-light\n" + HELP + "snap help-light\n",
+            + "key , control\nframe\nwindow \"Settings\"\nframe\nsnap general\n"
+            + "press role=option label=\"Appearance\"\nframe\n"
+            + "press role=radio label=\"Light\"\nframe\nclose\nframe\n"
+            + "window main\nframe\nsnap ready-light\n" + HELP + "snap help-light\n",
         app,
         dir.resolve("out"));
     assertEquals(List.of("0.3.0"), updater.downloaded);
@@ -95,9 +96,12 @@ class UpdatesTest {
     assertTrue(line(ready, "#update-act").contains("label=\"Restart now\""), ready);
     assertTrue(line(ready, "#update-dismiss").contains("label=\"Later\""), ready);
     assertFalse(ready.contains("#downloading"), ready);
+    var general = tree("settings-general");
+    assertTrue(line(general, "role=radio label=\"Stable\"").endsWith(" checked"), general);
+    assertTrue(line(general, "role=radio label=\"Nightly\"").contains("checked=false"), general);
     var help = tree("help-light");
-    assertTrue(line(help, "label=\"Stable updates\"").contains("checked"), help);
-    assertFalse(line(help, "label=\"Nightly updates\"").contains("checked"), help);
+    assertFalse(help.contains("Stable updates"), help);
+    assertFalse(help.contains("Nightly updates"), help);
     assertFalse(line(help, "label=\"Restart to update\"").contains("disabled"), help);
     assertEquals(Channel.STABLE, stored().channel(), "derived from the version, and saved");
   }
@@ -316,21 +320,27 @@ class UpdatesTest {
     assertEquals(Channel.STABLE, app.state().updates.channel());
   }
 
-  /** A nightly without a stored channel takes Nightly, saves it, and the Help menu checks it. */
+  /** A nightly without a stored channel takes Nightly, saves it, and Settings selects it. */
   @Test
   void aNightlyWithoutAStoredChannelStoresNightly() throws Exception {
     var app = app(updater(), NIGHTLY);
-    run(app, START + HELP + "snap help\n");
+    run(
+        app,
+        START + HELP + "snap help\nkey Escape\nframe\n" + OPENED
+            + "key , control\nframe\nwindow \"Settings\"\nframe\nsnap general\n");
     assertEquals(Channel.NIGHTLY, stored().channel());
+    var general = tree("settings-general");
+    assertTrue(line(general, "role=radio label=\"Nightly\"").endsWith(" checked"), general);
+    assertTrue(line(general, "role=radio label=\"Stable\"").contains("checked=false"), general);
     var help = tree("help");
-    assertTrue(line(help, "label=\"Nightly updates\"").contains("checked"), help);
-    assertFalse(line(help, "label=\"Stable updates\"").contains("checked"), help);
+    assertFalse(help.contains("Stable updates"), help);
+    assertFalse(help.contains("Nightly updates"), help);
     assertTrue(line(help, "label=\"Restart to update\"").contains("disabled"), help);
   }
 
   /**
-   * From Nightly to Stable while a nightly runs, the status line says that HooriDB stays on it;
-   * the offer of a nightly goes, and About shows the channel.
+   * From Nightly to Stable while a nightly runs, the status line says that HooriDB stays on it for
+   * a while; the offer of a nightly goes, and About shows the channel.
    */
   @Test
   void switchingFromNightlyToStableSaysThatHooriDbStaysOnItsVersion() throws Exception {
@@ -340,14 +350,17 @@ class UpdatesTest {
     assertTrue(tree("offered").contains("HooriDB 0.2.0-nightly.202611200300 is ready"));
     run(
         app,
-        HELP + "press role=menuitem label=\"Stable updates\"\nframe\n" + OPENED
-            + "await\nframe\n".repeat(2) + "snap stable\n"
+        "key , control\nframe\nwindow \"Settings\"\nframe\n"
+            + "press role=radio label=\"Stable\"\nframe\nclose\nframe\n"
+            + "window main\n" + "await\nframe\n".repeat(2) + "snap stable\n"
+            + "advance 5\nframe\nsnap later\n"
             + "press role=button label=\"" + NIGHTLY + "\"\nframe\n" + OPENED + "snap about\n");
     var stable = tree("stable");
     assertTrue(
         stable.contains("HooriDB stays on " + NIGHTLY + " until a higher release comes out."),
         stable);
     assertFalse(stable.contains("#update"), "the nightly is no longer offered: " + stable);
+    assertFalse(tree("later").contains("#message"), "the message went after its time");
     assertEquals(Channel.STABLE, stored().channel());
     var about = tree("about");
     assertTrue(about.contains("label=\"Updates\" ") && about.contains("value=\"Stable\""), about);
@@ -370,8 +383,9 @@ class UpdatesTest {
     var app = app(updater, "0.1.0");
     run(
         app,
-        START + HELP + "press role=menuitem label=\"Stable updates\"\nframe\n" + OPENED
-            + "await\nframe\n".repeat(2) + "snap stable\n");
+        START + "key , control\nframe\nwindow \"Settings\"\nframe\n"
+            + "press role=radio label=\"Stable\"\nframe\nclose\nframe\n"
+            + "window main\n" + "await\nframe\n".repeat(2) + "snap stable\n");
     assertFalse(tree("stable").contains("#update"), tree("stable"));
     assertEquals(List.of(), updater.restarts);
   }
@@ -392,9 +406,9 @@ class UpdatesTest {
         Installation.Result.Status.REJECTED, "locked", "A file stayed locked");
     updater.reading = new CountDownLatch(1);
     var app = app(updater, "0.1.0");
-    run(
-        app,
-        "size 1200 760\nframe\n" + HELP + "press role=menuitem label=\"Stable updates\"\nframe\n");
+    run(app, "size 1200 760\nframe\n");
+    app.state().updates.channel(app.state(), Channel.STABLE);
+    run(app, "frame\n");
     updater.reading.countDown();
     run(app, "await\nframe\n".repeat(3) + OPENED + "snap start\n");
     var start = tree("start");
