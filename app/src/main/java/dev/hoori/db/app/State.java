@@ -137,7 +137,7 @@ final class State {
   void start() {
     load();
     startUpdates();
-    statements.start(app);
+    statements.start(app, this::settled);
     keeping.start();
   }
 
@@ -770,7 +770,8 @@ final class State {
     // The one way out: the file saved, unless the user chose to go without it ("anyway" waives
     // that alone); then every console's session ends, and HooriDB waits for each to say how, as
     // long as their closing is bounded, waiving only those it said it could not confirm. The
-    // consoles and the history are saved last, as ending a session may add to them.
+    // consoles, the history and the statement log are saved last, as ending a session may add to
+    // them.
     if (unsaved && !quitAnyway) {
       persist();
       return;
@@ -785,7 +786,7 @@ final class State {
       stay("HooriDB stayed open: a session reported a problem as it closed. See the connections.");
       return;
     }
-    if (!keeping.waits()) { // what the sessions' ends added
+    if (!keeping.waits() && !statements.waits()) { // what the sessions' ends added
       if (updates.restartWith != null) {
         updates.restartNow(this);
       } else {

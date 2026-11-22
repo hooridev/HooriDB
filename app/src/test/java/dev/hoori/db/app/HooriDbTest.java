@@ -182,7 +182,8 @@ class HooriDbTest {
   @Test
   void exitClosesTheWindow(@TempDir Path out) throws IOException {
     App<State> app = app(out);
-    Script.run("""
+    Script.run(
+        """
         size 1200 760
         frame
         press role=menuitem label="File"
@@ -191,7 +192,9 @@ class HooriDbTest {
         frame
         press role=menuitem label="Exit"
         frame
-        """, app, out);
+        await
+        frame
+        """, app, out); // Exit waits for the statement log to be read, so that its entries stay
     assertTrue(app.windows().all().isEmpty());
   }
 

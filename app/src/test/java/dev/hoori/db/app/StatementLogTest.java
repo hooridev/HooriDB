@@ -17,10 +17,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.connection.StatementLogStore;
+import dev.hoori.db.core.log.Logged;
+import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.log.Sent;
 import dev.hoori.db.core.sql.Secrets;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -244,5 +253,92 @@ class StatementLogTest {
     assertFalse(new StatementLogStore(dir.resolve("config")).enabled());
     c.run(app, "press #statement-log-on\nframe\n" + SETTLE + open("sales") + SETTLE);
     assertTrue(app.state().statements.entries().size() > before);
+  }
+
+  private static Logged entry(String sql) {
+    return new Logged(
+        SHOP.id(),
+        new Sent(
+            Instant.now(), Purpose.STATEMENT, "shop", sql, Duration.ofMillis(1), Outcome.DONE));
+  }
+
+  @Test
+  void exitWaitsForAHeldWriteAndClosesOnceItEnds() throws Exception {
+    var app = shop();
+    var started = new CountDownLatch(1);
+    var gate = new CountDownLatch(1);
+    app.state().statements.beforeCall = () -> {
+      started.countDown();
+      try {
+        gate.await();
+      } catch (InterruptedException _) {
+        Thread.currentThread().interrupt();
+      }
+    };
+    try {
+      app.state().statements.add(entry("SELECT 41"));
+      app.state().requestClose();
+      assertTrue(started.await(5, TimeUnit.SECONDS), "the first write started");
+      c.run(app, "frame\n");
+      assertFalse(app.windows().all().isEmpty(), "Exit waits for the held write");
+      // Another entry arrives while the first write runs; both are written before closing.
+      app.state().statements.add(entry("SELECT 42"));
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE);
+    assertTrue(app.windows().all().isEmpty(), "Exit closes once the writes have ended");
+    var kept = Files.readString(dir.resolve("config").resolve(StatementLogStore.FILE));
+    assertTrue(kept.contains("SELECT 41"), kept);
+    assertTrue(kept.contains("SELECT 42"), kept);
+  }
+
+  @Test
+  void aFailedWriteDoesNotBlockExit() throws Exception {
+    var app = shop();
+    var started = new CountDownLatch(1);
+    var gate = new CountDownLatch(1);
+    var failed = new AtomicBoolean();
+    app.state().statements.beforeCall = () -> {
+      if (failed.getAndSet(true)) {
+        return; // the first write alone fails
+      }
+      started.countDown();
+      try {
+        gate.await();
+      } catch (InterruptedException _) {
+        Thread.currentThread().interrupt();
+      }
+      throw new IOException("disk full");
+    };
+    try {
+      app.state().statements.add(entry("SELECT 41"));
+      app.state().requestClose();
+      assertTrue(started.await(5, TimeUnit.SECONDS), "the write started");
+      // Another entry comes while the write that fails runs: it is written, with what failed.
+      app.state().statements.add(entry("SELECT 42"));
+      c.run(app, "frame\n");
+      assertFalse(app.windows().all().isEmpty(), "Exit waits while the write runs");
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE);
+    assertTrue(app.windows().all().isEmpty(), "a failed write does not keep HooriDB open");
+    assertEquals("disk full", app.state().statements.problem());
+    var kept = Files.readString(dir.resolve("config").resolve(StatementLogStore.FILE));
+    assertTrue(kept.contains("SELECT 41"), kept);
+    assertTrue(kept.contains("SELECT 42"), kept);
+
+    // Entries left unsaved from an earlier failed write do not hold a later Exit either.
+    var second = shop();
+    second.state().statements.beforeCall = () -> {
+      throw new IOException("disk full");
+    };
+    second.state().statements.add(entry("SELECT 42"));
+    c.run(second, SETTLE);
+    assertEquals("disk full", second.state().statements.problem());
+    second.state().requestClose();
+    c.run(second, "frame\n");
+    assertTrue(second.windows().all().isEmpty(), "earlier unsaved entries do not hold Exit");
   }
 }
