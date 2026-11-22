@@ -188,6 +188,18 @@ class LayoutTest {
   }
 
   @Test
+  void aLayoutThatFailedToSaveIsSavedAtExit() throws Exception {
+    var file = config().resolve(UiStateStore.FILE);
+    Files.createDirectories(file); // a folder in its place: the save fails
+    var app = c.app(SHOP);
+    c.run(app, START + TOGGLE + SAVED);
+    Files.delete(file);
+    c.run(app, EXIT + SETTLE);
+    assertTrue(app.windows().all().isEmpty(), "Exit closed the window");
+    assertEquals(Boolean.TRUE, stored().logOpen());
+  }
+
+  @Test
   void windowPlacementParsesValidLinesFallsBackOnBadOnesAndSurvivesLayoutSaves() throws Exception {
     var placement = new Window.Placement(120, 80, 1280, 800, true, "DP-1");
     new UiStateStore(config()).save(UiState.EMPTY.withWindow(placement.toString()));

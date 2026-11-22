@@ -160,6 +160,7 @@ final class Keeping {
   private void uiStateSaved(boolean failed) {
     uiStateSaving = null;
     if (failed) {
+      uiStateUnsaved = true; // the next change or Exit tries again
       if (s.guard.quitting()) {
         uiStateExitFailed = true;
       }
