@@ -11,7 +11,6 @@ import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -66,100 +65,88 @@ public record Editable(Table table, List<Column> columns, List<Column> edited) {
       boolean createdTemporaryTable)
       throws QueryException {
     var list = EditableQuery.singleTable(sql, provider).orElse(null);
+    var dialect = provider.dialect().rows();
     // A * that stands for several columns moves the subqueries' columns from their positions.
-    if (list == null || !list.subqueries().isEmpty() && list.items() != fields.size()) {
+    if (list == null
+        || !list.subqueries().isEmpty() && list.items() != fields.size()
+        || createdTemporaryTable && dialect.temporaryTablesShadow()) {
       return Optional.empty();
     }
     var origins = new ArrayList<Origin>(fields.size());
     for (var i = 0; i < fields.size(); i++) {
       origins.add(list.subqueries().contains(i) ? null : fields.get(i).origin());
     }
-    var dialect = provider.dialect().rows();
-    if (createdTemporaryTable && dialect.temporaryTablesShadow()) {
+    var sample = oneTable(origins);
+    var resolved =
+        sample == null ? null : dialect.resolve(writer, provider, sample).orElse(null);
+    var columns = resolved == null ? null : columns(writer, provider, resolved.table());
+    if (columns == null || columns.stream().noneMatch(c -> c.keyPosition() > 0)) {
       return Optional.empty();
     }
+    var kinds = kinds(writer, provider, resolved.table(), columns);
+    if (kinds == null) {
+      return Optional.empty();
+    }
+    var byName = new HashMap<String, Column>();
+    columns.forEach(column -> byName.put(column.name(), column));
+    var named = new ArrayList<Column>(fields.size());
+    for (var origin : origins) {
+      named.add(origin == null ? null : byName.get(resolved.columnName().apply(origin)));
+    }
+    var edited = new ArrayList<Column>(fields.size());
+    for (var i = 0; i < fields.size(); i++) {
+      var column = named.get(i);
+      boolean editable = column != null
+          && Collections.frequency(named, column) == 1
+          && dialect.compatibleKind(fields.get(i).kind(), kinds.get(columns.indexOf(column)));
+      edited.add(editable ? column : null);
+    }
+    boolean keyed = columns.stream().filter(c -> c.keyPosition() > 0).allMatch(edited::contains);
+    return keyed ? Optional.of(new Editable(resolved.table(), columns, edited)) : Optional.empty();
+  }
+
+  // The origin of a field where those of all fields with one are of one table; null where none
+  // has one or they are of several.
+  private static Origin oneTable(List<Origin> origins) {
     Origin sample = null;
     for (var origin : origins) {
-      if (origin == null) {
-        continue;
-      }
       if (sample == null) {
         sample = origin;
-      } else if (!sample.sameTable(origin)) {
-        return Optional.empty();
+      } else if (origin != null && !sample.sameTable(origin)) {
+        return null;
       }
     }
-    if (sample == null) {
-      return Optional.empty();
-    }
-    var resolved = dialect.resolve(writer, provider, sample);
-    if (resolved.isEmpty()) {
-      return Optional.empty();
-    }
-    var table = resolved.get().table();
-    List<Column> columns;
+    return sample;
+  }
+
+  // The table's columns; null where it is gone.
+  private static List<Column> columns(Connection writer, Provider provider, Table table)
+      throws QueryException {
     try {
-      columns = Catalog.columns(writer, provider, table);
+      return Catalog.columns(writer, provider, table);
     } catch (CatalogException e) {
       if (e.failure() == CatalogException.Failure.NOT_FOUND) {
-        return Optional.empty();
+        return null;
       }
       throw queryFailure(e);
     }
-    var keyCount = (int) columns.stream().filter(c -> c.keyPosition() > 0).count();
-    if (keyCount == 0) {
-      return Optional.empty();
-    }
-    Rows.Described described;
+  }
+
+  // The kinds the table's columns are read as; null where the table or its columns changed.
+  private static List<Kind> kinds(
+      Connection writer, Provider provider, Table table, List<Column> columns)
+      throws QueryException {
     try {
-      described = dialect.describe(writer, provider, table, columns);
+      return provider.dialect().rows().describe(writer, provider, table, columns).reads().stream()
+          .map(read -> read.field().kind())
+          .toList();
     } catch (QueryException e) {
       if (e.failure() == QueryException.Failure.NOT_FOUND
           || e.failure() == QueryException.Failure.COLUMNS_CHANGED) {
-        return Optional.empty();
+        return null;
       }
       throw e;
     }
-    var byName = new HashMap<String, Integer>();
-    for (var i = 0; i < columns.size(); i++) {
-      byName.put(columns.get(i).name(), i);
-    }
-    var columnIndex = new Integer[fields.size()];
-    var seen = new int[columns.size()];
-    var columnName = resolved.get().columnName();
-    for (var i = 0; i < fields.size(); i++) {
-      var origin = origins.get(i);
-      if (origin == null) {
-        continue;
-      }
-      var name = columnName.apply(origin);
-      var index = name == null ? null : byName.get(name);
-      if (index != null) {
-        columnIndex[i] = index;
-        seen[index]++;
-      }
-    }
-    var edited = new ArrayList<Column>(fields.size());
-    var editableKeys = new HashSet<Column>();
-    for (var i = 0; i < fields.size(); i++) {
-      var index = columnIndex[i];
-      if (index != null
-          && seen[index] == 1
-          && dialect.compatibleKind(
-              fields.get(i).kind(), described.reads().get(index).field().kind())) {
-        var column = columns.get(index);
-        edited.add(column);
-        if (column.keyPosition() > 0) {
-          editableKeys.add(column);
-        }
-      } else {
-        edited.add(null);
-      }
-    }
-    if (editableKeys.size() != keyCount) {
-      return Optional.empty();
-    }
-    return Optional.of(new Editable(table, columns, edited));
   }
 
   private static QueryException queryFailure(CatalogException e) {

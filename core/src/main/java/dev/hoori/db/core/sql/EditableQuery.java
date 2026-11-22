@@ -94,42 +94,40 @@ public final class EditableQuery {
     if (n == 0 || !tokens.getFirst().is("SELECT")) {
       return null;
     }
-    int from = -1;
-    int parens = 0;
-    int brackets = 0;
-    int item = 0;
-    var subqueries = new HashSet<Integer>();
     for (int i = 0; i < n; i++) {
-      var token = tokens.get(i);
-      if (token.is("(")) {
-        parens++;
-      } else if (token.is(")")) {
-        if (--parens < 0) {
-          return null;
-        }
-      } else if (token.is("[")) {
-        brackets++;
-      } else if (token.is("]")) {
-        brackets--;
-      } else if (token.is(";")) {
-        if (i != n - 1 || token.depth() != 0) {
-          return null;
-        }
-      } else if (forbidden(tokens, i)) {
+      if (forbidden(tokens, i) || tokens.get(i).is(";") && i != n - 1) {
         return null;
-      } else if (from < 0 && token.depth() > 0 && token.is("SELECT")) {
-        subqueries.add(item);
-      } else if (from < 0 && token.depth() == 0 && brackets == 0 && token.is(",")) {
-        item++;
-      } else if (from < 0 && token.depth() == 0 && token.is("FROM") && !distinct(tokens, i)) {
-        from = i;
       }
     }
-    if (parens != 0 || from < 0 || !singleTableFrom(tokens, from + 1)) {
+    int from = from(tokens);
+    if (from < 0 || !singleTableFrom(tokens, from + 1)) {
       return null;
     }
-    var code = tokens.subList(0, from).stream().map(Tokens.Token::text).toList();
+    int item = 0;
+    int brackets = 0;
+    var subqueries = new HashSet<Integer>();
+    var list = tokens.subList(0, from);
+    for (var token : list) {
+      if (token.is("[") || token.is("]")) {
+        brackets += token.is("[") ? 1 : -1;
+      } else if (token.depth() > 0 && token.is("SELECT")) {
+        subqueries.add(item);
+      } else if (token.depth() == 0 && brackets == 0 && token.is(",")) {
+        item++;
+      }
+    }
+    var code = list.stream().map(Tokens.Token::text).toList();
     return new Shape(code, new SelectList(item + 1, Set.copyOf(subqueries)));
+  }
+
+  // The index of the FROM at the top level that ends the select list, or -1.
+  private static int from(List<Tokens.Token> tokens) {
+    for (int i = 0; i < tokens.size(); i++) {
+      if (tokens.get(i).depth() == 0 && tokens.get(i).is("FROM") && !distinct(tokens, i)) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   // Whether the FROM at the index ends IS [NOT] DISTINCT FROM.
@@ -163,26 +161,9 @@ public final class EditableQuery {
   // then only the end, a trailing ";", or a whitelisted top-level clause.
   private static boolean singleTableFrom(List<Tokens.Token> tokens, int start) {
     int n = tokens.size();
-    int k = start;
-    if (k >= n || tokens.get(k).depth() != 0 || !tokens.get(k).name()) {
+    int k = afterTable(tokens, start);
+    if (k < 0) {
       return false;
-    }
-    k++;
-    while (k + 1 < n
-        && tokens.get(k).depth() == 0
-        && tokens.get(k).is(".")
-        && tokens.get(k + 1).depth() == 0
-        && tokens.get(k + 1).name()) {
-      k += 2;
-    }
-    if (k < n && tokens.get(k).depth() == 0 && tokens.get(k).is("AS")) {
-      k++;
-      if (k >= n || tokens.get(k).depth() != 0 || !tokens.get(k).name()) {
-        return false;
-      }
-      k++;
-    } else if (k < n && tokens.get(k).depth() == 0 && bareAlias(tokens.get(k))) {
-      k++;
     }
     if (k == n || (k == n - 1 && tokens.get(k).is(";"))) {
       return true;
@@ -193,6 +174,29 @@ public final class EditableQuery {
         && !(k + 1 < n && tokens.get(k + 1).is(","))
         && tokens.subList(start, n).stream()
             .noneMatch(t -> t.depth() == 0 && (t.is("JOIN") || t.is("STRAIGHT_JOIN")));
+  }
+
+  // The index after the table's name and alias from the index on; -1 where no name begins there.
+  private static int afterTable(List<Tokens.Token> tokens, int start) {
+    int n = tokens.size();
+    if (start >= n || !top(tokens, start) || !tokens.get(start).name()) {
+      return -1;
+    }
+    int k = start + 1;
+    while (k + 1 < n
+        && top(tokens, k)
+        && tokens.get(k).is(".")
+        && tokens.get(k + 1).name()) {
+      k += 2;
+    }
+    if (k < n && top(tokens, k) && tokens.get(k).is("AS")) {
+      return k + 1 < n && top(tokens, k + 1) && tokens.get(k + 1).name() ? k + 2 : -1;
+    }
+    return k < n && top(tokens, k) && bareAlias(tokens.get(k)) ? k + 1 : k;
+  }
+
+  private static boolean top(List<Tokens.Token> tokens, int k) {
+    return tokens.get(k).depth() == 0;
   }
 
   // A word that is no clause after FROM; a keyword taken for an alias, as LEFT, leaves a word that
@@ -206,30 +210,29 @@ public final class EditableQuery {
   }
 
   private static boolean createsTemporaryTable(List<Tokens.Token> tokens) {
-    int n = tokens.size();
-    if (n > 0 && (tokens.getFirst().is("CALL") || tokens.getFirst().is("EXECUTE"))) {
+    if (!tokens.isEmpty() && (tokens.getFirst().is("CALL") || tokens.getFirst().is("EXECUTE"))) {
       return true;
     }
-    for (int i = 0; i < n; i++) {
-      if (!tokens.get(i).is("CREATE")) {
-        continue;
-      }
-      int k = i + 1;
-      if (k + 1 < n && tokens.get(k).is("OR") && tokens.get(k + 1).is("REPLACE")) {
-        k += 2;
-      }
-      if (k < n && (tokens.get(k).is("LOCAL") || tokens.get(k).is("GLOBAL"))) {
-        k++;
-      }
-      if (k < n && (tokens.get(k).is("TEMPORARY") || tokens.get(k).is("TEMP"))) {
-        k++;
-      } else {
-        continue;
-      }
-      if (k < n && tokens.get(k).is("TABLE")) {
+    for (int i = 0; i < tokens.size(); i++) {
+      if (tokens.get(i).is("CREATE") && temporaryTable(tokens, i + 1)) {
         return true;
       }
     }
     return false;
+  }
+
+  // Whether [OR REPLACE] [LOCAL | GLOBAL] TEMPORARY | TEMP, then TABLE, begin at the index.
+  private static boolean temporaryTable(List<Tokens.Token> tokens, int from) {
+    int n = tokens.size();
+    int k = from;
+    if (k + 1 < n && tokens.get(k).is("OR") && tokens.get(k + 1).is("REPLACE")) {
+      k += 2;
+    }
+    if (k < n && (tokens.get(k).is("LOCAL") || tokens.get(k).is("GLOBAL"))) {
+      k++;
+    }
+    return k + 1 < n
+        && (tokens.get(k).is("TEMPORARY") || tokens.get(k).is("TEMP"))
+        && tokens.get(k + 1).is("TABLE");
   }
 }

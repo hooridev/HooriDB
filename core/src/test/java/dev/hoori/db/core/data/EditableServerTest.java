@@ -66,18 +66,26 @@ class EditableServerTest {
               column(lineColumns, "item"),
               column(lineColumns, "purchase_id")),
           line.edited());
+    }
+  }
 
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void expressionsAndSubqueriesStayReadOnly(Provider provider) throws Exception {
+    try (var console = open(provider);
+        var writer = open(provider)) {
+      var expectedTable = table(provider, "customer");
+      var expectedColumns = Catalog.columns(writer, provider, expectedTable);
       // Expressions and scalar subqueries stay read-only while real columns stay editable.
       var exprSql = "SELECT id, upper(name) AS up, 1 AS one,"
           + " (SELECT count(*) FROM purchase p WHERE p.customer_id = c.id) AS orders, name"
           + " FROM customer c WHERE c.id IN (SELECT customer_id FROM purchase)";
       var expr = decide(console, writer, provider, exprSql, false).orElseThrow();
       assertEquals(expectedTable, expr.table());
-      assertEquals(column(expectedColumns, "id"), expr.edited().get(0));
-      assertNull(expr.edited().get(1));
-      assertNull(expr.edited().get(2));
-      assertNull(expr.edited().get(3));
-      assertEquals(column(expectedColumns, "name"), expr.edited().get(4));
+      assertEquals(
+          Arrays.asList(
+              column(expectedColumns, "id"), null, null, null, column(expectedColumns, "name")),
+          expr.edited());
 
       // A subquery's column has no origin, even where MariaDB and MySQL report the outer one's.
       var sub = decide(

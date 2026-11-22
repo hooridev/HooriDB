@@ -48,6 +48,20 @@ class EditableQueryTest {
       allowed(p, "SELECT DISTINCT id, name FROM customer GROUP BY id, name HAVING count(*) > 0");
       allowed(p, "SELECT id, name FROM customer WINDOW w AS (ORDER BY id) ORDER BY id OFFSET 5");
       allowed(p, "SELECT id, name FROM customer FETCH FIRST 10 ROWS ONLY");
+      allowed(p, "SELECT id, name IS NOT DISTINCT FROM 'x' AS same FROM customer");
+      allowed(p, "SELECT id, name IS DISTINCT FROM 'x' FROM customer WHERE id > 0");
+      allowed(p, "SELECT id, name FROM customer WHERE id IN (SELECT customer_id FROM purchase)");
+      allowed(p, "SELECT id, SUBSTRING(name FROM 1 FOR 3), EXTRACT(YEAR FROM born) FROM customer");
+      allowed(p, "/* leading */ SELECT id FROM customer -- trailing\n;");
+    }
+    allowed(POSTGRESQL, "SELECT DISTINCT ON (id) id, name FROM customer ORDER BY id");
+    allowed(MARIADB, "SELECT /*!40001 SQL_NO_CACHE */ id, name FROM customer");
+    allowed(MYSQL, "SELECT /*!40001 SQL_NO_CACHE */ id, name FROM customer");
+  }
+
+  @Test
+  void subqueriesInTheSelectListAreFoundByTheirItems() {
+    for (var p : Provider.SQL) {
       subqueries(
           p,
           "SELECT id, (SELECT count(*) FROM purchase WHERE customer_id = c.id) FROM customer c",
@@ -63,23 +77,22 @@ class EditableQueryTest {
           EditableQuery.singleTable("SELECT id * '2', (SELECT 1), name FROM customer", p)
               .orElseThrow()
               .items());
-      allowed(p, "SELECT id, name IS NOT DISTINCT FROM 'x' AS same FROM customer");
-      allowed(p, "SELECT id, name IS DISTINCT FROM 'x' FROM customer WHERE id > 0");
+    }
+    subqueries(POSTGRESQL, "SELECT ARRAY[1,2], (SELECT 1), id, name FROM customer", 1);
+    for (var p : new Provider[] {MARIADB, MYSQL}) {
+      refused(p, "SELECT /*!99999 0, */ /*! 1, */ (SELECT c.id) AS k, 2, name FROM customer c");
+      refused(p, "SELECT /*!99999 0 */ /*! , */ (SELECT c.id) AS k, name FROM customer c");
+    }
+  }
+
+  @Test
+  void anAliasSpelledAsAClauseTakesNoJoin() {
+    for (var p : Provider.SQL) {
       refused(p, "SELECT c.id FROM customer c JOIN offset ON offset.id = c.id");
       refused(p, "SELECT c.id FROM customer STRAIGHT_JOIN offset");
       refused(p, "SELECT offset.id FROM customer offset JOIN purchase p ON p.customer_id = 1");
       refused(p, "SELECT offset.id FROM customer offset, purchase p");
       refused(p, "SELECT window.id FROM customer window NATURAL JOIN purchase");
-      allowed(p, "SELECT id, name FROM customer WHERE id IN (SELECT customer_id FROM purchase)");
-      allowed(p, "SELECT id, SUBSTRING(name FROM 1 FOR 3), EXTRACT(YEAR FROM born) FROM customer");
-      allowed(p, "/* leading */ SELECT id FROM customer -- trailing\n;");
-    }
-    allowed(POSTGRESQL, "SELECT DISTINCT ON (id) id, name FROM customer ORDER BY id");
-    subqueries(POSTGRESQL, "SELECT ARRAY[1,2], (SELECT 1), id, name FROM customer", 1);
-    for (var p : new Provider[] {MARIADB, MYSQL}) {
-      refused(p, "SELECT /*!99999 0, */ /*! 1, */ (SELECT c.id) AS k, 2, name FROM customer c");
-      refused(p, "SELECT /*!99999 0 */ /*! , */ (SELECT c.id) AS k, name FROM customer c");
-      allowed(p, "SELECT /*!40001 SQL_NO_CACHE */ id, name FROM customer");
     }
   }
 
@@ -125,6 +138,12 @@ class EditableQueryTest {
       refused(p, "SELECT c.id FROM customer c, LATERAL (SELECT 1) l");
       refused(p, "SELECT id FROM LATERAL (SELECT 1) l");
       refused(p, "SELECT id FROM generate_series(1, 5)");
+    }
+  }
+
+  @Test
+  void modifiersOfTheTableRefuse() {
+    for (var p : Provider.SQL) {
       allowed(p, "SELECT id FROM ONLY customer");
       refused(p, "SELECT id, name FROM customer GROUP BY id, name WITH ROLLUP");
       refused(p, "SELECT id, name FROM customer GROUP BY ROLLUP (id, name)");
