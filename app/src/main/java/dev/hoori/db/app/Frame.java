@@ -31,7 +31,6 @@ import com.rethinkj.ui.kit.TitleBar;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
-import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.update.Channel;
 import java.util.Arrays;
 import java.util.List;
@@ -612,8 +611,8 @@ final class Frame {
   }
 
   /**
-   * Only what does something today: a new connection, a console, the drivers, the tabs of the
-   * window, quitting, the palette, the themes, where the focus goes, and About. They are the
+   * Only what does something today: a new connection, a console, the drivers, the settings, the
+   * tabs of the window, quitting, the palette, where the focus goes, and About. They are the
    * commands of the palette too, and their keys act in the window of these tabs, with or without
    * its bar.
    *
@@ -670,11 +669,7 @@ final class Frame {
                     .shortcut(Key.CONTROL | Key.SHIFT, "P"),
                 Menu.item("Statement log", inMain(s, () -> s.logPanel.toggle(s)))
                     .icon(Symbol.TEXT_BULLET_LIST_LTR)
-                    .checked(s.logPanel.open),
-                Menu.separator(),
-                themeItem(s, Settings.Look.SYSTEM, "System theme"),
-                themeItem(s, Settings.Look.LIGHT, "Light theme"),
-                themeItem(s, Settings.Look.DARK, "Dark theme"))),
+                    .checked(s.logPanel.open))),
         Menu.submenu(
             "&Go",
             List.of(
@@ -696,8 +691,6 @@ final class Frame {
         Menu.submenu(
             "&Help",
             List.of(
-                channelItem(s, Channel.STABLE, "Stable updates"),
-                channelItem(s, Channel.NIGHTLY, "Nightly updates"),
                 Menu.item(
                     "Restart to update",
                     free && s.updates.ready != null && !s.guard.exiting()
@@ -774,20 +767,5 @@ final class Frame {
       }
     }
     return null;
-  }
-
-  /** Where updates come from; not while HooriDB closes. */
-  private static Menu.Item channelItem(State s, Channel channel, String name) {
-    return Menu.item(name, s.guard.exiting() ? null : () -> s.updates.channel(s, channel))
-        .checked(s.updates.channel() == channel);
-  }
-
-  private static Menu.Item themeItem(State s, Settings.Look look, String name) {
-    Runnable choose = () -> {
-      s.choose(s.settings.withLook(look));
-      s.tell(name + " on");
-    };
-    return Menu.item(name, s.keeping.settingsLoading || s.guard.exiting() ? null : choose)
-        .checked(s.settings.look() == look);
   }
 }

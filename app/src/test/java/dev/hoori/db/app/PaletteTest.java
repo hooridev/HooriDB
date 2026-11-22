@@ -125,12 +125,17 @@ class PaletteTest {
             "File: Close tab",
             "View: Command palette…",
             "View: Statement log",
-            "View: System theme",
-            "View: Light theme",
-            "View: Dark theme",
             // The rows that fit: the rest of Go's and Help's come after.
             "Go: Go to table…")),
         all.toString());
+    for (var removed : List.of(
+        "View: System theme",
+        "View: Light theme",
+        "View: Dark theme",
+        "Help: Stable updates",
+        "Help: Nightly updates")) {
+      assertFalse(all.contains(removed), all.toString());
+    }
     assertTrue(option(open, "File: Settings…").contains("\"Ctrl+,\""), open);
     assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
@@ -138,9 +143,15 @@ class PaletteTest {
     assertTrue(line(open, "label=\"File: Close tab\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: New console\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: Server monitor\"").contains("disabled"), open);
-    assertFalse(line(open, "label=\"View: Light theme\"").contains("disabled"), open);
-    c.run(app, "type \"light th\"\nframe\nkey Enter\n" + SHOWN + "snap ran\n");
-    assertSame(Theme.LIGHT, app.state().theme);
+    assertFalse(line(open, "label=\"View: Statement log\"").contains("disabled"), open);
+    c.run(
+        app,
+        "type \"theme\"\nframe\nsnap no-theme\n"
+            + "key A control\ntype \"updates\"\nframe\nsnap no-updates\n"
+            + "key A control\ntype \"statement l\"\nframe\nkey Enter\n" + SHOWN + "snap ran\n");
+    assertEquals(List.of(), options(c.tree("no-theme")), c.tree("no-theme"));
+    assertEquals(List.of(), options(c.tree("no-updates")), c.tree("no-updates"));
+    assertTrue(app.state().logPanel.open);
     assertFalse(c.tree("ran").contains("label=\"Command palette\""), c.tree("ran"));
   }
 

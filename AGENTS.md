@@ -96,7 +96,7 @@ status counters and who blocks whom, read on a session of its own at an interval
 changed and paused, and not while the tab is hidden; a session's statement is cancelled and a
 session ended after a question, never the monitor's own, and credentials in other sessions'
 statements are masked. Run from its app image,
-HooriDB looks for a newer GitHub release at each start, in the channel Help chooses, Stable or
+HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
 Nightly (at first that of its own version), downloads it and restarts into it through its own Exit
 when asked; the new version confirms once its window has shown its first frame, and the updater's
 helper puts the old version back where it does not, and a version put back is not offered again
@@ -104,7 +104,7 @@ until a higher one comes out. Help, About HooriDB shows the version that runs, i
 updates, its authors, license and website. Started from the unpacked Linux bundle, it puts itself
 into the application menu, which gives its windows their icon in the dock. The main window's
 placement, the sidebar's width and the statement log's open state, height and detail split are kept
-(`ui-state.json`). The theme, System, Light or Dark in the View menu, where System follows the
+(`ui-state.json`). The theme, System, Light or Dark, where System follows the
 computer's scheme, is kept in `settings.json`, read before the first frame, with the accent, the
 rows' density, whether a console marks the word at the caret, the case of SQL keywords it completes
 and whether the start looks for an update. File, Settings… (Control+,, or the palette) opens or

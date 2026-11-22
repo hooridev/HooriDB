@@ -46,8 +46,8 @@ class SettingsTest {
   }
 
   /**
-   * Settings in the config folder apply at start; choosing Dark in View writes settings.json, and a
-   * new app on the same folder starts dark.
+   * Settings in the config folder apply at start; choosing Dark in Settings writes settings.json,
+   * and a new app on the same folder starts dark.
    */
   @Test
   void lightSettingsLoadAndSwitchingToDarkSavesForTheNextStart(@TempDir Path dir)
@@ -63,36 +63,39 @@ class SettingsTest {
     Script.run("""
         size 1200 760
         frame
-        press role=menuitem label="View"
-        """ + OPENED + """
+        key , control
+        frame
+        window "Settings"
+        press role=option label="Appearance"
+        frame
         snap loading
-        key Escape
-        """ + OPENED, first, out);
-    var loading = Files.readString(out.resolve("loading.tree.txt"));
-    assertTrue(line(loading, "label=\"Dark theme\"").contains("disabled"), loading);
+        """, first, out);
+    var loading = Files.readString(out.resolve("settings-loading.tree.txt"));
+    assertTrue(line(loading, "role=radiogroup label=\"Theme\"").contains("disabled"), loading);
     Script.run("""
         await
         frame
-        snap first
+        window "Settings"
+        frame
+        snap appearance
         """, first, out);
     assertSame(Theme.LIGHT, first.state().theme);
     assertEquals(Settings.Look.LIGHT, first.state().settings.look());
+    var appearance = Files.readString(out.resolve("settings-appearance.tree.txt"));
+    assertTrue(line(appearance, "role=radio label=\"Light\"").endsWith(" checked"), appearance);
+    assertTrue(
+        line(appearance, "role=radio label=\"System\"").contains("checked=false"), appearance);
+    assertTrue(line(appearance, "role=radio label=\"Dark\"").contains("checked=false"), appearance);
 
     Script.run("""
-        press role=menuitem label="View"
-        """ + OPENED + """
-        snap view
-        press role=menuitem label="Dark theme"
+        window "Settings"
+        press role=radio label="Dark"
         frame
         advance 2
         frame
         await
         frame
         """, first, out);
-    var view = Files.readString(out.resolve("view.tree.txt"));
-    assertTrue(line(view, "label=\"Light theme\"").contains("checked"), view);
-    assertFalse(line(view, "label=\"System theme\"").contains("checked"), view);
-    assertFalse(line(view, "label=\"Dark theme\"").contains("checked"), view);
 
     assertSame(Theme.DARK, first.state().theme);
     assertEquals(Settings.Look.DARK, first.state().settings.look());
@@ -105,14 +108,18 @@ class SettingsTest {
         frame
         await
         frame
-        press role=menuitem label="View"
-        """ + OPENED + """
-        snap second-view
+        key , control
+        frame
+        window "Settings"
+        press role=option label="Appearance"
+        frame
+        snap second-appearance
         """, second, out);
     assertSame(Theme.DARK, second.state().theme);
     assertEquals(Settings.Look.DARK, second.state().settings.look());
-    var secondView = Files.readString(out.resolve("second-view.tree.txt"));
-    assertTrue(line(secondView, "label=\"Dark theme\"").contains("checked"), secondView);
+    var secondAppearance = Files.readString(out.resolve("settings-second-appearance.tree.txt"));
+    assertTrue(
+        line(secondAppearance, "role=radio label=\"Dark\"").endsWith(" checked"), secondAppearance);
   }
 
   /** A broken settings.json gives one notice and dark defaults, and is set aside on next save. */
@@ -137,9 +144,12 @@ class SettingsTest {
     assertTrue(broken.contains("Settings · not read"), broken);
 
     Script.run("""
-        press role=menuitem label="View"
-        """ + OPENED + """
-        press role=menuitem label="Light theme"
+        key , control
+        frame
+        window "Settings"
+        press role=option label="Appearance"
+        frame
+        press role=radio label="Light"
         frame
         advance 2
         frame
@@ -238,10 +248,14 @@ class SettingsTest {
         frame
         await
         frame
-        press role=menuitem label="View"
-        """ + OPENED + """
-        press role=menuitem label="Light theme"
+        key , control
         frame
+        window "Settings"
+        press role=option label="Appearance"
+        frame
+        press role=radio label="Light"
+        frame
+        window main
         press role=menuitem label="File"
         """ + OPENED + """
         press role=menuitem label="Exit"

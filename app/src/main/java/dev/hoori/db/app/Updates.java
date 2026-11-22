@@ -387,8 +387,8 @@ final class Updates {
   }
 
   /**
-   * Help, Stable or Nightly updates: saved, and an offer not acted on goes, for one of the new
-   * channel. Not while HooriDB closes.
+   * Update channel chosen in the settings window: saved, and an offer not acted on goes, for one
+   * of the new channel. Not while HooriDB closes.
    */
   void channel(State s, Channel channel) {
     if (s.guard.exiting()) {
