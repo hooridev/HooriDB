@@ -103,7 +103,7 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     return new Sent(sent.at(), sent.purpose(), on, text, sent.took(), outcome);
   }
 
-  /** A link that logs each of its calls; its copy of the password goes when it closes. */
+  /** A link that logs each of its calls; its copy of the password goes when it closes or aborts. */
   static final class RecordedLink implements Link {
 
     private final Link link;
@@ -268,7 +268,11 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
 
     @Override
     public void abort() {
-      link.abort();
+      try {
+        link.abort();
+      } finally {
+        secret.wipe();
+      }
     }
   }
 }
