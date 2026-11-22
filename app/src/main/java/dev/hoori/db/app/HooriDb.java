@@ -191,8 +191,8 @@ public final class HooriDb {
         var loop = new WindowLoop(window, app, presenter);
         var state = app.state();
         // Now, so that the first frame wears it; the loop tells the changes after.
-        state.appearance(Window.systemAppearance());
-        loop.appearance(state::appearance);
+        state.systemChanged(Window.systemAppearance());
+        loop.appearance(state::systemChanged);
         // Not at the start: a version whose window cannot show is put back by the helper.
         loop.windows().of(app).onShown(() -> state.updates.shown(state));
         loop.run();

@@ -1225,7 +1225,7 @@ final class State {
    * Replaces the user's settings, re-resolving what derives from them and saving the file a moment
    * later; an equal value does nothing.
    */
-  void settings(Settings next) {
+  void choose(Settings next) {
     if (applySettings(next)) {
       keeping.settingsChanged();
     }
@@ -1253,7 +1253,7 @@ final class State {
   }
 
   /** The operating system's appearance changed: re-resolves the theme where it follows it. */
-  void appearance(SystemAppearance next) {
+  void systemChanged(SystemAppearance next) {
     var now = next == null ? new SystemAppearance(SystemAppearance.Scheme.UNKNOWN, 0, false) : next;
     if (now.equals(appearance)) {
       return;

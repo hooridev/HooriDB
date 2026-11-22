@@ -781,7 +781,7 @@ final class Frame {
 
   private static Menu.Item themeItem(State s, Settings.Look look, String name) {
     Runnable choose = () -> {
-      s.settings(s.settings.withLook(look));
+      s.choose(s.settings.withLook(look));
       s.tell(name + " on");
     };
     return Menu.item(name, s.keeping.settingsLoading ? null : choose)

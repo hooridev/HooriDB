@@ -194,27 +194,27 @@ class SettingsTest {
 
     var s = app.state();
     // System appearance takes effect when look is SYSTEM.
-    s.appearance(new SystemAppearance(SystemAppearance.Scheme.LIGHT, 0, false));
+    s.systemChanged(new SystemAppearance(SystemAppearance.Scheme.LIGHT, 0, false));
     assertSame(Theme.LIGHT, s.theme);
-    s.appearance(new SystemAppearance(SystemAppearance.Scheme.DARK, 0, false));
+    s.systemChanged(new SystemAppearance(SystemAppearance.Scheme.DARK, 0, false));
     assertSame(Theme.DARK, s.theme);
 
     // Explicit DARK with default accent and density resolves to Theme.DARK; ignores system Light.
-    s.settings(Settings.DEFAULT.withLook(Settings.Look.DARK));
+    s.choose(Settings.DEFAULT.withLook(Settings.Look.DARK));
     assertEquals(Theme.DARK, s.theme);
     assertSame(Theme.DARK, s.theme);
-    s.appearance(new SystemAppearance(SystemAppearance.Scheme.LIGHT, 0, false));
+    s.systemChanged(new SystemAppearance(SystemAppearance.Scheme.LIGHT, 0, false));
     assertSame(Theme.DARK, s.theme);
 
     // Accent and density apply on top of the look.
-    s.settings(s.settings.withAccent(Color.TEAL).withDensity(Settings.Density.COMFORTABLE));
+    s.choose(s.settings.withAccent(Color.TEAL).withDensity(Settings.Density.COMFORTABLE));
     assertEquals(Theme.Hue.TEAL.dark(), s.theme.accent());
     assertTrue(s.theme.grid().rowHeight() > Theme.DARK.grid().rowHeight());
 
     // Time zone resolves to the setting or back to the computer's zone.
-    s.settings(s.settings.withTimeZone(ZoneId.of("UTC")));
+    s.choose(s.settings.withTimeZone(ZoneId.of("UTC")));
     assertEquals(ZoneId.of("UTC"), s.zone);
-    s.settings(s.settings.withTimeZone(null));
+    s.choose(s.settings.withTimeZone(null));
     assertEquals(ZoneId.systemDefault(), s.zone);
   }
 
