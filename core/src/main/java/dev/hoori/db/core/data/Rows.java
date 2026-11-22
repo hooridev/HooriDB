@@ -97,7 +97,9 @@ public final class Rows {
 
   // The alias of the table in every statement that reads its rows, and of the table joined to it
   // whose columns say what the table's are now.
-  static final String ALIAS = "r";
+  /** The alias by which a read names the table, which the clauses of a {@link Filter} may use. */
+  public static final String ALIAS = "r";
+
   private static final String WITNESS = "w";
 
   private Rows() {}
@@ -179,7 +181,7 @@ public final class Rows {
   public static OptionalLong estimate(
       Connection connection, Provider provider, Table table, Filter filter, boolean readOnly)
       throws QueryException {
-    checkFilter(provider, filter, readOnly);
+    check(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
     var select = "SELECT * FROM " + filtered(provider, table, filter);
     return provider.dialect().rows().estimate(connection, provider, table, select);
@@ -215,7 +217,7 @@ public final class Rows {
   public static long count(
       Connection connection, Provider provider, Table table, Filter filter, boolean readOnly)
       throws QueryException {
-    checkFilter(provider, filter, readOnly);
+    check(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
     var sql = "SELECT " + provider.dialect().rows().count() + " FROM "
         + filtered(provider, table, filter);
@@ -290,7 +292,7 @@ public final class Rows {
       throw new IllegalArgumentException("Rows from " + from + " to " + to);
     }
     requireColumnsOf(table, columns);
-    checkFilter(provider, filter, readOnly);
+    check(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
     var dialect = provider.dialect().rows();
     var described = dialect.describe(connection, provider, table, columns);
@@ -436,7 +438,15 @@ public final class Rows {
             provider, sql.getSQLState() == null ? "" : sql.getSQLState(), sql.getErrorCode());
   }
 
-  private static void checkFilter(Provider provider, Filter filter, boolean readOnly)
+  /**
+   * Checks the filter's clauses against {@link Clauses}, as {@link #read}, {@link #count} and
+   * {@link #estimate} do before sending anything to the server.
+   *
+   * @param readOnly whether the session is read-only, where each clause is also checked with
+   *     {@link dev.hoori.db.core.sql.ReadWrite}
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} where a clause is refused
+   */
+  public static void check(Provider provider, Filter filter, boolean readOnly)
       throws QueryException {
     checkClause("WHERE", filter.where(), provider, readOnly);
     checkClause("ORDER BY", filter.order(), provider, readOnly);

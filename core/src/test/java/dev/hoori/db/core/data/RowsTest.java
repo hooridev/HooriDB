@@ -61,7 +61,7 @@ class RowsTest {
   }
 
   @Test
-  void aFilterRefusesBadClausesBeforeTouchingTheConnection() {
+  void aFilterRefusesBadClausesBeforeTouchingTheConnection() throws QueryException {
     var table = new Table(HOORI, "t", Table.Kind.TABLE);
     var bad = new Rows.Filter("1=1; DROP TABLE x", "");
     for (var provider : Provider.SQL) {
@@ -83,6 +83,11 @@ class RowsTest {
     var empty = new Rows.Filter(null, "  ");
     assertEquals(true, empty.empty());
     assertEquals("", empty.where());
+    Rows.check(Provider.POSTGRESQL, empty, true);
+    assertEquals(
+        QueryException.Failure.CLAUSE_REFUSED,
+        assertThrows(QueryException.class, () -> Rows.check(Provider.POSTGRESQL, bad, false))
+            .failure());
   }
 
   @Test

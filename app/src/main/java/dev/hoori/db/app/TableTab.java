@@ -8,22 +8,27 @@ import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.Key;
+import com.rethinkj.ui.Len;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
+import com.rethinkj.ui.kit.Completion;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
@@ -132,7 +137,28 @@ final class TableTab implements Tab {
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   final Menu.State menu = new Menu.State();
   final ValuePanel value = new ValuePanel();
+  Rows.Filter filter = Rows.Filter.NONE; // the clauses applied to reads and counts
+  private String refused; // why the clauses last submitted were refused, or null
+  private final Clause where;
+  private final Clause order;
   private Whole whole; // the current cell's whole value, for the value panel; or null
+
+  /** One clause field (WHERE or ORDER BY) with its caret and SQL completions. */
+  private static final class Clause {
+    String text = "";
+    int caret;
+    final Completion.State completion = new Completion.State().openAfter(".");
+    final Suggestions suggestions;
+
+    Clause(UUID id) {
+      this.suggestions = new Suggestions(id);
+    }
+
+    void close() {
+      completion.close();
+      suggestions.close();
+    }
+  }
 
   /**
    * The whole value of a cell that a page holds in part, asked for by its row as read: the text,
@@ -145,6 +171,8 @@ final class TableTab implements Tab {
     this.id = id;
     this.table = table;
     this.presentation = new DocumentPresentation(initial);
+    this.where = new Clause(id);
+    this.order = new Clause(id);
   }
 
   /** A tab for the table or collection, starting in the configured view for documents. */
@@ -179,6 +207,7 @@ final class TableTab implements Tab {
     var known = anew ? null : columns;
     boolean recount = anew && counted == Counted.EXACT; // a refresh counts again what was counted
     var of = table;
+    var applied = filter;
     // The page in view: of the grid, or of the documents JSON and Tree show.
     long from = presentation.isGrid() ? (long) first / PAGE * PAGE : presentation.page() * PAGE;
     opening = lane.ask(
@@ -187,9 +216,9 @@ final class TableTab implements Tab {
         Lane.Priority.VIEW,
         link -> {
           var read = known != null ? known : link.columns(of);
-          var estimate = link.estimate(of);
+          var estimate = link.estimate(of, applied);
           long start = System.nanoTime();
-          var page = link.read(of, read, from, from + PAGE);
+          var page = link.read(of, read, from, from + PAGE, applied);
           return new Opened(read, estimate, page, System.nanoTime() - start);
         },
         opened -> opened(s, from, recount, opened),
@@ -236,8 +265,10 @@ final class TableTab implements Tab {
     if (!presentation.isGrid()) {
       turn(s, presentation.page()); // as it was turned to while it opened
     }
+    // A WHERE's estimate says little of what its count scans: its rows are counted by the pages.
     if (counted != Counted.EXACT
-        && (recount || estimate.isPresent() && estimate.getAsLong() < COUNT_BELOW)) {
+        && (recount
+            || !filter.hasWhere() && estimate.isPresent() && estimate.getAsLong() < COUNT_BELOW)) {
       counted(s, recount);
     }
   }
@@ -313,6 +344,7 @@ final class TableTab implements Tab {
     var live = s.catalog.live(id);
     var of = table;
     var with = columns;
+    var applied = filter;
     long from = page * PAGE;
     record Read(Page page, long took) {}
     var asked = lane.ask(
@@ -321,7 +353,7 @@ final class TableTab implements Tab {
         priority,
         link -> {
           long start = System.nanoTime();
-          var read = link.read(of, with, from, from + PAGE);
+          var read = link.read(of, with, from, from + PAGE, applied);
           return new Read(read, System.nanoTime() - start);
         },
         read -> {
@@ -444,11 +476,12 @@ final class TableTab implements Tab {
     }
     var live = s.catalog.live(id);
     var of = table;
+    var applied = filter;
     counting = lane.ask(
         s.app,
         "count rows of " + table.name(),
         Lane.Priority.COUNT,
-        link -> link.count(of),
+        link -> link.count(of, applied),
         n -> {
           counting = null;
           countedFirst = opening != null;
@@ -495,9 +528,14 @@ final class TableTab implements Tab {
       return;
     }
     var problem = problem(error);
-    if (again && (problem == Problem.GONE || problem == Problem.CHANGED)) {
-      open(s, true);
-      return;
+    if (problem == Problem.GONE || problem == Problem.CHANGED) {
+      if (again) {
+        open(s, true);
+        return;
+      }
+      if (!filter.empty() && error instanceof QueryException) {
+        problem = Problem.OTHER; // the columns were just read: the clauses name what is not there
+      }
     }
     var detail = CatalogTree.words(live, detail(error));
     if (error instanceof ConnectionException e) {
@@ -609,8 +647,44 @@ final class TableTab implements Tab {
   public void close() {
     closed = true;
     stop();
+    where.close();
+    order.close();
     pages.clear();
     documents.clear();
+  }
+
+  /**
+   * Applies the clauses in the WHERE and ORDER BY fields: cancels reads in flight, drops old pages
+   * and count, scrolls to the top, clears the selection, and reads the table again with its known
+   * columns.
+   */
+  void apply(State s) {
+    if (closed || !s.catalog.connected(id)) {
+      return;
+    }
+    var next = new Rows.Filter(where.text.strip(), order.text.strip());
+    var profile = s.profile(id);
+    try {
+      Rows.check(profile.provider(), next, profile.readOnly()); // refused before anything is sent
+      refused = null;
+    } catch (QueryException e) {
+      refused = e.detail(); // the applied filter and its reads go on
+      return;
+    }
+    if (next.equals(filter) && failure == null) {
+      return;
+    }
+    filter = next;
+    took = -1;
+    got = 0;
+    rows = 0;
+    more = false;
+    counted = Counted.ESTIMATED;
+    first = 0;
+    last = -1;
+    selection.clear();
+    selection.scrollToRow(0);
+    open(s, false);
   }
 
   /** Shows the documents as asked: whole, the page the grid was at. */
@@ -678,12 +752,16 @@ final class TableTab implements Tab {
     Theme t = Theme.CURRENT.get();
     var connected = s.catalog.connected(id);
     var profile = s.profile(id);
-    String where = profile == null ? null : State.name(profile);
+    String connection = profile == null ? null : State.name(profile);
     boolean ofDocuments = profile != null && Language.of(profile.provider()).documents();
-    El top = Card.toolbar(path(), where, actions(s, connected, ofDocuments).toArray(El[]::new));
+    El top =
+        Card.toolbar(path(), connection, actions(s, connected, ofDocuments).toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
-    El content =
-        col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
+    El content = col().grow(1).minSize(0, 0).child(top);
+    if (!ofDocuments) {
+      content.child(Card.filters(filters(s, app, profile, connected)).shrink(0));
+    }
+    content.child(line == null ? Divider.divider() : line);
     El note = note(s, connected);
     if (note != null) {
       content.child(col().padding(t.space().m()).shrink(0).child(note));
@@ -700,6 +778,111 @@ final class TableTab implements Tab {
         .ellipsis();
     return content.child(
         Card.footer(rowsStatus, footer(ofDocuments, presented).toArray(El[]::new)));
+  }
+
+  /** The WHERE and ORDER BY clause fields above the grid on an SQL server. */
+  private El filters(State s, App<State> app, ConnectionProfile profile, boolean connected) {
+    Theme t = Theme.CURRENT.get();
+    return row()
+        .key("filter-bar")
+        .grow(1)
+        .minSize(0, 0)
+        .gap(t.space().m())
+        .align(Style.Align.CENTER)
+        .child(clauseGroup(s, app, profile, connected, where, "where", "WHERE", 3))
+        .child(clauseGroup(s, app, profile, connected, order, "order", "ORDER BY", 2));
+  }
+
+  private El clauseGroup(
+      State s,
+      App<State> app,
+      ConnectionProfile profile,
+      boolean connected,
+      Clause clause,
+      String key,
+      String keyword,
+      float grow) {
+    Theme t = Theme.CURRENT.get();
+    El heading = Label.label(Label.Variant.MUTED, keyword)
+        .font(t.type().mono().font().get())
+        .fontSize(t.type().mono().size())
+        .shrink(0);
+    return row()
+        .grow(grow)
+        .basis(0)
+        .minSize(0, 0)
+        .gap(t.space().s())
+        .align(Style.Align.CENTER)
+        .child(heading)
+        .child(clauseField(s, app, profile, connected, clause, key, keyword));
+  }
+
+  private El clauseField(
+      State s,
+      App<State> app,
+      ConnectionProfile profile,
+      boolean connected,
+      Clause clause,
+      String key,
+      String keyword) {
+    Theme t = Theme.CURRENT.get();
+    if (!connected && clause.completion.isOpen()) {
+      clause.completion.close();
+    }
+    El field = TextField.textField(clause.text, null, connected ? v -> clause.text = v : null)
+        .key(key)
+        .label(keyword)
+        .font(t.type().mono().font().get())
+        .fontSize(t.type().mono().size())
+        .codeWords()
+        .onSelect((caret, anchor) -> clause.caret = caret)
+        .grow(1)
+        .basis(0)
+        .minSize(0, 0);
+    field.style().width = Len.AUTO;
+    if (profile != null) {
+      var syntax = Syntax.of(profile.provider());
+      field.highlight(syntax, syntax);
+    }
+    if (connected) {
+      field.onKey(k -> {
+        if (k.modifiers() == 0 && (k.name().equals("Enter") || k.name().equals("NumpadEnter"))) {
+          apply(s);
+          return true;
+        }
+        return false;
+      });
+    }
+    if (!clause.completion.isOpen()) {
+      clause.suggestions.forget();
+    }
+    if (connected && profile != null) {
+      var provider = profile.provider();
+      var prefix = "SELECT * FROM " + Rows.qualified(provider, table) + " AS " + Rows.ALIAS + " "
+          + keyword + " ";
+      El completing = Completion.complete(
+          app,
+          field,
+          clause.caret,
+          clause.completion,
+          word -> clause.suggestions.at(
+              s,
+              provider,
+              table.container().database().name(),
+              prefix + clause.text,
+              prefix.length() + Math.min(clause.caret, clause.text.length()),
+              word,
+              table,
+              columns));
+      var keys = completing.onKey();
+      completing.onKey(k -> {
+        if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
+          clause.suggestions.forget();
+        }
+        return keys != null && keys.test(k);
+      });
+    }
+    return field;
   }
 
   /** The toolbar's actions: how documents show, Open in console for SQL, and Refresh. */
@@ -729,8 +912,18 @@ final class TableTab implements Tab {
     if (profile == null || group == null) {
       return;
     }
-    var sql = "SELECT * FROM " + Rows.qualified(profile.provider(), table);
-    s.openConsole(id, group, table.container().database().name(), sql);
+    // By the alias the grid's reads give the table, each clause on lines of its own, as they read.
+    var sql = new StringBuilder("SELECT * FROM ").append(Rows.qualified(profile.provider(), table));
+    if (!filter.empty()) {
+      sql.append(" AS ").append(Rows.ALIAS);
+    }
+    if (filter.hasWhere()) {
+      sql.append("\nWHERE ").append(filter.where());
+    }
+    if (filter.hasOrder()) {
+      sql.append("\nORDER BY ").append(filter.order());
+    }
+    s.openConsole(id, group, table.container().database().name(), sql.toString());
   }
 
   /** Placeholder body before columns are known: spinner while opening, else empty. */
@@ -972,7 +1165,8 @@ final class TableTab implements Tab {
 
   /** How many rows or documents, and what the number rests on; empty before the first read. */
   String rowsText(boolean documents) {
-    if (fields == null) {
+    if (fields == null
+        || (opening != null || failure != null) && rows == 0 && counted == Counted.ESTIMATED) {
       return "";
     }
     var n = ConsoleTab.rows(rows, documents);
@@ -1015,7 +1209,9 @@ final class TableTab implements Tab {
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
     if (failure == null) {
-      return null;
+      return refused == null
+          ? null
+          : Callout.callout(Callout.Kind.DANGER, "Clause refused", refused);
     }
     var words = switch (failure.problem()) {
       case GONE ->

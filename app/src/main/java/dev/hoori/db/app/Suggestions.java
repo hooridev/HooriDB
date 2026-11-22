@@ -12,13 +12,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
- * What a console's editor suggests at the caret, as its language's {@link Strategy} makes it from
- * what the tree has read of the console's connection and database. What it lacks it reads in the
+ * What an editor or clause field suggests at the caret, as its language's {@link Strategy} makes it
+ * from what the tree has read of the connection and database. What it lacks it reads in the
  * background on the tree's connection, behind what the tree and the tabs ask for, and suggests at
- * the next keystroke; never on the console's own connection, which may be busy or in a
- * transaction. Closing the console gives up those reads. Only the app's thread uses it.
+ * the next keystroke; never on a console's own connection, which may be busy or in a transaction.
+ * Closing the tab gives up those reads. Only the app's thread uses it.
  */
 final class Suggestions {
 
@@ -43,6 +44,7 @@ final class Suggestions {
     List<Candidate> candidates(Known known, String statement, int caret, String word);
   }
 
+  private final UUID id;
   private final ConsoleTab tab;
   private final Map<Node, CatalogTree.Scan> asked = new HashMap<>(); // the reads it started
   private CatalogTree catalog; // where they were asked, once they are
@@ -53,10 +55,24 @@ final class Suggestions {
   private int madeAt;
   private String madeOf;
   private Settings.KeywordCase madeCase;
+  private List<Column> madeColumns;
   int made; // how often they were made, which a test counts
 
   Suggestions(ConsoleTab tab) {
+    this(null, tab);
+  }
+
+  Suggestions(UUID id) {
+    this(id, null);
+  }
+
+  private Suggestions(UUID id, ConsoleTab tab) {
+    this.id = id;
     this.tab = tab;
+  }
+
+  private UUID connection() {
+    return tab != null ? tab.id : id;
   }
 
   /**
@@ -74,12 +90,49 @@ final class Suggestions {
         && keywordCase == madeCase) {
       return entries;
     }
-    entries = make(s, provider, word, text, caret);
+    // The statement the caret writes in, with the comments around it, from the console's split.
+    var around = tab.statements(provider).around(caret);
+    var statement = text.substring(around.start(), around.end());
+    entries = make(s, provider, tab.database, statement, caret - around.start(), word, null, null);
     made++;
     madeFor = text;
     madeAt = caret;
     madeOf = word;
     madeCase = keywordCase;
+    madeColumns = null;
+    return entries;
+  }
+
+  /**
+   * The entries for the word before the caret in one statement, such as a synthetic {@code SELECT}
+   * built from a table tab's clause field, with the table and its known columns supplied directly.
+   */
+  List<Completion.Entry> at(
+      State s,
+      Provider provider,
+      String database,
+      String statement,
+      int caret,
+      String word,
+      Table table,
+      List<Column> columns) {
+    int at = Math.min(caret, statement.length());
+    var keywordCase = s.settings.keywordCase();
+    if (entries != null
+        && statement.equals(madeFor)
+        && at == madeAt
+        && word.equals(madeOf)
+        && keywordCase == madeCase
+        && columns == madeColumns) {
+      return entries;
+    }
+    entries = make(s, provider, database, statement, at, word, table, columns);
+    made++;
+    madeFor = statement;
+    madeAt = at;
+    madeOf = word;
+    madeCase = keywordCase;
+    madeColumns = columns;
     return entries;
   }
 
@@ -89,14 +142,18 @@ final class Suggestions {
   }
 
   private List<Completion.Entry> make(
-      State s, Provider provider, String word, String text, int caret) {
-    // The statement the caret writes in, with the comments around it, from the console's split.
-    var around = tab.statements(provider).around(caret);
+      State s,
+      Provider provider,
+      String database,
+      String statement,
+      int caret,
+      String word,
+      Table table,
+      List<Column> columns) {
     var strategy = Language.of(provider).completion();
-    var known = new Known(s, provider, strategy.exactNames(provider));
-    var statement = text.substring(around.start(), around.end());
+    var known = new Known(s, provider, database, strategy.exactNames(provider), table, columns);
     return Ranking.rank(
-            strategy.candidates(known, statement, caret - around.start(), word),
+            strategy.candidates(known, statement, caret, word),
             Candidate::name,
             Candidate::own,
             word)
@@ -113,7 +170,7 @@ final class Suggestions {
     asked.clear();
   }
 
-  /** What the tree has read of the console's connection, and what it asks for of what it lacks. */
+  /** What the tree has read of the connection, and what it asks for of what it lacks. */
   final class Known {
     final Provider provider;
     final Settings.KeywordCase keywordCase;
@@ -125,21 +182,31 @@ final class Suggestions {
     private final State s;
     private final boolean exact;
     private final Live live; // null while not connected
-    private final String named; // the console's database, or null
+    private final String named; // the current database, or null
+    private final Table ownTable; // a table tab's own table, or null
+    private final List<Column> ownColumns; // its known columns, or null
     private Node.OfDatabase console; // the node of that name, or null, once looked up
     private boolean looked;
 
-    private Known(State s, Provider provider, boolean exact) {
+    private Known(
+        State s,
+        Provider provider,
+        String database,
+        boolean exact,
+        Table ownTable,
+        List<Column> ownColumns) {
       this.s = s;
       this.provider = provider;
       this.keywordCase = s.settings.keywordCase();
       this.exact = exact;
-      var opened = s.catalog.live(tab.id);
+      this.ownTable = ownTable;
+      this.ownColumns = ownColumns;
+      var opened = s.catalog.live(connection());
       var connected = opened != null && opened.phase instanceof Live.Connected c ? c : null;
       this.live = connected == null ? null : opened;
       schemas = connected != null && connected.schemas();
-      named = !tab.database.isEmpty() || connected == null ? tab.database : connected.database();
-      var profile = s.profile(tab.id);
+      named = !database.isEmpty() || connected == null ? database : connected.database();
+      var profile = s.profile(connection());
       path = profile == null ? List.of("public") : List.of(profile.user(), "public");
     }
 
@@ -172,7 +239,7 @@ final class Suggestions {
     }
 
     private Node.OfDatabase database(String name) {
-      for (var node : read(new Node.Connection(tab.id))) {
+      for (var node : read(new Node.Connection(connection()))) {
         if (node instanceof Node.OfDatabase d && same(d.database().name(), name)) {
           return d;
         }
@@ -180,7 +247,7 @@ final class Suggestions {
       return null;
     }
 
-    // The console's database, looked up once and only where a candidate needs it.
+    // The current database, looked up once and only where a candidate needs it.
     private Node.OfDatabase database() {
       if (!looked) {
         looked = true;
@@ -195,7 +262,7 @@ final class Suggestions {
      */
     List<Node> schemasOrDatabases() {
       if (!schemas) {
-        return read(new Node.Connection(tab.id));
+        return read(new Node.Connection(connection()));
       }
       var database = database();
       return database == null ? List.of() : read(database);
@@ -260,9 +327,14 @@ final class Suggestions {
     /**
      * The table of that name in the schema, or without one where the server finds it: on
      * PostgreSQL in the first schema of the search path that has it, on MariaDB and MySQL in the
-     * console's database; null for none.
+     * current database; null for none.
      */
     Table table(String schema, String name) {
+      if (ownTable != null
+          && (schema == null || same(ownTable.container().name(), schema))
+          && same(ownTable.name(), name)) {
+        return ownTable;
+      }
       if (schema == null && schemas) {
         tables(); // reads the database's tables where it has not
         for (var first : path) {
@@ -293,10 +365,13 @@ final class Suggestions {
 
     /** The table's columns, with their types; none yet where it reads them now. */
     List<Column> columns(Table table) {
-      var columns = s.catalog.columns(tab.id, table);
+      if (table.equals(ownTable) && ownColumns != null) {
+        return ownColumns;
+      }
+      var columns = s.catalog.columns(connection(), table);
       if (columns == null) {
         if (live != null) {
-          want(new Node.OfTable(tab.id, table));
+          want(new Node.OfTable(connection(), table));
         }
         return List.of();
       }
