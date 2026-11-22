@@ -96,6 +96,33 @@ class ChangesTest {
   }
 
   @Test
+  void unreadAndPartialColumnsCannotBeUpdated() {
+    var none = changes();
+    var unread = row(1L, "x", Missing.FIELD, new BigDecimal("1.50"));
+    assertThrows(IllegalArgumentException.class, () -> none.edit(unread, 2, "new"));
+    assertThrows(IllegalArgumentException.class, () -> none.edit(unread, 2, Missing.FIELD));
+    assertThrows(IllegalArgumentException.class, () -> new Change.Update(unread, values(2, "new")));
+    // Other present, whole columns of the same row can still be edited, and the row deleted.
+    assertEquals(
+        List.of(new Change.Update(unread, values(3, new BigDecimal("2.00")))),
+        none.edit(unread, 3, new BigDecimal("2.00")).changes());
+    assertEquals(List.of(new Change.Delete(unread)), none.delete(unread).changes());
+
+    var cutText = row(1L, "x", new Cut("old", OptionalLong.of(2000)), null);
+    assertThrows(IllegalArgumentException.class, () -> none.edit(cutText, 2, "new"));
+    assertThrows(
+        IllegalArgumentException.class, () -> new Change.Update(cutText, values(2, "new")));
+
+    var cutBinary = row(1L, "x", new Binary(new byte[] {1}, 2), null);
+    assertThrows(IllegalArgumentException.class, () -> none.edit(cutBinary, 2, "new"));
+    assertThrows(
+        IllegalArgumentException.class, () -> new Change.Update(cutBinary, values(2, "new")));
+
+    assertThrows(IllegalArgumentException.class, () -> none.edit(ROW, 2, Missing.FIELD));
+    assertThrows(IllegalArgumentException.class, () -> none.insert(values(2, Missing.FIELD)));
+  }
+
+  @Test
   void statementsNameTheirRowsByTheKeyAndUpdatesComeFirst() {
     var changes = changes()
         .insert(Map.of(0, 3L, 1, "it's"))

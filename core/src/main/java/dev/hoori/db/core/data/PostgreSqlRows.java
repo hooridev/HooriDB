@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.OptionalLong;
+import java.util.function.Function;
 
 /** How PostgreSQL's tables and results are read, with pgjdbc. */
 public final class PostgreSqlRows extends RowsDialect {
@@ -272,6 +273,22 @@ public final class PostgreSqlRows extends RowsDialect {
     return "?";
   }
 
+  // Texts (including json, other types and server texts such as infinity) compare byte-wise
+  // through the type's output function, as the read reads them, which covers types without '=' and
+  // catches differences a collation or '=' would blur; concat() turns NULL into '', so require
+  // IS NOT NULL as well.
+  @Override
+  String unchanged(String column, Object value, Function<Object, String> parameter) {
+    if (value == null) {
+      return column + " IS NULL";
+    }
+    if (value instanceof String) {
+      return column + " IS NOT NULL AND pg_catalog.concat(" + column + ") COLLATE pg_catalog.\"C\" "
+          + keyEquality() + " " + parameter.apply(value);
+    }
+    return column + " " + keyEquality() + " " + parameter.apply(value);
+  }
+
   // An UPDATE or DELETE of a table that others inherit from meets their rows too, whose keys may
   // be its own; a partitioned table's keys are unique across its partitions.
   @Override
@@ -280,12 +297,17 @@ public final class PostgreSqlRows extends RowsDialect {
     var sql = "SELECT c.relhassubclass AND c.relkind OPERATOR(pg_catalog.=) 'r'"
         + " FROM pg_catalog.pg_class c"
         + " WHERE c.oid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(?)";
-    return Query.run(connection, provider, sql, statement -> {
-      statement.setString(1, Rows.qualified(provider, table));
-      try (var rows = statement.executeQuery()) {
-        return !rows.next() || !rows.getBoolean(1);
-      }
-    });
+    return Journal.sql(
+        provider,
+        Purpose.CHANGES,
+        sql,
+        ok -> Outcome.rows(1),
+        () -> Query.run(connection, provider, sql, statement -> {
+          statement.setString(1, Rows.qualified(provider, table));
+          try (var rows = statement.executeQuery()) {
+            return !rows.next() || !rows.getBoolean(1);
+          }
+        }));
   }
 
   // The output function's text of a PostgreSQL value of any type, which counts as NULL where

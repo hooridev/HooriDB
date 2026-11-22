@@ -6,6 +6,11 @@ public enum Purpose {
   CATALOG,
   /** Reading a table's rows: a page, a whole value, a count or an estimate of its rows. */
   ROWS,
+  /**
+   * Writing changes of a table's rows: checking whether the table can be changed, checking each row
+   * and writing the changes.
+   */
+  CHANGES,
   /** The planner's estimate of the rows a statement gives, before it runs. */
   ESTIMATE,
   /** A statement the user ran, and its cancel. */

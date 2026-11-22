@@ -23,11 +23,13 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 /** How MariaDB's and MySQL's tables and results are read alike; their drivers differ. */
@@ -278,22 +280,50 @@ abstract class MySqlFamilyRows extends RowsDialect {
     return value instanceof OffsetDateTime ? "FROM_UNIXTIME(?)" : "?";
   }
 
+  // Texts compare by their UTF-8 bytes so no collation or PAD SPACE blurs them; binary values
+  // (including bit(n) and spatial types) compare as bytes, as MariaDB compares BIT with a bound
+  // binary value numerically otherwise; a FLOAT compares as its text, as it was read, which has six
+  // digits and so equals no number of more, such as CAST(? AS FLOAT).
+  @Override
+  String unchanged(String column, Object value, Function<Object, String> parameter) {
+    if (value == null) {
+      return column + " IS NULL";
+    }
+    if (value instanceof String) {
+      return "CAST(CONVERT(" + column + " USING utf8mb4) AS BINARY) = CAST("
+          + parameter.apply(value) + " AS BINARY)";
+    }
+    if (value instanceof Binary) {
+      return "CAST(" + column + " AS BINARY) = CAST(" + parameter.apply(value) + " AS BINARY)";
+    }
+    if (value instanceof Float) {
+      return "CAST(" + column + " AS CHAR) = CAST(" + parameter.apply(value) + " AS CHAR)";
+    }
+    return column + " = " + parameter.apply(value);
+  }
+
   // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails
   // the statement that names it. A moment must come back as itself from the session's time.
   @Override
   boolean changeable(Connection connection, Provider provider, Table table, List<Object> values)
       throws QueryException {
+    var checked = new HashSet<OffsetDateTime>();
     for (var value : values) {
-      if (value instanceof OffsetDateTime moment) {
+      if (value instanceof OffsetDateTime moment && checked.add(moment)) {
         var seconds = seconds(moment);
-        var back = Query.run(
-            connection, provider, "SELECT UNIX_TIMESTAMP(FROM_UNIXTIME(?))", statement -> {
+        var roundTrip = "SELECT UNIX_TIMESTAMP(FROM_UNIXTIME(?))";
+        var back = Journal.sql(
+            provider,
+            Purpose.CHANGES,
+            roundTrip,
+            b -> Outcome.rows(1),
+            () -> Query.run(connection, provider, roundTrip, statement -> {
               statement.setBigDecimal(1, seconds);
               try (var rows = statement.executeQuery()) {
                 rows.next();
                 return rows.getBigDecimal(1);
               }
-            });
+            }));
         if (back == null || back.compareTo(seconds) != 0) {
           return false;
         }
@@ -302,13 +332,18 @@ abstract class MySqlFamilyRows extends RowsDialect {
     var sql = "SELECT e.TRANSACTIONS FROM information_schema.TABLES t"
         + " JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE"
         + " WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?";
-    return Query.run(connection, provider, sql, statement -> {
-      statement.setString(1, table.container().name());
-      statement.setString(2, table.name());
-      try (var rows = statement.executeQuery()) {
-        return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
-      }
-    });
+    return Journal.sql(
+        provider,
+        Purpose.CHANGES,
+        sql,
+        ok -> Outcome.rows(1),
+        () -> Query.run(connection, provider, sql, statement -> {
+          statement.setString(1, table.container().name());
+          statement.setString(2, table.name());
+          try (var rows = statement.executeQuery()) {
+            return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
+          }
+        }));
   }
 
   private static BigDecimal seconds(OffsetDateTime moment) {
