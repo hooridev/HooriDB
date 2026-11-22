@@ -186,6 +186,10 @@ public final class HooriDb {
     SystemDialogs.reportFailure(NAME, () -> {
       Window.identity(DesktopEntry.ID, NAME);
       Window.Options options = Window.options().icon(ICON).frameless().minimumSize(640, 400);
+      var placement = app.state().keeping.windowPlacement();
+      if (placement != null) {
+        options.placement(placement);
+      }
       try (Window window = Window.open(NAME, 1200, 760, options);
           GpuPresenter presenter = new GpuPresenter(window)) {
         var loop = new WindowLoop(window, app, presenter);

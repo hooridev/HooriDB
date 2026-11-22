@@ -1,7 +1,10 @@
 package dev.hoori.db.app;
 
+import com.rethinkj.ui.Work;
+import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.SystemAppearance;
+import com.rethinkj.ui.window.Window;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryStore;
@@ -25,7 +28,8 @@ import java.util.concurrent.FutureTask;
 
 /**
  * The files kept beside the workspace, a part of the state: the consoles, the history, the saved
- * queries and the settings, each a {@link Kept}, read at the start and saved as they change; and
+ * queries and the settings, each a {@link Kept}, read at the start and saved as they change; the
+ * remembered layout ({@link UiStateStore}), read before the first frame and saved silently; and
  * what Exit waits for of them and of the update settings. Only the app's thread uses it.
  */
 final class Keeping {
@@ -34,7 +38,7 @@ final class Keeping {
   static final double EDIT_SECONDS = 1;
 
   /** What a window's start reads before the first frame: settings (or its error) and UI state. */
-  record Start(SettingsStore.Loaded settings, Exception settingsError, UiState uiState) {}
+  record Start(SettingsStore.Loaded settings, Exception settingsError) {}
 
   private final State s;
   private final ConsoleStore consoleStore;
@@ -46,7 +50,7 @@ final class Keeping {
   final Kept historyKept;
   final Kept queriesKept;
   final Kept settingsKept;
-  private boolean preloaded; // settings and UI state were already read before the first frame
+  private boolean preloaded; // the settings were already read before the first frame
   // Until the file is read no setting changes, so that none replaces the file's others.
   boolean settingsLoading = true;
   // The queries saved on purpose, of every connection, in the order they were first saved.
@@ -71,6 +75,12 @@ final class Keeping {
   private List<StoredConsole> restoring;
   // The consoles kept of connections not known, saved along with the others and not shown.
   private List<StoredConsole> unseen = List.of();
+  private UiState uiState;
+  private boolean uiStateUnsaved;
+  private Work uiStateSaving;
+  private boolean uiStateSaveAgain;
+  private boolean uiStateExitFailed; // a failed save during Exit is not retried
+  private int uiStateChanges;
 
   /**
    * @param folder where the workspace is kept
@@ -83,6 +93,7 @@ final class Keeping {
     this.queryStore = new QueryStore(folder);
     this.settingsStore = new SettingsStore(folder);
     this.uiStateStore = new UiStateStore(folder);
+    this.uiState = uiStateStore.load();
     consolesKept = new Kept("consoles", () -> {
       var list = new ArrayList<StoredConsole>();
       s.consoles(null).forEach(x -> list.add(x.stored()));
@@ -95,8 +106,8 @@ final class Keeping {
   }
 
   /**
-   * Starts reading {@code settings.json} and {@code ui-state.json} on a thread of their own, so
-   * that a window's start overlaps them with the GPU's.
+   * Starts reading {@code settings.json} on a thread of its own, so that a window's start overlaps
+   * it with the GPU's.
    */
   static FutureTask<Start> startReading(Path folder) {
     var task = new FutureTask<>(() -> readStart(folder));
@@ -105,11 +116,10 @@ final class Keeping {
   }
 
   private static Start readStart(Path folder) {
-    var uiState = new UiStateStore(folder).load();
     try {
-      return new Start(new SettingsStore(folder).load(), null, uiState);
+      return new Start(new SettingsStore(folder).load(), null);
     } catch (Exception e) {
-      return new Start(null, e, uiState);
+      return new Start(null, e);
     }
   }
 
@@ -125,10 +135,9 @@ final class Keeping {
       if (e.getCause() instanceof Error error) {
         throw error;
       }
-      loaded = new Start(null, (Exception) e.getCause(), UiState.EMPTY);
+      loaded = new Start(null, (Exception) e.getCause());
     }
     preloaded = true;
-    s.uiState = loaded.uiState();
     if (loaded.settingsError() != null) {
       settingsFailed(loaded.settingsError());
     } else {
@@ -175,12 +184,111 @@ final class Keeping {
     return resolved;
   }
 
+  /** Applies the layout loaded from {@link UiStateStore#FILE} to the sidebar and statement log. */
+  void restoreLayout() {
+    if (uiState.sidebar() != null) {
+      s.sidebar = Split.Position.first(uiState.sidebar());
+    }
+    s.logPanel.restore(uiState);
+  }
+
+  /** The main window's remembered placement, or null where none is stored or it cannot be read. */
+  Window.Placement windowPlacement() {
+    var line = uiState.window();
+    if (line == null) {
+      return null;
+    }
+    try {
+      return Window.Placement.parse(line);
+    } catch (IllegalArgumentException _) {
+      return null;
+    }
+  }
+
+  UiState uiState() {
+    return uiState;
+  }
+
+  /** Keeps the sidebar's width, a moment after the last move. */
+  void sidebar(Split.Position position) {
+    if (position.kind() == Split.Position.Kind.FIRST) {
+      uiState(uiState.withSidebar(position.value()));
+    }
+  }
+
+  /** Keeps the layout once it has not changed for a moment, and at Exit; failures are silent. */
+  void uiState(UiState changed) {
+    if (changed.equals(uiState)) {
+      return;
+    }
+    uiState = changed;
+    uiStateUnsaved = true;
+    if (!s.guard.quitting()) {
+      uiStateExitFailed = false;
+    }
+    int at = ++uiStateChanges;
+    s.app.after(EDIT_SECONDS, () -> {
+      if (uiStateChanges == at && uiStateUnsaved) {
+        saveUiState();
+      }
+    });
+  }
+
+  private void saveUiState() {
+    if (uiStateSaving != null) {
+      uiStateSaveAgain = true;
+      return;
+    }
+    if (!uiStateUnsaved) {
+      return;
+    }
+    var snapshot = uiState;
+    uiStateUnsaved = false;
+    uiStateSaving = s.app.background(
+        "save UI state",
+        Kept.writing(snapshot, uiStateStore::save),
+        done -> uiStateSaved(false),
+        error -> uiStateSaved(true));
+  }
+
+  private void uiStateSaved(boolean failed) {
+    uiStateSaving = null;
+    if (failed) {
+      uiStateUnsaved = true; // the next change or Exit tries again
+      if (s.guard.quitting()) {
+        uiStateExitFailed = true;
+      }
+    } else {
+      uiStateExitFailed = false;
+    }
+    if (uiStateSaveAgain) {
+      uiStateSaveAgain = false;
+      if (!uiStateExitFailed) {
+        saveUiState();
+        return;
+      }
+    }
+    s.settled();
+  }
+
+  /** Reads the main window's placement before Exit closes it; none in a script run. */
+  private void captureWindow() {
+    var handle = s.app == null ? null : s.app.windows().of(s.app);
+    var window = handle == null ? null : handle.window();
+    if (window != null && window.isOpen()) {
+      var placement = window.placement().toString();
+      if (!placement.equals(uiState.window())) {
+        uiState = uiState.withWindow(placement);
+        uiStateUnsaved = true;
+      }
+    }
+  }
+
   /** Loads the consoles, the history, the saved queries, and where not preloaded, the settings. */
   void start() {
     if (!preloaded) {
       s.app.background(
           "load settings", settingsStore::load, this::settingsLoaded, this::settingsFailed);
-      s.app.background("load UI state", uiStateStore::load, loaded -> s.uiState = loaded, e -> {});
     }
     var consoles = consoleStore;
     s.app.background(
@@ -466,9 +574,10 @@ final class Keeping {
   }
 
   /**
-   * Whether Exit waits for the consoles, the history, the saved queries, the settings or the
-   * update settings to be saved; a save due begins. Changes that cannot be saved, as the file was
-   * not read, stop it once.
+   * Whether Exit waits for the consoles, the history, the saved queries, the settings, the update
+   * settings or the remembered layout to be saved; a save due begins. Changes to the others that
+   * cannot be saved, as the file was not read, stop Exit once; a failure to save the layout never
+   * stops it.
    */
   boolean waits() {
     for (var each : List.of(consolesKept, historyKept, queriesKept, settingsKept, s.updates.kept)) {
@@ -483,7 +592,13 @@ final class Keeping {
         return true;
       }
     }
-    return false;
+    if (!uiStateExitFailed) {
+      captureWindow();
+      if (uiStateUnsaved) {
+        saveUiState();
+      }
+    }
+    return uiStateSaving != null;
   }
 
   /** Changes to a file that was not read stop Exit once, as they cannot be saved. */

@@ -74,7 +74,7 @@ final class Frame {
                     Split.Direction.ROW,
                     s.sidebar,
                     State.DEFAULT_SIDEBAR,
-                    p -> s.sidebar = p,
+                    s::moveSidebar,
                     catalog,
                     160,
                     tabs,
@@ -665,7 +665,7 @@ final class Frame {
                 Menu.item("Command palette…", modal ? null : palette::open)
                     .icon(Symbol.SEARCH)
                     .shortcut(Key.CONTROL | Key.SHIFT, "P"),
-                Menu.item("Statement log", inMain(s, s.logPanel::toggle))
+                Menu.item("Statement log", inMain(s, () -> s.logPanel.toggle(s)))
                     .icon(Symbol.TEXT_BULLET_LIST_LTR)
                     .checked(s.logPanel.open),
                 Menu.separator(),

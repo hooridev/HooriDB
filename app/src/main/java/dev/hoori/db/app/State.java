@@ -14,7 +14,6 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Settings;
-import dev.hoori.db.core.connection.UiState;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.dialect.Dialect;
@@ -46,7 +45,6 @@ final class State {
 
   App<State> app; // runs the clock and the windows, and says whether the window is maximized
   Settings settings = Settings.DEFAULT;
-  UiState uiState = UiState.EMPTY;
   SystemAppearance appearance = new SystemAppearance(SystemAppearance.Scheme.UNKNOWN, 0, false);
   Theme theme = Theme.DARK;
   ZoneId zone = ZoneId.systemDefault(); // the computer's, in which moments show
@@ -128,6 +126,7 @@ final class State {
   State(Path folder, Services services, String version) {
     this.store = new WorkspaceStore(folder);
     this.keeping = new Keeping(folder, this);
+    this.keeping.restoreLayout();
     this.updates = new Updates(folder, services.updater(), version);
     this.version = version;
     this.findKeyring = services.keyring();
@@ -1263,6 +1262,15 @@ final class State {
     if (settings.look() == Settings.Look.SYSTEM && now.scheme() != was.scheme()) {
       theme = Keeping.theme(settings, appearance);
     }
+  }
+
+  /** Moves the sidebar divider and keeps its width. */
+  void moveSidebar(Split.Position position) {
+    if (position.equals(sidebar)) {
+      return;
+    }
+    sidebar = position;
+    keeping.sidebar(position);
   }
 
   /** Shows a message in the status line for {@link #MESSAGE_SECONDS}, on the app's clock. */

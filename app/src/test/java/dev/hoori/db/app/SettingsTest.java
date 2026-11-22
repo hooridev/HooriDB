@@ -13,8 +13,6 @@ import com.rethinkj.ui.window.SystemAppearance;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.SettingsStore;
-import dev.hoori.db.core.connection.UiState;
-import dev.hoori.db.core.connection.UiStateStore;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -175,8 +173,6 @@ class SettingsTest {
     var config = Files.createDirectories(dir.resolve("config"));
     var out = dir.resolve("out");
     var customZone = ZoneId.of("Pacific/Auckland");
-    var uiState = new UiState("win-state", 280f, true, 180f, 0.4f);
-    new UiStateStore(config).save(uiState);
 
     var app = app(config);
     app.state().theme = Theme.LIGHT;
@@ -190,7 +186,6 @@ class SettingsTest {
     // Default settings equal the initial state, so test overrides survive the load.
     assertSame(Theme.LIGHT, app.state().theme);
     assertEquals(customZone, app.state().zone);
-    assertEquals(uiState, app.state().uiState);
 
     var s = app.state();
     // System appearance takes effect when look is SYSTEM.
@@ -245,14 +240,12 @@ class SettingsTest {
         Settings.Look.LIGHT, new SettingsStore(config).load().settings().look());
   }
 
-  /** Preloading with startReading/takeStart applies settings and UI state before the first frame. */
+  /** Preloading with startReading/takeStart applies the settings before the first frame. */
   @Test
-  void preloadingAppliesSettingsAndUiStateBeforeStart(@TempDir Path dir) throws IOException {
+  void preloadingAppliesSettingsBeforeStart(@TempDir Path dir) throws IOException {
     var config = Files.createDirectories(dir.resolve("config"));
     var savedSettings = Settings.DEFAULT.withLook(Settings.Look.LIGHT).withAccent(Color.GREEN);
-    var savedUi = new UiState("placement", 300f, false, null, null);
     new SettingsStore(config).save(savedSettings);
-    new UiStateStore(config).save(savedUi);
 
     var initial = Keeping.startReading(config);
     var state = new State(
@@ -270,7 +263,6 @@ class SettingsTest {
 
     assertEquals(savedSettings, state.settings);
     assertEquals(Theme.LIGHT.withAccent(Theme.Hue.GREEN), state.theme);
-    assertEquals(savedUi, state.uiState);
     assertTrue(state.keeping.settingsKept.canSave);
   }
 }
