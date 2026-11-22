@@ -214,6 +214,7 @@ class DocumentConsoleTest {
         line(collectionJson, "role=radio label=\"JSON\"").contains("checked"), collectionJson);
     assertTrue(
         line(collectionJson, "#json").contains("\\\"customer\\\": \\\"Ada\\\""), collectionJson);
+    assertFalse(collectionJson.contains("label=\"Open in console\""), collectionJson);
 
     // SQL tables still open in Grid even when documentView is JSON.
     c.run(
@@ -224,6 +225,7 @@ class DocumentConsoleTest {
     var sqlGrid = c.tree("sql-grid");
     assertTrue(sqlGrid.contains("#grid"), sqlGrid);
     assertFalse(sqlGrid.contains("#json"), sqlGrid);
+    assertTrue(sqlGrid.contains("label=\"Open in console\""), sqlGrid);
     assertEquals(
         DocumentPresentation.Mode.GRID,
         app.state().tables(SHOP.id()).getFirst().presentation.mode());
