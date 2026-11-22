@@ -647,7 +647,8 @@ final class ResultEdits {
         .key("preview-sql")
         .label("SQL preview"));
     El content = col()
-        .w(ConnectionDialog.width())
+        // Statements are long and the editor does not wrap them.
+        .w(2 * ConnectionDialog.width())
         .gap(t.space().m())
         .child(Label.label(summary).wrapText())
         .child(code.h(Math.min(10, Math.max(3, n + 1)) * t.size().control()).wFull());
