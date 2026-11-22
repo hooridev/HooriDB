@@ -14,6 +14,7 @@ import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.driver.LoadedDriver;
@@ -720,10 +721,27 @@ final class FakeServers implements Servers {
       }
     }
 
+    private static String suffix(Rows.Filter filter) {
+      if (filter == null || filter.empty()) {
+        return "";
+      }
+      var text = new StringBuilder();
+      if (filter.hasWhere()) {
+        text.append(" WHERE ").append(filter.where());
+      }
+      if (filter.hasOrder()) {
+        text.append(" ORDER BY ").append(filter.order());
+      }
+      return text.toString();
+    }
+
     @Override
-    public OptionalLong estimate(Table t) throws QueryException {
+    public OptionalLong estimate(Table t, Rows.Filter filter) throws QueryException {
       var path = path(t);
-      return rows("estimate " + path, t, table -> estimates.getOrDefault(path, OptionalLong.of(3)));
+      return rows(
+          "estimate " + path + suffix(filter),
+          t,
+          table -> estimates.getOrDefault(path, OptionalLong.of(3)));
     }
 
     @Override
@@ -772,15 +790,16 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public long count(Table t) throws QueryException {
+    public long count(Table t, Rows.Filter filter) throws QueryException {
       var path = path(t);
-      return rows("count " + path, t, table -> counts.getOrDefault(path, 3L));
+      return rows("count " + path + suffix(filter), t, table -> counts.getOrDefault(path, 3L));
     }
 
     @Override
-    public Page read(Table t, List<Column> columns, long from, long to) throws QueryException {
+    public Page read(Table t, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException {
       var path = path(t);
-      return rows("read " + path + " " + from + "-" + to, t, table -> {
+      return rows("read " + path + " " + from + "-" + to + suffix(filter), t, table -> {
         // As core reads: the columns given must be the table's now, by name, order and type.
         var now = table.children().stream()
             .map(line -> List.of(line.text().replaceFirst("^\\*", "").split(": ", 2)))

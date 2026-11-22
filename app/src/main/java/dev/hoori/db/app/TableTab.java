@@ -547,7 +547,7 @@ final class TableTab implements Tab {
           case CONNECTION_LOST -> Problem.LOST;
           case ABORTED -> Problem.DISCARDED;
           case CANCELLED -> Problem.CANCELLED;
-          case OTHER -> Problem.OTHER;
+          case CLAUSE_REFUSED, OTHER -> Problem.OTHER;
         };
       case CatalogException e ->
         switch (e.failure()) {

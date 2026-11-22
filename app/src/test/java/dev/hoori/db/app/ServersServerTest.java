@@ -9,8 +9,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.TestServer;
+import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Schema;
+import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Plan;
@@ -137,6 +141,26 @@ class ServersServerTest {
           link.run("CREATE TABLE never_made (id integer)").next(10).results().getLast();
       assertEquals("25006", write.state(), write.toString()); // the server's own refusal
       assertTrue(link.estimate(TestServer.DATABASE, "SELECT * FROM customer").isPresent());
+      var db = new Database(TestServer.DATABASE, false);
+      var container = provider == Provider.POSTGRESQL ? new Schema(db, "public", false) : db;
+      var reading = new Table(container, "reading", Table.Kind.TABLE);
+      var columns = link.columns(reading);
+      var filter = new Rows.Filter("id <= 5", "id DESC");
+      assertEquals(5, link.count(reading, filter));
+      assertEquals(
+          List.of(5L, 4L, 3L),
+          link.read(reading, columns, 0, 3, filter).rows().stream()
+              .map(List::getFirst)
+              .toList());
+      var bypass = provider == Provider.POSTGRESQL
+          ? "set_config('default_transaction_read_only', 'off', false) IS NOT NULL"
+          : "@@transaction_read_only = 0";
+      assertEquals(
+          QueryException.Failure.CLAUSE_REFUSED,
+          assertThrows(
+                  QueryException.class,
+                  () -> link.read(reading, columns, 0, 5, new Rows.Filter(bypass, "")))
+              .failure());
     } finally {
       link.close();
     }

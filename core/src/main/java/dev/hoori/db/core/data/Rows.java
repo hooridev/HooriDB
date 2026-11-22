@@ -11,6 +11,7 @@ import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sql.Clauses;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Connection;
@@ -101,6 +102,36 @@ public final class Rows {
 
   private Rows() {}
 
+  /**
+   * How a table's rows are narrowed and ordered on the server, as the user typed the SQL clauses:
+   * each is empty or blank for none.
+   *
+   * @param where the condition of a {@code WHERE} clause, without {@code WHERE}
+   * @param order the expressions of an {@code ORDER BY} clause, without {@code ORDER BY}
+   */
+  public record Filter(String where, String order) {
+
+    /** No filter and no user order. */
+    public static final Filter NONE = new Filter("", "");
+
+    public Filter {
+      where = where == null ? "" : where;
+      order = order == null ? "" : order;
+    }
+
+    public boolean hasWhere() {
+      return !where.isBlank();
+    }
+
+    public boolean hasOrder() {
+      return !order.isBlank();
+    }
+
+    public boolean empty() {
+      return !hasWhere() && !hasOrder();
+    }
+  }
+
   interface Value {
     Object read(ResultSet rows, int index) throws SQLException;
   }
@@ -133,8 +164,24 @@ public final class Rows {
    */
   public static OptionalLong estimate(Connection connection, Provider provider, Table table)
       throws QueryException {
+    return estimate(connection, provider, table, Filter.NONE, false);
+  }
+
+  /**
+   * As {@link #estimate(Connection, Provider, Table)}, narrowed by the filter's {@code WHERE}
+   * clause where given.
+   *
+   * @param readOnly whether the session is read-only, where each clause is also checked with
+   *     {@link dev.hoori.db.core.sql.ReadWrite}
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} before anything is sent
+   *     where a clause of the filter is refused by {@link Clauses}
+   */
+  public static OptionalLong estimate(
+      Connection connection, Provider provider, Table table, Filter filter, boolean readOnly)
+      throws QueryException {
+    checkFilter(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
-    var select = "SELECT * FROM " + qualified(provider, table);
+    var select = "SELECT * FROM " + filtered(provider, table, filter);
     return provider.dialect().rows().estimate(connection, provider, table, select);
   }
 
@@ -153,8 +200,25 @@ public final class Rows {
   /** The exact number of rows of the table or view, which the server counts one by one. */
   public static long count(Connection connection, Provider provider, Table table)
       throws QueryException {
+    return count(connection, provider, table, Filter.NONE, false);
+  }
+
+  /**
+   * As {@link #count(Connection, Provider, Table)}, narrowed by the filter's {@code WHERE} clause
+   * where given.
+   *
+   * @param readOnly whether the session is read-only, where each clause is also checked with
+   *     {@link dev.hoori.db.core.sql.ReadWrite}
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} before anything is sent
+   *     where a clause of the filter is refused by {@link Clauses}
+   */
+  public static long count(
+      Connection connection, Provider provider, Table table, Filter filter, boolean readOnly)
+      throws QueryException {
+    checkFilter(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
-    var sql = "SELECT " + provider.dialect().rows().count() + " FROM " + qualified(provider, table);
+    var sql = "SELECT " + provider.dialect().rows().count() + " FROM "
+        + filtered(provider, table, filter);
     return Journal.sql(
         provider,
         Purpose.ROWS,
@@ -199,10 +263,34 @@ public final class Rows {
       long from,
       long to)
       throws QueryException {
+    return read(connection, provider, table, columns, from, to, Filter.NONE, false);
+  }
+
+  /**
+   * As {@link #read(Connection, Provider, Table, List, long, long)}, narrowed by the filter's
+   * {@code WHERE} clause and ordered by its {@code ORDER BY} clause first, then by the table's own
+   * order so that paging stays stable.
+   *
+   * @param readOnly whether the session is read-only, where each clause is also checked with
+   *     {@link dev.hoori.db.core.sql.ReadWrite}
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} before anything is sent
+   *     where a clause of the filter is refused by {@link Clauses}
+   */
+  public static Page read(
+      Connection connection,
+      Provider provider,
+      Table table,
+      List<Column> columns,
+      long from,
+      long to,
+      Filter filter,
+      boolean readOnly)
+      throws QueryException {
     if (from < 0 || to < from) {
       throw new IllegalArgumentException("Rows from " + from + " to " + to);
     }
     requireColumnsOf(table, columns);
+    checkFilter(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
     var dialect = provider.dialect().rows();
     var described = dialect.describe(connection, provider, table, columns);
@@ -219,15 +307,14 @@ public final class Rows {
     if (witness) {
       expressions.add(WITNESS + ".*");
     }
-    var sql = "SELECT "
-        + String.join(", ", expressions)
-        + " FROM " + qualified(provider, table) + " AS " + ALIAS
-        + (witness
-            ? " LEFT JOIN (SELECT * FROM " + qualified(provider, table) + " LIMIT 0) AS " + WITNESS
-                + " ON FALSE"
-            : "")
-        + order(provider, columns, reads, places, children)
-        + " LIMIT " + (to - from) + " OFFSET " + from;
+    var sql = page(
+        expressions,
+        qualified(provider, table),
+        witness,
+        filter,
+        orderTerms(provider, columns, reads, places, children),
+        provider.quote(orderColumn(columns)),
+        " LIMIT " + (to - from) + " OFFSET " + from);
     var fields = reads.stream().map(Read::field).toList();
     Page page;
     try {
@@ -243,7 +330,17 @@ public final class Rows {
             return shown == null ? null : new Page(shown, List.copyOf(rows(result, reads)));
           }));
     } catch (QueryException e) {
-      throw columnGone(provider, e) ? changed(table) : e;
+      if (columnGone(provider, e)) {
+        if (filter.empty()) {
+          throw changed(table);
+        }
+        // An unknown column may be the user's clause's or one the table lost: no rows read without
+        // the filter fail as changed in the latter case. Without a witness, describe() has told.
+        if (witness) {
+          read(connection, provider, table, columns, from, from, Filter.NONE, false);
+        }
+      }
+      throw e;
     }
     if (page == null) {
       throw changed(table);
@@ -339,7 +436,85 @@ public final class Rows {
             provider, sql.getSQLState() == null ? "" : sql.getSQLState(), sql.getErrorCode());
   }
 
-  private static String order(
+  private static void checkFilter(Provider provider, Filter filter, boolean readOnly)
+      throws QueryException {
+    checkClause("WHERE", filter.where(), provider, readOnly);
+    checkClause("ORDER BY", filter.order(), provider, readOnly);
+  }
+
+  private static void checkClause(String name, String clause, Provider provider, boolean readOnly)
+      throws QueryException {
+    var problem = Clauses.problem(clause, provider, readOnly);
+    if (problem.isPresent()) {
+      var detail = switch (problem.get()) {
+        case MULTIPLE -> "The " + name + " clause holds more than one statement";
+        case UNCLOSED -> "The " + name + " clause leaves a string or comment open";
+        case PARENTHESES -> "The " + name + " clause has unbalanced parentheses";
+        case READ_ONLY ->
+          "The connection is read-only, and the " + name
+              + " clause may turn that off for the session";
+      };
+      throw QueryException.of(QueryException.Failure.CLAUSE_REFUSED, detail);
+    }
+  }
+
+  private static String where(Filter filter) {
+    return filter.hasWhere() ? " WHERE (\n" + filter.where() + "\n)" : "";
+  }
+
+  // The table and its rows' condition, the table by the alias that a page reads it by, so that a
+  // clause names the same in a count and an estimate.
+  private static String filtered(Provider provider, Table table, Filter filter) {
+    return qualified(provider, table) + (filter.hasWhere() ? " AS " + ALIAS + where(filter) : "");
+  }
+
+  // The statement of a page: without a filter as ever. Where the server has a witness, whose names
+  // a clause's bare names would clash with, the clauses go in a derived table of the table's rows;
+  // with a user order, that is the page, which an index may give, its rows numbered in that order.
+  private static String page(
+      List<String> expressions,
+      String table,
+      boolean witness,
+      Filter filter,
+      List<String> tieBreakers,
+      String number,
+      String limit) {
+    var source = table + " AS " + ALIAS + where(filter);
+    List<String> order = new ArrayList<>();
+    if (filter.hasOrder()) {
+      // Not in parentheses, as "(a DESC, b)" is no order; on lines of its own, bounded by Clauses.
+      order.add("\n" + filter.order() + "\n");
+    }
+    order.addAll(tieBreakers);
+    var rest = limit;
+    if (witness && filter.hasOrder()) {
+      var by = String.join(", ", order);
+      source = "(SELECT " + ALIAS + ".*, ROW_NUMBER() OVER (ORDER BY " + by + ") AS " + number
+          + " FROM (SELECT " + ALIAS + ".* FROM " + source + " ORDER BY " + by + limit + ") AS "
+          + ALIAS + ") AS " + ALIAS;
+      order = List.of(ALIAS + "." + number);
+      rest = "";
+    } else if (witness && filter.hasWhere()) {
+      source = "(SELECT " + ALIAS + ".* FROM " + source + ") AS " + ALIAS;
+    }
+    return "SELECT " + String.join(", ", expressions) + " FROM " + source
+        + (witness
+            ? " LEFT JOIN (SELECT * FROM " + table + " LIMIT 0) AS " + WITNESS + " ON FALSE"
+            : "")
+        + (order.isEmpty() ? "" : " ORDER BY " + String.join(", ", order))
+        + rest;
+  }
+
+  // A name for the rows' number that is none of the table's columns, as the server compares names.
+  private static String orderColumn(List<Column> columns) {
+    var name = new StringBuilder("__hoori_order");
+    while (columns.stream().anyMatch(column -> column.name().equalsIgnoreCase(name.toString()))) {
+      name.append('_');
+    }
+    return name.toString();
+  }
+
+  private static List<String> orderTerms(
       Provider provider,
       List<Column> columns,
       List<Read> reads,
@@ -360,7 +535,7 @@ public final class Rows {
       }
       reads.stream().map(Read::bytes).filter(Objects::nonNull).forEach(order::add);
     }
-    return order.isEmpty() ? "" : " ORDER BY " + String.join(", ", order);
+    return order;
   }
 
   // How a table's columns are read, and the table as the dialect's children() names it, or 0.

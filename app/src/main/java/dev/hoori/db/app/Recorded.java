@@ -10,6 +10,7 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Page;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
@@ -180,13 +181,13 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     @Override
-    public OptionalLong estimate(Table table) throws QueryException {
-      return recorded(of(table), () -> link.estimate(table));
+    public OptionalLong estimate(Table table, Rows.Filter filter) throws QueryException {
+      return recorded(of(table), () -> link.estimate(table, filter));
     }
 
     @Override
-    public long count(Table table) throws QueryException {
-      return recorded(of(table), () -> link.count(table));
+    public long count(Table table, Rows.Filter filter) throws QueryException {
+      return recorded(of(table), () -> link.count(table, filter));
     }
 
     @Override
@@ -196,8 +197,9 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     @Override
-    public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
-      return recorded(of(table), () -> link.read(table, columns, from, to));
+    public Page read(Table table, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException {
+      return recorded(of(table), () -> link.read(table, columns, from, to, filter));
     }
 
     @Override

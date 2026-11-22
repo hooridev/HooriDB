@@ -65,8 +65,23 @@ abstract class MySqlFamilyRows extends RowsDialect {
             return OptionalLong.empty();
           }
           var estimate = rows.getLong("rows");
-          return rows.wasNull() ? OptionalLong.empty() : OptionalLong.of(estimate);
+          return rows.wasNull()
+              ? OptionalLong.empty()
+              : OptionalLong.of(Math.round(estimate * filtered(rows) / 100));
         }));
+  }
+
+  // The percent of the rows examined that a condition keeps, where the plan says, as of a filter.
+  // shortcut: MariaDB's EXPLAIN has no such column, and its EXPLAIN EXTENDED says 100 without the
+  // statistics of ANALYZE TABLE … PERSISTENT FOR ALL; ask its optimizer otherwise if a filtered
+  // estimate on MariaDB matters.
+  private static double filtered(ResultSet rows) {
+    try {
+      var filtered = rows.getDouble("filtered");
+      return rows.wasNull() ? 100 : filtered;
+    } catch (SQLException _) {
+      return 100;
+    }
   }
 
   @Override

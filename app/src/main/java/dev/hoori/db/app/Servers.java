@@ -100,10 +100,20 @@ interface Servers {
     List<Column> columns(Table table) throws CatalogException;
 
     /** The server's estimate of the table's rows, or empty where it has none, as {@link Rows}. */
-    OptionalLong estimate(Table table) throws QueryException;
+    default OptionalLong estimate(Table table) throws QueryException {
+      return estimate(table, Rows.Filter.NONE);
+    }
+
+    /** The server's estimate of the table's rows matching the filter, as {@link Rows#estimate}. */
+    OptionalLong estimate(Table table, Rows.Filter filter) throws QueryException;
 
     /** The exact number of the table's rows. */
-    long count(Table table) throws QueryException;
+    default long count(Table table) throws QueryException {
+      return count(table, Rows.Filter.NONE);
+    }
+
+    /** The exact number of the table's rows matching the filter, as {@link Rows#count}. */
+    long count(Table table, Rows.Filter filter) throws QueryException;
 
     /**
      * The planner's estimate of the rows the statement gives, without running it, its names read on
@@ -112,7 +122,16 @@ interface Servers {
     OptionalLong estimate(String database, String sql) throws QueryException;
 
     /** The rows from {@code from} up to {@code to}, fewer at the end, as {@link Rows#read}. */
-    Page read(Table table, List<Column> columns, long from, long to) throws QueryException;
+    default Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
+      return read(table, columns, from, to, Rows.Filter.NONE);
+    }
+
+    /**
+     * The rows matching the filter, in its order then the table's, from {@code from} up to
+     * {@code to}, as {@link Rows#read}.
+     */
+    Page read(Table table, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException;
 
     /** The whole text of a column of the row its key names, as {@link Rows#whole}. */
     String whole(Table table, List<Column> columns, List<Object> row, int column)
@@ -268,9 +287,17 @@ interface Servers {
       }
     }
 
+    private static void requireUnfiltered(Rows.Filter filter) throws QueryException {
+      if (filter != null && !filter.empty()) {
+        throw QueryException.of(
+            QueryException.Failure.OTHER, "A server of documents does not take a SQL filter");
+      }
+    }
+
     @Override
-    public OptionalLong estimate(Table table) throws QueryException {
+    public OptionalLong estimate(Table table, Rows.Filter filter) throws QueryException {
       usable();
+      requireUnfiltered(filter);
       try {
         return session.estimate(table);
       } catch (QueryException e) {
@@ -279,8 +306,9 @@ interface Servers {
     }
 
     @Override
-    public long count(Table table) throws QueryException {
+    public long count(Table table, Rows.Filter filter) throws QueryException {
       usable();
+      requireUnfiltered(filter);
       try {
         return session.count(table);
       } catch (QueryException e) {
@@ -295,8 +323,10 @@ interface Servers {
     }
 
     @Override
-    public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
+    public Page read(Table table, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException {
       usable();
+      requireUnfiltered(filter);
       try {
         return session.read(table, columns, from, to);
       } catch (QueryException e) {
@@ -489,9 +519,9 @@ interface Servers {
     }
 
     @Override
-    public OptionalLong estimate(Table table) throws QueryException {
+    public OptionalLong estimate(Table table, Rows.Filter filter) throws QueryException {
       usable();
-      return Rows.estimate(connection, provider, table);
+      return Rows.estimate(connection, provider, table, filter, readOnly);
     }
 
     @Override
@@ -501,15 +531,16 @@ interface Servers {
     }
 
     @Override
-    public long count(Table table) throws QueryException {
+    public long count(Table table, Rows.Filter filter) throws QueryException {
       usable();
-      return Rows.count(connection, provider, table);
+      return Rows.count(connection, provider, table, filter, readOnly);
     }
 
     @Override
-    public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
+    public Page read(Table table, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException {
       usable();
-      return Rows.read(connection, provider, table, columns, from, to);
+      return Rows.read(connection, provider, table, columns, from, to, filter, readOnly);
     }
 
     @Override
