@@ -349,13 +349,14 @@ final class SettingsWindow {
   private void launch(State s) {
     App<State> window = new App<>(s, this::view).provide(Theme.CURRENT, st -> st.theme);
     window.textRendering(s.app.textRendering());
+    // The minimum width fits the widest row, the accent's swatches beside its reset button.
     handle = s.app
         .windows()
         .open(
             TITLE,
             880,
             600,
-            Window.options().frameless().minimumSize(560, 400).icon(HooriDb.ICON),
+            Window.options().frameless().minimumSize(800, 400).icon(HooriDb.ICON),
             window);
     handle.onClosed(() -> {
       if (s.dialogs.settings == this) {
