@@ -59,6 +59,10 @@ final class ResultEdits {
   static final String COMMITTED_HINT =
       "Committed — run the statement again for the server's values";
   static final String UNLOADED_PASTE = "Scroll to load all target rows before pasting or clearing";
+  static final String CONNECTION_CHANGED =
+      "Read-only: the connection changed; run the statement again to edit";
+  static final String REPEATED_ROW =
+      "The same row shows more than once in the result; edit only one of its copies.";
 
   Editable editable; // null while checking or when not editable
   String readOnlyReason; // why the whole result is read-only; null for MongoDB or editable results
@@ -68,6 +72,8 @@ final class ResultEdits {
   ConsoleTab.Problem writeProblem; // why the last commit did not succeed, or null
   String committedHint; // shown after Committed until the next edit or run
   String pasteRefused; // why a paste/clear was refused, cleared on next edit
+  Live live; // the tree's connection the result was found editable on, which writes it
+  String database; // the console's database then, whose write lane writes it
 
   /**
    * The DML Preview dialog shown before committing changes: the statements formatted in the
@@ -184,6 +190,8 @@ final class ResultEdits {
       o.edits.readOnlyReason = "Read-only: not connected";
       return;
     }
+    o.edits.live = s.catalog.live(tab.id);
+    o.edits.database = tab.database;
     var sql = o.statement;
     var fields = o.fields;
     o.edits.checking = lane.ask(
@@ -215,6 +223,14 @@ final class ResultEdits {
             o.edits.readOnlyReason = CHECK_FAILED;
           }
         });
+  }
+
+  /**
+   * Whether the result's connection is still the one it was found editable on: one opened again,
+   * perhaps to another server, must not take its changes.
+   */
+  static boolean current(State s, ConsoleTab tab, ConsoleTab.Output o) {
+    return o.edits.live != null && s.catalog.live(tab.id) == o.edits.live;
   }
 
   /** GridChanges keyed by row position in the result, never by primary key. */
@@ -517,7 +533,10 @@ final class ResultEdits {
    * write lane does not block on the console's own lock), and then opens the DML Preview dialog.
    */
   static void askCommit(State s, ConsoleTab tab, ConsoleTab.Output o) {
-    if (o.edits.editable == null || o.edits.writing != null || s.guard.locked(tab) != null) {
+    if (o.edits.editable == null
+        || o.edits.writing != null
+        || s.guard.locked(tab) != null
+        || !current(s, tab, o)) {
       return;
     }
     if (!o.selection.commitEdit()) {
@@ -563,7 +582,12 @@ final class ResultEdits {
       int rowIndex = (int) gc.key();
       var padded = tableRow(o, rowIndex);
       var key = keyCols.stream().map(padded::get).toList();
-      rowsByKey.computeIfAbsent(key, k -> new ArrayList<>()).add(rowIndex);
+      var copies = rowsByKey.computeIfAbsent(key, k -> new ArrayList<>());
+      if (!copies.isEmpty()) {
+        o.edits.writeProblem = new ConsoleTab.Problem("Row shown twice", REPEATED_ROW);
+        return null;
+      }
+      copies.add(rowIndex);
       var rowNew = new LinkedHashMap<Integer, Object>();
       for (var entry : gc.values().entrySet()) {
         int resultCol = entry.getKey();
@@ -641,10 +665,10 @@ final class ResultEdits {
     }
     tab.preview = null;
     var o = p.output;
-    if (!tab.outputs.contains(o) || o.edits.writing != null) {
+    if (!tab.outputs.contains(o) || o.edits.writing != null || !current(s, tab, o)) {
       return;
     }
-    var lane = s.catalog.writer(s, tab.id, tab.database);
+    var lane = s.catalog.writer(s, tab.id, o.edits.database);
     if (lane == null) {
       o.edits.writeProblem = new ConsoleTab.Problem(
           "Not connected",
@@ -655,7 +679,7 @@ final class ResultEdits {
     o.edits.committedHint = null;
     o.edits.pasteRefused = null;
     var changes = p.changes;
-    var live = s.catalog.live(tab.id);
+    var live = o.edits.live;
     o.edits.writing = lane.ask(
         s.app,
         "commit changes to " + changes.table().name(),
@@ -752,7 +776,7 @@ final class ResultEdits {
     if (error instanceof QueryException qe
         && (qe.failure() == QueryException.Failure.CONNECTION_LOST
             || qe.failure() == QueryException.Failure.ABORTED)) {
-      String detail = scrubbed(tab, live, qe.detail());
+      String detail = scrubbed(live, qe.detail());
       String body = "The connection was lost while committing changes: whether the commit took"
           + " effect is not known. Check the data before committing again; your changes are kept.";
       if (!detail.isEmpty()) {
@@ -772,16 +796,16 @@ final class ResultEdits {
         case CANCELLED -> ConsoleTab.CANCELLED_TEXT;
         default -> "Commit failed";
       };
-      detail = scrubbed(tab, live, qe.detail());
+      detail = scrubbed(live, qe.detail());
     } else if (error instanceof ConnectionException ce) {
       var profile = s.profile(tab.id);
       title = Words.title(ce.failure());
       detail = profile == null
-          ? scrubbed(tab, live, ce.detail())
+          ? scrubbed(live, ce.detail())
           : Words.note(ce.failure(), profile, true, s.settings.connectTimeout());
     } else {
       title = "Commit failed";
-      detail = scrubbed(tab, live, State.messageOf(error));
+      detail = scrubbed(live, State.messageOf(error));
     }
     String text = detail.isEmpty()
         ? "Nothing was written; your changes are kept."
@@ -806,15 +830,9 @@ final class ResultEdits {
     tab.settledFromEdit(s);
   }
 
-  private static String scrubbed(ConsoleTab tab, Live live, String text) {
-    if (text == null || text.isEmpty()) {
-      return "";
-    }
-    var checked = tab.scrub(text);
-    if (checked != null) {
-      return checked;
-    }
-    return CatalogTree.words(live, text);
+  // The write lane signs in with the tree's password, which its messages are checked against.
+  private static String scrubbed(Live live, String text) {
+    return text == null || text.isEmpty() ? "" : CatalogTree.words(live, text);
   }
 
   private static String connectionName(State s, ConsoleTab tab) {

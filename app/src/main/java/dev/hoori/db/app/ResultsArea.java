@@ -34,6 +34,7 @@ import dev.hoori.db.core.execution.Transaction;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 
 /**
@@ -252,6 +253,12 @@ final class ResultsArea {
           .key("cancel-write"));
       return;
     }
+    if (o.edits.editable != null && !ResultEdits.current(s, tab, o)) {
+      footer.add(Label.label(Label.Variant.MUTED, ResultEdits.CONNECTION_CHANGED)
+          .key("edit-status")
+          .ellipsis());
+      return;
+    }
     String status = editStatus(o);
     if (status != null) {
       footer.add(Label.label(Label.Variant.MUTED, status).key("edit-status").ellipsis());
@@ -451,8 +458,10 @@ final class ResultsArea {
   private El grid(State s, App<State> app, ConsoleTab.Output o) {
     var zone = s.zone;
     var nullText = Cells.nullText(s.settings.copyNull());
-    var editable = o.edits.editable;
+    var editable = ResultEdits.current(s, tab, o) ? o.edits.editable : null;
     var changes = o.edits.changes;
+    // While a write runs or an act holds the console, no edit, paste, undo or redo comes between.
+    BooleanSupplier free = () -> o.edits.writing == null && s.guard.locked(tab) == null;
     var columns = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < o.fields.size(); c++) {
       int at = c;
@@ -466,7 +475,7 @@ final class ResultsArea {
           col = col.icon(Symbol.KEY, Icon.Variant.WARNING);
         }
         if (tableCol != null && field.kind() != Kind.BINARY) {
-          col = col.editable(row -> ResultEdits.cellEditable(o, row, at));
+          col = col.editable(row -> free.getAsBoolean() && ResultEdits.cellEditable(o, row, at));
           if (tableCol.nullable()) {
             col = col.nullable();
           }
@@ -487,14 +496,33 @@ final class ResultsArea {
         .rowNumbers()
         .copy(app.clipboard())
         .nullText(nullText)
-        .copyLimit(0, copy -> copy(app, o, copy, zone, nullText))
+        // Every copy whole; an editable result keeps the kit's limit, which also bounds a paste or
+        // clear of a selection (rethinkj/ui#511).
+        .copyLimit(editable == null ? 0 : 100_000, copy -> copy(app, o, copy, zone, nullText))
         .loading(row -> row < o.rows.size(), (_, last) -> tab.want(s, o, last));
     int count;
     if (editable != null && changes != null) {
       options
           .changes(changes)
-          .onCommit((row, col, value) -> ResultEdits.commitCell(s, o, row, col, value))
-          .onPaste(cells -> ResultEdits.pasteCells(s, o, cells))
+          .history(
+              () -> {
+                if (free.getAsBoolean()) {
+                  changes.undo();
+                }
+              },
+              () -> {
+                if (free.getAsBoolean()) {
+                  changes.redo();
+                }
+              })
+          .onCommit((row, col, value) -> free.getAsBoolean()
+              ? ResultEdits.commitCell(s, o, row, col, value)
+              : "Not now: wait until what runs is done")
+          .onPaste(cells -> {
+            if (free.getAsBoolean()) {
+              ResultEdits.pasteCells(s, o, cells);
+            }
+          })
           .onInsertRow(null)
           .onDeleteRows(null);
       count = changes.rowCount();

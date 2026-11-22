@@ -383,6 +383,64 @@ class ConsoleEditTest {
   }
 
   @Test
+  void cancellingTheCommitInTheQuestionKeepsChangesAndAsksAboutThem() throws Exception {
+    var app = openCustomers();
+    c.run(app, "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n");
+    var gate = servers.hold(WRITE_CUSTOMERS);
+    c.run(
+        app,
+        "press #commit-changes\nframe\n" + OPENED + "press #preview-commit\nframe\n" + OPENED
+            + "frame\n");
+    eventually(() -> servers.calls.contains(WRITE_CUSTOMERS));
+    c.run(app, menu("shop-prod", "Disconnect") + OPENED + "snap waiting\n");
+    assertTrue(c.tree("waiting").contains("#answer-cancel-commit"), c.tree("waiting"));
+    c.run(app, "press #answer-cancel-commit\nframe\n" + OPENED + "snap asked\n");
+    eventually(() -> servers.interrupted.contains(WRITE_CUSTOMERS));
+    assertTrue(c.tree("asked").contains("Discard 1 change?"), c.tree("asked"));
+    assertEquals(1, k.tab(app).pendingChanges(false));
+    assertTrue(app.state().catalog.connected(SHOP.id()));
+    gate.countDown();
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE);
+  }
+
+  @Test
+  void aResultOfAConnectionOpenedAgainIsReadOnly() throws Exception {
+    var app = openCustomers();
+    c.run(app, menu("shop-prod", "Disconnect") + OPENED + SETTLE);
+    c.run(app, CatalogTreeTest.open("shop-prod") + SETTLE + "snap again\n");
+    assertTrue(app.state().catalog.connected(SHOP.id()));
+    String again = c.tree("again");
+    assertTrue(line(again, "#edit-status").contains(ResultEdits.CONNECTION_CHANGED), again);
+    assertFalse(again.contains("#commit-changes"), again);
+    c.run(app, "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n");
+    assertEquals(0, k.tab(app).pendingChanges(false));
+    assertEquals(0, writeCount());
+  }
+
+  @Test
+  void aRowShownTwiceIsNotWrittenFromBothCopies() throws Exception {
+    var twice = "SELECT id, name, email FROM customers WHERE id = 1";
+    servers.statement(twice, () -> {
+      var answer = customersAnswer();
+      var rows = (Result.Rows) answer.results().getFirst();
+      var first = rows.rows().getFirst();
+      return new FakeServers.Answer(
+          List.of(new Result.Rows(rows.fields(), 0, List.of(first, first))), List.of());
+    });
+    var app = k.console(SHOP);
+    c.run(app, type(twice) + RUN + SETTLE);
+    c.run(
+        app,
+        "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n"
+            + "press #cell-1-1\ntype \"Ali\"\nkey Enter\nframe\n"
+            + "press #commit-changes\nframe\n" + OPENED + "snap twice\n");
+    String shown = c.tree("twice");
+    assertFalse(shown.contains("DML Preview"), shown);
+    assertTrue(line(shown, "#write-problem").contains("Row shown twice"), shown);
+    assertEquals(0, writeCount());
+  }
+
+  @Test
   void readOnlyReasonsShowInStatusLine() throws Exception {
     // 1. Read-only connection.
     var ro = SHOP.withReadOnly(true);

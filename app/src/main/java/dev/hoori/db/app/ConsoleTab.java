@@ -2023,24 +2023,22 @@ final class ConsoleTab implements Tab {
         asked.then().run();
         return;
       }
-      case GO_ON -> {
-        s.guard.pending = null;
+      case STOP_WRITES -> {
+        // The changes stay, and the question goes on to them and to the transaction.
         boolean unpinnedOnly = asked.scope() == Guard.Scope.CHANGES;
         for (var o : outputs) {
           if ((!unpinnedOnly || !o.pinned) && o.edits.writing != null) {
             ResultEdits.cancelWrite(s, this, o);
           }
         }
-        if (asked.scope() != Guard.Scope.TRANSACTION) {
-          discardChanges(unpinnedOnly);
+      }
+      case GO_ON -> {
+        s.guard.pending = null;
+        var cut = running;
+        if (teller != null) {
+          teller.tell(cut, WENT_ON, true); // the app keeps it, whatever becomes of the console
         }
-        if (asked.scope() != Guard.Scope.CHANGES && transactionAtStake()) {
-          var cut = running;
-          if (teller != null) {
-            teller.tell(cut, WENT_ON, true); // the app keeps it, whatever becomes of the console
-          }
-          end();
-        }
+        end();
         asked.then().run();
         return;
       }
@@ -2083,6 +2081,7 @@ final class ConsoleTab implements Tab {
   static final String CONTINUE = "CONTINUE";
   static final String GO_ON = "GO_ON";
   static final String DISCARD = "DISCARD";
+  static final String STOP_WRITES = "STOP_WRITES";
 
   /** Acknowledge: the user has read that an outcome is not known. */
   void acknowledge(State s) {
@@ -2104,11 +2103,6 @@ final class ConsoleTab implements Tab {
 
   void settledFromEdit(State s) {
     settle(s);
-  }
-
-  /** Scrubs the console's session password from a server message, or returns null without one. */
-  String scrub(String text) {
-    return password == null ? null : words(text);
   }
 
   /** Says something in the tab's status line, for a while. */

@@ -361,15 +361,14 @@ final class ConsoleView {
       if (tab.writingChanges(unpinnedOnly)) {
         return new Wording(
             "Waiting for changes to commit",
-            "Changes are being committed on " + name + ". Wait until the commit finishes, or go"
-                + " on now: the commit is cancelled, and whether it took effect will not be"
-                + " known.",
+            "Changes are being committed on " + name + ". Wait until the commit finishes, or"
+                + " cancel it: whether it took effect is then not known, and the changes stay.",
             List.of(button(
                     SECONDARY,
-                    "Go on now",
-                    () -> tab.answer(s, ConsoleTab.GO_ON),
+                    "Cancel commit",
+                    () -> tab.answer(s, ConsoleTab.STOP_WRITES),
                     Button.options().tone(Button.Tone.DANGER))
-                .key("answer-go-on")));
+                .key("answer-cancel-commit")));
       }
       int n = tab.pendingChanges(unpinnedOnly);
       String changes = n == 1 ? "1 change" : n + " changes";
