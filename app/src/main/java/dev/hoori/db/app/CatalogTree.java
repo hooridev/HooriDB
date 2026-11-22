@@ -910,7 +910,7 @@ final class CatalogTree {
               case NOT_FOUND -> CatalogException.Failure.NOT_FOUND;
               case ACCESS_DENIED -> CatalogException.Failure.ACCESS_DENIED;
               case CANCELLED -> CatalogException.Failure.CANCELLED;
-              case COLUMNS_CHANGED, OTHER -> CatalogException.Failure.OTHER;
+              case COLUMNS_CHANGED, CLAUSE_REFUSED, OTHER -> CatalogException.Failure.OTHER;
             },
             shown);
       default -> CatalogException.of(CatalogException.Failure.OTHER, shown);
