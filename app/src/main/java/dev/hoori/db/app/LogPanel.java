@@ -436,6 +436,7 @@ final class LogPanel {
     return switch (purpose) {
       case CATALOG -> "Tree";
       case ROWS -> "Grid";
+      case CHANGES -> "Changes";
       case ESTIMATE -> "Estimate";
       case STATEMENT -> "Console";
       case TRANSACTION -> "Transaction";

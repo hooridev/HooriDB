@@ -213,10 +213,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
 - Every statement and command that core sends goes through `dev.hoori.db.core.log.Journal`, with
   its purpose, which records it for the recorder a caller bound and masks a password first, as the
   dialect's `passwordWords` and `DocumentDialect.secretFields` say; a new send goes through it too.
-  Not yet: the writes of `data.Changes` and the reads of the rows dialects' `changeable`, which
-  nothing in the app calls so far. The app binds it per call on a lane's link (`Recorded`), so
-  recording never waits for the disk; it binds none for the server monitor's reads, which repeat
-  every few seconds and would fill the log, only for its cancels and ends (`Purpose.MONITOR`).
+  The app binds it per call on a lane's link (`Recorded`), so recording never waits for the disk;
+  it binds none for the server monitor's reads, which repeat every few seconds and would fill the
+  log, only for its cancels and ends (`Purpose.MONITOR`).
 - The shell's syntax is lexed in one place, core's `dev.hoori.db.core.document.Lexer`: splitting
   statements (`Script.split`, `Statements`), reading them (`Shell`), coloring (`ShellSyntax`, which
   maps its tokens to `Theme.Code`), laying out (`Layout`, which Control+Alt+L runs) and completing
