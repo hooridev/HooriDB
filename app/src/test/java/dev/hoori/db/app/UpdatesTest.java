@@ -502,6 +502,26 @@ class UpdatesTest {
     assertEquals(1, updater.looks.get());
   }
 
+  /** Turning checking on and off again before updates have started looks for nothing. */
+  @Test
+  void checkForUpdatesTurnedOnAndOffDuringTheStartDoesNotLook() throws Exception {
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"checkForUpdates":false}
+        """);
+    var updater = updater().publish("0.3.0");
+    updater.reading = new CountDownLatch(1);
+    var app = app(updater, "0.2.0");
+    run(app, "size 1200 760\nframe\n");
+    app.await("load settings", Duration.ofSeconds(5));
+    run(app, "frame\n");
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    app.state().choose(app.state().settings.withCheckForUpdates(false));
+    updater.reading.countDown();
+    run(app, START);
+    assertEquals(0, updater.looks.get());
+  }
+
   /**
    * With checkForUpdates off, the start skips looking even when settings finish loading before
    * updates' own start.

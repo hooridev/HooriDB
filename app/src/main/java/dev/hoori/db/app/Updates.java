@@ -202,6 +202,16 @@ final class Updates {
     }
   }
 
+  /**
+   * Checking for updates was turned on: looks once, or leaves it to the start's check, which reads
+   * the setting then, where updates have not started.
+   */
+  void turnedOn(State s) {
+    if (kept.canSave) {
+      check(s);
+    }
+  }
+
   /** Tells what the helper reported of the last update, and keeps what it means for the next. */
   private void report(State s, Installation.Result result, boolean kept) {
     var attempt = stored.attempt();

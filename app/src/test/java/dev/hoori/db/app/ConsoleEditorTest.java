@@ -628,10 +628,17 @@ class ConsoleEditorTest {
     assertEquals("SELECT", console.tab(app).text);
 
     app.state().choose(app.state().settings.withKeywordCase(Settings.KeywordCase.LOWER));
-    console.c.run(
-        app,
-        "key A control\nkey Delete\ntype \"sel\"\nframe\nadvance 1\nframe\nsnap lower\n"
-            + "key Enter\nframe\n");
+    console.c.run(app, """
+        key A control
+        key Delete
+        type "sel"
+        frame
+        advance 1
+        frame
+        snap lower
+        key Enter
+        frame
+        """);
     var lower = options(console.c.tree("lower"));
     assertEquals("select", lower.getFirst(), lower.toString());
     assertFalse(lower.contains("SELECT"), lower.toString());

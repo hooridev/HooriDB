@@ -1249,7 +1249,7 @@ final class State {
       zone = next.timeZone() != null ? next.timeZone() : ZoneId.systemDefault();
     }
     if (!was.checkForUpdates() && next.checkForUpdates()) {
-      updates.check(this);
+      updates.turnedOn(this);
     }
     return true;
   }
