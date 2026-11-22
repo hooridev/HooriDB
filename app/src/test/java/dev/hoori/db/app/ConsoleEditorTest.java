@@ -10,6 +10,7 @@ import static dev.hoori.db.app.ConsoleTest.COUNT;
 import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.RUN_ALL;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -22,10 +23,12 @@ import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.execution.Failure;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
@@ -540,6 +543,112 @@ class ConsoleEditorTest {
         line(window("failed"), "#sql").contains("squiggle " + at + "-" + (at + 5)),
         window("failed"));
     assertEquals(String.valueOf(at), caret(window("failed")), line(window("failed"), "#sql"));
+  }
+
+  /**
+   * Turning off highlightOccurrences drops the highlight of matching words in open SQL and MongoDB
+   * consoles without losing their text or caret, and turning it back on restores it.
+   */
+  @Test
+  void highlightOccurrencesTogglesOnOpenSqlAndMongodbConsolesWithoutLosingTextOrCaret()
+      throws Exception {
+    var out = dir.resolve("out");
+
+    var sql = console.console(SHOP);
+    var query = "SELECT orders.id FROM orders";
+    console.c.run(
+        sql,
+        type(query) + "key Home\n" + "key ArrowRight\n".repeat(9) + "frame\nsnap occurrences-on\n");
+    var onTree = console.c.tree("occurrences-on");
+    var onPng = Files.readAllBytes(out.resolve("occurrences-on.png"));
+    assertEquals("9", caret(onTree), line(onTree, "#sql"));
+
+    sql.state().choose(sql.state().settings.withHighlightOccurrences(false));
+
+    sql.invalidate(); // as the handler of a choice would
+    console.c.run(sql, "frame\nsnap occurrences-off\n");
+    var offTree = console.c.tree("occurrences-off");
+    var offPng = Files.readAllBytes(out.resolve("occurrences-off.png"));
+    assertEquals(query, console.tab(sql).text);
+    assertEquals(line(onTree, "#sql"), line(offTree, "#sql"));
+    assertFalse(Arrays.equals(onPng, offPng), "highlight disappeared when turned off");
+
+    sql.state().choose(sql.state().settings.withHighlightOccurrences(true));
+
+    sql.invalidate(); // as the handler of a choice would
+    console.c.run(sql, "frame\nsnap occurrences-back\n");
+    var backTree = console.c.tree("occurrences-back");
+    var backPng = Files.readAllBytes(out.resolve("occurrences-back.png"));
+    assertEquals(query, console.tab(sql).text);
+    assertEquals(line(onTree, "#sql"), line(backTree, "#sql"));
+    assertArrayEquals(onPng, backPng);
+
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        hoori
+          orders
+            _id: objectId
+        """);
+    var mongo = console.console(DocumentConsoleTest.DOCS);
+    var shell = "db.orders.find({ orders: 1 })";
+    console.c.run(
+        mongo,
+        type(shell)
+            + "key Home\n"
+            + "key ArrowRight\n".repeat(5)
+            + "frame\nsnap mongo-occurrences-on\n");
+    var mongoOnTree = console.c.tree("mongo-occurrences-on");
+    var mongoOnPng = Files.readAllBytes(out.resolve("mongo-occurrences-on.png"));
+    assertEquals("5", caret(mongoOnTree), line(mongoOnTree, "#sql"));
+
+    mongo.state().choose(mongo.state().settings.withHighlightOccurrences(false));
+
+    mongo.invalidate(); // as the handler of a choice would
+    console.c.run(mongo, "frame\nsnap mongo-occurrences-off\n");
+    var mongoOffTree = console.c.tree("mongo-occurrences-off");
+    var mongoOffPng = Files.readAllBytes(out.resolve("mongo-occurrences-off.png"));
+    assertEquals(shell, console.tab(mongo).text);
+    assertEquals(line(mongoOnTree, "#sql"), line(mongoOffTree, "#sql"));
+    assertFalse(Arrays.equals(mongoOnPng, mongoOffPng), "MongoDB highlight disappeared");
+
+    mongo.state().choose(mongo.state().settings.withHighlightOccurrences(true));
+
+    mongo.invalidate(); // as the handler of a choice would
+    console.c.run(mongo, "frame\nsnap mongo-occurrences-back\n");
+    assertArrayEquals(mongoOnPng, Files.readAllBytes(out.resolve("mongo-occurrences-back.png")));
+  }
+
+  /** SQL keyword completions follow keywordCase: UPPER by default, LOWER when chosen. */
+  @Test
+  void keywordCaseChangesSqlCompletionsBetweenUpperAndLower() throws Exception {
+    var app = console.console(SHOP);
+    console.c.run(
+        app, "press #sql\ntype \"sel\"\nframe\nadvance 1\nframe\nsnap upper\nkey Enter\nframe\n");
+    var upper = options(console.c.tree("upper"));
+    assertEquals("SELECT", upper.getFirst(), upper.toString());
+    assertEquals("SELECT", console.tab(app).text);
+
+    app.state().choose(app.state().settings.withKeywordCase(Settings.KeywordCase.LOWER));
+    console.c.run(app, """
+        key A control
+        key Delete
+        type "sel"
+        frame
+        advance 1
+        frame
+        snap lower
+        key Enter
+        frame
+        """);
+    var lower = options(console.c.tree("lower"));
+    assertEquals("select", lower.getFirst(), lower.toString());
+    assertFalse(lower.contains("SELECT"), lower.toString());
+    assertEquals("select", console.tab(app).text);
+
+    app.state().choose(app.state().settings.withKeywordCase(Settings.KeywordCase.UPPER));
+    console.c.run(
+        app,
+        "key A control\nkey Delete\ntype \"sel\"\nframe\nadvance 1\nframe\nkey Enter\nframe\n");
+    assertEquals("SELECT", console.tab(app).text);
   }
 
   /** The tree of the snap of the window other than the main one. */

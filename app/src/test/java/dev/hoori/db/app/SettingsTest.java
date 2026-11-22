@@ -1,8 +1,17 @@
 package dev.hoori.db.app;
 
+import static dev.hoori.db.app.CatalogTreeTest.PG;
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.SHOP;
+import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.line;
+import static dev.hoori.db.app.TableTabTest.ORDERS;
+import static dev.hoori.db.app.TableTabTest.OUTLINE;
+import static dev.hoori.db.app.TableTabTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -11,13 +20,18 @@ import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.SystemAppearance;
 import dev.hoori.db.core.connection.Color;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.ZoneId;
+import java.util.Arrays;
+import java.util.OptionalLong;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -264,5 +278,111 @@ class SettingsTest {
     assertEquals(savedSettings, state.settings);
     assertEquals(Theme.LIGHT.withAccent(Theme.Hue.GREEN), state.theme);
     assertTrue(state.keeping.settingsKept.canSave);
+  }
+
+  private static int height(String tree, String match) {
+    var m = Pattern.compile(" \\d+,\\d+ \\d+x(\\d+)").matcher(line(tree, match));
+    assertTrue(m.find(), line(tree, match));
+    return Integer.parseInt(m.group(1));
+  }
+
+  /**
+   * Accent and row density take effect immediately in dark and light looks: the theme's accent
+   * changes visually and Compact/Default/Comfortable resize both grid and tree rows to 20/24/28;
+   * {@code -Dreview=<folder>} also keeps the pictures there.
+   */
+  @Test
+  void accentAndDensityTakeEffectInDarkAndLightLook(@TempDir Path dir) throws Exception {
+    var c = new CatalogTreeTest();
+    c.dir = dir;
+    c.setUp();
+    try {
+      c.servers.serve(PG, Provider.POSTGRESQL, "16.4", OUTLINE);
+      c.servers.rows(ORDERS, 50, OptionalLong.of(50));
+      var app = c.app(SHOP);
+      c.ready(app, SHOP);
+      c.run(
+          app,
+          START
+              + open("shop-prod")
+              + SETTLE
+              + open("shop")
+              + SETTLE
+              + open("public")
+              + SETTLE
+              + table("orders")
+              + SETTLE
+              + "press #number-0\nframe\n");
+
+      var s = app.state();
+      var out = dir.resolve("out");
+      var review = System.getProperty("review");
+
+      for (var look : new Settings.Look[] {Settings.Look.DARK, Settings.Look.LIGHT}) {
+        String suffix = look == Settings.Look.DARK ? "dark" : "light";
+        Theme base = look == Settings.Look.DARK ? Theme.DARK : Theme.LIGHT;
+
+        // Default accent (blue) and default density (24 px).
+        s.choose(Settings.DEFAULT.withLook(look));
+        app.invalidate(); // as the handler of a choice would
+        c.run(app, "frame\nadvance 1\nframe\nsnap density-default-" + suffix + "\n");
+        var defTree = c.tree("density-default-" + suffix);
+        assertEquals(base.accent(), s.theme.accent());
+        assertEquals(24f, s.theme.grid().rowHeight());
+        assertEquals(24, height(defTree, "#row-0"), defTree);
+        assertEquals(24, height(defTree, "role=treeitem label=\"orders\""), defTree);
+        assertTrue(line(defTree, "#cell-0-0").contains("selected"), defTree);
+
+        // Non-default accent (green) with default density.
+        s.choose(Settings.DEFAULT.withLook(look).withAccent(Color.GREEN));
+        app.invalidate(); // as the handler of a choice would
+        c.run(app, "frame\nadvance 1\nframe\nsnap accent-green-" + suffix + "\n");
+        assertEquals(
+            look == Settings.Look.DARK ? Theme.Hue.GREEN.dark() : Theme.Hue.GREEN.light(),
+            s.theme.accent());
+        assertNotEquals(base.accent(), s.theme.accent());
+        assertFalse(
+            Arrays.equals(
+                Files.readAllBytes(out.resolve("density-default-" + suffix + ".png")),
+                Files.readAllBytes(out.resolve("accent-green-" + suffix + ".png"))),
+            "green accent changes the rendered image in " + suffix);
+
+        // Compact density (20 px).
+        s.choose(Settings.DEFAULT.withLook(look).withDensity(Settings.Density.COMPACT));
+        app.invalidate(); // as the handler of a choice would
+        c.run(app, "frame\nadvance 1\nframe\nsnap density-compact-" + suffix + "\n");
+        var compactTree = c.tree("density-compact-" + suffix);
+        assertEquals(20f, s.theme.grid().rowHeight());
+        assertEquals(20, height(compactTree, "#row-0"), compactTree);
+        assertEquals(20, height(compactTree, "role=treeitem label=\"orders\""), compactTree);
+
+        // Comfortable density (28 px).
+        s.choose(Settings.DEFAULT.withLook(look).withDensity(Settings.Density.COMFORTABLE));
+        app.invalidate(); // as the handler of a choice would
+        c.run(app, "frame\nadvance 1\nframe\nsnap density-comfortable-" + suffix + "\n");
+        var comfortableTree = c.tree("density-comfortable-" + suffix);
+        assertEquals(28f, s.theme.grid().rowHeight());
+        assertEquals(28, height(comfortableTree, "#row-0"), comfortableTree);
+        assertEquals(
+            28, height(comfortableTree, "role=treeitem label=\"orders\""), comfortableTree);
+
+        if (review == null) {
+          continue;
+        }
+        for (var name : new String[] {
+          "density-default-" + suffix,
+          "accent-green-" + suffix,
+          "density-compact-" + suffix,
+          "density-comfortable-" + suffix
+        }) {
+          Files.copy(
+              out.resolve(name + ".png"),
+              Files.createDirectories(Path.of(review)).resolve(name + ".png"),
+              StandardCopyOption.REPLACE_EXISTING);
+        }
+      }
+    } finally {
+      c.tearDown();
+    }
   }
 }

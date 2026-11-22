@@ -4,6 +4,7 @@ import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.sql.Context;
 import dev.hoori.db.core.sql.Keywords;
 import dev.hoori.db.core.sql.Names;
@@ -11,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * What a console of SQL suggests, by what the statement asks for at the caret: after {@code
@@ -41,9 +43,11 @@ record SqlCompletion() implements Suggestions.Strategy {
         tables(known, candidates);
       }
       default -> {
+        boolean lower = known.keywordCase == Settings.KeywordCase.LOWER;
         for (var keyword : Keywords.offered(provider)) {
+          var written = lower ? keyword.toLowerCase(Locale.ROOT) : keyword;
           candidates.add(
-              new Suggestions.Candidate(keyword, keyword, keyword, null, "keyword", false));
+              new Suggestions.Candidate(written, written, written, null, "keyword", false));
         }
         schemas(known, candidates);
         tables(known, candidates);
