@@ -1,5 +1,6 @@
 package dev.hoori.db.app;
 
+import static dev.hoori.db.app.CatalogTreeTest.INVENTORY;
 import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
@@ -12,6 +13,7 @@ import static dev.hoori.db.app.CatalogTreeTest.rows;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
@@ -1190,6 +1192,70 @@ class TableTabTest {
         () -> app.state().choose(app.state().settings.withCopyNull(Settings.CopyNull.BACKSLASH_N)));
     c.run(app, "await\nframe\nkey C control\nframe\n");
     assertEquals("\\N", app.clipboard().read());
+  }
+
+  @Test
+  void openInConsoleOpensAConsoleWithQualifiedSelectOnTheTablesDatabase() throws Exception {
+    var app = shop();
+    c.run(
+        app,
+        open("analytics")
+            + SETTLE
+            + open("tracking")
+            + SETTLE
+            + table("events")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + "snap pg-console\n");
+    var expected = "SELECT * FROM \"tracking\".\"events\"";
+    var console = assertInstanceOf(ConsoleTab.class, app.state().tabs.main().activeTab());
+    assertEquals(SHOP.id(), console.id);
+    assertEquals("analytics", console.database);
+    assertEquals(expected, console.text);
+    assertEquals(expected.length(), console.editor.caret());
+    assertEquals(expected.length(), console.editor.anchor());
+    var tree = c.tree("pg-console");
+    assertTrue(line(tree, "#sql").contains("focused"), tree);
+    // Typing goes right after the table name.
+    c.run(app, "type \" LIMIT 5\"\nframe\n");
+    assertEquals(expected + " LIMIT 5", console.text);
+    // Still available while disconnected, and opens in the tab's own window.
+    c.run(
+        app,
+        menu("shop-prod", "Disconnect")
+            + "press role=tab label=\"events\"\nframe\nadvance 1\nframe\n"
+            + "press #tab-0 right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
+            + "window \"events\"\n"
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    var tornGroup = app.state().tabs.groupOf(tab(app));
+    var tornConsole = assertInstanceOf(ConsoleTab.class, tornGroup.activeTab());
+    assertEquals("analytics", tornConsole.database);
+    assertEquals(expected, tornConsole.text);
+    assertEquals(expected.length(), tornConsole.editor.caret());
+  }
+
+  @Test
+  void openInConsoleUsesBackticksAndDatabaseOnMariaDb() throws Exception {
+    var app = c.app(INVENTORY);
+    c.ready(app, INVENTORY);
+    c.run(
+        app,
+        START
+            + open("inventory")
+            + SETTLE
+            + "press role=treeitem label=\"inventory\" level=2\nkey ArrowRight\nframe\n"
+            + SETTLE
+            + table("items")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    var expected = "SELECT * FROM `inventory`.`items`";
+    var console = assertInstanceOf(ConsoleTab.class, app.state().tabs.main().activeTab());
+    assertEquals(INVENTORY.id(), console.id);
+    assertEquals("inventory", console.database);
+    assertEquals(expected, console.text);
+    assertEquals(expected.length(), console.editor.caret());
+    assertEquals(expected.length(), console.editor.anchor());
   }
 
   String snapped(App<State> app, String name) throws Exception {

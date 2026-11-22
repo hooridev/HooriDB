@@ -76,7 +76,7 @@ public record SqlMonitor(Connection connection, Provider provider) implements Mo
   private static boolean fallsBack(QueryException e) {
     return switch (e.failure()) {
       case ACCESS_DENIED, NOT_FOUND, OTHER -> true;
-      case CONNECTION_LOST, CANCELLED, ABORTED, COLUMNS_CHANGED -> false;
+      case CONNECTION_LOST, CANCELLED, ABORTED, COLUMNS_CHANGED, CLAUSE_REFUSED -> false;
     };
   }
 

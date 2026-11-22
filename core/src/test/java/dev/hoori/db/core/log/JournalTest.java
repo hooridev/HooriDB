@@ -157,6 +157,31 @@ class JournalTest {
   }
 
   @Test
+  void theFailureOfAChangeIsWithheld() {
+    assertThrows(
+        SQLException.class,
+        () -> Journal.recording(
+            recorder,
+            () -> Journal.sql(
+                Provider.POSTGRESQL,
+                Purpose.CHANGES,
+                "UPDATE t SET v = ? WHERE id = ?",
+                v -> Outcome.DONE,
+                () -> {
+                  throw new SQLException("Failing row contains (1, token)", "23514");
+                })));
+    assertEquals(new Outcome.Failed(Outcome.ROW_WITHHELD), sent.getFirst().outcome());
+    assertThrows(
+        SQLException.class,
+        () -> Journal.recording(
+            recorder,
+            () -> Journal.callWithheld(Purpose.TRANSACTION, Journal.COMMIT, () -> {
+              throw new SQLException("Key (id)=(1) already exists.", "23505");
+            })));
+    assertEquals(new Outcome.Failed(Outcome.ROW_WITHHELD), sent.getLast().outcome());
+  }
+
+  @Test
   void theFailureOfAStatementThatCarriesAPasswordIsWithheld() {
     assertThrows(
         SQLException.class,

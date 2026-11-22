@@ -25,7 +25,8 @@ their sizes, downloads one and deletes one that no open connection uses. Opening
 tree connects and reads its databases, schemas, tables and views, and columns, one level at a time
 as they are opened; several connections are open at once. A double press or Enter on a table or view
 opens its rows in a tab, read late in pages on its connection's lane, with the rows in view in its
-status line and buttons that scroll a page back or on, or to the first or last row; tabs move and
+status line, buttons that scroll a page back or on, or to the first or last row, and, on SQL
+servers, Open in console to open a console on its database with its SELECT; tabs move and
 tear off into windows of their own. The columns of a table and of a console's result fit their first
 rows once, and a table's fit again where a refresh finds other columns. A moment, a timestamp with a
 time zone, shows and is copied in the computer's time zone, with the offset it has there.
@@ -212,10 +213,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
 - Every statement and command that core sends goes through `dev.hoori.db.core.log.Journal`, with
   its purpose, which records it for the recorder a caller bound and masks a password first, as the
   dialect's `passwordWords` and `DocumentDialect.secretFields` say; a new send goes through it too.
-  Not yet: the writes of `data.Changes` and the reads of the rows dialects' `changeable`, which
-  nothing in the app calls so far. The app binds it per call on a lane's link (`Recorded`), so
-  recording never waits for the disk; it binds none for the server monitor's reads, which repeat
-  every few seconds and would fill the log, only for its cancels and ends (`Purpose.MONITOR`).
+  The app binds it per call on a lane's link (`Recorded`), so recording never waits for the disk;
+  it binds none for the server monitor's reads, which repeat every few seconds and would fill the
+  log, only for its cancels and ends (`Purpose.MONITOR`).
 - The shell's syntax is lexed in one place, core's `dev.hoori.db.core.document.Lexer`: splitting
   statements (`Script.split`, `Statements`), reading them (`Shell`), coloring (`ShellSyntax`, which
   maps its tokens to `Theme.Code`), laying out (`Layout`, which Control+Alt+L runs) and completing

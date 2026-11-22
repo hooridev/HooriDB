@@ -7,6 +7,8 @@ import static dev.hoori.db.core.data.RowsServerTest.qualified;
 import static dev.hoori.db.core.data.RowsServerTest.table;
 import static dev.hoori.db.core.data.RowsServerTest.types;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -18,6 +20,10 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.log.Sent;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -29,6 +35,7 @@ import java.util.Map;
 import java.util.TimeZone;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
@@ -464,6 +471,7 @@ class ChangesServerTest {
         copy.put(0, 3L);
         for (var i = 1; i < columns.size(); i++) {
           copy.put(i, first.get(i));
+          changes = changes.edit(first, i, null);
           changes = changes.edit(read.get(1), i, first.get(i));
         }
         changes = changes.insert(copy);
@@ -473,6 +481,7 @@ class ChangesServerTest {
         assertEquals(3, written.size());
         for (var i = 1; i < columns.size(); i++) {
           var label = types.get(i - 1).type() + " " + types.get(i - 1).literal();
+          assertNull(written.get(0).get(i), "nulled " + label);
           assertEquals(first.get(i), written.get(1).get(i), "updated " + label);
           assertEquals(first.get(i), written.get(2).get(i), "inserted " + label);
         }
@@ -535,6 +544,284 @@ class ChangesServerTest {
         if (pg) {
           dropAfter(provider, "DROP SCHEMA IF EXISTS " + hostile + " CASCADE");
         }
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aCellChangedSinceItWasReadMissesWhileAnotherColumnCommits(Provider provider)
+      throws Exception {
+    var name = unique("changes_concurrent");
+    var table = table(provider, name, Table.Kind.TABLE);
+    var qualified = qualified(provider, name);
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified + " (id integer PRIMARY KEY, a varchar(20), b varchar(20))",
+          "INSERT INTO " + qualified + " VALUES (1, 'old', 'kept'), (2, '', NULL)");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        var none = Changes.of(table, columns).orElseThrow();
+
+        // Another session changes the same cell (even only in case or trailing space): missed.
+        try (var other = open(provider)) {
+          execute(other, "UPDATE " + qualified + " SET a = 'OLD ' WHERE id = 1");
+        }
+        var conflict = none.edit(read.get(0), 1, "mine").edit(read.get(1), 2, "also mine");
+        assertEquals(
+            new Changes.Outcome.Missed(conflict.changes().getFirst(), 0),
+            conflict.write(connection, provider));
+        assertEquals(List.of(row(1L, "OLD ", "kept"), row(2L, "", null)), rows(provider, table));
+        assertLeftAsItWas(connection, provider);
+
+        // Another session changes an empty string to NULL: still caught as missed.
+        try (var other = open(provider)) {
+          execute(other, "UPDATE " + qualified + " SET a = NULL WHERE id = 2");
+        }
+        var emptyToNull = none.edit(read.get(1), 1, "mine");
+        assertEquals(
+            new Changes.Outcome.Missed(emptyToNull.changes().getFirst(), 0),
+            emptyToNull.write(connection, provider));
+        assertEquals(List.of(row(1L, "OLD ", "kept"), row(2L, null, null)), rows(provider, table));
+        assertLeftAsItWas(connection, provider);
+
+        // Another session changes a different column of the same row: does not miss, commits.
+        var fresh = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        try (var other = open(provider)) {
+          execute(other, "UPDATE " + qualified + " SET b = 'other b' WHERE id = 1");
+        }
+        var disjoint = none.edit(fresh.get(0), 1, "updated a");
+        assertEquals(new Changes.Outcome.Committed(), disjoint.write(connection, provider));
+        assertEquals(
+            List.of(row(1L, "updated a", "other b"), row(2L, null, null)), rows(provider, table));
+        assertLeftAsItWas(connection, provider);
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified);
+      }
+    }
+  }
+
+  // 00:30Z and 01:30Z are both 02:30 in Berlin, as the clocks go back.
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aMomentChangedToOneTheZoneShowsAlikeMisses(Provider provider) throws Exception {
+    var name = unique("changes_fold");
+    var table = table(provider, name, Table.Kind.TABLE);
+    var qualified = qualified(provider, name);
+    try (var connection = open(provider)) {
+      try {
+        execute(connection, "SET SESSION time_zone = 'Europe/Berlin'");
+      } catch (SQLException _) {
+        assumeTrue(false, "The server has no named time zones");
+      }
+      execute(
+          connection,
+          "CREATE TABLE " + qualified + " (id integer PRIMARY KEY, t timestamp NULL)",
+          "SET SESSION time_zone = '+00:00'",
+          "INSERT INTO " + qualified + " VALUES (1, '2024-10-27 00:30:00')",
+          "SET SESSION time_zone = 'Europe/Berlin'");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        try (var other = open(provider)) {
+          execute(
+              other,
+              "SET SESSION time_zone = '+00:00'",
+              "UPDATE " + qualified + " SET t = '2024-10-27 01:30:00' WHERE id = 1");
+        }
+        var changes = Changes.of(table, columns).orElseThrow().edit(read.getFirst(), 1, null);
+        assertEquals(
+            new Changes.Outcome.Missed(changes.changes().getFirst(), 0),
+            changes.write(connection, provider));
+        assertEquals(
+            List.of(row(1L, OffsetDateTime.of(2024, 10, 27, 1, 30, 0, 0, ZoneOffset.UTC))),
+            rows(provider, table));
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified);
+      }
+    }
+  }
+
+  // IS NULL holds for a composite whose fields are all NULL.
+  @Test
+  void aCompositeOfNullFieldsIsNotNull() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var name = unique("changes_composite");
+    var type = qualified(provider, name + "_pair");
+    var table = table(provider, name, Table.Kind.TABLE);
+    var qualified = qualified(provider, name);
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TYPE " + type + " AS (a integer, b integer)",
+          "CREATE TABLE " + qualified + " (id integer PRIMARY KEY, p " + type + ")",
+          "INSERT INTO " + qualified + " VALUES (1, ROW(NULL, NULL)), (2, NULL)");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        try (var other = open(provider)) {
+          execute(other, "UPDATE " + qualified + " SET p = ROW(NULL, NULL) WHERE id = 2");
+        }
+        var stale = Changes.of(table, columns).orElseThrow().edit(read.get(1), 1, "(3,4)");
+        assertEquals(
+            new Changes.Outcome.Missed(stale.changes().getFirst(), 0),
+            stale.write(connection, provider));
+        var changes = Changes.of(table, columns).orElseThrow().edit(read.get(0), 1, "(1,2)");
+        assertEquals(new Changes.Outcome.Committed(), changes.write(connection, provider));
+        assertEquals(List.of(row(1L, "(1,2)"), row(2L, "(,)")), rows(provider, table));
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified, "DROP TYPE " + type);
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void spatialAndFloatingPointOriginalValuesCompareAsRead(Provider provider) throws Exception {
+    var name = unique("changes_geom");
+    var table = table(provider, name, Table.Kind.TABLE);
+    var qualified = qualified(provider, name);
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified
+              + " (id integer PRIMARY KEY, g geometry, f float, d double, s float(7,3))",
+          "INSERT INTO " + qualified
+              + " VALUES (1, ST_GeomFromText('POINT(1 2)'), 0.00001, 1.2345678901234567, 1.2),"
+              + " (2, NULL, 1.2345678e20, 1e-300, 0), (3, NULL, 0, 0, NULL)");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        var changes = Changes.of(table, columns)
+            .orElseThrow()
+            .edit(read.getFirst(), 1, null)
+            .edit(read.getFirst(), 2, 0.2f)
+            .edit(read.getFirst(), 3, 2.5)
+            .edit(read.getFirst(), 4, 2.5f)
+            .edit(read.get(1), 2, 0.5f)
+            .edit(read.get(1), 3, 0.25)
+            .edit(read.get(1), 4, 1.5f)
+            .edit(read.get(2), 2, 1f);
+        assertEquals(new Changes.Outcome.Committed(), changes.write(connection, provider));
+        assertEquals(
+            List.of(
+                row(1L, null, 0.2f, 2.5, 2.5f),
+                row(2L, null, 0.5f, 0.25, 1.5f),
+                row(3L, null, 1f, 0d, null)),
+            rows(provider, table));
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified);
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void writesAndTransactionsAreRecordedWithoutValues(Provider provider) throws Exception {
+    var name = unique("changes_journal");
+    var table = table(provider, name, Table.Kind.TABLE);
+    var qualified = qualified(provider, name);
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified
+              + " (id integer PRIMARY KEY, v varchar(40) CHECK (v <> 'forbidden-value'))",
+          "INSERT INTO " + qualified + " VALUES (1, 'old-secret-value')");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        var changes =
+            Changes.of(table, columns).orElseThrow().edit(read.getFirst(), 1, "new-secret-value");
+        var sent = new CopyOnWriteArrayList<Sent>();
+        var outcome = Journal.recording(sent::add, () -> changes.write(connection, provider));
+        assertEquals(new Changes.Outcome.Committed(), outcome);
+
+        var texts = sent.stream().map(Sent::text).toList();
+        assertTrue(
+            sent.stream()
+                .anyMatch(s -> s.purpose() == Purpose.CHANGES
+                    && (s.text().contains("pg_class") || s.text().contains("ENGINES"))),
+            texts.toString());
+        assertTrue(
+            sent.stream()
+                .anyMatch(s -> s.purpose() == Purpose.CHANGES
+                    && s.text().startsWith("SELECT 1 FROM ")
+                    && s.text().endsWith(" FOR UPDATE")
+                    && s.outcome().equals(Outcome.rows(1))),
+            texts.toString());
+        assertTrue(
+            sent.stream()
+                .anyMatch(s -> s.purpose() == Purpose.CHANGES
+                    && s.text().startsWith("UPDATE ")
+                    && s.text().contains("?")
+                    && s.outcome().equals(new Outcome.Changed(1))),
+            texts.toString());
+        assertTrue(
+            sent.stream()
+                .anyMatch(s -> s.purpose() == Purpose.TRANSACTION
+                    && s.text().equals(Journal.autoCommit(false))),
+            texts.toString());
+        assertTrue(
+            sent.stream()
+                .anyMatch(
+                    s -> s.purpose() == Purpose.TRANSACTION && s.text().equals(Journal.COMMIT)),
+            texts.toString());
+        assertTrue(
+            sent.stream()
+                .anyMatch(s -> s.purpose() == Purpose.TRANSACTION
+                    && s.text().equals(Journal.autoCommit(true))),
+            texts.toString());
+        assertFalse(
+            sent.stream()
+                .anyMatch(s ->
+                    s.text().contains("old-secret-value") || s.text().contains("new-secret-value")),
+            texts.toString());
+
+        // A missed update records rollback() and setAutoCommit(true), still without values.
+        sent.clear();
+        var stale =
+            Changes.of(table, columns).orElseThrow().edit(read.getFirst(), 1, "stale-secret");
+        var missed = Journal.recording(sent::add, () -> stale.write(connection, provider));
+        assertEquals(new Changes.Outcome.Missed(stale.changes().getFirst(), 0), missed);
+        var missedTexts = sent.stream().map(Sent::text).toList();
+        assertTrue(
+            sent.stream()
+                .anyMatch(
+                    s -> s.purpose() == Purpose.TRANSACTION && s.text().equals(Journal.ROLLBACK)),
+            missedTexts.toString());
+        assertTrue(
+            sent.stream()
+                .anyMatch(s -> s.purpose() == Purpose.TRANSACTION
+                    && s.text().equals(Journal.autoCommit(true))),
+            missedTexts.toString());
+        assertFalse(
+            sent.stream()
+                .anyMatch(s ->
+                    s.text().contains("old-secret-value") || s.text().contains("stale-secret")),
+            missedTexts.toString());
+
+        // A failure, which may quote the row, is recorded without its message.
+        sent.clear();
+        var written = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        var forbidden =
+            Changes.of(table, columns).orElseThrow().edit(written.getFirst(), 1, "forbidden-value");
+        assertThrows(
+            QueryException.class,
+            () -> Journal.recording(sent::add, () -> forbidden.write(connection, provider)));
+        assertTrue(
+            sent.stream()
+                .anyMatch(s -> s.purpose() == Purpose.CHANGES
+                    && s.outcome().equals(new Outcome.Failed(Outcome.ROW_WITHHELD))),
+            sent.toString());
+        assertFalse(sent.toString().contains("forbidden-value"), sent.toString());
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified);
       }
     }
   }
