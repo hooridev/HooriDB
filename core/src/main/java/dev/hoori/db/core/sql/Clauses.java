@@ -1,6 +1,7 @@
 package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -41,24 +42,11 @@ public final class Clauses {
       return Optional.of(Problem.MULTIPLE);
     }
     for (var reading : Tokens.readings(provider)) {
-      if (unclosed(clause, provider, reading)) {
-        return Optional.of(Problem.UNCLOSED);
-      }
-      int depth = 0;
-      for (var token : Tokens.of(clause, provider, reading)) {
-        if (token.is(";")) {
-          return Optional.of(Problem.MULTIPLE);
-        }
-        if (token.is("(")) {
-          depth++;
-        } else if (token.is(")")) {
-          if (--depth < 0) {
-            return Optional.of(Problem.PARENTHESES);
-          }
-        }
-      }
-      if (depth != 0) {
-        return Optional.of(Problem.PARENTHESES);
+      var problem = unclosed(clause, provider, reading)
+          ? Problem.UNCLOSED
+          : outside(Tokens.of(clause, provider, reading));
+      if (problem != null) {
+        return Optional.of(problem);
       }
     }
     // Prefixed with SELECT so that a clause starting with the word SHOW is checked all the same.
@@ -66,6 +54,24 @@ public final class Clauses {
       return Optional.of(Problem.READ_ONLY);
     }
     return Optional.empty();
+  }
+
+  // A semicolon, or parentheses that do not balance, among the tokens; null where neither.
+  private static Problem outside(List<Tokens.Token> tokens) {
+    int depth = 0;
+    for (var token : tokens) {
+      if (token.is(";")) {
+        return Problem.MULTIPLE;
+      } else if (token.is("(")) {
+        depth++;
+      } else if (token.is(")")) {
+        depth--;
+      }
+      if (depth < 0) {
+        return Problem.PARENTHESES;
+      }
+    }
+    return depth == 0 ? null : Problem.PARENTHESES;
   }
 
   // Whether the clause leaves a string, quoted name or block comment open, or holds an executable

@@ -179,10 +179,9 @@ public final class Rows {
   public static OptionalLong estimate(
       Connection connection, Provider provider, Table table, Filter filter, boolean readOnly)
       throws QueryException {
-    var effective = Objects.requireNonNull(filter, "filter");
-    checkFilter(provider, effective, readOnly);
+    checkFilter(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
-    var select = "SELECT * FROM " + filtered(provider, table, effective);
+    var select = "SELECT * FROM " + filtered(provider, table, filter);
     return provider.dialect().rows().estimate(connection, provider, table, select);
   }
 
@@ -216,11 +215,10 @@ public final class Rows {
   public static long count(
       Connection connection, Provider provider, Table table, Filter filter, boolean readOnly)
       throws QueryException {
-    var effective = Objects.requireNonNull(filter, "filter");
-    checkFilter(provider, effective, readOnly);
+    checkFilter(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
     var sql = "SELECT " + provider.dialect().rows().count() + " FROM "
-        + filtered(provider, table, effective);
+        + filtered(provider, table, filter);
     return Journal.sql(
         provider,
         Purpose.ROWS,
@@ -292,8 +290,7 @@ public final class Rows {
       throw new IllegalArgumentException("Rows from " + from + " to " + to);
     }
     requireColumnsOf(table, columns);
-    var effective = Objects.requireNonNull(filter, "filter");
-    checkFilter(provider, effective, readOnly);
+    checkFilter(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
     var dialect = provider.dialect().rows();
     var described = dialect.describe(connection, provider, table, columns);
@@ -310,9 +307,14 @@ public final class Rows {
     if (witness) {
       expressions.add(WITNESS + ".*");
     }
-    var tieBreakers = orderTerms(provider, columns, reads, places, children);
-    var sql =
-        pageSql(provider, table, columns, expressions, witness, effective, tieBreakers, from, to);
+    var sql = page(
+        expressions,
+        qualified(provider, table),
+        witness,
+        filter,
+        orderTerms(provider, columns, reads, places, children),
+        provider.quote(orderColumn(columns)),
+        " LIMIT " + (to - from) + " OFFSET " + from);
     var fields = reads.stream().map(Read::field).toList();
     Page page;
     try {
@@ -329,12 +331,14 @@ public final class Rows {
           }));
     } catch (QueryException e) {
       if (columnGone(provider, e)) {
-        if (effective.empty()) {
+        if (filter.empty()) {
           throw changed(table);
         }
         // An unknown column may be the user's clause's or one the table lost: no rows read without
-        // the filter fail as changed in the latter case.
-        read(connection, provider, table, columns, from, from, Filter.NONE, false);
+        // the filter fail as changed in the latter case. Without a witness, describe() has told.
+        if (witness) {
+          read(connection, provider, table, columns, from, from, Filter.NONE, false);
+        }
       }
       throw e;
     }
@@ -464,92 +468,52 @@ public final class Rows {
     return qualified(provider, table) + (filter.hasWhere() ? " AS " + ALIAS + where(filter) : "");
   }
 
-  private static String witnessJoin(Provider provider, Table table) {
-    return " LEFT JOIN (SELECT * FROM " + qualified(provider, table) + " LIMIT 0) AS " + WITNESS
-        + " ON FALSE";
-  }
-
-  private static String pageSql(
-      Provider provider,
-      Table table,
-      List<Column> columns,
+  // The statement of a page: without a filter as ever. Where the server has a witness, whose names
+  // a clause's bare names would clash with, the clauses go in a derived table of the table's rows;
+  // with a user order, that is the page, which an index may give, its rows numbered in that order.
+  private static String page(
       List<String> expressions,
+      String table,
       boolean witness,
       Filter filter,
       List<String> tieBreakers,
-      long from,
-      long to) {
-    var select = "SELECT " + String.join(", ", expressions);
-    var tableSql = qualified(provider, table);
-    var limit = " LIMIT " + (to - from) + " OFFSET " + from;
-    if (filter.empty()) {
-      return select
-          + " FROM " + tableSql + " AS " + ALIAS
-          + (witness ? witnessJoin(provider, table) : "")
-          + (tieBreakers.isEmpty() ? "" : " ORDER BY " + String.join(", ", tieBreakers))
-          + limit;
+      String number,
+      String limit) {
+    var source = table + " AS " + ALIAS + where(filter);
+    List<String> order = new ArrayList<>();
+    if (filter.hasOrder()) {
+      // Not in parentheses, as "(a DESC, b)" is no order; on lines of its own, bounded by Clauses.
+      order.add("\n" + filter.order() + "\n");
     }
-    if (!witness) {
-      return select
-          + " FROM " + tableSql + " AS " + ALIAS
-          + where(filter)
-          + orderBy(filter, tieBreakers)
-          + limit;
+    order.addAll(tieBreakers);
+    var rest = limit;
+    if (witness && filter.hasOrder()) {
+      var by = String.join(", ", order);
+      source = "(SELECT " + ALIAS + ".*, ROW_NUMBER() OVER (ORDER BY " + by + ") AS " + number
+          + " FROM (SELECT " + ALIAS + ".* FROM " + source + " ORDER BY " + by + limit + ") AS "
+          + ALIAS + ") AS " + ALIAS;
+      order = List.of(ALIAS + "." + number);
+      rest = "";
+    } else if (witness && filter.hasWhere()) {
+      source = "(SELECT " + ALIAS + ".* FROM " + source + ") AS " + ALIAS;
     }
-    // With the witness join, bare column names in the user's clauses would be ambiguous with w.
-    // Scope them to the table in a derived table aliased as r so the outer expressions and w.*
-    // stay unchanged; with a user ORDER BY, number the ordered page inside and sort by that number.
-    if (!filter.hasOrder()) {
-      return select
-          + " FROM (SELECT " + ALIAS + ".* FROM " + tableSql + " AS " + ALIAS
-          + where(filter) + ") AS " + ALIAS
-          + witnessJoin(provider, table)
-          + (tieBreakers.isEmpty() ? "" : " ORDER BY " + String.join(", ", tieBreakers))
-          + limit;
-    }
-    var rowNumber = provider.quote(orderColumn(columns));
-    var innerOrder = "ORDER BY\n"
-        + filter.order()
-        + "\n"
-        + (tieBreakers.isEmpty() ? "" : ", " + String.join(", ", tieBreakers));
-    return select
-        + " FROM (SELECT " + ALIAS + ".*, ROW_NUMBER() OVER (" + innerOrder + ") AS " + rowNumber
-        + " FROM " + tableSql + " AS " + ALIAS
-        + where(filter)
-        + " ORDER BY " + rowNumber + limit
-        + ") AS " + ALIAS
-        + witnessJoin(provider, table)
-        + " ORDER BY " + ALIAS + "." + rowNumber;
+    return "SELECT " + String.join(", ", expressions) + " FROM " + source
+        + (witness
+            ? " LEFT JOIN (SELECT * FROM " + table + " LIMIT 0) AS " + WITNESS + " ON FALSE"
+            : "")
+        + (order.isEmpty() ? "" : " ORDER BY " + String.join(", ", order))
+        + rest;
   }
 
-  private static String orderBy(Filter filter, List<String> tieBreakers) {
-    if (!filter.hasOrder()) {
-      return tieBreakers.isEmpty() ? "" : " ORDER BY " + String.join(", ", tieBreakers);
-    }
-    // ORDER BY cannot be wrapped in parentheses because "(a DESC, b)" is not valid SQL; it goes on
-    // its own lines, bounded by Clauses.problem().
-    return " ORDER BY\n"
-        + filter.order()
-        + "\n"
-        + (tieBreakers.isEmpty() ? "" : ", " + String.join(", ", tieBreakers));
-  }
-
-  // An alias for ROW_NUMBER() that does not collide with any column of the table.
+  // A name for the rows' number that is none of the table's columns.
   private static String orderColumn(List<Column> columns) {
-    var name = "__hoori_order";
-    while (hasColumn(columns, name)) {
-      name += "_";
+    var names =
+        columns.stream().map(column -> column.name().toLowerCase(Locale.ROOT)).toList();
+    var name = new StringBuilder("__hoori_order");
+    while (names.contains(name.toString())) {
+      name.append('_');
     }
-    return name;
-  }
-
-  private static boolean hasColumn(List<Column> columns, String name) {
-    for (var column : columns) {
-      if (column.name().equalsIgnoreCase(name)) {
-        return true;
-      }
-    }
-    return false;
+    return name.toString();
   }
 
   private static List<String> orderTerms(
