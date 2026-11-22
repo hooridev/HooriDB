@@ -66,9 +66,8 @@ class EditableServerTest {
               column(lineColumns, "purchase_id")),
           line.edited());
 
-      // Expressions and scalar subqueries stay read-only while real columns stay editable.
-      var exprSql = "SELECT id, upper(name) AS up, 1 AS one,"
-          + " (SELECT count(*) FROM purchase p WHERE p.customer_id = c.id) AS orders, name"
+      // Expressions stay read-only while real columns stay editable.
+      var exprSql = "SELECT id, upper(name) AS up, 1 AS one, id + 0 AS orders, name"
           + " FROM customer c WHERE c.id IN (SELECT customer_id FROM purchase)";
       var expr = decide(console, writer, provider, exprSql, false).orElseThrow();
       assertEquals(expectedTable, expr.table());
@@ -191,6 +190,32 @@ class EditableServerTest {
             decide(console, writer, provider, "SELECT ts, name FROM editable_ts_pk", false));
       } finally {
         execute(writer, "DROP TABLE editable_ts", "DROP TABLE editable_ts_pk");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aTableIsNotTakenForOneWhoseNameDiffersInCase(Provider provider) throws Exception {
+    try (var console = open(provider);
+        var writer = open(provider)) {
+      execute(
+          writer,
+          "CREATE TABLE EditableCase (id integer PRIMARY KEY, name varchar(20))",
+          "CREATE TABLE editablecase (id integer, name varchar(20))",
+          "INSERT INTO editablecase VALUES (1, 'a'), (1, 'b')");
+      try {
+        assertEquals(
+            Optional.empty(),
+            decide(console, writer, provider, "SELECT id, name FROM editablecase", false));
+        var other = decide(console, writer, provider, "SELECT id, name FROM EditableCase", false)
+            .orElseThrow();
+        assertEquals("EditableCase", other.table().name());
+        assertEquals(2, other.columns().size());
+      } finally {
+        execute(writer, "DROP TABLE EditableCase", "DROP TABLE editablecase");
       }
     }
   }

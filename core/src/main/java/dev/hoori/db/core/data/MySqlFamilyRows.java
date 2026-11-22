@@ -181,10 +181,9 @@ abstract class MySqlFamilyRows extends RowsDialect {
     if (!(sample instanceof Origin.Named named)) {
       return Optional.empty();
     }
-    var schema = named.catalog();
-    var tableName = named.table();
     var sql = "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES"
-        + " WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND TABLE_TYPE = 'BASE TABLE'";
+        + " WHERE TABLE_SCHEMA = CAST(? AS BINARY) AND TABLE_NAME = CAST(? AS BINARY)"
+        + " AND TABLE_TYPE = 'BASE TABLE'";
     var catalog = provider.dialect().catalog();
     var table = Journal.sql(
         provider,
@@ -192,22 +191,12 @@ abstract class MySqlFamilyRows extends RowsDialect {
         sql,
         found -> Outcome.rows(found == null ? 0 : 1),
         () -> Query.run(connection, provider, sql, statement -> {
-          statement.setString(1, schema);
-          statement.setString(2, tableName);
+          statement.setString(1, named.catalog());
+          statement.setString(2, named.table());
           try (var rows = statement.executeQuery()) {
-            Table first = null;
-            int matches = 0;
-            while (rows.next()) {
-              var database = catalog.database(rows);
-              var name = rows.getString(2);
-              var candidate = new Table(database, name, Table.Kind.TABLE);
-              if (database.name().equals(schema) && name.equals(tableName)) {
-                return candidate;
-              }
-              first = candidate;
-              matches++;
-            }
-            return matches == 1 ? first : null;
+            return rows.next()
+                ? new Table(catalog.database(rows), rows.getString(2), Table.Kind.TABLE)
+                : null;
           }
         }));
     if (table == null) {

@@ -28,7 +28,8 @@ public final class EditableQuery {
   /**
    * Whether the text is a single {@code SELECT} statement reading directly from one named table,
    * with no {@code WITH}, subquery in {@code FROM}, join, set operation, {@code INTO} or locking
-   * clause. Subqueries in the select list and {@code WHERE} are allowed.
+   * clause. Subqueries in {@code WHERE} are allowed; one in the select list is not, as MariaDB and
+   * MySQL report the origin of a column it selects as if the outer query did.
    */
   public static boolean singleTable(String sql, Provider provider) {
     if (provider.keepsDocuments() || Statements.split(sql, provider).size() != 1) {
@@ -43,9 +44,12 @@ public final class EditableQuery {
   }
 
   /**
-   * Whether any reading of the SQL text creates a temporary table ({@code CREATE … TEMPORARY
-   * TABLE}, including {@code CREATE OR REPLACE TEMPORARY TABLE} and {@code CREATE TEMP TABLE}).
+   * Whether any reading of the SQL text may create a temporary table: {@code CREATE … TEMPORARY
+   * TABLE}, including {@code CREATE OR REPLACE TEMPORARY TABLE} and {@code CREATE TEMP TABLE}, or a
+   * {@code CALL} or {@code EXECUTE}, whose procedure or prepared statement may.
    */
+  // shortcut: a stored function or trigger that creates one is not seen; make the server tell, if
+  // it ever can, from the console's session.
   public static boolean createsTemporaryTable(String sql, Provider provider) {
     if (provider.keepsDocuments()) {
       return false;
@@ -79,7 +83,9 @@ public final class EditableQuery {
         }
       } else if (forbidden(tokens, i)) {
         return false;
-      } else if (from < 0 && token.depth() == 0 && token.is("FROM")) {
+      } else if (from < 0 && token.depth() > 0 && token.is("SELECT")) {
+        return false;
+      } else if (from < 0 && token.depth() == 0 && token.is("FROM") && !distinct(tokens, i)) {
         from = i;
       }
     }
@@ -87,6 +93,13 @@ public final class EditableQuery {
       return false;
     }
     return singleTableFrom(tokens, from + 1);
+  }
+
+  // Whether the FROM at the index ends IS [NOT] DISTINCT FROM.
+  private static boolean distinct(List<Tokens.Token> tokens, int from) {
+    return from >= 2
+        && tokens.get(from - 1).is("DISTINCT")
+        && (tokens.get(from - 2).is("IS") || tokens.get(from - 2).is("NOT"));
   }
 
   // Forbidden anywhere, at any depth: the words above, and locking clauses.
@@ -140,10 +153,11 @@ public final class EditableQuery {
     return tokens.get(k).depth() == 0 && afterFrom(tokens.get(k));
   }
 
-  // A word that is no clause after FROM; a keyword taken for an alias, as JOIN, leaves a word that
-  // no clause allows.
+  // A word that is no clause after FROM nor a join of one word, whose right side may be a table
+  // named as a clause, such as MySQL's offset; a keyword taken for an alias, as LEFT, leaves a word
+  // that no clause allows.
   private static boolean bareAlias(Tokens.Token token) {
-    return token.name() && !afterFrom(token);
+    return token.name() && !afterFrom(token) && !token.is("JOIN") && !token.is("STRAIGHT_JOIN");
   }
 
   private static boolean afterFrom(Tokens.Token token) {
@@ -152,6 +166,9 @@ public final class EditableQuery {
 
   private static boolean createsTemporaryTable(List<Tokens.Token> tokens) {
     int n = tokens.size();
+    if (n > 0 && (tokens.getFirst().is("CALL") || tokens.getFirst().is("EXECUTE"))) {
+      return true;
+    }
     for (int i = 0; i < n; i++) {
       if (!tokens.get(i).is("CREATE")) {
         continue;

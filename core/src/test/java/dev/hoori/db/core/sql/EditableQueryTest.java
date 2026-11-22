@@ -38,8 +38,13 @@ class EditableQueryTest {
       allowed(p, "SELECT DISTINCT id, name FROM customer GROUP BY id, name HAVING count(*) > 0");
       allowed(p, "SELECT id, name FROM customer WINDOW w AS (ORDER BY id) ORDER BY id OFFSET 5");
       allowed(p, "SELECT id, name FROM customer FETCH FIRST 10 ROWS ONLY");
-      allowed(
+      refused(
           p, "SELECT id, (SELECT count(*) FROM purchase WHERE customer_id = c.id) FROM customer c");
+      refused(p, "SELECT (SELECT c.id) AS id, name FROM customer c");
+      allowed(p, "SELECT id, name IS NOT DISTINCT FROM 'x' AS same FROM customer");
+      allowed(p, "SELECT id, name IS DISTINCT FROM 'x' FROM customer WHERE id > 0");
+      refused(p, "SELECT c.id FROM customer c JOIN offset ON offset.id = c.id");
+      refused(p, "SELECT c.id FROM customer STRAIGHT_JOIN offset");
       allowed(p, "SELECT id, name FROM customer WHERE id IN (SELECT customer_id FROM purchase)");
       allowed(p, "SELECT id, SUBSTRING(name FROM 1 FOR 3), EXTRACT(YEAR FROM born) FROM customer");
       allowed(p, "/* leading */ SELECT id FROM customer -- trailing\n;");
@@ -181,6 +186,8 @@ class EditableQueryTest {
       temp(p, "CREATE GLOBAL TEMP TABLE customer (id int)");
       temp(p, "CREATE OR REPLACE TEMPORARY TABLE customer (id int)");
       temp(p, "SELECT 1; CREATE TEMPORARY TABLE customer (id int)");
+      temp(p, "CALL make_tables()");
+      temp(p, "EXECUTE stmt");
       notTemp(p, "CREATE TABLE customer (id int)");
       notTemp(p, "DROP TEMPORARY TABLE customer");
       notTemp(p, "CREATE TEMPORARY SEQUENCE s");
