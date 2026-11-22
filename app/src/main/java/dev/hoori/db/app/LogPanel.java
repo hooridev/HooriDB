@@ -7,10 +7,10 @@ import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
+import com.rethinkj.ui.editor.CodeEditor;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
-import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.DataGrid.CellIcon;
 import com.rethinkj.ui.kit.EmptyState;
