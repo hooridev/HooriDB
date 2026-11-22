@@ -253,6 +253,9 @@ class EditableQueryTest {
       temp(p, "CALL make_tables()");
       temp(p, "EXECUTE stmt");
       temp(p, "BEGIN NOT ATOMIC CALL make_tables(); END");
+      temp(p, "IF 1 THEN CALL make_tables(); END IF");
+      temp(p, "WHILE 0 DO CALL make_tables(); END WHILE");
+      temp(p, "work: BEGIN NOT ATOMIC CALL make_tables(); END");
       notTemp(p, "BEGIN");
       notTemp(p, "CREATE TABLE customer (id int)");
       notTemp(p, "DROP TEMPORARY TABLE customer");

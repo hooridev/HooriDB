@@ -25,6 +25,10 @@ public final class EditableQuery {
   private static final Set<String> FORBIDDEN =
       Set.of("INTO", "UNION", "INTERSECT", "EXCEPT", "ROLLUP", "CUBE", "GROUPING");
 
+  // First words of a statement that runs others.
+  private static final Set<String> RUNS_OTHERS =
+      Set.of("CALL", "EXECUTE", "IF", "CASE", "LOOP", "REPEAT", "WHILE", "FOR");
+
   private EditableQuery() {}
 
   /**
@@ -66,8 +70,8 @@ public final class EditableQuery {
   /**
    * Whether any reading of the text of one statement, as the console runs each on its own, may
    * create a temporary table: {@code CREATE … TEMPORARY TABLE}, including {@code CREATE OR REPLACE
-   * TEMPORARY TABLE} and {@code CREATE TEMP TABLE}, or a {@code CALL} or {@code EXECUTE}, whose
-   * procedure or prepared statement may.
+   * TEMPORARY TABLE} and {@code CREATE TEMP TABLE}, or one that runs others, which may: a {@code
+   * CALL}, an {@code EXECUTE}, or a compound statement of MariaDB's outside a stored program.
    */
   // shortcut: a stored function or trigger that creates one is not seen; make the server tell, if
   // it ever can, from the console's session.
@@ -232,13 +236,7 @@ public final class EditableQuery {
   }
 
   private static boolean createsTemporaryTable(List<Tokens.Token> tokens) {
-    // MariaDB's BEGIN NOT ATOMIC runs a block of statements.
-    if (!tokens.isEmpty()
-        && (tokens.getFirst().is("CALL")
-            || tokens.getFirst().is("EXECUTE")
-            || tokens.getFirst().is("BEGIN")
-                && tokens.size() > 1
-                && tokens.get(1).is("NOT"))) {
+    if (!tokens.isEmpty() && runsOthers(tokens)) {
       return true;
     }
     for (int i = 0; i < tokens.size(); i++) {
@@ -247,6 +245,16 @@ public final class EditableQuery {
       }
     }
     return false;
+  }
+
+  // Whether the statement runs others: a CALL, an EXECUTE, or one of MariaDB's compound statements
+  // outside a stored program, as BEGIN NOT ATOMIC, IF or WHILE, also after a label.
+  private static boolean runsOthers(List<Tokens.Token> tokens) {
+    var first = tokens.getFirst();
+    var second = tokens.size() > 1 ? tokens.get(1) : first;
+    return !first.ident() && RUNS_OTHERS.contains(Tokens.keyword(first.text()))
+        || first.is("BEGIN") && second.is("NOT")
+        || second.is(":");
   }
 
   // Whether [OR REPLACE] [LOCAL | GLOBAL] TEMPORARY | TEMP, then TABLE, begin at the index.

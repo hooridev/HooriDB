@@ -65,10 +65,12 @@ public record Editable(Table table, List<Column> columns, List<Column> edited) {
       boolean createdTemporaryTable)
       throws QueryException {
     var list = EditableQuery.singleTable(sql, provider).orElse(null);
+    if (list == null) {
+      return Optional.empty();
+    }
     var dialect = provider.dialect().rows();
     // A * that stands for several columns moves the subqueries' columns from their positions.
-    if (list == null
-        || !list.subqueries().isEmpty() && list.items() != fields.size()
+    if (!list.subqueries().isEmpty() && list.items() != fields.size()
         || createdTemporaryTable && dialect.temporaryTablesShadow()) {
       return Optional.empty();
     }
