@@ -63,7 +63,7 @@ public final class SettingsStore {
    */
   public record Loaded(Settings settings, List<String> fellBack) {
     public Loaded {
-      Objects.requireNonNull(settings, "settings");
+      Objects.requireNonNull(settings);
       fellBack = List.copyOf(fellBack);
     }
   }
@@ -230,7 +230,7 @@ public final class SettingsStore {
    * @throws IOException if it could not be written
    */
   public void save(Settings settings) throws IOException {
-    Objects.requireNonNull(settings, "settings");
+    Objects.requireNonNull(settings);
     var root = JsonFile.newRoot(VERSION);
     if (settings.look() != Settings.DEFAULT.look()) {
       root.put(THEME, stored(settings.look()));

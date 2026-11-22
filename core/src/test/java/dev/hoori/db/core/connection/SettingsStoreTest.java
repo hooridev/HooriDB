@@ -215,14 +215,10 @@ class SettingsStoreTest {
 
   @Test
   void recordRejectsInvalidValues() {
-    assertThrows(
-        IllegalArgumentException.class, () -> Settings.DEFAULT.withConnectTimeout(Duration.ZERO));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Settings.DEFAULT.withConnectTimeout(Duration.ofSeconds(301)));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Settings.DEFAULT.withConnectTimeout(Duration.ofMillis(1500)));
+    for (var timeout : List.of(Duration.ZERO, Duration.ofSeconds(301), Duration.ofMillis(1500))) {
+      assertThrows(
+          IllegalArgumentException.class, () -> Settings.DEFAULT.withConnectTimeout(timeout));
+    }
     assertThrows(IllegalArgumentException.class, () -> Settings.DEFAULT.withMonitorInterval(3));
     assertThrows(NullPointerException.class, () -> Settings.DEFAULT.withLook(null));
     assertThrows(NullPointerException.class, () -> Settings.DEFAULT.withAccent(null));
