@@ -105,7 +105,10 @@ updates, its authors, license and website. Started from the unpacked Linux bundl
 into the application menu, which gives its windows their icon in the dock. The main window's
 placement, the sidebar's width and the statement log's open state, height and detail split are kept
 (`ui-state.json`). The theme, System, Light or Dark in the View menu, where System follows the
-computer's scheme, is kept in `settings.json`, read before the first frame. Nothing can be edited,
+computer's scheme, is kept in `settings.json`, read before the first frame. File, Settings…
+(Control+,, or the palette) opens or raises a modeless settings window over the shared state, with
+pages General, Appearance, Editor, Databases and History & log, where every change applies at once,
+a changed row can be reset and each page has Restore defaults. Nothing can be edited,
 filtered or sorted yet.
 
 - Later home: https://db.hoori.dev
