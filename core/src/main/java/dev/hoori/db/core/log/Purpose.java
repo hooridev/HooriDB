@@ -8,7 +8,8 @@ public enum Purpose {
   ROWS,
   /**
    * Writing changes of a table's rows: checking whether the table can be changed, checking each row
-   * and writing the changes.
+   * and writing the changes. A failure's message is not recorded, as it may quote the row, also
+   * columns that were not read.
    */
   CHANGES,
   /** The planner's estimate of the rows a statement gives, before it runs. */

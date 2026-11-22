@@ -730,7 +730,8 @@ class ChangesServerTest {
     try (var connection = open(provider)) {
       execute(
           connection,
-          "CREATE TABLE " + qualified + " (id integer PRIMARY KEY, v varchar(40))",
+          "CREATE TABLE " + qualified
+              + " (id integer PRIMARY KEY, v varchar(40) CHECK (v <> 'forbidden-value'))",
           "INSERT INTO " + qualified + " VALUES (1, 'old-secret-value')");
       try {
         var columns = columns(connection, provider, table);
@@ -804,6 +805,21 @@ class ChangesServerTest {
                 .anyMatch(s ->
                     s.text().contains("old-secret-value") || s.text().contains("stale-secret")),
             missedTexts.toString());
+
+        // A failure, which may quote the row, is recorded without its message.
+        sent.clear();
+        var written = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        var forbidden =
+            Changes.of(table, columns).orElseThrow().edit(written.getFirst(), 1, "forbidden-value");
+        assertThrows(
+            QueryException.class,
+            () -> Journal.recording(sent::add, () -> forbidden.write(connection, provider)));
+        assertTrue(
+            sent.stream()
+                .anyMatch(s -> s.purpose() == Purpose.CHANGES
+                    && s.outcome().equals(new Outcome.Failed(Outcome.ROW_WITHHELD))),
+            sent.toString());
+        assertFalse(sent.toString().contains("forbidden-value"), sent.toString());
       } finally {
         dropAfter(provider, "DROP TABLE " + qualified);
       }

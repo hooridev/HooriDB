@@ -454,7 +454,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       return new SQLException("Given up before the commit", "08006");
     }
     try {
-      Journal.call(Purpose.TRANSACTION, Journal.COMMIT, () -> {
+      Journal.callWithheld(Purpose.TRANSACTION, Journal.COMMIT, () -> {
         connection.commit();
         return null;
       });
