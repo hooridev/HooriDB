@@ -271,7 +271,7 @@ class StatementLogTest {
       started.countDown();
       try {
         gate.await();
-      } catch (InterruptedException e) {
+      } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
       }
     };
@@ -306,7 +306,7 @@ class StatementLogTest {
       started.countDown();
       try {
         gate.await();
-      } catch (InterruptedException e) {
+      } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
       }
       throw new IOException("disk full");
