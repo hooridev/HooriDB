@@ -784,7 +784,7 @@ final class Frame {
       s.choose(s.settings.withLook(look));
       s.tell(name + " on");
     };
-    return Menu.item(name, s.keeping.settingsLoading ? null : choose)
+    return Menu.item(name, s.keeping.settingsLoading || s.guard.exiting() ? null : choose)
         .checked(s.settings.look() == look);
   }
 }
