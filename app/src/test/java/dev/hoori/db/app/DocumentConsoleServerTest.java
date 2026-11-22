@@ -193,7 +193,7 @@ class DocumentConsoleServerTest {
         type("db.orders.find({ a: 1 b: 2 })") + RUN + "snap error\n" + MESSAGES
             + "snap messages\n");
     var error = c.tree("error");
-    assertTrue(line(error, "#sql").contains("underline 22-23"), line(error, "#sql"));
+    assertTrue(line(error, "#sql").contains("squiggle 22-23"), line(error, "#sql"));
     assertTrue(c.tree("messages").contains("A comma or } is missing"), c.tree("messages"));
   }
 

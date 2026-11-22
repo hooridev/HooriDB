@@ -337,7 +337,7 @@ public final class WorkspaceStore {
     };
   }
 
-  private static String stored(Color color) {
+  static String stored(Color color) {
     return switch (color) {
       case BLUE -> "blue";
       case VIOLET -> "violet";
