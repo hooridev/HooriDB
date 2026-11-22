@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import static com.rethinkj.ui.El.col;
 import static com.rethinkj.ui.El.row;
+import static com.rethinkj.ui.kit.Button.Variant.GHOST;
 import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 
@@ -419,23 +420,6 @@ final class TableTab implements Tab {
   }
 
   /**
-   * Count rows: the exact number, on the database's count connection so that it never holds up the
-   * tree or other tables' pages; again, it stops counting. Not while the count finds where the
-   * table ends.
-   */
-  void count(State s) {
-    if (ending) {
-      return;
-    }
-    if (counting != null) {
-      counting.cancel();
-      counting = null;
-      return;
-    }
-    counted(s, true);
-  }
-
-  /**
    * Makes sure the rows are counted: a count under way, whoever asked for it, goes on.
    *
    * @param separate whether to run on the database's count connection, for a count that may take
@@ -717,34 +701,21 @@ final class TableTab implements Tab {
         Card.footer(rowsStatus, footer(ofDocuments, presented).toArray(El[]::new)));
   }
 
-  /** The toolbar's actions: how documents show, Count rows, and Refresh. */
+  /** The toolbar's actions: how documents show, and Refresh. */
   private List<El> actions(State s, boolean connected, boolean ofDocuments) {
     var actions = new ArrayList<El>();
     if (ofDocuments) {
       actions.add(presentation.switcher("shown", v -> show(s, v)));
     }
-    actions.add(button(
-            SECONDARY,
-            Symbol.CALCULATOR,
-            countLabel(ofDocuments),
-            connected && columns != null && !ending ? () -> count(s) : null)
-        .key("count"));
-    actions.add(button(
-            SECONDARY,
+    actions.add(Button.icon(
+            GHOST,
+            Symbol.ARROW_CLOCKWISE,
             "Refresh",
             connected ? () -> open(s, true) : null,
             Button.options()
-                .icon(Symbol.ARROW_CLOCKWISE)
                 .state(opening != null && connected ? Button.State.BUSY : Button.State.READY))
         .key("refresh"));
     return actions;
-  }
-
-  private String countLabel(boolean ofDocuments) {
-    if (counting != null) {
-      return "Stop counting";
-    }
-    return ofDocuments ? "Count documents" : "Count rows";
   }
 
   /** Placeholder body before columns are known: spinner while opening, else empty. */

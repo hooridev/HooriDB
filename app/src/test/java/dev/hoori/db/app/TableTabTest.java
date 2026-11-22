@@ -373,7 +373,7 @@ class TableTabTest {
   }
 
   @Test
-  void withoutAnEstimateThePagesTellAndCountRowsCounts() throws Exception {
+  void withoutAnEstimateThePagesTell() throws Exception {
     servers.rows(ORDERS, 50, OptionalLong.empty()); // as a view on MySQL
     servers.rows(BIG, 1000, OptionalLong.empty());
     var app = shop();
@@ -382,8 +382,6 @@ class TableTabTest {
     // Each full page at the end says that there are more, which the grid then asks for.
     assertTrue(status(c.tree("big")).contains("\"At least "), c.tree("big"));
     assertFalse(servers.calls.contains("count " + BIG), "a table of unknown size is not counted");
-    c.run(app, "press #count\nframe\n" + SETTLE + "snap counted\n");
-    assertTrue(status(c.tree("counted")).contains("\"1,000 rows\""), c.tree("counted"));
   }
 
   @Test
@@ -765,7 +763,8 @@ class TableTabTest {
    */
   @Test
   void aHeldCountDoesNotHoldTheTreeOfTheSameDatabase() throws Exception {
-    servers.rows(BIG, 1_000_000, OptionalLong.of(1_000_000));
+    // An estimate far too high: the empty pages where the grid scrolls to are counted.
+    servers.rows(BIG, 1000, OptionalLong.of(1_000_000));
     var app = shop();
     c.run(app, table("big") + SETTLE);
     assertEquals(
@@ -774,7 +773,7 @@ class TableTabTest {
         "opening a large table opens only the tree's connection");
     var key = "count " + BIG;
     var held = servers.hold(key);
-    c.run(app, "advance 1\nframe\npress #count\nframe\n");
+    c.run(app, scroll(500_000) + "await\nframe\n"); // the empty pages arrive and start the count
     eventually(() -> servers.calls.contains(key));
     // While the count is held, the tree still opens customers on the same database.
     c.run(app, open("customers"));
@@ -787,15 +786,16 @@ class TableTabTest {
     assertTrue(servers.linked.contains("2 " + key), servers.linked.toString());
     held.countDown();
     c.run(app, SETTLE + "snap counted\n");
-    assertTrue(status(c.tree("counted")).contains("\"1,000,000 rows\""), c.tree("counted"));
+    assertTrue(status(c.tree("counted")).contains("\"1,000 rows\""), c.tree("counted"));
     assertEquals(
         2,
         servers.calls.stream().filter(("open " + PG + "/shop")::equals).count(),
         servers.calls.toString());
     // A count connection that is lost, as one the server closed while idle, is replaced and the
-    // count asked again, once; its loss leaves the tree's connection intact.
+    // count asked again, once; its loss leaves the tree's connection intact. A refresh counts again
+    // what was counted.
     servers.fail(key, FakeServers.queryFailure(QueryException.Failure.CONNECTION_LOST));
-    c.run(app, "advance 1\nframe\npress #count\nframe\n" + SETTLE);
+    c.run(app, "advance 1\nframe\npress #refresh\nframe\n" + SETTLE);
     assertTrue(app.state().catalog.connected(SHOP.id()));
     assertEquals(
         3,
@@ -826,12 +826,12 @@ class TableTabTest {
   }
 
   @Test
-  void aPageReadWhenTheTableEndedInItIsReadAgainOnceItGrew() throws Exception {
+  void aRefreshCountsAgainATableThatGrew() throws Exception {
     servers.rows(ORDERS, 50, OptionalLong.of(50));
     var app = shop();
     c.run(app, table("orders") + SETTLE);
     servers.rows(ORDERS, 250, OptionalLong.of(50));
-    c.run(app, "advance 1\nframe\npress #count\nframe\n" + SETTLE + scroll(100) + SETTLE);
+    c.run(app, "advance 1\nframe\npress #refresh\nframe\n" + SETTLE + scroll(100) + SETTLE);
     c.run(app, "snap grown\n");
     String grown = c.tree("grown");
     assertTrue(status(grown).contains("\"250 rows\""), grown);
@@ -871,23 +871,6 @@ class TableTabTest {
     // at the end.
     assertEquals(1, after.stream().filter(x -> x.startsWith("count")).count(), after.toString());
     assertTrue(after.size() <= 8, after.toString());
-  }
-
-  @Test
-  void theCountOfAnOpeningDoesNotStopTheUsersCount() throws Exception {
-    servers.rows(ORDERS, 1000, OptionalLong.of(1000)); // small: counted on opening too
-    var app = shop();
-    var held = servers.hold("read " + ORDERS + " 0-200");
-    c.run(
-        app,
-        open("orders") + SETTLE + table("orders")
-            + "frame\nadvance 1\nframe\npress #count\nframe\n");
-    held.countDown();
-    c.run(app, SETTLE + "snap counted\n");
-    assertTrue(status(c.tree("counted")).contains("\"1,000 rows\""), c.tree("counted"));
-    assertEquals(
-        1, servers.calls.stream().filter(x -> x.equals("count " + ORDERS)).count());
-    assertFalse(servers.interrupted.contains("count " + ORDERS));
   }
 
   @Test
