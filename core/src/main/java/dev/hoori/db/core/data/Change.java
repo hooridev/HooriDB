@@ -14,12 +14,23 @@ import java.util.TreeMap;
  */
 public sealed interface Change {
 
-  /** New values of cells of a row as it was read. */
+  /**
+   * New values of cells of a row as it was read. Each changed column must be one of the row's and
+   * hold an original value in it that is present (not {@link Missing#FIELD}) and whole (not a
+   * {@link Cut} or a {@link Binary#cut} one).
+   */
   record Update(List<Object> row, Map<Integer, Object> values) implements Change {
 
+    /**
+     * @throws IllegalArgumentException if a changed column is out of range or its value in the row
+     *     is {@link Missing#FIELD} or read only in part
+     */
     public Update {
       row = copy(row);
       values = copy(values);
+      for (var column : values.keySet()) {
+        Changes.requireOriginal(row, column);
+      }
     }
   }
 

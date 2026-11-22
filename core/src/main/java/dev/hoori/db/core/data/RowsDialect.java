@@ -10,6 +10,7 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.OptionalLong;
+import java.util.function.Function;
 
 /**
  * How {@link Rows} reads a provider's tables and results: the estimate and the count, the order
@@ -89,6 +90,12 @@ public abstract class RowsDialect {
 
   /** The parameter that takes the value in a statement: {@code ?}, or an expression of it. */
   abstract String parameter(Object value);
+
+  /**
+   * The condition that the quoted column still holds the value as it was read, with any value
+   * bound through {@code parameter}.
+   */
+  abstract String unchanged(String column, Object value, Function<Object, String> parameter);
 
   /**
    * Whether changes of the table's rows, with the values bound, can be all or nothing, each meeting

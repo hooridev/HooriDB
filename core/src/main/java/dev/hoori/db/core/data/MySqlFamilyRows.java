@@ -23,11 +23,13 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 /** How MariaDB's and MySQL's tables and results are read alike; their drivers differ. */
@@ -207,7 +209,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
       case "json" -> Rows.text(source, Kind.JSON, start, length);
       case "char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set" ->
         Rows.text(source, Kind.TEXT, start, length)
-            .withBytes(Rows.bytes(source, name -> "CAST(" + name + " AS BINARY)"));
+            .withBytes(Rows.bytes(source, MySqlFamilyRows::bytes));
       // The spatial types are sent as the server stores them: an SRID and the geometry's WKB.
       case "binary",
           "varbinary",
@@ -278,22 +280,58 @@ abstract class MySqlFamilyRows extends RowsDialect {
     return value instanceof OffsetDateTime ? "FROM_UNIXTIME(?)" : "?";
   }
 
+  // Texts compare by their UTF-8 bytes so no collation or PAD SPACE blurs them; binary values
+  // (including bit(n) and spatial types) compare as bytes, as MariaDB compares BIT with a bound
+  // binary value numerically otherwise; a FLOAT as the text it was read as, of six digits, which
+  // a number of more digits does not equal.
+  @Override
+  String unchanged(String column, Object value, Function<Object, String> parameter) {
+    if (value == null) {
+      return column + " IS NULL";
+    }
+    if (value instanceof String) {
+      return bytes("CONVERT(" + column + " USING utf8mb4)") + " = " + bytes(parameter.apply(value));
+    }
+    if (value instanceof Binary) {
+      return bytes(column) + " = " + bytes(parameter.apply(value));
+    }
+    if (value instanceof Float) {
+      return "CAST(CAST(" + column + " AS CHAR) AS FLOAT) = CAST(" + parameter.apply(value)
+          + " AS FLOAT)";
+    }
+    // As the moment it stores, which the session's zone may show alike for two.
+    if (value instanceof OffsetDateTime moment) {
+      return "UNIX_TIMESTAMP(" + column + ") = " + parameter.apply(seconds(moment));
+    }
+    return column + " = " + parameter.apply(value);
+  }
+
+  private static String bytes(String expression) {
+    return "CAST(" + expression + " AS BINARY)";
+  }
+
   // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails
   // the statement that names it. A moment must come back as itself from the session's time.
   @Override
   boolean changeable(Connection connection, Provider provider, Table table, List<Object> values)
       throws QueryException {
+    var checked = new HashSet<OffsetDateTime>();
     for (var value : values) {
-      if (value instanceof OffsetDateTime moment) {
+      if (value instanceof OffsetDateTime moment && checked.add(moment)) {
         var seconds = seconds(moment);
-        var back = Query.run(
-            connection, provider, "SELECT UNIX_TIMESTAMP(FROM_UNIXTIME(?))", statement -> {
+        var roundTrip = "SELECT UNIX_TIMESTAMP(FROM_UNIXTIME(?))";
+        var back = Journal.sql(
+            provider,
+            Purpose.CHANGES,
+            roundTrip,
+            b -> Outcome.rows(1),
+            () -> Query.run(connection, provider, roundTrip, statement -> {
               statement.setBigDecimal(1, seconds);
               try (var rows = statement.executeQuery()) {
                 rows.next();
                 return rows.getBigDecimal(1);
               }
-            });
+            }));
         if (back == null || back.compareTo(seconds) != 0) {
           return false;
         }
@@ -302,13 +340,18 @@ abstract class MySqlFamilyRows extends RowsDialect {
     var sql = "SELECT e.TRANSACTIONS FROM information_schema.TABLES t"
         + " JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE"
         + " WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?";
-    return Query.run(connection, provider, sql, statement -> {
-      statement.setString(1, table.container().name());
-      statement.setString(2, table.name());
-      try (var rows = statement.executeQuery()) {
-        return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
-      }
-    });
+    return Journal.sql(
+        provider,
+        Purpose.CHANGES,
+        sql,
+        ok -> Outcome.rows(1),
+        () -> Query.run(connection, provider, sql, statement -> {
+          statement.setString(1, table.container().name());
+          statement.setString(2, table.name());
+          try (var rows = statement.executeQuery()) {
+            return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
+          }
+        }));
   }
 
   private static BigDecimal seconds(OffsetDateTime moment) {
