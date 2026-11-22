@@ -39,16 +39,21 @@ public final class EditableQuery {
     if (provider.keepsDocuments() || Statements.split(sql, provider).size() != 1) {
       return Optional.empty();
     }
-    var subqueries = new HashSet<Integer>();
+    // Every reading must find the same items: a server may run some executable comments and not
+    // others, which no single reading shows, and a comma or subquery in one would move the rest.
+    Shape shape = null;
     for (var reading : Tokens.readings(provider)) {
       var found = singleTable(Tokens.of(sql, provider, reading));
-      if (found == null) {
+      if (found == null || shape != null && !shape.equals(found)) {
         return Optional.empty();
       }
-      subqueries.addAll(found);
+      shape = found;
     }
-    return Optional.of(Set.copyOf(subqueries));
+    return Optional.of(Set.copyOf(shape.subqueries()));
   }
+
+  // The number of the select list's items, and the positions of those that hold a subquery.
+  private record Shape(int items, Set<Integer> subqueries) {}
 
   /**
    * Whether any reading of the SQL text may create a temporary table: {@code CREATE … TEMPORARY
@@ -69,15 +74,15 @@ public final class EditableQuery {
     return false;
   }
 
-  // The positions of the select list's items that hold a subquery; null where it is no such
-  // statement.
-  private static Set<Integer> singleTable(List<Tokens.Token> tokens) {
+  // The select list's shape; null where it is no such statement.
+  private static Shape singleTable(List<Tokens.Token> tokens) {
     int n = tokens.size();
     if (n == 0 || !tokens.getFirst().is("SELECT")) {
       return null;
     }
     int from = -1;
     int parens = 0;
+    int brackets = 0;
     int item = 0;
     boolean star = false;
     var subqueries = new HashSet<Integer>();
@@ -89,6 +94,10 @@ public final class EditableQuery {
         if (--parens < 0) {
           return null;
         }
+      } else if (token.is("[")) {
+        brackets++;
+      } else if (token.is("]")) {
+        brackets--;
       } else if (token.is(";")) {
         if (i != n - 1 || token.depth() != 0) {
           return null;
@@ -97,10 +106,10 @@ public final class EditableQuery {
         return null;
       } else if (from < 0 && token.depth() > 0 && token.is("SELECT")) {
         subqueries.add(item);
-      } else if (from < 0 && token.depth() == 0 && token.is(",")) {
+      } else if (from < 0 && token.depth() == 0 && brackets == 0 && token.is(",")) {
         item++;
-      } else if (from < 0 && token.depth() == 0 && token.is("*")) {
-        star = true; // or a product, which is as unclear
+      } else if (from < 0 && token.depth() == 0 && star(tokens, i)) {
+        star = true;
       } else if (from < 0 && token.depth() == 0 && token.is("FROM") && !distinct(tokens, i)) {
         from = i;
       }
@@ -108,7 +117,14 @@ public final class EditableQuery {
     if (parens != 0 || from < 0 || star && !subqueries.isEmpty()) {
       return null;
     }
-    return singleTableFrom(tokens, from + 1) ? subqueries : null;
+    return singleTableFrom(tokens, from + 1) ? new Shape(item + 1, subqueries) : null;
+  }
+
+  // Whether the token is a * that stands for columns, which ends its item, unlike a product's.
+  private static boolean star(List<Tokens.Token> tokens, int i) {
+    return tokens.get(i).is("*")
+        && i + 1 < tokens.size()
+        && (tokens.get(i + 1).is(",") || tokens.get(i + 1).is("FROM"));
   }
 
   // Whether the FROM at the index ends IS [NOT] DISTINCT FROM.

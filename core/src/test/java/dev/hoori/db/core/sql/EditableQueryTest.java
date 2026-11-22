@@ -57,6 +57,7 @@ class EditableQueryTest {
           p, "SELECT (SELECT c.id) AS id, name, coalesce((SELECT 1), 0) FROM customer c", 0, 2);
       subqueries(p, "SELECT DISTINCT id, name, (SELECT max(x) FROM t) FROM customer", 2);
       refused(p, "SELECT *, (SELECT 1) FROM customer");
+      subqueries(p, "SELECT id, id * 2, (SELECT 1), name FROM customer", 2);
       refused(p, "SELECT c.*, (SELECT 1) FROM customer c");
       allowed(p, "SELECT id, name IS NOT DISTINCT FROM 'x' AS same FROM customer");
       allowed(p, "SELECT id, name IS DISTINCT FROM 'x' FROM customer WHERE id > 0");
@@ -67,6 +68,11 @@ class EditableQueryTest {
       allowed(p, "/* leading */ SELECT id FROM customer -- trailing\n;");
     }
     allowed(POSTGRESQL, "SELECT DISTINCT ON (id) id, name FROM customer ORDER BY id");
+    subqueries(POSTGRESQL, "SELECT ARRAY[1,2], (SELECT 1), id, name FROM customer", 1);
+    for (var p : new Provider[] {MARIADB, MYSQL}) {
+      refused(p, "SELECT /*!99999 0, */ /*! 1, */ (SELECT c.id) AS k, 2, name FROM customer c");
+      allowed(p, "SELECT /*!40001 SQL_NO_CACHE */ id, name FROM customer");
+    }
   }
 
   @Test

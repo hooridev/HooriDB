@@ -238,6 +238,30 @@ class EditableServerTest {
   @EnumSource(
       value = Provider.class,
       names = {"MARIADB", "MYSQL"})
+  void aConstraintNamedLikeThePrimaryKeyIsNoKey(Provider provider) throws Exception {
+    try (var console = open(provider);
+        var writer = open(provider)) {
+      execute(
+          writer,
+          "CREATE TABLE editable_parent (id integer PRIMARY KEY) DEFAULT CHARSET utf8mb4",
+          "CREATE TABLE editable_child (id integer, name varchar(20), CONSTRAINT `prímary`"
+              + " FOREIGN KEY (id) REFERENCES editable_parent (id)) DEFAULT CHARSET utf8mb4",
+          "INSERT INTO editable_parent VALUES (1)",
+          "INSERT INTO editable_child VALUES (1, 'a'), (1, 'b')");
+      try {
+        assertEquals(
+            Optional.empty(),
+            decide(console, writer, provider, "SELECT id, name FROM editable_child", false));
+      } finally {
+        execute(writer, "DROP TABLE editable_child", "DROP TABLE editable_parent");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
   void mariaDbAndMySqlRefuseAfterCreateTemporaryTableInTheConsoleSession(Provider provider)
       throws Exception {
     try (var console = open(provider);
