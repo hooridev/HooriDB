@@ -317,15 +317,13 @@ class ConnectorTest {
   void aCallerInterruptedBeforehandDoesNotConnect(Provider provider) throws Exception {
     try (var gate = new Gate(null, 0)) {
       var profile = local(provider).withPort(gate.port());
+      // Loaded before the interrupt, which would cancel its download where this JVM has not yet.
+      var driver = TestServer.driver(provider);
       Thread.currentThread().interrupt();
       try {
         assertFailure(
             Failure.CANCELLED,
-            () -> Connector.open(
-                    profile,
-                    TestServer.password(),
-                    TestServer.driver(provider),
-                    Duration.ofSeconds(5))
+            () -> Connector.open(profile, TestServer.password(), driver, Duration.ofSeconds(5))
                 .connection());
         assertTrue(Thread.currentThread().isInterrupted());
       } finally {
