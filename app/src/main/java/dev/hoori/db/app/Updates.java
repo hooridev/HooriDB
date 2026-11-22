@@ -401,7 +401,13 @@ final class Updates {
         restart(updater, download, store, stored),
         started -> {
           restarting = null;
-          s.closeAll();
+          // Started: what came meanwhile is saved, then the windows close; no second restart.
+          restartWith = null;
+          ready = null;
+          if (notice != null && notice.offer()) {
+            notice = null;
+          }
+          s.settled();
         },
         error -> {
           restarting = null;

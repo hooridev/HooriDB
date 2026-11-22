@@ -44,6 +44,7 @@ final class StatementLog {
   private volatile App<?> app; // from the start on
 
   // On the app's thread.
+  private Runnable settled = () -> {};
   private final List<Logged> entries = new ArrayList<>();
   private int changes; // counted, so that a view knows to look again
   private List<Logged> unsaved = new ArrayList<>();
@@ -55,6 +56,8 @@ final class StatementLog {
   private boolean cleared; // cleared before the file was read, whose entries then stay out
   private int dropped; // counts each clear and each turning off: a failed write from before stays
   private String problem; // why the file could not be read or written, or null
+  // For tests: runs off the app's thread before a call on the file, to hold or fail it.
+  volatile Step beforeCall;
 
   /**
    * A call on the file, by what it does; the batch it writes, or null, and the count of {@link
@@ -62,7 +65,7 @@ final class StatementLog {
    */
   private record Call(String name, Step step, List<Logged> batch, int dropped) {}
 
-  private interface Step {
+  interface Step {
     void run() throws IOException;
   }
 
@@ -96,8 +99,9 @@ final class StatementLog {
   }
 
   /** Reads the file's last entries and whether logging is on, and from then on writes it. */
-  void start(App<?> app) {
+  void start(App<?> app, Runnable settled) {
     this.app = app;
+    this.settled = settled;
     var store = this.store;
     app.background(
         "read the statement log",
@@ -150,6 +154,7 @@ final class StatementLog {
     loaded = true;
     take();
     write();
+    settled.run(); // an Exit waited for the file to be read
   }
 
   /** The entries, the oldest first; the list changes on the app's thread. */
@@ -165,6 +170,16 @@ final class StatementLog {
   /** Why the log could not be read or written, or null. */
   String problem() {
     return problem;
+  }
+
+  /**
+   * Whether Exit waits for the statement log: takes any entries waiting for the app's thread so
+   * that their write begins at once, and waits while the file is read or a call on it runs or
+   * waits. Entries left unsaved by a failed write do not hold it.
+   */
+  boolean waits() {
+    take();
+    return !loaded || calling != null || !calls.isEmpty();
   }
 
   /** Turns logging on or off, and keeps the choice; off, what waits is dropped. */
@@ -252,14 +267,14 @@ final class StatementLog {
 
   // A call has ended: the next one runs, and a batch that waited for a write is written. Of a
   // batch that failed, what was not written waits for the next, unless it was dropped meanwhile:
-  // tried again as more comes, not at once, so that a disk that keeps failing is not kept busy.
+  // tried again as more comes, which may have come while it failed, not at once, so that a disk
+  // that keeps failing is not kept busy.
   private void ended(Call call, Exception error) {
     calling = null;
     if (call.batch() != null) {
       writing = false;
-      if (error == null) {
-        write();
-      } else if (call.dropped() == dropped) {
+      boolean more = error == null || !unsaved.isEmpty();
+      if (error != null && call.dropped() == dropped) {
         int written = error instanceof StatementLogStore.Unwritten u ? u.written() : 0;
         var rest = new ArrayList<>(call.batch().subList(written, call.batch().size()));
         rest.addAll(unsaved);
@@ -268,8 +283,14 @@ final class StatementLog {
         }
         unsaved = rest;
       }
+      if (more) {
+        write();
+      }
     }
     next();
+    if (calling == null && calls.isEmpty()) {
+      settled.run();
+    }
   }
 
   private void next() {
@@ -278,9 +299,13 @@ final class StatementLog {
       return;
     }
     var call = calls.poll();
+    var before = this.beforeCall;
     calling = app.background(
         call.name(),
         () -> {
+          if (before != null) {
+            before.run();
+          }
           call.step().run();
           return null;
         },
