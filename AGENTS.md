@@ -26,10 +26,11 @@ tree connects and reads its databases, schemas, tables and views, and columns, o
 as they are opened; several connections are open at once. A double press or Enter on a table or view
 opens its rows in a tab, read late in pages on its connection's lane, with the rows in view in its
 status line, buttons that scroll a page back or on, or to the first or last row, and, on SQL
-servers, Open in console to open a console on its database with its SELECT; tabs move and
-tear off into windows of their own. The columns of a table and of a console's result fit their first
-rows once, and a table's fit again where a refresh finds other columns. A moment, a timestamp with a
-time zone, shows and is copied in the computer's time zone, with the offset it has there.
+servers, WHERE and ORDER BY fields with completion that narrow and order the rows and count, and
+Open in console to open a console on its database with its SELECT and applied clauses; tabs move
+and tear off into windows of their own. The columns of a table and of a console's result fit their
+first rows once, and a table's fit again where a refresh finds other columns. A moment, a timestamp
+with a time zone, shows and is copied in the computer's time zone, with the offset it has there.
 Shift+Enter in a grid, or the button in its
 status line, opens a panel beside it with the value of the current cell, which follows the
 selection: JSON (PostgreSQL's `json` and `jsonb`, MySQL's and MariaDB's `json`) formatted and
@@ -111,12 +112,11 @@ rows' density, whether a console marks the word at the caret, the case of SQL ke
 and whether the start looks for an update. File, Settings… (Control+,, or the palette) opens or
 raises a modeless settings window over the shared state, with pages General, Appearance, Editor,
 Databases and History & log, where every change applies at once, a changed row can be reset and
-each page has Restore defaults. An SQL console's result of a SELECT on one table that core finds
-editable can be edited inline (UPDATE only): changed cells are marked, Revert reverts the selection
-or all pending changes, Commit… always opens a DML Preview with the generated statements in the
-dialect's colors, and Commit writes them all or nothing on a write lane of its own (in Manual mode,
-after the console's transaction question); rows cannot yet be inserted or deleted, and table tabs
-cannot yet be edited, filtered or sorted.
+each page has Restore defaults. A console's result of a SELECT on one table that core finds
+editable can be edited: changed cells are marked, Revert takes back the selection or all, and
+Commit… shows the UPDATEs in a DML Preview and writes them all or nothing on a connection of its
+own, after the console's question where its transaction may be open. Nothing else can be edited
+yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it
@@ -276,7 +276,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `frame` twice after `scroll`, and only then do the reads of those rows start. `FakeServers` makes
   up a table's rows from their position (`rows`, `values`), whose moments show in Europe/Berlin, as
   the catalog's tests set `State.zone`, whatever the machine's zone; its reads are keyed
-  `read <host>/<path> <from>-<to>`, and those of a whole value, which `whole` gives,
+  `read <host>/<path> <from>-<to>`, with ` WHERE …` and ` ORDER BY …` after them where a filter
+  applies, which `values`, `counts` and `estimates` also take after the path, refusing a clause as
+  core does, and those of a whole value, which `whole` gives,
   `whole <host>/<path> <column> <key>`, and, as core's do, fail as columns changed when the columns
   they are given are not the table's now; `FakeServers.queryFailure` makes core's typed failure.
   Its calls go through core's `Journal` as core's do, a catalog read or a page by its key and a

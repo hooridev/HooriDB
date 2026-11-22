@@ -542,7 +542,8 @@ final class FakeServers implements Servers {
           ConnectionException.Failure.NO_SUCH_DATABASE,
           "FATAL: database \"" + database + "\" does not exist");
     }
-    var link = new FakeLink(profile.host(), made, perDatabase ? database : null);
+    var link =
+        new FakeLink(profile.host(), made, perDatabase ? database : null, profile.readOnly());
     link.current = perDatabase || profile.database().isBlank() ? null : profile.database();
     links.add(link);
     return link;
@@ -563,6 +564,7 @@ final class FakeServers implements Servers {
     private final String host;
     private final Made made;
     private final String database;
+    private final boolean readOnly;
     private final AtomicInteger busy = new AtomicInteger();
     // The session's auto-commit and transaction, on the lane's thread only.
     private boolean manual; // the server's auto-commit off, as its status says it
@@ -584,10 +586,11 @@ final class FakeServers implements Servers {
       return servers.get(host).root();
     }
 
-    FakeLink(String host, Made made, String database) {
+    FakeLink(String host, Made made, String database, boolean readOnly) {
       this.host = host;
       this.made = made;
       this.database = database;
+      this.readOnly = readOnly;
     }
 
     @Override
@@ -763,6 +766,17 @@ final class FakeServers implements Servers {
       }
     }
 
+    private void check(Rows.Filter filter) throws QueryException {
+      if (filter == null || filter.empty()) {
+        return;
+      }
+      if (made.provider().keepsDocuments()) {
+        throw QueryException.of(
+            QueryException.Failure.OTHER, "A server of documents does not take a SQL filter");
+      }
+      Rows.check(made.provider(), filter, readOnly);
+    }
+
     private static String suffix(Rows.Filter filter) {
       if (filter == null || filter.empty()) {
         return "";
@@ -779,11 +793,15 @@ final class FakeServers implements Servers {
 
     @Override
     public OptionalLong estimate(Table t, Rows.Filter filter) throws QueryException {
+      check(filter);
       var path = path(t);
+      var key = path + suffix(filter);
       return rows(
-          "estimate " + path + suffix(filter),
+          "estimate " + key,
           t,
-          table -> estimates.getOrDefault(path, OptionalLong.of(3)));
+          table -> estimates.containsKey(key)
+              ? estimates.get(key)
+              : estimates.getOrDefault(path, OptionalLong.of(3)));
     }
 
     @Override
@@ -833,15 +851,23 @@ final class FakeServers implements Servers {
 
     @Override
     public long count(Table t, Rows.Filter filter) throws QueryException {
+      check(filter);
       var path = path(t);
-      return rows("count " + path + suffix(filter), t, table -> counts.getOrDefault(path, 3L));
+      var key = path + suffix(filter);
+      return rows(
+          "count " + key,
+          t,
+          table -> counts.containsKey(key) ? counts.get(key) : counts.getOrDefault(path, 3L));
     }
 
     @Override
     public Page read(Table t, List<Column> columns, long from, long to, Rows.Filter filter)
         throws QueryException {
+      check(filter);
       var path = path(t);
-      return rows("read " + path + " " + from + "-" + to + suffix(filter), t, table -> {
+      var suffix = suffix(filter);
+      var key = path + suffix;
+      return rows("read " + path + " " + from + "-" + to + suffix, t, table -> {
         // As core reads: the columns given must be the table's now, by name, order and type.
         var now = table.children().stream()
             .map(line -> List.of(line.text().replaceFirst("^\\*", "").split(": ", 2)))
@@ -856,10 +882,15 @@ final class FakeServers implements Servers {
             : columns.stream()
                 .map(c -> new Field(c.name(), c.type(), kind(c.type())))
                 .toList();
-        var given = values.get(path);
+        var given = values.get(key);
+        Long counted = counts.get(key);
+        if (given == null && counted == null) {
+          given = values.get(path);
+          counted = counts.get(path);
+        }
         long count = docs != null
             ? docs.size()
-            : given != null ? given.size() : counts.getOrDefault(path, 3L);
+            : given != null ? given.size() : counted != null ? counted : 3L;
         var rows = new ArrayList<List<Object>>();
         for (long i = from; i < Math.min(to, count); i++) {
           if (docs != null) {

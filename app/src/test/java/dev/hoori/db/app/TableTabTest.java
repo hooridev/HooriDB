@@ -14,6 +14,7 @@ import static dev.hoori.db.app.ConnectionsTest.line;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
@@ -943,21 +944,21 @@ class TableTabTest {
     var app = shop();
     c.run(app, table("big") + SETTLE + "press #cell-2-1\nadvance 1\nframe\nsnap top\n");
     String top = c.tree("top");
-    assertTrue(inView(top).contains("\"Rows 1–23\""), top);
+    assertTrue(inView(top).contains("\"Rows 1–22\""), top);
     assertTrue(off(top, "First page") && off(top, "Previous page"), top);
     assertFalse(off(top, "Next page") || off(top, "Last page"), top);
     int before = servers.calls.size();
     c.run(app, page("Next page") + SETTLE + "snap next\n");
     String next = c.tree("next");
-    assertTrue(inView(next).contains("\"Rows 24–46\""), next);
+    assertTrue(inView(next).contains("\"Rows 23–44\""), next);
     assertFalse(off(next, "First page") || off(next, "Previous page"), next);
     // The rows of the next page were read with the first.
     assertEquals(before, servers.calls.size(), servers.calls.toString());
     c.run(app, page("Previous page") + SETTLE + "snap back\n");
-    assertTrue(inView(c.tree("back")).contains("\"Rows 1–23\""), c.tree("back"));
+    assertTrue(inView(c.tree("back")).contains("\"Rows 1–22\""), c.tree("back"));
     c.run(app, page("Last page") + SETTLE + "snap last\n");
     String last = c.tree("last");
-    assertTrue(inView(last).contains("\"Rows 9,978–10,000\""), last);
+    assertTrue(inView(last).contains("\"Rows 9,979–10,000\""), last);
     assertTrue(cell(last, 9_999, 0).contains("\"10000\""), last);
     assertTrue(off(last, "Next page") && off(last, "Last page"), last);
     assertFalse(off(last, "First page") || off(last, "Previous page"), last);
@@ -966,7 +967,7 @@ class TableTabTest {
         List.of("read " + BIG + " 9800-10000", "read " + BIG + " 9600-9800"),
         servers.calls.subList(before, servers.calls.size()));
     c.run(app, page("First page") + SETTLE + "snap first\n");
-    assertTrue(inView(c.tree("first")).contains("\"Rows 1–23\""), c.tree("first"));
+    assertTrue(inView(c.tree("first")).contains("\"Rows 1–22\""), c.tree("first"));
     var selection = tab(app).selection;
     assertEquals(List.of(2, 1), List.of(selection.row(), selection.column()));
     assertFalse(servers.overlapped);
@@ -981,12 +982,12 @@ class TableTabTest {
     // The grid tells the rows in view in the frame after it moved them.
     c.run(app, table("big") + SETTLE + "wheel #rows 0 24\nframe\nframe\nsnap one\n");
     String one = c.tree("one");
-    assertTrue(inView(one).contains("\"Rows 2–24\""), one);
+    assertTrue(inView(one).contains("\"Rows 2–23\""), one);
     assertFalse(off(one, "First page") || off(one, "Previous page"), one);
     assertFalse(off(one, "Next page") || off(one, "Last page"), one);
     c.run(app, "wheel #rows 0 -24\nframe\nframe\nsnap back\n");
     String back = c.tree("back");
-    assertTrue(inView(back).contains("\"Rows 1–23\""), back);
+    assertTrue(inView(back).contains("\"Rows 1–22\""), back);
     assertTrue(off(back, "First page") && off(back, "Previous page"), back);
   }
 
@@ -995,9 +996,9 @@ class TableTabTest {
   void theLastRowsOfATableOfAPageShowAsTheWheelGetsThere() throws Exception {
     servers.rows(BIG, 25, OptionalLong.of(25));
     var app = shop();
-    c.run(app, table("big") + SETTLE + "wheel #rows 0 48\nframe\nframe\nsnap end\n");
+    c.run(app, table("big") + SETTLE + "wheel #rows 0 72\nframe\nframe\nsnap end\n");
     String end = c.tree("end");
-    assertTrue(inView(end).contains("\"Rows 3–25\""), end);
+    assertTrue(inView(end).contains("\"Rows 4–25\""), end);
     assertTrue(off(end, "Next page") && off(end, "Last page"), end);
     assertFalse(off(end, "First page") || off(end, "Previous page"), end);
   }
@@ -1036,7 +1037,7 @@ class TableTabTest {
     assertTrue(inView(end).contains("–1,000\""), end);
     assertTrue(off(end, "Next page") && off(end, "Last page"), end);
     c.run(app, "press role=tab label=\"big\"\nframe\nadvance 1\nframe\nframe\nsnap big\n");
-    assertTrue(inView(c.tree("big")).contains("\"Rows 24–46\""), c.tree("big"));
+    assertTrue(inView(c.tree("big")).contains("\"Rows 23–44\""), c.tree("big"));
   }
 
   /** The row that asks whether there are more is not said to be in view. */
@@ -1256,6 +1257,228 @@ class TableTabTest {
     assertEquals(expected, console.text);
     assertEquals(expected.length(), console.editor.caret());
     assertEquals(expected.length(), console.editor.anchor());
+  }
+
+  // Filtering and ordering
+
+  /** Replaces the clause field's text in one edit, without opening completions. */
+  private static String clause(String label, String text) {
+    return "press role=textbox label=\""
+        + label
+        + "\"\nkey A control\n"
+        + (text.isEmpty()
+            ? "key Backspace\n"
+            : "clipboard \"" + text.replace("\"", "\\\"") + "\"\nkey V control\n")
+        + "frame\n";
+  }
+
+  @Test
+  void whereAndOrderByFilterAndOrderTheRowsAndCount() throws Exception {
+    servers.values(
+        ORDERS,
+        List.of(
+            List.of(
+                1L,
+                10,
+                OffsetDateTime.of(2026, 1, 1, 9, 0, 0, 0, ZoneOffset.UTC),
+                new BigDecimal("10.00")),
+            List.of(
+                2L,
+                20,
+                OffsetDateTime.of(2026, 1, 1, 9, 1, 0, 0, ZoneOffset.UTC),
+                new BigDecimal("80.00")),
+            List.of(
+                3L,
+                30,
+                OffsetDateTime.of(2026, 1, 1, 9, 2, 0, 0, ZoneOffset.UTC),
+                new BigDecimal("25.00")),
+            List.of(
+                4L,
+                40,
+                OffsetDateTime.of(2026, 1, 1, 9, 3, 0, 0, ZoneOffset.UTC),
+                new BigDecimal("120.00"))));
+    servers.values(
+        ORDERS + " WHERE total > 50 ORDER BY total DESC",
+        List.of(
+            List.of(
+                4L,
+                40,
+                OffsetDateTime.of(2026, 1, 1, 9, 3, 0, 0, ZoneOffset.UTC),
+                new BigDecimal("120.00")),
+            List.of(
+                2L,
+                20,
+                OffsetDateTime.of(2026, 1, 1, 9, 1, 0, 0, ZoneOffset.UTC),
+                new BigDecimal("80.00"))));
+    var app = shop();
+    c.run(app, table("orders") + SETTLE + "press #cell-2-0\nframe\n");
+    assertEquals(2, tab(app).selection.row());
+    int before = servers.calls.size();
+    c.run(
+        app,
+        clause("WHERE", "total > 50")
+            + clause("ORDER BY", "total DESC")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "snap table-filter\n");
+    String filtered = c.tree("table-filter");
+    assertTrue(status(filtered).contains("\"2 rows\""), filtered);
+    assertTrue(cell(filtered, 0, 0).contains("\"4\""), filtered);
+    assertTrue(cell(filtered, 0, 3).contains("\"120.00\""), filtered);
+    assertTrue(cell(filtered, 1, 0).contains("\"2\""), filtered);
+    assertTrue(cell(filtered, 1, 3).contains("\"80.00\""), filtered);
+    assertEquals(-1, tab(app).selection.row(), "applying a filter clears the selection");
+    var sent = servers.calls.subList(before, servers.calls.size());
+    assertFalse(sent.contains("columns " + ORDERS), "reuses known columns: " + sent);
+    assertTrue(
+        sent.contains("read " + ORDERS + " 0-200 WHERE total > 50 ORDER BY total DESC"),
+        sent.toString());
+    // Refresh keeps the applied filter.
+    int beforeRefresh = servers.calls.size();
+    c.run(app, "press #refresh\nframe\n" + SETTLE + "snap refreshed\n");
+    var refreshed = servers.calls.subList(beforeRefresh, servers.calls.size());
+    assertTrue(
+        refreshed.contains("read " + ORDERS + " 0-200 WHERE total > 50 ORDER BY total DESC"),
+        refreshed.toString());
+    assertTrue(status(c.tree("refreshed")).contains("\"2 rows\""), c.tree("refreshed"));
+    // Clearing both fields removes the clauses and shows all rows again.
+    c.run(
+        app,
+        clause("WHERE", "")
+            + clause("ORDER BY", "")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "snap cleared\n");
+    String cleared = c.tree("cleared");
+    assertTrue(status(cleared).contains("\"4 rows\""), cleared);
+    assertTrue(cell(cleared, 0, 0).contains("\"1\""), cleared);
+  }
+
+  @Test
+  void aRefusedClauseShowsItsReasonAndSendsNothing() throws Exception {
+    var app = shop();
+    c.run(app, table("orders") + SETTLE);
+    int before = servers.calls.size();
+    c.run(
+        app,
+        clause("WHERE", "1=1; DROP TABLE x")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "advance 1\nframe\nsnap refused\n");
+    String refused = c.tree("refused");
+    assertTrue(line(refused, "role=note").contains("label=\"Clause refused\""), refused);
+    assertTrue(refused.contains("The WHERE clause holds more than one statement"), refused);
+    assertTrue(cell(refused, 0, 0).contains("\"1\""), "the rows read stay: " + refused);
+    assertNull(tab(app).failure, "a refused draft is not a failure of the reads");
+    assertEquals(
+        List.of(),
+        servers.calls.subList(before, servers.calls.size()),
+        "no call sent for a refused clause");
+    // A server error with a filter shows as "Could not be read" with the server's detail.
+    var bad = "estimate " + ORDERS + " WHERE bad_expr";
+    servers.fail(bad, QueryException.of(QueryException.Failure.OTHER, "ERROR: syntax error"));
+    c.run(
+        app,
+        clause("WHERE", "bad_expr")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "advance 1\nframe\nsnap server-error\n");
+    String error = c.tree("server-error");
+    assertTrue(line(error, "role=note").contains("label=\"Could not be read\""), error);
+    assertTrue(error.contains("ERROR: syntax error"), error);
+    // A column the clause names that is not there is the clause's error, not a changed table.
+    var unknown = "estimate " + ORDERS + " WHERE nosuch = 1";
+    servers.fail(
+        unknown,
+        QueryException.of(
+            QueryException.Failure.COLUMNS_CHANGED, "column \"nosuch\" does not exist"));
+    c.run(
+        app,
+        clause("WHERE", "nosuch = 1")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "advance 1\nframe\nsnap unknown-column\n");
+    String missing = c.tree("unknown-column");
+    assertTrue(line(missing, "role=note").contains("label=\"Could not be read\""), missing);
+    assertTrue(missing.contains("column \\\"nosuch\\\" does not exist"), missing);
+  }
+
+  @Test
+  void completionInTheFilterFieldsOffersTheTablesColumnsAndKeywords() throws Exception {
+    var app = shop();
+    c.run(
+        app,
+        table("orders")
+            + SETTLE
+            + "press role=textbox label=\"WHERE\"\nframe\n"
+            + "type \"cu\"\nframe\nadvance 1\nframe\nsnap where-complete\n");
+    var whereOptions = ConsoleEditorTest.options(c.tree("where-complete"));
+    assertTrue(whereOptions.contains("customer_id"), whereOptions.toString());
+    assertEquals("customer_id", whereOptions.getFirst(), whereOptions.toString());
+    // Enter while the list is open takes the completion instead of applying the filter.
+    int before = servers.calls.size();
+    c.run(app, "key Enter\nframe\nsnap accepted\n");
+    assertTrue(line(c.tree("accepted"), "#where").contains("\"customer_id\""), c.tree("accepted"));
+    assertEquals(
+        before, servers.calls.size(), "Enter took the completion without querying the server");
+    // ORDER BY also completes columns and keywords.
+    c.run(app, """
+        press role=textbox label="ORDER BY"
+        frame
+        type "to"
+        frame
+        advance 1
+        frame
+        snap order-complete
+        """);
+    var orderOptions = ConsoleEditorTest.options(c.tree("order-complete"));
+    assertEquals("total", orderOptions.getFirst(), orderOptions.toString());
+  }
+
+  @Test
+  void openInConsoleCarriesAppliedWhereAndOrderByClauses() throws Exception {
+    var app = shop();
+    c.run(
+        app,
+        table("orders")
+            + SETTLE
+            + clause("WHERE", "total > 50")
+            + clause("ORDER BY", "id DESC")
+            + "key Enter\nframe\n"
+            + SETTLE
+            // Unapplied edit after applying is ignored by Open in console.
+            + clause("WHERE", "total > 999")
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    var console = assertInstanceOf(ConsoleTab.class, app.state().tabs.main().activeTab());
+    var expected = "SELECT * FROM \"public\".\"orders\" AS r\nWHERE total > 50\nORDER BY id DESC";
+    assertEquals(expected, console.text);
+    assertEquals(expected.length(), console.editor.caret());
+  }
+
+  @Test
+  void aDocumentCollectionTabHasNoSqlFilterFields() throws Exception {
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        shop
+          orders
+            _id: ObjectId
+            total: Int32
+        """);
+    var app = c.app(DocumentConsoleTest.DOCS);
+    c.ready(app, DocumentConsoleTest.DOCS);
+    c.run(
+        app,
+        START
+            + open("docs")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + table("orders")
+            + SETTLE
+            + "snap mongo\n");
+    String mongo = c.tree("mongo");
+    assertFalse(mongo.contains("#filter-bar"), mongo);
+    assertFalse(mongo.contains("label=\"WHERE\""), mongo);
+    assertFalse(mongo.contains("label=\"ORDER BY\""), mongo);
   }
 
   String snapped(App<State> app, String name) throws Exception {
