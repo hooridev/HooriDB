@@ -82,6 +82,8 @@ class HooriDbTest {
     Script.run("""
         size 1200 760
         frame
+        await
+        frame
         press role=menuitem label="View"
         frame
         advance 0.3

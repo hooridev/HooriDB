@@ -104,7 +104,9 @@ until a higher one comes out. Help, About HooriDB shows the version that runs, i
 updates, its authors, license and website. Started from the unpacked Linux bundle, it puts itself
 into the application menu, which gives its windows their icon in the dock. The main window's
 placement, the sidebar's width and the statement log's open state, height and detail split are kept
-(`ui-state.json`). Nothing can be edited, filtered or sorted yet.
+(`ui-state.json`). The theme, System, Light or Dark in the View menu, where System follows the
+computer's scheme, is kept in `settings.json`, read before the first frame. Nothing can be edited,
+filtered or sorted yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it
