@@ -856,7 +856,7 @@ final class State {
             x.table.container().equals(table.container()) && x.table.name().equals(table.name()))
         .findFirst();
     if (open.isEmpty()) {
-      var tab = new TableTab(id, table);
+      var tab = TableTab.of(this, id, table);
       tabs.add(into, into.tabs().size(), tab);
       tab.open(this, false);
       return into;
@@ -905,7 +905,7 @@ final class State {
     var at = group == tabs.main() && selected != null && selected.id().equals(id)
         ? CatalogTree.database(selected)
         : null;
-    var console = new ConsoleTab(id, at == null ? database(profile) : at);
+    var console = ConsoleTab.of(this, id, at == null ? database(profile) : at);
     console.take(this);
     tabs.add(group, group.tabs().size(), console);
     keeping.persist(keeping.consolesKept);

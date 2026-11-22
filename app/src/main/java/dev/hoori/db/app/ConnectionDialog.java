@@ -177,7 +177,9 @@ final class ConnectionDialog {
   }
 
   static ConnectionDialog create(State s) {
-    var dialog = new ConnectionDialog(ConnectionProfile.of(Provider.POSTGRESQL), true);
+    var profile =
+        ConnectionProfile.of(Provider.POSTGRESQL).withReadOnly(s.settings.newConnectionsReadOnly());
+    var dialog = new ConnectionDialog(profile, true);
     dialog.driver(s);
     return dialog;
   }

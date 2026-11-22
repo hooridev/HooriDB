@@ -12,6 +12,8 @@ import com.rethinkj.ui.Script;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
@@ -1281,6 +1283,53 @@ class ConnectionsTest {
     assertTrue(after(tree, "label=\"shop-prod\"").contains("value=\"PostgreSQL\""), tree);
     assertTrue(after(tree, "label=\"analytics\"").contains("value=\"MariaDB\""), tree);
     assertTrue(after(tree, "label=\"legacy\"").contains("value=\"MySQL\""), tree);
+  }
+
+  /** New connections start read-only when configured; editing and duplicating keep their own. */
+  @Test
+  void newConnectionsStartReadOnlyWhenConfiguredWhileSavedProfilesKeepTheirs() throws IOException {
+    var existing = shop();
+    store(existing);
+    new SettingsStore(dir.resolve("config"))
+        .save(Settings.DEFAULT.withNewConnectionsReadOnly(true));
+    App<State> app = app();
+    run(app, ADD_CONNECTION + """
+        frame
+        advance 1
+        frame
+        snap created
+        press role=textbox label="Host"
+        type "ro.example.com"
+        frame
+        press role=button label="Save"
+        frame
+        """ + SETTLE + """
+        advance 1
+        frame
+        """ + EDIT_SHOP + """
+        snap edited
+        key Escape
+        frame
+        advance 1
+        frame
+        press role=treeitem label="shop-prod" right
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Duplicate"
+        frame
+        """ + SETTLE);
+    String created = tree("created");
+    assertFalse(
+        line(created, "role=checkbox label=\"Read-only\"").contains("checked=false"), created);
+    assertTrue(line(created, "role=checkbox label=\"Read-only\"").contains("checked"), created);
+    String edited = tree("edited");
+    assertTrue(line(edited, "role=checkbox label=\"Read-only\"").contains("checked=false"), edited);
+    var saved = stored();
+    assertEquals(3, saved.size());
+    assertFalse(saved.get(0).readOnly(), "existing stayed read-write");
+    assertFalse(saved.get(1).readOnly(), "duplicate kept read-write");
+    assertTrue(saved.get(2).readOnly(), "new connection saved read-only");
   }
 
   /** The lines of the tree from the first that contains the text to the next row. */

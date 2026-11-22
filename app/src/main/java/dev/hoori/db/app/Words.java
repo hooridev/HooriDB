@@ -4,6 +4,7 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.dialect.Dialect;
 import dev.hoori.db.core.dialect.DocumentDialect;
+import java.time.Duration;
 
 /** Why a connection failed, in the same words wherever it shows: in the dialog and in the tree. */
 final class Words {
@@ -38,7 +39,10 @@ final class Words {
    * @param withPassword whether a password was sent
    */
   static String note(
-      ConnectionException.Failure failure, ConnectionProfile p, boolean withPassword) {
+      ConnectionException.Failure failure,
+      ConnectionProfile p,
+      boolean withPassword,
+      Duration timeout) {
     return switch (failure) {
       case LOGIN_REFUSED ->
         withPassword
@@ -56,14 +60,17 @@ final class Words {
                 + ". Check the host, and that the servers are running."
             : "Nothing answered at " + p.host() + ", port " + p.port()
                 + ". Check the host and the port, and that the server is running.";
-      case TIMED_OUT ->
-        (p.srv()
+      case TIMED_OUT -> {
+        long seconds = timeout.toSeconds();
+        yield (p.srv()
                 ? "The servers that DNS lists for " + p.host() + " did not answer within "
                 : p.host() + " did not answer on port " + p.port() + " within ")
-            + Tester.TIMEOUT.toSeconds()
+            + seconds
+            + (seconds == 1 ? " second." : " seconds.")
             + (p.srv()
-                ? " seconds. Check the host; a firewall may be in the way."
-                : " seconds. Check the host and the port; a firewall may be in the way.");
+                ? " Check the host; a firewall may be in the way."
+                : " Check the host and the port; a firewall may be in the way.");
+      }
       case TLS_UNAVAILABLE ->
         "The server offers no TLS. Off connects without it, and password and data go over the"
             + " network as they are.";

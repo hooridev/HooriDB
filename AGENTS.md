@@ -255,7 +255,8 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
 - The catalog's tests run against `FakeServers`: made-up servers by host, each written as an outline
   of databases, schemas, tables and columns, whose calls a test holds at a gate or fails by their
   key, such as `tables <host>/<database>.<schema>`. Each connection's calls run one at a time on its
-  `Lane`, so a held call also holds the calls behind it on that connection.
+  `Lane`, so a held call also holds the calls behind it on that connection. A held `open` fails as
+  timed out once the connect timeout it was given has passed, as a driver's does.
 - A script's `type "…"` types one character at a time, as a keyboard does, so the kit's completion
   list opens from a word's second letter, and a `key Enter` after it takes a suggestion. Text that
   must go in as it is, in one edit, is pasted with `clipboard "…"` and `key V control`, as the

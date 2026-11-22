@@ -573,7 +573,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
       var connection = stuck.connection();
       var lane = new Lane(e -> {});
       lane.open(
-          (profile, password, driver) -> Servers.Real.of(
+          (profile, password, driver, timeout) -> Servers.Real.of(
               connection,
               Provider.POSTGRESQL,
               dev.hoori.db.core.connection.ServerVersion.UNKNOWN,
@@ -581,7 +581,8 @@ class ConsoleNoticeTest extends ConsoleTransactions {
               false),
           SHOP,
           ConnectionsTest.PASSWORD.toCharArray(),
-          null);
+          null,
+          java.time.Duration.ofSeconds(10));
       var first = lane.submit(link -> link.run("SELECT a FROM t").next(10))
           .get(10, java.util.concurrent.TimeUnit.SECONDS);
       assertTrue(first.more(), "left open");
@@ -610,14 +611,14 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     var stuck = new dev.hoori.db.core.execution.Stuck();
     var opens = new java.util.concurrent.atomic.AtomicInteger();
     // The tree's connection and the later ones made up; the console's first one stuck.
-    Servers mixed = (profile, password, driver) -> opens.getAndIncrement() == 1
+    Servers mixed = (profile, password, driver, timeout) -> opens.getAndIncrement() == 1
         ? Servers.Real.of(
             stuck.connection(),
             Provider.POSTGRESQL,
             dev.hoori.db.core.connection.ServerVersion.UNKNOWN,
             "shop",
             false)
-        : servers.open(profile, password, driver);
+        : servers.open(profile, password, driver, timeout);
     try (var _ = new ShortEnding()) {
       var app = c.app(mixed, () -> new Keyring.Available(c.secrets), SHOP);
       c.ready(app, SHOP);

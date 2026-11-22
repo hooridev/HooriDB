@@ -13,6 +13,7 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.ExtendedJson;
 import java.time.ZoneId;
@@ -243,8 +244,24 @@ final class DocumentPresentation {
   private final Strategy grid = new Grid();
   private final Strategy json = new Json();
   private final Strategy tree = new Tree();
-  private Mode mode = Mode.GRID;
+  private Mode mode;
   private long page;
+
+  DocumentPresentation() {
+    this(Mode.GRID);
+  }
+
+  DocumentPresentation(Mode initial) {
+    this.mode = initial;
+  }
+
+  static Mode of(Settings.DocumentView view) {
+    return switch (view) {
+      case GRID -> Mode.GRID;
+      case JSON -> Mode.JSON;
+      case TREE -> Mode.TREE;
+    };
+  }
 
   Mode mode() {
     return mode;

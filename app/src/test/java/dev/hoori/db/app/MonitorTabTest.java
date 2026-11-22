@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Credentials;
@@ -940,5 +941,21 @@ class MonitorTabTest {
     var tree = c.tree("monitor");
     assertFalse(tree.contains(PASSWORD), tree);
     assertTrue(tree.contains("the key is •••"), tree);
+  }
+
+  /** A new server monitor starts at the interval configured in settings. */
+  @Test
+  void aNewMonitorStartsAtTheConfiguredInterval() throws Exception {
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(app, START + open("shop-prod") + SETTLE);
+    app.post(() -> app.state().choose(Settings.DEFAULT.withMonitorInterval(10)));
+    c.run(app, "await\nframe\n" + menu("shop-prod", "Server monitor") + SETTLE + "snap ten\n");
+    assertTrue(c.tree("ten").contains("\"Every 10 s\""), c.tree("ten"));
+    long first = reads();
+    c.run(app, after(5));
+    assertEquals(first, reads(), "does not read at the 5 s default");
+    c.run(app, after(5));
+    assertEquals(first + 1, reads(), "reads at 10 s");
   }
 }

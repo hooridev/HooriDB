@@ -12,6 +12,8 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
@@ -746,6 +748,26 @@ class TestConnectionTest {
     assertTrue(secrets.stored.isEmpty());
     assertFalse(app.state().remembers(shop.id()));
     assertEquals(List.of(shop), store.load().connections());
+  }
+
+  /** Test connection uses the configured connect timeout and names it on timeout. */
+  @Test
+  void aHeldTestFailsAfterTheConfiguredConnectTimeout() throws Exception {
+    downloaded();
+    new SettingsStore(dir.resolve("config"))
+        .save(Settings.DEFAULT.withConnectTimeout(Duration.ofSeconds(1)));
+    server.gate = new CountDownLatch(1);
+    App<State> app = app();
+    run(app, START + NEW_SHOP + TEST + SETTLE + SETTLE + "snap timed\n");
+    String timed = tree("timed");
+    assertTrue(line(timed, "role=note").contains("label=\"No answer in time\""), timed);
+    at(
+        timed,
+        "#port",
+        "#database",
+        "db.example.com did not answer on port 5432 within 1 second. Check the host and the port;"
+            + " a firewall may be in the way.");
+    assertEquals(List.of(Duration.ofSeconds(1)), server.timeouts);
   }
 
   /**

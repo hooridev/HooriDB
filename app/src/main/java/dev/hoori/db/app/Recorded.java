@@ -25,6 +25,7 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -43,7 +44,8 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
   static final String WITHHELD = "/* Not shown, as it holds the connection's password. */";
 
   @Override
-  public Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
+  public Link open(
+      ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout)
       throws ConnectionException {
     // What opening sends, as a read-only profile's statement, is logged as the link's calls are.
     var id = profile.id();
@@ -52,8 +54,8 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
       var link = log.on()
           ? Journal.recording(
               sent -> secret.log(log, id, sent, null),
-              () -> servers.open(profile, password, driver))
-          : servers.open(profile, password, driver);
+              () -> servers.open(profile, password, driver, timeout))
+          : servers.open(profile, password, driver, timeout);
       return new RecordedLink(link, id, secret, log);
     } catch (ConnectionException | RuntimeException e) {
       secret.wipe();

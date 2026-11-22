@@ -12,22 +12,19 @@ import java.time.Duration;
 @FunctionalInterface
 interface Tester {
 
-  /** How long reaching the server and logging in may take. */
-  Duration TIMEOUT = Duration.ofSeconds(10);
-
   /** Through the driver to the real server, of SQL or of documents. */
-  Tester SERVER = (profile, password, driver) -> {
+  Tester SERVER = (profile, password, driver, timeout) -> {
     try {
       return new Reached(
           driver.documents()
-              ? DocumentConnector.test(profile, password, driver, TIMEOUT)
-              : Connector.test(profile, password, driver, TIMEOUT));
+              ? DocumentConnector.test(profile, password, driver, timeout)
+              : Connector.test(profile, password, driver, timeout));
     } catch (ConnectionException e) {
       return new Refused(e.failure(), e.detail());
     }
   };
 
-  Result test(ConnectionProfile profile, char[] password, LoadedDriver driver);
+  Result test(ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout);
 
   /** What a test found. */
   sealed interface Result {}

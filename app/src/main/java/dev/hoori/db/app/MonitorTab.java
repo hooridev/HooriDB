@@ -129,7 +129,7 @@ final class MonitorTab implements Tab {
   record Asked(Action action, ServerSession session) {}
 
   final UUID id;
-  final Refresh refresh = new Refresh();
+  final Refresh refresh;
   View view = View.SESSIONS;
   List<ServerSession> sessions = List.of();
   List<ServerVariable> variables; // null until read
@@ -172,6 +172,7 @@ final class MonitorTab implements Tab {
   MonitorTab(State state, UUID id) {
     this.state = state;
     this.id = id;
+    this.refresh = new Refresh(Refresh.Interval.of(state.settings.monitorInterval()));
   }
 
   /**
@@ -189,7 +190,7 @@ final class MonitorTab implements Tab {
       return;
     }
     if (lane == null) {
-      var session = s.catalog.session(id, "");
+      var session = s.catalog.session(s, id, "");
       if (session == null) {
         return; // the view says that it is not connected
       }

@@ -20,6 +20,7 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.document.Document;
@@ -114,13 +115,19 @@ final class ConsoleTab implements Tab {
     final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
     // Of a server of documents, the documents of the rows, whole, and how they show.
     final List<Document> documents = new ArrayList<>();
-    final DocumentPresentation presentation = new DocumentPresentation();
+    final DocumentPresentation presentation;
 
-    Output(int number, String statement, List<Field> fields, long count) {
+    Output(
+        int number,
+        String statement,
+        List<Field> fields,
+        long count,
+        DocumentPresentation.Mode initial) {
       this.number = number;
       this.statement = statement;
       this.fields = fields;
       this.count = count;
+      this.presentation = new DocumentPresentation(initial);
       if (fields != null) {
         widths = new float[fields.size()];
         Arrays.fill(widths, -1);
@@ -322,9 +329,21 @@ final class ConsoleTab implements Tab {
   /** A statement of the user's on its way to the server, and since when. */
   private record Sent(String sql, Instant started) {}
 
-  ConsoleTab(UUID id, String database) {
+  ConsoleTab(UUID id, String database, Mode initial) {
     this.id = id;
     this.database = database;
+    this.mode = initial;
+  }
+
+  /** A console starting in the configured commit mode for SQL, and Auto for documents. */
+  static ConsoleTab of(State s, UUID id, String database) {
+    var profile = s.profile(id);
+    var initial = profile != null
+            && Language.of(profile.provider()).transactions()
+            && s.settings.commitMode() == Settings.CommitMode.MANUAL
+        ? Mode.MANUAL
+        : Mode.AUTO;
+    return new ConsoleTab(id, database, initial);
   }
 
   /** The console as it is kept until the next start. */
@@ -342,6 +361,10 @@ final class ConsoleTab implements Tab {
       return;
     }
     recording = null;
+    if (!s.settings.keepHistory()) {
+      recorded = null;
+      return;
+    }
     var time = took != null ? took : Duration.between(entry.started(), Instant.now());
     recorded = new HistoryEntry(
         id,
@@ -592,8 +615,9 @@ final class ConsoleTab implements Tab {
     boolean lazy = plain && mode == Mode.AUTO && transaction == Transaction.NONE;
     writes = !lazy;
     // Not for a read Auto keeps open: no connection is opened for an estimate never asked for.
-    var planner =
-        estimate && plain && !lazy && language.estimates() ? s.catalog.planner(id, database) : null;
+    var planner = estimate && plain && !lazy && language.estimates()
+        ? s.catalog.planner(s, id, database)
+        : null;
     var on = database;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
@@ -689,7 +713,7 @@ final class ConsoleTab implements Tab {
   private Lane session(State s) {
     if (lane == null) {
       take(s);
-      var session = s.catalog.session(id, database);
+      var session = s.catalog.session(s, id, database);
       if (session == null) {
         return null;
       }
@@ -871,7 +895,7 @@ final class ConsoleTab implements Tab {
       empty = true; // what is open after a typed COMMIT or ROLLBACK, the server began by itself
     }
     inTransaction = transaction == Transaction.NONE ? 0 : inTransaction + 1;
-    take(sql, portion, ran.dropped());
+    take(s, sql, portion, ran.dropped());
     if (before < outputs.size()) {
       shown = outputs.get(before);
     }
@@ -1152,7 +1176,7 @@ final class ConsoleTab implements Tab {
   }
 
   /** Puts the portion's results in tabs: rows from a position on go on with the result before. */
-  private void take(String sql, Portion portion, List<Long> dropped) {
+  private void take(State s, String sql, Portion portion, List<Long> dropped) {
     var all = portion.results();
     for (int i = 0; i < all.size(); i++) {
       var result = all.get(i);
@@ -1164,7 +1188,10 @@ final class ConsoleTab implements Tab {
         }
         case Result.Rows r -> {
           finished();
-          var output = new Output(++results, sql, r.fields(), 0);
+          var initial = !r.documents().isEmpty()
+              ? DocumentPresentation.of(s.settings.documentView())
+              : DocumentPresentation.Mode.GRID;
+          var output = new Output(++results, sql, r.fields(), 0, initial);
           output.rows.addAll(r.rows());
           output.documents.addAll(r.documents());
           output.dropped = dropped == null ? 0 : dropped.get(i);
@@ -1173,7 +1200,7 @@ final class ConsoleTab implements Tab {
         }
         case Result.Count(var count) -> {
           finished();
-          outputs.add(new Output(++results, sql, null, count));
+          outputs.add(new Output(++results, sql, null, count, DocumentPresentation.Mode.GRID));
         }
         case Failure _ -> {
           // no tab: the failure is said where the portion is taken, through failure(portion)
@@ -1304,7 +1331,7 @@ final class ConsoleTab implements Tab {
     if (doubt == null) {
       s.guard.drop(this);
     }
-    problem = problem(profile, error, lost);
+    problem = problem(s, profile, error, lost);
     log.add(new Logged(Level.ERROR, brief(sql), null, problem.title()));
     if (lost) {
       closeSession();
@@ -1344,10 +1371,12 @@ final class ConsoleTab implements Tab {
   }
 
   /** What the results area says of a call that failed rather than gave a result. */
-  private Problem problem(ConnectionProfile profile, Exception error, boolean lost) {
+  private Problem problem(State s, ConnectionProfile profile, Exception error, boolean lost) {
     if (error instanceof ConnectionException e && profile != null) {
       var on = database.isEmpty() ? profile : profile.withDatabase(database);
-      return heard(Words.title(e.failure()), lines(Words.note(e.failure(), on, true), e.detail()));
+      return heard(
+          Words.title(e.failure()),
+          lines(Words.note(e.failure(), on, true, s.settings.connectTimeout()), e.detail()));
     }
     if (lost) {
       var detail = error instanceof QueryException e ? e.detail() : State.messageOf(error);
@@ -1397,7 +1426,7 @@ final class ConsoleTab implements Tab {
             open = null; // over: nothing is left to give up
           }
           int before = outputs.size();
-          take(sql, portion, null);
+          take(s, sql, portion, null);
           learn(portion, true);
           follow(portion.autoCommit());
           messages(portion);

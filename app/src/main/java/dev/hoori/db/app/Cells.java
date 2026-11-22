@@ -8,6 +8,7 @@ import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
@@ -60,6 +61,15 @@ final class Cells {
       .toFormatter();
 
   private Cells() {}
+
+  /** What copying a NULL cell puts on the clipboard. */
+  static String nullText(Settings.CopyNull copyNull) {
+    return switch (copyNull) {
+      case EMPTY -> "";
+      case NULL -> "NULL";
+      case BACKSLASH_N -> "\\N";
+    };
+  }
 
   /** The grid's kind of column for core's kind of values. */
   static DataType type(Kind kind) {

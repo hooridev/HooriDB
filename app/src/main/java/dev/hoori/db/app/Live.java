@@ -6,6 +6,7 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.driver.LoadedDriver;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
@@ -75,7 +76,8 @@ final class Live {
   record Connected(ServerVersion version, String database, boolean schemas) implements Phase {}
 
   /** @param withPassword whether a password was sent */
-  record Failed(ConnectionException.Failure failure, String detail, boolean withPassword)
+  record Failed(
+      ConnectionException.Failure failure, String detail, boolean withPassword, Duration timeout)
       implements Phase {}
 
   /**

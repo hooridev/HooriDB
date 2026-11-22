@@ -54,7 +54,8 @@ class DocumentConsoleServerTest {
   App<State> console(ConnectionProfile profile) throws Exception {
     var server = TestServer.of(Provider.MONGODB);
     // The app's tests load made-up drivers; its connections go through the real one.
-    Servers real = (p, password, driver) -> Servers.SERVER.open(p, password, server.driver());
+    Servers real = (p, password, driver, timeout) ->
+        Servers.SERVER.open(p, password, server.driver(), timeout);
     var app = c.app(real, () -> new Keyring.Available(c.secrets), profile);
     c.ready(app, profile);
     app.state().rememberPassword(profile.id(), TestServer.password());

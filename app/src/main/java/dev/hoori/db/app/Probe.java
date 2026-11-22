@@ -19,6 +19,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.secret.SecretStore;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.UUID;
 
@@ -51,7 +52,8 @@ final class Probe {
   record Failed(Exception error, Tried tried) implements Step {}
 
   /** @param withPassword whether the test sent a password */
-  record Done(Tried tried, Tester.Result result, boolean withPassword) implements Step {
+  record Done(Tried tried, Tester.Result result, boolean withPassword, Duration timeout)
+      implements Step {
     ConnectionProfile profile() {
       return tried.profile();
     }
@@ -140,6 +142,7 @@ final class Probe {
     char[] kept = typed == null && !d.isNew ? s.rememberedCopy(id) : null;
     var secrets = typed == null && kept == null && !d.isNew && d.mayHold() ? s.secrets() : null;
     var tester = s.tester;
+    var timeout = s.settings.connectTimeout();
     var tried = new Tried(profile, d.passwordEdits);
     step = new Testing(profile.host());
     work = s.app.background(
@@ -147,11 +150,11 @@ final class Probe {
         () -> {
           char[] password = password(typed, kept, secrets, id);
           try {
-            var result = tester.test(profile, password, driver);
+            var result = tester.test(profile, password, driver, timeout);
             if (result instanceof Tester.Refused r && contains(r.detail(), password)) {
               result = new Tester.Refused(r.failure(), HIDDEN);
             }
-            return new Done(tried, result, password.length > 0);
+            return new Done(tried, result, password.length > 0, timeout);
           } finally {
             Arrays.fill(password, '\0');
           }
@@ -238,7 +241,7 @@ final class Probe {
     if (done != null
         && done.result() instanceof Tester.Refused r
         && at(r.failure(), done.profile()) == at) {
-      return Words.note(r.failure(), done.profile(), done.withPassword());
+      return Words.note(r.failure(), done.profile(), done.withPassword(), done.timeout());
     }
     return null;
   }

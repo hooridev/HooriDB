@@ -24,6 +24,7 @@ import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.query.QueryException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -61,7 +62,8 @@ final class CatalogTree {
   record NotRead(CatalogException.Failure failure, String detail) implements Level {}
 
   /** A database that needs a connection of its own, which could not be opened. */
-  record NotOpened(ConnectionException.Failure failure, String detail) implements Level {}
+  record NotOpened(ConnectionException.Failure failure, String detail, Duration timeout)
+      implements Level {}
 
   /** What the question before an edit or a delete of a connected connection leads to. */
   enum Then {
@@ -344,10 +346,11 @@ final class CatalogTree {
 
   /** Opens the first connection, with the password, which is the live's now. */
   private void connect(State s, Live live, char[] password) {
+    var timeout = s.settings.connectTimeout();
     live.password = password;
     live.phase = new Live.Connecting();
     live.lane = lane(s, live);
-    live.lane.open(servers, live.profile, password, live.driver);
+    live.lane.open(servers, live.profile, password, live.driver, timeout);
     record Opened(ServerVersion version, String database) {}
     // Right behind the opening, which it fails as.
     live.connecting = live.lane.ask(
@@ -374,7 +377,7 @@ final class CatalogTree {
           var failure = checked instanceof ConnectionException e
               ? e.failure()
               : ConnectionException.Failure.OTHER;
-          live.phase = new Live.Failed(failure, detail(checked), live.password.length > 0);
+          live.phase = new Live.Failed(failure, detail(checked), live.password.length > 0, timeout);
           end(live);
           s.unconnected(live.id());
           s.tell(State.name(live.profile) + ": " + Words.title(failure));
@@ -400,6 +403,7 @@ final class CatalogTree {
         && x.asked != null) {
       x.asked.cancel();
     }
+    var timeout = s.settings.connectTimeout();
     var lane = lane(s, live, database(node));
     var reading = new Reading();
     live.levels.put(node, reading);
@@ -416,7 +420,7 @@ final class CatalogTree {
         },
         error -> {
           if (live.levels.get(node) == reading) {
-            readFailed(s, live, node, lane, error);
+            readFailed(s, live, node, lane, error, timeout);
           }
         });
   }
@@ -449,14 +453,15 @@ final class CatalogTree {
   }
 
   /** A read of the node's children failed: the node says why, unless the connection was lost. */
-  private void readFailed(State s, Live live, Node node, Lane lane, Exception error) {
+  private void readFailed(
+      State s, Live live, Node node, Lane lane, Exception error, Duration timeout) {
     switch (checked(live, error)) {
       case ConnectionException e -> {
         // The next read opens it again.
         if (live.lanes.remove(database(node), lane)) {
           lane.close();
         }
-        live.levels.put(node, new NotOpened(e.failure(), e.detail()));
+        live.levels.put(node, new NotOpened(e.failure(), e.detail(), timeout));
       }
       case CatalogException e
       when readAlone(e) -> live.levels.put(node, new NotRead(e.failure(), e.detail()));
@@ -671,8 +676,8 @@ final class CatalogTree {
    * its database. It is opened as the tree's further connections are, with the password the tree
    * keeps while connected, and closes with them.
    */
-  Lane planner(UUID id, String database) {
-    return auxiliary(id, database, live -> live.planners);
+  Lane planner(State s, UUID id, String database) {
+    return auxiliary(s, id, database, live -> live.planners);
   }
 
   /**
@@ -681,11 +686,11 @@ final class CatalogTree {
    * connected. Nothing else runs on it, so that a slow count does not hold up the tree or other
    * tables' pages: on PostgreSQL one per database, else one, as {@link #planner} does.
    */
-  Lane counter(UUID id, String database) {
-    return auxiliary(id, database, live -> live.counters);
+  Lane counter(State s, UUID id, String database) {
+    return auxiliary(s, id, database, live -> live.counters);
   }
 
-  private Lane auxiliary(UUID id, String database, Function<Live, Map<String, Lane>> map) {
+  private Lane auxiliary(State s, UUID id, String database, Function<Live, Map<String, Lane>> map) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected c) || live.password == null) {
       return null;
@@ -700,7 +705,7 @@ final class CatalogTree {
       // Its loss is the call's alone, which fails without losing the tree's connection.
       lane = new Lane(e -> {});
       var profile = key.isEmpty() ? live.profile : live.profile.withDatabase(key);
-      lane.open(servers, profile, live.password, live.driver);
+      lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
       lanes.put(key, lane);
     }
     return lane;
@@ -743,7 +748,7 @@ final class CatalogTree {
    * tree's connection got; null while that is not connected. It is no lane of the tree's: what
    * runs on it never holds up the tree or a table tab.
    */
-  Session session(UUID id, String database) {
+  Session session(State s, UUID id, String database) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected)) {
       return null;
@@ -751,7 +756,7 @@ final class CatalogTree {
     // A console finds a lost connection in what its statements give, not through the tree.
     var lane = new Lane(e -> {});
     var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
-    lane.open(servers, profile, live.password, live.driver);
+    lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
     return new Session(lane, live.driver, live.password.clone());
   }
 
@@ -872,7 +877,12 @@ final class CatalogTree {
         lane.close();
       }
       lane = lane(s, live);
-      lane.open(servers, live.profile.withDatabase(database), live.password, live.driver);
+      lane.open(
+          servers,
+          live.profile.withDatabase(database),
+          live.password,
+          live.driver,
+          s.settings.connectTimeout());
       live.lanes.put(database, lane);
     }
     return lane;
@@ -1232,10 +1242,10 @@ final class CatalogTree {
     if (failedWhole(live, node)) {
       var p = live.profile;
       return switch (live.phase) {
-        case Live.Failed(var failure, var detail, var withPassword) -> {
+        case Live.Failed(var failure, var detail, var withPassword, var timeout) -> {
           var note = failure == ConnectionException.Failure.UNFIT
               ? "Its settings cannot connect as they are. Edit the connection to complete them."
-              : Words.note(failure, p, withPassword);
+              : Words.note(failure, p, withPassword, timeout);
           yield new Trouble(
               Words.title(failure),
               join(note, detail),
@@ -1253,7 +1263,7 @@ final class CatalogTree {
     return switch (live.levels.get(node)) {
       case NotRead(var failure, var detail) ->
         new Trouble(title(failure), join(text(failure, s, node), detail), false);
-      case NotOpened(var failure, var detail) ->
+      case NotOpened(var failure, var detail, var timeout) ->
         new Trouble(
             "The database could not be opened",
             join(
@@ -1262,7 +1272,8 @@ final class CatalogTree {
                     database(node) == null
                         ? live.profile
                         : live.profile.withDatabase(database(node)),
-                    true),
+                    true,
+                    timeout),
                 detail),
             false);
       case null, default -> null;

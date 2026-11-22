@@ -44,7 +44,8 @@ class ServersServerTest {
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 500) SELECT i FROM n";
 
   static Servers.Link open(TestServer server) throws Exception {
-    return Servers.SERVER.open(server.profile(), TestServer.password(), server.driver());
+    return Servers.SERVER.open(
+        server.profile(), TestServer.password(), server.driver(), Duration.ofSeconds(10));
   }
 
   /** A lane of a console, open on the server's database or another. */
@@ -54,7 +55,8 @@ class ServersServerTest {
         Servers.SERVER,
         server.profile().withDatabase(database),
         TestServer.password(),
-        server.driver());
+        server.driver(),
+        Duration.ofSeconds(10));
     lane.submit(link -> link).get(30, TimeUnit.SECONDS); // fails as the opening did
     return lane;
   }
@@ -122,7 +124,10 @@ class ServersServerTest {
   void aReadOnlyLinkWritesNothing(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var link = Servers.SERVER.open(
-        server.profile().withReadOnly(true), TestServer.password(), server.driver());
+        server.profile().withReadOnly(true),
+        TestServer.password(),
+        server.driver(),
+        Duration.ofSeconds(10));
     try {
       var back =
           provider == Provider.POSTGRESQL ? "RESET ALL" : "SET SESSION TRANSACTION READ WRITE";
@@ -1126,8 +1131,8 @@ class ServersServerTest {
     var c = new CatalogTreeTest();
     c.dir = dir;
     c.setUp();
-    Servers real = (profile, password, driver) ->
-        Servers.SERVER.open(profile, TestServer.password(), server.driver());
+    Servers real = (profile, password, driver, timeout) ->
+        Servers.SERVER.open(profile, TestServer.password(), server.driver(), timeout);
     var profile = server.profile().withName("real");
     var app = c.app(
         real,
@@ -1249,7 +1254,8 @@ class ServersServerTest {
           Servers.SERVER,
           server.profile().withHost(dev.hoori.db.core.query.Relay.HOST).withPort(relay.port()),
           TestServer.password(),
-          server.driver());
+          server.driver(),
+          Duration.ofSeconds(10));
       lane.submit(link -> link).get(30, TimeUnit.SECONDS);
       var many = provider == Provider.POSTGRESQL
           ? "SELECT n FROM generate_series(1, 100000) n"

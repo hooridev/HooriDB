@@ -35,6 +35,7 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.List;
 import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -52,9 +53,9 @@ interface Servers {
    * Through the driver to the real server: with {@link Connector} and {@link Catalog} to one of
    * SQL, with {@link DocumentConnector} and a {@link DocumentSession} to one of documents.
    */
-  Servers SERVER = (profile, password, driver) -> {
+  Servers SERVER = (profile, password, driver, timeout) -> {
     if (driver.documents()) {
-      var opened = DocumentConnector.open(profile, password, driver, Tester.TIMEOUT);
+      var opened = DocumentConnector.open(profile, password, driver, timeout);
       var session =
           new DocumentSession(opened.client(), profile.provider().documents(), profile.readOnly());
       return Documents.of(
@@ -63,7 +64,7 @@ interface Servers {
           opened.database(),
           profile.provider().documents().defaultDatabase());
     }
-    var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
+    var opened = Connector.open(profile, password, driver, timeout);
     return Real.of(
         opened.connection(),
         profile.provider(),
@@ -75,7 +76,7 @@ interface Servers {
   String GONE = "The connection was lost or given up: nothing more is sent on it.";
 
   /** Opens a connection to the profile's server and database. */
-  Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
+  Link open(ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout)
       throws ConnectionException;
 
   /** An open connection. It serves one call at a time. */
