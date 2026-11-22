@@ -275,15 +275,16 @@ public final class PostgreSqlRows extends RowsDialect {
 
   // Texts (including json, other types and server texts such as infinity) compare byte-wise
   // through the type's output function, as the read reads them, which covers types without '=' and
-  // catches differences a collation or '=' would blur; concat() turns NULL into '', so require
-  // IS NOT NULL as well.
+  // catches differences a collation or '=' would blur. NULL is told as the read tells it, by
+  // num_nulls(), as IS NULL holds for a composite whose fields are all NULL and concat() gives ''.
   @Override
   String unchanged(String column, Object value, Function<Object, String> parameter) {
+    var nulls = "pg_catalog.num_nulls(" + column + ") " + keyEquality();
     if (value == null) {
-      return column + " IS NULL";
+      return nulls + " 1";
     }
     if (value instanceof String) {
-      return column + " IS NOT NULL AND pg_catalog.concat(" + column + ") COLLATE pg_catalog.\"C\" "
+      return nulls + " 0 AND pg_catalog.concat(" + column + ") COLLATE pg_catalog.\"C\" "
           + keyEquality() + " " + parameter.apply(value);
     }
     return column + " " + keyEquality() + " " + parameter.apply(value);

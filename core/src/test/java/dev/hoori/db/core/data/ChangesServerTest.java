@@ -603,6 +603,82 @@ class ChangesServerTest {
     }
   }
 
+  // 00:30Z and 01:30Z are both 02:30 in Berlin, as the clocks go back.
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aMomentChangedToOneTheZoneShowsAlikeMisses(Provider provider) throws Exception {
+    var name = unique("changes_fold");
+    var table = table(provider, name, Table.Kind.TABLE);
+    var qualified = qualified(provider, name);
+    try (var connection = open(provider)) {
+      try {
+        execute(connection, "SET SESSION time_zone = 'Europe/Berlin'");
+      } catch (SQLException _) {
+        assumeTrue(false, "The server has no named time zones");
+      }
+      execute(
+          connection,
+          "CREATE TABLE " + qualified + " (id integer PRIMARY KEY, t timestamp NULL)",
+          "SET SESSION time_zone = '+00:00'",
+          "INSERT INTO " + qualified + " VALUES (1, '2024-10-27 00:30:00')",
+          "SET SESSION time_zone = 'Europe/Berlin'");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        try (var other = open(provider)) {
+          execute(
+              other,
+              "SET SESSION time_zone = '+00:00'",
+              "UPDATE " + qualified + " SET t = '2024-10-27 01:30:00' WHERE id = 1");
+        }
+        var changes = Changes.of(table, columns).orElseThrow().edit(read.getFirst(), 1, null);
+        assertEquals(
+            new Changes.Outcome.Missed(changes.changes().getFirst(), 0),
+            changes.write(connection, provider));
+        assertEquals(
+            List.of(row(1L, OffsetDateTime.of(2024, 10, 27, 1, 30, 0, 0, ZoneOffset.UTC))),
+            rows(provider, table));
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified);
+      }
+    }
+  }
+
+  // IS NULL holds for a composite whose fields are all NULL.
+  @Test
+  void aCompositeOfNullFieldsIsNotNull() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var name = unique("changes_composite");
+    var type = qualified(provider, name + "_pair");
+    var table = table(provider, name, Table.Kind.TABLE);
+    var qualified = qualified(provider, name);
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TYPE " + type + " AS (a integer, b integer)",
+          "CREATE TABLE " + qualified + " (id integer PRIMARY KEY, p " + type + ")",
+          "INSERT INTO " + qualified + " VALUES (1, ROW(NULL, NULL)), (2, NULL)");
+      try {
+        var columns = columns(connection, provider, table);
+        var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
+        try (var other = open(provider)) {
+          execute(other, "UPDATE " + qualified + " SET p = ROW(NULL, NULL) WHERE id = 2");
+        }
+        var stale = Changes.of(table, columns).orElseThrow().edit(read.get(1), 1, "(3,4)");
+        assertEquals(
+            new Changes.Outcome.Missed(stale.changes().getFirst(), 0),
+            stale.write(connection, provider));
+        var changes = Changes.of(table, columns).orElseThrow().edit(read.get(0), 1, "(1,2)");
+        assertEquals(new Changes.Outcome.Committed(), changes.write(connection, provider));
+        assertEquals(List.of(row(1L, "(1,2)"), row(2L, "(,)")), rows(provider, table));
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified, "DROP TYPE " + type);
+      }
+    }
+  }
+
   @ParameterizedTest
   @EnumSource(
       value = Provider.class,
@@ -614,10 +690,11 @@ class ChangesServerTest {
     try (var connection = open(provider)) {
       execute(
           connection,
-          "CREATE TABLE " + qualified + " (id integer PRIMARY KEY, g geometry, f float, d double)",
+          "CREATE TABLE " + qualified
+              + " (id integer PRIMARY KEY, g geometry, f float, d double, s float(7,3))",
           "INSERT INTO " + qualified
-              + " VALUES (1, ST_GeomFromText('POINT(1 2)'), 0.00001, 1.2345678901234567),"
-              + " (2, NULL, 1.2345678e20, 1e-300)");
+              + " VALUES (1, ST_GeomFromText('POINT(1 2)'), 0.00001, 1.2345678901234567, 1.2),"
+              + " (2, NULL, 1.2345678e20, 1e-300, 0), (3, NULL, 0, 0, NULL)");
       try {
         var columns = columns(connection, provider, table);
         var read = Rows.read(connection, provider, table, columns, 0, 10).rows();
@@ -626,11 +703,18 @@ class ChangesServerTest {
             .edit(read.getFirst(), 1, null)
             .edit(read.getFirst(), 2, 0.2f)
             .edit(read.getFirst(), 3, 2.5)
+            .edit(read.getFirst(), 4, 2.5f)
             .edit(read.get(1), 2, 0.5f)
-            .edit(read.get(1), 3, 0.25);
+            .edit(read.get(1), 3, 0.25)
+            .edit(read.get(1), 4, 1.5f)
+            .edit(read.get(2), 2, 1f);
         assertEquals(new Changes.Outcome.Committed(), changes.write(connection, provider));
         assertEquals(
-            List.of(row(1L, null, 0.2f, 2.5), row(2L, null, 0.5f, 0.25)), rows(provider, table));
+            List.of(
+                row(1L, null, 0.2f, 2.5, 2.5f),
+                row(2L, null, 0.5f, 0.25, 1.5f),
+                row(3L, null, 1f, 0d, null)),
+            rows(provider, table));
       } finally {
         dropAfter(provider, "DROP TABLE " + qualified);
       }

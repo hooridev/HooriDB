@@ -282,8 +282,8 @@ abstract class MySqlFamilyRows extends RowsDialect {
 
   // Texts compare by their UTF-8 bytes so no collation or PAD SPACE blurs them; binary values
   // (including bit(n) and spatial types) compare as bytes, as MariaDB compares BIT with a bound
-  // binary value numerically otherwise; a FLOAT compares as its text, as it was read, which has six
-  // digits and so equals no number of more, such as CAST(? AS FLOAT).
+  // binary value numerically otherwise; a FLOAT as the text it was read as, of six digits, which
+  // a number of more digits does not equal.
   @Override
   String unchanged(String column, Object value, Function<Object, String> parameter) {
     if (value == null) {
@@ -297,7 +297,12 @@ abstract class MySqlFamilyRows extends RowsDialect {
       return "CAST(" + column + " AS BINARY) = CAST(" + parameter.apply(value) + " AS BINARY)";
     }
     if (value instanceof Float) {
-      return "CAST(" + column + " AS CHAR) = CAST(" + parameter.apply(value) + " AS CHAR)";
+      return "CAST(CAST(" + column + " AS CHAR) AS FLOAT) = CAST(" + parameter.apply(value)
+          + " AS FLOAT)";
+    }
+    // As the moment it stores, which the session's zone may show alike for two.
+    if (value instanceof OffsetDateTime moment) {
+      return "UNIX_TIMESTAMP(" + column + ") = " + parameter.apply(seconds(moment));
     }
     return column + " = " + parameter.apply(value);
   }
