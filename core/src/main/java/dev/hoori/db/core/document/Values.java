@@ -150,7 +150,8 @@ public final class Values {
   }
 
   private static Object maybeCut(String text, boolean cut) {
-    return text.length() > (cut ? Rows.LIMIT : Rows.WHOLE_LIMIT) ? cut(text) : text;
+    int limit = cut ? Rows.LIMIT : Rows.WHOLE_LIMIT;
+    return text.length() > limit ? cut(text) : text;
   }
 
   // Not between the two halves of a character beyond the 16 bits of one char.

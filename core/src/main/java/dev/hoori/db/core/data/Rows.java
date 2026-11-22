@@ -454,14 +454,14 @@ public final class Rows {
   }
 
   /** Reads a column of a statement's result as its whole text, which {@link RowReader} bounds. */
-  static final Value WHOLE = ResultSet::getString;
+  static final Value WHOLE_TEXT = ResultSet::getString;
 
   /**
    * A column of a statement's result read whole as text; {@link RowReader} keeps a value longer
    * than {@link #LIMIT} code points whole while its budget allows and cuts the rest.
    */
   static Read whole(Source source, Kind kind) {
-    return new Read(field(source, kind), null, List.of(), WHOLE);
+    return new Read(field(source, kind), null, List.of(), WHOLE_TEXT);
   }
 
   static Object cut(String text, ResultSet rows, int length) throws SQLException {

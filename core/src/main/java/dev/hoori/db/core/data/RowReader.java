@@ -65,7 +65,8 @@ public final class RowReader {
     for (var i = 0; i < values.length; i++) {
       var read = reads.get(i);
       var value = read.value().read(rows, i + 1);
-      values[i] = read.value() == Rows.WHOLE && value instanceof String text ? keep(text) : value;
+      values[i] =
+          read.value() == Rows.WHOLE_TEXT && value instanceof String text ? keep(text) : value;
     }
     return Collections.unmodifiableList(Arrays.asList(values));
   }
