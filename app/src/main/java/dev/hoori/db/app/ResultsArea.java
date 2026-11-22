@@ -20,7 +20,11 @@ import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.execution.Transaction;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -31,8 +35,15 @@ import java.util.List;
  */
 final class ResultsArea {
 
+  private static final long COPY_LIMIT = 100_000;
+
   private final ConsoleTab tab;
   private final DataGrid.Selection logSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
+  // The whole document value last read for the value panel, reused across frames while on the same
+  // cell so JSON is neither serialized nor formatted anew on every frame.
+  private Document wholeDocument;
+  private Field wholeField;
+  private Object wholeValue;
 
   ResultsArea(ConsoleTab tab) {
     this.tab = tab;
@@ -276,14 +287,20 @@ final class ResultsArea {
   }
 
   /**
-   * The result's grid and value panel input: a text cut short stays so, as the statement may not
-   * name a row to read it by.
+   * The result's grid and value panel input: where the result holds documents whole, the panel
+   * takes the cell's value from the document; a text cut short beyond a SQL result's budget stays
+   * so, as the statement may not name a row to read it by.
    */
   private DocumentPresentation.GridView gridView(State s, App<State> app, ConsoleTab.Output o) {
     int row = o.selection.row();
     int column = o.selection.column();
     ValuePanel.Cell cell = null;
     String note = null;
+    if (!tab.value.open && wholeDocument != null) {
+      wholeDocument = null;
+      wholeField = null;
+      wholeValue = null;
+    }
     // A row beyond those read is the one that asks for more.
     if (tab.value.open
         && row >= 0
@@ -291,7 +308,7 @@ final class ResultsArea {
         && column >= 0
         && column < o.fields.size()) {
       var field = o.fields.get(column);
-      var v = row < o.rows.size() ? o.rows.get(row).get(column) : null;
+      var v = row < o.rows.size() ? panelValue(o, row, column) : null;
       cell = new ValuePanel.Cell(field.name(), field.type(), field.kind(), v);
       if (v instanceof Cut) {
         note = Cells.icon(v).tooltip() + "; a result keeps no more";
@@ -305,6 +322,31 @@ final class ResultsArea {
         cell != null && row >= o.rows.size(),
         null,
         null);
+  }
+
+  /** The cell's whole value for the value panel, cached across frames while on the same cell. */
+  private Object panelValue(ConsoleTab.Output o, int row, int column) {
+    if (o.documents.isEmpty() || row >= o.documents.size()) {
+      wholeDocument = null;
+      wholeField = null;
+      wholeValue = null;
+      return o.rows.get(row).get(column);
+    }
+    var document = o.documents.get(row);
+    var field = o.fields.get(column);
+    if (document != wholeDocument || !field.equals(wholeField)) {
+      wholeDocument = document;
+      wholeField = field;
+      wholeValue = Values.whole(field, document);
+    }
+    return wholeValue;
+  }
+
+  /** The cell's whole value: from the document where the result holds documents, else the row's. */
+  private static Object cellValue(ConsoleTab.Output o, int row, int column) {
+    return !o.documents.isEmpty() && row < o.documents.size()
+        ? Values.whole(o.fields.get(column), o.documents.get(row))
+        : o.rows.get(row).get(column);
   }
 
   /** The result's rows, read-only, with the table tab's cells. */
@@ -322,11 +364,42 @@ final class ResultsArea {
         .fitColumns(o.fit)
         .rowNumbers()
         .copy(app.clipboard())
+        .copyLimit(0, copy -> copy(app, o, copy, zone))
         .loading(row -> row < o.rows.size(), (_, last) -> tab.want(s, o, last));
     int count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), DocumentPresentation.GRID_ROWS);
     return DataGrid.dataGrid(columns, count, options)
         .key("grid")
         .label("Rows of result " + o.number);
+  }
+
+  /**
+   * Copies the selected cells: one cell whole, as the grid's own cells hold only the start of a
+   * long text; more cells as the grid shows them, which bounds the text of a large selection.
+   */
+  // shortcut: the grid copies what it shows (rethinkj/ui#414); drop this once it copies it whole.
+  private static void copy(App<State> app, ConsoleTab.Output o, DataGrid.Copy copy, ZoneId zone) {
+    if (copy.cells() > COPY_LIMIT) {
+      return;
+    }
+    for (var range : copy.ranges()) {
+      if (range.bottom() >= o.rows.size()) {
+        return;
+      }
+    }
+    boolean one = copy.cells() == 1;
+    var whole = new ArrayList<DataGrid.Column>(o.fields.size());
+    for (int c = 0; c < o.fields.size(); c++) {
+      var field = o.fields.get(c);
+      int at = c;
+      whole.add(new DataGrid.Column(
+          field.name(),
+          0,
+          Cells.type(field.kind()),
+          row -> one
+              ? Cells.text(cellValue(o, row, at), zone)
+              : Cells.cell(o.rows.get(row).get(at), zone)));
+    }
+    app.clipboard().write(DataGrid.copyText(whole, copy.ranges(), copy.headers(), ""));
   }
 
   /** What ran, how long it took, what it gave, and what the server said along the way. */

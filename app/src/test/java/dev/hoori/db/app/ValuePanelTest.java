@@ -15,14 +15,21 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.json.Json;
+import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
+import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.ExtendedJson;
+import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.execution.Result;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
 import java.util.OptionalLong;
@@ -194,7 +201,7 @@ class ValuePanelTest {
   }
 
   @Test
-  void aConsolesResultShowsWhatItHoldsAndSaysWhereItIsCut() throws Exception {
+  void aConsolesResultShowsLongJsonWholeAndCutBeyondBudgetWithANote() throws Exception {
     var sql = "SELECT doc FROM kinds";
     t.servers.statement(
         sql,
@@ -202,15 +209,33 @@ class ValuePanelTest {
             List.of(new Field("doc", "jsonb", Kind.JSON)),
             0,
             List.of(
-                List.of(new Cut(LONG.substring(0, 1024), OptionalLong.empty())),
+                List.of(LONG),
+                List.of(new Cut(LONG.substring(0, Rows.LIMIT), OptionalLong.empty())),
                 List.of("[1, 2]")))));
     var app = t.c.app(SHOP);
     t.c.ready(app, SHOP);
     t.c.run(
         app,
         START + menu(SHOP.name(), "New console") + SETTLE + ConsoleTest.type(sql) + ConsoleTest.RUN
-            + "press #cell-0-0\nkey Enter shift\nadvance 1\nframe\nsnap cut\n"
+            + "press #cell-0-0\nframe\nkey C control\nframe\n"
+            + "key Enter shift\nadvance 1\nframe\nsnap whole\n"
+            + "key ArrowDown\nframe\nsnap cut\n"
             + "key ArrowDown\nframe\nsnap next\n");
+    // Copying a cell gives the whole value, even though the grid cell draws only the start.
+    assertEquals(LONG, DataGrid.parseText(app.clipboard().read()).getFirst().getFirst());
+    String whole = t.c.tree("whole");
+    var gridCell = TableTabTest.cell(whole, 0, 0);
+    assertTrue(gridCell.contains(dumped(LONG.substring(0, 60))), gridCell);
+    assertFalse(gridCell.contains("item 59"), gridCell);
+    assertFalse(gridCell.contains("more_horizontal"), gridCell);
+    var formatted = Json.format(LONG).text();
+    var wholeEditor = editor(whole);
+    assertTrue(wholeEditor.contains(" \"" + dumped(formatted.substring(0, 60))), wholeEditor);
+    assertTrue(
+        wholeEditor.contains(dumped(formatted.substring(formatted.length() - 25)) + "\" length "
+            + formatted.length() + " "),
+        wholeEditor);
+    assertFalse(whole.contains("Cut short"), whole);
     String cut = t.c.tree("cut");
     assertTrue(
         cut.contains("\"Cut short: the first 1024 characters; a result keeps no more\""), cut);
@@ -218,6 +243,76 @@ class ValuePanelTest {
     String next = t.c.tree("next");
     assertTrue(editor(next).contains("\"" + dumped("[\n    1,\n    2\n]") + "\""), editor(next));
     assertFalse(next.contains("Cut short"), next);
+    // Copying more cells gives what the grid shows, which bounds a large selection's text.
+    t.c.run(app, "press #cell-0-0\nframe\nkey ArrowDown shift\nframe\nkey C control\nframe\n");
+    var copied = DataGrid.parseText(app.clipboard().read());
+    assertEquals(Cells.cell(LONG, ZoneOffset.UTC), copied.getFirst().getFirst());
+    assertEquals(LONG.substring(0, Rows.LIMIT), copied.get(1).getFirst());
+  }
+
+  @Test
+  void aGridCellShowsOnlyTheStartOfALongStringWithoutSplittingASurrogatePair() {
+    var boundary = "a".repeat(Rows.LIMIT - 1) + "😀" + "z";
+    assertEquals("a".repeat(Rows.LIMIT - 1) + "😀", Cells.cell(boundary, ZoneOffset.UTC));
+    assertEquals(boundary, Cells.text(boundary, ZoneOffset.UTC));
+    var exact = "😀".repeat(Rows.LIMIT);
+    assertEquals(exact, Cells.cell(exact, ZoneOffset.UTC));
+    var longer = exact + "😀";
+    assertEquals(exact, Cells.cell(longer, ZoneOffset.UTC));
+  }
+
+  @Test
+  void aMongoDbConsolesValuePanelShowsTheDocumentsValueWhole() throws Exception {
+    t.c.servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        hoori
+          orders
+            _id: int
+            payload: object
+            note: string
+        """);
+    var items = IntStream.range(0, 60)
+        .mapToObj(i -> (Object) Document.of("n", i, "name", "item " + i))
+        .toList();
+    var payload = Document.of("items", items);
+    var note = "n".repeat(Rows.LIMIT + 50);
+    var first = Document.of("payload", payload, "note", note);
+    var second = Document.of("payload", null);
+    var documents = List.of(first, second);
+    var fields = Values.found(documents);
+    var rows = documents.stream().map(d -> Values.row(fields, d)).toList();
+    var query = "db.orders.find()";
+    t.c.servers.statement(query, List.of(new Result.Rows(fields, 0, rows, documents)));
+    var app = t.c.app(DocumentConsoleTest.DOCS);
+    t.c.ready(app, DocumentConsoleTest.DOCS);
+    t.c.run(
+        app,
+        START + menu(DocumentConsoleTest.DOCS.name(), "New console") + SETTLE
+            + ConsoleTest.type(query) + ConsoleTest.RUN
+            + "press #cell-0-0\nframe\nkey C control\nframe\n"
+            + "key Enter shift\nadvance 1\nframe\nsnap payload\n"
+            + "key ArrowRight\nframe\nsnap note\n"
+            + "key ArrowDown\nframe\nsnap missing\n"
+            + "key ArrowLeft\nframe\nsnap nulled\n");
+    var wholeJson = ExtendedJson.of(payload);
+    assertEquals(
+        wholeJson, DataGrid.parseText(app.clipboard().read()).getFirst().getFirst());
+    var payloadTree = t.c.tree("payload");
+    var gridCell = TableTabTest.cell(payloadTree, 0, 0);
+    assertTrue(gridCell.contains("more_horizontal"), gridCell);
+    assertFalse(gridCell.contains("item 59"), gridCell);
+    var formatted = Json.format(wholeJson).text();
+    var payloadEditor = editor(payloadTree);
+    assertTrue(payloadEditor.contains(" \"" + dumped(formatted.substring(0, 60))), payloadEditor);
+    assertTrue(
+        payloadEditor.contains(dumped(formatted.substring(formatted.length() - 25)) + "\" length "
+            + formatted.length() + " "),
+        payloadEditor);
+    assertFalse(payloadTree.contains("Cut short"), payloadTree);
+    var noteTree = t.c.tree("note");
+    assertTrue(editor(noteTree).contains(" length " + note.length() + " "), editor(noteTree));
+    assertFalse(noteTree.contains("Cut short"), noteTree);
+    assertTrue(t.c.tree("missing").contains("\"No such field\""), t.c.tree("missing"));
+    assertTrue(t.c.tree("nulled").contains("\"NULL\""), t.c.tree("nulled"));
   }
 
   @Test

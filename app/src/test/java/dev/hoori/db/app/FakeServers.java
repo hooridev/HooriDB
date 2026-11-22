@@ -897,7 +897,11 @@ final class FakeServers implements Servers {
               if (next instanceof Result.Rows r) {
                 int from = (int) position;
                 int to = (int) Math.min(r.rows().size(), position + count);
-                out.add(new Result.Rows(r.fields(), from, r.rows().subList(from, to)));
+                out.add(new Result.Rows(
+                    r.fields(),
+                    from,
+                    r.rows().subList(from, to),
+                    r.documents().isEmpty() ? List.of() : r.documents().subList(from, to)));
                 position = to;
                 if (to < r.rows().size()) {
                   more = true;
