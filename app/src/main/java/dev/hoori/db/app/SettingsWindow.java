@@ -62,6 +62,8 @@ import java.util.function.Predicate;
 final class SettingsWindow {
 
   static final String TITLE = "Settings";
+  private static final String CONNECTIONS = "Connections";
+  private static final String DATA = "Data";
 
   // Sample moment for the time zone preview, formatted as the grid formats moments.
   private static final OffsetDateTime SAMPLE_MOMENT =
@@ -134,14 +136,10 @@ final class SettingsWindow {
     El view(SettingsWindow window, State s, boolean locked) {
       T value = read.apply(s);
       boolean atDefault = isDefault.test(s);
+      Runnable reset = locked ? null : () -> window.resetRow(s, this);
       El resetButton = atDefault
           ? null
-          : Button.icon(
-                  GHOST,
-                  Symbol.ARROW_UNDO,
-                  "Reset " + title,
-                  locked ? null : () -> window.resetRow(s, this))
-              .key("reset");
+          : Button.icon(GHOST, Symbol.ARROW_UNDO, "Reset " + title, reset).key("reset");
       Consumer<T> writer = locked ? null : next -> write.accept(s, next);
       return control.build(window, s, this, value, writer, resetButton);
     }
@@ -228,7 +226,7 @@ final class SettingsWindow {
       // Databases
       setting(
           Page.DATABASES,
-          "Connections",
+          CONNECTIONS,
           "Connect timeout",
           "Seconds to wait when opening a connection ("
               + Settings.MIN_CONNECT_TIMEOUT_SECONDS
@@ -241,7 +239,7 @@ final class SettingsWindow {
           SettingsWindow::timeoutRow),
       setting(
           Page.DATABASES,
-          "Connections",
+          CONNECTIONS,
           "New connections start read-only",
           "Pre-select read-only when creating a new connection",
           List.of("read-only", "readonly", "new", "connection", "safe"),
@@ -250,7 +248,7 @@ final class SettingsWindow {
           SettingsWindow::toggleRow),
       setting(
           Page.DATABASES,
-          "Connections",
+          CONNECTIONS,
           "Commit mode of new consoles",
           "Auto commits each statement by itself; Manual waits for Commit or Rollback",
           List.of("commit", "autocommit", "manual", "transaction", "console"),
@@ -261,7 +259,7 @@ final class SettingsWindow {
               m -> m == Settings.CommitMode.AUTO ? "Auto" : "Manual")),
       setting(
           Page.DATABASES,
-          "Data",
+          DATA,
           "Time zone of moments",
           "How timestamps with a time zone show",
           List.of("time", "zone", "timezone", "moments", "timestamp", "utc", "date"),
@@ -270,7 +268,7 @@ final class SettingsWindow {
           SettingsWindow::timeZoneRow),
       setting(
           Page.DATABASES,
-          "Data",
+          DATA,
           "Copy NULL as",
           "Text placed on the clipboard when copying a NULL cell",
           List.of("copy", "null", "clipboard", "empty", "backslash", "grid"),
@@ -282,7 +280,7 @@ final class SettingsWindow {
               SettingsWindow::copyNullLabel)),
       setting(
           Page.DATABASES,
-          "Data",
+          DATA,
           "First view of a MongoDB collection",
           "How a MongoDB collection or console result opens first",
           List.of("mongodb", "collection", "document", "view", "grid", "json", "tree"),
