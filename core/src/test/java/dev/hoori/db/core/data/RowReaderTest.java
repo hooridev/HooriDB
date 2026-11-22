@@ -101,6 +101,7 @@ class RowReaderTest {
           case "getColumnTypeName" -> columns.get((int) args[0] - 1).typeName();
           case "getColumnType" -> columns.get((int) args[0] - 1).jdbcType();
           case "getPrecision" -> columns.get((int) args[0] - 1).precision();
+          case "getCatalogName", "getTableName", "getColumnName" -> "";
           default -> throw new UnsupportedOperationException(method.getName());
         });
   }

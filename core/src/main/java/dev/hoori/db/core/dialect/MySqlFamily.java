@@ -234,9 +234,15 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE = 'YES', k.ORDINAL_POSITION"
           + " FROM information_schema.COLUMNS c"
           + " LEFT JOIN information_schema.KEY_COLUMN_USAGE k"
-          + " ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME"
-          + " AND k.CONSTRAINT_NAME = 'PRIMARY' AND k.COLUMN_NAME = c.COLUMN_NAME"
-          + " WHERE c.TABLE_SCHEMA = ? AND c.TABLE_NAME = ? ORDER BY c.ORDINAL_POSITION";
+          // Exact names, as MariaDB's information_schema compares them regardless of case and
+          // accents, where two tables or columns may differ only in them.
+          + " ON k.TABLE_SCHEMA = CAST(c.TABLE_SCHEMA AS BINARY)"
+          + " AND k.TABLE_NAME = CAST(c.TABLE_NAME AS BINARY)"
+          + " AND k.CONSTRAINT_NAME = CAST('PRIMARY' AS BINARY)"
+          + " AND k.REFERENCED_TABLE_NAME IS NULL" // MySQL lets a foreign key take the name
+          + " AND k.COLUMN_NAME = CAST(c.COLUMN_NAME AS BINARY)"
+          + " WHERE c.TABLE_SCHEMA = CAST(? AS BINARY) AND c.TABLE_NAME = CAST(? AS BINARY)"
+          + " ORDER BY c.ORDINAL_POSITION";
     }
 
     @Override
