@@ -44,8 +44,8 @@ final class Suggestions {
     List<Candidate> candidates(Known known, String statement, int caret, String word);
   }
 
-  private final UUID id;
-  private final ConsoleTab tab;
+  private final ConsoleTab tab; // the console it suggests in, or null
+  private final TableTab grid; // or the table tab whose clauses it suggests in, or null
   private final Map<Node, CatalogTree.Scan> asked = new HashMap<>(); // the reads it started
   private CatalogTree catalog; // where they were asked, once they are
   // The last entries, and what they were made for: the list keeps them while only its highlight
@@ -55,24 +55,17 @@ final class Suggestions {
   private int madeAt;
   private String madeOf;
   private Settings.KeywordCase madeCase;
-  private List<Column> madeColumns;
   int made; // how often they were made, which a test counts
 
   Suggestions(ConsoleTab tab) {
-    this(null, tab);
-  }
-
-  Suggestions(UUID id) {
-    this(id, null);
-  }
-
-  private Suggestions(UUID id, ConsoleTab tab) {
-    this.id = id;
     this.tab = tab;
+    this.grid = null;
   }
 
-  private UUID connection() {
-    return tab != null ? tab.id : id;
+  /** For the clauses of a table tab, one statement at a time, with the columns the tab read. */
+  Suggestions(TableTab grid) {
+    this.tab = null;
+    this.grid = grid;
   }
 
   /**
@@ -93,46 +86,36 @@ final class Suggestions {
     // The statement the caret writes in, with the comments around it, from the console's split.
     var around = tab.statements(provider).around(caret);
     var statement = text.substring(around.start(), around.end());
-    entries = make(s, provider, tab.database, statement, caret - around.start(), word, null, null);
+    entries = make(s, provider, tab.database, statement, caret - around.start(), word);
     made++;
     madeFor = text;
     madeAt = caret;
     madeOf = word;
     madeCase = keywordCase;
-    madeColumns = null;
     return entries;
   }
 
   /**
-   * The entries for the word before the caret in one statement, such as a synthetic {@code SELECT}
-   * built from a table tab's clause field, with the table and its known columns supplied directly.
+   * The entries for the word before the caret in one statement on the database, such as the
+   * {@code SELECT} a table tab's clause field is a part of.
    */
   List<Completion.Entry> at(
-      State s,
-      Provider provider,
-      String database,
-      String statement,
-      int caret,
-      String word,
-      Table table,
-      List<Column> columns) {
+      State s, Provider provider, String database, String statement, int caret, String word) {
     int at = Math.min(caret, statement.length());
     var keywordCase = s.settings.keywordCase();
     if (entries != null
         && statement.equals(madeFor)
         && at == madeAt
         && word.equals(madeOf)
-        && keywordCase == madeCase
-        && columns == madeColumns) {
+        && keywordCase == madeCase) {
       return entries;
     }
-    entries = make(s, provider, database, statement, at, word, table, columns);
+    entries = make(s, provider, database, statement, at, word);
     made++;
     madeFor = statement;
     madeAt = at;
     madeOf = word;
     madeCase = keywordCase;
-    madeColumns = columns;
     return entries;
   }
 
@@ -142,16 +125,9 @@ final class Suggestions {
   }
 
   private List<Completion.Entry> make(
-      State s,
-      Provider provider,
-      String database,
-      String statement,
-      int caret,
-      String word,
-      Table table,
-      List<Column> columns) {
+      State s, Provider provider, String database, String statement, int caret, String word) {
     var strategy = Language.of(provider).completion();
-    var known = new Known(s, provider, database, strategy.exactNames(provider), table, columns);
+    var known = new Known(s, provider, database, strategy.exactNames(provider));
     return Ranking.rank(
             strategy.candidates(known, statement, caret, word),
             Candidate::name,
@@ -183,30 +159,22 @@ final class Suggestions {
     private final boolean exact;
     private final Live live; // null while not connected
     private final String named; // the current database, or null
-    private final Table ownTable; // a table tab's own table, or null
-    private final List<Column> ownColumns; // its known columns, or null
+    private final UUID connection;
     private Node.OfDatabase console; // the node of that name, or null, once looked up
     private boolean looked;
 
-    private Known(
-        State s,
-        Provider provider,
-        String database,
-        boolean exact,
-        Table ownTable,
-        List<Column> ownColumns) {
+    private Known(State s, Provider provider, String database, boolean exact) {
       this.s = s;
       this.provider = provider;
       this.keywordCase = s.settings.keywordCase();
       this.exact = exact;
-      this.ownTable = ownTable;
-      this.ownColumns = ownColumns;
-      var opened = s.catalog.live(connection());
+      connection = tab != null ? tab.id : grid.id;
+      var opened = s.catalog.live(connection);
       var connected = opened != null && opened.phase instanceof Live.Connected c ? c : null;
       this.live = connected == null ? null : opened;
       schemas = connected != null && connected.schemas();
       named = !database.isEmpty() || connected == null ? database : connected.database();
-      var profile = s.profile(connection());
+      var profile = s.profile(connection);
       path = profile == null ? List.of("public") : List.of(profile.user(), "public");
     }
 
@@ -239,7 +207,7 @@ final class Suggestions {
     }
 
     private Node.OfDatabase database(String name) {
-      for (var node : read(new Node.Connection(connection()))) {
+      for (var node : read(new Node.Connection(connection))) {
         if (node instanceof Node.OfDatabase d && same(d.database().name(), name)) {
           return d;
         }
@@ -262,7 +230,7 @@ final class Suggestions {
      */
     List<Node> schemasOrDatabases() {
       if (!schemas) {
-        return read(new Node.Connection(connection()));
+        return read(new Node.Connection(connection));
       }
       var database = database();
       return database == null ? List.of() : read(database);
@@ -330,11 +298,6 @@ final class Suggestions {
      * current database; null for none.
      */
     Table table(String schema, String name) {
-      if (ownTable != null
-          && (schema == null || same(ownTable.container().name(), schema))
-          && same(ownTable.name(), name)) {
-        return ownTable;
-      }
       if (schema == null && schemas) {
         tables(); // reads the database's tables where it has not
         for (var first : path) {
@@ -365,13 +328,13 @@ final class Suggestions {
 
     /** The table's columns, with their types; none yet where it reads them now. */
     List<Column> columns(Table table) {
-      if (table.equals(ownTable) && ownColumns != null) {
-        return ownColumns;
+      if (grid != null && table.equals(grid.table) && grid.columns != null) {
+        return grid.columns;
       }
-      var columns = s.catalog.columns(connection(), table);
+      var columns = s.catalog.columns(connection, table);
       if (columns == null) {
         if (live != null) {
-          want(new Node.OfTable(connection(), table));
+          want(new Node.OfTable(connection, table));
         }
         return List.of();
       }

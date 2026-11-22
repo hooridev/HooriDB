@@ -28,7 +28,7 @@ import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
-import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
@@ -145,13 +145,17 @@ final class TableTab implements Tab {
 
   /** One clause field (WHERE or ORDER BY) with its caret and SQL completions. */
   private static final class Clause {
+    final String key;
+    final String keyword;
     String text = "";
     int caret;
     final Completion.State completion = new Completion.State().openAfter(".");
     final Suggestions suggestions;
 
-    Clause(UUID id) {
-      this.suggestions = new Suggestions(id);
+    Clause(TableTab tab, String key, String keyword) {
+      this.key = key;
+      this.keyword = keyword;
+      this.suggestions = new Suggestions(tab);
     }
 
     void close() {
@@ -171,8 +175,8 @@ final class TableTab implements Tab {
     this.id = id;
     this.table = table;
     this.presentation = new DocumentPresentation(initial);
-    this.where = new Clause(id);
-    this.order = new Clause(id);
+    this.where = new Clause(this, "where", "WHERE");
+    this.order = new Clause(this, "order", "ORDER BY");
   }
 
   /** A tab for the table or collection, starting in the configured view for documents. */
@@ -675,6 +679,7 @@ final class TableTab implements Tab {
       return;
     }
     filter = next;
+    fields = null; // read anew, also where the opening is asked again
     took = -1;
     got = 0;
     rows = 0;
@@ -759,7 +764,7 @@ final class TableTab implements Tab {
     El line = ConnectionColors.line(s.color(id));
     El content = col().grow(1).minSize(0, 0).child(top);
     if (!ofDocuments) {
-      content.child(Card.filters(filters(s, app, profile, connected)).shrink(0));
+      content.child(Card.filters(filters(s, app)).shrink(0));
     }
     content.child(line == null ? Divider.divider() : line);
     El note = note(s, connected);
@@ -781,7 +786,7 @@ final class TableTab implements Tab {
   }
 
   /** The WHERE and ORDER BY clause fields above the grid on an SQL server. */
-  private El filters(State s, App<State> app, ConnectionProfile profile, boolean connected) {
+  private El filters(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     return row()
         .key("filter-bar")
@@ -789,21 +794,13 @@ final class TableTab implements Tab {
         .minSize(0, 0)
         .gap(t.space().m())
         .align(Style.Align.CENTER)
-        .child(clauseGroup(s, app, profile, connected, where, "where", "WHERE", 3))
-        .child(clauseGroup(s, app, profile, connected, order, "order", "ORDER BY", 2));
+        .child(clauseGroup(s, app, where, 3))
+        .child(clauseGroup(s, app, order, 2));
   }
 
-  private El clauseGroup(
-      State s,
-      App<State> app,
-      ConnectionProfile profile,
-      boolean connected,
-      Clause clause,
-      String key,
-      String keyword,
-      float grow) {
+  private El clauseGroup(State s, App<State> app, Clause clause, float grow) {
     Theme t = Theme.CURRENT.get();
-    El heading = Label.label(Label.Variant.MUTED, keyword)
+    El heading = Label.label(Label.Variant.MUTED, clause.keyword)
         .font(t.type().mono().font().get())
         .fontSize(t.type().mono().size())
         .shrink(0);
@@ -814,24 +811,19 @@ final class TableTab implements Tab {
         .gap(t.space().s())
         .align(Style.Align.CENTER)
         .child(heading)
-        .child(clauseField(s, app, profile, connected, clause, key, keyword));
+        .child(clauseField(s, app, clause));
   }
 
-  private El clauseField(
-      State s,
-      App<State> app,
-      ConnectionProfile profile,
-      boolean connected,
-      Clause clause,
-      String key,
-      String keyword) {
+  private El clauseField(State s, App<State> app, Clause clause) {
     Theme t = Theme.CURRENT.get();
+    var profile = s.profile(id);
+    boolean connected = profile != null && s.catalog.connected(id);
     if (!connected && clause.completion.isOpen()) {
       clause.completion.close();
     }
     El field = TextField.textField(clause.text, null, connected ? v -> clause.text = v : null)
-        .key(key)
-        .label(keyword)
+        .key(clause.key)
+        .label(clause.keyword)
         .font(t.type().mono().font().get())
         .fontSize(t.type().mono().size())
         .codeWords()
@@ -844,45 +836,46 @@ final class TableTab implements Tab {
       var syntax = Syntax.of(profile.provider());
       field.highlight(syntax, syntax);
     }
-    if (connected) {
-      field.onKey(k -> {
-        if (k.modifiers() == 0 && (k.name().equals("Enter") || k.name().equals("NumpadEnter"))) {
-          apply(s);
-          return true;
-        }
-        return false;
-      });
-    }
     if (!clause.completion.isOpen()) {
       clause.suggestions.forget();
     }
-    if (connected && profile != null) {
-      var provider = profile.provider();
-      var prefix = "SELECT * FROM " + Rows.qualified(provider, table) + " AS " + Rows.ALIAS + " "
-          + keyword + " ";
-      El completing = Completion.complete(
-          app,
-          field,
-          clause.caret,
-          clause.completion,
-          word -> clause.suggestions.at(
-              s,
-              provider,
-              table.container().database().name(),
-              prefix + clause.text,
-              prefix.length() + Math.min(clause.caret, clause.text.length()),
-              word,
-              table,
-              columns));
-      var keys = completing.onKey();
-      completing.onKey(k -> {
-        if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
-          clause.suggestions.forget();
-        }
-        return keys != null && keys.test(k);
-      });
-    }
-    return field;
+    return connected ? completing(s, app, profile.provider(), clause, field) : field;
+  }
+
+  /**
+   * The field applies the clauses with Enter, and completes them as the console does a statement
+   * of the table's SELECT, whose list takes Enter first while it is open.
+   */
+  private El completing(State s, App<State> app, Provider provider, Clause clause, El field) {
+    field.onKey(k -> {
+      if (k.modifiers() == 0 && (k.name().equals("Enter") || k.name().equals("NumpadEnter"))) {
+        apply(s);
+        return true;
+      }
+      return false;
+    });
+    var prefix = "SELECT * FROM " + Rows.qualified(provider, table) + " AS " + Rows.ALIAS + " "
+        + clause.keyword + " ";
+    var database = table.container().database().name();
+    El completing = Completion.complete(
+        app,
+        field,
+        clause.caret,
+        clause.completion,
+        word -> clause.suggestions.at(
+            s,
+            provider,
+            database,
+            prefix + clause.text,
+            prefix.length() + Math.min(clause.caret, clause.text.length()),
+            word));
+    var keys = completing.onKey();
+    return completing.onKey(k -> {
+      if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
+        clause.suggestions.forget();
+      }
+      return keys != null && keys.test(k);
+    });
   }
 
   /** The toolbar's actions: how documents show, Open in console for SQL, and Refresh. */
@@ -1165,8 +1158,7 @@ final class TableTab implements Tab {
 
   /** How many rows or documents, and what the number rests on; empty before the first read. */
   String rowsText(boolean documents) {
-    if (fields == null
-        || (opening != null || failure != null) && rows == 0 && counted == Counted.ESTIMATED) {
+    if (fields == null) {
       return "";
     }
     var n = ConsoleTab.rows(rows, documents);
@@ -1208,10 +1200,11 @@ final class TableTab implements Tab {
               ? new El[0]
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
+    // The refused clauses beside, not in place of, why the applied ones could not be read.
+    El refusal =
+        refused == null ? null : Callout.callout(Callout.Kind.DANGER, "Clause refused", refused);
     if (failure == null) {
-      return refused == null
-          ? null
-          : Callout.callout(Callout.Kind.DANGER, "Clause refused", refused);
+      return refusal;
     }
     var words = switch (failure.problem()) {
       case GONE ->
@@ -1234,8 +1227,11 @@ final class TableTab implements Tab {
       case OTHER -> new String[] {"Could not be read", "The server could not read " + name + "."};
     };
     var text = CatalogTree.join(words[1], failure.detail());
-    return Callout.callout(
+    El failed = Callout.callout(
         Callout.Kind.DANGER, words[0], text, button(SECONDARY, "Try again", () -> open(s, true)));
+    return refusal == null
+        ? failed
+        : col().gap(Theme.CURRENT.get().space().s()).child(refusal).child(failed);
   }
 
   /** The rows in the grid, late: a row not read yet shows the grid's loading cells. */

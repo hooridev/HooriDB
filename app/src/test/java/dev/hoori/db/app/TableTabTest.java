@@ -1422,10 +1422,15 @@ class TableTabTest {
     assertEquals(
         before, servers.calls.size(), "Enter took the completion without querying the server");
     // ORDER BY also completes columns and keywords.
-    c.run(
-        app,
-        "press role=textbox label=\"ORDER BY\"\nframe\n"
-            + "type \"to\"\nframe\nadvance 1\nframe\nsnap order-complete\n");
+    c.run(app, """
+        press role=textbox label="ORDER BY"
+        frame
+        type "to"
+        frame
+        advance 1
+        frame
+        snap order-complete
+        """);
     var orderOptions = ConsoleEditorTest.options(c.tree("order-complete"));
     assertEquals("total", orderOptions.getFirst(), orderOptions.toString());
   }
