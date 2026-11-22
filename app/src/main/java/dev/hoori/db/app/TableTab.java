@@ -226,7 +226,7 @@ final class TableTab implements Tab {
     }
     if (counted != Counted.EXACT
         && (recount || estimate.isPresent() && estimate.getAsLong() < COUNT_BELOW)) {
-      counted(s);
+      counted(s, recount);
     }
   }
 
@@ -369,7 +369,7 @@ final class TableTab implements Tab {
       rows = Math.min(rows, from);
       more = false;
       ending = true;
-      counted(s);
+      counted(s, true);
     }
     pages.keySet().removeIf(p -> p * PAGE >= rows);
     documents.keySet().retainAll(pages.keySet());
@@ -409,8 +409,9 @@ final class TableTab implements Tab {
   }
 
   /**
-   * Count rows: the exact number, on the lane behind the pages; again, it stops counting. Not
-   * while the count finds where the table ends.
+   * Count rows: the exact number, on the database's count connection so that it never holds up the
+   * tree or other tables' pages; again, it stops counting. Not while the count finds where the
+   * table ends.
    */
   void count(State s) {
     if (ending) {
@@ -421,15 +422,28 @@ final class TableTab implements Tab {
       counting = null;
       return;
     }
-    counted(s);
+    counted(s, true);
   }
 
-  /** Makes sure the rows are counted: a count under way, whoever asked for it, goes on. */
-  private void counted(State s) {
+  /**
+   * Makes sure the rows are counted: a count under way, whoever asked for it, goes on.
+   *
+   * @param separate whether to run on the database's count connection, for a count that may take
+   *     long; false stays on the tree's lane for the cheap count of a small table at opening
+   */
+  private void counted(State s, boolean separate) {
+    counted(s, separate, separate);
+  }
+
+  // retry: whether a count connection found gone, as after the server closed it while idle, is
+  // replaced by a new one and the count asked again, once.
+  private void counted(State s, boolean separate, boolean retry) {
     if (closed || counting != null) {
       return;
     }
-    var lane = s.catalog.lane(s, id, table);
+    var lane = separate
+        ? s.catalog.counter(id, table.container().database().name())
+        : s.catalog.lane(s, id, table);
     if (lane == null) {
       return;
     }
@@ -456,7 +470,11 @@ final class TableTab implements Tab {
         },
         error -> {
           counting = null;
-          failed(s, error, false, live);
+          if (retry && lane.broken()) {
+            counted(s, true, false);
+          } else {
+            failed(s, error, false, live, !separate);
+          }
         });
   }
 
@@ -469,6 +487,10 @@ final class TableTab implements Tab {
    * @param again whether opening anew may help: not after the columns were just read
    */
   private void failed(State s, Exception error, boolean again, Live live) {
+    failed(s, error, again, live, true);
+  }
+
+  private void failed(State s, Exception error, boolean again, Live live, boolean onTree) {
     stop();
     if (closed) {
       return;
@@ -487,7 +509,7 @@ final class TableTab implements Tab {
       detail = CatalogTree.join(unopened(s, e), detail);
     }
     failure = new Failure(problem, detail);
-    if (problem == Problem.LOST || problem == Problem.DISCARDED) {
+    if (onTree && (problem == Problem.LOST || problem == Problem.DISCARDED)) {
       s.catalog.lost(s, live, detail, problem == Problem.DISCARDED);
     }
   }
@@ -500,7 +522,7 @@ final class TableTab implements Tab {
     if (columns == null || fields == null) {
       open(s, false);
     } else if (ending) {
-      counted(s); // the end was being found: no page past it is read until the count says
+      counted(s, true); // the end was being found: no page past it is read until the count says
     } else if (presentation.isGrid()) {
       want(s, first, last);
     } else {

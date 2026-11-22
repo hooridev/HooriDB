@@ -242,7 +242,7 @@ final class DriversDialog {
           .gap(t.space().s())
           .align(Style.Align.CENTER)
           .role("status")
-          .label("Reading the versions of " + kind.name())
+          .label("Reading the downloaded versions of " + kind.name())
           .child(Progress.spinner())
           .child(label(Label.Variant.MUTED, "Reading…"))));
     } else if (read == null) {
@@ -327,10 +327,15 @@ final class DriversDialog {
     boolean can = target != null && !downloaded(kind, target) && kind.work == null;
     El download = button(SECONDARY, "Download", can ? () -> download(s, kind) : null)
         .label("Download " + kind.name());
-    return Group.row(
-        "Download",
-        note,
-        row().gap(t.space().s()).align(Style.Align.CENTER).child(box).child(download));
+    El controls = row().gap(t.space().s()).align(Style.Align.CENTER);
+    if (versions.readingChoices()) {
+      controls.child(col()
+          .role("status")
+          .label("Reading the versions of " + kind.name())
+          .child(Progress.spinner()));
+    }
+    controls.child(box).child(download);
+    return Group.row("Download", note, controls);
   }
 
   private El downloading(Kind kind) {

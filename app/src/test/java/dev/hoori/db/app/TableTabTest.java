@@ -21,6 +21,7 @@ import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -738,22 +739,67 @@ class TableTabTest {
     assertEquals("", tabs(c.tree("edited")));
   }
 
-  /** A count the user stops ends the connection where core gave it up; the tree says so. */
+  /** A read the user scrolls past ends the connection where core gave it up; the tree says so. */
   @Test
   void aConnectionGivenUpByAnyCallIsLostAlsoForTheCallsBehindIt() throws Exception {
     servers.rows(BIG, 1_000_000, OptionalLong.of(1_000_000));
     var app = shop();
     c.run(app, table("big") + SETTLE);
-    var key = "count " + BIG;
+    var key = "read " + BIG + " 500000-500200";
     servers.hold(key);
     servers.fail(key, FakeServers.queryFailure(QueryException.Failure.ABORTED));
-    c.run(app, "advance 1\nframe\npress #count\nframe\n");
+    c.run(app, scroll(500_000));
     eventually(() -> servers.calls.contains(key));
-    c.run(app, open("customers") + "advance 1\nframe\npress #count\nframe\n" + SETTLE);
+    c.run(app, open("customers") + scroll(0) + SETTLE);
     c.run(app, SETTLE + "snap lost\n");
     String lost = c.tree("lost");
     assertEquals(List.of("shop-prod", "  Disconnected"), rows(lost));
     assertTrue(lost.contains("as the server did not stop a cancelled read"), lost);
+  }
+
+  /**
+   * A long count runs on a connection of its own per database: while it is held, the tree can
+   * still open a level of the same database, and its loss does not disconnect the tree.
+   */
+  @Test
+  void aHeldCountDoesNotHoldTheTreeOfTheSameDatabase() throws Exception {
+    servers.rows(BIG, 1_000_000, OptionalLong.of(1_000_000));
+    var app = shop();
+    c.run(app, table("big") + SETTLE);
+    assertEquals(
+        1,
+        servers.calls.stream().filter(("open " + PG + "/shop")::equals).count(),
+        "opening a large table opens only the tree's connection");
+    var key = "count " + BIG;
+    var held = servers.hold(key);
+    c.run(app, "advance 1\nframe\npress #count\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    // While the count is held, the tree still opens customers on the same database.
+    c.run(app, open("customers"));
+    var columns = "columns " + PG + "/shop.public.customers";
+    app.await("read customers", Duration.ofSeconds(10));
+    c.run(app, "frame\nadvance 1\nframe\nsnap while-counting\n");
+    String tree = c.tree("while-counting");
+    assertTrue(rows(tree).contains("        id"), rows(tree).toString());
+    assertTrue(servers.linked.contains("1 " + columns), servers.linked.toString());
+    assertTrue(servers.linked.contains("2 " + key), servers.linked.toString());
+    held.countDown();
+    c.run(app, SETTLE + "snap counted\n");
+    assertTrue(status(c.tree("counted")).contains("\"1,000,000 rows\""), c.tree("counted"));
+    assertEquals(
+        2,
+        servers.calls.stream().filter(("open " + PG + "/shop")::equals).count(),
+        servers.calls.toString());
+    // A count connection that is lost, as one the server closed while idle, is replaced and the
+    // count asked again, once; its loss leaves the tree's connection intact.
+    servers.fail(key, FakeServers.queryFailure(QueryException.Failure.CONNECTION_LOST));
+    c.run(app, "advance 1\nframe\npress #count\nframe\n" + SETTLE);
+    assertTrue(app.state().catalog.connected(SHOP.id()));
+    assertEquals(
+        3,
+        servers.calls.stream().filter(("open " + PG + "/shop")::equals).count(),
+        servers.calls.toString());
+    assertEquals(2, servers.failed.stream().filter(key::equals).count(), servers.failed.toString());
   }
 
   // The paging and the count
@@ -819,9 +865,10 @@ class TableTabTest {
     String jumped = c.tree("jumped");
     assertTrue(status(jumped).contains("\"1,000 rows\""), jumped);
     assertTrue(cell(jumped, 999, 0).contains("\"1000\""), jumped);
-    // The empty pages where the grid was, one count, and the pages at the end.
+    // The empty pages where the grid was, the count connection's open, one count, and the pages
+    // at the end.
     assertEquals(1, after.stream().filter(x -> x.startsWith("count")).count(), after.toString());
-    assertTrue(after.size() <= 7, after.toString());
+    assertTrue(after.size() <= 8, after.toString());
   }
 
   @Test
@@ -847,18 +894,32 @@ class TableTabTest {
     var app = shop();
     var key = "read " + ORDERS + " 0-200";
     var held = servers.hold(key);
-    c.run(
-        app,
-        open("orders") + SETTLE + table("orders")
-            + "frame\nadvance 1\nframe\npress #count\nframe\n");
+    c.run(app, open("orders") + SETTLE + table("orders") + "frame\n");
     eventually(() -> servers.calls.contains(key));
-    // The read that runs is interrupted, which lets the lane go on at once: the count behind it
-    // has left the lane by then.
     c.run(app, "press #close-0\nframe\n");
     eventually(() -> servers.interrupted.contains(key));
     held.countDown();
     c.run(app, SETTLE);
     assertFalse(servers.calls.contains("count " + ORDERS), servers.calls.toString());
+  }
+
+  @Test
+  void aTabClosedWhileReadingNeverStartsItsPagesAhead() throws Exception {
+    servers.rows(BIG, 1_000_000, OptionalLong.of(1_000_000));
+    var app = shop();
+    c.run(app, table("big") + SETTLE);
+    var key = "read " + BIG + " 500000-500200";
+    var held = servers.hold(key);
+    c.run(app, scroll(500_000));
+    eventually(() -> servers.calls.contains(key));
+    // The read that runs is interrupted, which lets the lane go on at once: the pages ahead behind
+    // it have left the lane by then.
+    c.run(app, "press #close-0\nframe\n");
+    eventually(() -> servers.interrupted.contains(key));
+    held.countDown();
+    c.run(app, SETTLE);
+    assertFalse(servers.calls.contains("read " + BIG + " 500200-500400"), servers.calls.toString());
+    assertFalse(servers.calls.contains("read " + BIG + " 499600-499800"), servers.calls.toString());
   }
 
   /** The row more that asks whether there are more is not counted as one that is there. */

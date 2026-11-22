@@ -32,6 +32,8 @@ final class Live {
   final Map<String, Lane> lanes = new HashMap<>(); // further connections, by database
   // The connections of the consoles' estimates, by database on PostgreSQL, else one under "".
   final Map<String, Lane> planners = new HashMap<>();
+  // The connections for counts that may take long, by database on PostgreSQL, else one under "".
+  final Map<String, Lane> counters = new HashMap<>();
   final Map<Node, CatalogTree.Level> levels = new HashMap<>();
   // The background reads of go to table and of completions: a database's tables, a table's
   // columns.

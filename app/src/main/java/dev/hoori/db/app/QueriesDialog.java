@@ -23,7 +23,6 @@ import dev.hoori.db.core.connection.QueryStore;
 import dev.hoori.db.core.connection.SavedQuery;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -179,6 +178,7 @@ final class QueriesDialog {
               : "Save query, beside Run, keeps what the editor holds under a name.",
           null);
     } else {
+      var zone = s.zone;
       var columns = List.of(
           new DataGrid.Column(
                   "Name",
@@ -196,8 +196,7 @@ final class QueriesDialog {
                   "Saved",
                   6 * unit,
                   DataGrid.DataType.DATE_TIME,
-                  row -> WHEN.text(
-                      LocalDateTime.ofInstant(queries.get(row).saved(), ZoneId.systemDefault())))
+                  row -> WHEN.text(LocalDateTime.ofInstant(queries.get(row).saved(), zone)))
               .sortable(false));
       list = DataGrid.dataGrid(
               columns,

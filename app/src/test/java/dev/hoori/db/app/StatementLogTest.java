@@ -1,8 +1,10 @@
 package dev.hoori.db.app;
 
+import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.PASSWORD;
 import static dev.hoori.db.app.ConnectionsTest.line;
@@ -10,6 +12,7 @@ import static dev.hoori.db.app.ConsoleTest.COUNT;
 import static dev.hoori.db.app.ConsoleTest.MISSING;
 import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.FakeServers.session;
 import static dev.hoori.db.app.TableTabTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -21,6 +24,9 @@ import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.log.Sent;
+import dev.hoori.db.core.monitor.Block;
+import dev.hoori.db.core.monitor.Counter;
+import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.sql.Secrets;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -340,5 +346,42 @@ class StatementLogTest {
     second.state().requestClose();
     c.run(second, "frame\n");
     assertTrue(second.windows().all().isEmpty(), "earlier unsaved entries do not hold Exit");
+  }
+
+  @Test
+  void theServerMonitorsEndsAreLoggedAsMonitorWhileItsReadsAreNot() throws Exception {
+    servers.sessions(PG, session("101", "ada", "SELECT pg_sleep(60)"), session("102", "bob", ""));
+    servers.variables(PG, new ServerVariable("work_mem", "4MB", "default"));
+    servers.counters(PG, new Counter("commits", "42"));
+    servers.locks(PG, new Block("101", "102", "public.orders", "ShareLock"));
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START + open("shop-prod") + SETTLE + menu("shop-prod", "Server monitor") + SETTLE
+            + "press role=radio label=\"Variables\"\n" + MonitorTabTest.SHOWN + SETTLE
+            + "press role=radio label=\"Status\"\n" + MonitorTabTest.SHOWN + SETTLE
+            + "press role=radio label=\"Locks\"\n" + MonitorTabTest.SHOWN + SETTLE
+            + "press role=radio label=\"Sessions\"\n" + MonitorTabTest.SHOWN + SETTLE
+            + MonitorTabTest.pick(2) + "press #end-session\n" + MonitorTabTest.SHOWN
+            + "press #question-go\n" + MonitorTabTest.SHOWN + SETTLE + TOGGLE
+            + filter("Part", "Monitor") + "snap monitor\n");
+    var entries = app.state().statements.entries();
+    assertTrue(
+        entries.stream()
+            .anyMatch(e -> e.sent().purpose() == Purpose.MONITOR
+                && e.sent().text().equals("end " + PG + " 102")),
+        entries.toString());
+    assertFalse(
+        entries.stream()
+            .anyMatch(e -> e.sent().text().startsWith("sessions ")
+                || e.sent().text().startsWith("variables ")
+                || e.sent().text().startsWith("status ")
+                || e.sent().text().startsWith("locks ")),
+        entries.toString());
+    var log = panel(c.tree("monitor"));
+    assertTrue(log.contains("\"Monitor\""), log);
+    assertTrue(log.contains("\"end " + PG + " 102\""), log);
+    assertFalse(log.contains("\"Tree\""), log);
   }
 }
