@@ -1,7 +1,6 @@
 package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -48,25 +47,20 @@ public final class EditableQuery {
     if (provider.keepsDocuments() || Statements.split(sql, provider).size() != 1) {
       return Optional.empty();
     }
-    var shapes = new ArrayList<Shape>();
+    // Every reading must find the same code: a server may run some executable comments and not
+    // others, a mix that no single reading shows, and a string may end elsewhere by its escapes.
+    Shape shape = null;
     for (var reading : Tokens.readings(provider)) {
       var found = singleTable(Tokens.of(sql, provider, reading));
-      if (found == null) {
+      if (found == null || shape != null && !shape.equals(found)) {
         return Optional.empty();
       }
-      shapes.add(found);
+      shape = found;
     }
-    // Positions of subqueries hold only where every reading finds the same select list: a server
-    // may run some executable comments and not others, which no single reading shows.
-    var first = shapes.getFirst();
-    if (shapes.stream().anyMatch(shape -> !shape.list().subqueries().isEmpty())
-        && shapes.stream().anyMatch(shape -> !shape.equals(first))) {
-      return Optional.empty();
-    }
-    return Optional.of(first.list());
+    return Optional.of(shape.list());
   }
 
-  // The select list, and the code before the FROM it ends at.
+  // The select list, and the code of the whole statement.
   private record Shape(List<String> code, SelectList list) {}
 
   /**
@@ -119,7 +113,7 @@ public final class EditableQuery {
         item++;
       }
     }
-    var code = list.stream().map(Tokens.Token::text).toList();
+    var code = tokens.stream().map(Tokens.Token::text).toList();
     return new Shape(code, new SelectList(item + 1, Set.copyOf(subqueries)));
   }
 
@@ -238,7 +232,13 @@ public final class EditableQuery {
   }
 
   private static boolean createsTemporaryTable(List<Tokens.Token> tokens) {
-    if (!tokens.isEmpty() && (tokens.getFirst().is("CALL") || tokens.getFirst().is("EXECUTE"))) {
+    // MariaDB's BEGIN NOT ATOMIC runs a block of statements.
+    if (!tokens.isEmpty()
+        && (tokens.getFirst().is("CALL")
+            || tokens.getFirst().is("EXECUTE")
+            || tokens.getFirst().is("BEGIN")
+                && tokens.size() > 1
+                && tokens.get(1).is("NOT"))) {
       return true;
     }
     for (int i = 0; i < tokens.size(); i++) {

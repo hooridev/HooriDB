@@ -55,8 +55,7 @@ class EditableQueryTest {
       allowed(p, "/* leading */ SELECT id FROM customer -- trailing\n;");
     }
     allowed(POSTGRESQL, "SELECT DISTINCT ON (id) id, name FROM customer ORDER BY id");
-    allowed(MARIADB, "SELECT /*!40001 SQL_NO_CACHE */ id, name FROM customer");
-    allowed(MYSQL, "SELECT /*!40001 SQL_NO_CACHE */ id, name FROM customer");
+    allowed(MARIADB, "SELECT /*!40001 */ id, name FROM customer");
   }
 
   @Test
@@ -91,6 +90,11 @@ class EditableQueryTest {
           p,
           "SELECT c.id FROM customer c /*!99999 WHERE ( */"
               + " /*!80000 JOIN purchase p ON p.customer_id = c.id */");
+      refused(
+          p,
+          "SELECT c.id FROM customer c /*!99999 WHERE ( */"
+              + " /*!80000 JOIN purchase p ON p.customer_id = c.id */ /*!99999 ) */");
+      refused(p, "SELECT /*!40001 SQL_NO_CACHE */ id, name FROM customer");
     }
   }
 
@@ -221,14 +225,14 @@ class EditableQueryTest {
   }
 
   @Test
-  void executableCommentsMustPassBothAsCodeAndAsComment() {
+  void executableCommentsWithCodeRefuse() {
     for (var p : new Provider[] {MARIADB, MYSQL}) {
       refused(p, "SELECT id, name FROM customer /*! , purchase */");
       refused(p, "SELECT id, name FROM customer /*!50000 FOR UPDATE */");
       refused(p, "SELECT id, name FROM customer /*! UNION SELECT 1, 'a' */");
       refused(p, "SELECT id, name FROM customer /*! ; SELECT 1 */");
       refused(p, "SELECT id, name /*! FROM customer */");
-      allowed(p, "SELECT id, name FROM customer /*! WHERE id = 1 */");
+      refused(p, "SELECT id, name FROM customer /*! WHERE id = 1 */");
     }
     refused(MARIADB, "SELECT id, name FROM customer /*M!100500 FOR UPDATE */");
     allowed(MYSQL, "SELECT id, name FROM customer /*M! FOR UPDATE */");
@@ -248,6 +252,8 @@ class EditableQueryTest {
       temp(p, "SELECT 1; CREATE TEMPORARY TABLE customer (id int)");
       temp(p, "CALL make_tables()");
       temp(p, "EXECUTE stmt");
+      temp(p, "BEGIN NOT ATOMIC CALL make_tables(); END");
+      notTemp(p, "BEGIN");
       notTemp(p, "CREATE TABLE customer (id int)");
       notTemp(p, "DROP TEMPORARY TABLE customer");
       notTemp(p, "CREATE TEMPORARY SEQUENCE s");
