@@ -99,7 +99,7 @@ class ConsoleEditorTest {
   /** What the console's editor underlines in the last frame, or null for nothing. */
   Failure.Place underlined(App<State> app) throws Exception {
     console.c.run(app, "snap underlined\n");
-    var underline = Pattern.compile(" underline (\\d+)-(\\d+)")
+    var underline = Pattern.compile(" squiggle (\\d+)-(\\d+)")
         .matcher(line(console.c.tree("underlined"), "#sql"));
     return underline.find()
         ? new Failure.Place(
@@ -122,7 +122,7 @@ class ConsoleEditorTest {
     String failed = console.c.tree("failed");
     assertEquals(new Failure.Place(at, at + 5), underlined(app));
     assertEquals(String.valueOf(at), caret(failed), line(failed, "#sql"));
-    assertTrue(line(failed, "#sql").contains("underline " + at + "-" + (at + 5)), failed);
+    assertTrue(line(failed, "#sql").contains("squiggle " + at + "-" + (at + 5)), failed);
     assertTrue(failed.contains("\"syntax error at or near \\\"WHERE\\\"\""), failed);
     // Typing drops it, and the message stays.
     console.c.run(app, "type \" \"\nframe\nsnap typed\n");
@@ -537,7 +537,7 @@ class ConsoleEditorTest {
             + type(text).replaceFirst("press #sql\n", "") + RUN_ALL + "snap failed\n");
     assertEquals(List.of("order_totals", "orders"), options(window("there")));
     assertTrue(
-        line(window("failed"), "#sql").contains("underline " + at + "-" + (at + 5)),
+        line(window("failed"), "#sql").contains("squiggle " + at + "-" + (at + 5)),
         window("failed"));
     assertEquals(String.valueOf(at), caret(window("failed")), line(window("failed"), "#sql"));
   }

@@ -150,7 +150,7 @@ class ValuePanelTest {
             + "snap invalid\n");
     var editor = editor(t.c.tree("invalid"));
     assertTrue(editor.contains("\"" + dumped("{\"a\": }") + "\""), editor);
-    assertTrue(editor.contains("underline 6-7"), editor);
+    assertTrue(editor.contains("squiggle 6-7"), editor);
   }
 
   @Test
