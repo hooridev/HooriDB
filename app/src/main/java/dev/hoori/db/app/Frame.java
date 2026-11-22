@@ -655,6 +655,9 @@ final class Frame {
                     s.drivers == null || !free
                         ? null
                         : inMain(s, () -> s.dialogs.driverList = DriversDialog.open(s))),
+                Menu.item("Settings…", s.guard.exiting() ? null : () -> SettingsWindow.open(s))
+                    .icon(Symbol.SETTINGS)
+                    .shortcut(Key.CONTROL, ","),
                 Menu.separator(),
                 Menu.item("Close tab", close).icon(Symbol.DISMISS).shortcut(Key.CONTROL, "W"),
                 Menu.separator(),
