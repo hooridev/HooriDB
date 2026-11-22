@@ -789,11 +789,13 @@ final class FakeServers implements Servers {
         if (!now.equals(asked)) {
           return null;
         }
-        var fields = columns.stream()
-            .map(c -> new Field(c.name(), c.type(), kind(c.type())))
-            .toList();
-        var given = values.get(path);
         var docs = documents.get(path);
+        var fields = docs != null
+            ? Values.fields(columns)
+            : columns.stream()
+                .map(c -> new Field(c.name(), c.type(), kind(c.type())))
+                .toList();
+        var given = values.get(path);
         long count = docs != null
             ? docs.size()
             : given != null ? given.size() : counts.getOrDefault(path, 3L);
