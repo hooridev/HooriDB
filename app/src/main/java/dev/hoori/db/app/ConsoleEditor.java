@@ -3,7 +3,7 @@ package dev.hoori.db.app;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
-import com.rethinkj.ui.kit.CodeEditor;
+import com.rethinkj.ui.editor.CodeEditor;
 import com.rethinkj.ui.kit.Completion;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
