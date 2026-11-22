@@ -6,6 +6,7 @@ import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.ConsoleHistoryTest.CLEAR;
 import static dev.hoori.db.app.ConsoleTest.ORDERS;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.TableTabTest.cell;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -14,6 +15,7 @@ import dev.hoori.db.core.connection.QueryStore;
 import dev.hoori.db.core.connection.SavedQuery;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
@@ -53,8 +55,9 @@ class SavedQueriesTest {
 
   @BeforeEach
   void setUp(TestInfo test) throws Exception {
-    boolean cleanup = test.getTestMethod().orElseThrow().getName().startsWith("theQueriesOf");
-    new QueryStore(dir.resolve("config")).save(cleanup ? List.of(ORPHAN, KEPT) : List.of(ORPHAN));
+    var name = test.getTestMethod().orElseThrow().getName();
+    boolean withKept = name.startsWith("theQueriesOf") || name.contains("ConfiguredZone");
+    new QueryStore(dir.resolve("config")).save(withKept ? List.of(ORPHAN, KEPT) : List.of(ORPHAN));
     k.dir = dir;
     k.setUp();
     c = k.c;
@@ -138,5 +141,19 @@ class SavedQueriesTest {
     c.run(app, "press #delete-query-confirm\nframe\nadvance 1\nframe\n" + SETTLE + "snap gone\n");
     assertTrue(app.state().keeping.queries.isEmpty());
     assertTrue(c.tree("gone").contains("No saved queries yet"), c.tree("gone"));
+  }
+
+  @Test
+  void savedQueriesShowsItsTimesInTheConfiguredZone() throws Exception {
+    var app = k.console(SHOP);
+    app.state().zone = ZoneId.of("Asia/Tokyo");
+    c.run(app, SAVED + "snap tokyo\n");
+    var tokyo = c.tree("tokyo").substring(c.tree("tokyo").indexOf("#queries-dialog"));
+    assertTrue(cell(tokyo, 0, 2).contains("2026-01-01 09:00:00"), tokyo);
+    app.state().zone = ZoneId.of("America/New_York");
+    app.invalidate();
+    c.run(app, "frame\nsnap ny\n");
+    var ny = c.tree("ny").substring(c.tree("ny").indexOf("#queries-dialog"));
+    assertTrue(cell(ny, 0, 2).contains("2025-12-31 19:00:00"), ny);
   }
 }

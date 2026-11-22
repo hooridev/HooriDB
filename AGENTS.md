@@ -71,14 +71,14 @@ from and clears; Save query keeps the selection, or else the whole text, under a
 (`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. The
 statement log, a panel below the tabs that starts collapsed and that the status line, the View menu
 and the palette open, lists what every connection sent, from the tree, a table's grid, the
-estimates, the transactions and the consoles, with its time, connection, part, duration and
-outcome, and the chosen statement whole in its dialect's colors; it filters by connection, part
-and outcome, searches, copies a statement, clears, and can be turned off. A password in a statement
-or a MongoDB command is masked before it is logged, and the log is kept beside the workspace
-(`statement-log.jsonl`, up to 8 MB and one older file, owner-only), written in batches. A
-connection to MongoDB goes through its Java driver, downloaded as the JDBC drivers are, with its
-parts beside it, and through a bridge of core's that is loaded beside the driver; its host may name
-a DNS SRV record that lists the servers, as `mongodb+srv://` does, with TLS on by default and no
+estimates, the transactions, the consoles and the server monitor's cancels and ends, with its time,
+connection, part, duration and outcome, and the chosen statement whole in its dialect's colors; it
+filters by connection, part and outcome, searches, copies a statement, clears, and can be turned
+off. A password in a statement or a MongoDB command is masked before it is logged, and the log is
+kept beside the workspace (`statement-log.jsonl`, up to 8 MB and one older file, owner-only),
+written in batches. A connection to MongoDB goes through its Java driver, downloaded as the JDBC
+drivers are, with its parts beside it, and through a bridge of core's that is loaded beside the
+driver; its host may name a DNS SRV record that lists the servers, as `mongodb+srv://` does, with TLS on by default and no
 port; its user may be defined in a database other than `admin`, which it names (`authSource`); it
 may be read-only, which sends only commands that read, as find, aggregate without `$out` or `$merge`
 and counts, and refuses the others unsent. Its databases and collections show in the tree, with the
@@ -206,8 +206,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   its purpose, which records it for the recorder a caller bound and masks a password first, as the
   dialect's `passwordWords` and `DocumentDialect.secretFields` say; a new send goes through it too.
   Not yet: the writes of `data.Changes` and the reads of the rows dialects' `changeable`, which
-  nothing in the app calls so far, and what the server monitor (`core.monitor`) sends.
-  The app binds it per call on a lane's link (`Recorded`), so recording never waits for the disk.
+  nothing in the app calls so far. The app binds it per call on a lane's link (`Recorded`), so
+  recording never waits for the disk; it binds none for the server monitor's reads, which repeat
+  every few seconds and would fill the log, only for its cancels and ends (`Purpose.MONITOR`).
 - The shell's syntax is lexed in one place, core's `dev.hoori.db.core.document.Lexer`: splitting
   statements (`Script.split`, `Statements`), reading them (`Shell`), coloring (`ShellSyntax`, which
   maps its tokens to `Theme.Code`), laying out (`Layout`, which Control+Alt+L runs) and completing
@@ -275,10 +276,11 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `next <host> <sql> <from>` for each further one, and a held one that is interrupted ends with a
   cancelled failure, as core's does. A console opens its own connection behind the tree's, so a
   server's `open` key is called twice, and once more where the first estimate of a read runs, on the
-  connection that only estimates use. Each fake connection keeps a transaction and auto-commit as
-  the servers do: `BEGIN`, `COMMIT` and `ROLLBACK` are known statements, and on MariaDB and MySQL
-  `SET autocommit=0` or `=1` and `SET completion_type=1`; auto-commit off opens a transaction with
-  any other statement, as `begins` does with one; an error fails PostgreSQL's, a failed COMMIT ends
+  connection that only estimates use, and once more where a table's rows are counted other than at
+  its opening, on the connection that only such counts use. Each fake connection keeps a
+  transaction and auto-commit as the servers do: `BEGIN`, `COMMIT` and `ROLLBACK` are known
+  statements, and on MariaDB and MySQL `SET autocommit=0` or `=1` and `SET completion_type=1`;
+  auto-commit off opens a transaction with any other statement, as `begins` does with one; an error fails PostgreSQL's, a failed COMMIT ends
   it there and leaves MariaDB's and MySQL's unless it is of class 40 (`rolledBack`, `deadlock()`),
   which rolls it back, DDL commits theirs, and `rollBackBehind` ends it as a server does by itself;
   a `ROLLBACK TO` a savepoint leaves it open. The server's auto-commit and the driver's idea of it

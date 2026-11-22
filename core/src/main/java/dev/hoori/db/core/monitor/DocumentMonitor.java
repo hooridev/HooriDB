@@ -3,6 +3,7 @@ package dev.hoori.db.core.monitor;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.DocumentException;
 import dev.hoori.db.core.document.DocumentSession;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.QueryException;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,7 +51,8 @@ public record DocumentMonitor(DocumentSession session) implements Monitor {
     }
     var monitor = this.session.dialect().monitor();
     try {
-      this.session.command(monitor.database(), monitor.cancel(session.operation()));
+      this.session.command(
+          Purpose.MONITOR, monitor.database(), monitor.cancel(session.operation()));
       return true;
     } catch (DocumentException e) {
       throw DocumentSession.query(e);

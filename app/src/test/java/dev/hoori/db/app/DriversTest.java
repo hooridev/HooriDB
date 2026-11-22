@@ -390,6 +390,40 @@ class DriversTest {
   }
 
   @Test
+  void theDriversDialogShowsDownloadedVersionsWhileTheRepositoryIsHeld() throws Exception {
+    downloaded(FakeDrivers.VERSION, OLD);
+    var app = app();
+    run(app, START);
+    repository.opening = new CountDownLatch(1);
+    run(app, """
+        press role=menuitem label="File"
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Drivers…"
+        frame
+        advance 1
+        frame
+        """);
+    app.await("read the downloaded versions of a driver", Duration.ofSeconds(10));
+    CatalogTreeTest.eventually(() -> repository.listings(Provider.POSTGRESQL) == 1);
+    run(app, "frame\nadvance 1\nframe\nsnap held\n");
+    assertEquals(1, repository.opening.getCount(), "the repository read is still held");
+    String held = tree("held");
+    assertTrue(block(held, "\"42.7.14\"").contains("\"" + FakeDrivers.SIZE + "\""), held);
+    assertTrue(block(held, "\"" + OLD + "\"").contains("\"" + FakeDrivers.SIZE + "\""), held);
+    assertTrue(
+        held.contains("role=status label=\"Reading the versions of PostgreSQL JDBC\""), held);
+    assertFalse(held.contains("Reading the downloaded versions of"), held);
+    repository.opening.countDown();
+    run(app, SETTLE + "snap loaded\n");
+    String loaded = tree("loaded");
+    assertTrue(
+        block(loaded, "\"42.7.14\"").contains("\"" + FakeDrivers.SIZE + ", recommended\""), loaded);
+    assertFalse(loaded.contains("Reading the versions of"), loaded);
+  }
+
+  @Test
   void aDownloadShowsItsProgressAndCanBeCancelled() throws Exception {
     repository.reading = new CountDownLatch(1);
     var app = app();

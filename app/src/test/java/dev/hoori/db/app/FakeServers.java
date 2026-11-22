@@ -1080,35 +1080,38 @@ final class FakeServers implements Servers {
         @Override
         public List<ServerSession> sessions() throws QueryException {
           var key = "sessions " + host;
-          try {
-            note(key);
-            call(key, queryFailure(QueryException.Failure.CANCELLED));
-          } catch (QueryException e) {
-            throw e;
-          } catch (Exception e) {
-            throw queryFailure(QueryException.Failure.OTHER);
-          }
-          done.add(key);
-          var all = new ArrayList<ServerSession>();
-          all.add(new ServerSession(
-              String.valueOf(number),
-              "",
-              "",
-              true,
-              true,
-              "hoori",
-              "HooriDB (10.0.0.1:5000)",
-              "shop",
-              "active",
-              "SELECT the sessions",
-              Duration.ZERO,
-              ""));
-          // Masked as core's monitors mask them, which keeps each statement's digest.
-          var provider = servers.get(host).provider();
-          for (var session : FakeServers.this.sessions.getOrDefault(host, List.of())) {
-            all.add(session.withStatement(Credentials.mask(session.statement(), provider)));
-          }
-          return all;
+          return Journal.sql(
+              made.provider(), Purpose.MONITOR, key, list -> Outcome.rows(list.size()), () -> {
+                try {
+                  note(key);
+                  call(key, queryFailure(QueryException.Failure.CANCELLED));
+                } catch (QueryException e) {
+                  throw e;
+                } catch (Exception e) {
+                  throw queryFailure(QueryException.Failure.OTHER);
+                }
+                done.add(key);
+                var all = new ArrayList<ServerSession>();
+                all.add(new ServerSession(
+                    String.valueOf(number),
+                    "",
+                    "",
+                    true,
+                    true,
+                    "hoori",
+                    "HooriDB (10.0.0.1:5000)",
+                    "shop",
+                    "active",
+                    "SELECT the sessions",
+                    Duration.ZERO,
+                    ""));
+                // Masked as core's monitors mask them, which keeps each statement's digest.
+                var provider = servers.get(host).provider();
+                for (var session : FakeServers.this.sessions.getOrDefault(host, List.of())) {
+                  all.add(session.withStatement(Credentials.mask(session.statement(), provider)));
+                }
+                return all;
+              });
         }
 
         @Override
@@ -1130,15 +1133,18 @@ final class FakeServers implements Servers {
         }
 
         private void read(String key) throws QueryException {
-          try {
-            note(key);
-            call(key, queryFailure(QueryException.Failure.CANCELLED));
-          } catch (QueryException e) {
-            throw e;
-          } catch (Exception e) {
-            throw queryFailure(QueryException.Failure.OTHER);
-          }
-          done.add(key);
+          Journal.sql(made.provider(), Purpose.MONITOR, key, _ -> Outcome.DONE, () -> {
+            try {
+              note(key);
+              call(key, queryFailure(QueryException.Failure.CANCELLED));
+            } catch (QueryException e) {
+              throw e;
+            } catch (Exception e) {
+              throw queryFailure(QueryException.Failure.OTHER);
+            }
+            done.add(key);
+            return null;
+          });
         }
 
         @Override
@@ -1153,32 +1159,34 @@ final class FakeServers implements Servers {
 
         private boolean stop(String key, ServerSession session, boolean idle)
             throws QueryException {
-          try {
-            note(key);
-            call(key, queryFailure(QueryException.Failure.CANCELLED));
-          } catch (QueryException e) {
-            throw e;
-          } catch (Exception e) {
-            throw queryFailure(QueryException.Failure.OTHER);
-          }
-          done.add(key);
-          var now = new ArrayList<ServerSession>();
-          boolean found = false;
-          for (var other : FakeServers.this.sessions.getOrDefault(host, List.of())) {
-            // As a server that checks the session's start, and for a cancel its statement.
-            if (!other.id().equals(session.id())
-                || !other.started().equals(session.started())
-                || idle && !other.operation().equals(session.operation())) {
-              now.add(other);
-              continue;
+          return Journal.sql(made.provider(), Purpose.MONITOR, key, found -> Outcome.DONE, () -> {
+            try {
+              note(key);
+              call(key, queryFailure(QueryException.Failure.CANCELLED));
+            } catch (QueryException e) {
+              throw e;
+            } catch (Exception e) {
+              throw queryFailure(QueryException.Failure.OTHER);
             }
-            found = true;
-            if (idle) {
-              now.add(FakeServers.session(other.id(), other.user(), "", other.started()));
+            done.add(key);
+            var now = new ArrayList<ServerSession>();
+            boolean found = false;
+            for (var other : FakeServers.this.sessions.getOrDefault(host, List.of())) {
+              // As a server that checks the session's start, and for a cancel its statement.
+              if (!other.id().equals(session.id())
+                  || !other.started().equals(session.started())
+                  || idle && !other.operation().equals(session.operation())) {
+                now.add(other);
+                continue;
+              }
+              found = true;
+              if (idle) {
+                now.add(FakeServers.session(other.id(), other.user(), "", other.started()));
+              }
             }
-          }
-          FakeServers.this.sessions.put(host, List.copyOf(now));
-          return found;
+            FakeServers.this.sessions.put(host, List.copyOf(now));
+            return found;
+          });
         }
       };
     }

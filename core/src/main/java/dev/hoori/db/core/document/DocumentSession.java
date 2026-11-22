@@ -74,7 +74,7 @@ public final class DocumentSession implements AutoCloseable {
    * As {@link #command(String, Document)}, for the purpose given, which {@link Journal} records
    * with it.
    */
-  private Document command(Purpose purpose, String database, Document command)
+  public Document command(Purpose purpose, String database, Document command)
       throws DocumentException {
     if (retired) {
       throw DocumentException.of(

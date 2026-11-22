@@ -19,10 +19,15 @@ import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Sent;
+import dev.hoori.db.core.monitor.Block;
+import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Monitor;
+import dev.hoori.db.core.monitor.ServerSession;
+import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 
@@ -241,10 +246,42 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
       });
     }
 
-    // Not logged yet: what the monitor sends runs outside the link's calls.
+    // Only cancels and ends are logged: the monitor's periodic reads run unbound so that they do
+    // not fill the statement log.
     @Override
     public Monitor monitor() throws QueryException {
-      return link.monitor();
+      var monitor = link.monitor();
+      return new Monitor() {
+        @Override
+        public List<ServerSession> sessions() throws QueryException {
+          return monitor.sessions();
+        }
+
+        @Override
+        public boolean cancel(ServerSession session) throws QueryException {
+          return recorded(null, () -> monitor.cancel(session));
+        }
+
+        @Override
+        public boolean end(ServerSession session) throws QueryException {
+          return recorded(null, () -> monitor.end(session));
+        }
+
+        @Override
+        public List<ServerVariable> variables() throws QueryException {
+          return monitor.variables();
+        }
+
+        @Override
+        public List<Counter> status() throws QueryException {
+          return monitor.status();
+        }
+
+        @Override
+        public Optional<List<Block>> locks() throws QueryException {
+          return monitor.locks();
+        }
+      };
     }
 
     @Override

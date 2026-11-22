@@ -35,6 +35,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * The workspace as a tree: its folders, which the user opens, closes and moves, and its
@@ -671,21 +672,36 @@ final class CatalogTree {
    * keeps while connected, and closes with them.
    */
   Lane planner(UUID id, String database) {
+    return auxiliary(id, database, live -> live.planners);
+  }
+
+  /**
+   * The connection for counts that may take long on the database, opened the first time it is
+   * asked for, and anew where it could not be or is gone; null while the tree's connection is not
+   * connected. Nothing else runs on it, so that a slow count does not hold up the tree or other
+   * tables' pages: on PostgreSQL one per database, else one, as {@link #planner} does.
+   */
+  Lane counter(UUID id, String database) {
+    return auxiliary(id, database, live -> live.counters);
+  }
+
+  private Lane auxiliary(UUID id, String database, Function<Live, Map<String, Lane>> map) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected c) || live.password == null) {
       return null;
     }
     var key = c.database() == null ? "" : database;
-    var lane = live.planners.get(key);
+    var lanes = map.apply(live);
+    var lane = lanes.get(key);
     if (lane == null || lane.broken()) {
       if (lane != null) {
         lane.close();
       }
-      // Its loss is the estimate's alone, which then fails and asks nothing.
+      // Its loss is the call's alone, which fails without losing the tree's connection.
       lane = new Lane(e -> {});
       var profile = key.isEmpty() ? live.profile : live.profile.withDatabase(key);
       lane.open(servers, profile, live.password, live.driver);
-      live.planners.put(key, lane);
+      lanes.put(key, lane);
     }
     return lane;
   }
@@ -1077,6 +1093,8 @@ final class CatalogTree {
     live.lanes.clear();
     live.planners.values().forEach(Lane::close);
     live.planners.clear();
+    live.counters.values().forEach(Lane::close);
+    live.counters.clear();
     if (live.password != null) {
       Arrays.fill(live.password, '\0');
       live.password = null;

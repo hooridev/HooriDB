@@ -26,6 +26,7 @@ import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
+import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.Provider;
@@ -35,6 +36,9 @@ import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -444,6 +448,29 @@ class ConsoleHistoryTest {
     // Sent, and the made-up server does not know it: short, it would be kept as failed.
     assertTrue(line(c.tree("long"), "#run-status").contains("Failed after"), c.tree("long"));
     assertEquals(List.of(), app.state().keeping.history);
+  }
+
+  @Test
+  void historyShowsItsTimesInTheConfiguredZone() throws Exception {
+    new HistoryStore(config())
+        .save(List.of(new HistoryEntry(
+            SHOP.id(),
+            COUNT,
+            Instant.parse("2026-01-15T10:30:00Z"),
+            Duration.ofMillis(4),
+            new Outcome.Rows())));
+    var app = c.again(SHOP);
+    c.ready(app, SHOP);
+    app.state().zone = ZoneId.of("Asia/Tokyo");
+    c.run(app, START + menu(SHOP.name(), "New console") + SETTLE + HISTORY + "snap tokyo\n");
+    assertTrue(
+        cell(dialog(c.tree("tokyo")), 0, 1).contains("2026-01-15 19:30:00"),
+        dialog(c.tree("tokyo")));
+    app.state().zone = ZoneId.of("America/New_York");
+    app.invalidate();
+    c.run(app, "frame\nsnap ny\n");
+    assertTrue(
+        cell(dialog(c.tree("ny")), 0, 1).contains("2026-01-15 05:30:00"), dialog(c.tree("ny")));
   }
 
   /**

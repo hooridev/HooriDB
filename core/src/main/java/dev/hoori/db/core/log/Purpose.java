@@ -13,5 +13,7 @@ public enum Purpose {
   /** A transaction's end, auto-commit, and asking for their status. */
   TRANSACTION,
   /** The database the session is on. */
-  SESSION
+  SESSION,
+  /** The server monitor's cancel of a statement and end of a session. */
+  MONITOR
 }
