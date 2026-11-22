@@ -197,8 +197,11 @@ class ConsoleConfirmationTest {
   void theToolbarsCancelStopsTheEstimate() throws Exception {
     var app = estimating();
     c.run(app, "snap estimating\n");
-    assertTrue(line(c.tree("estimating"), "#run").contains("busy"), c.tree("estimating"));
-    c.run(app, "press #cancel\nframe\n" + SETTLE + MESSAGES + "snap cancelled\n");
+    assertTrue(line(c.tree("estimating"), "#run ").contains("busy"), c.tree("estimating"));
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + SETTLE
+            + MESSAGES + "snap cancelled\n");
     String cancelled = c.tree("cancelled");
     assertTrue(servers.interrupted.contains(EXPLAIN), servers.interrupted.toString());
     assertFalse(ran(BIG), servers.calls.toString());

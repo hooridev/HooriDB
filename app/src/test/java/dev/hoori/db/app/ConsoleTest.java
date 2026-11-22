@@ -33,6 +33,7 @@ import dev.hoori.db.core.execution.Result;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -109,6 +110,14 @@ class ConsoleTest {
       }
     }
     throw new AssertionError("No " + text + " in\n" + tree);
+  }
+
+  /** Where the element with the key is, as its line in the tree says: "x,y wxh". */
+  static String place(String tree, String key) {
+    var m =
+        java.util.regex.Pattern.compile(" (\\d+,\\d+ \\d+x\\d+)").matcher(line(tree, key + " "));
+    assertTrue(m.find(), tree);
+    return m.group(1);
   }
 
   static String status(String tree) {
@@ -261,6 +270,47 @@ class ConsoleTest {
   }
 
   @Test
+  void runAllOffersCancelHalfASecondAfterItStartedNotAfterEachStatement() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN); // connected
+    var count = "run " + PG + " " + COUNT;
+    var orders = "run " + PG + " " + ORDERS;
+    var first = servers.hold(count);
+    var second = servers.hold(orders);
+    c.run(app, type("\n" + ORDERS + ";") + "key Enter control shift\nframe\n");
+    eventually(() -> Collections.frequency(servers.calls, count) == 2);
+    c.run(app, "advance 0.3\nframe\n");
+    first.countDown();
+    c.run(app, "await\nframe\nframe\n"); // its outcome sends the second, which is held
+    eventually(() -> servers.calls.contains(orders));
+    assertTrue(servers.calls.contains(orders), servers.calls.toString());
+    c.run(app, "advance 0.3\nframe\nsnap second\n");
+    String later = c.tree("second");
+    assertTrue(later.contains("#cancel "), "0.6 s into the run: " + later);
+    second.countDown();
+    c.run(app, SETTLE);
+  }
+
+  @Test
+  void runPressedByKeyHandsItsFocusToCancelAndBack() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN); // connected
+    var key = "run " + PG + " " + ORDERS;
+    var gate = servers.hold(key);
+    c.run(
+        app,
+        type("\n" + ORDERS) + "focus #run\nkey Enter\nframe\nadvance 0.5\nframe\nadvance 1\nframe\n"
+            + "snap cancelling\n");
+    eventually(() -> servers.calls.contains(key));
+    String cancelling = c.tree("cancelling");
+    assertTrue(line(cancelling, "#cancel").contains("focused"), cancelling);
+    gate.countDown();
+    c.run(app, SETTLE + "snap ran\n");
+    String ran = c.tree("ran");
+    assertTrue(line(ran, "#run ").contains("focused"), ran);
+  }
+
+  @Test
   void cancelStopsTheStatementAndTheFocusStaysInTheEditor() throws Exception {
     var app = console(SHOP);
     c.run(app, type(COUNT + ";") + RUN);
@@ -270,12 +320,20 @@ class ConsoleTest {
     eventually(() -> servers.calls.contains(key));
     String running = c.tree("running");
     assertTrue(line(running, "#run ").contains("busy"), running);
-    assertFalse(line(running, "#cancel").contains("disabled"), running);
+    assertTrue(line(running, "#run ").contains("label=\"Run\""), "not Cancel at once: " + running);
     assertTrue(status(running).contains("\"Running…\""), running);
+    // Run turns into Cancel once the statement has run for a while.
+    c.run(app, "advance 0.5\nframe\nsnap turning\nadvance 1\nframe\nsnap stoppable\n");
+    String turning = c.tree("turning");
+    assertEquals(place(running, "#run"), place(turning, "#cancel"), "in Run's place");
+    assertEquals(place(running, "#mode"), place(turning, "#mode"), "nothing moves");
+    String stoppable = c.tree("stoppable");
+    assertFalse(line(stoppable, "#cancel").contains("disabled"), stoppable);
+    assertFalse(stoppable.contains("#run "), stoppable);
     c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\nsnap cancelled\n");
     eventually(() -> servers.interrupted.contains(key));
     String cancelled = c.tree("cancelled");
-    assertTrue(line(cancelled, "#cancel").contains("disabled"), cancelled);
+    assertTrue(line(cancelled, "#run ").contains("label=\"Run\""), cancelled);
     assertFalse(line(cancelled, "#run ").contains("busy"), cancelled);
     assertTrue(line(cancelled, "#sql").contains("focused"), cancelled);
     assertTrue(status(cancelled).contains("\"Cancelled\""), cancelled);
@@ -511,7 +569,7 @@ class ConsoleTest {
     assertTrue(line(window, "#unconnected").contains("label=\"Login refused\""), window);
     assertTrue(window.contains("role=button label=\"Enter password…\""), window);
     assertFalse(line(window, "#run ").contains("busy"), window);
-    assertTrue(line(window, "#cancel").contains("disabled"), window);
+    assertTrue(line(window, "#run ").contains("label=\"Run\""), window);
     assertFalse(status(window).contains("Ran"), window);
     // Its window says it: the tree's callout does not say it again.
     c.run(app, """
@@ -595,7 +653,9 @@ class ConsoleTest {
     String switching = c.tree("switching");
     assertTrue(status(switching).contains("\"Switching to inventory…\""), switching);
     assertTrue(near(switching, "#database").contains("\"No database\""), switching);
-    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\nsnap cancelled\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\nsnap cancelled\n");
     eventually(() -> servers.interrupted.contains(key));
     String cancelled = c.tree("cancelled");
     assertTrue(near(cancelled, "#database").contains("\"No database\""), cancelled);
@@ -618,7 +678,10 @@ class ConsoleTest {
     // Its first portion is read, with more to come, but not delivered before Cancel.
     gate.countDown();
     eventually(() -> servers.done.contains(key));
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap cancelled\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + SETTLE
+            + "snap cancelled\n");
     assertTrue(status(c.tree("cancelled")).contains("\"Cancelled\""), c.tree("cancelled"));
     eventually(() -> servers.calls.contains("close " + PG + " " + ORDERS));
   }

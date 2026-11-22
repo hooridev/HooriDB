@@ -132,7 +132,9 @@ class DocumentConsoleServerTest {
         type("db.orders.find()") + RUN
             + "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\n"
             + "press role=button label=\"Next page\"\nframe\nsnap reading\n"
-            + "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap after\n");
+            + "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + SETTLE
+            + "snap after\n");
     var reading = c.tree("reading");
     assertTrue(reading.contains("Reading documents…"), reading);
     var after = c.tree("after");

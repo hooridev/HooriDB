@@ -255,7 +255,8 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     String waiting = c.tree("waiting");
     assertTrue(waiting.contains("role=dialog label=\"Waiting for the commit\""), waiting);
     assertFalse(waiting.contains("#answer-rollback"), waiting);
-    assertTrue(line(waiting, "#cancel").contains("disabled"), "a commit runs to its end");
+    assertTrue(line(waiting, "#run ").contains("label=\"Run\""), "a commit runs to its end");
+    assertTrue(line(waiting, "#run ").contains("disabled"), waiting);
     gate.countDown();
     c.run(app, SETTLE);
     assertEquals(1, servers.calls.stream().filter(COMMITTING::equals).count());
@@ -665,8 +666,9 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     assertTrue(app.state().guard.pending != null, "the console asks");
     c.run(
         app,
-        in("main") + "press role=button label=\"Cancel\"\nframe\n" + OPENED + SETTLE + in(window)
-            + OPENED + "snap after\n");
+        in("main")
+            + "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + OPENED + SETTLE + in(window) + OPENED + "snap after\n");
     assertEquals(null, app.state().guard.pending);
     assertFalse(c.tree("shop-prod-shop-after").contains("role=dialog"));
     assertEquals(1, app.state().profiles.size());

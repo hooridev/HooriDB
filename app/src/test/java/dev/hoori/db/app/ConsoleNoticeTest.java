@@ -150,8 +150,9 @@ class ConsoleNoticeTest extends ConsoleTransactions {
   @Test
   void aGiveUpsFailureOutlivesWhatCameAfter() throws Exception {
     servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
-    for (var after :
-        List.of("press role=button label=\"Cancel\"\nframe\n", "press #close-0\nframe\n")) {
+    for (var after : List.of(
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n",
+        "press #close-0\nframe\n")) {
       var app = k.console(SHOP);
       c.run(app, type(ORDERS) + RUN);
       c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\nframe\n");
@@ -179,7 +180,9 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     c.run(app, type("\n" + COUNT) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(counting));
     var probing = servers.hold("transaction " + PG);
-    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\n");
     var lane = tab.probing.lane();
     counted.countDown();
     probing.countDown();
@@ -191,7 +194,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
       return null;
     });
     c.run(app, type(";\n" + COUNT) + "key Enter control\nframe\n");
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n");
+    c.run(app, "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n");
     busy.countDown();
     c.run(app, SETTLE);
     assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
@@ -216,8 +219,10 @@ class ConsoleNoticeTest extends ConsoleTransactions {
             + "press role=textbox label=\"Password\"\ntype \"first\"\n"
             + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
-            + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED
-            + "press role=button label=\"Cancel\"\nframe\n" + OPENED
+            + "\nframe\nadvance 1\nframe\nadvance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + OPENED
+            + "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + OPENED
             + "press role=button label=\"Discard\"\nframe\n" + OPENED
             + menu("shop-prod", "Delete…") + OPENED
             + "press role=button label=\"Delete\"\nframe\nadvance " + State.KEYRING_SECONDS
@@ -250,7 +255,10 @@ class ConsoleNoticeTest extends ConsoleTransactions {
               + "advance " + State.KEYRING_SECONDS + "\nframe\nadvance 1\nframe\nsnap slow\n");
       String slow = c.tree("slow");
       assertTrue(slow.contains("The system keyring does not answer"), slow);
-      c.run(app, "press role=button label=\"Cancel\"\nframe\n" + OPENED + "snap given\n");
+      c.run(
+          app,
+          "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+              + OPENED + "snap given\n");
       assertTrue(c.tree("given").contains("the deletion was given up"), c.tree("given"));
       assertEquals(null, app.state().guard.pending);
       // Delete again, and Exit: the first gives the delete up once it is slow, the next goes.
@@ -355,7 +363,10 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     var tab = k.tab(app);
     c.run(app, type("\n" + BROKEN) + "key Enter control\nframe\nframe\n");
     eventually(tab::outcomeWaiting);
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE);
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + SETTLE);
     assertTrue(noticed(app).contains("relation \"missing\" does not exist"), noticed(app));
     assertTrue(app.state().notices.getFirst().failure());
   }
@@ -370,7 +381,9 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     var gate = servers.hold(key);
     c.run(app, type("\n" + BROKEN) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
-    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\n");
     gate.countDown();
     c.run(app, SETTLE);
     assertTrue(noticed(app).contains("relation \"missing\" does not exist"), noticed(app));
@@ -384,7 +397,10 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     var tab = k.tab(app);
     c.run(app, type(";\n" + ConsoleTab.ROLLBACK) + "key Enter control\nframe\nframe\n");
     eventually(tab::outcomeWaiting);
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE);
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + SETTLE);
     assertTrue(noticed(app).contains(ConsoleTab.PARTLY), noticed(app));
   }
 
@@ -488,7 +504,8 @@ class ConsoleNoticeTest extends ConsoleTransactions {
         "press role=textbox label=\"Password\"\ntype \"fresh\"\n"
             + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
-            + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED);
+            + "\nframe\nadvance 1\nframe\nadvance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + OPENED);
     c.secrets.fails = true; // the delete given up fails, and so does the refresh behind it
     late.countDown();
     c.run(app, SETTLE + "snap unknown\n");
@@ -695,7 +712,8 @@ class ConsoleNoticeTest extends ConsoleTransactions {
         app,
         "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
-            + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED);
+            + "\nframe\nadvance 1\nframe\nadvance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + OPENED);
     eventually(() -> c.secrets.late == null); // the delete's read took it
     int before = c.secrets.calls.size() - 1;
     // The read answers; the refresh behind it is held, and fails.

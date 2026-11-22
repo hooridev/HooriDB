@@ -283,6 +283,9 @@ final class ConsoleTab implements Tab {
   // anyway may send a statement while the question's Commit runs, and either outcome comes first.
   Firm firm;
   private int firms; // counted, so that a late patience is dropped
+  // Run shows Cancel in its place once the work under way has lasted STOP_AFTER.
+  private boolean stoppable;
+  private int starts; // counted, so that the patience of an earlier run is dropped
   // The last Commit or Rollback failed, the connection still there: ending it is a way out, also
   // while other statements run after it, until the next ends or the session closes.
   boolean endFailed;
@@ -425,6 +428,7 @@ final class ConsoleTab implements Tab {
       askHere(s);
     }
     activity = new Idle(); // from stranded: busy() lets it start from nothing else
+    started(s); // once for the run, not for each of its statements
     outputs.removeIf(o -> !o.pinned);
     if (!outputs.contains(shown)) {
       shown = null;
@@ -1381,6 +1385,7 @@ final class ConsoleTab implements Tab {
     writes = false; // only a plain read in Auto, with nothing open, is read so
     plain = true;
     // Not through ask, as the read goes on rather than being given up.
+    started(s);
     activity = new Running(through(
         s,
         "read rows",
@@ -1517,6 +1522,7 @@ final class ConsoleTab implements Tab {
     writes = true;
     plain = false;
     sent = new AtomicReference<>(); // no statement of the user's
+    started(s);
     activity = new Running(ask(
         s,
         "switch the database",
@@ -1832,6 +1838,27 @@ final class ConsoleTab implements Tab {
 
   static final double FIRM_SECONDS = 10;
 
+  /**
+   * A run, a read of further rows or a switch of the database starts: Run turns into Cancel once it
+   * has lasted {@link #STOP_AFTER}, not at once, so that a quick second press meant as Run again
+   * does not cancel the run it started.
+   */
+  private void started(State s) {
+    if (working()) {
+      return;
+    }
+    int at = ++starts;
+    stoppable = false;
+    s.app.after(STOP_AFTER, () -> stoppable = starts == at);
+  }
+
+  static final double STOP_AFTER = 0.5;
+
+  /** Whether Run shows Cancel in its place: work that Cancel stops has run for a while. */
+  boolean stoppable() {
+    return stoppable && working() && !firm();
+  }
+
   /** Shows the console's tab, in its window raised, for the question {@link Guard#asks} put. */
   void show(State s) {
     var group = s.tabs.groupOf(this);
@@ -2013,9 +2040,8 @@ final class ConsoleTab implements Tab {
     Theme t = Theme.CURRENT.get();
     var profile = s.profile(id);
     var provider = profile.provider();
-    El top =
-        // Without the provider's name, which the tree says: Commit and Rollback need its room.
-        Card.toolbar(State.name(profile), null, ui.actions(s, provider).toArray(El[]::new));
+    // No title: the tab names the connection, and the database starts the row.
+    El top = Card.toolbar(null, null, ui.actions(s, provider).toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     El code = editor(s, app, provider);
     El panes = Split.split(

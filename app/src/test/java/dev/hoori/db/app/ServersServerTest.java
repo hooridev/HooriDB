@@ -1350,7 +1350,10 @@ class ServersServerTest {
               + ConsoleTest.type("\nROLLBACK")
               + "key Enter control\nframe\nframe\n");
       eventually(tab::outcomeWaiting);
-      c.run(app, "press role=button label=\"Cancel\"\nframe\n" + CatalogTreeTest.SETTLE);
+      c.run(
+          app,
+          "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+              + CatalogTreeTest.SETTLE);
       assertTrue(
           ConsoleTransactions.noticed(app).contains(ConsoleTab.PARTLY),
           ConsoleTransactions.noticed(app));

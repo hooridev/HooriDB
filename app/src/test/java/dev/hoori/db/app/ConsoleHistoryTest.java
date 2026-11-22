@@ -154,7 +154,9 @@ class ConsoleHistoryTest {
     c.run(app, CLEAR + type(MISSING) + RUN);
     var held = servers.hold("run " + PG + " " + ORDERS);
     c.run(app, CLEAR + type(ORDERS) + "key Enter control\nframe\n");
-    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\n");
     held.countDown();
     c.run(app, SETTLE + CLEAR + SAVED);
     return app;
@@ -407,7 +409,10 @@ class ConsoleHistoryTest {
     var tab = k.tab(app);
     c.run(app, type("\n" + PAY) + "key Enter control\nframe\nframe\n");
     eventually(tab::outcomeWaiting);
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE);
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + SETTLE);
     assertEquals(new Outcome.Changed(3), app.state().keeping.history.getLast().outcome());
   }
 
