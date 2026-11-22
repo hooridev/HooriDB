@@ -209,7 +209,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
       case "json" -> Rows.text(source, Kind.JSON, start, length);
       case "char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set" ->
         Rows.text(source, Kind.TEXT, start, length)
-            .withBytes(Rows.bytes(source, name -> "CAST(" + name + " AS BINARY)"));
+            .withBytes(Rows.bytes(source, MySqlFamilyRows::bytes));
       // The spatial types are sent as the server stores them: an SRID and the geometry's WKB.
       case "binary",
           "varbinary",
@@ -290,11 +290,10 @@ abstract class MySqlFamilyRows extends RowsDialect {
       return column + " IS NULL";
     }
     if (value instanceof String) {
-      return "CAST(CONVERT(" + column + " USING utf8mb4) AS BINARY) = CAST("
-          + parameter.apply(value) + " AS BINARY)";
+      return bytes("CONVERT(" + column + " USING utf8mb4)") + " = " + bytes(parameter.apply(value));
     }
     if (value instanceof Binary) {
-      return "CAST(" + column + " AS BINARY) = CAST(" + parameter.apply(value) + " AS BINARY)";
+      return bytes(column) + " = " + bytes(parameter.apply(value));
     }
     if (value instanceof Float) {
       return "CAST(CAST(" + column + " AS CHAR) AS FLOAT) = CAST(" + parameter.apply(value)
@@ -305,6 +304,10 @@ abstract class MySqlFamilyRows extends RowsDialect {
       return "UNIX_TIMESTAMP(" + column + ") = " + parameter.apply(seconds(moment));
     }
     return column + " = " + parameter.apply(value);
+  }
+
+  private static String bytes(String expression) {
+    return "CAST(" + expression + " AS BINARY)";
   }
 
   // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails

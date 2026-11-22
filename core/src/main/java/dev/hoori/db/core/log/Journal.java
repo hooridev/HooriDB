@@ -72,11 +72,10 @@ public final class Journal {
         null,
         () -> {
           var masked = Secrets.masked(sql, provider);
-          return new Shown(
-              masked,
-              !masked.equals(sql)
-                  ? Outcome.WITHHELD
-                  : purpose == Purpose.CHANGES ? Outcome.ROW_WITHHELD : null);
+          if (!masked.equals(sql)) {
+            return new Shown(masked, Outcome.WITHHELD);
+          }
+          return new Shown(masked, purpose == Purpose.CHANGES ? Outcome.ROW_WITHHELD : null);
         },
         outcome,
         call);
