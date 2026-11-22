@@ -41,7 +41,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.EnumSet;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -150,9 +149,6 @@ final class MonitorTab implements Tab {
   final DataGrid.Selection variableSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   final DataGrid.Selection statusSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   final DataGrid.Selection lockSelection = new DataGrid.Selection(DataGrid.Mode.ROWS);
-  // The items of the selection's rows in Variables, Status and Locks, by row and key, which a read
-  // or a search that puts another at one of the rows clears.
-  private final Map<View, Map<Integer, String>> picked = new EnumMap<>(View.class);
   final Menu.State intervals = new Menu.State();
   final Menu.State menu = new Menu.State(); // the sessions' context menu
   final Menu.State lockMenu = new Menu.State(); // the locks' context menu
@@ -211,7 +207,6 @@ final class MonitorTab implements Tab {
       variableSelection.clear();
       statusSelection.clear();
       lockSelection.clear();
-      picked.clear();
       problems.clear();
       disconnected = null;
       refused = null;
@@ -282,7 +277,6 @@ final class MonitorTab implements Tab {
             case Status x -> counters = x.counters();
             case Locks x -> blocks = x.blocks();
           }
-          keep(of);
           next(s);
         },
         error -> {
@@ -327,6 +321,15 @@ final class MonitorTab implements Tab {
     for (var session : read) {
       shown.add(session.withStatement(Credentials.without(session.statement(), password)));
     }
+    // Several sessions selected, none of which is acted on, are let go where any of them is gone.
+    var several = rows(selection, sessions.size());
+    if (several != null && several.size() > 1) {
+      var was = several.stream().map(sessions::get).map(x -> x.id() + "\n" + x.started());
+      var now = shown.stream().map(x -> x.id() + "\n" + x.started()).toList();
+      if (!was.allMatch(now::contains)) {
+        selection.clear();
+      }
+    }
     sessions = List.copyOf(shown);
     listed = true;
     // The same session, by its id and its start, as a server may give the id to another.
@@ -336,7 +339,8 @@ final class MonitorTab implements Tab {
     }
     if (at >= 0) {
       selectedStart = sessions.get(at).started();
-      if (selection.row() != at || !Set.of(at).equals(rows(selection, sessions.size()))) {
+      // The grid follows the selected row by its key; one gone to before it was read is put there.
+      if (selection.isEmpty()) {
         selection.select(at, Math.max(0, selection.column()));
       }
     } else if (selected != null) {
@@ -556,16 +560,12 @@ final class MonitorTab implements Tab {
   }
 
   /**
-   * The session an action acts on: the one row the selection holds, wherever its cursor is, in a
-   * list read on the monitor's session now; null for none.
+   * The session an action acts on: the one the selection holds, by its id and start, also before
+   * the grid moved the selection to where a read put it, in a list read on the monitor's session
+   * now; null for none.
    */
   ServerSession chosen() {
-    var rows = rows(selection, sessions.size());
-    if (!listed || lane == null || rows == null || rows.size() != 1) {
-      return null;
-    }
-    var session = sessions.get(rows.iterator().next());
-    return session.id().equals(selected) ? session : null;
+    return listed && lane != null && selection.rowCount() == 1 ? selected() : null;
   }
 
   /**
@@ -732,74 +732,6 @@ final class MonitorTab implements Tab {
     sessions = List.of();
   }
 
-  // The selections of Variables, Status and Locks
-
-  // shortcut: a read-only grid keeps its selection by row, not by key (rethinkj/ui#309), so a
-  // read or a search that puts another item at the selected row clears it; follow the item by key
-  // once the grid can.
-
-  private DataGrid.Selection selectionOf(View of) {
-    return switch (of) {
-      case SESSIONS -> selection;
-      case VARIABLES -> variableSelection;
-      case STATUS -> statusSelection;
-      case LOCKS -> lockSelection;
-    };
-  }
-
-  /** The keys of the items the view shows, in order: a name, or who waits for whom on what. */
-  private List<String> keys(View of) {
-    return switch (of) {
-      case SESSIONS -> sessions.stream().map(x -> x.id() + "\n" + x.started()).toList();
-      case VARIABLES ->
-        variables == null
-            ? List.of()
-            : shownVariables().stream().map(ServerVariable::name).toList();
-      case STATUS ->
-        counters == null
-            ? List.of()
-            : shownCounters().stream().map(Counter::name).toList();
-      case LOCKS ->
-        blocks == null
-            ? List.of()
-            : blocks.orElse(List.of()).stream()
-                .map(b -> b.waiting() + "\n" + b.blocking() + "\n" + b.object() + "\n" + b.mode())
-                .toList();
-    };
-  }
-
-  /** The user selected in the view: its items are kept by their keys. */
-  private void picked(View of) {
-    var keys = keys(of);
-    var rows = rows(selectionOf(of), keys.size());
-    if (rows == null) {
-      picked.remove(of);
-      return;
-    }
-    var at = new HashMap<Integer, String>();
-    rows.forEach(row -> at.put(row, keys.get(row)));
-    picked.put(of, at);
-  }
-
-  /** The view's selection goes where another item stands at one of its rows now. */
-  private void keep(View of) {
-    var chosen = selectionOf(of);
-    // A single session is followed by its id and start, as the sessions are read.
-    if (chosen.isEmpty() || of == View.SESSIONS && selected != null) {
-      return;
-    }
-    var keys = keys(of);
-    var rows = rows(chosen, keys.size());
-    var was = picked.get(of);
-    if (rows == null
-        || was == null
-        || !rows.equals(was.keySet())
-        || rows.stream().anyMatch(row -> !keys.get(row).equals(was.get(row)))) {
-      chosen.clear();
-      picked.remove(of);
-    }
-  }
-
   // The rows that the selection holds, each once; null where one is not among the items.
   private static Set<Integer> rows(DataGrid.Selection chosen, int items) {
     var rows = new TreeSet<Integer>();
@@ -825,19 +757,16 @@ final class MonitorTab implements Tab {
     var profile = s.profile(id);
     String where = profile == null ? null : State.name(profile);
     boolean can = lane != null;
-    // shortcut: the toolbar puts its actions at its end, and has no slot at its start
-    // (rethinkj/ui#310), and Segmented's choices slide where the control moves (rethinkj/ui#311);
-    // so the view's switch goes last, Refresh before it, and what differs by view before those,
-    // that they stay in place. Move the switch to the start once the toolbar has the slot.
+    // The view's switch at the start, so that it stays in place while the actions change by view.
     var actions = new ArrayList<El>();
+    actions.add(Segmented.segmented(VIEWS, view, v -> v.title, v -> show(s, v))
+        .key("view")
+        .label("Show"));
+    actions.add(Card.spacer());
     if (view == View.VARIABLES || view == View.STATUS) {
       var of = view;
       actions.add(TextField.withIcon(
-              TextField.textField(search(of), "Search", v -> {
-                searches.put(of, v);
-                keep(of);
-              }),
-              Symbol.SEARCH)
+              TextField.textField(search(of), "Search", v -> searches.put(of, v)), Symbol.SEARCH)
           .key("search")
           .label("Search " + of.what)
           .w(8 * t.size().control()));
@@ -854,11 +783,8 @@ final class MonitorTab implements Tab {
                 .icon(Symbol.ARROW_CLOCKWISE)
                 .state(reading != null && loud ? Button.State.BUSY : Button.State.READY))
         .key("refresh"));
-    actions.add(Segmented.segmented(VIEWS, view, v -> v.title, v -> show(s, v))
-        .key("view")
-        .label("Show"));
     // The view's name is on its switch: the toolbar names the connection.
-    El top = Card.toolbar(where == null ? "" : where, null, actions.toArray(El[]::new));
+    El top = Card.toolbar(where, null, actions.toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     // Each part keyed, so that a callout that comes or goes leaves the others as they are.
     El content =
@@ -1009,7 +935,6 @@ final class MonitorTab implements Tab {
   /** The view as read. */
   private El shown(State s, App<State> app) {
     var of = view;
-    Runnable onSelect = () -> picked(of);
     return switch (of) {
       case SESSIONS ->
         MonitorGrids.sessions(
@@ -1025,15 +950,13 @@ final class MonitorTab implements Tab {
               selected = at == null ? null : at.id();
               selectedStart = at == null ? null : at.started();
               went = false;
-              picked(View.SESSIONS);
             },
             menu,
             menuItems(s),
             app);
       case VARIABLES ->
-        MonitorGrids.variables(shownVariables(), widths(of), variableSelection, onSelect, app);
-      case STATUS ->
-        MonitorGrids.status(shownCounters(), widths(of), statusSelection, onSelect, app);
+        MonitorGrids.variables(shownVariables(), widths(of), variableSelection, app);
+      case STATUS -> MonitorGrids.status(shownCounters(), widths(of), statusSelection, app);
       case LOCKS -> {
         if (blocks.isEmpty()) {
           yield EmptyState.emptyState(
@@ -1057,7 +980,6 @@ final class MonitorTab implements Tab {
             shown,
             widths(of),
             lockSelection,
-            onSelect,
             row -> goTo(s, shown.get(row).blocking()),
             lockMenu,
             lockItems(s, shown),
