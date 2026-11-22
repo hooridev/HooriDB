@@ -107,7 +107,10 @@ placement, the sidebar's width and the statement log's open state, height and de
 (`ui-state.json`). The theme, System, Light or Dark in the View menu, where System follows the
 computer's scheme, is kept in `settings.json`, read before the first frame, with the accent, the
 rows' density, whether a console marks the word at the caret, the case of SQL keywords it completes
-and whether the start looks for an update. Nothing can be edited, filtered or sorted yet.
+and whether the start looks for an update. File, Settings… (Control+,, or the palette) opens or
+raises a modeless settings window over the shared state, with pages General, Appearance, Editor,
+Databases and History & log, where every change applies at once, a changed row can be reset and
+each page has Restore defaults. Nothing can be edited, filtered or sorted yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it

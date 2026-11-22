@@ -121,16 +121,17 @@ class PaletteTest {
             "File: New folder…",
             "File: New console",
             "File: Server monitor",
+            "File: Settings…",
             "File: Close tab",
             "View: Command palette…",
             "View: Statement log",
             "View: System theme",
             "View: Light theme",
             "View: Dark theme",
-            "Go: Go to table…",
             // The rows that fit: the rest of Go's and Help's come after.
-            "Go: Next tab")),
+            "Go: Go to table…")),
         all.toString());
+    assertTrue(option(open, "File: Settings…").contains("\"Ctrl+,\""), open);
     assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
     // Disabled in the menu, disabled here: no tab is open, and nothing is selected for a console.
