@@ -187,14 +187,18 @@ public final class EditableQuery {
     if (k == n || (k == n - 1 && tokens.get(k).is(";"))) {
       return true;
     }
-    return tokens.get(k).depth() == 0 && afterFrom(tokens.get(k));
+    // An alias spelled as a clause, as MySQL's offset, takes a join or comma after it for one.
+    return tokens.get(k).depth() == 0
+        && afterFrom(tokens.get(k))
+        && !(k + 1 < n && tokens.get(k + 1).is(","))
+        && tokens.subList(start, n).stream()
+            .noneMatch(t -> t.depth() == 0 && (t.is("JOIN") || t.is("STRAIGHT_JOIN")));
   }
 
-  // A word that is no clause after FROM nor a join of one word, whose right side may be a table
-  // named as a clause, such as MySQL's offset; a keyword taken for an alias, as LEFT, leaves a word
-  // that no clause allows.
+  // A word that is no clause after FROM; a keyword taken for an alias, as LEFT, leaves a word that
+  // no clause allows.
   private static boolean bareAlias(Tokens.Token token) {
-    return token.name() && !afterFrom(token) && !token.is("JOIN") && !token.is("STRAIGHT_JOIN");
+    return token.name() && !afterFrom(token);
   }
 
   private static boolean afterFrom(Tokens.Token token) {

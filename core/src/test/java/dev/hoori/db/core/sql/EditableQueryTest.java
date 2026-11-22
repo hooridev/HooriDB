@@ -67,6 +67,9 @@ class EditableQueryTest {
       allowed(p, "SELECT id, name IS DISTINCT FROM 'x' FROM customer WHERE id > 0");
       refused(p, "SELECT c.id FROM customer c JOIN offset ON offset.id = c.id");
       refused(p, "SELECT c.id FROM customer STRAIGHT_JOIN offset");
+      refused(p, "SELECT offset.id FROM customer offset JOIN purchase p ON p.customer_id = 1");
+      refused(p, "SELECT offset.id FROM customer offset, purchase p");
+      refused(p, "SELECT window.id FROM customer window NATURAL JOIN purchase");
       allowed(p, "SELECT id, name FROM customer WHERE id IN (SELECT customer_id FROM purchase)");
       allowed(p, "SELECT id, SUBSTRING(name FROM 1 FOR 3), EXTRACT(YEAR FROM born) FROM customer");
       allowed(p, "/* leading */ SELECT id FROM customer -- trailing\n;");
