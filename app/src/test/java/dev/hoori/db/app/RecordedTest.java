@@ -16,10 +16,10 @@ class RecordedTest {
         Servers.Link.class.getClassLoader(),
         new Class<?>[] {Servers.Link.class},
         (_, method, _) -> {
-          switch (method.getName()) {
-            case "database" -> {}
-            case "abort" -> onAbort.run();
-            default -> throw new UnsupportedOperationException(method.getName());
+          if (method.getName().equals("abort")) {
+            onAbort.run();
+          } else if (!method.getName().equals("database")) {
+            throw new UnsupportedOperationException(method.getName());
           }
           return null;
         });
