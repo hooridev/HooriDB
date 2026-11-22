@@ -49,7 +49,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     c.run(app, "snap auto\n");
     String auto = c.tree("auto");
     assertTrue(line(auto, "role=radio label=\"Auto\"").contains("checked"), auto);
-    assertFalse(auto.contains("#commit"), "no Commit in Auto: " + auto);
+    assertTrue(line(auto, "#commit").contains("disabled"), "Commit off in Auto: " + auto);
     assertFalse(auto.contains("#transaction"), auto);
     c.run(app, MANUAL + "snap manual\n");
     String manual = c.tree("manual");
@@ -102,7 +102,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     c.run(app, type(";\n" + "COMMIT") + RUN + "snap ended\n");
     String ended = c.tree("ended");
     assertFalse(ended.contains("#transaction"), ended);
-    assertFalse(ended.contains("#commit"), ended);
+    assertTrue(line(ended, "#commit").contains("disabled"), ended);
     // A ROLLBACK typed in Manual ends it as well.
     c.run(app, MANUAL + type(";\n" + PAY) + RUN);
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
@@ -161,7 +161,10 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     servers.hold(key);
     c.run(app, type(";\n" + ORDERS) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap cancelled\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + SETTLE
+            + "snap cancelled\n");
     assertTrue(badge(c.tree("cancelled")).contains("Transaction failed"), c.tree("cancelled"));
     // MariaDB leaves it open.
     var maria = open(INVENTORY);
@@ -169,7 +172,10 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     servers.hold(held);
     c.run(maria, type(";\n" + ORDERS) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(held));
-    c.run(maria, "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap open\n");
+    c.run(
+        maria,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + SETTLE
+            + "snap open\n");
     assertTrue(servers.calls.contains("transaction " + MARIA), servers.calls.toString());
     assertTrue(badge(c.tree("open")).contains("Transaction open · 1 statement"), c.tree("open"));
   }
@@ -235,7 +241,9 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     c.run(app, type(";\n" + ORDERS) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
     // The cancelled call ends; the question to the server is held.
-    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\n");
     eventually(() -> servers.calls.contains("transaction " + PG));
     c.run(app, """
             frame
@@ -460,7 +468,9 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     var opening = servers.hold(open);
     c.run(app, type(PAY) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.stream().filter(open::equals).count() == 2);
-    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\n");
     opening.countDown();
     c.run(app, SETTLE + "press #sql\n" + RUN + "snap retried\n");
     String retried = c.tree("retried");
@@ -479,7 +489,10 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     var gate = servers.hold(COMMITTING);
     c.run(app, type(";\nCOMMIT") + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(COMMITTING));
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap cancelled\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + SETTLE
+            + "snap cancelled\n");
     String cancelled = c.tree("cancelled");
     assertTrue(near(cancelled, "#doubt").contains("COMMIT: it was cancelled"), cancelled);
     gate.countDown();
@@ -584,7 +597,9 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     c.run(app, type(";\n" + ORDERS) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
     // The cancel asks the server what it left; the question is held.
-    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\n");
     var probe = tab.probing;
     assertNotNull(probe);
     servers.dead = true; // the change, held, runs once its gate opens, cancelled or not
@@ -596,7 +611,9 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     held.countDown();
     if (cancel) {
       eventually(() -> servers.calls.contains(change));
-      c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+      c.run(
+          app,
+          "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\n");
     }
     paying.countDown();
     c.run(app, SETTLE + "snap settled\n");
@@ -664,11 +681,13 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     // Cancelled instead: what it did is in doubt, and in Auto nothing is offered to undo it.
     c.run(
         app,
-        "press #answer-cancel\nframe\n" + OPENED + "press role=button label=\"Cancel\"\nframe\n"
-            + SETTLE + "snap after\n");
+        "press #answer-cancel\nframe\n" + OPENED
+            + "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + SETTLE
+            + "snap after\n");
     String after = c.tree("after");
     assertTrue(near(after, "#doubt").contains(PAY + ": it was cancelled"), after);
-    assertFalse(after.contains("#rollback"), after);
+    assertTrue(line(after, "#rollback").contains("disabled"), after);
     // In Manual, a Rollback while one is in doubt runs, and does not claim to have undone it.
     servers.openAll();
     var manual = open(SHOP);
@@ -679,8 +698,8 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     eventually(() -> servers.calls.contains("run " + PG + " " + change));
     c.run(
         manual,
-        "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "press #rollback\nframe\n" + SETTLE
-            + "snap rolled\n");
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + SETTLE
+            + "press #rollback\nframe\n" + SETTLE + "snap rolled\n");
     String rolled = c.tree("rolled");
     assertTrue(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
     assertFalse(rolled.contains("\"Rolled back\""), rolled);
@@ -906,7 +925,10 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     // The script's text escapes its backslash.
     c.run(app, type("\n" + EXPLAINED.replace("\\", "\\\\")) + "key Enter control\nframe\nframe\n");
     eventually(() -> servers.calls.contains(key));
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap cancelled\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + SETTLE
+            + "snap cancelled\n");
     assertTrue(
         near(c.tree("cancelled"), "#doubt").contains("it was cancelled"), c.tree("cancelled"));
   }
@@ -1053,7 +1075,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
             + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
             + "\nframe\nadvance 1\nframe\nsnap dialog-keyring-slow-" + look + "\n"
-            + "press role=button label=\"Cancel\"\nframe\nadvance 1\nframe\n"
+            + "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nadvance 1\nframe\n"
             + "snap dialog-keyring-given-up-" + look + "\n",
         app,
         out);
@@ -1098,8 +1120,10 @@ class ConsoleTransactionTest extends ConsoleTransactions {
             + "press role=textbox label=\"Password\"\ntype \"first\"\n"
             + "press role=checkbox label=\"Save in system keyring\"\nframe\n"
             + "press role=button label=\"Save\"\nframe\nadvance " + State.KEYRING_SECONDS
-            + "\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + OPENED
-            + "press role=button label=\"Cancel\"\nframe\n" + OPENED
+            + "\nframe\nadvance 1\nframe\nadvance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + OPENED
+            + "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + OPENED
             + "press role=button label=\"Discard\"\nframe\n" + OPENED
             + menu("shop-prod", "Delete…") + OPENED
             + "press role=button label=\"Delete\"\nframe\nadvance " + State.KEYRING_SECONDS

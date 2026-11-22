@@ -14,6 +14,7 @@ import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.Dialog;
+import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
@@ -22,6 +23,7 @@ import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tooltip;
+import com.rethinkj.ui.text.Font;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Transaction;
 import java.util.ArrayList;
@@ -60,22 +62,25 @@ final class ConsoleView {
     };
   }
 
-  /** The toolbar's actions: the database, the transaction's, the runs' and the statements kept. */
+  /**
+   * The toolbar's actions: the database at the start, the runs, the transaction's, and the
+   * statements kept at the end. All stay in place whatever the mode or the transaction, so nothing
+   * moves when they change; what cannot be used is off.
+   */
   List<El> actions(State s, Provider provider) {
     boolean busy = tab.busy();
     var locked = s.guard.locked(tab);
     var actions = new ArrayList<El>();
     actions.add(databases(s));
-    // Off where Manual cannot be made sure of, which its tooltip and a note say.
-    boolean switchable = !busy && locked == null && tab.unavailable == null;
+    actions.add(runs(s, locked));
     if (Language.of(provider).transactions()) {
+      // Off where Manual cannot be made sure of, which its tooltip and a note say.
+      boolean switchable = !busy && locked == null && tab.unavailable == null;
       actions.add(modes(s, switchable));
-    }
-    if (tab.mode == ConsoleTab.Mode.MANUAL || tab.transaction != Transaction.NONE) {
       actions.add(commitButton(s));
       actions.add(rollbackButton(s));
     }
-    actions.addAll(runs(s, busy, locked));
+    actions.add(Card.spacer());
     actions.addAll(kept(s));
     return actions;
   }
@@ -97,27 +102,33 @@ final class ConsoleView {
   }
 
   private El commitButton(State s) {
-    return Tooltip.tooltip(
-        button(
-                SECONDARY,
-                "Commit",
-                tab.canCommit() ? () -> tab.commitTransaction(s) : null,
-                Button.options().icon(Symbol.CHECKMARK).state(busyWith(ConsoleTab.COMMIT)))
-            .key("commit")
-            .keepFocus(),
-        "Commit (Control+Shift+C)");
+    return Button.icon(
+            Button.Variant.GHOST,
+            Symbol.CHECKMARK,
+            "Commit",
+            tab.canCommit() ? () -> tab.commitTransaction(s) : null,
+            Button.options()
+                .state(busyWith(ConsoleTab.COMMIT))
+                .tone(Button.Tone.SUCCESS)
+                .shortcut(Key.CONTROL | Key.SHIFT, "C"))
+        .key("commit")
+        .keepFocus();
   }
 
   private El rollbackButton(State s) {
-    return Tooltip.tooltip(
-        button(
-                SECONDARY,
-                ConsoleTab.ROLLBACK_BUTTON,
-                tab.canRollback() ? () -> tab.rollBackTransaction(s) : null,
-                Button.options().icon(Symbol.ARROW_UNDO).state(busyWith(ConsoleTab.ROLLBACK)))
-            .key("rollback")
-            .keepFocus(),
-        "Roll back (Control+Shift+R)");
+    // In Auto with nothing open, off: no Rollback could say what it undid.
+    boolean offered = tab.mode == ConsoleTab.Mode.MANUAL || tab.transaction != Transaction.NONE;
+    return Button.icon(
+            Button.Variant.GHOST,
+            Symbol.ARROW_UNDO,
+            ConsoleTab.ROLLBACK_BUTTON,
+            offered && tab.canRollback() ? () -> tab.rollBackTransaction(s) : null,
+            Button.options()
+                .state(busyWith(ConsoleTab.ROLLBACK))
+                .tone(Button.Tone.ACCENT)
+                .shortcut(Key.CONTROL | Key.SHIFT, "R"))
+        .key("rollback")
+        .keepFocus();
   }
 
   /** Busy while Commit's or Rollback's own statement runs. */
@@ -125,31 +136,44 @@ final class ConsoleView {
     return tab.firm() && sql.equals(tab.running) ? Button.State.BUSY : Button.State.READY;
   }
 
-  /** Run, Run all and Cancel. */
-  private List<El> runs(State s, boolean busy, String locked) {
-    return List.of(
-        button(
-                PRIMARY,
-                "Run",
-                tab.firm() || locked != null ? null : () -> tab.run(s),
-                Button.options()
-                    .icon(Symbol.PLAY)
-                    // Off, not busy, while a change of its connection is saved or deleted.
-                    .state(
-                        tab.working() && !tab.firm() && locked == null
-                            ? Button.State.BUSY
-                            : Button.State.READY))
-            .key("run")
-            .keepFocus(),
-        button(SECONDARY, "Run all", busy || locked != null ? null : () -> tab.runAll(s))
-            .key("run-all")
-            .keepFocus(),
-        button(
-                SECONDARY,
-                ConsoleTab.CANCEL_BUTTON,
-                busy && !tab.firm() ? () -> tab.cancel(s) : null)
-            .key("cancel")
-            .keepFocus());
+  /**
+   * Run, or Cancel in its place while work has run for a while; Run all is Control+Shift+Enter. In
+   * a place of their own, which the focus stays in when one takes the other's place.
+   */
+  private El runs(State s, String locked) {
+    El button;
+    if (tab.stoppable()) {
+      button = Button.icon(
+              Button.Variant.GHOST,
+              Filled.STOP,
+              ConsoleTab.CANCEL_BUTTON,
+              () -> tab.cancel(s),
+              Button.options().tone(Button.Tone.DANGER))
+          // Its own key: a press begun on Cancel does not end on Run, which takes its place.
+          .key("cancel");
+    } else {
+      button = Button.icon(
+              PRIMARY,
+              Filled.PLAY,
+              "Run",
+              tab.firm() || locked != null ? null : () -> tab.run(s),
+              Button.options()
+                  // Off, not busy, while a change of its connection is saved or deleted.
+                  .state(
+                      tab.working() && !tab.firm() && locked == null
+                          ? Button.State.BUSY
+                          : Button.State.READY)
+                  .shortcut(Key.CONTROL, "Enter"))
+          .key("run");
+    }
+    return row().key("runs").child(button.keepFocus());
+  }
+
+  /** Fluent's filled Play and Stop (ic_fluent_*_16_filled) alone; the kit's symbols are outlines. */
+  private static final class Filled {
+    static final Font FONT = Font.resource(ConsoleView.class, "filled-icons.ttf");
+    static final Icon PLAY = Icon.glyph(FONT, 0xE9A2, "Run");
+    static final Icon STOP = Icon.glyph(FONT, 0xF741, "Stop");
   }
 
   /** Save query, Saved queries and History. */
