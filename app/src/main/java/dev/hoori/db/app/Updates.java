@@ -340,9 +340,11 @@ final class Updates {
 
   /** The channel updates come from: the one stored, else the one of the version that runs. */
   Channel channel() {
-    if (stored.channel() != null) {
-      return stored.channel();
-    }
+    return stored.channel() != null ? stored.channel() : defaultChannel();
+  }
+
+  /** The channel the running version belongs to, or Stable where it is not a SemVer version. */
+  Channel defaultChannel() {
     return installed == null ? Channel.STABLE : Channel.of(installed);
   }
 
