@@ -5,6 +5,7 @@ import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.sql.Ranking;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -51,6 +52,7 @@ final class Suggestions {
   private String madeFor;
   private int madeAt;
   private String madeOf;
+  private Settings.KeywordCase madeCase;
   int made; // how often they were made, which a test counts
 
   Suggestions(ConsoleTab tab) {
@@ -59,12 +61,17 @@ final class Suggestions {
 
   /**
    * The entries for the word before the caret, best first: made again only where the text, the
-   * caret or the word changed since the last, or the list was closed meanwhile.
+   * caret, the word or the keyword case changed since the last, or the list was closed meanwhile.
    */
   List<Completion.Entry> at(State s, Provider provider, String word) {
     var text = tab.text;
     int caret = Math.min(tab.editor.caret(), text.length());
-    if (entries != null && text.equals(madeFor) && caret == madeAt && word.equals(madeOf)) {
+    var keywordCase = s.settings.keywordCase();
+    if (entries != null
+        && text.equals(madeFor)
+        && caret == madeAt
+        && word.equals(madeOf)
+        && keywordCase == madeCase) {
       return entries;
     }
     entries = make(s, provider, word, text, caret);
@@ -72,6 +79,7 @@ final class Suggestions {
     madeFor = text;
     madeAt = caret;
     madeOf = word;
+    madeCase = keywordCase;
     return entries;
   }
 
@@ -108,6 +116,7 @@ final class Suggestions {
   /** What the tree has read of the console's connection, and what it asks for of what it lacks. */
   final class Known {
     final Provider provider;
+    final Settings.KeywordCase keywordCase;
     final boolean schemas; // whether the server has schemas within its databases
     // Where PostgreSQL looks for a name without a schema, in order.
     // shortcut: the search path is taken to be PostgreSQL's default, "$user", public; read the
@@ -123,6 +132,7 @@ final class Suggestions {
     private Known(State s, Provider provider, boolean exact) {
       this.s = s;
       this.provider = provider;
+      this.keywordCase = s.settings.keywordCase();
       this.exact = exact;
       var opened = s.catalog.live(tab.id);
       var connected = opened != null && opened.phase instanceof Live.Connected c ? c : null;

@@ -2068,6 +2068,7 @@ final class ConsoleTab implements Tab {
     Highlighter syntax = Syntax.of(provider);
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
+    this.editor.occurrences(s.settings.highlightOccurrences());
     El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
           text = v;
           s.keeping.edited();

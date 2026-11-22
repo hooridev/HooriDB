@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Made-up releases of HooriDB and a helper that does what it is told: its result is given, and
@@ -38,6 +39,7 @@ final class FakeUpdater implements Updater {
   final List<String> downloaded = new CopyOnWriteArrayList<>(); // the versions, in order
   final List<Download> restarts = new CopyOnWriteArrayList<>();
   final List<Path> cleared = new CopyOnWriteArrayList<>(); // what each clear kept, or the folder
+  final AtomicInteger looks = new AtomicInteger(); // the calls of releases()
   volatile int confirms;
 
   FakeUpdater(Path downloads) {
@@ -105,6 +107,7 @@ final class FakeUpdater implements Updater {
 
   @Override
   public List<Release> releases() throws IOException {
+    looks.incrementAndGet();
     if (offline) {
       throw new ConnectException("offline");
     }
