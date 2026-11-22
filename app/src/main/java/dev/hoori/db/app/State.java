@@ -905,8 +905,18 @@ final class State {
     var at = group == tabs.main() && selected != null && selected.id().equals(id)
         ? CatalogTree.database(selected)
         : null;
-    var console = ConsoleTab.of(this, id, at == null ? database(profile) : at);
+    openConsole(id, group, at == null ? database(profile) : at, "");
+  }
+
+  /**
+   * Opens a console on the connection and database in the window of these tabs, with the given
+   * initial text and the caret at its end.
+   */
+  void openConsole(UUID id, TabGroups.Group<Tab> group, String database, String text) {
+    var console = ConsoleTab.of(this, id, database);
     console.take(this);
+    console.text = text;
+    console.editor.select(text.length(), text.length());
     tabs.add(group, group.tabs().size(), console);
     keeping.persist(keeping.consolesKept);
   }
