@@ -27,6 +27,7 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.function.Function;
@@ -166,6 +167,60 @@ abstract class MySqlFamilyRows extends RowsDialect {
   @Override
   Rows.Read read(Rows.Source source, ResultSetMetaData metadata, int column) throws SQLException {
     return read(source, catalogType(source.type(), metadata.getPrecision(column)));
+  }
+
+  // Both drivers give the original catalog, table and column names from the wire metadata without
+  // querying the server; an empty table name marks an expression or union column.
+  @Override
+  Origin origin(ResultSetMetaData metadata, int column) throws SQLException {
+    var table = metadata.getTableName(column);
+    if (table == null || table.isEmpty()) {
+      return null;
+    }
+    var catalog = metadata.getCatalogName(column);
+    var name = metadata.getColumnName(column);
+    if (catalog == null || catalog.isEmpty() || name == null || name.isEmpty()) {
+      return null;
+    }
+    return new Origin.Named(catalog, table, name);
+  }
+
+  // A session's temporary table reports the same catalog and table name as a permanent table of
+  // that name, so another session cannot tell them apart and would write into the permanent one.
+  @Override
+  boolean temporaryTablesShadow() {
+    return true;
+  }
+
+  @Override
+  Optional<Resolved> resolve(Connection connection, Provider provider, Origin sample)
+      throws QueryException {
+    if (!(sample instanceof Origin.Named named)) {
+      return Optional.empty();
+    }
+    var sql = "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES"
+        + " WHERE TABLE_SCHEMA = CAST(? AS BINARY) AND TABLE_NAME = CAST(? AS BINARY)"
+        + " AND TABLE_TYPE = 'BASE TABLE'";
+    var catalog = provider.dialect().catalog();
+    var table = Journal.sql(
+        provider,
+        Purpose.CATALOG,
+        sql,
+        found -> Outcome.rows(found == null ? 0 : 1),
+        () -> Query.run(connection, provider, sql, statement -> {
+          statement.setString(1, named.catalog());
+          statement.setString(2, named.table());
+          try (var rows = statement.executeQuery()) {
+            return rows.next()
+                ? new Table(catalog.database(rows), rows.getString(2), Table.Kind.TABLE)
+                : null;
+          }
+        }));
+    if (table == null) {
+      return Optional.empty();
+    }
+    return Optional.of(new Resolved(
+        table, origin -> origin instanceof Origin.Named col ? col.column() : null));
   }
 
   // The type as the catalog would name it, from what the driver reports: MariaDB Connector/J

@@ -149,6 +149,11 @@ public final class Rows {
     Read withBytes(String bytes) {
       return new Read(field, column, sql, value, bytes);
     }
+
+    Read withOrigin(Origin origin) {
+      return new Read(
+          new Field(field.name(), field.type(), field.kind(), origin), column, sql, value, bytes);
+    }
   }
 
   // What a column is read from: the name and type its field shows, and its name through the alias,
@@ -550,7 +555,9 @@ public final class Rows {
     var reads = new ArrayList<Read>();
     for (var i = 1; i <= metadata.getColumnCount(); i++) {
       var type = metadata.getColumnTypeName(i);
-      reads.add(dialect.read(new Source(metadata.getColumnLabel(i), type, null), metadata, i));
+      var read = dialect.read(new Source(metadata.getColumnLabel(i), type, null), metadata, i);
+      var origin = dialect.origin(metadata, i);
+      reads.add(origin == null ? read : read.withOrigin(origin));
     }
     return reads;
   }

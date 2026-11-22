@@ -9,6 +9,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.function.Function;
 
@@ -69,6 +70,35 @@ public abstract class RowsDialect {
   /** How the column of a result, or of the table as {@link #describe} reads it, is read. */
   abstract Rows.Read read(Rows.Source source, ResultSetMetaData metadata, int column)
       throws SQLException;
+
+  /**
+   * The table column that the column of a statement's result was read from, without querying the
+   * server; null where it has none, such as an expression or a system column.
+   */
+  abstract Origin origin(ResultSetMetaData metadata, int column) throws SQLException;
+
+  /**
+   * Whether a session's temporary table can shadow a permanent table of the same name in result
+   * metadata, so that another connection cannot tell them apart.
+   */
+  abstract boolean temporaryTablesShadow();
+
+  /** A resolved base table and how an origin of one of its columns names that column. */
+  record Resolved(Table table, Function<Origin, String> columnName) {}
+
+  /**
+   * Resolves the origin's table on the given connection to a permanent base table and a mapping
+   * from each origin of that table to its column name; empty where it is not a permanent base
+   * table (such as a view, materialized view, foreign table or temporary table) or no longer
+   * exists.
+   */
+  abstract Optional<Resolved> resolve(Connection connection, Provider provider, Origin sample)
+      throws QueryException;
+
+  /** Whether a result field of the first kind edits a table column described as the second. */
+  boolean compatibleKind(Kind result, Kind table) {
+    return result == table;
+  }
 
   /** The operator that compares a column of a key with its value, as the reads name theirs. */
   abstract String keyEquality();
