@@ -303,7 +303,9 @@ class JournalTest {
       }
 
       @Override
-      public void close() {}
+      public void close() {
+        // nothing to close: no server behind it
+      }
     };
     var session = new DocumentSession(client, Provider.MONGODB.documents(), false);
     var target = new ServerSession(
