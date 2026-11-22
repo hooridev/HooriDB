@@ -361,10 +361,6 @@ final class ConsoleTab implements Tab {
       return;
     }
     recording = null;
-    if (!s.settings.keepHistory()) {
-      recorded = null;
-      return;
-    }
     var time = took != null ? took : Duration.between(entry.started(), Instant.now());
     recorded = new HistoryEntry(
         id,
@@ -627,7 +623,12 @@ final class ConsoleTab implements Tab {
     var held = new AtomicReference<Servers.Run>();
     sent = held;
     var asked = mode;
-    recording = new Sent(sql, Instant.now());
+    if (s.settings.keepHistory()) { // as the setting is at the send
+      recording = new Sent(sql, Instant.now());
+    } else {
+      recording = null;
+      recorded = null; // a later failure of this statement's rows changes no earlier entry
+    }
     var label = openSql;
     activity = new Running(ask(
         s,
