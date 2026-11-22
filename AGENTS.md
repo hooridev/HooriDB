@@ -25,7 +25,8 @@ their sizes, downloads one and deletes one that no open connection uses. Opening
 tree connects and reads its databases, schemas, tables and views, and columns, one level at a time
 as they are opened; several connections are open at once. A double press or Enter on a table or view
 opens its rows in a tab, read late in pages on its connection's lane, with the rows in view in its
-status line and buttons that scroll a page back or on, or to the first or last row; tabs move and
+status line, buttons that scroll a page back or on, or to the first or last row, and, on SQL
+servers, Open in console to open a console on its database with its SELECT; tabs move and
 tear off into windows of their own. The columns of a table and of a console's result fit their first
 rows once, and a table's fit again where a refresh finds other columns. A moment, a timestamp with a
 time zone, shows and is copied in the computer's time zone, with the offset it has there.
