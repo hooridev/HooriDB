@@ -25,6 +25,7 @@ import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Toggle;
+import dev.hoori.db.core.connection.UiState;
 import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -44,13 +45,16 @@ final class LogPanel {
   /** The panel's height where it was never moved. */
   static final Split.Position SPLIT = Split.Position.second(220);
 
+  /** The detail split's share where it was never moved. */
+  static final Split.Position DETAIL = Split.Position.share(0.6f);
+
   private static final Format<LocalTime> TIME = Format.time(3);
   private static final List<Purpose> PARTS = List.of(Purpose.values());
   private static final List<LogFilter.Ended> ENDINGS = List.of(LogFilter.Ended.values());
 
   boolean open;
   Split.Position split = SPLIT;
-  Split.Position detail = Split.Position.share(0.6f);
+  Split.Position detail = DETAIL;
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.ROWS);
   LogFilter filter = LogFilter.ALL;
   boolean clearing; // Clear asks first
@@ -65,9 +69,43 @@ final class LogPanel {
   private LogFilter seenFilter;
   private Logged newest; // the last entry shown then
 
-  /** Opens it, or closes it. */
-  void toggle() {
+  /** Applies the open state, height and detail split kept from the last run. */
+  void restore(UiState ui) {
+    if (ui.logOpen() != null) {
+      open = ui.logOpen();
+    }
+    if (ui.logHeight() != null) {
+      split = Split.Position.second(ui.logHeight());
+    }
+    if (ui.logDetail() != null) {
+      detail = Split.Position.share(ui.logDetail());
+    }
+  }
+
+  /** Opens it, or closes it, and keeps the choice. */
+  void toggle(State s) {
     open = !open;
+    s.keeping.uiState(s.keeping.uiState().withLogOpen(open));
+  }
+
+  private void resize(State s, Split.Position position) {
+    if (position.equals(split)) {
+      return;
+    }
+    split = position;
+    if (position.kind() == Split.Position.Kind.SECOND) {
+      s.keeping.uiState(s.keeping.uiState().withLogHeight(position.value()));
+    }
+  }
+
+  private void detail(State s, Split.Position position) {
+    if (position.equals(detail)) {
+      return;
+    }
+    detail = position;
+    if (position.kind() == Split.Position.Kind.SHARE) {
+      s.keeping.uiState(s.keeping.uiState().withLogDetail(position.value()));
+    }
   }
 
   /** The workspace and the tabs, with the panel below them while it is open. */
@@ -80,7 +118,7 @@ final class LogPanel {
         Split.Direction.COLUMN,
         split,
         SPLIT,
-        p -> split = p,
+        p -> resize(s, p),
         work,
         8 * t.size().control(),
         view(s).margin(t.space().m(), 0, 0, 0),
@@ -89,7 +127,8 @@ final class LogPanel {
 
   /** What opens and closes it in the status line; expanded while it is open. */
   El toggle(State s, boolean modal) {
-    return StatusBar.item(Symbol.TEXT_BULLET_LIST_LTR, "Statement log", modal ? null : this::toggle)
+    return StatusBar.item(
+            Symbol.TEXT_BULLET_LIST_LTR, "Statement log", modal ? null : () -> toggle(s))
         .key("statement-log-toggle")
         .expanded(open);
   }
@@ -114,7 +153,7 @@ final class LogPanel {
                 // With a problem, the file may hold what does not show, or what a clear left.
                 (all.isEmpty() && log.problem() == null) || clearing ? null : () -> clearing = true)
             .key("statement-log-clear"),
-        button(SECONDARY, Symbol.DISMISS, "Close", this::toggle).key("statement-log-close"));
+        button(SECONDARY, Symbol.DISMISS, "Close", () -> toggle(s)).key("statement-log-close"));
     El body;
     if (entries.isEmpty()) {
       body = empty(log, all.isEmpty());
@@ -122,8 +161,8 @@ final class LogPanel {
       body = Split.split(
           Split.Direction.ROW,
           detail,
-          Split.Position.share(0.6f),
-          p -> detail = p,
+          DETAIL,
+          p -> detail(s, p),
           grid(s, entries),
           12 * t.size().control(),
           statement(s),

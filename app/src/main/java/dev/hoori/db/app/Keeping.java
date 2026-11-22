@@ -1,11 +1,16 @@
 package dev.hoori.db.app;
 
+import com.rethinkj.ui.Work;
+import com.rethinkj.ui.kit.Split;
+import com.rethinkj.ui.window.Window;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.QueryStore;
 import dev.hoori.db.core.connection.SavedQuery;
 import dev.hoori.db.core.connection.StoredConsole;
+import dev.hoori.db.core.connection.UiState;
+import dev.hoori.db.core.connection.UiStateStore;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -17,7 +22,8 @@ import java.util.concurrent.Callable;
 
 /**
  * The files kept beside the workspace, a part of the state: the consoles, the history and the saved
- * queries, each a {@link Kept}, read at the start and saved as they change; and what Exit waits for
+ * queries, each a {@link Kept}, read at the start and saved as they change; the remembered layout
+ * ({@link UiStateStore}), read before the first frame and saved silently; and what Exit waits for
  * of them and of the update settings. Only the app's thread uses it.
  */
 final class Keeping {
@@ -29,6 +35,7 @@ final class Keeping {
   private final ConsoleStore consoleStore;
   private final HistoryStore historyStore;
   private final QueryStore queryStore;
+  private final UiStateStore uiStateStore;
   final Kept consolesKept;
   final Kept historyKept;
   final Kept queriesKept;
@@ -55,6 +62,12 @@ final class Keeping {
   // The consoles kept of connections not known, saved along with the others and not shown.
   private List<StoredConsole> unseen = List.of();
   private int edits; // counted, so that a late patience is dropped
+  private UiState uiState;
+  private boolean uiStateUnsaved;
+  private Work uiStateSaving;
+  private boolean uiStateSaveAgain;
+  private boolean uiStateExitFailed; // a failed save during Exit is not retried
+  private int uiStateChanges;
 
   /**
    * @param folder where the workspace is kept
@@ -65,6 +78,8 @@ final class Keeping {
     this.consoleStore = new ConsoleStore(folder);
     this.historyStore = new HistoryStore(folder);
     this.queryStore = new QueryStore(folder);
+    this.uiStateStore = new UiStateStore(folder);
+    this.uiState = uiStateStore.load();
     consolesKept = new Kept("consoles", () -> {
       var list = new ArrayList<StoredConsole>();
       s.consoles(null).forEach(x -> list.add(x.stored()));
@@ -73,6 +88,105 @@ final class Keeping {
     });
     historyKept = new Kept("history", () -> Kept.writing(history, historyStore::save));
     queriesKept = new Kept("saved queries", () -> Kept.writing(queries, queryStore::save));
+  }
+
+  /** Applies the layout loaded from {@link UiStateStore#FILE} to the sidebar and statement log. */
+  void restoreLayout() {
+    if (uiState.sidebar() != null) {
+      s.sidebar = Split.Position.first(uiState.sidebar());
+    }
+    s.logPanel.restore(uiState);
+  }
+
+  /** The main window's remembered placement, or null where none is stored or it cannot be read. */
+  Window.Placement windowPlacement() {
+    var line = uiState.window();
+    if (line == null) {
+      return null;
+    }
+    try {
+      return Window.Placement.parse(line);
+    } catch (IllegalArgumentException _) {
+      return null;
+    }
+  }
+
+  UiState uiState() {
+    return uiState;
+  }
+
+  /** Keeps the sidebar's width, a moment after the last move. */
+  void sidebar(Split.Position position) {
+    if (position.kind() == Split.Position.Kind.FIRST) {
+      uiState(uiState.withSidebar(position.value()));
+    }
+  }
+
+  /** Keeps the layout once it has not changed for a moment, and at Exit; failures are silent. */
+  void uiState(UiState changed) {
+    if (changed.equals(uiState)) {
+      return;
+    }
+    uiState = changed;
+    uiStateUnsaved = true;
+    if (!s.guard.quitting()) {
+      uiStateExitFailed = false;
+    }
+    int at = ++uiStateChanges;
+    s.app.after(EDIT_SECONDS, () -> {
+      if (uiStateChanges == at && uiStateUnsaved) {
+        saveUiState();
+      }
+    });
+  }
+
+  private void saveUiState() {
+    if (uiStateSaving != null) {
+      uiStateSaveAgain = true;
+      return;
+    }
+    if (!uiStateUnsaved) {
+      return;
+    }
+    var snapshot = uiState;
+    uiStateUnsaved = false;
+    uiStateSaving = s.app.background(
+        "save UI state",
+        Kept.writing(snapshot, uiStateStore::save),
+        done -> uiStateSaved(false),
+        error -> uiStateSaved(true));
+  }
+
+  private void uiStateSaved(boolean failed) {
+    uiStateSaving = null;
+    if (failed) {
+      if (s.guard.quitting()) {
+        uiStateExitFailed = true;
+      }
+    } else {
+      uiStateExitFailed = false;
+    }
+    if (uiStateSaveAgain) {
+      uiStateSaveAgain = false;
+      if (!uiStateExitFailed) {
+        saveUiState();
+        return;
+      }
+    }
+    s.settled();
+  }
+
+  /** Reads the main window's placement before Exit closes it; none in a script run. */
+  private void captureWindow() {
+    var handle = s.app == null ? null : s.app.windows().of(s.app);
+    var window = handle == null ? null : handle.window();
+    if (window != null && window.isOpen()) {
+      var placement = window.placement().toString();
+      if (!placement.equals(uiState.window())) {
+        uiState = uiState.withWindow(placement);
+        uiStateUnsaved = true;
+      }
+    }
   }
 
   /** Loads the consoles, the history and the saved queries. */
@@ -326,8 +440,9 @@ final class Keeping {
   }
 
   /**
-   * Whether Exit waits for the consoles, the history or the saved queries to be saved; a save due
-   * begins. Changes that cannot be saved, as the file was not read, stop it once.
+   * Whether Exit waits for the consoles, the history, the saved queries, the update settings or
+   * the remembered layout to be saved; a save due begins. Changes to the first four that cannot be
+   * saved, as the file was not read, stop Exit once; a failure to save the layout never stops it.
    */
   boolean waits() {
     for (var each : List.of(consolesKept, historyKept, queriesKept, s.updates.kept)) {
@@ -342,7 +457,13 @@ final class Keeping {
         return true;
       }
     }
-    return false;
+    if (!uiStateExitFailed) {
+      captureWindow();
+      if (uiStateUnsaved) {
+        saveUiState();
+      }
+    }
+    return uiStateSaving != null;
   }
 
   /** Changes to a file that was not read stop Exit once, as they cannot be saved. */

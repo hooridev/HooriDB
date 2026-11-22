@@ -102,8 +102,9 @@ when asked; the new version confirms once its window has shown its first frame, 
 helper puts the old version back where it does not, and a version put back is not offered again
 until a higher one comes out. Help, About HooriDB shows the version that runs, its channel of
 updates, its authors, license and website. Started from the unpacked Linux bundle, it puts itself
-into the application menu, which gives its windows their icon in the dock. Nothing can be edited,
-filtered or sorted yet.
+into the application menu, which gives its windows their icon in the dock. The main window's
+placement, the sidebar's width and the statement log's open state, height and detail split are kept
+(`ui-state.json`). Nothing can be edited, filtered or sorted yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it
