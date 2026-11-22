@@ -1222,7 +1222,7 @@ final class State {
   }
 
   /** Moves the sidebar divider and keeps its width. */
-  void sidebar(Split.Position position) {
+  void moveSidebar(Split.Position position) {
     if (position.equals(sidebar)) {
       return;
     }

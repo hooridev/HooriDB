@@ -73,7 +73,7 @@ final class Frame {
                     Split.Direction.ROW,
                     s.sidebar,
                     State.DEFAULT_SIDEBAR,
-                    s::sidebar,
+                    s::moveSidebar,
                     catalog,
                     160,
                     tabs,

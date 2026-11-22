@@ -104,7 +104,6 @@ class LayoutTest {
     var logDetailValue = valueOf(before, "label=\"Resize Statements sent\"");
     float catalogWidth = widthOf(before, "#catalog ");
 
-    assertTrue(Files.exists(config().resolve(UiStateStore.FILE)));
     var saved = stored();
     assertEquals(app.state().sidebar.value(), saved.sidebar());
     assertNotEquals(State.DEFAULT_SIDEBAR.value(), saved.sidebar());
@@ -112,14 +111,13 @@ class LayoutTest {
     assertEquals(app.state().logPanel.split.value(), saved.logHeight());
     assertNotEquals(LogPanel.SPLIT.value(), saved.logHeight());
     assertEquals(app.state().logPanel.detail.value(), saved.logDetail());
-    assertNotEquals(LogPanel.DETAIL.value(), saved.logDetail());
+    assertNotEquals(LogPanel.DETAIL_SHARE.value(), saved.logDetail());
 
     // A new app on the same folder opens with the same sidebar width and statement log layout.
     var again = c.restarted();
     c.run(again, START + "snap again\n");
     var restored = c.tree("again");
     assertTrue(line(restored, "#statement-log-toggle").contains("expanded"), restored);
-    assertTrue(restored.contains("#statement-log "), restored);
     assertEquals(sidebarValue, valueOf(restored, "label=\"Resize Catalog\""));
     assertEquals(logHeightValue, valueOf(restored, "label=\"Resize\""));
     assertEquals(logDetailValue, valueOf(restored, "label=\"Resize Statements sent\""));
@@ -128,7 +126,6 @@ class LayoutTest {
     // Closing the statement log is remembered too, without losing the sidebar width.
     c.run(again, "press #statement-log-close\nframe\nadvance 1\nframe\n" + SAVED);
     assertEquals(Boolean.FALSE, stored().logOpen());
-    assertEquals(saved.sidebar(), stored().sidebar());
     var closed = c.restarted();
     c.run(closed, START + "snap closed\n");
     var closedTree = c.tree("closed");

@@ -42,11 +42,14 @@ import java.util.UUID;
  */
 final class LogPanel {
 
+  /** Its title, in the status line, on its toolbar and as its label. */
+  static final String TITLE = "Statement log";
+
   /** The panel's height where it was never moved. */
   static final Split.Position SPLIT = Split.Position.second(220);
 
   /** The detail split's share where it was never moved. */
-  static final Split.Position DETAIL = Split.Position.share(0.6f);
+  static final Split.Position DETAIL_SHARE = Split.Position.share(0.6f);
 
   private static final Format<LocalTime> TIME = Format.time(3);
   private static final List<Purpose> PARTS = List.of(Purpose.values());
@@ -54,7 +57,7 @@ final class LogPanel {
 
   boolean open;
   Split.Position split = SPLIT;
-  Split.Position detail = DETAIL;
+  Split.Position detail = DETAIL_SHARE;
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.ROWS);
   LogFilter filter = LogFilter.ALL;
   boolean clearing; // Clear asks first
@@ -127,8 +130,7 @@ final class LogPanel {
 
   /** What opens and closes it in the status line; expanded while it is open. */
   El toggle(State s, boolean modal) {
-    return StatusBar.item(
-            Symbol.TEXT_BULLET_LIST_LTR, "Statement log", modal ? null : () -> toggle(s))
+    return StatusBar.item(Symbol.TEXT_BULLET_LIST_LTR, TITLE, modal ? null : () -> toggle(s))
         .key("statement-log-toggle")
         .expanded(open);
   }
@@ -139,7 +141,7 @@ final class LogPanel {
     var all = log.entries();
     var entries = shown(log);
     El top = Card.toolbar(
-        "Statement log",
+        TITLE,
         filter.narrows()
             ? entries.size() + " of " + all.size()
             : all.size() == 1 ? "1 entry" : all.size() + " entries",
@@ -161,7 +163,7 @@ final class LogPanel {
       body = Split.split(
           Split.Direction.ROW,
           detail,
-          DETAIL,
+          DETAIL_SHARE,
           p -> detail(s, p),
           grid(s, entries),
           12 * t.size().control(),
@@ -170,7 +172,7 @@ final class LogPanel {
     }
     return Card.flush(top, Card.filters(filters(s, all)), said(s), body.grow(1).minSize(0, 0))
         .key("statement-log")
-        .label("Statement log")
+        .label(TITLE)
         .minSize(0, 0);
   }
 
