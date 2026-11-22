@@ -121,6 +121,7 @@ final class State {
   State(Path folder, Services services, String version) {
     this.store = new WorkspaceStore(folder);
     this.keeping = new Keeping(folder, this);
+    this.keeping.restoreLayout();
     this.updates = new Updates(folder, services.updater(), version);
     this.version = version;
     this.findKeyring = services.keyring();
@@ -1218,6 +1219,15 @@ final class State {
   void useTheme(Theme theme, String name) {
     this.theme = theme;
     tell(name + " on");
+  }
+
+  /** Moves the sidebar divider and keeps its width. */
+  void moveSidebar(Split.Position position) {
+    if (position.equals(sidebar)) {
+      return;
+    }
+    sidebar = position;
+    keeping.sidebar(position);
   }
 
   /** Shows a message in the status line for {@link #MESSAGE_SECONDS}, on the app's clock. */
