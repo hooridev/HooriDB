@@ -73,6 +73,12 @@ public final class Rows {
   /** How many characters of a text, and how many bytes of binary data, a page holds. */
   public static final int LIMIT = 1024;
 
+  /**
+   * The most characters of one text that a statement's result or a document's value keeps whole
+   * for the value panel; a longer one is cut to {@link #LIMIT}, as the panel lays it out whole.
+   */
+  public static final int WHOLE_LIMIT = 1024 * 1024;
+
   // A date, and a date and time, as PostgreSQL writes them with DateStyle ISO, which pgjdbc sets,
   // and as MariaDB and MySQL write them; PostgreSQL's years go beyond 9999, and before the common
   // era they end in BC. A timestamp with time zone of a statement's result has the offset of the
@@ -432,7 +438,8 @@ public final class Rows {
 
   // One character more than the limit tells that there is more; the server counts characters, as
   // code points, where Java counts UTF-16 units. A NULL has no length, also where the start, such
-  // as concat()'s, is an empty text. A statement's result has the whole text, which is cut here.
+  // as concat()'s, is an empty text. A statement's result reads the whole text, which RowReader
+  // cuts beyond its budget.
   static Read text(Source source, Kind kind, UnaryOperator<String> start, String length) {
     if (source.sql() == null) {
       return whole(source, kind);
@@ -446,22 +453,33 @@ public final class Rows {
             rows.getString(index + 1) == null ? null : cut(rows.getString(index), rows, index + 1));
   }
 
+  /** Reads a column of a statement's result as its whole text, which {@link RowReader} bounds. */
+  static final Value WHOLE = ResultSet::getString;
+
+  /**
+   * A column of a statement's result read whole as text; {@link RowReader} keeps a value longer
+   * than {@link #LIMIT} code points whole while its budget allows and cuts the rest.
+   */
   static Read whole(Source source, Kind kind) {
-    return new Read(field(source, kind), null, List.of(), (rows, index) -> {
-      var text = rows.getString(index);
-      return text == null || text.codePointCount(0, text.length()) <= LIMIT
-          ? text
-          : new Cut(text.substring(0, text.offsetByCodePoints(0, LIMIT)), OptionalLong.empty());
-    });
+    return new Read(field(source, kind), null, List.of(), WHOLE);
   }
 
   static Object cut(String text, ResultSet rows, int length) throws SQLException {
-    if (text == null || text.codePointCount(0, text.length()) <= LIMIT) {
-      return text;
-    }
-    return new Cut(
-        text.substring(0, text.offsetByCodePoints(0, LIMIT)),
-        OptionalLong.of(rows.getLong(length)));
+    return tooLong(text) ? new Cut(start(text), OptionalLong.of(rows.getLong(length))) : text;
+  }
+
+  static Cut cut(String text) {
+    return new Cut(start(text), OptionalLong.empty());
+  }
+
+  static boolean tooLong(String text) {
+    return text != null
+        && text.length() > LIMIT
+        && (text.length() > 2 * LIMIT || text.codePointCount(0, text.length()) > LIMIT);
+  }
+
+  private static String start(String text) {
+    return text.substring(0, text.offsetByCodePoints(0, LIMIT));
   }
 
   static Read binary(Source source, UnaryOperator<String> sql, String length) {

@@ -33,7 +33,8 @@ Shift+Enter in a grid, or the button in its
 status line, opens a panel beside it with the value of the current cell, which follows the
 selection: JSON (PostgreSQL's `json` and `jsonb`, MySQL's and MariaDB's `json`) formatted and
 colored, and with its first problem marked where it is not valid; a table reads a value cut short
-whole by its row's primary key, and a console's result shows the start it holds. A connection can
+whole by its row's primary key, a console's result keeps long values whole up to a budget and
+their start beyond it, and a MongoDB console's shows the value in its document. A connection can
 carry a color, which marks its row and its tabs. "New console", in a connection's menu or the File
 menu, opens a tab with an SQL editor that runs the statement at the caret, the selection or all of
 them on a connection of its own, with each result's rows read in portions as they scroll, a count

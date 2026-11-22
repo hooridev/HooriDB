@@ -104,7 +104,8 @@ class RowReaderServerTest {
 
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
-  void aQueryCutsLongTextAndBinaryDataAsATableDoes(Provider provider) throws Exception {
+  void aQueryKeepsLongTextWholeWithinBudgetAndCutsBinaryDataAsATableDoes(Provider provider)
+      throws Exception {
     var pg = provider == Provider.POSTGRESQL;
     var limit = Rows.LIMIT;
     try (var connection = open(provider)) {
@@ -121,15 +122,16 @@ class RowReaderServerTest {
         var page = Rows.read(
             connection, provider, table, Catalog.columns(connection, provider, table), 0, 2);
         var query = query(connection, provider, "SELECT * FROM long_value ORDER BY id");
-        // The size the server stores is known of the table's column only.
         assertEquals(page.rows().get(0), query.rows().get(0));
         assertEquals(
             new Cut("😀".repeat(limit), OptionalLong.of(4L * (limit + 1))),
             page.rows().get(1).get(1));
-        assertEquals(
-            new Cut("😀".repeat(limit), OptionalLong.empty()),
-            query.rows().get(1).get(1));
+        assertEquals("😀".repeat(limit + 1), query.rows().get(1).get(1));
         assertEquals(page.rows().get(1).get(2), query.rows().get(1).get(2));
+        // Beyond the budget, the query's long text is cut without a stored size.
+        var cut = readWithBudget(connection, provider, "SELECT * FROM long_value ORDER BY id", 0);
+        assertEquals(
+            new Cut("😀".repeat(limit), OptionalLong.empty()), cut.get(1).get(1));
       } finally {
         execute(connection, "DROP TABLE long_value");
       }
@@ -184,8 +186,13 @@ class RowReaderServerTest {
         assertEquals(
             new Cut(start, OptionalLong.of(2000)), page.rows().getFirst().get(1));
         assertEquals(
-            new Cut(start, OptionalLong.empty()),
+            "é".repeat(2000),
             query(connection, provider, "SELECT t FROM latin").rows().getFirst().getFirst());
+        assertEquals(
+            new Cut(start, OptionalLong.empty()),
+            readWithBudget(connection, provider, "SELECT t FROM latin", 0)
+                .getFirst()
+                .getFirst());
       } finally {
         execute(connection, "DROP TABLE latin");
       }
@@ -193,18 +200,18 @@ class RowReaderServerTest {
   }
 
   @org.junit.jupiter.api.Test
-  void aLongCharOfPostgresqlIsCutWithItsPadding() throws Exception {
+  void aLongCharOfPostgresqlKeepsItsPaddingWholeAndWhenCut() throws Exception {
     var provider = Provider.POSTGRESQL;
+    var sql = "SELECT repeat('x', 2048)::char(2048), 'ab'::char(2048), 'ab'::char(4)";
     try (var connection = open(provider)) {
-      var row = query(
-              connection,
-              provider,
-              "SELECT repeat('x', 2048)::char(2048), 'ab'::char(2048), 'ab'::char(4)")
-          .rows()
-          .getFirst();
-      assertEquals(new Cut("x".repeat(Rows.LIMIT), OptionalLong.empty()), row.get(0));
-      assertEquals(new Cut("ab" + " ".repeat(Rows.LIMIT - 2), OptionalLong.empty()), row.get(1));
+      var row = query(connection, provider, sql).rows().getFirst();
+      assertEquals("x".repeat(2048), row.get(0));
+      assertEquals("ab" + " ".repeat(2046), row.get(1));
       assertEquals("ab  ", row.get(2));
+      var cut = readWithBudget(connection, provider, sql, 0).getFirst();
+      assertEquals(new Cut("x".repeat(Rows.LIMIT), OptionalLong.empty()), cut.get(0));
+      assertEquals(new Cut("ab" + " ".repeat(Rows.LIMIT - 2), OptionalLong.empty()), cut.get(1));
+      assertEquals("ab  ", cut.get(2));
     }
   }
 
@@ -246,6 +253,19 @@ class RowReaderServerTest {
       var portion = execution.next(1000);
       var rows = assertInstanceOf(Result.Rows.class, portion.results().getFirst());
       return new Page(rows.fields(), new ArrayList<>(rows.rows()));
+    }
+  }
+
+  private static List<List<Object>> readWithBudget(
+      Connection connection, Provider provider, String sql, long budget) throws SQLException {
+    try (var statement = connection.createStatement();
+        var rows = statement.executeQuery(sql)) {
+      var reader = RowReader.of(provider, rows.getMetaData(), budget);
+      var read = new ArrayList<List<Object>>();
+      while (rows.next()) {
+        read.add(reader.read(rows));
+      }
+      return read;
     }
   }
 

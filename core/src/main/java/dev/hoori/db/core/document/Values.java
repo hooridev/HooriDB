@@ -102,18 +102,36 @@ public final class Values {
   public static List<Object> row(List<Field> fields, Document document) {
     var row = new ArrayList<Object>(fields.size());
     for (var field : fields) {
-      var value = document.get(field.name());
-      row.add(
-          value != null || document.has(field.name()) ? value(value, field.kind()) : Missing.FIELD);
+      row.add(of(field, document, true));
     }
     return Collections.unmodifiableList(row);
   }
 
+  /**
+   * The value of the field in the document as a grid of the field's kind shows it, cutting only a
+   * text longer than {@link Rows#WHOLE_LIMIT}, or {@link Missing#FIELD} where the document has no
+   * such field.
+   */
+  public static Object whole(Field field, Document document) {
+    return of(field, document, false);
+  }
+
+  private static Object of(Field field, Document document, boolean cut) {
+    var value = document.get(field.name());
+    return value != null || document.has(field.name())
+        ? value(value, field.kind(), cut)
+        : Missing.FIELD;
+  }
+
   /** The value of a document as a grid of the kind shows it. */
   public static Object value(Object value, Kind kind) {
+    return value(value, kind, true);
+  }
+
+  private static Object value(Object value, Kind kind, boolean cut) {
     return switch (value) {
       case null -> null;
-      case String s when kind == Kind.TEXT -> s.length() > Rows.LIMIT ? cut(s) : s;
+      case String s when kind == Kind.TEXT -> maybeCut(s, cut);
       case Integer n when kind == Kind.INTEGER -> (long) n;
       case Long n when kind == Kind.INTEGER -> n;
       case Double n when kind == Kind.DECIMAL -> n;
@@ -125,18 +143,14 @@ public final class Values {
         var bytes = b.bytes();
         yield new Binary(Arrays.copyOf(bytes, Math.min(bytes.length, Rows.LIMIT)), bytes.length);
       }
-      case Document d -> json(d);
-      case List<?> list -> json(list);
-      default -> {
-        var text = Shell.compact(value);
-        yield text.length() > Rows.LIMIT ? cut(text) : text;
-      }
+      case Document d -> maybeCut(ExtendedJson.of(d), cut);
+      case List<?> list -> maybeCut(ExtendedJson.of(list), cut);
+      default -> maybeCut(Shell.compact(value), cut);
     };
   }
 
-  private static Object json(Object value) {
-    var text = ExtendedJson.of(value);
-    return text.length() > Rows.LIMIT ? cut(text) : text;
+  private static Object maybeCut(String text, boolean cut) {
+    return text.length() > (cut ? Rows.LIMIT : Rows.WHOLE_LIMIT) ? cut(text) : text;
   }
 
   // Not between the two halves of a character beyond the 16 bits of one char.

@@ -128,7 +128,7 @@ final class Cells {
       widths[index] = width(kind) * t.size().control();
     }
     float w = widths[index] < 0 ? width(Kind.DECIMAL) * t.size().control() : widths[index];
-    var column = new DataGrid.Column(header.name(), w, type, row -> text(valueAt.apply(row), zone))
+    var column = new DataGrid.Column(header.name(), w, type, row -> cell(valueAt.apply(row), zone))
         .typeName(header.type())
         .sortable(false);
     if (header.key()) {
@@ -138,6 +138,23 @@ final class Cells {
       column = column.cellIcon(row -> icon(valueAt.apply(row)));
     }
     return column;
+  }
+
+  /**
+   * The text a grid cell shows: at most {@link Rows#LIMIT} code points of a string, so that
+   * drawing and fitting columns stay fast while {@link #text} keeps the whole value.
+   */
+  static String cell(Object value, ZoneId zone) {
+    return value instanceof String s ? preview(s) : text(value, zone);
+  }
+
+  // shortcut: the grid shapes a cell's whole text (rethinkj/ui#414); drop this once it bounds it.
+  private static String preview(String text) {
+    if (text.length() <= Rows.LIMIT
+        || text.length() <= 2 * Rows.LIMIT && text.codePointCount(0, text.length()) <= Rows.LIMIT) {
+      return text;
+    }
+    return text.substring(0, text.offsetByCodePoints(0, Rows.LIMIT));
   }
 
   /**
