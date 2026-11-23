@@ -151,7 +151,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   private final Clause where;
   private final Clause order;
   private Whole whole; // the current cell's whole value, for the value panel; or null
-  private boolean keyChanged; // a commit changed a primary key: the rows are read anew
+  private boolean reread; // a commit changed a key, inserted, or deleted: read the rows anew
   final ResultEdits edits = new ResultEdits();
   ResultEdits.Preview preview; // the DML Preview dialog before committing edits, or null
   // Original rows (as read) of edited positions, kept also where a shrunk end trims their page.
@@ -410,12 +410,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     long from = page * PAGE;
     if (n > 0) {
       if (!undone.isEmpty() && hasUndone(page)) {
-        forgetHistory(s); // rows come back where undo history was, which may be others now
+        forgetHistory(); // rows come back where undo history was, which may be others now
       }
-      int editing = selection.isEditing() ? selection.editingRow() : -1;
+      int editing = selection.isEditing() ? positionOf(selection.editingRow()) : -1;
       // A draft is of the row as shown when it opened: of its original where one is held, else
       // of a row that must come back unchanged, as its values are what the write compares.
-      if (editing / PAGE == page && editing >= 0 && !originals.containsKey(editing)) {
+      if (editing >= 0 && editing / PAGE == page && !originals.containsKey(editing)) {
         int at = editing % PAGE;
         var was = pageRow(editing);
         if (was == null || at >= n || !was.equals(read.rows().get(at))) {
@@ -480,7 +480,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var far = new ArrayList<>(pages.keySet());
     far.remove(Long.valueOf(panelPage()));
     if (selection.isEditing()) {
-      far.remove(Long.valueOf(selection.editingRow() / PAGE)); // its draft's row stays
+      int editingPos = positionOf(selection.editingRow());
+      if (editingPos >= 0) {
+        far.remove(Long.valueOf(editingPos / PAGE)); // its draft's row stays
+      }
     }
     // Pages with edits, or edits undo may bring back, stay, beside the pages kept: a page read
     // again may hold other rows at those positions, which the undo history, kept by position,
@@ -506,26 +509,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
    * Drops the undo history and keeps the staged changes: the kit keeps its history by position, so
    * a step must not replay on another row that came to its position.
    */
-  private void forgetHistory(State s) {
-    var old = edits.changes;
-    var cells = new ArrayList<DataGrid.CellValue>();
-    for (var change : old.changes()) {
-      change
-          .values()
-          .forEach((column, text) ->
-              cells.add(new DataGrid.CellValue((int) change.key(), column, text)));
-    }
+  private void forgetHistory() {
     undone.clear();
-    edits.changes = ResultEdits.gridChanges(s, this);
-    if (!cells.isEmpty()) {
-      edits.changes.set(cells);
-    }
-    for (var cell : cells) {
-      var error = old.errorText(cell.row(), cell.column());
-      if (error != null) {
-        edits.changes.error(cell.row(), cell.column(), error);
-      }
-    }
+    edits.forgetHistory();
   }
 
   /** Whether the new values of these columns change the row's primary key. */
@@ -559,7 +545,11 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   /** The page of the cell the open value panel shows, which stays; -1 for none. */
   private long panelPage() {
-    return value.open && selection.row() >= 0 ? selection.row() / PAGE : -1;
+    if (!value.open) {
+      return -1;
+    }
+    int pos = positionOf(selection.row());
+    return pos >= 0 ? pos / PAGE : -1;
   }
 
   /**
@@ -1173,6 +1163,16 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     static final InPanel NONE = new InPanel(null, null, false, false);
   }
 
+  // Whether the cell holds a staged value of its own, which the panel shows in place of the row's.
+  private boolean staged(int row, int column) {
+    var changes = edits.changes;
+    if (changes == null || changes.isEmpty()) {
+      return false;
+    }
+    var status = changes.cellStatus(row, column);
+    return status == DataGrid.Status.CHANGED || status == DataGrid.Status.ERROR;
+  }
+
   /** What the open value panel shows of the current cell, read where its page is not held. */
   private InPanel inPanel(State s) {
     int row = selection.row();
@@ -1180,26 +1180,31 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (!value.open
         || fields == null
         || row < 0
-        || row >= gridRows()
+        || row >= gridRowCount()
         || column < 0
         || column >= columns.size()) {
       return InPanel.NONE;
     }
-    if (!loaded(row)) {
+    var changes = edits.changes;
+    if (changes != null && !changes.isEmpty() && changes.isNew(row)) {
+      boolean set = ResultEdits.insertedColumns(changes).get(changes.key(row)).contains(column);
+      var v = set ? changes.cell(row, column) : ValuePanel.DEFAULT;
+      return new InPanel(cell(column, v), null, false, false);
+    }
+    int pos = positionOf(row);
+    if (!loaded(pos)) {
       // Out of the pages held, as after a refresh far from it: read as a page in view.
-      long page = row / PAGE;
+      long page = pos / PAGE;
       if (!closed && failure == null && opening == null && !ending) {
         read(s, page, Lane.Priority.VIEW);
       }
       boolean waiting = opening != null || reading.containsKey(page);
       return new InPanel(waiting ? cell(column, null) : null, null, waiting, false);
     }
-    if (edits.changes != null
-        && !edits.changes.isEmpty()
-        && edits.changes.cellStatus(row, column) != DataGrid.Status.UNCHANGED) {
-      return new InPanel(cell(column, edits.changes.cell(row, column)), null, false, false);
+    if (staged(row, column)) {
+      return new InPanel(cell(column, changes.cell(row, column)), null, false, false);
     }
-    var values = rowValues(row);
+    var values = rowValues(pos);
     var v = values.get(column);
     if (!(v instanceof Cut)) {
       return new InPanel(cell(column, v), null, false, false);
@@ -1286,12 +1291,24 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   /** The rows wholly in view, as "Rows 201–223"; empty before the grid was laid out. */
   private String inViewText(boolean documents) {
     int top = selection.firstRowInView();
-    if (top < 0 || top >= rows) {
+    int bottom = selection.lastRowInView();
+    if (top < 0 || bottom < top) {
+      return "";
+    }
+    var changes = edits.changes;
+    if (changes != null && !changes.isEmpty()) {
+      var at = ResultEdits.positions(changes, top, bottom);
+      if (at == null) {
+        return "";
+      }
+      top = at[0];
+      bottom = at[1];
+    }
+    if (top >= rows) {
       return "";
     }
     // Not the row that asks whether there are more, which is not known to be there.
-    long bottom = Math.min(selection.lastRowInView() + 1L, rows);
-    return DocumentPresentation.range(top + 1L, bottom, documents);
+    return DocumentPresentation.range(top + 1L, Math.min(bottom + 1L, rows), documents);
   }
 
   /**
@@ -1299,11 +1316,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
    * selection stays. Each is off where the grid shows its first or last row already.
    */
   private DocumentPresentation.Paging gridPaging() {
+    int total = gridRowCount();
     int top = selection.firstRowInView();
     int bottom = selection.lastRowInView();
     return new DocumentPresentation.Paging(
         top > 0,
-        bottom >= 0 && bottom < gridRows() - 1,
+        bottom >= 0 && bottom < total - 1,
         () -> selection.scrollToRow(0),
         () -> {
           int from = selection.firstRowInView();
@@ -1312,7 +1330,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         },
         () -> selection.scrollToRow(selection.lastRowInView() + 1),
         // As Control+End: an estimate too high shows the end once the reads there correct it.
-        () -> selection.scrollToRow(gridRows()));
+        () -> selection.scrollToRow(gridRowCount()));
   }
 
   /** The page of documents for the JSON and Tree strategies. */
@@ -1431,15 +1449,15 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var changes = edits.changes;
     BooleanSupplier free = () ->
         edits.writing == null && s.guard.locked(this) == null && ResultEdits.current(s, this, this);
+    boolean edited = editable != null && changes != null;
+    int count = edited ? changes.rowCount() : gridRows();
+    var inserted = edited ? ResultEdits.insertedColumns(changes) : Map.<Long, Set<Integer>>of();
     var shown = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < columns.size(); c++) {
       var kind = fields == null ? null : fields.get(c).kind();
       int at = c;
       var col = Cells.column(columns.get(c), kind, widths, c, row -> value(row, at), zone);
-      shown.add(
-          editable != null && changes != null
-              ? ResultEdits.editedColumn(this, col, at, free, false)
-              : col);
+      shown.add(edited ? ResultEdits.editedColumn(this, col, at, free, false, inserted) : col);
     }
     var options = DataGrid.options()
         .select(selection)
@@ -1452,28 +1470,24 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
         .contextMenu(
             menu, List.of(Menu.item("Refresh", () -> refresh(s)).icon(Symbol.ARROW_CLOCKWISE)))
-        .loading(this::loaded, (from, to) -> want(s, from, to))
+        .loading(this::gridRowLoaded, (from, to) -> wantGrid(s, from, to))
         // Nothing to do: the build it causes brings the footer's rows in view along.
         .onRowsInView((from, to) -> {});
-    int count;
-    if (editable != null && changes != null) {
-      ResultEdits.configureGrid(s, this, options, free);
-      count = changes.rowCount();
-    } else {
-      count = gridRows();
+    if (edited) {
+      ResultEdits.configureGrid(s, this, options, free, true);
     }
     El grid = DataGrid.dataGrid(shown, count, options)
         .key("grid")
         .label("Rows of " + table.name())
         .defaultFocus();
-    if (editable != null && changes != null) {
+    if (edited) {
       Predicate<Key> guard = k -> ResultEdits.rejectUnloadedKey(app, this, k);
       grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
     }
     return grid;
   }
 
-  /** The rows in the grid, which counts them in an int. */
+  /** Base table rows in the grid (excluding staged new rows), which counts them in an int. */
   private int gridRows() {
     long n = shown();
     if (!originals.isEmpty()) {
@@ -1482,22 +1496,60 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return (int) Math.min(n, DocumentPresentation.GRID_ROWS);
   }
 
-  private boolean loaded(int row) {
-    if (!originals.isEmpty() && originals.containsKey(row)) {
-      return true;
-    }
-    var page = pages.get((long) row / PAGE);
-    return page != null && row % PAGE < page.size();
+  /** Total rows shown in the grid, including staged new rows. */
+  private int gridRowCount() {
+    var changes = edits.changes;
+    return changes == null || changes.isEmpty() ? gridRows() : changes.rowCount();
   }
 
-  private Object value(int row, int column) {
+  /** Table position for a grid row, or -1 if it is a staged new row or out of range. */
+  private int positionOf(int gridRow) {
+    return ResultEdits.position(edits.changes, gridRow);
+  }
+
+  private boolean gridRowLoaded(int gridRow) {
+    var changes = edits.changes;
+    if (changes == null || changes.isEmpty()) {
+      return loaded(gridRow);
+    }
+    long key = changes.key(gridRow);
+    return key < 0 || loaded((int) key);
+  }
+
+  private void wantGrid(State s, int gridFrom, int gridTo) {
+    var changes = edits.changes;
+    if (changes == null || changes.isEmpty()) {
+      want(s, gridFrom, gridTo);
+      return;
+    }
+    var at = ResultEdits.positions(changes, gridFrom, gridTo);
+    if (at == null) {
+      want(s, 0, -1);
+    } else {
+      want(s, at[0], at[1]);
+    }
+  }
+
+  private boolean loaded(int pos) {
+    if (!originals.isEmpty() && originals.containsKey(pos)) {
+      return true;
+    }
+    var page = pages.get((long) pos / PAGE);
+    return page != null && pos % PAGE < page.size();
+  }
+
+  private Object value(int gridRow, int column) {
+    int pos = positionOf(gridRow);
+    if (pos < 0) {
+      return null;
+    }
     if (!originals.isEmpty()) {
-      var rowValues = originals.get(row);
+      var rowValues = originals.get(pos);
       if (rowValues != null) {
         return rowValues.get(column);
       }
     }
-    return pages.get((long) row / PAGE).get(row % PAGE).get(column);
+    return pages.get((long) pos / PAGE).get(pos % PAGE).get(column);
   }
 
   private List<Object> rowValues(int row) {
@@ -1681,9 +1733,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   @Override
   public void settledFromEdit(State s) {
     settle(s);
-    if (keyChanged) {
-      keyChanged = false;
-      open(s, true); // the rows' places may have changed with their keys
+    if (reread) {
+      reread = false;
+      open(s, true); // rows may have moved, been removed, or gained generated keys
     }
   }
 
@@ -1760,7 +1812,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       var shown = pageRow(row);
       var before = undone.remove(row);
       if (before != null && !before.equals(shown)) {
-        forgetHistory(s); // its steps here are of another row, which must not replay on this one
+        forgetHistory(); // its steps here are of another row, which must not replay on this one
       }
       if (shown != null) {
         originals.put(row, shown);
@@ -1777,13 +1829,16 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       return;
     }
     for (var gc : changes.changes()) {
-      keepRow((int) gc.key());
+      if (gc.key() >= 0) {
+        keepRow((int) gc.key());
+      }
     }
-    boolean keepHistory = changes.canUndo() || changes.canRedo();
+    boolean keepHistory = edits.hasHistory();
     var it = originals.entrySet().iterator();
     while (it.hasNext()) {
       var entry = it.next();
-      if (changes.rowStatus(entry.getKey()) == DataGrid.Status.UNCHANGED) {
+      int gridRow = changes.rowOf(entry.getKey());
+      if (gridRow < 0 || changes.rowStatus(gridRow) == DataGrid.Status.UNCHANGED) {
         if (keepHistory) {
           undone.put(entry.getKey(), entry.getValue());
         }
@@ -1802,13 +1857,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   @Override
-  public void applyCommitted(Map<Integer, Map<Integer, Object>> applied) {
+  public void applyCommitted(Map<Integer, Map<Integer, Object>> applied, boolean reload) {
     whole = null;
-    keyChanged = applied.entrySet().stream().anyMatch(e -> {
-      var original = originals.get(e.getKey());
-      return original != null && changesKey(original, e.getValue());
-    });
-    if (keyChanged) {
+    reread = reload
+        || applied.entrySet().stream().anyMatch(e -> {
+          var original = originals.get(e.getKey());
+          return original != null && changesKey(original, e.getValue());
+        });
+    if (reread) {
       return; // read anew once settled, as the server holds them
     }
     var updatedPages = new HashMap<Long, List<List<Object>>>();

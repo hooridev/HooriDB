@@ -421,7 +421,7 @@ final class ResultsArea {
         .loading(row -> row < o.rows.size(), (_, last) -> tab.want(s, o, last));
     int count;
     if (editable != null && changes != null) {
-      ResultEdits.configureGrid(s, o, options, free);
+      ResultEdits.configureGrid(s, o, options, free, false);
       count = changes.rowCount();
     } else {
       count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), DocumentPresentation.GRID_ROWS);
