@@ -412,11 +412,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         forgetHistory(s); // rows come back where undo history was, which may be others now
       }
       int editing = selection.isEditing() ? selection.editingRow() : -1;
-      // A draft is of the row shown when it opened: of its original where one is held.
+      // A draft is of the row as shown when it opened: of its original where one is held, else
+      // of a row that must come back unchanged, as its values are what the write compares.
       if (editing / PAGE == page && editing >= 0 && !originals.containsKey(editing)) {
         int at = editing % PAGE;
         var was = pageRow(editing);
-        if (was == null || at >= n || !sameKey(was, read.rows().get(at))) {
+        if (was == null || at >= n || !was.equals(read.rows().get(at))) {
           selection.cancelEdit(); // its draft is of a row no longer there
           say(s, "The row being edited changed on the server; the edit was cancelled.");
         }
@@ -524,6 +525,17 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         edits.changes.error(cell.row(), cell.column(), error);
       }
     }
+  }
+
+  /** Whether the new values of these columns change the row's primary key. */
+  private boolean changesKey(List<Object> row, Map<Integer, Object> values) {
+    for (var value : values.entrySet()) {
+      int c = value.getKey();
+      if (columns.get(c).keyPosition() > 0 && !Objects.equals(row.get(c), value.getValue())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Whether two rows of the table have the same primary key. */
@@ -1802,8 +1814,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       }
       int offset = rowIndex % PAGE;
       var original = originals.get(rowIndex);
-      // Not where the page, read again since, holds another row at the edited row's position.
-      if (offset < page.size() && (original == null || sameKey(original, page.get(offset)))) {
+      // Not where the page, read again since, holds another row at the edited row's position;
+      // nor where the key changed, which the server, as by a trigger, may not have taken as given:
+      // Refresh shows what it holds.
+      if (offset < page.size()
+          && (original == null || sameKey(original, page.get(offset)))
+          && !changesKey(page.get(offset), entry.getValue())) {
         var updated = new ArrayList<>(page.get(offset));
         entry.getValue().forEach(updated::set);
         page.set(offset, Collections.unmodifiableList(updated));
