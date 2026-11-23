@@ -355,7 +355,7 @@ final class CatalogTree {
     live.password = password;
     live.phase = new Live.Connecting();
     live.lane = lane(s, live);
-    live.lane.open(servers, live.profile, password, live.driver, timeout);
+    live.lane.open(servers, browsing(live.profile), password, live.driver, timeout);
     record Opened(ServerVersion version, String database) {}
     // Right behind the opening, which it fails as.
     live.connecting = live.lane.ask(
@@ -683,17 +683,18 @@ final class CatalogTree {
    * keeps while connected, and closes with them.
    */
   Lane planner(State s, UUID id, String database) {
-    return auxiliary(s, id, database, live -> live.planners);
+    return auxiliary(s, id, database, live -> live.planners, false);
   }
 
   /**
    * The connection for counts that may take long on the database, opened the first time it is
    * asked for, and anew where it could not be or is gone; null while the tree's connection is not
    * connected. Nothing else runs on it, so that a slow count does not hold up the tree or other
-   * tables' pages: on PostgreSQL one per database, else one, as {@link #planner} does.
+   * tables' pages: on PostgreSQL one per database, else one, as {@link #planner} does. On a SQL
+   * server it is opened read-only at the server even for a writable profile.
    */
   Lane counter(State s, UUID id, String database) {
-    return auxiliary(s, id, database, live -> live.counters);
+    return auxiliary(s, id, database, live -> live.counters, true);
   }
 
   /**
@@ -704,10 +705,11 @@ final class CatalogTree {
    * #planner} does.
    */
   Lane writer(State s, UUID id, String database) {
-    return auxiliary(s, id, database, live -> live.writers);
+    return auxiliary(s, id, database, live -> live.writers, false);
   }
 
-  private Lane auxiliary(State s, UUID id, String database, Function<Live, Map<String, Lane>> map) {
+  private Lane auxiliary(
+      State s, UUID id, String database, Function<Live, Map<String, Lane>> map, boolean readOnly) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected c) || live.password == null) {
       return null;
@@ -722,10 +724,18 @@ final class CatalogTree {
       // Its loss is the call's alone, which fails without losing the tree's connection.
       lane = new Lane(e -> {});
       var profile = key.isEmpty() ? live.profile : live.profile.withDatabase(key);
+      if (readOnly) {
+        profile = browsing(profile);
+      }
       lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
       lanes.put(key, lane);
     }
     return lane;
+  }
+
+  /** The profile for the tree's and counts' lanes: read-only on SQL servers, as-is for documents. */
+  private static ConnectionProfile browsing(ConnectionProfile profile) {
+    return profile.provider().keepsDocuments() ? profile : profile.withReadOnly(true);
   }
 
   /** Whether the connection is connected, so that its lanes can be used. */
@@ -896,7 +906,7 @@ final class CatalogTree {
       lane = lane(s, live);
       lane.open(
           servers,
-          live.profile.withDatabase(database),
+          browsing(live.profile.withDatabase(database)),
           live.password,
           live.driver,
           s.settings.connectTimeout());

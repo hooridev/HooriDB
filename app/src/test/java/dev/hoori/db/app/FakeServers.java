@@ -149,6 +149,38 @@ final class FakeServers implements Servers {
   private final Map<String, Answer> statements = new ConcurrentHashMap<>();
   private final Map<String, Supplier<Answer>> dynamicStatements = new ConcurrentHashMap<>();
   private final java.util.Set<String> refused = ConcurrentHashMap.newKeySet();
+  private final java.util.Set<String> writing = ConcurrentHashMap.newKeySet();
+
+  /**
+   * Marks a SQL fragment (such as {@code nextval(}) as writing at the server: a read-only link
+   * refuses a clause or statement holding it while a writable link runs it.
+   */
+  FakeServers writes(String fragment) {
+    writing.add(fragment.toLowerCase(Locale.ROOT));
+    return this;
+  }
+
+  /** Whether the link opened with the given 1-based number was opened read-only. */
+  boolean readOnly(int link) {
+    return links.stream().filter(l -> l.number == link).findFirst().orElseThrow().readOnly;
+  }
+
+  private boolean isWrite(String sql) {
+    if (sql == null || sql.isEmpty() || writing.isEmpty()) {
+      return false;
+    }
+    var lower = sql.toLowerCase(Locale.ROOT);
+    for (var fragment : writing) {
+      if (lower.contains(fragment)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean isWrite(Rows.Filter filter) {
+    return filter != null && (isWrite(filter.where()) || isWrite(filter.order()));
+  }
 
   /** How long each portion of a statement took, as the server would say. */
   static final Duration TOOK = Duration.ofMillis(4);
@@ -727,15 +759,21 @@ final class FakeServers implements Servers {
 
     // A call on a table's rows: on its database, one at a time, held and failed by its key.
     private <T> T rows(String key, Table t, RowsCall<T> call) throws QueryException {
+      return rows(key, t, false, call);
+    }
+
+    private <T> T rows(String key, Table t, boolean writes, RowsCall<T> call)
+        throws QueryException {
       return Journal.sql(
           made.provider(),
           Purpose.ROWS,
           key,
           read -> read instanceof Page page ? Outcome.rows(page.rows().size()) : Outcome.rows(1),
-          () -> table(key, t, call));
+          () -> table(key, t, writes, call));
     }
 
-    private <T> T table(String key, Table t, RowsCall<T> call) throws QueryException {
+    private <T> T table(String key, Table t, boolean writes, RowsCall<T> call)
+        throws QueryException {
       if (busy.incrementAndGet() > 1) {
         overlapped = true;
       }
@@ -753,6 +791,10 @@ final class FakeServers implements Servers {
           throw e;
         } catch (Exception _) {
           throw queryFailure(QueryException.Failure.OTHER);
+        }
+        if (readOnly && writes) {
+          throw QueryException.of(
+              QueryException.Failure.OTHER, "ERROR: cannot execute in a read-only transaction");
         }
         if (table == null) {
           throw queryFailure(QueryException.Failure.NOT_FOUND);
@@ -858,6 +900,7 @@ final class FakeServers implements Servers {
       return rows(
           "count " + key,
           t,
+          isWrite(filter),
           table -> counts.containsKey(key) ? counts.get(key) : counts.getOrDefault(path, 3L));
     }
 
@@ -868,7 +911,7 @@ final class FakeServers implements Servers {
       var path = path(t);
       var suffix = suffix(filter);
       var key = path + suffix;
-      return rows("read " + path + " " + from + "-" + to + suffix, t, table -> {
+      return rows("read " + path + " " + from + "-" + to + suffix, t, isWrite(filter), table -> {
         // As core reads: the columns given must be the table's now, by name, order and type.
         var now = table.children().stream()
             .map(line -> List.of(line.text().replaceFirst("^\\*", "").split(": ", 2)))
@@ -1096,6 +1139,11 @@ final class FakeServers implements Servers {
         } catch (Exception _) {
           throw queryFailure(QueryException.Failure.OTHER);
         }
+        if (readOnly) {
+          throw QueryException.of(
+              QueryException.Failure.OTHER,
+              "ERROR: cannot execute write in a read-only transaction");
+        }
         if (refused.contains(key)) {
           done.add(key);
           return new Changes.Outcome.Refused();
@@ -1263,17 +1311,33 @@ final class FakeServers implements Servers {
                   "",
                   "")),
               List.of())
-          : dynamic != null
-              ? dynamic.get()
-              : statements.getOrDefault(
-                  sql,
-                  known
-                      ? new Answer(List.of(new Result.Count(0)), List.of())
-                      : new Answer(
-                          List.of(serverError(
-                              Failure.Kind.INVALID,
-                              "syntax error at or near \"" + sql.split("\\s+", 2)[0] + "\"")),
-                          List.of()));
+          : readOnly && isWrite(sql)
+              ? new Answer(
+                  List.of(new Failure(
+                      Failure.Kind.OTHER,
+                      "ERROR: cannot execute in a read-only transaction",
+                      "25006",
+                      0,
+                      0,
+                      "",
+                      0,
+                      0,
+                      "",
+                      "",
+                      "",
+                      "")),
+                  List.of())
+              : dynamic != null
+                  ? dynamic.get()
+                  : statements.getOrDefault(
+                      sql,
+                      known
+                          ? new Answer(List.of(new Result.Count(0)), List.of())
+                          : new Answer(
+                              List.of(serverError(
+                                  Failure.Kind.INVALID,
+                                  "syntax error at or near \"" + sql.split("\\s+", 2)[0] + "\"")),
+                              List.of()));
       return new Run() {
         private int result; // of the answer, the one read next
         private long position; // in its rows
