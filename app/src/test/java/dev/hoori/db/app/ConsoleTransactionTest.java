@@ -350,7 +350,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     c.run(app, type(CALL) + RUN + "snap read\n");
     String read = c.tree("read");
     assertTrue(badge(read).contains("Transaction open"), read);
-    assertTrue(near(read, "#result-status").contains("· 250 rows\""), read);
+    assertTrue(near(read, "#result-status").contains("\"250 rows ·"), read);
     assertTrue(
         servers.calls.contains("next " + MARIA + " " + CALL + " 200"), servers.calls.toString());
     c.run(app, "press #close-0\nframe\n" + OPENED + "snap asked\n");
@@ -757,7 +757,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     servers.statement(WRITING_WITH, List.of(FakeServers.made(250, "id: bigint")));
     var app = k.console(SHOP);
     c.run(app, type(WRITING_WITH) + RUN + "snap read\n");
-    assertTrue(near(c.tree("read"), "#result-status").contains("· 250 rows\""), c.tree("read"));
+    assertTrue(near(c.tree("read"), "#result-status").contains("\"250 rows ·"), c.tree("read"));
     c.run(app, "press #close-0\nframe\n" + OPENED);
     assertTrue(app.state().consoles(null).isEmpty(), "nothing at stake: Auto, read to its end");
     assertFalse(
@@ -933,7 +933,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     var app = k.console(INVENTORY);
     c.run(app, MANUAL + type(NOTE) + RUN + "snap read\n");
     String read = c.tree("read");
-    assertTrue(near(read, "#result-status").contains("· 250 rows\""), read);
+    assertTrue(near(read, "#result-status").contains("\"250 rows ·"), read);
     assertTrue(line(read, "#run-status").contains(ConsoleTab.WHOLE), read);
     assertTrue(servers.calls.contains("next " + MARIA + " " + NOTE + " 200"), "in its one call");
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
@@ -1039,7 +1039,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     c.run(app, MANUAL + type(NOTE) + RUN + "press #rollback\nframe\n" + SETTLE + "snap rolled\n");
     String rolled = c.tree("rolled");
     assertFalse(rolled.contains("stands"), rolled);
-    assertTrue(near(rolled, "#result-status").contains("· 250 rows\""), rolled);
+    assertTrue(near(rolled, "#result-status").contains("\"250 rows ·"), rolled);
   }
 
   /** MariaDB's and MySQL's warning that a rollback left changes is said, not "Rolled back". */

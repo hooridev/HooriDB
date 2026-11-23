@@ -162,6 +162,35 @@ class ConsoleConfirmationTest {
     assertFalse(c.tree("anyway").contains("role=dialog"), c.tree("anyway"));
   }
 
+  /** A question after an open read waits until that read is given up, which it may wait long. */
+  @Test
+  void aQuestionAfterAnOpenReadAsksOnceTheReadIsGivenUp() throws Exception {
+    var app = t.k.console(SHOP);
+    var close = "close " + PG + " " + BIG;
+    var gate = servers.hold(close);
+    try {
+      c.run(app, type(String.join(";\n", BIG, WIPE)) + "key Enter control shift\nframe\n");
+      // No await once the give-up started: it would wait for the gate.
+      for (int i = 0;
+          i < 12 && (tab(app).outputs.isEmpty() || !tab(app).outputs.getFirst().cut);
+          i++) {
+        c.run(app, "await\nframe\n");
+      }
+      eventually(() -> servers.calls.contains(close));
+      c.run(app, "frame\nadvance 1\nframe\nsnap closing\n");
+      assertFalse(c.tree("closing").contains(EVERY), c.tree("closing"));
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE + "snap asked\n");
+    assertTrue(c.tree("asked").contains(EVERY), c.tree("asked"));
+    var read = tab(app).outputs.getFirst();
+    assertTrue(read.cut);
+    assertEquals(200, read.rows.size());
+    c.run(app, ANYWAY);
+    assertTrue(ran(WIPE), servers.calls.toString());
+  }
+
   /** Cancelled in the empty transaction a chained Commit began, it leaves that empty. */
   @Test
   void aCancelledReadLeavesTheChainedTransactionEmpty() throws Exception {

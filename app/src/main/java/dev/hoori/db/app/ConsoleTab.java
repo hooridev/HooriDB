@@ -100,6 +100,18 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   static final Split.Position FIRST_SPLIT = Split.Position.share(0.45f);
 
+  /** Why a lazy read stopped with rows left unread. */
+  enum CutReason {
+    /** Another statement, switch, cancel or close ended the read. */
+    LEFT,
+    /** The user pressed Stop reading. */
+    STOPPED,
+    /** No portion was read for {@link #IDLE_SECONDS}. */
+    IDLE,
+    /** The result reached {@link #KEPT} rows. */
+    LIMIT
+  }
+
   /** A result of a run, in a tab of its own below the editor: rows, or a count of changed rows. */
   static final class Output implements ResultEdits.Target {
     final int number; // counted on through the console's runs, so that a pinned one keeps its own
@@ -110,7 +122,8 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     // once results of millions of rows are scrolled through.
     final List<List<Object>> rows = new ArrayList<>();
     boolean more; // its statement has more rows of it, read as the grid scrolls on
-    boolean cut; // rows were left unread, as the session went on to something else
+    boolean cut; // rows were left unread, as the read stopped or the session went on
+    CutReason cutReason = CutReason.LEFT; // why rows were left unread, when cut is true
     long dropped; // rows beyond those kept, read to the statement's end and not kept
     boolean pinned; // the next run leaves it
     float[] widths;
@@ -266,6 +279,13 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   // shortcut: a statement not on the read list is read to its end, of which this many rows are
   // kept to show; show its first rows as they come once long ones of them are common.
   static final int KEPT = 100_000;
+  // KEPT, lowered in tests that check the lazy read limit without scrolling 100,000 rows.
+  static int kept = KEPT;
+
+  /** How long an open read stays open without a portion read before it is given up by itself. */
+  static final double IDLE_SECONDS = 30;
+  // IDLE_SECONDS, shortened in tests that check the idle give-up against a real server's timeout.
+  static double idleSeconds = IDLE_SECONDS;
 
   static final String COMMIT = "COMMIT";
   static final String ROLLBACK = "ROLLBACK";
@@ -353,6 +373,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   // Run shows Cancel in its place once the work under way has lasted STOP_AFTER.
   private boolean stoppable;
   private int starts; // counted, so that the patience of an earlier run is dropped
+  private int idleReads; // counted, so that a late idle timer for an earlier read or portion drops
   // The last Commit or Rollback failed, the connection still there: ending it is a way out, also
   // while other statements run after it, until the next ends or the session closes.
   boolean endFailed;
@@ -654,8 +675,18 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     parsed = Language.of(provider) instanceof Language.Shell ? Script.Parsed.of(sql) : null;
     var every = parsed != null ? parsed.every() : EveryRow.of(sql, provider);
     if (every.isPresent()) {
-      running = sql;
-      confirming = everyRow(sql, every.get(), parsed != null);
+      var question = everyRow(sql, every.get(), parsed != null);
+      Runnable ask = () -> {
+        running = sql;
+        confirming = question;
+      };
+      if (reading != null && reading.more && lane != null) {
+        // The read before is given up first, as the question may wait long; it asks once that
+        // ended.
+        giveUp(s, CutReason.LEFT, ask);
+      } else {
+        ask.run();
+      }
     } else {
       send(s, sql, true);
     }
@@ -728,7 +759,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         link -> {
           label.set(sql);
           return Session.start(
-              link, new Session.Send(sql, statement, asked, lazy, KEPT, planner, on), held);
+              link, new Session.Send(sql, statement, asked, lazy, kept, planner, on), held);
         },
         ran -> {
           activity = new Idle();
@@ -964,11 +995,117 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
    * ({@link #ask}). The rows read of it stay.
    */
   private void leave() {
+    leave(CutReason.LEFT);
+  }
+
+  private void leave(CutReason reason) {
+    idleReads++;
     if (reading != null && reading.more) {
       reading.more = false;
       reading.cut = true;
+      reading.cutReason = reason;
     }
     reading = null;
+  }
+
+  /** Whether Stop reading is offered for {@code o}: its cursor is open and nothing runs. */
+  boolean canStopReading(State s, Output o) {
+    return o == reading
+        && o.more
+        && work() == null
+        && confirming == null
+        && lane != null
+        && s.guard.locked(this) == null
+        && asked(s) == null;
+  }
+
+  /** Stop reading: gives up the open read on the session's lane without closing the session. */
+  void stopReading(State s) {
+    s.acted();
+    if (reading == null || !canStopReading(s, reading) || preview != null) {
+      return;
+    }
+    giveUp(s, CutReason.STOPPED);
+  }
+
+  /** After a portion left a read open: gives it up at the row limit, else watches it for idle. */
+  private void afterPortion(State s) {
+    if (reading == null || !reading.more || work() != null || lane == null) {
+      return;
+    }
+    if (reading.rows.size() >= kept) {
+      if (confirming == null && gate(s, null)) {
+        giveUp(s, CutReason.LIMIT);
+      } else {
+        watchIdle(s);
+      }
+      return;
+    }
+    watchIdle(s);
+  }
+
+  /** Gives up the open read on its own once no portion has been read for {@link #idleSeconds}. */
+  private void watchIdle(State s) {
+    var target = reading;
+    int at = ++idleReads;
+    s.app.after(idleSeconds, () -> {
+      if (idleReads != at
+          || reading != target
+          || target == null
+          || !target.more
+          || work() != null
+          || lane == null) {
+        return;
+      }
+      if (confirming != null || !gate(s, null)) {
+        watchIdle(s);
+        return;
+      }
+      giveUp(s, target.rows.size() >= kept ? CutReason.LIMIT : CutReason.IDLE);
+    });
+  }
+
+  /**
+   * Gives up the open read on the session's lane through {@link #ask}, leaving the loaded rows
+   * marked partial with {@code reason} and keeping the session open where the give-up allows.
+   */
+  private void giveUp(State s, CutReason reason) {
+    giveUp(s, reason, () -> {});
+  }
+
+  /** As {@link #giveUp(State, CutReason)}, and then, where it ended well, {@code then}. */
+  private void giveUp(State s, CutReason reason, Runnable then) {
+    var target = reading;
+    if (target == null || !target.more || lane == null) {
+      return;
+    }
+    var sql = running;
+    leave(reason);
+    help.updateDetail(sql, rows(target.rows.size(), documents(s)));
+    writes = false;
+    plain = true;
+    starts++;
+    stoppable = false;
+    activity = new Running(ask(
+        s,
+        "stop reading",
+        null,
+        link -> null,
+        _ -> {
+          activity = new Idle();
+          then.run();
+        },
+        error -> {
+          activity = new Idle();
+          queue.clear(); // nothing that waited for it runs
+          if (error instanceof Session.GaveUp g) {
+            if (g.failure.kind() == Failure.Kind.CONNECTION_LOST) {
+              closeSession();
+            }
+          } else if (lost(error)) {
+            closeSession();
+          }
+        }));
   }
 
   private void ran(State s, String sql, Session.Ran ran) {
@@ -1021,6 +1158,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       check(s);
     }
     next(s);
+    afterPortion(s);
   }
 
   /** A statement not sent: the console says why, and takes what the session has. */
@@ -1323,6 +1461,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   /** The result whose rows it read has ended, as another came after it or the statement ended. */
   private void finished() {
+    idleReads++;
     if (reading != null) {
       reading.more = false;
       reading = null;
@@ -1510,8 +1649,15 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       leave(); // its statement was given up, or its session ended: no more rows of it
       return;
     }
+    int room = kept - output.rows.size();
+    if (room <= 0) {
+      giveUp(s, CutReason.LIMIT);
+      return;
+    }
+    int count = Math.min(PORTION, room);
     var held = open;
     var sql = running;
+    idleReads++;
     writes = false; // only a plain read in Auto, with nothing open, is read so
     plain = true;
     // Not through ask, as the read goes on rather than being given up.
@@ -1520,7 +1666,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         s,
         "read rows",
         sql,
-        link -> held.get().next(PORTION),
+        link -> held.get().next(count),
         portion -> {
           activity = new Idle();
           if (!portion.more()) {
@@ -1547,6 +1693,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
             help.failed(sql, failure, provider(s), words(failure.message()));
             fail(s, failure);
           } else {
+            afterPortion(s);
             help.updateDetail(
                 sql, rows(output.rows.size(), documents(s)) + (output.more ? " so far" : ""));
             if (before < outputs.size()) {
