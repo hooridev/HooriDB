@@ -404,6 +404,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     long from = page * PAGE;
     if (n > 0) {
+      if (!undoKept.isEmpty() && !pages.containsKey(page) && hasUndone(page)) {
+        forgetHistory(s); // rows come back where undo history was, which may be others now
+      }
       pages.put(page, held(page, read.rows()));
       documents.put(page, read.documents());
     } else {
@@ -476,6 +479,29 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     for (int i = 0; i < far.size() && pages.size() > KEPT + pinned.size(); i++) {
       pages.remove(far.get(i));
       documents.remove(far.get(i));
+    }
+  }
+
+  private boolean hasUndone(long page) {
+    return undoKept.keySet().stream().anyMatch(row -> row / PAGE == page);
+  }
+
+  /**
+   * Drops the undo history and keeps the staged changes: the kit keeps its history by position, so
+   * a step must not replay on another row that came to its position.
+   */
+  private void forgetHistory(State s) {
+    var cells = new ArrayList<DataGrid.CellValue>();
+    for (var change : edits.changes.changes()) {
+      change
+          .values()
+          .forEach((column, text) ->
+              cells.add(new DataGrid.CellValue((int) change.key(), column, text)));
+    }
+    undoKept.clear();
+    edits.changes = ResultEdits.gridChanges(s, this);
+    if (!cells.isEmpty()) {
+      edits.changes.set(cells);
     }
   }
 

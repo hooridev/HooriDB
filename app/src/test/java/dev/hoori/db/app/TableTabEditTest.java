@@ -312,6 +312,40 @@ class TableTabEditTest {
   }
 
   @Test
+  void undoHistoryIsForgottenWhereItsPageComesBackAfterItWasGone() throws Exception {
+    var rows = new ArrayList<List<Object>>(1_000);
+    for (long i = 1; i <= 1_000; i++) {
+      rows.add(List.of(i, "name " + i));
+    }
+    servers.values(BIG, rows);
+    var app = t.shop();
+    c.run(app, table("big") + SETTLE);
+    var tab = t.tab(app);
+
+    // Edit id 1 and revert it, which undo can bring back.
+    c.run(
+        app,
+        "press #cell-0-1\ntype \"Edited 1\"\nkey Enter\nframe\npress #cell-0-1\nframe\n"
+            + "press #revert-selection\nframe\n");
+    assertEquals(0, tab.pendingChanges());
+
+    // Page 0 is gone, as after a read found it empty, and comes back with other rows: id 1 is
+    // deleted, so id 2 is at row 0 now.
+    servers.values(BIG, rows.subList(1, rows.size()));
+    tab.pages.remove(0L);
+    c.run(app, scroll(0) + SETTLE + "snap back\n");
+    assertTrue(cell(c.tree("back"), 0, 1).contains("\"name 2\""), c.tree("back"));
+
+    // A fresh edit of id 2, undone, and undo once more: the revert of id 1's edit is not undone
+    // onto id 2.
+    c.run(
+        app,
+        "press #cell-0-1\ntype \"Fresh\"\nkey Enter\nframe\n"
+            + "key Z control\nframe\nkey Z control\nframe\n");
+    assertEquals(0, tab.pendingChanges());
+  }
+
+  @Test
   void pagesWithEditsLeaveRoomForThoseInView() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);
     for (long i = 1; i <= 3_000; i++) {
