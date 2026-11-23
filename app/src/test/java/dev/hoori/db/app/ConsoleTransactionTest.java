@@ -350,7 +350,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     c.run(app, type(CALL) + RUN + "snap read\n");
     String read = c.tree("read");
     assertTrue(badge(read).contains("Transaction open"), read);
-    assertTrue(near(read, "#result-status").contains("· 250 rows\""), read);
+    assertTrue(near(read, "#result-status").contains("\"250 rows ·"), read);
     assertTrue(
         servers.calls.contains("next " + MARIA + " " + CALL + " 200"), servers.calls.toString());
     c.run(app, "press #close-0\nframe\n" + OPENED + "snap asked\n");
@@ -546,13 +546,18 @@ class ConsoleTransactionTest extends ConsoleTransactions {
           "(SELECT 1)",
           "SHOW search_path",
           "VALUES (1)",
-          "TABLE orders")) {
+          "TABLE orders",
+          "WITH x AS (SELECT 1) SELECT 1",
+          "WITH RECURSIVE x(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM x WHERE n < 5) SELECT * FROM"
+              + " x",
+          "SELECT 'into'",
+          "SELECT 1 -- into")) {
         assertTrue(ConsoleTab.reads(sql, provider), provider + ": " + sql);
       }
       for (var sql : List.of(
           PAY,
           "WITH changed AS (UPDATE orders SET paid = true RETURNING id) SELECT id FROM changed",
-          "WITH x AS (SELECT 1) SELECT 1",
+          "WITH x AS (SELECT 1) DELETE FROM orders",
           "CALL report()",
           "COMMIT",
           "ROLLBACK TO SAVEPOINT a",
@@ -751,13 +756,29 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     assertTrue(servers.calls.contains("next " + MARIA + " " + COMMIT_ROWS + " 200"));
   }
 
+  /** A WITH whose CTEs and main query only read runs as a lazy read in Auto. */
+  @Test
+  void aReadingWithRunsLazilyInAuto() throws Exception {
+    var reading = "WITH x AS (SELECT id FROM orders) SELECT * FROM x";
+    servers.statement(reading, List.of(FakeServers.made(250, "id: bigint")));
+    var app = k.console(SHOP);
+    c.run(app, type(reading) + RUN + "snap read\n");
+    String read = c.tree("read");
+    assertTrue(near(read, "#result-status").contains("200 rows so far"), read);
+    assertFalse(
+        servers.calls.contains("next " + PG + " " + reading + " 200"), servers.calls.toString());
+    assertTrue(k.tab(app).outputs.getFirst().more);
+    c.run(app, "press #close-0\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.state().consoles(null).isEmpty(), "nothing asked: a plain read in Auto");
+  }
+
   /** 5: PostgreSQL's WITH that writes is read to its end: nothing of it is given up on a close. */
   @Test
   void aWritingWithIsReadToItsEndAndNeverGivenUp() throws Exception {
     servers.statement(WRITING_WITH, List.of(FakeServers.made(250, "id: bigint")));
     var app = k.console(SHOP);
     c.run(app, type(WRITING_WITH) + RUN + "snap read\n");
-    assertTrue(near(c.tree("read"), "#result-status").contains("· 250 rows\""), c.tree("read"));
+    assertTrue(near(c.tree("read"), "#result-status").contains("\"250 rows ·"), c.tree("read"));
     c.run(app, "press #close-0\nframe\n" + OPENED);
     assertTrue(app.state().consoles(null).isEmpty(), "nothing at stake: Auto, read to its end");
     assertFalse(
@@ -933,7 +954,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     var app = k.console(INVENTORY);
     c.run(app, MANUAL + type(NOTE) + RUN + "snap read\n");
     String read = c.tree("read");
-    assertTrue(near(read, "#result-status").contains("· 250 rows\""), read);
+    assertTrue(near(read, "#result-status").contains("\"250 rows ·"), read);
     assertTrue(line(read, "#run-status").contains(ConsoleTab.WHOLE), read);
     assertTrue(servers.calls.contains("next " + MARIA + " " + NOTE + " 200"), "in its one call");
     assertEquals(Transaction.OPEN, k.tab(app).transaction);
@@ -1039,7 +1060,7 @@ class ConsoleTransactionTest extends ConsoleTransactions {
     c.run(app, MANUAL + type(NOTE) + RUN + "press #rollback\nframe\n" + SETTLE + "snap rolled\n");
     String rolled = c.tree("rolled");
     assertFalse(rolled.contains("stands"), rolled);
-    assertTrue(near(rolled, "#result-status").contains("· 250 rows\""), rolled);
+    assertTrue(near(rolled, "#result-status").contains("\"250 rows ·"), rolled);
   }
 
   /** MariaDB's and MySQL's warning that a rollback left changes is said, not "Rolled back". */

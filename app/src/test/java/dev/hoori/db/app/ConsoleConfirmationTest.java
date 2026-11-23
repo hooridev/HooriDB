@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
@@ -160,6 +161,51 @@ class ConsoleConfirmationTest {
     assertTrue(ran(BIG), servers.calls.toString());
     assertTrue(ran(ORDERS), servers.calls.toString());
     assertFalse(c.tree("anyway").contains("role=dialog"), c.tree("anyway"));
+  }
+
+  /** A question after an open read waits until that read is given up, which it may wait long. */
+  @Test
+  void aQuestionAfterAnOpenReadAsksOnceTheReadIsGivenUp() throws Exception {
+    var app = t.k.console(SHOP);
+    var close = "close " + PG + " " + BIG;
+    var gate = servers.hold(close);
+    try {
+      c.run(app, type(String.join(";\n", BIG, WIPE)) + "key Enter control shift\nframe\n");
+      // No await once the give-up started: it would wait for the gate.
+      for (int i = 0;
+          i < 12 && (tab(app).outputs.isEmpty() || !tab(app).outputs.getFirst().cut);
+          i++) {
+        c.run(app, "await\nframe\n");
+      }
+      eventually(() -> servers.calls.contains(close));
+      c.run(app, "frame\nadvance 1\nframe\nsnap closing\n");
+      assertFalse(c.tree("closing").contains(EVERY), c.tree("closing"));
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE + "snap asked\n");
+    assertTrue(c.tree("asked").contains(EVERY), c.tree("asked"));
+    var read = tab(app).outputs.getFirst();
+    assertTrue(read.cut);
+    assertEquals(200, read.rows.size());
+    c.run(app, ANYWAY);
+    assertTrue(ran(WIPE), servers.calls.toString());
+  }
+
+  /** Where giving up the open read fails, the statement that waited for it says it did not run. */
+  @Test
+  void aFailedGiveUpBeforeAQuestionSaysTheStatementDidNotRun() throws Exception {
+    servers.failsAtGiveUp(BIG, FakeServers.serverError(Failure.Kind.CONSTRAINT, "no end"));
+    var app = t.k.console(SHOP);
+    c.run(app, type(String.join(";\n", BIG, WIPE)) + RUN_ALL + "snap failed\n");
+    assertFalse(c.tree("failed").contains(EVERY), c.tree("failed"));
+    assertFalse(ran(WIPE), servers.calls.toString());
+    assertTrue(
+        tab(app)
+            .log
+            .contains(
+                new ConsoleTab.Logged(ConsoleTab.Level.ERROR, WIPE, null, ConsoleTab.NOT_RUN)),
+        tab(app).log.toString());
   }
 
   /** Cancelled in the empty transaction a chained Commit began, it leaves that empty. */
@@ -375,6 +421,55 @@ class ConsoleConfirmationTest {
     assertTrue(
         servers.calls.stream().noneMatch(k -> k.startsWith("explain ")), servers.calls.toString());
     assertFalse(c.tree("ran").contains("role=dialog"), c.tree("ran"));
+  }
+
+  /**
+   * A read the console expected to keep lazy in Auto, but whose server status forces it to be read
+   * whole (as with a driver that cannot report auto-commit), asks first where the planner
+   * estimates more rows than KEPT.
+   */
+  @Test
+  void aReadForcedWholeByUnknownAutoCommitAsksBeforeRunning() throws Exception {
+    servers.cannotReport(MARIA);
+    var app = t.k.console(INVENTORY);
+    c.run(app, type(BIG) + RUN + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains(LARGE), asked);
+    assertTrue(servers.calls.contains("explain " + MARIA + " " + BIG), servers.calls.toString());
+    assertFalse(servers.calls.contains("run " + MARIA + " " + BIG), servers.calls.toString());
+    c.run(app, ANYWAY + "snap ran\n");
+    String ran = c.tree("ran");
+    assertFalse(ran.contains("role=dialog"), ran);
+    assertTrue(
+        servers.calls.contains("next " + MARIA + " " + BIG + " 200"), servers.calls.toString());
+    assertTrue(ConsoleTest.near(ran, "#result-status").contains("\"300 rows · "), ran);
+  }
+
+  /**
+   * Disconnecting while a read forced whole by unknown auto-commit runs asks as for any running
+   * read whole.
+   */
+  @Test
+  void disconnectingWhileAReadForcedWholeRunsAsks() throws Exception {
+    servers.cannotReport(MARIA);
+    var app = t.k.console(INVENTORY);
+    c.run(app, CatalogTreeTest.open(INVENTORY.name()) + SETTLE);
+    var key = "run " + MARIA + " " + ORDERS;
+    var gate = servers.hold(key);
+    c.run(app, type(ORDERS) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    c.run(
+        app,
+        "press role=treeitem label=\"" + INVENTORY.name() + "\" level=1 right\nframe\n" + OPENED
+            + "press role=menuitem label=\"Disconnect\"\nframe\n" + OPENED + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains("role=dialog label=\"Roll back the transaction?\""), asked);
+    assertTrue(asked.contains("A statement still runs on"), asked);
+    assertTrue(app.state().catalog.connected(INVENTORY.id()));
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED);
+    gate.countDown();
+    c.run(app, SETTLE);
+    assertTrue(app.state().catalog.connected(INVENTORY.id()));
   }
 
   /** An EXPLAIN that fails: the read runs, and PostgreSQL's transaction goes on. */

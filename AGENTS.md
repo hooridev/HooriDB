@@ -48,9 +48,10 @@ whole by its row's primary key, a console's result keeps long values whole up to
 their start beyond it, and a MongoDB console's shows the value in its document. A connection can
 carry a color, which marks its row and its tabs. "New console", in a connection's menu or the File
 menu, opens a tab with an SQL editor that runs the statement at the caret, the selection or all of
-them on a connection of its own, with each result's rows read in portions as they scroll, a count
-for a change, and a log of what ran in Messages, a gutter marker on each statement's first line
-(before it ran, to run it; after, its last outcome with time and rows or count to run it again,
+them on a connection of its own, with each result's rows read in portions as they scroll, its
+open cursor shown with Stop reading and given up by itself after 30 s idle or at 100,000 rows, a
+count for a change, and a log of what ran in Messages, a gutter marker on each statement's first
+line (before it ran, to run it; after, its last outcome with time and rows or count to run it again,
 moving with edits), an error at the place the server names in its own markup layer so it moves with
 edits and shows its message after its line with the caret there, quick documentation on hover or
 Control+Q for a table's kind, schema and columns or a column's type and table (reading what the
@@ -311,7 +312,7 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   invalid. Their calls are keyed `run <host> <sql>` for the first portion and
   `next <host> <sql> <from>` for each further one, and a held one that is interrupted ends with a
   cancelled failure, as core's does. A console opens its own connection behind the tree's, so a
-  server's `open` key is called twice, and once more where the first estimate of a read runs, on the
+  server's `open` key is called twice, and once more on a console's first plain SQL read, on the
   connection that only estimates use, and once more where a table's rows are counted other than at
   its opening, on the connection that only such counts use, and once more where a console's result
   is checked for editability or committed, on the writer connection (`editable <host> <sql>` and

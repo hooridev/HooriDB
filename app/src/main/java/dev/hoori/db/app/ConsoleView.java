@@ -258,7 +258,7 @@ final class ConsoleView {
       return "Switching to " + (tab.switching.isEmpty() ? "no database" : tab.switching) + "…";
     }
     if (!tab.firm()) {
-      return tab.writes ? "Running; rows show once all are read…" : "Running…";
+      return tab.writes() ? "Running; rows show once all are read…" : "Running…";
     }
     if (ConsoleTab.COMMIT.equals(tab.running)) {
       return "Committing…";
