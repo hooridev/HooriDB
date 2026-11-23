@@ -271,7 +271,8 @@ final class Session {
    */
   // shortcut: that connection does not see the session's uncommitted DDL, temporary tables or
   // settings such as search_path or a USE run in the console: there the EXPLAIN fails or plans
-  // something else, and no question or another is asked. Plan on the session once that misleads.
+  // something else, and no question or another is asked, or a lazy read's status line shows
+  // another table's estimate. Plan on the session once that misleads.
   private static long estimate(Lane planner, String database, String sql)
       throws InterruptedException {
     Future<OptionalLong> asked;

@@ -20,6 +20,7 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.document.Document;
@@ -28,6 +29,7 @@ import dev.hoori.db.core.execution.Transaction;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 
@@ -215,7 +217,8 @@ final class ResultsArea {
         .child(ResultEdits.writeProblemCallout(o.edits))
         .child(presented.body().grow(1))
         .child(Card.footer(
-            Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
+            Tooltip.whenShortened(
+                Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(), about),
             footer.toArray(El[]::new)));
   }
 
@@ -237,7 +240,13 @@ final class ResultsArea {
   /** What a result's status line says: how many of its rows it holds, and its statement. */
   private static String about(ConsoleTab.Output o) {
     boolean whole = !o.documents.isEmpty();
-    String count = ConsoleTab.rows(o.rows.size(), whole);
+    // Of a read left open, the server's estimate, short and first, as the footer may be narrow;
+    // none
+    // below the rows read.
+    String count = o.estimated > 0 && o.estimated >= o.rows.size() && (o.more || o.cut)
+        ? String.format(Locale.ROOT, "%,d", o.rows.size()) + " of about "
+            + ConsoleTab.rows(o.estimated, whole)
+        : ConsoleTab.rows(o.rows.size(), whole);
     String held;
     if (o.more) {
       held = count + " so far · cursor open, more as it scrolls";

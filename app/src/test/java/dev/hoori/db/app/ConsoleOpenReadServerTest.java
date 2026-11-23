@@ -90,8 +90,7 @@ class ConsoleOpenReadServerTest {
       assertTrue(output.more);
       assertEquals(200, output.rows.size());
       assertTrue(
-          near(c.tree("open"), "#result-status").contains("200 rows so far · cursor open"),
-          c.tree("open"));
+          near(c.tree("open"), "#result-status").contains(" so far · cursor open"), c.tree("open"));
       assertEquals(
           "idle in transaction",
           single(watcher, "SELECT state FROM pg_stat_activity WHERE pid = " + pid));
@@ -101,7 +100,7 @@ class ConsoleOpenReadServerTest {
       assertTrue(output.cut);
       assertEquals(200, output.rows.size());
       assertTrue(
-          near(c.tree("stopped"), "#result-status").contains("the first 200 rows; reading stopped"),
+          near(c.tree("stopped"), "#result-status").contains(" rows; reading stopped"),
           c.tree("stopped"));
       eventually(() -> {
         try {
@@ -148,7 +147,7 @@ class ConsoleOpenReadServerTest {
       assertEquals(200, output.rows.size());
       assertTrue(
           near(c.tree("idle"), "#result-status")
-              .contains("the first 200 rows; reading stopped after being idle"),
+              .contains(" rows; reading stopped after being idle"),
           c.tree("idle"));
 
       // Past net_write_timeout (1 s): an open stream would have dropped the connection by now.
