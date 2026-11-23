@@ -91,32 +91,34 @@ public final class Reads {
       k++;
     }
     while (true) {
-      // Past the CTE's name and optional column list to its AS.
-      int as = atDepth(tokens, k, to, base, "AS");
-      if (as <= k) {
+      k = cte(tokens, k, to, base);
+      if (k < 0 || k >= to) {
         return false;
       }
-      k = as + 1;
-      while (k < to && (tokens.get(k).is("NOT") || tokens.get(k).is("MATERIALIZED"))) {
-        k++;
+      if (!tokens.get(k).is(",")) {
+        return query(tokens, k, to, false);
       }
-      if (k >= to || !tokens.get(k).is("(")) {
-        return false;
-      }
-      int close = match(tokens, k, to);
-      if (close < 0 || !query(tokens, k + 1, close, false)) {
-        return false;
-      }
-      k = close + 1;
-      if (k >= to) {
-        return false;
-      }
-      if (tokens.get(k).is(",")) {
-        k++;
-        continue;
-      }
-      return query(tokens, k, to, false);
+      k++;
     }
+  }
+
+  // Past one common table expression from its name, if its body is a plain read: the index after
+  // its closing parenthesis, or -1.
+  private static int cte(List<Tokens.Token> tokens, int from, int to, int base) {
+    // Past the CTE's name and optional column list to its AS.
+    int as = atDepth(tokens, from, to, base, "AS");
+    if (as <= from) {
+      return -1;
+    }
+    int k = as + 1;
+    while (k < to && (tokens.get(k).is("NOT") || tokens.get(k).is("MATERIALIZED"))) {
+      k++;
+    }
+    if (k >= to || !tokens.get(k).is("(")) {
+      return -1;
+    }
+    int close = match(tokens, k, to);
+    return close >= 0 && query(tokens, k + 1, close, false) ? close + 1 : -1;
   }
 
   // The matching closing parenthesis at the same depth as the opening one at open, or -1.

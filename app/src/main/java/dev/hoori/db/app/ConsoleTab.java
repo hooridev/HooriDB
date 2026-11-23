@@ -1457,7 +1457,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       problem = heard(
           DISCONNECTED,
           brief(g.sql) + " could not be ended, and the connection was given up: "
-              + g.failure.message() + (gone == null ? "" : "\n" + gone));
+              + Delivery.said(g.failure) + (gone == null ? "" : "\n" + gone));
       log.add(new Logged(Level.ERROR, brief(sql), null, "Not run: the connection ended"));
       closeSession();
       return;

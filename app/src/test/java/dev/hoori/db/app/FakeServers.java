@@ -132,6 +132,7 @@ final class FakeServers implements Servers {
   final List<String> calls = new CopyOnWriteArrayList<>(); // in the order they began
   // The calls of the links, each after the link's number, from 1 in the order they were opened.
   final List<String> linked = new CopyOnWriteArrayList<>();
+  private final AtomicInteger opened = new AtomicInteger(); // links numbered, also at once
   final List<String> done = new CopyOnWriteArrayList<>(); // the reads that returned
   final List<String> passwords = new CopyOnWriteArrayList<>();
   final List<String> closed = new CopyOnWriteArrayList<>(); // the links closed, by database
@@ -550,7 +551,7 @@ final class FakeServers implements Servers {
   }
 
   private final class FakeLink implements Link {
-    private final int number = links.size() + 1;
+    private final int number = opened.incrementAndGet();
 
     private void note(String key) {
       linked.add(number + " " + key);

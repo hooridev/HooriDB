@@ -72,6 +72,11 @@ class ReadsTest {
           "WITH x AS (SELECT 1) SELECT * INTO copy FROM x",
           "WITH x AS (SELECT 1)",
           "WITH AS (SELECT 1) SELECT 1",
+          // Reads, but SEARCH and CYCLE are not followed: taken for writes, the cautious side.
+          "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3)"
+              + " SEARCH DEPTH FIRST BY n SET ord SELECT * FROM t",
+          "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3)"
+              + " CYCLE n SET is_cycle USING path SELECT * FROM t",
           "SELECT * INTO copy FROM orders",
           // INTO after a decimal point; a column t.into is taken for it too, a needless caution.
           "SELECT 1. INTO copy",
