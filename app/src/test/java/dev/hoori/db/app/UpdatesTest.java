@@ -21,6 +21,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.Test;
@@ -572,5 +574,150 @@ class UpdatesTest {
     var brokenUpdater = updater().publish("0.3.0");
     run(app(brokenUpdater, "0.2.0"), START);
     assertEquals(1, brokenUpdater.looks.get());
+  }
+
+  /**
+   * Hovering an offered update's notice (ready or available) shows a tooltip with the notice's
+   * title, version and published date in the state's zone, up to five highlights (features before
+   * fixes), "Plus N more changes.", and the change and contributor counts.
+   */
+  @Test
+  void hoveringAnOfferedUpdateShowsItsHighlightsAndCounts() throws Exception {
+    var notes21 = """
+        ## What's Changed
+        * feat(core): filter rows with `WHERE` by @alice in https://github.com/hooridev/HooriDB/pull/1
+        * fix(app): keep caret on undo by @bob in https://github.com/hooridev/HooriDB/pull/2
+        * docs: describe updates by @bob in https://github.com/hooridev/HooriDB/pull/3
+        """;
+    var notes30 = """
+        ## What's Changed
+        * fix(app): keep dialog off the screen edge by @alice in https://github.com/hooridev/HooriDB/pull/4
+        * feat(app): edit cells in a table tab by @alice in https://github.com/hooridev/HooriDB/pull/5
+        * feat!: drop legacy format by @bob in https://github.com/hooridev/HooriDB/pull/6
+        * feat: group connections in folders by @alice in https://github.com/hooridev/HooriDB/pull/7
+        * refactor(core): tidy dialect helpers by @bob in https://github.com/hooridev/HooriDB/pull/8
+
+        ## New Contributors
+        * @bob made their first contribution in https://github.com/hooridev/HooriDB/pull/2
+
+        **Full Changelog**: https://github.com/hooridev/HooriDB/compare/v0.2.1...v0.3.0
+        """;
+    // 23:30 UTC on Nov 22 is Nov 23 in Europe/Berlin.
+    var published = Instant.parse("2026-11-22T23:30:00Z");
+    var readyUpdater = updater()
+        .publish("0.2.1", Instant.parse("2026-11-20T10:00:00Z"), notes21)
+        .publish("0.3.0", published, notes30);
+    var readyApp = app(readyUpdater, "0.2.0");
+    readyApp.state().zone = ZoneId.of("Europe/Berlin");
+    run(
+        readyApp,
+        START + "move role=note label=\"HooriDB 0.3.0 is ready\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap ready-tip\n");
+    var readyTip = tree("ready-tip");
+    assertTrue(readyTip.contains("role=tooltip"), readyTip);
+    var tooltip = readyTip.substring(readyTip.indexOf("role=tooltip"));
+    assertTrue(tooltip.contains("\"HooriDB 0.3.0 is ready\""), tooltip);
+    assertTrue(tooltip.contains("\"0.3.0 · 2026-11-23\""), tooltip);
+    assertTrue(tooltip.contains("\"Edit cells in a table tab.\""), tooltip);
+    assertTrue(tooltip.contains("\"Drop legacy format.\""), tooltip);
+    assertTrue(tooltip.contains("\"Group connections in folders.\""), tooltip);
+    assertTrue(tooltip.contains("\"Filter rows with WHERE.\""), tooltip);
+    assertTrue(tooltip.contains("\"Keep dialog off the screen edge.\""), tooltip);
+    assertFalse(tooltip.contains("Keep caret on undo"), "capped at five highlights: " + tooltip);
+    assertTrue(
+        tooltip.indexOf("Filter rows with WHERE.") < tooltip.indexOf("Keep dialog off the screen"),
+        "features come before fixes: " + tooltip);
+    assertTrue(tooltip.contains("\"Plus 3 more changes.\""), tooltip);
+    assertTrue(tooltip.contains("\"8 changes from 2 contributors\""), tooltip);
+
+    var availUpdater = updater().publish("0.3.0", published, """
+            ## What's Changed
+            * feat: single highlight by @alice in https://github.com/hooridev/HooriDB/pull/9
+            * chore: tidy build by @alice in https://github.com/hooridev/HooriDB/pull/10
+            """);
+    availUpdater.writable = false;
+    var availApp = app(availUpdater, "0.2.0");
+    availApp.state().zone = ZoneId.of("UTC");
+    run(
+        availApp,
+        START + "move role=note label=\"HooriDB 0.3.0 is available\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap avail-tip\n");
+    var availTip = tree("avail-tip");
+    assertTrue(availTip.contains("role=tooltip"), availTip);
+    var availTooltip = availTip.substring(availTip.indexOf("role=tooltip"));
+    assertTrue(availTooltip.contains("\"HooriDB 0.3.0 is available\""), availTooltip);
+    assertTrue(availTooltip.contains("\"0.3.0 · 2026-11-22\""), availTooltip);
+    assertTrue(availTooltip.contains("\"Single highlight.\""), availTooltip);
+    assertTrue(availTooltip.contains("\"Plus 1 more change.\""), availTooltip);
+    assertTrue(availTooltip.contains("\"2 changes from 1 contributor\""), availTooltip);
+  }
+
+  /** The changes of a version skipped after its rollback count, as the update brings them too. */
+  @Test
+  void theChangesOfASkippedVersionCount() throws Exception {
+    new UpdateStore(dir.resolve("config"))
+        .save(new StoredUpdates(Channel.STABLE, Version.parse("0.3.0"), null));
+    var updater = updater()
+        .publish(
+            "0.3.0",
+            Instant.parse("2026-11-20T12:00:00Z"),
+            "* feat: edit cells by @alice in https://github.com/hooridev/HooriDB/pull/1")
+        .publish(
+            "0.3.1",
+            Instant.parse("2026-11-22T12:00:00Z"),
+            "* fix: keep the caret by @bob in https://github.com/hooridev/HooriDB/pull/2");
+    run(
+        app(updater, "0.2.0"),
+        START + "move role=note label=\"HooriDB 0.3.1 is ready\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap skipped-tip\n");
+    var tip = tree("skipped-tip");
+    var tooltip = tip.substring(tip.indexOf("role=tooltip"));
+    assertTrue(tooltip.contains("\"Edit cells.\""), tooltip);
+    assertTrue(tooltip.contains("\"Keep the caret.\""), tooltip);
+    assertTrue(tooltip.contains("\"2 changes from 2 contributors\""), tooltip);
+  }
+
+  /** An update without changes, and notices that do not offer an update, have no tooltip. */
+  @Test
+  void noticesWithoutChangesAndNonOfferNoticesHaveNoTooltip() throws Exception {
+    var emptyUpdater = updater().publish("0.3.0");
+    var emptyApp = app(emptyUpdater, "0.2.0");
+    run(
+        emptyApp,
+        START + "move role=note label=\"HooriDB 0.3.0 is ready\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap no-changes\n");
+    assertFalse(tree("no-changes").contains("role=tooltip"), tree("no-changes"));
+
+    var file = Files.createDirectories(dir.resolve("updates").resolve("downloads"))
+        .resolve("download-HooriDB-0.3.0-linux-x64.tar.gz");
+    Files.writeString(file, "0.3.0");
+    new UpdateStore(dir.resolve("config"))
+        .save(new StoredUpdates(
+            Channel.STABLE,
+            null,
+            new StoredUpdates.Attempt(Version.parse("0.3.0"), file, "1".repeat(64))));
+    var lockedUpdater = updater()
+        .publish(
+            "0.3.0",
+            Instant.parse("2026-11-22T12:00:00Z"),
+            "* feat: something by @alice in https://github.com/hooridev/HooriDB/pull/1");
+    lockedUpdater.result = new Installation.Result(
+        Installation.Result.Status.REJECTED, "locked", "A file stayed locked");
+    var lockedApp = app(lockedUpdater, "0.2.0");
+    run(
+        lockedApp,
+        START + "move role=note label=\"The update was not applied\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap locked-tip\n");
+    assertFalse(tree("locked-tip").contains("role=tooltip"), tree("locked-tip"));
+
+    var rolledUpdater = updater();
+    rolledUpdater.result = new Installation.Result(
+        Installation.Result.Status.ROLLED_BACK, "not-confirmed", "Not confirmed in time");
+    var rolledApp = app(rolledUpdater, "0.2.0");
+    run(
+        rolledApp,
+        START + "move role=note label=\"The update to HooriDB 0.3.0 was undone\"\nframe\n"
+            + "advance 1\nframe\nframe\nsnap rolled-tip\n");
+    assertFalse(tree("rolled-tip").contains("role=tooltip"), tree("rolled-tip"));
   }
 }

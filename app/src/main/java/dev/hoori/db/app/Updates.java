@@ -2,6 +2,8 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Callout;
+import com.rethinkj.ui.kit.Markdown;
+import com.rethinkj.ui.kit.MarkdownDocument;
 import com.rethinkj.updater.Asset;
 import com.rethinkj.updater.Download;
 import com.rethinkj.updater.Installation;
@@ -9,10 +11,12 @@ import com.rethinkj.updater.Release;
 import com.rethinkj.updater.Version;
 import dev.hoori.db.core.connection.StoredUpdates;
 import dev.hoori.db.core.connection.UpdateStore;
+import dev.hoori.db.core.update.Changes;
 import dev.hoori.db.core.update.Channel;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 
@@ -41,8 +45,29 @@ final class Updates {
   private boolean startLooks; // the start looks once the settings are read, where they say so
   private boolean asked; // a check asked for before updates had started
 
-  /** An update downloaded and verified: its version and its file. */
-  record Ready(Version version, Download download) {}
+  /**
+   * What an offered update brings, shown in the notice's tooltip: its version, when it was
+   * published, its changes, and the highlights parsed once for Markdown.
+   */
+  record Details(Version version, Instant published, Changes changes, MarkdownDocument highlights) {
+    static Details of(Release release, Changes changes) {
+      if (changes.isEmpty()) {
+        return null;
+      }
+      MarkdownDocument doc = null;
+      if (!changes.highlights().isEmpty()) {
+        var md = new StringBuilder();
+        for (var h : changes.highlights()) {
+          md.append("- ").append(h).append('\n');
+        }
+        doc = Markdown.parse(md.toString());
+      }
+      return new Details(release.version(), release.published(), changes, doc);
+    }
+  }
+
+  /** An update downloaded and verified: its version, its file, and what it brings (or null). */
+  record Ready(Version version, Download download, Details details) {}
 
   /**
    * The notice of updates, above the tree, apart from those of the consoles' sessions: of a kind,
@@ -51,6 +76,7 @@ final class Updates {
    * @param act the label of its act, or null for none
    * @param primary whether the act is the notice's main one
    * @param offer whether it offers an update, which a switch of the channel drops
+   * @param details what the update brings, shown in a tooltip on hover; null for none
    */
   record Notice(
       Callout.Kind kind,
@@ -60,7 +86,8 @@ final class Updates {
       Runnable action,
       boolean primary,
       String dismiss,
-      boolean offer) {}
+      boolean offer,
+      Details details) {}
 
   /**
    * What the start found of updates: what they keep, what the helper reported of the last one, or
@@ -68,8 +95,8 @@ final class Updates {
    */
   private record Begun(StoredUpdates stored, Installation.Result result, boolean kept) {}
 
-  /** An update found: its release, its archive, and whether HooriDB can replace itself. */
-  private record Offer(Release release, Asset asset, boolean writable) {}
+  /** An update found: its release, its archive, whether HooriDB can replace itself, and changes. */
+  private record Offer(Release release, Asset asset, boolean writable, Details details) {}
 
   private static final String DISMISS = "Dismiss";
 
@@ -255,7 +282,8 @@ final class Updates {
           () -> tryAgain(s, attempt, kept),
           false,
           DISMISS,
-          true);
+          true,
+          null);
     } else {
       stored = stored.withAttempt(null);
       notice = warning("The update was not applied", result.message());
@@ -263,7 +291,7 @@ final class Updates {
   }
 
   private static Notice warning(String title, String text) {
-    return new Notice(Callout.Kind.WARNING, title, text, null, null, false, DISMISS, false);
+    return new Notice(Callout.Kind.WARNING, title, text, null, null, false, DISMISS, false, null);
   }
 
   /** "HooriDB" and the version, as notices of updates name a version. */
@@ -275,7 +303,7 @@ final class Updates {
   private void tryAgain(State s, StoredUpdates.Attempt attempt, boolean kept) {
     notice = null;
     if (kept) {
-      ready = new Ready(attempt.version(), new Download(attempt.file(), attempt.sha256()));
+      ready = new Ready(attempt.version(), new Download(attempt.file(), attempt.sha256()), null);
       notice = readyNotice(s, ready);
       s.restartToUpdate();
     } else {
@@ -292,7 +320,8 @@ final class Updates {
         s::restartToUpdate,
         true,
         "Later",
-        true);
+        true,
+        ready.details());
   }
 
   /**
@@ -327,13 +356,17 @@ final class Updates {
   private static Callable<Optional<Offer>> look(
       Updater updater, Version installed, Channel channel, Version skipped) {
     return () -> {
-      var found = channel.offer(installed, updater.releases(), skipped);
+      var releases = updater.releases();
+      var found = channel.offer(installed, releases, skipped);
       if (found.isEmpty()) {
         return Optional.<Offer>empty();
       }
       var release = found.get().latest();
+      // The same latest, with the versions skipped, which the update brings too.
+      var update = channel.offer(installed, releases, null).orElseThrow();
       var asset = release.asset(Updater.ASSET);
-      return asset.map(a -> new Offer(release, a, updater.writable()));
+      return asset.map(
+          a -> new Offer(release, a, updater.writable(), Details.of(release, Changes.of(update))));
     };
   }
 
@@ -349,7 +382,8 @@ final class Updates {
           () -> s.app.openUri(release.page(), s::tell),
           false,
           DISMISS,
-          true);
+          true,
+          offer.details());
       return;
     }
     var asset = offer.asset();
@@ -360,7 +394,7 @@ final class Updates {
         download -> {
           work = null;
           downloading = null;
-          ready = new Ready(release.version(), download);
+          ready = new Ready(release.version(), download, offer.details());
           notice = readyNotice(s, ready);
         },
         error -> {
