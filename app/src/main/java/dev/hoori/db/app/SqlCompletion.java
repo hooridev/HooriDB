@@ -5,6 +5,7 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.dialect.SyntaxDialect;
 import dev.hoori.db.core.sql.Context;
 import dev.hoori.db.core.sql.Keywords;
 import dev.hoori.db.core.sql.Names;
@@ -13,6 +14,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * What a console of SQL suggests, by what the statement asks for at the caret: after {@code
@@ -24,18 +26,24 @@ record SqlCompletion() implements Suggestions.Strategy {
 
   @Override
   public boolean exactNames(Provider provider) {
-    return provider.dialect().syntax().caseSensitiveNames();
+    return provider != null && provider.dialect().syntax().caseSensitiveNames();
   }
 
   @Override
   public List<Suggestions.Candidate> candidates(
       Suggestions.Known known, String statement, int caret, String word) {
     var provider = known.provider;
+    var candidates = new ArrayList<Suggestions.Candidate>();
+    if (provider == null) { // a workspace query before its target: the words all servers share
+      if (Context.at(statement, SyntaxDialect.STANDARD, caret).asked() == Context.Asked.ANY) {
+        keywords(known, SyntaxDialect.STANDARD.offeredWords(), candidates);
+      }
+      return candidates;
+    }
     var context = Context.at(statement, provider, caret);
     if (context.asked() == Context.Asked.NOTHING) {
       return List.of();
     }
-    var candidates = new ArrayList<Suggestions.Candidate>();
     switch (context.asked()) {
       case MEMBER -> member(known, context, candidates);
       case TABLE -> {
@@ -43,12 +51,7 @@ record SqlCompletion() implements Suggestions.Strategy {
         tables(known, candidates);
       }
       default -> {
-        boolean lower = known.keywordCase == Settings.KeywordCase.LOWER;
-        for (var keyword : Keywords.offered(provider)) {
-          var written = lower ? keyword.toLowerCase(Locale.ROOT) : keyword;
-          candidates.add(
-              new Suggestions.Candidate(written, written, written, null, "keyword", false));
-        }
+        keywords(known, Keywords.offered(provider), candidates);
         schemas(known, candidates);
         tables(known, candidates);
         for (var reference : context.tables()) {
@@ -65,6 +68,15 @@ record SqlCompletion() implements Suggestions.Strategy {
       once.putIfAbsent(c.text() + "\0" + c.symbol(), c);
     }
     return List.copyOf(once.values());
+  }
+
+  private static void keywords(
+      Suggestions.Known known, Set<String> words, List<Suggestions.Candidate> candidates) {
+    boolean lower = known.keywordCase == Settings.KeywordCase.LOWER;
+    for (var keyword : words) {
+      var written = lower ? keyword.toLowerCase(Locale.ROOT) : keyword;
+      candidates.add(new Suggestions.Candidate(written, written, written, null, "keyword", false));
+    }
   }
 
   /** After {@code name.}: the columns of the table or alias, or else the tables of the schema. */

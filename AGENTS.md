@@ -23,7 +23,8 @@ holds up a level or deletes it, each connection as its own Delete… does after 
 their consoles and open query tabs, and then the folder; one whose password the keyring did not
 delete stays, with its folder, and the dialog names it. Opening a query opens a console tab bound
 to it (one tab per query, titled by its name, colored by its current target, autosaving text edits
-into `workspace.json`); running it asks for the target connection in a menu at the caret
+into `workspace.json`, colored, split and completed by standard SQL until it has a target);
+running it asks for the target connection in a menu at the caret
 (connections of its language, the last target first, then connected ones, with color mark, folder
 path and read-only note), silently re-running only when exactly one connection of that language is connected and is
 the last target, and switching targets asks via the console's existing question before ending the
@@ -58,8 +59,8 @@ edits and shows its message after its line with the caret there, quick documenta
 Control+Q for a table's kind, schema and columns or a column's type and table (reading what the
 tree lacks for the next hover), Control+B and Control+click on a table or column name to open its
 table in a tab, Control+Alt+L to lay its SQL out, changing only white space, and completions of
-keywords and of the schemas, tables and columns the tree read or reads for it; it switches databases and cancels what runs. It commits each
-statement by itself in Auto, and in Manual Commit and Rollback end the transaction, whose state it
+keywords and of the schemas, tables and columns the tree read or reads for it; it switches
+databases and cancels what runs. It commits each statement by itself in Auto, and in Manual Commit and Rollback end the transaction, whose state it
 shows as the server says it, and as possibly open where the server has not said; closing it,
 switching auto-commit or the database, disconnecting, changing or deleting its connection and
 closing HooriDB ask first while one may be open. In Manual, and while a transaction is open, it
@@ -79,11 +80,12 @@ another; one that does not answer can be given up, and what is asked of the keyr
 behind it; a saved password it does not give in time is asked of the user, and where the dialog does
 not know what the keyring holds, not keeping the password there deletes it. A command palette
 (Control+Shift+P, or the View menu) runs the menus' commands in its window, and after `@`
-(Control+P) finds the tables and views the tree has read by name and opens one, reading a database
-it has not read when chosen; the menus give keys to a new console, closing a tab, the next and
-previous tab, and the focus on the tree or the tab. Consoles are kept: their texts, connections and
-databases are saved a moment after each change, beside the workspace, and reopened unconnected at
-the next start; each statement run from a console goes into its connection's history
+(Control+P) finds the tables and views the tree has read and workspace queries by name and opens
+one, reading a database it has not read when chosen; the menus give keys to a new console, closing
+a tab, the next and previous tab, and the focus on the tree or the tab. Consoles and open workspace
+query tabs are kept: a console's text, connection and database, and a query tab's id and last
+target (with its text kept in `workspace.json` alone), are saved beside the workspace and reopened
+unconnected at the next start; each statement run from a console goes into its connection's history
 (`history.json`, at most 1,000 a connection, owner-only), which History lists, searches, inserts
 from and clears; Save to workspace saves a console's selection, or else its whole text, as a query
 in its connection's folder in `workspace.json`. The
@@ -117,10 +119,11 @@ changed and paused, and not while the tab is hidden; a session's statement is ca
 session ended after a question, never the monitor's own, and credentials in other sessions'
 statements are masked. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
-Nightly (at first that of its own version), downloads it and restarts into it through its own Exit
-when asked; the new version confirms once its window has shown its first frame, and the updater's
-helper puts the old version back where it does not, and a version put back is not offered again
-until a higher one comes out. Help, About HooriDB shows the version that runs, its channel of
+Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
+tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
+version confirms once its window has shown its first frame, and the updater's helper puts the old
+version back where it does not, and a version put back is not offered again until a higher one comes
+out. Help, About HooriDB shows the version that runs, its channel of
 updates, its authors, license and website. Started from the unpacked Linux bundle, it puts itself
 into the application menu, which gives its windows their icon in the dock. The main window's
 placement, the sidebar's width and the statement log's open state, height and detail split are kept

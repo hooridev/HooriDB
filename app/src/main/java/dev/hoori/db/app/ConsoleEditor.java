@@ -145,8 +145,8 @@ final class ConsoleEditor {
    * Wires quick documentation, go-to-table navigation, and statement gutter markers on the
    * editor's state before {@link CodeEditor#codeEditor} builds it.
    */
-  void prepare(State s, Provider provider) {
-    if (provider != null && Language.of(provider) instanceof Language.Sql) {
+  void prepare(State s, Language language, Provider provider) {
+    if (provider != null && language instanceof Language.Sql) {
       tab.editor
           .documentation(offset -> documentation(s, provider, offset))
           .declaration(offset -> declaration(s, provider, offset))
@@ -155,14 +155,14 @@ final class ConsoleEditor {
       navigable.clear();
       tab.editor.documentation(null).declaration(null).onOpen(null);
     }
-    if (provider == null) {
+    if (provider == null && !tab.isQuery()) {
       if (marked != null) {
         tab.editor.noMarkup(STATEMENTS_LAYER);
         marked = null;
       }
       return;
     }
-    var scanned = tab.statements(provider);
+    var scanned = tab.statements(language, provider);
     if (scanned == marked) {
       return;
     }
@@ -192,13 +192,17 @@ final class ConsoleEditor {
   }
 
   /** The editor as built, with its completions. */
-  El editor(State s, App<State> app, Provider provider, El editor) {
+  El editor(State s, App<State> app, Language language, Provider provider, El editor) {
     if (!completion.isOpen()) {
       suggestions.forget();
     }
-    completion.openAfter(provider == null ? "." : Language.of(provider).opensCompletion());
+    completion.openAfter(language.opensCompletion());
     El completing = Completion.complete(
-        app, editor, tab.editor.caret(), completion, word -> suggestions.at(s, provider, word));
+        app,
+        editor,
+        tab.editor.caret(),
+        completion,
+        word -> suggestions.at(s, language, provider, word));
     // Control+Space asks anew, with what was read since the list was made.
     var keys = completing.onKey();
     return completing.onKey(k -> {

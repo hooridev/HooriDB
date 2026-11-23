@@ -16,4 +16,12 @@ final class Syntax {
       case MONGODB -> ShellSyntax.of();
     };
   }
+
+  /** The dialect-neutral syntax colors of a language, before a target connection is chosen. */
+  static Highlighter of(Language language) {
+    return switch (language) {
+      case Language.Sql _ -> StandardSyntax.of();
+      case Language.Shell _ -> ShellSyntax.of();
+    };
+  }
 }

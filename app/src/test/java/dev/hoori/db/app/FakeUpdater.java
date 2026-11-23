@@ -48,6 +48,11 @@ final class FakeUpdater implements Updater {
 
   /** A release with an archive for each platform. */
   static Release release(String version) {
+    return release(version, Instant.parse("2026-11-01T00:00:00Z"), "");
+  }
+
+  /** A release with an archive for each platform, published date and release notes. */
+  static Release release(String version, Instant published, String notes) {
     var page = URI.create("https://github.com/hooridev/HooriDB/releases/tag/v" + version);
     var base =
         "https://github.com/hooridev/HooriDB/releases/download/v" + version + "/HooriDB-" + version;
@@ -55,8 +60,8 @@ final class FakeUpdater implements Updater {
         Version.parse(version),
         "v" + version,
         "HooriDB " + version,
-        Instant.parse("2026-11-01T00:00:00Z"),
-        "",
+        published,
+        notes,
         false,
         page,
         List.of(
@@ -76,6 +81,11 @@ final class FakeUpdater implements Updater {
     for (var version : versions) {
       releases.add(release(version));
     }
+    return this;
+  }
+
+  FakeUpdater publish(String version, Instant published, String notes) {
+    releases.add(release(version, published, notes));
     return this;
   }
 

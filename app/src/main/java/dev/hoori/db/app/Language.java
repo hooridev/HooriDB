@@ -4,6 +4,8 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.dialect.Dialect;
 import dev.hoori.db.core.dialect.DocumentDialect;
+import dev.hoori.db.core.dialect.SyntaxDialect;
+import dev.hoori.db.core.sql.Statements;
 
 /**
  * The language a connection's statements are written in, chosen once from its provider: SQL, or
@@ -44,6 +46,12 @@ sealed interface Language {
   /** What a console's editor suggests at the caret. */
   Suggestions.Strategy completion();
 
+  /** The text's statements, split by the provider's rules or neutrally where none is set. */
+  Statements statements(String text, Provider provider);
+
+  /** This language as a workspace query names it. */
+  Workspace.Language workspace();
+
   record Sql() implements Language {
     @Override
     public boolean documents() {
@@ -73,6 +81,18 @@ sealed interface Language {
     @Override
     public Suggestions.Strategy completion() {
       return new SqlCompletion();
+    }
+
+    @Override
+    public Statements statements(String text, Provider provider) {
+      return provider != null
+          ? Statements.of(text, provider)
+          : Statements.of(text, SyntaxDialect.STANDARD);
+    }
+
+    @Override
+    public Workspace.Language workspace() {
+      return Workspace.Language.SQL;
     }
   }
 
@@ -107,6 +127,16 @@ sealed interface Language {
     @Override
     public Suggestions.Strategy completion() {
       return new ShellCompletion();
+    }
+
+    @Override
+    public Statements statements(String text, Provider provider) {
+      return Statements.ofShell(text);
+    }
+
+    @Override
+    public Workspace.Language workspace() {
+      return Workspace.Language.SHELL;
     }
   }
 }

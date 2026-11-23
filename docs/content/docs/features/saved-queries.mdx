@@ -19,11 +19,13 @@ You can add a query to Workspace in two ways:
 
 ## Open and edit a query
 
-Double-click a query in Workspace, select it and press `Enter`, or right-click it and choose **Open**.
+Double-click a query in Workspace, select it and press `Enter`, right-click it and choose **Open**, or find it by name in the [command palette](/docs/features/command-palette) after `@` (`Ctrl+P`).
 
 - HooriDB opens one tab per query; opening the same query again raises its existing tab.
 - The tab shows the query's name and takes the color of its current target connection.
+- Until you choose a target connection, SQL queries use dialect-neutral standard SQL highlighting and statement splitting, and completion offers the keywords all servers share.
 - Edits are saved automatically into `workspace.json` about one second after you stop typing, and when you close the tab or exit HooriDB.
+- Query tabs left open when you exit reopen automatically at the next start, unconnected, with their last target connection remembered for the **Run on** menu.
 
 ## Choose a target connection and run
 

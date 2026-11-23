@@ -347,6 +347,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   String switching;
   private Statements scanned; // the statements of the text it was made from, as the caret moves
   private String scannedText;
+  private Language scannedLanguage;
   private Provider scannedProvider; // whose rules split it: the connection may change
   final List<Output> outputs = new ArrayList<>(); // the pinned results first
   Output shown; // the results tab shown; null for Messages
@@ -477,11 +478,19 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   /** A console tab bound to a workspace query, initially with no target connection. */
   static ConsoleTab ofQuery(State s, Workspace.Query query) {
+    return ofQuery(s, query, null);
+  }
+
+  /** A console tab bound to a workspace query, with a remembered target connection or null. */
+  static ConsoleTab ofQuery(State s, Workspace.Query query, UUID target) {
     var initial = Language.of(query.language()).transactions()
             && s.settings.commitMode() == Settings.CommitMode.MANUAL
         ? Mode.MANUAL
         : Mode.AUTO;
-    var tab = new ConsoleTab(null, "", initial, query.id(), query.language());
+    var profile = target == null ? null : s.profile(target);
+    var database = profile == null ? "" : State.database(profile);
+    var tab = new ConsoleTab(
+        profile == null ? null : target, database, initial, query.id(), query.language());
     tab.text = query.text();
     tab.editor.select(tab.text.length(), tab.text.length());
     return tab;
@@ -489,7 +498,9 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   /** The console as it is kept until the next start. */
   StoredConsole stored() {
-    return new StoredConsole(id, database, text);
+    return queryId != null
+        ? StoredConsole.ofQuery(queryId, id)
+        : new StoredConsole(id, database, text);
   }
 
   /**
@@ -624,17 +635,19 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       database = State.database(targetProfile);
       chosen = false;
       take(s);
+      s.keeping.persist(s.keeping.consolesKept);
     } else if (id == null) {
       id = targetId;
       database = State.database(targetProfile);
       chosen = false;
       take(s);
+      s.keeping.persist(s.keeping.consolesKept);
     }
     executePending(s, targetProfile.provider(), pending);
   }
 
   /** Target connection was deleted or changed language: end session, clear results, untarget. */
-  void detachTarget() {
+  void detachTarget(State s) {
     end();
     clearAllResults();
     help.clearForSwitch();
@@ -643,6 +656,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     chosen = false;
     targets.close();
     history = null; // of the connection that went
+    s.keeping.persist(s.keeping.consolesKept);
   }
 
   private void clearAllResults() {
@@ -691,19 +705,18 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     return profile == null ? null : profile.provider();
   }
 
-  /** The target connection's provider, or a default for the query's language while untargeted. */
-  Provider editingProvider(State s) {
-    var provider = provider(s);
-    if (provider != null) {
-      return provider;
+  /** The language of the console's statements: its query's, or its connection's. */
+  Language language(State s) {
+    if (queryLanguage != null) {
+      return Language.of(queryLanguage);
     }
-    return queryLanguage == Workspace.Language.SHELL ? Provider.MONGODB : Provider.POSTGRESQL;
+    var provider = provider(s);
+    return provider == null ? new Language.Sql() : Language.of(provider);
   }
 
   /** Whether its statements reach documents, as texts call them, rather than rows. */
   boolean documents(State s) {
-    var provider = editingProvider(s);
-    return provider != null && Language.of(provider).documents();
+    return language(s).documents();
   }
 
   /** The statements, with offsets from {@code from} in the text, run once the console takes them. */
@@ -2700,32 +2713,42 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   // The view
 
   /** The statement Control+Enter would run, or null where it would run the selection or none. */
-  private Statement target(Provider provider) {
+  private Statement target(Language language, Provider provider) {
     if (editor.caret() != editor.anchor()) {
       return null;
     }
-    return statements(provider).at(editor.caret()).orElse(null);
+    return statements(language, provider).at(editor.caret()).orElse(null);
   }
 
-  /** The text's statements, scanned again only when the text or its provider changed. */
-  Statements statements(Provider provider) {
+  /** The text's statements, scanned again only when the text, language or provider changed. */
+  Statements statements(Language language, Provider provider) {
     // Each edit hands over a new string, which equals takes as the same at once where it is.
-    if (scanned == null || !Objects.equals(scannedText, text) || scannedProvider != provider) {
-      scanned = Statements.of(text, provider);
+    if (scanned == null
+        || !Objects.equals(scannedText, text)
+        || scannedProvider != provider
+        || !language.equals(scannedLanguage)) {
+      scanned = language.statements(text, provider);
       scannedText = text;
+      scannedLanguage = language;
       scannedProvider = provider;
     }
     return scanned;
   }
 
+  /** The text's statements for a known provider, scanned again only when text or provider changed. */
+  Statements statements(Provider provider) {
+    return statements(Language.of(provider), provider);
+  }
+
   /** The tab's content: its toolbar, the editor over the results, and its status line. */
   El view(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
-    var provider = editingProvider(s);
+    var provider = provider(s);
+    var language = language(s);
     // No title: the tab names the connection or query, and the database starts the row.
-    El top = Card.toolbar(null, null, ui.actions(s, provider).toArray(El[]::new));
+    El top = Card.toolbar(null, null, ui.actions(s, language).toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
-    El code = editor(s, app, provider);
+    El code = editor(s, app, language, provider);
     El panes = Split.split(
             Split.Direction.COLUMN,
             split,
@@ -2746,15 +2769,12 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         .child(ui.footer(s));
   }
 
-  private El editor(State s, App<State> app, Provider provider) {
-    Highlighter syntax = Syntax.of(provider);
-    if (provider(s) == null && syntax instanceof SqlSyntax sql) {
-      syntax = sql.sql(); // no layout before a target: its server's comments and quotes differ
-    }
-    var at = target(provider); // the lines of the statement Control+Enter runs
+  private El editor(State s, App<State> app, Language language, Provider provider) {
+    Highlighter syntax = provider != null ? Syntax.of(provider) : Syntax.of(language);
+    var at = target(language, provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
     this.editor.occurrences(s.settings.highlightOccurrences());
-    help.prepare(s, provider);
+    help.prepare(s, language, provider);
     El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
           text = v;
           if (queryId != null) {
@@ -2764,7 +2784,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
           }
         })
         .key("sql")
-        .label(Language.of(provider).label())
+        .label(language.label())
         .autofocus(this)
         .wFull()
         .grow(1);
@@ -2790,7 +2810,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
           .atCaret()
           .side(Side.BOTTOM, Style.Align.START, Theme.CURRENT.get().space().xs()));
     }
-    return help.editor(s, app, provider, code);
+    return help.editor(s, app, language, provider, code);
   }
 
   /**

@@ -72,7 +72,7 @@ final class Suggestions {
    * The entries for the word before the caret, best first: made again only where the text, the
    * caret, the word or the keyword case changed since the last, or the list was closed meanwhile.
    */
-  List<Completion.Entry> at(State s, Provider provider, String word) {
+  List<Completion.Entry> at(State s, Language language, Provider provider, String word) {
     var text = tab.text;
     int caret = Math.min(tab.editor.caret(), text.length());
     var keywordCase = s.settings.keywordCase();
@@ -84,9 +84,9 @@ final class Suggestions {
       return entries;
     }
     // The statement the caret writes in, with the comments around it, from the console's split.
-    var around = tab.statements(provider).around(caret);
+    var around = tab.statements(language, provider).around(caret);
     var statement = text.substring(around.start(), around.end());
-    entries = make(s, provider, tab.database, statement, caret - around.start(), word);
+    entries = make(s, language, provider, tab.database, statement, caret - around.start(), word);
     made++;
     madeFor = text;
     madeAt = caret;
@@ -110,7 +110,7 @@ final class Suggestions {
         && keywordCase == madeCase) {
       return entries;
     }
-    entries = make(s, provider, database, statement, at, word);
+    entries = make(s, Language.of(provider), provider, database, statement, at, word);
     made++;
     madeFor = statement;
     madeAt = at;
@@ -131,8 +131,14 @@ final class Suggestions {
   }
 
   private List<Completion.Entry> make(
-      State s, Provider provider, String database, String statement, int caret, String word) {
-    var strategy = Language.of(provider).completion();
+      State s,
+      Language language,
+      Provider provider,
+      String database,
+      String statement,
+      int caret,
+      String word) {
+    var strategy = language.completion();
     var known = new Known(s, provider, database, strategy.exactNames(provider));
     return Ranking.rank(
             strategy.candidates(known, statement, caret, word),

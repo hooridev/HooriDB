@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.SyntaxDialect;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
@@ -522,5 +523,52 @@ class StatementsTest {
         .map(p -> text.substring(p.start(), p.end()))
         .toList();
     assertEquals(List.of("/'/", "'z'"), strings);
+  }
+
+  private static List<String> splitStandard(String text) {
+    return Statements.split(text, SyntaxDialect.STANDARD).stream()
+        .map(s -> text.substring(s.start(), s.end()))
+        .toList();
+  }
+
+  @Test
+  void standardSqlFollowsIsoLexicalRulesWithoutProviderSpecificSyntax() {
+    // ISO SQL strings, double-quoted identifiers, -- and non-nested /* */ comments.
+    assertEquals(List.of("SELECT 'a;''b'", "SELECT 2"), splitStandard("SELECT 'a;''b'; SELECT 2"));
+    assertEquals(
+        List.of("SELECT \"a;\"\"b\"", "SELECT 2"), splitStandard("SELECT \"a;\"\"b\"; SELECT 2"));
+    assertEquals(
+        List.of("SELECT 1 --;x\n, 2", "SELECT 3"), splitStandard("SELECT 1 --;x\n, 2; SELECT 3"));
+    assertEquals(
+        List.of("SELECT 1 /* ; */ + 2", "SELECT 3"),
+        splitStandard("SELECT 1 /* ; */ + 2; SELECT 3"));
+    // No backslash escapes in plain strings, no E'…', no dollar quotes, no nested block comments.
+    assertEquals(List.of("SELECT 'a\\'", "SELECT 2"), splitStandard("SELECT 'a\\'; SELECT 2"));
+    assertEquals(
+        List.of("SELECT E'a\\'", "b'; SELECT 2"), splitStandard("SELECT E'a\\';b'; SELECT 2"));
+    assertEquals(List.of("SELECT $$a", "b$$"), splitStandard("SELECT $$a;b$$"));
+    assertEquals(
+        List.of("*/ SELECT 1", "SELECT 2"), splitStandard("/* a /* b */ ; */ SELECT 1; SELECT 2"));
+    // No MySQL/MariaDB hash comments, backticks, executable comments or DELIMITER commands.
+    assertEquals(List.of("SELECT 1 # 2", "SELECT 3"), splitStandard("SELECT 1 # 2; SELECT 3"));
+    assertEquals(List.of("SELECT `a", "b`"), splitStandard("SELECT `a;b`"));
+    assertEquals(List.of("SELECT 2"), splitStandard("/*!40101 SET a = 1; */; SELECT 2"));
+    assertEquals(List.of("DELIMITER //\nSELECT 1"), splitStandard("DELIMITER //\nSELECT 1;"));
+    // Caret lookup through the SyntaxDialect overload matches of().
+    var text = "SELECT 1; SELECT 2";
+    assertEquals(
+        Optional.of("SELECT 2"),
+        Statements.at(text, SyntaxDialect.STANDARD, text.indexOf("2"))
+            .map(s -> text.substring(s.start(), s.end())));
+  }
+
+  @Test
+  void shellStatementsSplitWithoutAProvider() {
+    var text = "db.a.find({});\ndb.b.find({})";
+    assertEquals(
+        List.of("db.a.find({})", "db.b.find({})"),
+        Statements.ofShell(text).statements().stream()
+            .map(s -> text.substring(s.start(), s.end()))
+            .toList());
   }
 }
