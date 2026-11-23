@@ -31,12 +31,14 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.query.QueryException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -45,7 +47,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongPredicate;
+import java.util.function.Predicate;
 
 /**
  * A table's rows in a tab. They are read in pages, on the lane of the table's connection, as the
@@ -57,7 +61,7 @@ import java.util.function.LongPredicate;
  * <p>A collection of documents shows as a grid of their fields, as a table does, or a page of
  * them at a time, whole: as Extended JSON, or as a tree of their fields.
  */
-final class TableTab implements Tab {
+final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdits.Target {
 
   /**
    * Rows a page holds: some seven screens. A read far into a table costs the server mostly the
@@ -142,6 +146,12 @@ final class TableTab implements Tab {
   private final Clause where;
   private final Clause order;
   private Whole whole; // the current cell's whole value, for the value panel; or null
+  final ResultEdits edits = new ResultEdits();
+  ResultEdits.Preview preview; // the DML Preview dialog before committing edits, or null
+  // Original rows (as read) of edited positions, kept even when keep() drops their page.
+  private final Map<Integer, List<Object>> kept = new HashMap<>();
+  // Original rows moved out of kept on undo/revert while GridChanges can still undo/redo them.
+  private final Map<Integer, List<Object>> undoKept = new HashMap<>();
 
   /** One clause field (WHERE or ORDER BY) with its caret and SQL completions. */
   private static final class Clause {
@@ -199,6 +209,7 @@ final class TableTab implements Tab {
       return; // what was read stays, and the view says that it is not connected
     }
     stop();
+    clearEdits();
     failure = null;
     ending = false;
     countedFirst = false;
@@ -225,7 +236,7 @@ final class TableTab implements Tab {
           var page = link.read(of, read, from, from + PAGE, applied);
           return new Opened(read, estimate, page, System.nanoTime() - start);
         },
-        opened -> opened(s, from, recount, opened),
+        opened -> opened(s, from, recount, live, opened),
         error -> {
           opening = null;
           // Columns the tree read may be old; those read just now are not worth a second try.
@@ -249,7 +260,7 @@ final class TableTab implements Tab {
    * The table opened at the page from the row: its columns, the estimate unless a count came first,
    * and that page; then the pages in view, and a count where it is cheap or a refresh asks for one.
    */
-  private void opened(State s, long from, boolean recount, Opened opened) {
+  private void opened(State s, long from, boolean recount, Live live, Opened opened) {
     opening = null;
     if (!opened.columns().equals(columns)) {
       shape(opened.columns());
@@ -257,6 +268,7 @@ final class TableTab implements Tab {
     }
     columns = opened.columns();
     fields = opened.page().fields();
+    configureEdits(s, live);
     var estimate = opened.estimate();
     if (!countedFirst) {
       // Without an estimate the place in view stands until its page says more.
@@ -375,7 +387,12 @@ final class TableTab implements Tab {
   private void arrived(State s, long page, Page read, long nanos) {
     // On PostgreSQL the kinds are those of the read: one changed since the columns were read.
     if (!read.fields().equals(fields)) {
-      open(s, true);
+      if (atStake()) {
+        stop();
+        failure = new Failure(Problem.CHANGED, "");
+      } else {
+        open(s, true);
+      }
       return;
     }
     int n = read.rows().size();
@@ -533,11 +550,11 @@ final class TableTab implements Tab {
     }
     var problem = problem(error);
     if (problem == Problem.GONE || problem == Problem.CHANGED) {
-      if (again) {
+      if (again && !atStake()) {
         open(s, true);
         return;
       }
-      if (!filter.empty() && error instanceof QueryException) {
+      if (!filter.empty() && error instanceof QueryException && !again) {
         problem = Problem.OTHER; // the columns were just read: the clauses name what is not there
       }
     }
@@ -651,19 +668,55 @@ final class TableTab implements Tab {
   public void close() {
     closed = true;
     stop();
+    clearEdits();
     where.close();
     order.close();
     pages.clear();
     documents.clear();
   }
 
+  /** Refreshes the table, asking first while changes are pending or committing. */
+  void refresh(State s) {
+    if (closed || !s.catalog.connected(id) || preview != null || s.guard.locked(this) != null) {
+      return;
+    }
+    if (s.guard.asks(
+        s,
+        new Guard.Act("refresh", this),
+        table.name() + " is refreshed",
+        List.of(this),
+        () -> refresh(s),
+        Guard.Scope.CHANGES)) {
+      return;
+    }
+    open(s, true);
+  }
+
+  /** Replaces the table metadata (e.g. table became a view) and re-opens, asking first if edited. */
+  void replace(State s, Table next) {
+    if (closed || preview != null || s.guard.locked(this) != null) {
+      return;
+    }
+    if (s.guard.asks(
+        s,
+        new Guard.Act("refresh", this),
+        table.name() + " is refreshed",
+        List.of(this),
+        () -> replace(s, next),
+        Guard.Scope.CHANGES)) {
+      return;
+    }
+    table = next;
+    open(s, true);
+  }
+
   /**
-   * Applies the clauses in the WHERE and ORDER BY fields: cancels reads in flight, drops old pages
-   * and count, scrolls to the top, clears the selection, and reads the table again with its known
-   * columns.
+   * Applies the clauses in the WHERE and ORDER BY fields: asks first while changes are pending,
+   * then cancels reads in flight, drops old pages and count, scrolls to the top, clears the
+   * selection, and reads the table again with its known columns.
    */
   void apply(State s) {
-    if (closed || !s.catalog.connected(id)) {
+    if (closed || !s.catalog.connected(id) || preview != null || s.guard.locked(this) != null) {
       return;
     }
     var next = new Rows.Filter(where.text.strip(), order.text.strip());
@@ -676,6 +729,15 @@ final class TableTab implements Tab {
       return;
     }
     if (next.equals(filter) && failure == null) {
+      return;
+    }
+    if (s.guard.asks(
+        s,
+        new Guard.Act("filter", this),
+        "the filter is applied",
+        List.of(this),
+        () -> apply(s),
+        Guard.Scope.CHANGES)) {
       return;
     }
     filter = next;
@@ -732,7 +794,8 @@ final class TableTab implements Tab {
   }
 
   /** Says something in the tab's status line, in whichever window it is, for a while. */
-  void say(State s, String text) {
+  @Override
+  public void say(State s, String text) {
     said = text;
     int told = ++says;
     s.app.after(State.MESSAGE_SECONDS, () -> {
@@ -771,6 +834,10 @@ final class TableTab implements Tab {
     if (note != null) {
       content.child(col().padding(t.space().m()).shrink(0).child(note));
     }
+    El writeProblem = ResultEdits.writeProblemCallout(edits);
+    if (writeProblem != null) {
+      content.child(writeProblem);
+    }
     // Loading cells only while something is read, or was: not for a table that failed at once.
     boolean readable = columns != null && (fields != null || failure == null);
     DocumentPresentation.View presented = readable
@@ -782,7 +849,7 @@ final class TableTab implements Tab {
         .key("rows-status")
         .ellipsis();
     return content.child(
-        Card.footer(rowsStatus, footer(ofDocuments, presented).toArray(El[]::new)));
+        Card.footer(rowsStatus, footer(s, ofDocuments, presented).toArray(El[]::new)));
   }
 
   /** The WHERE and ORDER BY clause fields above the grid on an SQL server. */
@@ -891,7 +958,7 @@ final class TableTab implements Tab {
             GHOST,
             Symbol.ARROW_CLOCKWISE,
             "Refresh",
-            connected ? () -> open(s, true) : null,
+            connected ? () -> refresh(s) : null,
             Button.options()
                 .state(opening != null && connected ? Button.State.BUSY : Button.State.READY))
         .key("refresh"));
@@ -935,8 +1002,8 @@ final class TableTab implements Tab {
     return col().grow(1);
   }
 
-  /** The status line after the number of rows: what it says, the last read, and the paging. */
-  private List<El> footer(boolean ofDocuments, DocumentPresentation.View presented) {
+  /** The status line after the number of rows: what it says, the last read, edits, and paging. */
+  private List<El> footer(State s, boolean ofDocuments, DocumentPresentation.View presented) {
     Theme t = Theme.CURRENT.get();
     El read = busy()
         ? row()
@@ -951,6 +1018,9 @@ final class TableTab implements Tab {
       end.add(Label.label(Label.Variant.MUTED, said).key("said"));
     }
     end.add(read);
+    if (!ofDocuments && fields != null) {
+      ResultEdits.editControls(s, this, this, end);
+    }
     if (presented != null) {
       end.addAll(presented.footer());
     }
@@ -1009,7 +1079,12 @@ final class TableTab implements Tab {
       boolean waiting = opening != null || reading.containsKey(page);
       return new InPanel(waiting ? cell(column, null) : null, null, waiting, false);
     }
-    var values = pages.get((long) row / PAGE).get(row % PAGE);
+    if (edits.changes != null
+        && !edits.changes.isEmpty()
+        && edits.changes.cellStatus(row, column) != DataGrid.Status.UNCHANGED) {
+      return new InPanel(cell(column, edits.changes.cell(row, column)), null, false, false);
+    }
+    var values = rowValues(row);
     var v = values.get(column);
     if (!(v instanceof Cut)) {
       return new InPanel(cell(column, v), null, false, false);
@@ -1228,7 +1303,7 @@ final class TableTab implements Tab {
     };
     var text = CatalogTree.join(words[1], failure.detail());
     El failed = Callout.callout(
-        Callout.Kind.DANGER, words[0], text, button(SECONDARY, "Try again", () -> open(s, true)));
+        Callout.Kind.DANGER, words[0], text, button(SECONDARY, "Try again", () -> refresh(s)));
     return refusal == null
         ? failed
         : col().gap(Theme.CURRENT.get().space().s()).child(refusal).child(failed);
@@ -1237,11 +1312,19 @@ final class TableTab implements Tab {
   /** The rows in the grid, late: a row not read yet shows the grid's loading cells. */
   private El grid(State s, App<State> app) {
     var zone = s.zone;
+    var editable = edits.editable;
+    var changes = edits.changes;
+    BooleanSupplier free = () ->
+        edits.writing == null && s.guard.locked(this) == null && ResultEdits.current(s, this, this);
     var shown = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < columns.size(); c++) {
       var kind = fields == null ? null : fields.get(c).kind();
       int at = c;
-      shown.add(Cells.column(columns.get(c), kind, widths, c, row -> value(row, at), zone));
+      var col = Cells.column(columns.get(c), kind, widths, c, row -> value(row, at), zone);
+      shown.add(
+          editable != null && changes != null
+              ? ResultEdits.editedColumn(this, col, at, free, false)
+              : col);
     }
     var options = DataGrid.options()
         .select(selection)
@@ -1253,14 +1336,26 @@ final class TableTab implements Tab {
         .copyLimit(
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
         .contextMenu(
-            menu, List.of(Menu.item("Refresh", () -> open(s, true)).icon(Symbol.ARROW_CLOCKWISE)))
+            menu, List.of(Menu.item("Refresh", () -> refresh(s)).icon(Symbol.ARROW_CLOCKWISE)))
         .loading(this::loaded, (from, to) -> want(s, from, to))
         // Nothing to do: the build it causes brings the footer's rows in view along.
         .onRowsInView((from, to) -> {});
-    return DataGrid.dataGrid(shown, gridRows(), options)
+    int count;
+    if (editable != null && changes != null) {
+      ResultEdits.configureGrid(s, this, options, free);
+      count = changes.rowCount();
+    } else {
+      count = gridRows();
+    }
+    El grid = DataGrid.dataGrid(shown, count, options)
         .key("grid")
         .label("Rows of " + table.name())
         .defaultFocus();
+    if (editable != null && changes != null) {
+      Predicate<Key> guard = k -> ResultEdits.rejectUnloadedKey(app, this, k);
+      grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
+    }
+    return grid;
   }
 
   /** The rows in the grid, which counts them in an int. */
@@ -1269,11 +1364,348 @@ final class TableTab implements Tab {
   }
 
   private boolean loaded(int row) {
+    if (!kept.isEmpty() && kept.containsKey(row)) {
+      return true;
+    }
     var page = pages.get((long) row / PAGE);
     return page != null && row % PAGE < page.size();
   }
 
   private Object value(int row, int column) {
+    if (!kept.isEmpty()) {
+      var rowValues = kept.get(row);
+      if (rowValues != null) {
+        return rowValues.get(column);
+      }
+    }
     return pages.get((long) row / PAGE).get(row % PAGE).get(column);
+  }
+
+  private List<Object> rowValues(int row) {
+    if (!kept.isEmpty()) {
+      var rowValues = kept.get(row);
+      if (rowValues != null) {
+        return rowValues;
+      }
+    }
+    return pageRow(row);
+  }
+
+  private List<Object> pageRow(int row) {
+    if (row < 0) {
+      return null;
+    }
+    var page = pages.get((long) row / PAGE);
+    int offset = row % PAGE;
+    return page != null && offset < page.size() ? page.get(offset) : null;
+  }
+
+  // Editing and Guard participation
+
+  /** Sets up editing directly from the table, catalog columns, and page fields without a query. */
+  private void configureEdits(State s, Live live) {
+    clearEdits();
+    var profile = s.profile(id);
+    if (profile == null || !(Language.of(profile.provider()) instanceof Language.Sql)) {
+      return; // MongoDB and deleted connections stay as they were
+    }
+    if (profile.readOnly()) {
+      edits.readOnlyReason = ResultEdits.READ_ONLY_CONNECTION;
+      return;
+    }
+    if (table.kind() == Table.Kind.VIEW) {
+      edits.readOnlyReason = ResultEdits.VIEW_READ_ONLY;
+      return;
+    }
+    if (table.kind() != Table.Kind.TABLE) {
+      edits.readOnlyReason = ResultEdits.FOREIGN_TABLE_READ_ONLY;
+      return;
+    }
+    if (Changes.of(table, columns).isEmpty()) {
+      edits.readOnlyReason = ResultEdits.NO_PRIMARY_KEY;
+      return;
+    }
+    edits.live = live;
+    edits.database = table.container().database().name();
+    edits.editable = new Editable(table, columns, columns);
+    edits.changes = ResultEdits.gridChanges(s, this);
+  }
+
+  private void clearEdits() {
+    edits.stop();
+    edits.discard(this);
+    edits.editable = null;
+    edits.readOnlyReason = null;
+    edits.changes = null;
+    edits.live = null;
+    edits.database = null;
+    preview = null;
+  }
+
+  boolean hasPendingChanges() {
+    return edits.hasPending(this);
+  }
+
+  int pendingChanges() {
+    return edits.pendingCount(this);
+  }
+
+  boolean writingChanges() {
+    return edits.writing != null;
+  }
+
+  boolean atStake() {
+    return hasPendingChanges() || writingChanges();
+  }
+
+  @Override
+  public UUID connectionId() {
+    return id;
+  }
+
+  @Override
+  public boolean atStake(Guard.Scope scope) {
+    return switch (scope) {
+      case BOTH, CHANGES -> atStake();
+      case TRANSACTION -> false;
+    };
+  }
+
+  Guard.Pending.Question asked(State s) {
+    return s.guard.pending instanceof Guard.Pending.Question question && question.tab() == this
+        ? question
+        : null;
+  }
+
+  @Override
+  public El question(State s) {
+    var asked = asked(s);
+    if (asked == null) {
+      return null;
+    }
+    return ResultEdits.discardDialog(
+        s.title(this),
+        asked.what(),
+        writingChanges(),
+        pendingChanges(),
+        edits.unknown,
+        () -> answer(s, null),
+        () -> answer(s, ConsoleTab.STOP_WRITES),
+        () -> answer(s, ConsoleTab.DISCARD));
+  }
+
+  void answer(State s, String choice) {
+    var asked = asked(s);
+    if (asked == null) {
+      return;
+    }
+    if (choice == null) {
+      s.guard.pending = null;
+      return;
+    }
+    switch (choice) {
+      case ConsoleTab.DISCARD -> {
+        edits.discard(this);
+        preview = null;
+      }
+      case ConsoleTab.STOP_WRITES -> ResultEdits.cancelWrite(s, this, this);
+      default -> throw new IllegalArgumentException(choice);
+    }
+    settle(s);
+  }
+
+  private void settle(State s) {
+    var asked = asked(s);
+    if (asked != null && !atStake(asked.scope())) {
+      s.guard.pending = null;
+      asked.then().run();
+    }
+  }
+
+  /** The DML Preview dialog before committing table edits, while it is open; or null. */
+  El preview(State s, App<State> app) {
+    return ResultEdits.previewDialog(s, this, app);
+  }
+
+  @Override
+  public Guard.Guarded guarded() {
+    return this;
+  }
+
+  @Override
+  public boolean owns(ResultEdits.Target target) {
+    return !closed && target == this;
+  }
+
+  @Override
+  public ResultEdits.Preview preview() {
+    return preview;
+  }
+
+  @Override
+  public void preview(ResultEdits.Preview next) {
+    preview = next;
+  }
+
+  @Override
+  public String committedHint() {
+    return ResultEdits.TABLE_COMMITTED_HINT;
+  }
+
+  @Override
+  public String connectionChangedReason(State s) {
+    return s.catalog.connected(id)
+        ? ResultEdits.TABLE_CONNECTION_CHANGED
+        : ResultEdits.NOT_CONNECTED;
+  }
+
+  @Override
+  public void settledFromEdit(State s) {
+    settle(s);
+  }
+
+  @Override
+  public ResultEdits edits() {
+    return edits;
+  }
+
+  @Override
+  public DataGrid.Selection selection() {
+    return selection;
+  }
+
+  @Override
+  public List<Field> fields() {
+    return fields;
+  }
+
+  @Override
+  public int rowCount() {
+    return gridRows();
+  }
+
+  @Override
+  public boolean rowLoaded(int row) {
+    return row >= 0 && row < gridRows() && loaded(row);
+  }
+
+  @Override
+  public List<Object> rowAt(int row) {
+    return rowValues(row);
+  }
+
+  @Override
+  public List<Object> tableRow(int rowIndex) {
+    return rowValues(rowIndex);
+  }
+
+  @Override
+  public boolean hasUnloaded() {
+    return counted != Counted.EXACT
+        || more
+        || (long) pages.size() * PAGE < Math.min(rows, DocumentPresentation.GRID_ROWS);
+  }
+
+  @Override
+  public boolean rangeUnloaded(int top, int bottom) {
+    int total = gridRows();
+    if (top < 0 || bottom >= total) {
+      return true;
+    }
+    long firstPage = (long) top / PAGE;
+    long lastPage = (long) bottom / PAGE;
+    for (long p = firstPage; p <= lastPage; p++) {
+      var page = pages.get(p);
+      int from = (int) Math.max(top, p * PAGE);
+      int to = (int) Math.min(bottom, p * PAGE + PAGE - 1);
+      int needed = to - (int) (p * PAGE) + 1;
+      if (page != null && page.size() >= needed) {
+        continue;
+      }
+      int have = page == null ? 0 : page.size();
+      for (int r = Math.max(from, (int) (p * PAGE) + have); r <= to; r++) {
+        if (!kept.containsKey(r)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  @Override
+  public void beforeStage(int row) {
+    keepRow(row);
+  }
+
+  @Override
+  public void afterChange() {
+    var changes = edits.changes;
+    if (changes == null) {
+      kept.clear();
+      undoKept.clear();
+      return;
+    }
+    for (var gc : changes.changes()) {
+      keepRow((int) gc.key());
+    }
+    boolean keepHistory = changes.canUndo() || changes.canRedo();
+    var it = kept.entrySet().iterator();
+    while (it.hasNext()) {
+      var entry = it.next();
+      if (changes.rowStatus(entry.getKey()) == DataGrid.Status.UNCHANGED) {
+        if (keepHistory) {
+          undoKept.putIfAbsent(entry.getKey(), entry.getValue());
+        }
+        it.remove();
+      }
+    }
+    if (!keepHistory) {
+      undoKept.clear();
+    }
+  }
+
+  @Override
+  public void onCleared() {
+    kept.clear();
+    undoKept.clear();
+  }
+
+  @Override
+  public void applyCommitted(Map<Integer, Map<Integer, Object>> applied) {
+    whole = null;
+    var updatedPages = new HashMap<Long, List<List<Object>>>();
+    for (var entry : applied.entrySet()) {
+      int rowIndex = entry.getKey();
+      long pageKey = (long) rowIndex / PAGE;
+      var page = updatedPages.get(pageKey);
+      if (page == null) {
+        var existing = pages.get(pageKey);
+        if (existing == null) {
+          continue;
+        }
+        page = new ArrayList<>(existing);
+        updatedPages.put(pageKey, page);
+      }
+      int offset = rowIndex % PAGE;
+      if (offset >= 0 && offset < page.size()) {
+        var base = rowValues(rowIndex);
+        var updated = new ArrayList<>(base != null ? base : page.get(offset));
+        entry.getValue().forEach(updated::set);
+        page.set(offset, Collections.unmodifiableList(updated));
+      }
+    }
+    updatedPages.forEach((p, list) -> pages.put(p, List.copyOf(list)));
+  }
+
+  private void keepRow(int row) {
+    if (!kept.containsKey(row)) {
+      var original = undoKept.get(row);
+      if (original == null) {
+        original = pageRow(row);
+      }
+      if (original != null) {
+        kept.put(row, original);
+      }
+    }
   }
 }

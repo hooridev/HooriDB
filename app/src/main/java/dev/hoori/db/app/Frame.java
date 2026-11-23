@@ -175,10 +175,13 @@ final class Frame {
         group,
         tab -> switch (tab) {
           case TableTab x ->
-            new Tabs.Tab(s.title(x))
-                .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE)
-                .hue(ConnectionColors.hue(s.color(x.id)))
-                .busy(x.opening != null || x.counting != null);
+            new Tabs.Tab(
+                s.title(x),
+                true,
+                x.atStake(),
+                x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE,
+                ConnectionColors.hue(s.color(x.id)),
+                x.opening != null || x.counting != null || x.writingChanges());
           // What may be open is changes not yet committed: the tab's dot.
           case ConsoleTab x ->
             new Tabs.Tab(
@@ -257,27 +260,28 @@ final class Frame {
     return AppIcon.appIcon(16, HooriDb.COLOR, Symbol.DATABASE);
   }
 
-  /** What a console of the window asks about what may be open in it, or null. */
+  /** What a tab of the window asks about what may be open in it, or null. */
   private static El question(State s, TabGroups.Group<Tab> group) {
     var questioned = questioned(s, group);
-    return questioned != null ? questioned.console().question(s) : null;
+    return questioned != null ? questioned.tab().question(s) : null;
   }
 
-  /** The question a console of the window asks about what may be open in it, or null. */
+  /** The question a tab of the window asks about what may be open in it, or null. */
   private static Guard.Pending.Question questioned(State s, TabGroups.Group<Tab> group) {
     return s.guard.pending instanceof Guard.Pending.Question question
-            && s.tabs.groupOf(question.console()) == group
+            && s.tabs.groupOf((Tab) question.tab()) == group
         ? question
         : null;
   }
 
   /**
-   * Whether the window of these tabs shows a dialog of its own, without making it: a console's
-   * question, what its console in front asks before a statement or its History, or what the
-   * catalog asks there.
+   * Whether the window of these tabs shows a dialog of its own, without making it: a tab's
+   * question, a DML preview, what its console in front asks before a statement or its History, or
+   * what the catalog asks there.
    */
   private static boolean asks(State s, TabGroups.Group<Tab> group) {
     return questioned(s, group) != null
+        || group.activeTab() instanceof TableTab table && table.preview != null
         || group.activeTab() instanceof ConsoleTab console
             && (console.confirming != null
                 || console.preview != null
@@ -288,12 +292,15 @@ final class Frame {
   }
 
   /**
-   * What the window's console in front asks before it sends a statement, or null; that of a
-   * console behind another tab waits until its tab is shown.
+   * What the window's tab in front asks, or null; that of a tab behind another waits until its tab
+   * is shown.
    */
   private static El confirmation(State s, TabGroups.Group<Tab> group) {
     if (group.activeTab() instanceof MonitorTab monitor) {
       return monitor.question(s);
+    }
+    if (group.activeTab() instanceof TableTab table) {
+      return table.preview(s, app(s, group));
     }
     if (!(group.activeTab() instanceof ConsoleTab console)) {
       return null;
@@ -569,25 +576,40 @@ final class Frame {
   }
 
   /**
-   * The consoles where something may be at stake, as Exit asks about; pressing it shows the first,
+   * The tabs where something may be at stake, as Exit asks about; pressing it shows the first,
    * but not while a dialog is open in the main window or its own, whose tab it would switch. Null
    * while there are none.
    *
    * @param modal whether a dialog is open in the main window
    */
   private static El uncommitted(State s, boolean modal) {
-    var consoles = s.consoles(null).stream().filter(ConsoleTab::atStake).toList();
-    if (consoles.isEmpty()) {
+    var tabs = s.guarded(null).stream().filter(t -> t.atStake(Guard.Scope.BOTH)).toList();
+    if (tabs.isEmpty()) {
       return null;
     }
-    int n = consoles.size();
-    var first = consoles.getFirst();
-    boolean asking = modal || asks(s, s.tabs.groupOf(first));
+    int consoles = 0;
+    int tables = 0;
+    for (var tab : tabs) {
+      if (tab instanceof ConsoleTab) {
+        consoles++;
+      } else {
+        tables++;
+      }
+    }
+    String text;
+    if (tables == 0) {
+      text =
+          consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
+    } else if (consoles == 0) {
+      text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    } else {
+      int n = consoles + tables;
+      text = n + " tabs may hold uncommitted work";
+    }
+    var first = tabs.getFirst();
+    boolean asking = modal || asks(s, s.tabs.groupOf((Tab) first));
     return StatusBar.item(
-            Badge.Kind.WARNING,
-            Symbol.LOCK_OPEN,
-            n + (n == 1 ? " console may" : " consoles may") + " hold uncommitted work",
-            asking ? null : () -> first.show(s))
+            Badge.Kind.WARNING, Symbol.LOCK_OPEN, text, asking ? null : () -> first.show(s))
         .key("uncommitted");
   }
 

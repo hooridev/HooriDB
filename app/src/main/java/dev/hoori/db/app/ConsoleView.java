@@ -354,38 +354,18 @@ final class ConsoleView {
 
   /** What the question says before pending changes of a result are lost, or while one commits. */
   private Wording discarding(State s, String name, Guard.Pending.Question asked) {
-    String before = asked.what();
     boolean unpinnedOnly = asked.scope() == Guard.Scope.CHANGES;
-    if (tab.writingChanges(unpinnedOnly)) {
-      return new Wording(
-          "Waiting for changes to commit",
-          "Changes are being committed on " + name + ". Wait until the commit finishes, or"
-              + " cancel it: whether it took effect is then not known, and the changes stay.",
-          List.of(button(
-                  SECONDARY,
-                  "Cancel commit",
-                  () -> tab.answer(s, ConsoleTab.STOP_WRITES),
-                  Button.options().tone(Button.Tone.DANGER))
-              .key("answer-cancel-commit")));
-    }
-    int n = tab.pendingChanges(unpinnedOnly);
-    String changes = n == 1 ? "1 change" : n + " changes";
     boolean unsure =
         tab.outputs.stream().anyMatch(o -> (!unpinnedOnly || !o.pinned) && o.edits.unknown);
-    return new Wording(
-        "Discard " + changes + "?",
-        name + " has " + (n == 1 ? "1 uncommitted change" : n + " uncommitted changes")
-            + ". Discard " + (n == 1 ? "it" : "them") + " before " + before + "?"
-            + (unsure
-                ? " Whether the last commit took effect is not known: discarding drops the changes"
-                    + " here and undoes nothing on the server."
-                : ""),
-        List.of(button(
-                PRIMARY,
-                "Discard",
-                () -> tab.answer(s, ConsoleTab.DISCARD),
-                Button.options().tone(Button.Tone.DANGER))
-            .key("answer-discard")));
+    var d = ResultEdits.discardWording(
+        name,
+        asked.what(),
+        tab.writingChanges(unpinnedOnly),
+        tab.pendingChanges(unpinnedOnly),
+        unsure,
+        () -> tab.answer(s, ConsoleTab.STOP_WRITES),
+        () -> tab.answer(s, ConsoleTab.DISCARD));
+    return new Wording(d.title(), d.text(), d.buttons());
   }
 
   /** What the question says on the console {@code name} before the act {@code asked}. */

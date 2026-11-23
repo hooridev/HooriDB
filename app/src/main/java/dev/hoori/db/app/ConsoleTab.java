@@ -42,8 +42,10 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -88,7 +90,7 @@ import java.util.regex.Pattern;
  *       Every statement and portion goes to the session through one gate ({@link #gate}).
  * </ul>
  */
-final class ConsoleTab implements Tab {
+final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   /** Rows read at a time, as the first rows of a result and then as the grid scrolls on. */
   static final int PORTION = 200;
@@ -99,7 +101,7 @@ final class ConsoleTab implements Tab {
   static final Split.Position FIRST_SPLIT = Split.Position.share(0.45f);
 
   /** A result of a run, in a tab of its own below the editor: rows, or a count of changed rows. */
-  static final class Output {
+  static final class Output implements ResultEdits.Target {
     final int number; // counted on through the console's runs, so that a pinned one keeps its own
     final String statement;
     final List<Field> fields; // null for a count
@@ -138,6 +140,58 @@ final class ConsoleTab implements Tab {
 
     void stop() {
       edits.stop();
+    }
+
+    @Override
+    public ResultEdits edits() {
+      return edits;
+    }
+
+    @Override
+    public DataGrid.Selection selection() {
+      return selection;
+    }
+
+    @Override
+    public List<Field> fields() {
+      return fields;
+    }
+
+    @Override
+    public int rowCount() {
+      return (int) Math.min(rows.size() + (more ? 1L : 0L), DocumentPresentation.GRID_ROWS);
+    }
+
+    @Override
+    public boolean rowLoaded(int row) {
+      return row >= 0 && row < rows.size();
+    }
+
+    @Override
+    public List<Object> rowAt(int row) {
+      return row >= 0 && row < rows.size() ? rows.get(row) : null;
+    }
+
+    @Override
+    public boolean hasUnloaded() {
+      return more;
+    }
+
+    @Override
+    public boolean rangeUnloaded(int top, int bottom) {
+      return bottom >= rows.size();
+    }
+
+    @Override
+    public void applyCommitted(Map<Integer, Map<Integer, Object>> applied) {
+      for (var entry : applied.entrySet()) {
+        int rowIndex = entry.getKey();
+        if (rowIndex >= 0 && rowIndex < rows.size()) {
+          var updated = new ArrayList<>(rows.get(rowIndex));
+          entry.getValue().forEach(updated::set);
+          rows.set(rowIndex, Collections.unmodifiableList(updated));
+        }
+      }
     }
   }
 
@@ -471,7 +525,7 @@ final class ConsoleTab implements Tab {
     for (var o : outputs) {
       if (!o.pinned) {
         o.stop();
-        if (preview != null && preview.output == o) {
+        if (preview != null && preview.target == o) {
           preview = null;
         }
       }
@@ -1828,8 +1882,60 @@ final class ConsoleTab implements Tab {
     return transactionAtStake() || hasPendingChanges() || writingChanges();
   }
 
+  @Override
+  public UUID connectionId() {
+    return id;
+  }
+
+  @Override
+  public Guard.Guarded guarded() {
+    return this;
+  }
+
+  @Override
+  public boolean owns(ResultEdits.Target target) {
+    return target instanceof Output o && outputs.contains(o);
+  }
+
+  @Override
+  public ResultEdits.Preview preview() {
+    return preview;
+  }
+
+  @Override
+  public void preview(ResultEdits.Preview next) {
+    preview = next;
+  }
+
+  @Override
+  public String committedHint() {
+    return ResultEdits.COMMITTED_HINT;
+  }
+
+  @Override
+  public String connectionChangedReason(State s) {
+    return ResultEdits.CONNECTION_CHANGED;
+  }
+
+  @Override
+  public boolean askBeforeCommit(State s, ResultEdits.Target target, Runnable then) {
+    return s.guard.asks(
+        s,
+        new Guard.Act("commit-changes", target),
+        "the changes are committed",
+        List.of(this),
+        then,
+        Guard.Scope.TRANSACTION);
+  }
+
+  @Override
+  public void onLogged(Level level, String statement, String text) {
+    log.add(new Logged(level, statement, null, text));
+  }
+
   /** Whether something within {@code scope} is at stake on this console. */
-  boolean atStake(Guard.Scope scope) {
+  @Override
+  public boolean atStake(Guard.Scope scope) {
     return switch (scope) {
       case BOTH -> atStake();
       case TRANSACTION -> transactionAtStake();
@@ -1979,26 +2085,9 @@ final class ConsoleTab implements Tab {
     return stoppable && working() && !firm();
   }
 
-  /** Shows the console's tab, in its window raised, for the question {@link Guard#asks} put. */
-  void show(State s) {
-    var group = s.tabs.groupOf(this);
-    if (group == null) {
-      return;
-    }
-    s.tabs.select(group, group.tabs().indexOf(this));
-    // The main window's tabs have no window of their own: the app's is theirs.
-    var window = group.window();
-    if (window == null && s.app != null) {
-      window = s.app.windows().of(s.app);
-    }
-    if (window != null) {
-      window.raise();
-    }
-  }
-
   /** The act that waits for this console's question, or null. */
   Guard.Pending.Question asked(State s) {
-    return s.guard.pending instanceof Guard.Pending.Question question && question.console() == this
+    return s.guard.pending instanceof Guard.Pending.Question question && question.tab() == this
         ? question
         : null;
   }
@@ -2071,7 +2160,7 @@ final class ConsoleTab implements Tab {
     for (var o : outputs) {
       if (!unpinnedOnly || !o.pinned) {
         o.edits.discard(o);
-        if (preview != null && preview.output == o) {
+        if (preview != null && preview.target == o) {
           preview = null;
         }
       }
@@ -2105,12 +2194,14 @@ final class ConsoleTab implements Tab {
     }
   }
 
-  void settledFromEdit(State s) {
+  @Override
+  public void settledFromEdit(State s) {
     settle(s);
   }
 
   /** Says something in the tab's status line, for a while. */
-  void say(State s, String text) {
+  @Override
+  public void say(State s, String text) {
     said = text;
     int told = ++says;
     s.app.after(State.MESSAGE_SECONDS, () -> {
@@ -2247,7 +2338,8 @@ final class ConsoleTab implements Tab {
    * The question about what may be open, while it is asked; in the console's window ({@link
    * ConsoleView#question}).
    */
-  El question(State s) {
+  @Override
+  public El question(State s) {
     return ui.question(s);
   }
 
