@@ -102,9 +102,9 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       case Node.Folder(var id) ->
         icon(s.folderOpen(id) ? Symbol.FOLDER_OPEN : Symbol.FOLDER, false);
       case Node.Connection n -> connection(n);
-      case Node.Query _ -> icon(Symbol.DOCUMENT, false);
+      case Node.Query(var id) -> icon(Glyphs.query(s.query(id).language()), false);
       case Node.OfDatabase n -> icon(Symbol.DATABASE, n.database().system());
-      case Node.OfSchema n -> icon(Symbol.FOLDER, n.schema().system());
+      case Node.OfSchema n -> icon(Glyphs.SCHEMA, n.schema().system());
       case Node.OfTable n ->
         icon(n.table().kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE, system(n.table()));
       case Node.OfColumn n ->
@@ -116,7 +116,7 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
   }
 
   // A system object's icon is quieter too, as its name is muted.
-  private El icon(Symbol symbol, boolean system) {
+  private El icon(Icon symbol, boolean system) {
     return Icon.icon(symbol, system ? Icon.Variant.DISABLED : Icon.Variant.MUTED);
   }
 

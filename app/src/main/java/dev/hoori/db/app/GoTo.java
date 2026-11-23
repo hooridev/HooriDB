@@ -114,7 +114,8 @@ final class GoTo {
               })
               .key("query\0" + item.id())
               .detail(q.where())
-              .leading(() -> lead(null, Icon.icon(Symbol.DOCUMENT, Icon.Variant.MUTED))));
+              .leading(
+                  () -> lead(null, Icon.icon(Glyphs.query(item.language()), Icon.Variant.MUTED))));
         }
       }
     }

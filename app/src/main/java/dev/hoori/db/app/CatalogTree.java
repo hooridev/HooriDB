@@ -1408,7 +1408,7 @@ final class CatalogTree {
           yield List.of();
         }
         yield List.of(
-            Menu.item("Open", () -> s.openQuery(q.id())).icon(Symbol.DOCUMENT),
+            Menu.item("Open", () -> s.openQuery(q.id())).icon(Glyphs.query(q.language())),
             Menu.separator(),
             Menu.item("Rename…", () -> s.askRenameQuery(q.id())).icon(Symbol.EDIT),
             Menu.item("Duplicate", () -> s.duplicateQuery(q)).icon(Symbol.COPY),

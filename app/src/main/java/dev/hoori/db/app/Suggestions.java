@@ -1,7 +1,7 @@
 package dev.hoori.db.app;
 
 import com.rethinkj.ui.kit.Completion;
-import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.Icon;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
@@ -27,8 +27,7 @@ final class Suggestions {
    * A name it may suggest, as it is listed, and as it is put in, quoted where it needs to be; and
    * whether it belongs to the statement's tables.
    */
-  record Candidate(
-      String name, String shown, String text, Symbol symbol, String kind, boolean own) {}
+  record Candidate(String name, String shown, String text, Icon symbol, String kind, boolean own) {}
 
   /** What a language suggests: its words, and the names of what the tree has read. */
   sealed interface Strategy permits SqlCompletion, ShellCompletion {
