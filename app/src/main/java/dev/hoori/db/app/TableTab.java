@@ -461,6 +461,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (selection.isEditing()) {
       far.remove(Long.valueOf(selection.editingRow() / PAGE)); // its draft's row stays
     }
+    // Pages with edits, or edits undo may bring back, stay: a page read again may hold other rows
+    // at those positions, which the undo history, kept by position, would then change.
+    kept.keySet().forEach(row -> far.remove(Long.valueOf(row / PAGE)));
+    undoKept.keySet().forEach(row -> far.remove(Long.valueOf(row / PAGE)));
     if (!presentation.isGrid()) {
       far.remove(Long.valueOf(presentation.page()));
     }
@@ -863,7 +867,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
               .padding(t.space().s(), t.space().xl())
               .gap(t.space().s())
               .align(Style.Align.CENTER)
-              .minSize(0, 0)
+              .shrink(0)
               .children(edited.toArray(El[]::new)));
     }
     return content.child(Card.footer(rowsStatus, footer.toArray(El[]::new)));

@@ -1053,8 +1053,9 @@ final class ResultEdits {
       return;
     }
     boolean current = current(s, host, target);
-    String why =
-        edits.editable != null && !current ? host.connectionChangedReason(s) : editStatus(target);
+    String why = edits.editable != null && !current
+        ? host.connectionChangedReason(s)
+        : editStatus(s, host, target);
     if (why != null) {
       // The line is short; the whole reason, as how to add an offset, shows on hover.
       status.add(Tooltip.tooltip(
@@ -1092,7 +1093,7 @@ final class ResultEdits {
         .key("commit-changes"));
   }
 
-  private static String editStatus(Target target) {
+  private static String editStatus(State s, Host host, Target target) {
     var edits = target.edits();
     if (edits.pasteRefused != null) {
       return edits.pasteRefused;
@@ -1104,7 +1105,11 @@ final class ResultEdits {
       }
       return edits.committedHint;
     }
-    return edits.readOnlyReason;
+    var reason = edits.readOnlyReason;
+    // Whether it is connected may have changed since the result was checked.
+    return NOT_CONNECTED.equals(reason) || CONNECTION_CHANGED.equals(reason)
+        ? host.connectionChangedReason(s)
+        : reason;
   }
 
   /** Wires a grid column to staged values, editability, nullability, and warning icons. */

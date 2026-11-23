@@ -226,7 +226,7 @@ class TableTabEditTest {
   }
 
   @Test
-  void editedRowSurvivesDroppedPageAndCommitsRightRow() throws Exception {
+  void editedRowsPageStaysAndCommitsRightRow() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);
     for (long i = 1; i <= 3_000; i++) {
       rows.add(List.of(i, "name " + i));
@@ -240,13 +240,11 @@ class TableTabEditTest {
     c.run(app, "press #cell-0-1\ntype \"Edited 1\"\nkey Enter\nframe\n");
     assertEquals(1, tab.pendingChanges());
 
-    // Scroll far enough through distinct pages so keep() drops page 0.
+    // Scroll far enough through distinct pages that keep() would drop page 0: it holds an edit.
     for (long r : new long[] {600, 1000, 1400, 1800, 2200, 2600}) {
       c.run(app, scroll(r) + SETTLE);
     }
-    assertFalse(
-        tab.pages.containsKey(0L),
-        "page 0 should have been dropped by keep(): " + tab.pages.keySet());
+    assertTrue(tab.pages.containsKey(0L), tab.pages.keySet().toString());
     assertEquals(1, tab.pendingChanges());
 
     // Scroll back to row 0: the edited row still shows its edit, then commits the right row.
@@ -264,16 +262,14 @@ class TableTabEditTest {
     assertEquals("Edited 1", servers.rowsOf(BIG).get(0).get(1));
     assertEquals("name 2", servers.rowsOf(BIG).get(1).get(1));
 
-    // Also verify conflict detection across a dropped page: kept original wins over re-read page.
+    // A row the server changed since it was read is missed, not overwritten.
     c.run(app, "press #cell-1-1\ntype \"Edited 2\"\nkey Enter\nframe\n");
-    for (long r : new long[] {600, 1000, 1400, 1800, 2200, 2600}) {
-      c.run(app, scroll(r) + SETTLE);
-    }
-    assertFalse(tab.pages.containsKey(0L));
     var mutated = new ArrayList<>(servers.rowsOf(BIG));
     mutated.set(1, List.of(2L, "ServerChanged"));
     servers.values(BIG, mutated);
-    // Scroll back (re-reads page 0 with "ServerChanged"), then commit -> Missed!
+    for (long r : new long[] {600, 1000, 1400, 1800, 2200, 2600}) {
+      c.run(app, scroll(r) + SETTLE);
+    }
     c.run(app, scroll(0) + SETTLE);
     c.run(
         app,
@@ -295,18 +291,18 @@ class TableTabEditTest {
     c.run(app, table("big") + SETTLE);
     var tab = t.tab(app);
 
-    // Edit id 1, undo it, and let the server delete id 1 while page 0 is dropped.
+    // Edit id 1, undo it, and let the server delete id 1: page 0, with undo history, stays.
     c.run(app, "press #cell-0-1\ntype \"Edited 1\"\nkey Enter\nframe\nkey Z control\nframe\n");
     assertEquals(0, tab.pendingChanges());
     for (long r : new long[] {600, 1000, 1400, 1800, 2200, 2600}) {
       c.run(app, scroll(r) + SETTLE);
     }
-    assertFalse(tab.pages.containsKey(0L), tab.pages.keySet().toString());
+    assertTrue(tab.pages.containsKey(0L), tab.pages.keySet().toString());
     servers.values(BIG, rows.subList(1, rows.size()));
     c.run(app, scroll(0) + SETTLE + "snap back\n");
-    assertTrue(cell(c.tree("back"), 0, 1).contains("\"name 2\""), c.tree("back"));
+    assertTrue(cell(c.tree("back"), 0, 1).contains("\"name 1\""), c.tree("back"));
 
-    // Redo stages the edit on id 1 again, not on id 2 now shown there: the write misses.
+    // Redo stages the edit on id 1 again, not on id 2: the write misses.
     c.run(
         app,
         "key Y control\nframe\npress #commit-changes\nframe\n" + OPENED
