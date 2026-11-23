@@ -1,5 +1,6 @@
 package dev.hoori.db.app;
 
+import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
@@ -118,7 +119,7 @@ record SqlCompletion() implements Suggestions.Strategy {
     for (var node : known.schemasOrDatabases()) {
       switch (node) {
         case Node.OfSchema x ->
-          into.add(candidate(known, x.schema().name(), Symbol.FOLDER, "schema"));
+          into.add(candidate(known, x.schema().name(), Glyphs.SCHEMA, "schema"));
         case Node.OfDatabase d ->
           into.add(candidate(known, d.database().name(), Symbol.DATABASE, "database"));
         default -> {
@@ -189,7 +190,7 @@ record SqlCompletion() implements Suggestions.Strategy {
   }
 
   private static Suggestions.Candidate candidate(
-      Suggestions.Known known, String name, Symbol symbol, String kind) {
+      Suggestions.Known known, String name, Icon symbol, String kind) {
     return new Suggestions.Candidate(
         name, name, Names.quoted(name, known.provider), symbol, kind, false);
   }

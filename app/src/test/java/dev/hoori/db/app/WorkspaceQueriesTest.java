@@ -30,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
@@ -85,6 +86,25 @@ class WorkspaceQueriesTest {
   static String nameQuery(String name) {
     return "press #query-name\nkey A control\nkey Delete\ntype \"" + name + "\"\nframe\n"
         + "key Enter\n" + SHOWN;
+  }
+
+  @Test
+  void aQueryShowsItsLanguageAndASchemaIsNoFolder() throws Exception {
+    var sql = query("Orders", COUNT, Workspace.Language.SQL);
+    var shell = query("Carts", "db.carts.find()", Workspace.Language.SHELL);
+    var app = c.app(new Workspace(List.of(SHOP, folder("Reports", true, sql, shell))));
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START + open("shop-prod") + SETTLE + open("shop") + SETTLE
+            + "press role=treeitem label=\"Orders\"\nkey Enter\nframe\nframe\nsnap icons\n");
+    var icons = c.tree("icons");
+    assertTrue(
+        CatalogTreeTest.row(icons, "Orders")
+            .contains("label=\"" + Symbol.DOCUMENT_TABLE.label() + "\""),
+        icons);
+    assertTrue(CatalogTreeTest.row(icons, "Carts").contains("label=\"MongoDB query\""), icons);
+    assertTrue(CatalogTreeTest.row(icons, "public").contains("label=\"schema\""), icons);
   }
 
   @Test

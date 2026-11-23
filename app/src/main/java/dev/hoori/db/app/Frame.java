@@ -195,7 +195,7 @@ final class Frame {
                 s.title(x),
                 true,
                 x.atStake(),
-                x.isQuery() ? Symbol.DOCUMENT : Symbol.CODE,
+                x.isQuery() ? Glyphs.query(x.queryLanguage) : Symbol.CODE,
                 ConnectionColors.hue(s.color(x.id)),
                 x.busy());
           case MonitorTab x ->

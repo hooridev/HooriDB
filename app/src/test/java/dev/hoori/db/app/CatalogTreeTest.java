@@ -581,7 +581,7 @@ class CatalogTreeTest {
     assertTrue(row(tables, "customers").contains("label=\"table\""), tables);
     assertTrue(row(tables, "order_totals").contains("label=\"eye\""), tables);
     assertTrue(row(tables, "shop").contains("label=\"database\""), tables);
-    assertTrue(row(tables, "public").contains("label=\"folder\""), tables);
+    assertTrue(row(tables, "public").contains("label=\"schema\""), tables);
     String columns = tree("columns");
     assertEquals(
         List.of("        id", "        customer_id", "        placed_at", "        total"),
