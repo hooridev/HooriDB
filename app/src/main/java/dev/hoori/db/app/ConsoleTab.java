@@ -183,7 +183,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     }
 
     @Override
-    public void applyCommitted(Map<Integer, Map<Integer, Object>> applied) {
+    public void applyCommitted(Map<Integer, Map<Integer, Object>> applied, boolean reload) {
       for (var entry : applied.entrySet()) {
         int rowIndex = entry.getKey();
         if (rowIndex >= 0 && rowIndex < rows.size()) {

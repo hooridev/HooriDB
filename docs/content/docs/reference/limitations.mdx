@@ -7,7 +7,7 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 
 ## Table data
 
-- You cannot edit, insert, or delete rows in a table tab grid yet. In an [SQL console](/docs/features/console#edit-query-results), single-table `SELECT` results with a primary key support updating existing cells (inserting and deleting rows is not supported yet).
+- A table tab grid edits, inserts, and deletes rows only in tables with a primary key (see [Table data](/docs/features/table-data#edit-insert-and-delete-rows)). In an [SQL console](/docs/features/console#edit-query-results), single-table `SELECT` results with a primary key support updating existing cells only: a new row may not match the query, and the console does not run the query again after a commit, so deleted rows would still show.
 - You cannot filter or sort rows in the grid.
 - A table grid displays at most 2,147,483,647 rows, and copying from a grid is limited to 100,000 selected cells at once from rows that are already loaded.
 - Values longer than 1,024 characters can be fetched whole in the value panel only for tables with a primary key and for MongoDB collections (by the document's `_id`). In tables without a primary key, and in SQL console results, the value panel shows only the first 1,024 characters.

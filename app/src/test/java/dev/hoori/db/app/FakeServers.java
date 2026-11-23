@@ -1110,35 +1110,89 @@ final class FakeServers implements Servers {
           throw queryFailure(QueryException.Failure.NOT_FOUND);
         }
         var stored = materializeRows(path, changes.columns());
-        var next = new ArrayList<>(stored);
         var keyCols = IntStream.range(0, changes.columns().size())
             .filter(i -> changes.columns().get(i).keyPosition() > 0)
             .boxed()
             .sorted(Comparator.comparingInt(i -> changes.columns().get(i).keyPosition()))
             .toList();
-        for (var change : changes.changes()) {
-          if (change instanceof Change.Update(var origRow, var newVals)) {
-            int matched = -1;
-            long count = 0;
-            for (int r = 0; r < next.size(); r++) {
-              var row = next.get(r);
-              boolean keyOk =
-                  keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)));
-              boolean valsOk = keyOk
-                  && newVals.keySet().stream()
-                      .allMatch(c -> Objects.equals(row.get(c), origRow.get(c)));
-              if (valsOk) {
-                matched = r;
-                count++;
+        var ordered = new ArrayList<Change>();
+        for (var kind : List.of(Change.Update.class, Change.Delete.class, Change.Insert.class)) {
+          for (var change : changes.changes()) {
+            if (kind.isInstance(change)) {
+              ordered.add(change);
+            }
+          }
+        }
+        // Check every update and delete against the rows as read before applying, as core does.
+        for (var change : ordered) {
+          switch (change) {
+            case Change.Update(var origRow, var newVals) -> {
+              long count = stored.stream()
+                  .filter(row ->
+                      keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))
+                          && newVals.keySet().stream()
+                              .allMatch(c -> Objects.equals(row.get(c), origRow.get(c))))
+                  .count();
+              if (count != 1) {
+                done.add(key);
+                return new Changes.Outcome.Missed(change, count);
               }
             }
-            if (count != 1) {
-              done.add(key);
-              return new Changes.Outcome.Missed(change, count);
+            case Change.Delete(var origRow) -> {
+              long count = stored.stream()
+                  .filter(row ->
+                      keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k))))
+                  .count();
+              if (count != 1) {
+                done.add(key);
+                return new Changes.Outcome.Missed(change, count);
+              }
             }
-            var updated = new ArrayList<>(next.get(matched));
-            newVals.forEach(updated::set);
-            next.set(matched, Collections.unmodifiableList(updated));
+            case Change.Insert _ -> {}
+          }
+        }
+        var next = new ArrayList<>(stored);
+        for (var change : ordered) {
+          switch (change) {
+            case Change.Update(var origRow, var newVals) -> {
+              int matched = -1;
+              long count = 0;
+              for (int r = 0; r < next.size(); r++) {
+                var row = next.get(r);
+                if (keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))) {
+                  matched = r;
+                  count++;
+                }
+              }
+              if (count != 1) {
+                done.add(key);
+                return new Changes.Outcome.Missed(change, count);
+              }
+              var updated = new ArrayList<>(next.get(matched));
+              newVals.forEach(updated::set);
+              next.set(matched, Collections.unmodifiableList(updated));
+            }
+            case Change.Delete(var origRow) -> {
+              int matched = -1;
+              long count = 0;
+              for (int r = 0; r < next.size(); r++) {
+                var row = next.get(r);
+                if (keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))) {
+                  matched = r;
+                  count++;
+                }
+              }
+              if (count != 1) {
+                done.add(key);
+                return new Changes.Outcome.Missed(change, count);
+              }
+              next.remove(matched);
+            }
+            case Change.Insert(var newVals) -> {
+              var inserted = new Object[changes.columns().size()];
+              newVals.forEach((c, v) -> inserted[c] = v);
+              next.add(Collections.unmodifiableList(Arrays.asList(inserted)));
+            }
           }
         }
         values.put(path, List.copyOf(next));

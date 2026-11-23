@@ -40,6 +40,9 @@ final class ValuePanel {
   record Cell(String column, String type, Kind kind, Object value) {}
 
   private static final Object NOTHING = new Object();
+  /** The value of a new row's cell left without one, which takes the column's default. */
+  static final Object DEFAULT = new Object();
+
   private static final String TITLE = "Value"; // of the panel, and of its button
 
   boolean open;
@@ -117,6 +120,8 @@ final class ValuePanel {
           .child(Progress.spinner());
     } else if (cell.value() == null) {
       body = col().grow(1).center().child(Label.label(Label.Variant.MUTED, "NULL"));
+    } else if (cell.value() == DEFAULT) {
+      body = col().grow(1).center().child(Label.label(Label.Variant.MUTED, "DEFAULT"));
     } else if (cell.value() == Missing.FIELD) {
       body = col().grow(1).center().child(Label.label(Label.Variant.MUTED, "No such field"));
     } else {

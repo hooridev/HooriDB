@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
@@ -78,6 +79,9 @@ final class ResultEdits {
       "Committed — run the statement again for the server's values";
   static final String TABLE_COMMITTED_HINT = "Committed — refresh for the server's values";
   static final String UNLOADED_PASTE = "Scroll to load all target rows before pasting or clearing";
+  static final String UNLOADED_DELETE = "Scroll to load all target rows before deleting";
+  static final String UNKEYED_DELETE =
+      "Row cannot be deleted: primary key value is cut short or NULL";
   private static final String COMMIT_CHANGES = "Commit changes";
   static final String CONNECTION_CHANGED =
       "Read-only: the connection changed; run the statement again to edit";
@@ -86,7 +90,14 @@ final class ResultEdits {
   static final String REPEATED_ROW =
       "The same row shows more than once in the result; edit only one of its copies.";
 
-  /** One editable grid's rows, fields, selection, and hooks for keeping edited rows. */
+  /**
+   * One editable grid's rows, fields, selection, and hooks for keeping edited rows.
+   *
+   * <p>All row parameters and counts on this interface are base table or result positions ({@code
+   * 0 .. rowCount() - 1}), excluding staged new rows. Grid row indices from {@link #selection()}
+   * and {@link DataGrid} callbacks translate to positions via {@link GridChanges#key(int)}
+   * (negative for staged new rows) and back via {@link GridChanges#rowOf(long)}.
+   */
   interface Target {
     ResultEdits edits();
 
@@ -94,28 +105,28 @@ final class ResultEdits {
 
     List<Field> fields();
 
-    /** Total rows shown in the grid (including any loading row at the end). */
+    /** Total base rows (excluding staged new rows, including any loading row at the end). */
     int rowCount();
 
-    /** Whether the row at {@code row} is loaded (or kept) and available for reading or editing. */
-    boolean rowLoaded(int row);
+    /** Whether the base row at {@code position} is loaded (or kept) and available. */
+    boolean rowLoaded(int position);
 
-    /** The original row as read (or kept), in the grid's field order; null if not loaded. */
-    List<Object> rowAt(int row);
+    /** The original row as read (or kept) at {@code position}, in field order; null if unloaded. */
+    List<Object> rowAt(int position);
 
-    /** Whether any rows in the grid are not loaded (so paste and clear must check their range). */
+    /** Whether any base rows are not loaded (so paste, clear and delete must check their range). */
     boolean hasUnloaded();
 
-    /** Whether any row in {@code [top, bottom]} (inclusive) is not loaded. */
-    boolean rangeUnloaded(int top, int bottom);
+    /** Whether any base position in {@code [topPosition, bottomPosition]} (inclusive) is unloaded. */
+    boolean rangeUnloaded(int topPosition, int bottomPosition);
 
     /**
-     * The row in table-column order, padded with {@link Missing#FIELD} for table columns absent
-     * from the grid, as core's {@link Changes} expects.
+     * The base row at {@code position} in table-column order, padded with {@link Missing#FIELD}
+     * for table columns absent from the grid, as core's {@link Changes} expects.
      */
-    default List<Object> tableRow(int rowIndex) {
+    default List<Object> tableRow(int position) {
       var editable = edits().editable;
-      var resultRow = rowAt(rowIndex);
+      var resultRow = rowAt(position);
       var padded = new Object[editable.columns().size()];
       Arrays.fill(padded, Missing.FIELD);
       var fields = fields();
@@ -128,8 +139,8 @@ final class ResultEdits {
       return Collections.unmodifiableList(Arrays.asList(padded));
     }
 
-    /** Called before staging a cell edit on {@code row}, so a paged grid can keep its row. */
-    default void beforeStage(State s, int row) {}
+    /** Called before staging an edit or delete on base {@code position}, to keep its original row. */
+    default void beforeStage(State s, int position) {}
 
     /** Called after staging, reverting, or undo/redo changed staged state. */
     default void afterChange() {}
@@ -137,8 +148,12 @@ final class ResultEdits {
     /** Called when all pending edits are discarded or cleared. */
     default void onCleared() {}
 
-    /** Applies committed new values into the rows currently held for display. */
-    void applyCommitted(Map<Integer, Map<Integer, Object>> applied);
+    /**
+     * Applies committed new values (keyed by base position) into the rows held for display.
+     *
+     * @param reload true when inserts or deletes were committed, so a table tab reads anew
+     */
+    void applyCommitted(Map<Integer, Map<Integer, Object>> applied, boolean reload);
   }
 
   /** The tab hosting an editable grid: owns the preview dialog, write outcomes, and guard state. */
@@ -175,6 +190,11 @@ final class ResultEdits {
   Lane.Asked checking; // the in-flight Editable.of call on the write lane, or null
   GridChanges changes; // non-null once editable != null
   Lane.Asked writing; // the in-flight Changes.write call on the write lane, or null
+  // shortcut: the steps undo and redo may take, counted since the history was last forgotten, as
+  // GridChanges cannot drop its history alone (rethinkj/ui#529); a rebuilt one would renumber its
+  // new rows and lose the edits under deletion marks.
+  int undoable;
+  int redoable;
   ConsoleTab.Problem writeProblem; // why the last commit did not succeed, or null
   boolean unknown; // whether a commit's outcome is not known, until one commits or all is dropped
   String committedHint; // shown after Committed until the next edit or refresh/run
@@ -194,13 +214,15 @@ final class ResultEdits {
     final CodeEditor.State editor = new CodeEditor.State().readOnly(true);
     final Map<List<Object>, List<Integer>> rowsByKey;
     final Map<Integer, Map<Integer, Object>> applied;
+    final boolean structural;
 
     Preview(
         Target target,
         Changes changes,
         List<Changes.Statement> statements,
         Map<List<Object>, List<Integer>> rowsByKey,
-        Map<Integer, Map<Integer, Object>> applied) {
+        Map<Integer, Map<Integer, Object>> applied,
+        boolean structural) {
       this.target = target;
       this.changes = changes;
       this.statements = statements;
@@ -208,6 +230,7 @@ final class ResultEdits {
           statements.stream().map(st -> st.preview() + ";").collect(Collectors.joining("\n"));
       this.rowsByKey = rowsByKey;
       this.applied = applied;
+      this.structural = structural;
     }
   }
 
@@ -248,7 +271,11 @@ final class ResultEdits {
     int r = selection.editingRow();
     int c = selection.editingColumn();
     var fields = t.fields();
-    if (fields == null || !t.rowLoaded(r) || c < 0 || c >= fields.size()) {
+    if (fields == null || r < 0 || r >= changes.rowCount() || c < 0 || c >= fields.size()) {
+      return false;
+    }
+    long key = changes.key(r);
+    if (key >= 0 && !t.rowLoaded((int) key)) {
       return false;
     }
     return !Objects.equals(selection.draft(), changes.cell(r, c));
@@ -259,6 +286,7 @@ final class ResultEdits {
     t.selection().cancelEdit();
     if (changes != null) {
       changes.clear();
+      forgetHistory();
     }
     t.onCleared();
     writeProblem = null;
@@ -358,6 +386,7 @@ final class ResultEdits {
 
   /** GridChanges keyed by row position in the grid, never by primary key. */
   static GridChanges gridChanges(State s, Target t) {
+    t.edits().forgetHistory();
     return new GridChanges(new GridChanges.Rows() {
       @Override
       public int count() {
@@ -383,14 +412,98 @@ final class ResultEdits {
     });
   }
 
-  /** Whether cell ({@code row}, {@code col}) in an editable grid can be edited. */
-  static boolean cellEditable(Target t, int row, int col) {
+  /** Runs a change of the staged edits, counting it as a step of the history where it made one. */
+  private static void step(ResultEdits edits, Runnable change) {
+    var before = edits.changes.changes();
+    change.run();
+    if (!before.equals(edits.changes.changes())) { // a step always changes what is staged
+      edits.undoable++;
+      edits.redoable = 0;
+    }
+  }
+
+  /** Forgets the undo and redo steps, which stay in the kit but are no longer taken. */
+  void forgetHistory() {
+    undoable = 0;
+    redoable = 0;
+  }
+
+  /** Whether undo or redo may take a step. */
+  boolean hasHistory() {
+    return undoable > 0 || redoable > 0;
+  }
+
+  /** Base row position for a grid row, or -1 if it is a staged new row or out of range. */
+  static int position(GridChanges changes, int gridRow) {
+    if (gridRow < 0) {
+      return -1;
+    }
+    if (changes == null || changes.isEmpty()) {
+      return gridRow;
+    }
+    long key = changes.key(gridRow);
+    return key < 0 ? -1 : (int) key;
+  }
+
+  /** Total rows shown in the grid, including staged new rows. */
+  static int gridRowCount(Target t) {
+    var changes = t.edits().changes;
+    return changes == null || changes.isEmpty() ? t.rowCount() : changes.rowCount();
+  }
+
+  // shortcut: GridChanges cannot tell an unset cell of a new row from an explicit NULL per cell;
+  // snapshot which columns each INSERT sets once per build (rethinkj/ui#530).
+  static Map<Long, Set<Integer>> insertedColumns(GridChanges changes) {
+    if (changes == null || changes.isEmpty()) {
+      return Map.of();
+    }
+    Map<Long, Set<Integer>> set = null;
+    for (var change : changes.changes()) {
+      if (change.kind() == GridChanges.Kind.INSERT) {
+        if (set == null) {
+          set = new HashMap<>();
+        }
+        set.put(change.key(), change.values().keySet());
+      }
+    }
+    return set == null ? Map.of() : set;
+  }
+
+  /** Whether any non-new row in grid row range {@code [gridTop, gridBottom]} is unloaded. */
+  static boolean rangeUnloadedGrid(Target t, int gridTop, int gridBottom) {
+    var changes = t.edits().changes;
+    if (changes == null || changes.isEmpty()) {
+      return t.rangeUnloaded(gridTop, gridBottom);
+    }
+    if (gridTop < 0 || gridBottom < gridTop) {
+      return false;
+    }
+    int gridCount = changes.rowCount();
+    if (gridBottom >= gridCount) {
+      return true;
+    }
+    int first = gridTop;
+    while (first <= gridBottom && changes.key(first) < 0) {
+      first++;
+    }
+    if (first > gridBottom) {
+      return false;
+    }
+    int last = gridBottom;
+    while (last >= first && changes.key(last) < 0) {
+      last--;
+    }
+    return t.rangeUnloaded((int) changes.key(first), (int) changes.key(last));
+  }
+
+  /** Whether cell ({@code gridRow}, {@code col}) in an editable grid can be edited. */
+  static boolean cellEditable(Target t, int gridRow, int col) {
     var edits = t.edits();
     var fields = t.fields();
     if (edits.editable == null
         || edits.writing != null
         || fields == null
-        || !t.rowLoaded(row)
+        || gridRow < 0
         || col < 0
         || col >= fields.size()) {
       return false;
@@ -399,11 +512,25 @@ final class ResultEdits {
     if (column == null || fields.get(col).kind() == Kind.BINARY) {
       return false;
     }
-    var values = t.rowAt(row);
+    var changes = edits.changes;
+    if (changes != null && !changes.isEmpty()) {
+      var status = changes.rowStatus(gridRow);
+      if (status == DataGrid.Status.DELETED) {
+        return false;
+      }
+      if (status == DataGrid.Status.NEW) {
+        return true;
+      }
+    }
+    int pos = position(changes, gridRow);
+    if (pos < 0 || !t.rowLoaded(pos)) {
+      return false;
+    }
+    var values = t.rowAt(pos);
     if (values == null || !wholeForEdit(values.get(col))) {
       return false;
     }
-    return Changes.names(edits.editable.columns(), t.tableRow(row));
+    return Changes.names(edits.editable.columns(), t.tableRow(pos));
   }
 
   /** Whether the original value is whole and not shortened by display preview. */
@@ -424,8 +551,20 @@ final class ResultEdits {
     int row = selection.row();
     int col = selection.column();
     var fields = t.fields();
-    if (fields == null || !t.rowLoaded(row) || col < 0 || col >= fields.size()) {
+    if (fields == null || row < 0 || row >= gridRowCount(t) || col < 0 || col >= fields.size()) {
       return null;
+    }
+    var changes = edits.changes;
+    boolean isNew = changes != null && !changes.isEmpty() && changes.isNew(row);
+    int pos = isNew ? -1 : position(changes, row);
+    if (!isNew && (pos < 0 || !t.rowLoaded(pos))) {
+      return null;
+    }
+    if (!isNew
+        && changes != null
+        && !changes.isEmpty()
+        && changes.rowStatus(row) == DataGrid.Status.DELETED) {
+      return "Row read-only: marked for deletion";
     }
     var field = fields.get(col);
     var column = edits.editable.edited().get(col);
@@ -447,7 +586,10 @@ final class ResultEdits {
     if (field.kind() == Kind.BINARY) {
       return "Cell read-only: binary values cannot be edited here";
     }
-    var values = t.rowAt(row);
+    if (isNew) {
+      return null;
+    }
+    var values = t.rowAt(pos);
     if (values == null) {
       return null;
     }
@@ -458,21 +600,23 @@ final class ResultEdits {
     if (value instanceof String str && Cells.shortened(str)) {
       return "Cell read-only: long value shown in part";
     }
-    if (!Changes.names(edits.editable.columns(), t.tableRow(row))) {
+    if (!Changes.names(edits.editable.columns(), t.tableRow(pos))) {
       return "Row read-only: primary key value is cut short or NULL";
     }
     return null;
   }
 
   /** Stages a single edited cell after validating against its column type and nullability. */
-  static String commitCell(State s, Target t, int row, int col, String value) {
-    if (!cellEditable(t, row, col)) {
+  static String commitCell(State s, Target t, int gridRow, int col, String value) {
+    if (!cellEditable(t, gridRow, col)) {
       return "This cell is read-only";
     }
     var edits = t.edits();
     var field = t.fields().get(col);
     var column = edits.editable.edited().get(col);
-    var original = t.rowAt(row).get(col);
+    long key = edits.changes.key(gridRow);
+    boolean isNew = key < 0;
+    var original = isNew ? null : t.rowAt((int) key).get(col);
     var parsed = Cells.parse(field, column, value, original, s.zone);
     if (!parsed.valid()) {
       return parsed.error();
@@ -483,8 +627,10 @@ final class ResultEdits {
     edits.committedHint = null;
     edits.pasteRefused = null;
     edits.writeProblem = null;
-    t.beforeStage(s, row);
-    edits.changes.set(row, col, stored);
+    if (!isNew) {
+      t.beforeStage(s, (int) key);
+    }
+    step(edits, () -> edits.changes.set(gridRow, col, stored));
     t.afterChange();
     return null;
   }
@@ -529,7 +675,8 @@ final class ResultEdits {
       var parsed = DataGrid.parseText(app.clipboard().read());
       if (parsed.size() > 1 || parsed.size() == 1 && parsed.getFirst().size() > 1) {
         int top = t.selection().row();
-        if (top >= 0 && t.rangeUnloaded(top, top + parsed.size() - 1)) {
+        int bottom = Math.min(top + parsed.size() - 1, gridRowCount(t) - 1);
+        if (top >= 0 && bottom >= top && rangeUnloadedGrid(t, top, bottom)) {
           reachesUnloaded = true;
         }
       }
@@ -560,7 +707,9 @@ final class ResultEdits {
       }
       var field = fields.get(cell.column());
       var column = edits.editable.edited().get(cell.column());
-      var original = t.rowAt(cell.row()).get(cell.column());
+      long key = edits.changes.key(cell.row());
+      boolean isNew = key < 0;
+      var original = isNew ? null : t.rowAt((int) key).get(cell.column());
       var parsed = Cells.parse(field, column, cell.value(), original, s.zone);
       if (parsed.valid()) {
         String stored = staged(field, parsed.value(), original, cell.value(), s.zone);
@@ -574,42 +723,109 @@ final class ResultEdits {
       edits.committedHint = null;
       edits.writeProblem = null;
       for (var cell : valid) {
-        t.beforeStage(s, cell.row());
+        long key = edits.changes.key(cell.row());
+        if (key >= 0) {
+          t.beforeStage(s, (int) key);
+        }
       }
-      edits.changes.set(valid);
+      step(edits, () -> edits.changes.set(valid));
       t.afterChange();
     }
   }
 
+  /** Stages an empty new row after grid row {@code after} (-1 for a new first row). */
+  static void insertRow(Target t, int after) {
+    var edits = t.edits();
+    if (edits.editable == null || edits.writing != null) {
+      return;
+    }
+    edits.committedHint = null;
+    edits.pasteRefused = null;
+    edits.writeProblem = null;
+    step(edits, () -> edits.changes.insert(after));
+    t.afterChange();
+  }
+
+  /**
+   * Marks rows in {@code ranges} for deletion (or unmarks / removes new rows), refusing if any
+   * range reaches an unloaded row or a row whose primary key cannot name it.
+   */
+  static void deleteRows(State s, Target t, List<DataGrid.Range> ranges) {
+    var edits = t.edits();
+    if (edits.editable == null || edits.writing != null || ranges.isEmpty()) {
+      return;
+    }
+    var changes = edits.changes;
+    int gridCount = changes.rowCount();
+    for (var range : ranges) {
+      int top = Math.max(0, range.top());
+      int bottom = Math.min(range.bottom(), gridCount - 1);
+      if (top <= bottom && rangeUnloadedGrid(t, top, bottom)) {
+        edits.pasteRefused = UNLOADED_DELETE;
+        return;
+      }
+    }
+    var positions = new ArrayList<Integer>();
+    for (var range : ranges) {
+      int top = Math.max(0, range.top());
+      int bottom = Math.min(range.bottom(), gridCount - 1);
+      for (int r = top; r <= bottom; r++) {
+        long key = changes.key(r);
+        if (key >= 0) {
+          int pos = (int) key;
+          if (!Changes.names(edits.editable.columns(), t.tableRow(pos))) {
+            edits.pasteRefused = UNKEYED_DELETE;
+            return;
+          }
+          positions.add(pos);
+        }
+      }
+    }
+    for (int pos : positions) {
+      t.beforeStage(s, pos);
+    }
+    edits.committedHint = null;
+    edits.pasteRefused = null;
+    edits.writeProblem = null;
+    step(edits, () -> edits.changes.delete(ranges));
+    t.afterChange();
+  }
+
   private static boolean selectionReachesUnloaded(Target t) {
     var selection = t.selection();
+    int gridCount = gridRowCount(t);
     int row = selection.row();
-    if (row >= 0 && !t.rowLoaded(row)) {
+    if (row >= 0 && row < gridCount && rangeUnloadedGrid(t, row, row)) {
       return true;
     }
     for (var range : selection.ranges()) {
-      if (t.rangeUnloaded(range.top(), range.bottom())) {
+      int top = Math.max(0, range.top());
+      int bottom = Math.min(range.bottom(), gridCount - 1);
+      if (top <= bottom && rangeUnloadedGrid(t, top, bottom)) {
         return true;
       }
     }
     return false;
   }
 
-  /** Whether any cell in the current selection has a pending change. */
+  /** Whether any cell, new row, or deleted row in the current selection has a pending change. */
   static boolean hasSelectedChanges(Target t) {
-    if (t.edits().changes == null) {
+    var changes = t.edits().changes;
+    if (changes == null) {
       return false;
     }
     // Asked at each build, where there are changes: a small selection is looked up cell by cell, a
     // large one by the changes.
+    int gridCount = changes.rowCount();
+    int colCount = t.fields().size();
     var selection = t.selection();
     var ranges = selection.ranges();
     if (ranges.isEmpty()) {
-      return changed(t, selection.row(), selection.column());
+      return changed(changes, selection.row(), selection.column(), gridCount, colCount);
     }
     // A whole row or column reaches to the end, which the grid's bounds cut.
-    int lastRow = t.rowCount() - 1;
-    int lastColumn = t.fields().size() - 1;
+    int lastRow = gridCount - 1;
+    int lastColumn = colCount - 1;
     long area = 0;
     for (var range : ranges) {
       long rows = Math.max(0, Math.min(range.bottom(), lastRow) - range.top() + 1);
@@ -619,12 +835,12 @@ final class ResultEdits {
     // shortcut: a large selection walks every staged change at each build; ask the kit once it
     // can say whether a selection holds one (rethinkj/ui#514).
     if (area > SCAN) {
-      return !selectedChanges(t).isEmpty();
+      return hasAnySelectedChange(t);
     }
     for (var range : ranges) {
       for (int r = range.top(); r <= Math.min(range.bottom(), lastRow); r++) {
         for (int c = range.left(); c <= Math.min(range.right(), lastColumn); c++) {
-          if (selection.contains(r, c) && changed(t, r, c)) {
+          if (selection.contains(r, c) && changed(changes, r, c, gridCount, colCount)) {
             return true;
           }
         }
@@ -635,52 +851,115 @@ final class ResultEdits {
 
   private static final long SCAN = 10_000;
 
-  private static boolean changed(Target t, int row, int column) {
+  private static boolean changed(
+      GridChanges changes, int row, int column, int gridCount, int colCount) {
     return row >= 0
-        && row < t.rowCount()
+        && row < gridCount
         && column >= 0
-        && column < t.fields().size()
-        && t.edits().changes.cellStatus(row, column) != DataGrid.Status.UNCHANGED;
+        && column < colCount
+        && changes.cellStatus(row, column) != DataGrid.Status.UNCHANGED;
   }
 
-  // The changed cells in the selection, as row and column; from the changes, which are few beside
-  // a large selection.
-  private static List<int[]> selectedChanges(Target t) {
-    var cells = new ArrayList<int[]>();
+  private static boolean rowHasSelection(DataGrid.Selection selection, int gridRow, int colCount) {
+    var ranges = selection.ranges();
+    if (ranges.isEmpty()) {
+      return selection.row() == gridRow && selection.column() >= 0 && selection.column() < colCount;
+    }
+    for (var range : ranges) {
+      if (gridRow >= range.top() && gridRow <= range.bottom() && range.left() < colCount) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean hasAnySelectedChange(Target t) {
     var changes = t.edits().changes;
     if (changes == null) {
-      return cells;
+      return false;
     }
     var selection = t.selection();
     var ranges = selection.ranges();
+    int colCount = t.fields().size();
     for (var change : changes.changes()) {
-      int r = (int) change.key();
-      for (int c : change.values().keySet()) {
-        boolean selected = ranges.isEmpty()
-            ? r == selection.row() && c == selection.column()
-            : selection.contains(r, c);
-        if (selected && t.rowLoaded(r)) {
-          cells.add(new int[] {r, c});
+      int gridRow = changes.rowOf(change.key());
+      if (gridRow < 0) {
+        continue;
+      }
+      switch (change.kind()) {
+        case DELETE, INSERT -> {
+          if (rowHasSelection(selection, gridRow, colCount)) {
+            return true;
+          }
+        }
+        case UPDATE -> {
+          int pos = (int) change.key();
+          if (!t.rowLoaded(pos)) {
+            continue;
+          }
+          for (int c : change.values().keySet()) {
+            boolean selected = ranges.isEmpty()
+                ? gridRow == selection.row() && c == selection.column()
+                : selection.contains(gridRow, c);
+            if (selected) {
+              return true;
+            }
+          }
         }
       }
     }
-    return cells;
+    return false;
   }
 
-  /** Reverts only the changed cells inside the current selection. */
+  /** Reverts changed cells, unmarks deleted rows, and removes new rows in the current selection. */
   static void revertSelection(State s, Target t) {
     var edits = t.edits();
     if (edits.changes == null || edits.writing != null) {
       return;
     }
     t.selection().cancelEdit();
+    var changes = edits.changes;
+    var selection = t.selection();
+    var ranges = selection.ranges();
+    int colCount = t.fields().size();
     var reverts = new ArrayList<DataGrid.CellValue>();
-    for (var at : selectedChanges(t)) {
-      reverts.add(
-          new DataGrid.CellValue(at[0], at[1], Cells.cell(t.rowAt(at[0]).get(at[1]), s.zone)));
+    var rowRanges = new ArrayList<DataGrid.Range>();
+    for (var change : changes.changes()) {
+      int gridRow = changes.rowOf(change.key());
+      if (gridRow < 0) {
+        continue;
+      }
+      switch (change.kind()) {
+        case DELETE, INSERT -> {
+          if (rowHasSelection(selection, gridRow, colCount)) {
+            rowRanges.add(new DataGrid.Range(gridRow, 0, gridRow, DataGrid.Range.ALL));
+          }
+        }
+        case UPDATE -> {
+          int pos = (int) change.key();
+          if (!t.rowLoaded(pos)) {
+            continue;
+          }
+          var rowValues = t.rowAt(pos);
+          for (int c : change.values().keySet()) {
+            boolean selected = ranges.isEmpty()
+                ? gridRow == selection.row() && c == selection.column()
+                : selection.contains(gridRow, c);
+            if (selected) {
+              reverts.add(new DataGrid.CellValue(gridRow, c, Cells.cell(rowValues.get(c), s.zone)));
+            }
+          }
+        }
+      }
     }
+    // Revert cell edits before removing new rows so grid row indices stay valid for both steps.
     if (!reverts.isEmpty()) {
-      edits.changes.set(reverts);
+      step(edits, () -> edits.changes.set(reverts));
+    }
+    if (!rowRanges.isEmpty()) {
+      step(edits, () -> edits.changes.delete(rowRanges));
+    }
+    if (!reverts.isEmpty() || !rowRanges.isEmpty()) {
       t.afterChange();
       if (edits.changes.isEmpty()) {
         edits.writeProblem = null;
@@ -734,57 +1013,100 @@ final class ResultEdits {
     var edits = t.edits();
     var editable = edits.editable;
     var fields = t.fields();
-    var updates = new ArrayList<Change>();
+    var list = new ArrayList<Change>();
     var rowsByKey = new HashMap<List<Object>, List<Integer>>();
     var applied = new LinkedHashMap<Integer, Map<Integer, Object>>();
     var keyCols = keyIndexes(editable.columns());
+    boolean structural = false;
     for (var gc : edits.changes.changes()) {
-      if (gc.kind() != GridChanges.Kind.UPDATE) {
-        continue;
-      }
-      int rowIndex = (int) gc.key();
-      var padded = t.tableRow(rowIndex);
-      var key = keyCols.stream().map(padded::get).toList();
-      var copies = rowsByKey.computeIfAbsent(key, k -> new ArrayList<>());
-      if (!copies.isEmpty()) {
-        edits.writeProblem = new ConsoleTab.Problem("Row shown twice", REPEATED_ROW);
-        return null;
-      }
-      copies.add(rowIndex);
-      var rowNew = new LinkedHashMap<Integer, Object>();
-      var values = new TreeMap<Integer, Object>();
-      var origRow = t.rowAt(rowIndex);
-      for (var entry : gc.values().entrySet()) {
-        int resultCol = entry.getKey();
-        var col = editable.edited().get(resultCol);
-        int tableCol = editable.columns().indexOf(col);
-        var original = origRow.get(resultCol);
-        var parsed = Cells.parse(fields.get(resultCol), col, entry.getValue(), original, s.zone);
-        if (!parsed.valid()) {
-          edits.changes.error(rowIndex, resultCol, parsed.error());
-          edits.writeProblem =
-              new ConsoleTab.Problem("Invalid value", col.name() + ": " + parsed.error());
-          return null;
+      switch (gc.kind()) {
+        case UPDATE -> {
+          int pos = (int) gc.key();
+          var padded = t.tableRow(pos);
+          var key = keyCols.stream().map(padded::get).toList();
+          var copies = rowsByKey.computeIfAbsent(key, k -> new ArrayList<>());
+          if (!copies.isEmpty()) {
+            edits.writeProblem = new ConsoleTab.Problem("Row shown twice", REPEATED_ROW);
+            return null;
+          }
+          copies.add(pos);
+          var rowNew = new LinkedHashMap<Integer, Object>();
+          var values = new TreeMap<Integer, Object>();
+          var origRow = t.rowAt(pos);
+          int gridRow = edits.changes.rowOf(gc.key());
+          for (var entry : gc.values().entrySet()) {
+            int resultCol = entry.getKey();
+            var col = editable.edited().get(resultCol);
+            int tableCol = editable.columns().indexOf(col);
+            var original = origRow.get(resultCol);
+            var parsed =
+                Cells.parse(fields.get(resultCol), col, entry.getValue(), original, s.zone);
+            if (!parsed.valid()) {
+              edits.changes.error(gc, resultCol, parsed.error());
+              edits.writeProblem =
+                  new ConsoleTab.Problem("Invalid value", col.name() + ": " + parsed.error());
+              if (gridRow >= 0) {
+                t.selection().scrollToRow(gridRow);
+              }
+              return null;
+            }
+            if (!Objects.equals(parsed.value(), original)) {
+              values.put(tableCol, parsed.value());
+            }
+            rowNew.put(resultCol, parsed.value());
+          }
+          applied.put(pos, rowNew);
+          if (!values.isEmpty()) {
+            list.add(new Change.Update(padded, values));
+          }
         }
-        if (!Objects.equals(parsed.value(), original)) {
-          values.put(tableCol, parsed.value());
+        case DELETE -> {
+          int pos = (int) gc.key();
+          var padded = t.tableRow(pos);
+          var key = keyCols.stream().map(padded::get).toList();
+          var copies = rowsByKey.computeIfAbsent(key, k -> new ArrayList<>());
+          if (!copies.isEmpty()) {
+            edits.writeProblem = new ConsoleTab.Problem("Row shown twice", REPEATED_ROW);
+            return null;
+          }
+          copies.add(pos);
+          list.add(new Change.Delete(padded));
+          structural = true;
         }
-        rowNew.put(resultCol, parsed.value());
-      }
-      applied.put(rowIndex, rowNew);
-      if (!values.isEmpty()) {
-        updates.add(new Change.Update(padded, values));
+        case INSERT -> {
+          var values = new TreeMap<Integer, Object>();
+          int gridRow = edits.changes.rowOf(gc.key());
+          for (var entry : gc.values().entrySet()) {
+            int resultCol = entry.getKey();
+            var col = editable.edited().get(resultCol);
+            int tableCol = editable.columns().indexOf(col);
+            var parsed = Cells.parse(fields.get(resultCol), col, entry.getValue(), null, s.zone);
+            if (!parsed.valid()) {
+              edits.changes.error(gc, resultCol, parsed.error());
+              edits.writeProblem =
+                  new ConsoleTab.Problem("Invalid value", col.name() + ": " + parsed.error());
+              if (gridRow >= 0) {
+                t.selection().scrollToRow(gridRow);
+              }
+              return null;
+            }
+            values.put(tableCol, parsed.value());
+          }
+          list.add(new Change.Insert(values));
+          structural = true;
+        }
       }
     }
     // One Changes for all, checked once, as a paste may stage thousands of rows.
-    var core = new Changes(editable.table(), editable.columns(), updates);
+    var core = new Changes(editable.table(), editable.columns(), list);
     var statements = core.statements(provider);
     if (statements.isEmpty()) {
       edits.changes.clear();
+      edits.forgetHistory();
       t.onCleared();
       return null;
     }
-    return new Preview(t, core, statements, rowsByKey, applied);
+    return new Preview(t, core, statements, rowsByKey, applied, structural);
   }
 
   private static List<Integer> keyIndexes(List<Column> columns) {
@@ -892,8 +1214,9 @@ final class ResultEdits {
     var edits = t.edits();
     switch (outcome) {
       case Changes.Outcome.Committed committed -> {
-        t.applyCommitted(p.applied);
+        t.applyCommitted(p.applied, p.structural);
         edits.changes.clear();
+        edits.forgetHistory();
         t.onCleared();
         edits.writeProblem = null;
         edits.unknown = false;
@@ -928,20 +1251,38 @@ final class ResultEdits {
   }
 
   private static void markMissed(Target t, Preview p, Change change, String message) {
-    if (!(change instanceof Change.Update(var row, var values))) {
-      return;
+    List<Object> row;
+    boolean update;
+    switch (change) {
+      case Change.Update(var r, var _) -> {
+        row = r;
+        update = true;
+      }
+      case Change.Delete(var r) -> {
+        row = r;
+        update = false;
+      }
+      case Change.Insert _ -> {
+        return;
+      }
     }
     var edits = t.edits();
     var key = keyIndexes(p.changes.columns()).stream().map(row::get).toList();
-    var rows = p.rowsByKey.getOrDefault(key, List.of());
+    var positions = p.rowsByKey.getOrDefault(key, List.of());
     int first = -1;
-    for (int rowIndex : rows) {
-      if (first < 0) {
-        first = rowIndex;
+    for (int pos : positions) {
+      int gridRow = edits.changes.rowOf(pos);
+      if (gridRow < 0) {
+        continue;
       }
-      var editedCols = p.applied.getOrDefault(rowIndex, Map.of());
-      for (int col : editedCols.keySet()) {
-        edits.changes.error(rowIndex, col, message);
+      if (first < 0) {
+        first = gridRow;
+      }
+      if (update) {
+        var editedCols = p.applied.getOrDefault(pos, Map.of());
+        for (int col : editedCols.keySet()) {
+          edits.changes.error(gridRow, col, message);
+        }
       }
     }
     if (first >= 0) {
@@ -1078,7 +1419,7 @@ final class ResultEdits {
     actions.add(Button.icon(
             SECONDARY,
             Symbol.ARROW_UNDO,
-            "Revert selected cells",
+            "Revert selection",
             selectedChanges && !locked ? () -> revertSelection(s, target) : null)
         .key("revert-selection"));
     actions.add(Tooltip.tooltip(
@@ -1117,6 +1458,21 @@ final class ResultEdits {
   /** Wires a grid column to staged values, editability, nullability, and warning icons. */
   static DataGrid.Column editedColumn(
       Target target, DataGrid.Column col, int at, BooleanSupplier free, boolean markKey) {
+    return editedColumn(target, col, at, free, markKey, Map.of());
+  }
+
+  /**
+   * Wires a grid column to staged values, editability, nullability, warning icons, and muted
+   * {@code DEFAULT} placeholders on unset cells of staged new rows.
+   */
+  static DataGrid.Column editedColumn(
+      Target target,
+      DataGrid.Column col,
+      int at,
+      BooleanSupplier free,
+      boolean markKey,
+      Map<Long, Set<Integer>> inserted) {
+    Theme theme = Theme.CURRENT.get();
     var field = target.fields().get(at);
     var edits = target.edits();
     var changes = edits.changes;
@@ -1133,34 +1489,68 @@ final class ResultEdits {
     }
     if (field.kind() == Kind.TEXT || field.kind() == Kind.JSON || field.kind() == Kind.OTHER) {
       col = col.cellIcon(row -> {
-        if (!target.rowLoaded(row)
+        int pos = position(changes, row);
+        if (pos < 0
+            || !target.rowLoaded(pos)
             || !changes.isEmpty() && changes.cellStatus(row, at) != DataGrid.Status.UNCHANGED) {
           return null;
         }
-        var values = target.rowAt(row);
+        var values = target.rowAt(pos);
         return values != null ? Cells.icon(values.get(at)) : null;
+      });
+    }
+    if (!inserted.isEmpty()) {
+      Theme.TextStyle style = col.mono() ? theme.type().mono() : theme.type().body();
+      col = col.view(row -> {
+        long key = changes.key(row);
+        if (key >= 0) {
+          return null;
+        }
+        if (inserted.get(key).contains(at)) {
+          return null;
+        }
+        return El.text("DEFAULT")
+            .font(style.font().get())
+            .fontSize(style.size())
+            .color(theme.text().muted())
+            .ellipsis()
+            .minSize(0, 0);
       });
     }
     return col;
   }
 
-  /** Wires a {@link DataGrid.Options} to staged changes, undo/redo, commit, and paste handlers. */
+  /**
+   * Wires a {@link DataGrid.Options} to staged changes, undo/redo, commit, paste, and optionally
+   * row insert and delete handlers.
+   */
   static void configureGrid(
-      State s, Target target, DataGrid.Options options, BooleanSupplier free) {
+      State s, Target target, DataGrid.Options options, BooleanSupplier free, boolean rowEdits) {
     var changes = target.edits().changes;
+    boolean allowRows = rowEdits && free.getAsBoolean();
     options
         .changes(changes)
         .history(
             () -> {
               if (free.getAsBoolean()) {
-                changes.undo();
-                target.afterChange();
+                var edits = target.edits();
+                if (edits.undoable > 0) {
+                  changes.undo();
+                  edits.undoable--;
+                  edits.redoable++;
+                  target.afterChange();
+                }
               }
             },
             () -> {
               if (free.getAsBoolean()) {
-                changes.redo();
-                target.afterChange();
+                var edits = target.edits();
+                if (edits.redoable > 0) {
+                  changes.redo();
+                  edits.redoable--;
+                  edits.undoable++;
+                  target.afterChange();
+                }
               }
             })
         .onCommit((row, col, value) -> free.getAsBoolean()
@@ -1171,8 +1561,22 @@ final class ResultEdits {
             pasteCells(s, target, cells);
           }
         })
-        .onInsertRow(null)
-        .onDeleteRows(null);
+        .onInsertRow(
+            allowRows
+                ? after -> {
+                  if (free.getAsBoolean()) {
+                    insertRow(target, after);
+                  }
+                }
+                : null)
+        .onDeleteRows(
+            allowRows
+                ? ranges -> {
+                  if (free.getAsBoolean()) {
+                    deleteRows(s, target, ranges);
+                  }
+                }
+                : null);
   }
 
   /** Wording and action buttons for the Discard / Cancel commit question dialog. */

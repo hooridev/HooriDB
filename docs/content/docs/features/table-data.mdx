@@ -1,9 +1,9 @@
 ---
 title: Table data
-description: Look at a table's rows in the grid, page through them, and read a value whole in the value panel.
+description: Look at and edit a table's rows in the grid, page through them, and read a value whole in the value panel.
 ---
 
-Opening a table or view displays its rows in a read-only data grid. If the same table is already open in a tab (even in another window), HooriDB switches to that tab instead of opening a second copy. A MongoDB collection opens the same way, with its documents shown as a grid, JSON, or a tree; see [MongoDB](/docs/features/mongodb#look-at-a-collections-documents).
+Opening a table or view displays its rows in a data grid. If the same table is already open in a tab (even in another window), HooriDB switches to that tab instead of opening a second copy. A MongoDB collection opens the same way, with its documents shown as a grid, JSON, or a tree; see [MongoDB](/docs/features/mongodb#look-at-a-collections-documents).
 
 <Shot
   name="table"
@@ -63,4 +63,15 @@ What the value panel shows:
 - For JSON columns (PostgreSQL `json` and `jsonb`, MySQL and MariaDB `json`), valid JSON is formatted and syntax-colored. Invalid JSON is shown as received with its first syntax error underlined.
 - If a text or JSON value was shortened to 1,024 characters in the grid, HooriDB reads the full value from the server by the row's primary key when you view it in the value panel. If the table has no primary key, or if reading the full value fails, the panel shows the shortened start and says so.
 
-Table tabs are read-only; editing, filtering, and sorting are not supported yet. See [Limitations](/docs/reference/limitations).
+## Edit, insert, and delete rows
+
+On PostgreSQL, MySQL, and MariaDB, a permanent table with a primary key on a writable connection can be edited directly in its grid:
+
+- **Edit cells:** Double-click a cell, press `Enter` or `F2`, or start typing to edit it. Press `Ctrl+0` to set `NULL` (on nullable columns), `Delete` to clear, `Ctrl+V` to paste, and `Ctrl+Z` / `Ctrl+Y` to undo or redo.
+- **Insert rows:** Press `Insert` or `Ctrl++` (or right-click the grid and choose **Insert row**) to add a new row after the current row. Cells left empty show muted `DEFAULT` and are left out of the `INSERT` statement so the server fills in their defaults; press `Ctrl+0` on a nullable cell to set an explicit `NULL`.
+- **Delete rows:** Select one or more loaded rows and press `Ctrl+-` or `Ctrl+Delete` (or right-click and choose **Delete rows**) to mark them for deletion. Marked rows stay visible and struck through until committed, and pressing the shortcut again on marked rows unmarks them; deleting a new row removes it right away.
+- **Revert:** Press **Revert selection** in the edit bar to revert changed cells, unmark deleted rows, and remove new rows in the current selection, or press **Revert all** to discard every pending change.
+- **Preview and commit:** Press **Commit…** to open the **DML Preview** dialog, which shows all generated `UPDATE`, `DELETE`, and `INSERT` statements together before anything is sent. Confirming **Commit** writes them all or nothing in one transaction on a dedicated write connection, checking that each updated or deleted row still matches by primary key (and original cell values for updates). After a commit that inserts, deletes, or changes a primary key, the table reloads so you see the server's rows and generated keys.
+- **Guards and read-only cases:** HooriDB asks before discarding pending changes on Refresh, a changed `WHERE` or `ORDER BY`, closing the tab, disconnecting, editing or deleting the connection, or exiting. Views, tables without a primary key, read-only connections, and binary or cut-short cells stay read-only, with the reason shown in the status line.
+
+MongoDB collections and tables without a primary key remain read-only; see [Limitations](/docs/reference/limitations).

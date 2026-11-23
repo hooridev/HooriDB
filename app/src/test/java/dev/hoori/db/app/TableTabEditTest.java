@@ -37,7 +37,9 @@ import org.junit.jupiter.api.io.TempDir;
 class TableTabEditTest {
 
   private static final String CUSTOMERS = PG + "/shop.public.customers";
+  private static final String ITEMS = PG + "/shop.public.items";
   private static final String WRITE_CUSTOMERS = "write " + CUSTOMERS;
+  private static final String WRITE_ITEMS = "write " + ITEMS;
   private static final String WRITE_BIG = "write " + BIG;
 
   @TempDir
@@ -55,11 +57,17 @@ class TableTabEditTest {
     servers = t.servers;
     String outline = TableTabTest.OUTLINE.replace(
         "    logs\n      name: text\n",
-        "    logs\n      name: text\n    @active_customers\n      id: integer\n      name: text\n");
+        "    logs\n      name: text\n"
+            + "    items\n      *id: integer\n      name: text\n      note: text\n"
+            + "    @active_customers\n      id: integer\n      name: text\n");
     assertTrue(outline.contains("@active_customers"), outline);
     servers.serve(PG, Provider.POSTGRESQL, "16.4", outline);
     servers.values(
         CUSTOMERS, List.of(List.of(1L, "Alice"), List.of(2L, "Bob"), List.of(3L, "Carol")));
+    servers.values(
+        ITEMS,
+        List.of(
+            List.of(1L, "Alice", "vip"), List.of(2L, "Bob", "trial"), List.of(3L, "Carol", "std")));
   }
 
   @AfterEach
@@ -727,5 +735,264 @@ class TableTabEditTest {
     String refused = c.tree("refused-clear");
     assertTrue(line(refused, "#edit-status").contains(ResultEdits.UNLOADED_PASTE), refused);
     assertEquals(0, t.tab(app).pendingChanges());
+  }
+
+  @Test
+  void insertUpdateAndDeletePreviewCancelAndCommitTogether() throws Exception {
+    var app = t.shop();
+    c.run(app, table("items") + SETTLE);
+
+    // 1. Update row 0 (id=1): "Alice" -> "Alicia".
+    c.run(app, "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n");
+
+    // 2. Insert a new row after row 0: leave id at DEFAULT, type name "Dave", set note to NULL.
+    c.run(app, """
+        press #cell-0-1
+        frame
+        key Insert
+        frame
+        type "Dave"
+        key Enter
+        frame
+        press #cell-1-2
+        frame
+        key 0 control
+        frame
+        snap insert-new-row
+        """);
+    String inserted = c.tree("insert-new-row");
+    assertTrue(line(inserted, "#row-1 role=row").contains("value=\"new\""), inserted);
+    assertTrue(cell(inserted, 1, 0).contains("\"DEFAULT\""), inserted);
+    assertTrue(cell(inserted, 1, 1).contains("\"Dave\""), inserted);
+    assertTrue(cell(inserted, 1, 2).contains("\"NULL\""), inserted);
+    assertFalse(cell(inserted, 1, 2).contains("\"DEFAULT\""), inserted);
+    assertTrue(line(inserted, "#pending-changes").contains("2 changes"), inserted);
+
+    // 3. Mark grid row 2 (original row 1, id=2, shifted below the new row) for deletion.
+    c.run(app, "press #cell-2-1\nframe\nkey - control\nframe\nsnap delete-marked-row\n");
+    String deleted = c.tree("delete-marked-row");
+    assertTrue(line(deleted, "#row-2 role=row").contains("value=\"deleted\""), deleted);
+    assertTrue(line(deleted, "#pending-changes").contains("3 changes"), deleted);
+    assertTrue(line(deleted, "#edit-status").contains("marked for deletion"), deleted);
+    // Cells of a deleted row cannot be edited.
+    c.run(app, "type \"Ignored\"\nframe\n");
+    assertFalse(t.tab(app).selection.isEditing());
+
+    // 4. Commit… opens DML Preview with UPDATE, DELETE, and INSERT (leaving DEFAULT id out).
+    c.run(app, "press #commit-changes\nframe\n" + OPENED + "snap insert-delete-preview\n");
+    String preview = c.tree("insert-delete-preview");
+    assertTrue(preview.contains("role=dialog label=\"DML Preview\""), preview);
+    assertTrue(
+        preview.contains(
+            "UPDATE \\\"public\\\".\\\"items\\\" SET \\\"name\\\" = 'Alicia' WHERE \\\"id\\\" = 1;"),
+        preview);
+    assertTrue(
+        preview.contains("DELETE FROM \\\"public\\\".\\\"items\\\" WHERE \\\"id\\\" = 2;"),
+        preview);
+    assertTrue(
+        preview.contains(
+            "INSERT INTO \\\"public\\\".\\\"items\\\" (\\\"name\\\", \\\"note\\\") VALUES ('Dave', NULL);"),
+        preview);
+    assertFalse(preview.contains("(\\\"id\\\", \\\"name\\\""), preview);
+
+    // 5. Cancel sends nothing and keeps all 3 changes.
+    c.run(app, "press #preview-cancel\nframe\n" + OPENED + SETTLE);
+    assertEquals(0, writeCount(), servers.calls.toString());
+    assertEquals(3, servers.rowsOf(ITEMS).size());
+    assertEquals("Alice", servers.rowsOf(ITEMS).get(0).get(1));
+    assertEquals(3, t.tab(app).pendingChanges());
+
+    // 6. Commit writes once, FakeServers holds the result, and the table is read anew.
+    long readsBefore =
+        servers.calls.stream().filter(x -> x.startsWith("read " + ITEMS)).count();
+    c.run(
+        app,
+        "press #commit-changes\nframe\n" + OPENED + "press #preview-commit\nframe\n" + OPENED
+            + SETTLE + "snap after-commit\n");
+    assertEquals(1, writeCount(), servers.calls.toString());
+    assertTrue(servers.calls.contains(WRITE_ITEMS), servers.calls.toString());
+    var stored = servers.rowsOf(ITEMS);
+    assertEquals(3, stored.size(), stored.toString());
+    assertEquals(List.of(1L, "Alicia", "vip"), stored.get(0));
+    assertEquals(List.of(3L, "Carol", "std"), stored.get(1));
+    assertEquals(Arrays.asList(null, "Dave", null), stored.get(2));
+    assertTrue(
+        servers.calls.stream().filter(x -> x.startsWith("read " + ITEMS)).count() > readsBefore,
+        servers.calls.toString());
+    String after = c.tree("after-commit");
+    assertFalse(after.contains("#pending-changes"), after);
+    assertTrue(cell(after, 0, 1).contains("\"Alicia\""), after);
+    assertTrue(cell(after, 1, 1).contains("\"Carol\""), after);
+    assertTrue(cell(after, 2, 1).contains("\"Dave\""), after);
+  }
+
+  @Test
+  void revertSelectionRemovesNewRowAndUnmarksDeletedRow() throws Exception {
+    var app = openCustomers();
+    // Stage an update on row 0, a new row at grid row 1, and a delete on grid row 2 (id=2).
+    c.run(app, """
+        press #cell-0-1
+        type "Alicia"
+        key Enter
+        frame
+        press #cell-0-1
+        frame
+        key Insert
+        frame
+        type "Dave"
+        key Enter
+        frame
+        press #cell-2-1
+        frame
+        key - control
+        frame
+        snap staged-all
+        """);
+    String staged = c.tree("staged-all");
+    assertTrue(line(staged, "#pending-changes").contains("3 changes"), staged);
+    assertTrue(line(staged, "#row-1 role=row").contains("value=\"new\""), staged);
+    assertTrue(line(staged, "#row-2 role=row").contains("value=\"deleted\""), staged);
+
+    // Revert selection on the new row removes it; row 1 is now id=2 (still deleted).
+    c.run(app, "press #cell-1-1\nframe\npress #revert-selection\nframe\nsnap after-revert-new\n");
+    String afterNew = c.tree("after-revert-new");
+    assertTrue(line(afterNew, "#pending-changes").contains("2 changes"), afterNew);
+    assertTrue(line(afterNew, "#row-1 role=row").contains("value=\"deleted\""), afterNew);
+    assertTrue(cell(afterNew, 1, 1).contains("\"Bob\""), afterNew);
+
+    // Revert selection on the deleted row unmarks it; row 0 update stays.
+    c.run(app, "press #cell-1-0\nframe\npress #revert-selection\nframe\nsnap after-revert-del\n");
+    String afterDel = c.tree("after-revert-del");
+    assertTrue(line(afterDel, "#pending-changes").contains("1 change"), afterDel);
+    assertFalse(line(afterDel, "#row-1 role=row").contains("value=\"deleted\""), afterDel);
+    assertTrue(line(afterDel, "#row-0 role=row").contains("value=\"changed\""), afterDel);
+    assertEquals(0, writeCount());
+  }
+
+  @Test
+  void deleteOverUnloadedRowsIsRefused() throws Exception {
+    servers.rows(BIG, 1_000, OptionalLong.of(1_000));
+    var app = t.shop();
+    c.run(app, table("big") + SETTLE);
+    // Page 0 and 1 (400 rows) are loaded; rows 400..999 are unloaded. Ctrl+A -> Ctrl+- is refused.
+    c.run(app, "press #cell-0-1\nkey A control\nframe\nkey - control\nframe\nsnap refused-del\n");
+    String refused = c.tree("refused-del");
+    assertTrue(line(refused, "#edit-status").contains(ResultEdits.UNLOADED_DELETE), refused);
+    assertEquals(0, t.tab(app).pendingChanges());
+  }
+
+  @Test
+  void missedDeleteKeepsMarkedRowAndReportsProblem() throws Exception {
+    var app = openCustomers();
+    c.run(app, "press #cell-1-1\nframe\nkey - control\nframe\n");
+    // Another session deleted id=2 before Commit.
+    servers.values(CUSTOMERS, List.of(List.of(1L, "Alice"), List.of(3L, "Carol")));
+    c.run(
+        app,
+        "press #commit-changes\nframe\n" + OPENED + "press #preview-commit\nframe\n" + OPENED
+            + SETTLE + "snap missed-delete\n");
+    String missed = c.tree("missed-delete");
+    assertTrue(line(missed, "#write-problem").contains("Changes not committed"), missed);
+    assertTrue(line(missed, "#row-1 role=row").contains("value=\"deleted\""), missed);
+    assertTrue(line(missed, "#pending-changes").contains("1 change"), missed);
+  }
+
+  @Test
+  void anUntouchedEditorOnAnEmptyNewCellKeepsDefaultAndThePanelShowsIt() throws Exception {
+    var app = openCustomers();
+    // F2 and Enter change nothing, also on the integer key, whose empty text would be NULL.
+    c.run(app, """
+        press #cell-0-1
+        frame
+        key Insert
+        frame
+        press #cell-1-0
+        frame
+        key F2
+        frame
+        key Enter
+        frame
+        press #cell-1-1
+        frame
+        key F2
+        frame
+        key Enter
+        frame
+        press #cell-1-0
+        frame
+        key Enter shift
+        advance 1
+        frame
+        snap untouched
+        """);
+    String tree = c.tree("untouched");
+    assertFalse(t.tab(app).selection.isEditing(), tree);
+    assertTrue(cell(tree, 1, 0).contains("DEFAULT"), tree);
+    assertTrue(cell(tree, 1, 1).contains("DEFAULT"), tree);
+    // The two cells and the value panel.
+    assertEquals(3, tree.lines().filter(l -> l.contains("\"DEFAULT\"")).count(), tree);
+    c.run(app, "press #commit-changes\nframe\n" + OPENED + "snap untouched-preview\n");
+    assertTrue(
+        c.tree("untouched-preview").contains("(\\\"id\\\") VALUES (DEFAULT)"),
+        c.tree("untouched-preview"));
+  }
+
+  @Test
+  void forgettingTheHistoryKeepsNewRowsAndEditsUnderDeletionMarks() throws Exception {
+    var rows = new ArrayList<List<Object>>(1_000);
+    for (long i = 1; i <= 1_000; i++) {
+      rows.add(List.of(i, "name " + i));
+    }
+    servers.values(BIG, rows);
+    var app = t.shop();
+    c.run(app, table("big") + SETTLE);
+    var tab = t.tab(app);
+
+    // Id 6 edited and then marked for deletion, a new row after id 11, and id 1 edited and
+    // reverted, which undo could bring back.
+    c.run(app, """
+        press #cell-5-1
+        type "Edited 6"
+        key Enter
+        frame
+        press #cell-5-1
+        frame
+        key - control
+        frame
+        press #cell-10-1
+        frame
+        key Insert
+        frame
+        type "New"
+        key Enter
+        frame
+        press #cell-0-1
+        type "Edited 1"
+        key Enter
+        frame
+        press #cell-0-1
+        frame
+        press #revert-selection
+        frame
+        """);
+    assertEquals(2, tab.pendingChanges());
+
+    // Page 0 comes back where undo history was: the history is forgotten.
+    tab.pages.remove(0L);
+    c.run(app, scroll(300) + SETTLE + scroll(0) + SETTLE);
+    assertEquals(0, tab.edits.undoable);
+
+    // Unmarking id 6 shows its edit again; undo takes back only the unmarking.
+    c.run(app, "press #cell-5-1\nframe\nkey - control\nframe\nsnap unmarked\n");
+    String unmarked = c.tree("unmarked");
+    assertEquals(1, tab.edits.undoable, "undoable after unmark");
+    assertTrue(cell(unmarked, 5, 1).contains("\"Edited 6\""), unmarked);
+    assertTrue(cell(unmarked, 11, 1).contains("\"New\""), unmarked);
+    c.run(app, "key Z control\nframe\nkey Z control\nframe\nsnap undone\n");
+    String undone = c.tree("undone");
+    assertTrue(line(undone, "#row-5 role=row").contains("value=\"deleted\""), undone);
+    assertTrue(line(undone, "#row-11 role=row").contains("value=\"new\""), undone);
+    assertTrue(cell(undone, 0, 1).contains("\"name 1\""), undone);
+    assertEquals(2, tab.pendingChanges());
   }
 }
