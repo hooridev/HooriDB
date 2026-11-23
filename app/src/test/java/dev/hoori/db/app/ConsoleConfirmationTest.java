@@ -418,9 +418,125 @@ class ConsoleConfirmationTest {
     var app = t.k.console(SHOP);
     c.run(app, type(BIG + ";\n" + ORDERS) + RUN_ALL + "snap ran\n");
     assertTrue(ran(BIG) && ran(ORDERS), servers.calls.toString());
-    assertTrue(
-        servers.calls.stream().noneMatch(k -> k.startsWith("explain ")), servers.calls.toString());
     assertFalse(c.tree("ran").contains("role=dialog"), c.tree("ran"));
+    // BIG was left as ORDERS ran, so only the open read ORDERS asks the planner, after it ran.
+    assertFalse(servers.calls.contains("explain " + PG + " " + BIG), servers.calls.toString());
+    int ranOrders = servers.calls.indexOf("run " + PG + " " + ORDERS);
+    int explainedOrders = servers.calls.indexOf("explain " + PG + " " + ORDERS);
+    assertTrue(ranOrders >= 0 && explainedOrders > ranOrders, servers.calls.toString());
+  }
+
+  @Test
+  void aLazyReadShowsThePlannersEstimateOnItsOwnConnection() throws Exception {
+    servers.plans(BIG, 2_400_000).plans(COUNT, 10);
+    var app = t.k.console(SHOP);
+    c.run(app, type(BIG) + RUN + "snap open\n");
+    String open = c.tree("open");
+    assertFalse(open.contains("role=dialog"), open);
+    assertTrue(
+        ConsoleTest.near(open, "#result-status")
+            .contains("200 of about 2,400,000 rows so far · cursor open, more as it scrolls"),
+        open);
+    int ranBig = servers.calls.indexOf("run " + PG + " " + BIG);
+    int explainedBig = servers.calls.indexOf(EXPLAIN);
+    assertTrue(ranBig >= 0 && explainedBig > ranBig, servers.calls.toString());
+    // The estimate ran on the estimates' connection, not on the console's session or the tree's.
+    var session = number("run " + PG + " " + BIG);
+    var tree = number("databases " + PG);
+    var planner = number(EXPLAIN);
+    assertFalse(planner.equals(session) || planner.equals(tree), servers.linked.toString());
+    assertTrue(
+        servers.linked.stream()
+            .filter(k -> k.startsWith(planner + " "))
+            .allMatch(k -> k.startsWith(planner + " explain ")),
+        servers.linked.toString());
+    assertTrue(
+        servers.linked.stream().noneMatch(k -> k.startsWith(session + " explain ")),
+        servers.linked.toString());
+    assertTrue(
+        servers.linked.stream().noneMatch(k -> k.startsWith(tree + " explain ")),
+        servers.linked.toString());
+
+    // Stopped early, the partial result keeps the estimate.
+    c.run(app, "press role=button label=\"Stop reading\"\nframe\n" + SETTLE + "snap stopped\n");
+    String stopped = c.tree("stopped");
+    assertTrue(
+        ConsoleTest.near(stopped, "#result-status")
+            .contains("the first 200 of about 2,400,000 rows; reading stopped"),
+        stopped);
+
+    // Scrolled to its end, the exact count stands and no estimate shows.
+    c.run(app, RUN + "scroll #grid row 180\nframe\nframe\n" + SETTLE + "snap ended\n");
+    String endedStatus = ConsoleTest.near(c.tree("ended"), "#result-status");
+    assertTrue(endedStatus.contains("\"300 rows · "), endedStatus);
+    assertFalse(endedStatus.contains(" of about "), endedStatus);
+
+    // A read that finishes in its first portion needs no estimate and asks none.
+    c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN);
+    assertFalse(servers.calls.contains("explain " + PG + " " + COUNT), servers.calls.toString());
+  }
+
+  @Test
+  void aHeldEstimateDoesNotHoldTheFirstRowsAndCancelsWhenLeft() throws Exception {
+    var app = t.k.console(SHOP);
+    c.run(app, type(COUNT) + RUN); // session open on shop
+    var gate = servers.hold(EXPLAIN);
+    try {
+      c.run(app, type(";\n" + BIG) + "key Enter control\nframe\nawait\nframe\n");
+      eventually(() -> servers.calls.contains(EXPLAIN));
+      c.run(app, "advance 1\nframe\nsnap held\n");
+      String held = c.tree("held");
+      assertEquals(200, tab(app).outputs.getFirst().rows.size());
+      assertFalse(tab(app).busy());
+      String heldStatus = ConsoleTest.near(held, "#result-status");
+      assertTrue(heldStatus.contains("200 rows so far · cursor open, more as it scrolls"), held);
+      assertFalse(heldStatus.contains(" of about "), held);
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE + "snap estimated\n");
+    String estimated = c.tree("estimated");
+    assertTrue(
+        ConsoleTest.near(estimated, "#result-status")
+            .contains("200 of about 5,000,000 rows so far · cursor open, more as it scrolls"),
+        estimated);
+
+    // Leaving the read while a new estimate is held cancels the estimate on the planner lane.
+    var second = servers.hold(EXPLAIN);
+    try {
+      int explainBefore = (int) servers.calls.stream().filter(EXPLAIN::equals).count();
+      c.run(app, "press #sql\nkey Enter control\nframe\nawait\nframe\n");
+      eventually(() -> servers.calls.stream().filter(EXPLAIN::equals).count() > explainBefore);
+      c.run(app, "advance 1\nframe\npress role=button label=\"Stop reading\"\nframe\n");
+      eventually(() -> servers.interrupted.contains(EXPLAIN));
+    } finally {
+      second.countDown();
+    }
+    c.run(app, SETTLE + "snap stopped\n");
+    String stopped = ConsoleTest.near(c.tree("stopped"), "#result-status");
+    assertTrue(stopped.contains("the first 200 rows; reading stopped"), stopped);
+    assertFalse(stopped.contains(" of about "), stopped);
+  }
+
+  @Test
+  void aMissingOrFailedEstimateLeavesTodaysStatusLine() throws Exception {
+    var app = t.k.console(SHOP);
+    // Missing plan (same OptionalLong.empty() as Plan.callsOut): today's text stays.
+    c.run(app, type(ORDERS) + RUN + "snap missing\n");
+    assertTrue(servers.done.contains("explain " + PG + " " + ORDERS), servers.done.toString());
+    String missing = ConsoleTest.near(c.tree("missing"), "#result-status");
+    assertTrue(missing.contains("200 rows so far · cursor open, more as it scrolls"), missing);
+    assertFalse(missing.contains(" of about "), missing);
+
+    // Failed estimate: today's text stays, with no error or notice.
+    servers.fail(EXPLAIN, FakeServers.queryFailure(QueryException.Failure.OTHER));
+    c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(BIG) + RUN + "snap failed\n");
+    assertTrue(servers.failed.contains(EXPLAIN), servers.failed.toString());
+    String failed = ConsoleTest.near(c.tree("failed"), "#result-status");
+    assertTrue(failed.contains("200 rows so far · cursor open, more as it scrolls"), failed);
+    assertFalse(failed.contains(" of about "), failed);
+    assertEquals(null, tab(app).problem);
+    assertTrue(app.state().notices.isEmpty(), app.state().notices.toString());
   }
 
   /**
