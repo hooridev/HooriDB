@@ -1287,28 +1287,44 @@ class TableTabTest {
     // A statement left open is closed before the blank line; a blank line at the end is kept as
     // the one before the statement.
     var open = "SELECT * FROM \"public\".\"orders\"";
+    var again = """
+        press role=tab label="customers"
+        frame
+        advance 1
+        frame
+        press role=button label="Open in console"
+        frame
+        advance 1
+        frame
+        """;
     console.text = open + "\n";
-    c.run(
-        app,
-        "press role=tab label=\"customers\"\nframe\nadvance 1\nframe\n"
-            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    c.run(app, again);
     assertEquals(ordersSql + "\n\n" + customersSql, console.text);
     console.text = open + "\n\n";
-    c.run(
-        app,
-        "press role=tab label=\"customers\"\nframe\nadvance 1\nframe\n"
-            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    c.run(app, again);
     assertEquals(ordersSql + "\n\n" + customersSql, console.text);
 
     // Tear off customers into a second window: with no console in its own window, Open in console
     // reuses the main window's console and raises main.
-    c.run(
-        app,
-        "press role=tab label=\"customers\"\nframe\nadvance 1\nframe\n"
-            + "press role=tab label=\"customers\" right\nframe\nadvance 1\nframe\n"
-            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
-            + "window \"customers\"\n"
-            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    c.run(app, """
+        press role=tab label="customers"
+        frame
+        advance 1
+        frame
+        press role=tab label="customers" right
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Move to new window"
+        frame
+        advance 1
+        frame
+        window "customers"
+        press role=button label="Open in console"
+        frame
+        advance 1
+        frame
+        """);
     var tornGroup =
         app.state().tabs.groups().stream().filter(g -> g != main).findFirst().orElseThrow();
     assertEquals(1, tornGroup.tabs().size(), "no new console opened in the torn-off window");

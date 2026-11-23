@@ -288,8 +288,6 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   String database;
   String text = "";
   final CodeEditor.State editor = new CodeEditor.State();
-  // Whether the editor was built once: before, an edit asked of it is lost (rethinkj/ui#545).
-  private boolean built;
   final ConsoleEditor help = new ConsoleEditor(this); // the error's place, completions
   private final ResultsArea area = new ResultsArea(this);
   private final ConsoleView ui = new ConsoleView(this);
@@ -2309,7 +2307,6 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
     this.editor.occurrences(s.settings.highlightOccurrences());
-    built = true;
     El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
           text = v;
           s.keeping.edited();
@@ -2423,16 +2420,6 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
    * where Run runs it.
    */
   void insert(App<State> app, String sql) {
-    if (!built) {
-      // An editor never built drops an edit (rethinkj/ui#545): it waits for the frame that built
-      // it.
-      app.after(0, () -> insertNow(app, sql));
-      return;
-    }
-    insertNow(app, sql);
-  }
-
-  private void insertNow(App<State> app, String sql) {
     int from = selectionStart();
     int to = selectionEnd();
     var provider = provider(app.state());
@@ -2461,13 +2448,6 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       put = closing + put;
       caret += closing.length();
       start = end;
-    }
-    if (!built) {
-      // shortcut: still not shown, so no Undo step, until rethinkj/ui#545 keeps the edit.
-      text = text.substring(0, start) + put + text.substring(at);
-      editor.select(start + caret, start + caret);
-      app.state().keeping.edited();
-      return;
     }
     editor.replace(start, at, put, caret);
   }

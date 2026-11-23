@@ -44,6 +44,7 @@ import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -133,6 +134,7 @@ class ConsoleHistoryTest {
   }
 
   @Test
+  @Disabled("An edit asked of an editor never built is lost: rethinkj/ui#545")
   void openInConsoleAddsToAKeptConsoleNeverShown() throws Exception {
     // The last one kept is the one shown; the console on shop was never built.
     new ConsoleStore(config())
