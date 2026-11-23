@@ -162,9 +162,10 @@ class ConsoleTest {
     assertTrue(line(one, "#column-0").contains("label=\"count\""), one);
     assertTrue(cell(one, 0, 0).contains("\"1\""), one);
     assertTrue(status(one).contains("\"Ran in 4 ms · 1 row\""), one);
-    // Its own connection, opened behind the tree's, which the status bar counts alone.
+    // Its own connection and the planner's, opened behind the tree's, which the status bar counts
+    // alone.
     assertEquals(
-        2, servers.calls.stream().filter(k -> k.equals("open " + PG + "/shop")).count());
+        3, servers.calls.stream().filter(k -> k.equals("open " + PG + "/shop")).count());
     String connections = line(one, "#connected");
     assertTrue(
         connections.contains("label=\"1 connected\"") && connections.contains("value=\"ok\""), one);
@@ -227,6 +228,29 @@ class ConsoleTest {
     assertTrue(status(c.tree("more")).contains("400 rows so far"), c.tree("more"));
     c.run(app, "scroll #grid row 300\nframe\nframe\nsnap later\n");
     assertTrue(cell(c.tree("later"), 300, 0).contains("\"301\""), c.tree("later"));
+  }
+
+  @Test
+  void aFailedContinuationMarksTheRowsReadAsPartial() throws Exception {
+    var partial = "SELECT * FROM partial";
+    servers.statement(
+        partial,
+        List.of(
+            FakeServers.made(250, "id: bigint"),
+            FakeServers.serverError(Failure.Kind.OTHER, "read failed midway")));
+    var app = console(SHOP);
+    c.run(app, type(partial) + RUN + "snap first\n");
+    assertTrue(
+        near(c.tree("first"), "#result-status").contains("200 rows so far"), c.tree("first"));
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE + "snap failed\n");
+    String failed = c.tree("failed");
+    assertTrue(near(failed, "#problem").contains("read failed midway"), failed);
+    assertTrue(
+        near(failed, "#result-status").contains("the first 250 rows; the rest was not read"),
+        failed);
+    var output = tab(app).outputs.getFirst();
+    assertFalse(output.more);
+    assertTrue(output.cut);
   }
 
   @Test
@@ -523,7 +547,7 @@ class ConsoleTest {
             + "snap inventory\n");
     assertTrue(servers.calls.contains("use " + MARIA + " inventory"), servers.calls.toString());
     assertEquals(
-        2, servers.calls.stream().filter(k -> k.equals("open " + MARIA)).count());
+        3, servers.calls.stream().filter(k -> k.equals("open " + MARIA)).count());
     assertTrue(tabs(c.tree("inventory")).startsWith("inventory: inventory,"));
   }
 
@@ -664,7 +688,7 @@ class ConsoleTest {
     eventually(() -> servers.closed.contains(MARIA));
     c.run(app, "press #sql\n" + RUN);
     assertEquals(
-        3, servers.calls.stream().filter(k -> k.equals("open " + MARIA)).count());
+        4, servers.calls.stream().filter(k -> k.equals("open " + MARIA)).count());
   }
 
   @Test

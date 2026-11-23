@@ -377,6 +377,55 @@ class ConsoleConfirmationTest {
     assertFalse(c.tree("ran").contains("role=dialog"), c.tree("ran"));
   }
 
+  /**
+   * A read the console expected to keep lazy in Auto, but whose server status forces it to be read
+   * whole (as with a driver that cannot report auto-commit), asks first where the planner
+   * estimates more rows than KEPT.
+   */
+  @Test
+  void aReadForcedWholeByUnknownAutoCommitAsksBeforeRunning() throws Exception {
+    servers.cannotReport(MARIA);
+    var app = t.k.console(INVENTORY);
+    c.run(app, type(BIG) + RUN + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains(LARGE), asked);
+    assertTrue(servers.calls.contains("explain " + MARIA + " " + BIG), servers.calls.toString());
+    assertFalse(servers.calls.contains("run " + MARIA + " " + BIG), servers.calls.toString());
+    c.run(app, ANYWAY + "snap ran\n");
+    String ran = c.tree("ran");
+    assertFalse(ran.contains("role=dialog"), ran);
+    assertTrue(
+        servers.calls.contains("next " + MARIA + " " + BIG + " 200"), servers.calls.toString());
+    assertTrue(ConsoleTest.near(ran, "#result-status").contains("· 300 rows\""), ran);
+  }
+
+  /**
+   * Disconnecting while a read forced whole by unknown auto-commit runs asks as for any running
+   * read whole.
+   */
+  @Test
+  void disconnectingWhileAReadForcedWholeRunsAsks() throws Exception {
+    servers.cannotReport(MARIA);
+    var app = t.k.console(INVENTORY);
+    c.run(app, CatalogTreeTest.open(INVENTORY.name()) + SETTLE);
+    var key = "run " + MARIA + " " + ORDERS;
+    var gate = servers.hold(key);
+    c.run(app, type(ORDERS) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    c.run(
+        app,
+        "press role=treeitem label=\"" + INVENTORY.name() + "\" level=1 right\nframe\n" + OPENED
+            + "press role=menuitem label=\"Disconnect\"\nframe\n" + OPENED + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains("role=dialog label=\"Roll back the transaction?\""), asked);
+    assertTrue(asked.contains("A statement still runs on"), asked);
+    assertTrue(app.state().catalog.connected(INVENTORY.id()));
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED);
+    gate.countDown();
+    c.run(app, SETTLE);
+    assertTrue(app.state().catalog.connected(INVENTORY.id()));
+  }
+
   /** An EXPLAIN that fails: the read runs, and PostgreSQL's transaction goes on. */
   @Test
   void aFailedEstimateRunsTheReadAndLeavesTheTransaction() throws Exception {

@@ -112,6 +112,84 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     assertTrue(app.state().notices.isEmpty());
   }
 
+  /**
+   * Giving up a plain read says nothing about changes and ends with one period, whether or not the
+   * failure message already ended with one; a non-read still warns of changes without a double
+   * period.
+   */
+  @Test
+  void aGiveUpNoticeOfAReadSaysNothingOfChangesAndHasOnePeriod() throws Exception {
+    servers.failsAtGiveUp(
+        ORDERS,
+        FakeServers.serverError(
+            Failure.Kind.OTHER,
+            "Timed out after 10 s as the statement was ended: the connection was closed."));
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS + ";\n" + COUNT) + RUN_ALL + "snap given\n");
+    String notice = app.state().notices.getFirst().what();
+    assertEquals(
+        Session.ENDED
+            + "Timed out after 10 s as the statement was ended: the connection was closed.",
+        notice);
+    assertFalse(notice.contains("changed"), notice);
+    assertFalse(notice.contains(".."), notice);
+    String given = c.tree("given");
+    assertFalse(near(given, "#problem").contains("What it changed"), given);
+    assertFalse(near(given, "#problem").contains(".."), given);
+
+    // Same on session end, and when the failure message has no trailing period.
+    servers.failsAtGiveUp(
+        ORDERS, FakeServers.serverError(Failure.Kind.OTHER, "could not serialize access"));
+    var closing = k.console(SHOP);
+    c.run(closing, type(ORDERS) + RUN + "press #close-0\nframe\n" + OPENED);
+    eventually(() -> {
+      try {
+        c.run(closing, "await\nframe\n");
+      } catch (java.io.IOException e) {
+        throw new java.io.UncheckedIOException(e);
+      }
+      return !closing.state().notices.isEmpty();
+    });
+    assertEquals(
+        ConsoleTab.SESSION_ENDED + "could not serialize access.",
+        closing.state().notices.getFirst().what());
+
+    // A non-read still says changes may not stand, with one period between sentences either way.
+    var told = new java.util.ArrayList<String>();
+    Session.told(
+        new dev.hoori.db.core.execution.Abandoned(
+            java.util.Optional.of(FakeServers.serverError(Failure.Kind.OTHER, "the commit failed")),
+            List.of()),
+        PAY,
+        false,
+        Session.ENDED,
+        (sql, what, failure) -> told.add(what));
+    Session.told(
+        new dev.hoori.db.core.execution.Abandoned(
+            java.util.Optional.of(FakeServers.serverError(
+                Failure.Kind.CONNECTION_LOST, "the connection was given up.")),
+            List.of()),
+        PAY,
+        false,
+        ConsoleTab.SESSION_ENDED,
+        (sql, what, failure) -> told.add(what));
+    // A lost connection, which core says without words, is named.
+    Session.told(
+        new dev.hoori.db.core.execution.Abandoned(
+            java.util.Optional.of(FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "")),
+            List.of()),
+        ORDERS,
+        true,
+        Session.ENDED,
+        (sql, what, failure) -> told.add(what));
+    assertEquals(
+        List.of(
+            Session.ENDED + "the commit failed. " + Session.MAY_NOT_STAND,
+            ConsoleTab.SESSION_ENDED + "the connection was given up. " + Session.MAY_NOT_STAND,
+            Session.ENDED + "The connection was lost."),
+        told);
+  }
+
   /** A keyring that does not answer can be given up, and says what that leaves. */
   @Test
   void aKeyringThatDoesNotAnswerCanBeGivenUp() throws Exception {
@@ -610,8 +688,8 @@ class ConsoleNoticeTest extends ConsoleTransactions {
   void aGiveUpCutOffByItsDeadlineEndsTheSession() throws Exception {
     var stuck = new dev.hoori.db.core.execution.Stuck();
     var opens = new java.util.concurrent.atomic.AtomicInteger();
-    // The tree's connection and the later ones made up; the console's first one stuck.
-    Servers mixed = (profile, password, driver, timeout) -> opens.getAndIncrement() == 1
+    // The tree's and planner's connections made up; the console's first one stuck.
+    Servers mixed = (profile, password, driver, timeout) -> opens.getAndIncrement() == 2
         ? Servers.Real.of(
             stuck.connection(),
             Provider.POSTGRESQL,
@@ -622,7 +700,16 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     try (var _ = new ShortEnding()) {
       var app = c.app(mixed, () -> new Keyring.Available(c.secrets), SHOP);
       c.ready(app, SHOP);
-      c.run(app, CatalogTreeTest.START + menu("shop-prod", "New console") + SETTLE);
+      c.run(
+          app,
+          CatalogTreeTest.START
+              + CatalogTreeTest.open("shop-prod")
+              + SETTLE
+              + menu("shop-prod", "New console")
+              + SETTLE);
+      // Open the planner's connection before the console's so only the console gets the stuck one.
+      app.state().catalog.planner(app.state(), SHOP.id(), "shop");
+      eventually(() -> opens.get() == 2);
       var tab = k.tab(app);
       c.run(app, type("SELECT a FROM t") + RUN);
       assertTrue(tab.outputs.getFirst().more, "a read left open on the stuck connection");

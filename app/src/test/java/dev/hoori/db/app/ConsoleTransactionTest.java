@@ -546,13 +546,18 @@ class ConsoleTransactionTest extends ConsoleTransactions {
           "(SELECT 1)",
           "SHOW search_path",
           "VALUES (1)",
-          "TABLE orders")) {
+          "TABLE orders",
+          "WITH x AS (SELECT 1) SELECT 1",
+          "WITH RECURSIVE x(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM x WHERE n < 5) SELECT * FROM"
+              + " x",
+          "SELECT 'into'",
+          "SELECT 1 -- into")) {
         assertTrue(ConsoleTab.reads(sql, provider), provider + ": " + sql);
       }
       for (var sql : List.of(
           PAY,
           "WITH changed AS (UPDATE orders SET paid = true RETURNING id) SELECT id FROM changed",
-          "WITH x AS (SELECT 1) SELECT 1",
+          "WITH x AS (SELECT 1) DELETE FROM orders",
           "CALL report()",
           "COMMIT",
           "ROLLBACK TO SAVEPOINT a",
@@ -749,6 +754,22 @@ class ConsoleTransactionTest extends ConsoleTransactions {
         near(lost, "#doubt").contains(COMMIT_ROWS + ": the connection was lost while it ran"),
         lost);
     assertTrue(servers.calls.contains("next " + MARIA + " " + COMMIT_ROWS + " 200"));
+  }
+
+  /** A WITH whose CTEs and main query only read runs as a lazy read in Auto. */
+  @Test
+  void aReadingWithRunsLazilyInAuto() throws Exception {
+    var reading = "WITH x AS (SELECT id FROM orders) SELECT * FROM x";
+    servers.statement(reading, List.of(FakeServers.made(250, "id: bigint")));
+    var app = k.console(SHOP);
+    c.run(app, type(reading) + RUN + "snap read\n");
+    String read = c.tree("read");
+    assertTrue(near(read, "#result-status").contains("200 rows so far"), read);
+    assertFalse(
+        servers.calls.contains("next " + PG + " " + reading + " 200"), servers.calls.toString());
+    assertTrue(k.tab(app).outputs.getFirst().more);
+    c.run(app, "press #close-0\nframe\n" + OPENED + SETTLE);
+    assertTrue(app.state().consoles(null).isEmpty(), "nothing asked: a plain read in Auto");
   }
 
   /** 5: PostgreSQL's WITH that writes is read to its end: nothing of it is given up on a close. */
