@@ -276,20 +276,8 @@ final class Suggestions {
     // shortcut: a system schema's tables are read only by the tree, as the database's read leaves
     // them out; read them here once completions in pg_catalog are asked for.
     Optional<List<Table>> tablesIn(String name) {
-      Node container = null;
       var database = database();
-      if (!schemas) {
-        container = database(name);
-      } else if (database != null) {
-        if (CatalogTree.unread(live.levels.get(database))) {
-          want(database); // its schemas, as tables() reads them
-        }
-        for (var node : read(database)) {
-          if (node instanceof Node.OfSchema x && same(x.schema().name(), name)) {
-            container = node;
-          }
-        }
-      }
+      Node container = !schemas ? database(name) : schema(database, name);
       if (container == null) {
         return Optional.empty();
       }
@@ -299,6 +287,23 @@ final class Suggestions {
       }
       return Optional.of(
           read(container).stream().map(n -> ((Node.OfTable) n).table()).toList());
+    }
+
+    // The schema of that name in the database, null for none; reads the database where it has not.
+    private Node schema(Node.OfDatabase database, String name) {
+      if (database == null) {
+        return null;
+      }
+      if (CatalogTree.unread(live.levels.get(database))) {
+        want(database); // its schemas, as tables() reads them
+      }
+      Node found = null;
+      for (var node : read(database)) {
+        if (node instanceof Node.OfSchema x && same(x.schema().name(), name)) {
+          found = node;
+        }
+      }
+      return found;
     }
 
     /**

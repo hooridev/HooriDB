@@ -281,7 +281,28 @@ class ContextTest {
     assertEquals("orders", table.name());
     assertEquals(true, table.table());
     assertEquals(false, table.qualifier());
+  }
 
+  @Test
+  void theFromOfIsDistinctFromNamesNoTable() {
+    var column = symbolAt(
+            "SELECT o.total IS DISTINCT FROM o.custo|mer_id FROM orders o", POSTGRESQL)
+        .orElseThrow();
+    assertEquals(false, column.table());
+    assertEquals(List.of(ref(null, "orders", "o")), column.tables());
+    var not = symbolAt("SELECT a IS NOT DISTINCT FROM o.b|c FROM orders o", POSTGRESQL);
+    assertEquals(false, not.orElseThrow().table());
+    // A column labeled distinct is followed by a FROM that names tables.
+    assertEquals(
+        List.of(ref(null, "orders", "o")),
+        Context.tables("SELECT o.total AS distinct FROM orders o", POSTGRESQL));
+    assertEquals(
+        List.of(ref(null, "orders", "o")),
+        at("SELECT o.total AS distinct FROM orders o WHERE o.|", POSTGRESQL).tables());
+  }
+
+  @Test
+  void symbolReadsListsQuotedNamesAndNothingOutsideAName() {
     // Second table in a comma-separated FROM list is also in table position.
     var second = symbolAt("SELECT id FROM orders, cust|omers", POSTGRESQL).orElseThrow();
     assertEquals("customers", second.name());

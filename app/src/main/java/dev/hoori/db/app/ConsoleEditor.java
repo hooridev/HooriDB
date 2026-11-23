@@ -272,38 +272,42 @@ final class ConsoleEditor {
     if (!sym.quoted() && Keywords.isReserved(sym.name(), provider)) {
       return null;
     }
+    return switch (sym.path().size()) {
+      case 0 -> bare(known, sym);
+      case 1 -> afterOne(known, sym, sym.path().getFirst());
+      default -> sym.qualifier() ? null : afterTwo(known, sym);
+    };
+  }
+
+  // schema.table.column, or database.schema.table.column: the column of the table before it.
+  private static Target afterTwo(Suggestions.Known known, Context.Symbol sym) {
     var path = sym.path();
-    if (path.size() >= 2) {
-      if (sym.qualifier()) {
-        return null;
-      }
-      var table = known.table(path.get(path.size() - 2), path.getLast());
-      return table == null ? null : findColumn(known, table, sym.name());
+    var table = known.table(path.get(path.size() - 2), path.getLast());
+    return table == null ? null : findColumn(known, table, sym.name());
+  }
+
+  // prefix.name: a table of a schema, or a column of a table or alias the prefix names.
+  private static Target afterOne(Suggestions.Known known, Context.Symbol sym, String prefix) {
+    if (sym.qualifier()) {
+      return ofTable(known.table(prefix, sym.name()));
     }
-    if (path.size() == 1) {
-      var prefix = path.getFirst();
-      if (sym.qualifier()) {
-        var table = known.table(prefix, sym.name());
-        return table == null ? null : new Target.OfTable(table);
+    if (!sym.table()) {
+      var refTable = referenced(known, sym.tables(), prefix);
+      if (refTable != null) {
+        return findColumn(known, refTable, sym.name());
       }
-      if (!sym.table()) {
-        var refTable = referenced(known, sym.tables(), prefix);
-        if (refTable != null) {
-          return findColumn(known, refTable, sym.name());
-        }
-      }
-      var table = known.table(prefix, sym.name());
-      if (table != null) {
-        return new Target.OfTable(table);
-      }
-      if (!sym.table()) {
-        var direct = known.table(null, prefix);
-        if (direct != null) {
-          return findColumn(known, direct, sym.name());
-        }
-      }
-      return null;
     }
+    var table = known.table(prefix, sym.name());
+    if (table != null || sym.table()) {
+      return ofTable(table);
+    }
+    var direct = known.table(null, prefix);
+    return direct == null ? null : findColumn(known, direct, sym.name());
+  }
+
+  // A name without a prefix: an alias or table before a dot, a table where one is named, else a
+  // column of the statement's tables, an alias, or a table of that name.
+  private static Target bare(Suggestions.Known known, Context.Symbol sym) {
     if (sym.qualifier()) {
       var refTable = referenced(known, sym.tables(), sym.name());
       if (refTable != null) {
@@ -312,21 +316,14 @@ final class ConsoleEditor {
       if (known.tablesIn(sym.name()).isPresent()) {
         return null; // a schema or database qualifier, not a table
       }
-      var table = known.table(null, sym.name());
-      return table == null ? null : new Target.OfTable(table);
+      return ofTable(known.table(null, sym.name()));
     }
     if (sym.table()) {
-      var table = known.table(null, sym.name());
-      return table == null ? null : new Target.OfTable(table);
+      return ofTable(known.table(null, sym.name()));
     }
-    for (var ref : sym.tables()) {
-      var table = known.table(ref.schema(), ref.name());
-      if (table != null) {
-        var column = findColumn(known, table, sym.name());
-        if (column != null) {
-          return column;
-        }
-      }
+    var column = columnOfTables(known, sym);
+    if (column != null) {
+      return column;
     }
     for (var ref : sym.tables()) {
       if (ref.alias() != null && known.same(ref.alias(), sym.name())) {
@@ -336,7 +333,21 @@ final class ConsoleEditor {
         }
       }
     }
-    var table = known.table(null, sym.name());
+    return ofTable(known.table(null, sym.name()));
+  }
+
+  private static Target.OfColumn columnOfTables(Suggestions.Known known, Context.Symbol sym) {
+    for (var ref : sym.tables()) {
+      var table = known.table(ref.schema(), ref.name());
+      var column = table == null ? null : findColumn(known, table, sym.name());
+      if (column != null) {
+        return column;
+      }
+    }
+    return null;
+  }
+
+  private static Target ofTable(Table table) {
     return table == null ? null : new Target.OfTable(table);
   }
 

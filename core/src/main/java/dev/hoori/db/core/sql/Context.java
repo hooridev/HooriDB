@@ -126,7 +126,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     if (!path.isEmpty()) {
       return readable ? new Context(Asked.MEMBER, List.copyOf(path), typed, tables) : NOTHING;
     }
-    boolean table = n > 0 && INTRODUCERS.contains(tokens.get(n - 1).upper());
+    boolean table = n > 0 && introduces(tokens, n - 1);
     return new Context(table ? Asked.TABLE : Asked.ANY, List.of(), typed, tables);
   }
 
@@ -156,14 +156,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     }
     var pieces = Statements.pieces(statement, provider);
     var tokens = tokens(statement, pieces, provider);
-    int index = -1;
-    for (int i = 0; i < tokens.size(); i++) {
-      var t = tokens.get(i);
-      if (t.start() <= offset && offset < t.end()) {
-        index = i;
-        break;
-      }
-    }
+    int index = tokenAt(tokens, offset);
     if (index < 0) {
       return Optional.empty();
     }
@@ -184,8 +177,8 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
       left -= 2;
     }
     boolean qualifier = index + 1 < tokens.size() && tokens.get(index + 1).kind() == Kind.DOT;
-    boolean table = tableTokens.contains(index)
-        || !qualifier && left > 0 && INTRODUCERS.contains(tokens.get(left - 1).upper());
+    boolean table =
+        tableTokens.contains(index) || !qualifier && left > 0 && introduces(tokens, left - 1);
     return Optional.of(new Symbol(
         List.copyOf(path),
         token.identifier(),
@@ -193,6 +186,27 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
         table,
         qualifier,
         tables));
+  }
+
+  // Whether the token names a table after it: not the FROM of IS [NOT] DISTINCT FROM.
+  private static boolean introduces(List<Token> tokens, int i) {
+    boolean distinct = word(tokens, i - 1, "DISTINCT")
+        && (word(tokens, i - 2, "IS") || word(tokens, i - 2, "NOT") && word(tokens, i - 3, "IS"));
+    return INTRODUCERS.contains(tokens.get(i).upper()) && !distinct;
+  }
+
+  private static boolean word(List<Token> tokens, int i, String upper) {
+    return i >= 0 && tokens.get(i).upper().equals(upper);
+  }
+
+  // The index of the token the offset is in, or -1 for none.
+  private static int tokenAt(List<Token> tokens, int offset) {
+    for (int i = 0; i < tokens.size(); i++) {
+      if (tokens.get(i).start() <= offset && offset < tokens.get(i).end()) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   // Whether it is no statement with a CTE, WITH at its start, or a subquery, "(" before SELECT.
@@ -216,7 +230,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     var found = new ArrayList<Reference>();
     for (int i = 0; i < tokens.size(); i++) {
       var introducer = tokens.get(i).upper();
-      if (INTRODUCERS.contains(introducer)) {
+      if (introduces(tokens, i)) {
         introduced(tokens, i + 1, introducer.equals("FROM"), found, tableTokens);
       }
     }
