@@ -8,8 +8,6 @@ import com.rethinkj.ui.window.Window;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryStore;
-import dev.hoori.db.core.connection.QueryStore;
-import dev.hoori.db.core.connection.SavedQuery;
 import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.StoredConsole;
@@ -27,10 +25,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 
 /**
- * The files kept beside the workspace, a part of the state: the consoles, the history, the saved
- * queries and the settings, each a {@link Kept}, read at the start and saved as they change; the
- * remembered layout ({@link UiStateStore}), read before the first frame and saved silently; and
- * what Exit waits for of them and of the update settings. Only the app's thread uses it.
+ * The files kept beside the workspace, a part of the state: the consoles, the history and the
+ * settings, each a {@link Kept}, read at the start and saved as they change; the remembered layout
+ * ({@link UiStateStore}), read before the first frame and saved silently; and what Exit waits for
+ * of them and of the update settings. Only the app's thread uses it.
  */
 final class Keeping {
 
@@ -43,34 +41,18 @@ final class Keeping {
   private final State s;
   private final ConsoleStore consoleStore;
   private final HistoryStore historyStore;
-  private final QueryStore queryStore;
   private final SettingsStore settingsStore;
   private final UiStateStore uiStateStore;
   final Kept consolesKept;
   final Kept historyKept;
-  final Kept queriesKept;
   final Kept settingsKept;
   private boolean preloaded; // the settings were already read before the first frame
   // Until the file is read no setting changes, so that none replaces the file's others.
   boolean settingsLoading = true;
-  // The queries saved on purpose, of every connection, in the order they were first saved.
-  List<SavedQuery> queries = List.of();
-  // Until the file is read nothing is saved or deleted, so that each name and id is the file's.
-  boolean queriesLoading = true;
-
-  /**
-   * Whether a query can be saved or deleted now: once the file was read, and not where it could not
-   * be, as nothing would be written.
-   */
-  boolean queriesUsable() {
-    return !queriesLoading && queriesKept.canSave;
-  }
   // The statements run from consoles, of every connection, the oldest first.
   List<HistoryEntry> history = List.of();
   // Connections deleted: what is loaded of their history and consoles after that goes too.
   private final Set<UUID> forgotten = new HashSet<>();
-  // Connections deleted: their saved queries go, also those loaded after.
-  private final Set<UUID> deletedConnections = new HashSet<>();
   // The consoles loaded and not yet restored, which waits for the profiles; null before and after.
   private List<StoredConsole> restoring;
   // The consoles kept of connections not known, saved along with the others and not shown.
@@ -90,18 +72,20 @@ final class Keeping {
     this.s = s;
     this.consoleStore = new ConsoleStore(folder);
     this.historyStore = new HistoryStore(folder);
-    this.queryStore = new QueryStore(folder);
     this.settingsStore = new SettingsStore(folder);
     this.uiStateStore = new UiStateStore(folder);
     this.uiState = uiStateStore.load();
     consolesKept = new Kept("consoles", () -> {
       var list = new ArrayList<StoredConsole>();
-      s.consoles(null).forEach(x -> list.add(x.stored()));
+      for (var x : s.consoles(null)) {
+        if (x.queryId == null) {
+          list.add(x.stored());
+        }
+      }
       list.addAll(unseen);
       return Kept.writing(list, consoleStore::save);
     });
     historyKept = new Kept("history", () -> Kept.writing(history, historyStore::save));
-    queriesKept = new Kept("saved queries", () -> Kept.writing(queries, queryStore::save));
     settingsKept = new Kept("settings", () -> Kept.writing(s.settings, settingsStore::save));
   }
 
@@ -284,7 +268,7 @@ final class Keeping {
     }
   }
 
-  /** Loads the consoles, the history, the saved queries, and where not preloaded, the settings. */
+  /** Loads the consoles, the history, and where not preloaded, the settings. */
   void start() {
     if (!preloaded) {
       s.app.background(
@@ -319,75 +303,6 @@ final class Keeping {
           loadFailed(historyKept, error);
           historyLoaded(error instanceof WorkspaceStore.UnreadableException);
         });
-    var saved = queryStore;
-    s.app.background(
-        "load saved queries",
-        saved::load,
-        list -> {
-          var all = list.stream()
-              .filter(q -> !deletedConnections.contains(q.connection()))
-              .toList();
-          // Those of a connection deleted while they loaded are deleted from the file too.
-          boolean dropped = all.size() != list.size();
-          this.queries = all;
-          if (dropped) {
-            queriesKept.unsaved = true;
-          }
-          queriesLoaded(true);
-        },
-        error -> {
-          loadFailed(queriesKept, error);
-          queriesLoaded(error instanceof WorkspaceStore.UnreadableException);
-        });
-  }
-
-  private void queriesLoaded(boolean canSave) {
-    queriesLoading = false;
-    queriesKept.canSave = canSave;
-    dropOrphanQueries();
-    if (queriesKept.unsaved) {
-      save(queriesKept);
-    }
-  }
-
-  /**
-   * Deletes the queries of connections the workspace does not have, as those of one deleted while
-   * HooriDB closed before they were read; once both files are read, and not where the workspace
-   * failed to load, which then has none.
-   */
-  void dropOrphanQueries() {
-    if (!s.loaded || s.loadError != null || queriesLoading || !queriesKept.canSave) {
-      return;
-    }
-    var known = new HashSet<UUID>();
-    s.workspace().connections().forEach(p -> known.add(p.id()));
-    var left = queries.stream().filter(q -> known.contains(q.connection())).toList();
-    if (left.size() != queries.size()) {
-      queries = left;
-      persist(queriesKept);
-    }
-  }
-
-  /** Keeps the query, in place of one of its connection and name. */
-  void saveQuery(SavedQuery query) {
-    queries = QueryStore.put(queries, query);
-    persist(queriesKept);
-  }
-
-  /** Deletes the saved query. */
-  void deleteQuery(UUID id) {
-    queries = queries.stream().filter(q -> !q.id().equals(id)).toList();
-    persist(queriesKept);
-  }
-
-  /** The connection was deleted: its saved queries go too; those not loaded yet go as they load. */
-  void forgetQueries(UUID id) {
-    deletedConnections.add(id);
-    var before = queries;
-    queries = queries.stream().filter(q -> !q.connection().equals(id)).toList();
-    if (queries.size() != before.size()) {
-      persist(queriesKept);
-    }
   }
 
   private void settingsLoaded(SettingsStore.Loaded loaded) {
@@ -578,13 +493,12 @@ final class Keeping {
   }
 
   /**
-   * Whether Exit waits for the consoles, the history, the saved queries, the settings, the update
-   * settings or the remembered layout to be saved; a save due begins. Changes to the others that
-   * cannot be saved, as the file was not read, stop Exit once; a failure to save the layout never
-   * stops it.
+   * Whether Exit waits for the consoles, the history, the settings, the update settings or the
+   * remembered layout to be saved; a save due begins. Changes to the others that cannot be saved,
+   * as the file was not read, stop Exit once; a failure to save the layout never stops it.
    */
   boolean waits() {
-    for (var each : List.of(consolesKept, historyKept, queriesKept, settingsKept, s.updates.kept)) {
+    for (var each : List.of(consolesKept, historyKept, settingsKept, s.updates.kept)) {
       if (each.waits()) {
         if (each.saving == null) {
           save(each);

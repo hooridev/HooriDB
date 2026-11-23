@@ -1,35 +1,46 @@
 ---
-title: Saved queries
-description: Keep queries under a name for a connection and insert them into a console again.
+title: Workspace queries
+description: Keep SQL and MongoDB queries in Workspace folders and run them on any matching connection.
 ---
 
-A saved query is text from a console that you keep on purpose, under a name, for its connection. Unlike [History](/docs/features/history), which records the statements you run, saved queries hold only what you save, and they stay until you delete them. They work the same way in SQL consoles and [MongoDB](/docs/features/mongodb) consoles. Saved queries are stored in `queries.json`, readable and writable only by your user account on Linux, because a query can contain a password. The **Save query** and **Saved queries** buttons are off while HooriDB loads the file, and stay off if the file system does not let it read the file.
+A workspace query is a reusable SQL or [MongoDB](/docs/features/mongodb) shell query stored right beside your connections in the [Workspace](/docs/features/workspace) tree (`workspace.json`). Unlike [History](/docs/features/history), which records statements run on a specific connection, a workspace query is not tied to a connection, database, or schema — you can run the same query against local, staging, or production.
 
 <Shot
   name="saved-queries"
-  alt="The Saved queries dialog for shop-prod listing four queries with Search, Name, Query, Saved, Delete, Close, and Insert"
+  alt="A workspace query open in a tab with the target connection menu open at the caret"
 />
 
-## Save a query
+## Create a query
 
-1. Select the text to save in the console editor. Without a selection, HooriDB saves the whole text of the console. Text of only blanks is not saved.
-2. Press the **Save query** icon in the console toolbar.
-3. In the **Name** field, keep the suggested name (the first non-blank line of the text, up to 60 characters) or type another one.
-4. Press **Save**.
+You can add a query to Workspace in two ways:
 
-If the connection already has a saved query of that name (ignoring case and spaces around it), the dialog warns that it will be replaced and the button reads **Replace**. Pressing it replaces that query.
+1. Press **+** in the Workspace toolbar, open the **File** menu, or right-click a folder, and choose **New query…**. Enter a **Name**, choose **SQL** or **MongoDB**, and press **Create**. The new query goes into the selected folder, or into the folder of the selected entry.
+2. From an open console, select the text to keep (or leave nothing selected to keep the whole console text) and press **Save to workspace** in the toolbar. Enter a **Name** and press **Save** to create the query in the folder of the console's connection.
 
-## Find and insert a saved query
+## Open and edit a query
 
-1. Press the **Saved queries** (star) icon in the console toolbar. The dialog lists the queries of the console's connection by name, with the first non-blank line of each and when it was saved.
-2. Type in the **Search** box to show only the queries whose name or text contains that text (case-insensitive).
-3. Select a row and press **Insert**, double-click the row, or press `Enter`. You can also copy selected rows with `Ctrl+C`.
+Double-click a query in Workspace, select it and press `Enter`, or right-click it and choose **Open**.
 
-HooriDB inserts the query as it inserts a statement from [History](/docs/features/history#search-and-insert-a-statement). **Run** runs the selection, or else the statement at the caret: to run all statements of an inserted query, select them first. You can undo the insert in one step.
+- HooriDB opens one tab per query; opening the same query again raises its existing tab.
+- The tab shows the query's name and takes the color of its current target connection.
+- Edits are saved automatically into `workspace.json` about one second after you stop typing, and when you close the tab or exit HooriDB.
 
-## Delete a saved query
+## Choose a target connection and run
 
-1. In the **Saved queries** dialog, select the query and press **Delete**.
-2. Press **Delete** to confirm.
+Run a workspace query the same way as any console: **Run** (`Ctrl+Enter`), **Run all** (`Ctrl+Shift+Enter`), or a statement's gutter marker.
 
-Consoles keep their text. Deleting a connection from Workspace also deletes its saved queries.
+- On the first run, HooriDB opens a menu at the caret listing every connection of the query's language (**SQL** or **MongoDB**): the last target first, with a check mark, then the other connected ones, then those not connected. Each row shows the connection's color mark, folder path, and whether it is **Read-only** or **Not connected**.
+- Move with `Up`/`Down` or type a connection's first letter, and press `Enter` (or click a row) to run. Press `Escape` to cancel without running anything.
+- Choosing a disconnected connection connects it first, then runs the query.
+- Later runs run directly without asking only when **exactly one** connection of that language is connected and it is the last target. Otherwise, the menu opens again with the last target first, so a query never silently moves to another connection.
+
+## Switch target connections
+
+When you choose a different connection from the menu:
+
+- If the tab has an open transaction or pending result edits, HooriDB asks first using the console's usual confirmation dialog.
+- HooriDB ends the old session, clears all result tabs (including pinned results) so results from the previous server cannot be committed to the new one, resets **Database** to the new connection's default, and runs the query on the new target.
+
+## Organize and delete queries
+
+Rename, duplicate, move (via **Move to** or drag and drop), and delete work the same way as for connections in [Workspace](/docs/features/workspace). Deleting a folder counts its queries alongside its connections; **Delete contents** deletes them and closes their open tabs (asking first if any has an open transaction or pending edits).

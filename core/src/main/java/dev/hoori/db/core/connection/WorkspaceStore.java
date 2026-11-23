@@ -21,8 +21,9 @@ import tools.jackson.databind.node.ObjectNode;
  * <p>The file is a JSON object in UTF-8 with a {@code version} and the {@code entries} of the top
  * level as an array in their order. Each entry is an object whose {@code kind} says what it is: a
  * {@code "folder"} with its {@code id}, {@code name}, whether it is {@code open} and its own {@code
- * entries}, or a {@code "connection"} with the fields of its profile. It holds no passwords: those
- * are in the system keyring under the profile's id. Another kind of entry raises the version.
+ * entries}, a {@code "connection"} with the fields of its profile, or a {@code "query"} with its
+ * {@code id}, {@code name}, {@code text} and {@code language}. It holds no passwords: those are in
+ * the system keyring under the profile's id. Another kind of entry raises the version.
  *
  * <p>Where there is no such file, {@link #load} takes the connections of {@value #CONNECTIONS},
  * where HooriDB kept them before it had a workspace. No save writes that file.
@@ -49,6 +50,7 @@ public final class WorkspaceStore {
   private static final String ENTRIES = "entries";
   private static final String FOLDER = "folder";
   private static final String CONNECTION = "connection";
+  private static final String QUERY = "query";
   private static final String COLOR = "color";
   private static final String DRIVER_VERSION = "driverVersion";
 
@@ -142,9 +144,15 @@ public final class WorkspaceStore {
                   json.bool(node, where, "open"),
                   entries(json.array(node, where, ENTRIES), where + ".", ids));
             case CONNECTION -> profile(json, node, where, id(json, node, where, ids));
+            case QUERY ->
+              new Workspace.Query(
+                  id(json, node, where, ids),
+                  json.text(node, where, "name"),
+                  json.text(node, where, "text"),
+                  language(json, node, where));
             default ->
               throw json.unreadable(
-                  "in " + where + ", \"kind\" is not \"folder\" or \"connection\"");
+                  "in " + where + ", \"kind\" is not \"folder\", \"connection\" or \"query\"");
           });
     }
     return entries;
@@ -226,6 +234,13 @@ public final class WorkspaceStore {
           write(object.putArray(ENTRIES), inner);
         }
         case ConnectionProfile profile -> write(object, profile);
+        case Workspace.Query(var id, var name, var text, var language) ->
+          object
+              .put("kind", QUERY)
+              .put("id", id.toString())
+              .put("name", name)
+              .put("text", text)
+              .put("language", stored(language));
       }
     }
   }
@@ -257,6 +272,18 @@ public final class WorkspaceStore {
     if (!profile.authDatabase().isEmpty()) {
       object.put("authDatabase", profile.authDatabase());
     }
+  }
+
+  private static Workspace.Language language(JsonFile in, JsonNode query, String where)
+      throws UnreadableException {
+    return choice(
+        in,
+        query,
+        where,
+        "language",
+        Workspace.Language.values(),
+        WorkspaceStore::stored,
+        "\"sql\" or \"shell\"");
   }
 
   private static Provider provider(JsonFile in, JsonNode profile, String where)
@@ -327,6 +354,13 @@ public final class WorkspaceStore {
   // The names in the file, spelled out so that renaming a constant cannot change it.
   private static String stored(Provider provider) {
     return provider.traits().storedName();
+  }
+
+  private static String stored(Workspace.Language language) {
+    return switch (language) {
+      case SQL -> "sql";
+      case SHELL -> "shell";
+    };
   }
 
   private static String stored(Tls tls) {

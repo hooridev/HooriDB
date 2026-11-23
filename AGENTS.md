@@ -11,16 +11,24 @@ with their passwords in the system keyring and the rest in the workspace (`works
 of folders and connections, which the first start fills from an earlier version's `connections.json`
 where it is missing, and tested from their dialog, which downloads the JDBC driver from Maven
 Central after asking: the recommended version, or one the connection chose from the repository's
-list. The sidebar, Workspace, shows folders, nested to any depth up to 240, beside the connections:
-its "+", the File menu and a folder's menu make a folder, named in a dialog, or a connection, which
-go into the folder selected or that of the connection selected, and a duplicate goes right after its
-original; a folder is renamed in a dialog, folders and connections move by Move to, which lists the
-top and every folder by its path, or by dragging them before, after or into a folder, in any order,
-and a move leaves a connection connected with its tabs; whether a folder is open is saved, and
-Delete… of one that holds something asks first, with the number of its connections, and moves what
-it holds up a level or deletes it, each connection as its own Delete… does after the questions of
-all their consoles, and then the folder; one whose password the keyring did not delete stays, with
-its folder, and the dialog names it. File, Drivers… lists the versions downloaded of each kind with
+list. The sidebar, Workspace, shows folders, nested to any depth up to 240, beside the connections and
+queries: its "+", the File menu and a folder's menu make a folder, named in a dialog, a connection,
+or a query (SQL or MongoDB shell, not bound to a connection), which go into the folder selected or
+that of the entry selected, and a duplicate goes right after its original; a folder or query is
+renamed in a dialog, folders, connections and queries move by Move to, which lists the top and every
+folder by its path, or by dragging them before, after or into a folder, in any order, and a move
+leaves a connection connected with its tabs; whether a folder is open is saved, and Delete… of one
+that holds something asks first, with the number of its connections and queries, and moves what it
+holds up a level or deletes it, each connection as its own Delete… does after the questions of all
+their consoles and open query tabs, and then the folder; one whose password the keyring did not
+delete stays, with its folder, and the dialog names it. Opening a query opens a console tab bound
+to it (one tab per query, titled by its name, colored by its current target, autosaving text edits
+into `workspace.json`); running it asks for the target connection in a menu at the caret
+(connections of its language, the last target first, then connected ones, with color mark, folder
+path and read-only note), silently re-running only when exactly one connection of that language is connected and is
+the last target, and switching targets asks via the console's existing question before ending the
+old session, clearing every result (pinned too) and resetting the database to the new target's
+default. File, Drivers… lists the versions downloaded of each kind with
 their sizes, downloads one and deletes one that no open connection uses. Opening a connection in the
 tree connects and reads its databases, schemas, tables and views, and columns, one level at a time
 as they are opened; several connections are open at once. A double press or Enter on a table or view
@@ -76,8 +84,8 @@ previous tab, and the focus on the tree or the tab. Consoles are kept: their tex
 databases are saved a moment after each change, beside the workspace, and reopened unconnected at
 the next start; each statement run from a console goes into its connection's history
 (`history.json`, at most 1,000 a connection, owner-only), which History lists, searches, inserts
-from and clears; Save query keeps the selection, or else the whole text, under a name
-(`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. The
+from and clears; Save to workspace saves a console's selection, or else its whole text, as a query
+in its connection's folder in `workspace.json`. The
 statement log, a panel below the tabs that starts collapsed and that the status line, the View menu
 and the palette open, lists what every connection sent, from the tree, a table's grid, the
 estimates, the transactions, the consoles and the server monitor's cancels and ends, with its time,

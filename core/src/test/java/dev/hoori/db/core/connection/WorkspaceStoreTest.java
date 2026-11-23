@@ -47,6 +47,15 @@ class WorkspaceStoreTest {
 
   private static final String CONNECTION = PROFILE.replace("{", "{\"kind\": \"connection\",");
 
+  private static final String QUERY = """
+      {
+        "kind": "query",
+        "id": "11111111-2222-3333-4444-555555555555",
+        "name": "Orders",
+        "text": "SELECT * FROM orders",
+        "language": "sql"
+      }""";
+
   private static final String FOLDER = """
       {
         "kind": "folder",
@@ -173,6 +182,37 @@ class WorkspaceStoreTest {
     assertEquals(WORKSPACE, new WorkspaceStore(folder).load());
     assertEquals(
         List.of(PROFILES.get(2), PROFILES.get(0), PROFILES.get(1)), WORKSPACE.connections());
+  }
+
+  @Test
+  void queriesRoundTripAtAnyLevelAndStoreTheirOwnFields() throws IOException {
+    var sql = new Workspace.Query(
+        UUID.randomUUID(),
+        "Revenue 東京 \"q\"",
+        "SELECT *\nFROM orders\nWHERE country = 'DE';",
+        Workspace.Language.SQL);
+    var shell = new Workspace.Query(
+        UUID.randomUUID(),
+        "Active users",
+        "db.users.find({ active: true })",
+        Workspace.Language.SHELL);
+    var nested = new Workspace(List.of(
+        sql,
+        new Workspace.Folder(
+            UUID.randomUUID(), "Reports", true, List.of(PROFILES.getFirst(), shell))));
+    var store = new WorkspaceStore(folder);
+    store.save(nested);
+    assertEquals(nested, store.load());
+    assertEquals(nested, new WorkspaceStore(folder).load());
+    var items = entries();
+    var first = items.get(0);
+    assertEquals(
+        Set.of("kind", "id", "name", "text", "language"), Set.copyOf(first.propertyNames()));
+    assertEquals("query", first.get("kind").stringValue());
+    assertEquals("sql", first.get("language").stringValue());
+    var second = items.get(1).get("entries").get(1);
+    assertEquals("query", second.get("kind").stringValue());
+    assertEquals("shell", second.get("language").stringValue());
   }
 
   @Test
@@ -410,6 +450,30 @@ class WorkspaceStoreTest {
                 "0f8fad5b-d9cb-469f-a165-70867728950e", "7c9e6679-7425-40de-944b-e07fc1f90ae7"),
             "entry 1.1 has the id"),
         broken(VALID.replace("]}", "," + FOLDER.replace(CONNECTION, "") + "]}"), "entry 2 has"),
+        broken(
+            "{\"version\": 1, \"entries\": [" + QUERY.replace("\"name\": \"Orders\",", "") + "]}",
+            "entry 1 has no \"name\""),
+        broken(
+            "{\"version\": 1, \"entries\": ["
+                + QUERY.replace("\"text\": \"SELECT * FROM orders\",", "") + "]}",
+            "entry 1 has no \"text\""),
+        broken(
+            "{\"version\": 1, \"entries\": [" + QUERY.replace("\"sql\"", "\"javascript\"") + "]}",
+            "\"language\" is not \"sql\" or \"shell\""),
+        broken(
+            "{\"version\": 1, \"entries\": [" + QUERY.replace("\"sql\"", "\"SQL\"") + "]}",
+            "\"language\" is not \"sql\" or \"shell\""),
+        broken(
+            "{\"version\": 1, \"entries\": [" + QUERY.replace("\"sql\"", "7") + "]}",
+            "\"language\" is not text"),
+        broken(
+            "{\"version\": 1, \"entries\": ["
+                + CONNECTION
+                + ","
+                + QUERY.replace(
+                    "11111111-2222-3333-4444-555555555555", "0f8fad5b-d9cb-469f-a165-70867728950e")
+                + "]}",
+            "entry 2 has the id"),
         // "ÿ" in Latin-1 is a byte that UTF-8 never has.
         Arguments.of(VALID.replace("Local", "Lÿcal").getBytes(ISO_8859_1), "not valid JSON"));
   }

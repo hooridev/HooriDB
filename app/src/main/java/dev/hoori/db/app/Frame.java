@@ -95,6 +95,7 @@ final class Frame {
     }
     root.overlay(s.dialogs.deleting == null ? null : deleteDialog(s));
     root.overlay(s.dialogs.folderDialog == null ? null : s.dialogs.folderDialog.view(s));
+    root.overlay(s.dialogs.queryDialog == null ? null : s.dialogs.queryDialog.view(s));
     root.overlay(s.dialogs.about ? aboutDialog(s) : null);
     root.overlay(asked);
     root.overlay(question);
@@ -122,6 +123,7 @@ final class Frame {
     return s.dialogs.dialog != null
         || s.dialogs.deleting != null
         || s.dialogs.folderDialog != null
+        || s.dialogs.queryDialog != null
         || s.dialogs.about;
   }
 
@@ -188,7 +190,7 @@ final class Frame {
                 s.title(x),
                 true,
                 x.atStake(),
-                Symbol.CODE,
+                x.isQuery() ? Symbol.DOCUMENT : Symbol.CODE,
                 ConnectionColors.hue(s.color(x.id)),
                 x.busy());
           case MonitorTab x ->
@@ -283,10 +285,7 @@ final class Frame {
     return questioned(s, group) != null
         || group.activeTab() instanceof TableTab table && table.preview != null
         || group.activeTab() instanceof ConsoleTab console
-            && (console.confirming != null
-                || console.preview != null
-                || console.history != null
-                || console.queries != null)
+            && (console.confirming != null || console.preview != null || console.history != null)
         || group.activeTab() instanceof MonitorTab monitor && monitor.asked != null
         || s.catalog.asks(s, group);
   }
@@ -313,21 +312,13 @@ final class Frame {
     if (preview != null) {
       return preview;
     }
-    if (console.queries != null) {
-      return console.queries.view(s, console, app(s, group));
-    }
     return console.history == null ? null : console.history.view(s, console, app(s, group));
   }
 
   /** The question of the History dialog of the window's console in front, or null. */
   private static El historyQuestion(State s, TabGroups.Group<Tab> group) {
-    if (group.activeTab() instanceof ConsoleTab console) {
-      if (console.queries != null) {
-        return console.queries.question(s);
-      }
-      if (console.history != null) {
-        return console.history.question(s, console);
-      }
+    if (group.activeTab() instanceof ConsoleTab console && console.history != null) {
+      return console.history.question(s, console);
     }
     return null;
   }
@@ -376,6 +367,7 @@ final class Frame {
         c.adding,
         List.of(
             Menu.item("New connection…", create).icon(Symbol.ADD),
+            Menu.item("New query…", s.canChange() ? s::newQuery : null).icon(Symbol.DOCUMENT),
             Menu.item("New folder…", s.canAddFolder() ? s::newFolder : null).icon(Symbol.FOLDER)));
     return Card.flush(
         Card.toolbar(WORKSPACE, null, add),
@@ -664,6 +656,8 @@ final class Frame {
                         "New connection…",
                         free && s.canChange() ? inMain(s, s::newConnection) : null)
                     .icon(Symbol.ADD),
+                Menu.item("New query…", free && s.canChange() ? inMain(s, s::newQuery) : null)
+                    .icon(Symbol.DOCUMENT),
                 Menu.item("New folder…", free && s.canAddFolder() ? inMain(s, s::newFolder) : null)
                     .icon(Symbol.FOLDER),
                 Menu.item(
@@ -676,7 +670,9 @@ final class Frame {
                     .icon(Symbol.SERVER),
                 Menu.item(
                         "History…",
-                        !modal && group.activeTab() instanceof ConsoleTab c ? c::openHistory : null)
+                        !modal && group.activeTab() instanceof ConsoleTab c && c.id != null
+                            ? c::openHistory
+                            : null)
                     .icon(Symbol.HISTORY),
                 Menu.item(
                     "Drivers…",
@@ -749,6 +745,7 @@ final class Frame {
     return s.dialogs.dialog != null
         || s.dialogs.deleting != null
         || s.dialogs.folderDialog != null
+        || s.dialogs.queryDialog != null
         || s.dialogs.about
         || s.dialogs.driverList != null
         || asks(s, s.tabs.main());

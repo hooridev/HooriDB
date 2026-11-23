@@ -175,12 +175,12 @@ final class Suggestions {
       this.keywordCase = s.settings.keywordCase();
       this.exact = exact;
       connection = tab != null ? tab.id : grid.id;
-      var opened = s.catalog.live(connection);
+      var opened = connection == null ? null : s.catalog.live(connection);
       var connected = opened != null && opened.phase instanceof Live.Connected c ? c : null;
       this.live = connected == null ? null : opened;
       schemas = connected != null && connected.schemas();
       named = !database.isEmpty() || connected == null ? database : connected.database();
-      var profile = s.profile(connection);
+      var profile = connection == null ? null : s.profile(connection);
       path = profile == null ? List.of("public") : List.of(profile.user(), "public");
     }
 
