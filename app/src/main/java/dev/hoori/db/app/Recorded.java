@@ -9,6 +9,9 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.data.Changes;
+import dev.hoori.db.core.data.Editable;
+import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Script;
@@ -206,6 +209,17 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     public String whole(Table table, List<Column> columns, List<Object> row, int column)
         throws QueryException {
       return recorded(of(table), () -> link.whole(table, columns, row, column));
+    }
+
+    @Override
+    public Optional<Editable> editable(
+        String sql, List<Field> fields, boolean createdTemporaryTable) throws QueryException {
+      return recorded(null, () -> link.editable(sql, fields, createdTemporaryTable));
+    }
+
+    @Override
+    public Changes.Outcome write(Changes changes) throws QueryException {
+      return recorded(of(changes.table()), () -> link.write(changes));
     }
 
     @Override

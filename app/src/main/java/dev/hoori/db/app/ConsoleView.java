@@ -318,11 +318,14 @@ final class ConsoleView {
     var buttons = new ArrayList<El>();
     buttons.add(button(SECONDARY, ConsoleTab.CANCEL_BUTTON, () -> tab.answer(s, null))
         .key("answer-cancel"));
-    boolean waits = tab.waits();
-    var wording = wording(s, s.title(tab), asked.what(), waits);
+    boolean unpinnedOnly = asked.scope() == Guard.Scope.CHANGES;
+    boolean discarding = asked.scope() != Guard.Scope.TRANSACTION
+        && (tab.writingChanges(unpinnedOnly) || tab.pendingChanges(unpinnedOnly) > 0);
+    boolean waits = !discarding && tab.waits() || discarding && tab.writingChanges(unpinnedOnly);
+    var wording = wording(s, s.title(tab), asked, waits, discarding);
     buttons.addAll(wording.buttons());
     var body = wording.text();
-    if (tab.endFailed && !tab.firm() && tab.work() == null && tab.doubt == null) {
+    if (!discarding && tab.endFailed && !tab.firm() && tab.work() == null && tab.doubt == null) {
       body += " Or end the connection: it is closed, and the server rolls back what was not"
           + " committed.";
       buttons.add(1, endIt(s));
@@ -332,7 +335,7 @@ final class ConsoleView {
         .gap(t.space().m())
         .child(Label.label(body).wrapText())
         .child(
-            waits && tab.doubt == null
+            waits && (discarding || tab.doubt == null)
                 ? row()
                     .gap(t.space().s())
                     .align(Style.Align.CENTER)
@@ -341,7 +344,7 @@ final class ConsoleView {
                 : null)
         // Why the last Commit or Rollback did not end it, where it did not.
         .child(
-            tab.problem == null || waits || tab.doubt != null
+            discarding || tab.problem == null || waits || tab.doubt != null
                 ? null
                 : Callout.callout(Callout.Kind.DANGER, tab.problem.title(), tab.problem.text())
                     .key("question-problem"));
@@ -349,8 +352,49 @@ final class ConsoleView {
         .key("transaction-question");
   }
 
-  /** What the question says on the console {@code name} before the act {@code before}. */
-  private Wording wording(State s, String name, String before, boolean waits) {
+  /** What the question says before pending changes of a result are lost, or while one commits. */
+  private Wording discarding(State s, String name, Guard.Pending.Question asked) {
+    String before = asked.what();
+    boolean unpinnedOnly = asked.scope() == Guard.Scope.CHANGES;
+    if (tab.writingChanges(unpinnedOnly)) {
+      return new Wording(
+          "Waiting for changes to commit",
+          "Changes are being committed on " + name + ". Wait until the commit finishes, or"
+              + " cancel it: whether it took effect is then not known, and the changes stay.",
+          List.of(button(
+                  SECONDARY,
+                  "Cancel commit",
+                  () -> tab.answer(s, ConsoleTab.STOP_WRITES),
+                  Button.options().tone(Button.Tone.DANGER))
+              .key("answer-cancel-commit")));
+    }
+    int n = tab.pendingChanges(unpinnedOnly);
+    String changes = n == 1 ? "1 change" : n + " changes";
+    boolean unsure =
+        tab.outputs.stream().anyMatch(o -> (!unpinnedOnly || !o.pinned) && o.edits.unknown);
+    return new Wording(
+        "Discard " + changes + "?",
+        name + " has " + (n == 1 ? "1 uncommitted change" : n + " uncommitted changes")
+            + ". Discard " + (n == 1 ? "it" : "them") + " before " + before + "?"
+            + (unsure
+                ? " Whether the last commit took effect is not known: discarding drops the changes"
+                    + " here and undoes nothing on the server."
+                : ""),
+        List.of(button(
+                PRIMARY,
+                "Discard",
+                () -> tab.answer(s, ConsoleTab.DISCARD),
+                Button.options().tone(Button.Tone.DANGER))
+            .key("answer-discard")));
+  }
+
+  /** What the question says on the console {@code name} before the act {@code asked}. */
+  private Wording wording(
+      State s, String name, Guard.Pending.Question asked, boolean waits, boolean discarding) {
+    String before = asked.what();
+    if (discarding) {
+      return discarding(s, name, asked);
+    }
     if (tab.doubt != null) {
       return new Wording(
           ConsoleTab.UNSURE,

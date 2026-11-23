@@ -279,7 +279,10 @@ final class Frame {
   private static boolean asks(State s, TabGroups.Group<Tab> group) {
     return questioned(s, group) != null
         || group.activeTab() instanceof ConsoleTab console
-            && (console.confirming != null || console.history != null || console.queries != null)
+            && (console.confirming != null
+                || console.preview != null
+                || console.history != null
+                || console.queries != null)
         || group.activeTab() instanceof MonitorTab monitor && monitor.asked != null
         || s.catalog.asks(s, group);
   }
@@ -298,6 +301,10 @@ final class Frame {
     El asked = console.confirmation(s);
     if (asked != null) {
       return asked;
+    }
+    El preview = console.preview(s, app(s, group));
+    if (preview != null) {
+      return preview;
     }
     if (console.queries != null) {
       return console.queries.view(s, console, app(s, group));

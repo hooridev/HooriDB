@@ -45,6 +45,19 @@ Each statement that returns rows or changes rows creates a result tab (**Result 
 - Select cells and press `Ctrl+C` (or `Ctrl+Insert`) to copy from a result grid.
 - Open the **Messages** tab to see every statement run in the console, how long it took, and its result, warnings, or errors.
 
+## Edit query results
+
+When a PostgreSQL, MySQL, or MariaDB `SELECT` reads directly from a single permanent table and includes all of its primary key columns (on a writable connection), you can edit its cells directly in the result grid:
+
+- Double-click a cell, press `Enter` or `F2`, or start typing to edit it. Press `Ctrl+0` to set `NULL` (on nullable columns), `Delete` to clear, `Ctrl+V` to paste, and `Ctrl+Z` / `Ctrl+Y` to undo or redo.
+- Changed cells and rows are highlighted, and a badge in the result footer shows the number of pending row changes.
+- Press **Revert** to revert only the selected cells, or **Revert all** to discard every pending change in the result.
+- Press **Commit…** to open the **DML Preview** dialog, which always shows the generated `UPDATE` statements in the dialect's syntax colors before any of them is sent. In **Manual** mode (or whenever the console has an open transaction), HooriDB first asks you to commit or roll back the console's transaction, so the write does not wait on it; cancelling the preview afterwards does not undo that commit or rollback.
+- Confirming **Commit** runs all updates together in a single transaction on a dedicated write connection, checking that each row is still there by its primary key and that each cell you changed still holds the value that was read. If another session changed one of those cells, or the row's key, nothing is written, the row is marked, and your pending edits stay in place. A change by another session to a column you did not edit does not stop the write.
+- After a successful commit, the edited values stay visible in the grid with a hint to re-run the query if you want server-generated values (such as triggers or defaults).
+- Before pending edits would be lost — running another statement (for unpinned results), switching databases or commit mode, closing the tab, disconnecting, editing or deleting the connection, or exiting HooriDB — HooriDB asks whether to discard them.
+- Read-only connections, multi-table queries, views, tables without a primary key, sessions that created a temporary table on MySQL or MariaDB (until reconnect), and individual read-only columns or cut-short cells remain read-only, with the reason shown in the result status line.
+
 ## Find errors in the editor
 
 <Shot

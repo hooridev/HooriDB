@@ -47,13 +47,16 @@ In both **Auto** and **Manual** mode, HooriDB checks the SQL of `UPDATE` and `DE
 
 ## Prompts before work could be lost
 
-While a console has an open, failed, unknown, or in-doubt transaction, or is running a statement that may change data, HooriDB asks what to do before any action that would end it:
+While a console has pending cell edits in its result grid, or an open, failed, unknown, or in-doubt transaction, or is running a statement that may change data, HooriDB asks what to do before any action that would end or discard it:
 
+- Running another statement (when unpinned results have pending cell edits)
 - Closing the console tab
 - Switching between **Auto** and **Manual**
 - Switching the console's database
 - Disconnecting, editing, or deleting the connection (or deleting a folder that holds it)
 - Exiting HooriDB or restarting to apply an update
+
+For pending cell edits, HooriDB asks whether to **Discard** them (and then asks about an open transaction if one is still open). Committing pending cell edits from **Manual** mode asks to commit or roll back the open console transaction first, keeping your edits, before opening the **DML Preview**.
 
 Depending on the transaction state, the dialog offers **Commit**, **Rollback**, or **Cancel** (or **Continue** when an outcome is in doubt). If a commit or rollback fails or stops answering, or a modifying statement is still running, the dialog also lets you choose **End the connection** or **Go on now** to close the connection; the server rolls back uncommitted work, while a change or commit already in flight may have taken effect, so check the data before running it again.
 

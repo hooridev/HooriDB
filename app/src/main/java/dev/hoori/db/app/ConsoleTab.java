@@ -32,6 +32,7 @@ import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sql.EditableQuery;
 import dev.hoori.db.core.sql.EveryRow;
 import dev.hoori.db.core.sql.Statement;
 import dev.hoori.db.core.sql.Statements;
@@ -116,6 +117,7 @@ final class ConsoleTab implements Tab {
     // Of a server of documents, the documents of the rows, whole, and how they show.
     final List<Document> documents = new ArrayList<>();
     final DocumentPresentation presentation;
+    final ResultEdits edits = new ResultEdits();
 
     Output(
         int number,
@@ -132,6 +134,10 @@ final class ConsoleTab implements Tab {
         widths = new float[fields.size()];
         Arrays.fill(widths, -1);
       }
+    }
+
+    void stop() {
+      edits.stop();
     }
   }
 
@@ -325,6 +331,11 @@ final class ConsoleTab implements Tab {
   private HistoryEntry recorded; // the last statement that went into the history, or null
   HistoryDialog history; // the History dialog, null while closed
   QueriesDialog queries; // Save query or Saved queries, null while closed
+  // Whether this console session has sent a statement that may create a temporary table.
+  boolean createdTemporaryTable;
+  // The tree's connection the session was opened from: a result edits only through it.
+  Live sessionLive;
+  ResultEdits.Preview preview; // the DML Preview dialog before committing result edits, or null
 
   /** A statement of the user's on its way to the server, and since when. */
   private record Sent(String sql, Instant started) {}
@@ -433,11 +444,20 @@ final class ConsoleTab implements Tab {
   /** The statements, with offsets from {@code from} in the text, run once the console takes them. */
   private void start(State s, int from, List<Statement> chosen) {
     s.acted();
-    if (busy() || locked(s) != null) {
+    if (busy() || preview != null || locked(s) != null) {
       return; // refused: what the run under way sent stays its own
     }
     if (chosen.isEmpty()) {
       say(s, "No statement to run");
+      return;
+    }
+    if (s.guard.asks(
+        s,
+        new Guard.Act("run", this),
+        "the statement runs",
+        List.of(this),
+        () -> start(s, from, chosen),
+        Guard.Scope.CHANGES)) {
       return;
     }
     var sql = help.sent(text, from, chosen); // where an error of each is, from now on
@@ -448,6 +468,14 @@ final class ConsoleTab implements Tab {
     }
     activity = new Idle(); // from stranded: busy() lets it start from nothing else
     started(s); // once for the run, not for each of its statements
+    for (var o : outputs) {
+      if (!o.pinned) {
+        o.stop();
+        if (preview != null && preview.output == o) {
+          preview = null;
+        }
+      }
+    }
     outputs.removeIf(o -> !o.pinned);
     if (!outputs.contains(shown)) {
       shown = null;
@@ -599,6 +627,9 @@ final class ConsoleTab implements Tab {
     running = sql;
     var provider = s.profile(id).provider();
     var language = Language.of(provider);
+    if (EditableQuery.createsTemporaryTable(sql, provider)) {
+      createdTemporaryTable = true;
+    }
     if (!language.transactions()) {
       // No Manual either: also where the console was in Manual on a connection of SQL before its
       // connection changed.
@@ -719,6 +750,7 @@ final class ConsoleTab implements Tab {
         return null;
       }
       lane = session.lane();
+      sessionLive = s.catalog.live(id);
       driver = session.driver();
       password = session.password();
       teller = new Teller(
@@ -1198,6 +1230,7 @@ final class ConsoleTab implements Tab {
           output.dropped = dropped == null ? 0 : dropped.get(i);
           outputs.add(output);
           reading = output;
+          ResultEdits.check(s, this, output);
         }
         case Result.Count(var count) -> {
           finished();
@@ -1519,15 +1552,11 @@ final class ConsoleTab implements Tab {
    * and the next run opens one to it. Asks first where something is at stake.
    */
   void use(State s, String name) {
-    if (busy() || name.equals(database) || locked(s) != null) {
+    if (busy() || preview != null || name.equals(database) || locked(s) != null) {
       return;
     }
-    chosen = true;
     var profile = s.profile(id);
-    var version = s.catalog.version(id);
-    if (lane == null || profile == null) {
-      database = name; // the next session opens on it
-      s.keeping.edited();
+    if (profile == null) {
       return;
     }
     if (s.guard.asks(
@@ -1536,6 +1565,13 @@ final class ConsoleTab implements Tab {
         "it switches to " + (name.isEmpty() ? "no database" : name),
         List.of(this),
         () -> use(s, name))) {
+      return;
+    }
+    chosen = true;
+    var version = s.catalog.version(id);
+    if (lane == null) {
+      database = name; // the next session opens on it
+      s.keeping.edited();
       return;
     }
     if (version == null
@@ -1603,10 +1639,12 @@ final class ConsoleTab implements Tab {
    * what going on costs; where a way did not, the console says what that cost.
    */
   void end() {
-    boolean stake = atStake();
+    boolean stake = transactionAtStake();
     if (work() != null) {
       stop();
     }
+    preview = null;
+    outputs.forEach(Output::stop);
     queue.clear();
     activity = new Idle();
     switching = null;
@@ -1622,6 +1660,8 @@ final class ConsoleTab implements Tab {
   }
 
   private void closeSession() {
+    createdTemporaryTable = false;
+    sessionLive = null;
     transaction = Transaction.NONE;
     inTransaction = 0;
     empty = true;
@@ -1723,14 +1763,12 @@ final class ConsoleTab implements Tab {
   }
 
   /**
-   * Whether something is at stake on the console, the one test of every way out, the questions,
-   * the tab's mark and Rollback: an outcome in doubt until the user has read it; on its session, a
-   * call that may change data or the transaction for as long as it runs, as a statement that is not
-   * a plain read runs until it is read to its end; a question to the server; or a transaction the
-   * server did not say is closed and that a statement which may have changed something ran in. A
-   * plain read, running or with rows left, is none.
+   * Whether the console's transaction or session is at stake, without pending grid edits: an
+   * outcome in doubt until the user has read it; on its session, a call that may change data or the
+   * transaction for as long as it runs; a question to the server; or a transaction the server did
+   * not say is closed and that a statement which may have changed something ran in.
    */
-  boolean atStake() {
+  boolean transactionAtStake() {
     if (doubt != null) {
       return true; // until the user has read it
     }
@@ -1747,6 +1785,58 @@ final class ConsoleTab implements Tab {
     };
   }
 
+  /** Whether any result tab holds uncommitted cell edits. */
+  boolean hasPendingChanges() {
+    return pendingChanges(false) > 0;
+  }
+
+  /** Whether any unpinned result tab holds uncommitted cell edits. */
+  boolean hasUnpinnedPendingChanges() {
+    return pendingChanges(true) > 0;
+  }
+
+  /** Number of pending row edits across all (or only unpinned) result tabs. */
+  int pendingChanges(boolean unpinnedOnly) {
+    int total = 0;
+    for (var o : outputs) {
+      if (!unpinnedOnly || !o.pinned) {
+        total += o.edits.pendingCount(o);
+      }
+    }
+    return total;
+  }
+
+  /** Whether any result tab has a commit write in flight on the write lane. */
+  boolean writingChanges() {
+    return writingChanges(false);
+  }
+
+  boolean writingChanges(boolean unpinnedOnly) {
+    for (var o : outputs) {
+      if ((!unpinnedOnly || !o.pinned) && o.edits.writing != null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether something is at stake on the console, the one test of every way out, the questions and
+   * the tab's mark: a transaction or outcome in doubt, pending result edits, or a commit in flight.
+   */
+  boolean atStake() {
+    return transactionAtStake() || hasPendingChanges() || writingChanges();
+  }
+
+  /** Whether something within {@code scope} is at stake on this console. */
+  boolean atStake(Guard.Scope scope) {
+    return switch (scope) {
+      case BOTH -> atStake();
+      case TRANSACTION -> transactionAtStake();
+      case CHANGES -> hasUnpinnedPendingChanges() || writingChanges(true);
+    };
+  }
+
   /** Whether Commit is offered: only where the server said that a transaction is open. */
   boolean canCommit() {
     return work() == null && probe == null && transaction == Transaction.OPEN && !empty;
@@ -1754,28 +1844,28 @@ final class ConsoleTab implements Tab {
 
   /**
    * Whether Rollback is offered: the safe way out wherever something may be open on the session,
-   * also while the server is asked.
+   * also while the server is asked. Pending result grid edits do not enable Rollback.
    */
   boolean canRollback() {
-    return work() == null && lane != null && atStake();
+    return work() == null && lane != null && transactionAtStake();
   }
 
   /** Auto or Manual; asks first where something is at stake. */
   void switchMode(State s, Mode mode) {
-    if (busy() || mode == this.mode || locked(s) != null) {
+    if (busy() || preview != null || mode == this.mode || locked(s) != null) {
       return;
     }
     if (mode == Mode.MANUAL && unavailable != null) {
       say(s, unavailable);
       return;
     }
-    if (lane == null) {
-      this.mode = mode; // the next session takes it, before any statement of the user's
-      return;
-    }
     var before = "it switches to " + mode.title;
     var act = new Guard.Act("switch to " + mode, this);
     if (s.guard.asks(s, act, before, List.of(this), () -> switchMode(s, mode))) {
+      return;
+    }
+    if (lane == null) {
+      this.mode = mode; // the next session takes it, before any statement of the user's
       return;
     }
     boolean wasEmpty = empty;
@@ -1930,11 +2020,21 @@ final class ConsoleTab implements Tab {
       return;
     }
     switch (choice) {
+      case DISCARD -> discardChanges(asked.scope() == Guard.Scope.CHANGES);
       case CONTINUE -> {
         s.guard.pending = null;
         doubt = null;
         asked.then().run();
         return;
+      }
+      case STOP_WRITES -> {
+        // The changes stay, and the question goes on to them and to the transaction.
+        boolean unpinnedOnly = asked.scope() == Guard.Scope.CHANGES;
+        for (var o : outputs) {
+          if ((!unpinnedOnly || !o.pinned) && o.edits.writing != null) {
+            ResultEdits.cancelWrite(s, this, o);
+          }
+        }
       }
       case GO_ON -> {
         s.guard.pending = null;
@@ -1967,12 +2067,25 @@ final class ConsoleTab implements Tab {
     settle(s);
   }
 
+  private void discardChanges(boolean unpinnedOnly) {
+    for (var o : outputs) {
+      if (!unpinnedOnly || !o.pinned) {
+        o.edits.discard(o);
+        if (preview != null && preview.output == o) {
+          preview = null;
+        }
+      }
+    }
+  }
+
   static final String WENT_ON =
       "The connection was ended before this was done, as asked: the server rolls back what was"
           + " not committed, and what this statement did is not known.";
 
   static final String CONTINUE = "CONTINUE";
   static final String GO_ON = "GO_ON";
+  static final String DISCARD = "DISCARD";
+  static final String STOP_WRITES = "STOP_WRITES";
 
   /** Acknowledge: the user has read that an outcome is not known. */
   void acknowledge(State s) {
@@ -1986,10 +2099,14 @@ final class ConsoleTab implements Tab {
    */
   private void settle(State s) {
     var asked = asked(s);
-    if (asked != null && !atStake()) {
+    if (asked != null && !atStake(asked.scope())) {
       s.guard.pending = null;
       asked.then().run();
     }
+  }
+
+  void settledFromEdit(State s) {
+    settle(s);
   }
 
   /** Says something in the tab's status line, for a while. */
@@ -2137,6 +2254,11 @@ final class ConsoleTab implements Tab {
   /** What is asked before a statement is sent, while it is; in the console's window. */
   El confirmation(State s) {
     return ui.confirmation(s);
+  }
+
+  /** The DML Preview dialog before committing result edits, while it is open; or null. */
+  El preview(State s, App<State> app) {
+    return ResultEdits.previewDialog(s, this, app);
   }
 
   /** Run anyway: the statement asked about is sent, through the gate again. */
