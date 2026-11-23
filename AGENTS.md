@@ -117,10 +117,11 @@ changed and paused, and not while the tab is hidden; a session's statement is ca
 session ended after a question, never the monitor's own, and credentials in other sessions'
 statements are masked. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
-Nightly (at first that of its own version), downloads it and restarts into it through its own Exit
-when asked; the new version confirms once its window has shown its first frame, and the updater's
-helper puts the old version back where it does not, and a version put back is not offered again
-until a higher one comes out. Help, About HooriDB shows the version that runs, its channel of
+Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
+tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
+version confirms once its window has shown its first frame, and the updater's helper puts the old
+version back where it does not, and a version put back is not offered again until a higher one comes
+out. Help, About HooriDB shows the version that runs, its channel of
 updates, its authors, license and website. Started from the unpacked Linux bundle, it puts itself
 into the application menu, which gives its windows their icon in the dock. The main window's
 placement, the sidebar's width and the statement log's open state, height and detail split are kept

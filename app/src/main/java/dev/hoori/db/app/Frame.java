@@ -16,7 +16,9 @@ import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.CommandPalette;
 import com.rethinkj.ui.kit.Dialog;
+import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Label;
+import com.rethinkj.ui.kit.Markdown;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Progress;
@@ -28,10 +30,13 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.TitleBar;
+import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.update.Channel;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Predicate;
@@ -478,14 +483,44 @@ final class Frame {
     El dismiss = button(
             Button.Variant.SECONDARY, notice.dismiss(), modal ? null : s.updates::dismiss)
         .key("update-dismiss");
-    return col()
-        .padding(t.space().s())
-        .child(Callout.callout(
-                notice.kind(),
-                notice.title(),
-                notice.text(),
-                act == null ? new El[] {dismiss} : new El[] {act, dismiss})
-            .key("update"));
+    El callout = Callout.callout(
+            notice.kind(),
+            notice.title(),
+            notice.text(),
+            act == null ? new El[] {dismiss} : new El[] {act, dismiss})
+        .key("update");
+    var details = notice.details();
+    if (details != null) {
+      callout = Tooltip.tooltip(callout, () -> updateChanges(t, notice.title(), details, s.zone));
+    }
+    return col().padding(t.space().s()).child(callout);
+  }
+
+  /** What an offered update brings, for its notice's tooltip. */
+  private static El updateChanges(Theme t, String title, Updates.Details details, ZoneId zone) {
+    var changes = details.changes();
+    var date = Format.DATE.text(LocalDate.ofInstant(details.published(), zone));
+    var header = col()
+        .gap(t.space().xs())
+        .child(label(Label.Variant.HEADING, title).wrapText())
+        .child(label(Label.Variant.SMALL, details.version() + " · " + date).wrapText());
+    El body = col().w(t.size().tooltip()).gap(t.space().s()).child(header);
+    if (details.highlights() != null) {
+      body.child(Markdown.fragment(details.highlights(), Markdown.options()));
+      int more = changes.count() - changes.highlights().size();
+      if (more > 0) {
+        body.child(label(
+                Label.Variant.NORMAL,
+                "Plus " + more + (more == 1 ? " more change." : " more changes."))
+            .wrapText());
+      }
+    }
+    String counts = changes.count()
+        + (changes.count() == 1 ? " change" : " changes")
+        + " from "
+        + changes.contributors()
+        + (changes.contributors() == 1 ? " contributor" : " contributors");
+    return body.child(label(Label.Variant.MUTED, counts).wrapText());
   }
 
   /** The download of an update, busy while it runs; null while none does. */
