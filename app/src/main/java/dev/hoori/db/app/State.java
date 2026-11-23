@@ -556,9 +556,9 @@ final class State {
       return;
     }
     var held = folder.connections();
-    var tabs = held.stream().flatMap(p -> guarded(p.id()).stream()).toList();
+    var asking = held.stream().flatMap(p -> guarded(p.id()).stream()).toList();
     var act = deleteFolderAct(id);
-    if (guard.asks(this, act, folder.name() + " is deleted", tabs, () -> deleteFolder(id))) {
+    if (guard.asks(this, act, folder.name() + " is deleted", asking, () -> deleteFolder(id))) {
       return;
     }
     remove(act, folder.name() + " is being deleted", held, id);

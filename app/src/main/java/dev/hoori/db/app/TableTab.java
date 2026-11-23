@@ -48,6 +48,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongPredicate;
@@ -109,6 +110,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   record Failure(Problem problem, String detail) {}
 
   private static final String DISCONNECTED = "Disconnected";
+  private static final String REFRESH = "refresh";
 
   final UUID id;
   Table table; // its kind may change, as a table replaced by a view of its name
@@ -151,9 +153,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   final ResultEdits edits = new ResultEdits();
   ResultEdits.Preview preview; // the DML Preview dialog before committing edits, or null
   // Original rows (as read) of edited positions, kept also where a shrunk end trims their page.
-  private final Map<Integer, List<Object>> kept = new HashMap<>();
-  // Original rows moved out of kept on undo/revert while GridChanges can still undo/redo them.
-  private final Map<Integer, List<Object>> undoKept = new HashMap<>();
+  private final TreeMap<Integer, List<Object>> originals = new TreeMap<>();
+  // Original rows moved out of originals on undo or Revert while GridChanges can still undo/redo
+  // them.
+  private final Map<Integer, List<Object>> undone = new HashMap<>();
 
   /** One clause field (WHERE or ORDER BY) with its caret and SQL completions. */
   private static final class Clause {
@@ -404,10 +407,18 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     long from = page * PAGE;
     if (n > 0) {
-      if (!undoKept.isEmpty() && !pages.containsKey(page) && hasUndone(page)) {
+      if (!undone.isEmpty() && hasUndone(page)) {
         forgetHistory(s); // rows come back where undo history was, which may be others now
       }
-      pages.put(page, held(page, read.rows()));
+      if (selection.isEditing() && selection.editingRow() / PAGE == page) {
+        int at = selection.editingRow() % PAGE;
+        var was = pageRow(selection.editingRow());
+        if (was != null && (at >= n || !was.equals(read.rows().get(at)))) {
+          selection.cancelEdit(); // its draft is of a row no longer there
+          say(s, "The row being edited changed on the server; the edit was cancelled.");
+        }
+      }
+      pages.put(page, read.rows());
       documents.put(page, read.documents());
     } else {
       pages.remove(page);
@@ -483,7 +494,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   private boolean hasUndone(long page) {
-    return undoKept.keySet().stream().anyMatch(row -> row / PAGE == page);
+    return undone.keySet().stream().anyMatch(row -> row / PAGE == page);
   }
 
   /**
@@ -491,43 +502,33 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
    * a step must not replay on another row that came to its position.
    */
   private void forgetHistory(State s) {
+    var old = edits.changes;
     var cells = new ArrayList<DataGrid.CellValue>();
-    for (var change : edits.changes.changes()) {
+    for (var change : old.changes()) {
       change
           .values()
           .forEach((column, text) ->
               cells.add(new DataGrid.CellValue((int) change.key(), column, text)));
     }
-    undoKept.clear();
+    undone.clear();
     edits.changes = ResultEdits.gridChanges(s, this);
     if (!cells.isEmpty()) {
       edits.changes.set(cells);
+    }
+    for (var cell : cells) {
+      var error = old.errorText(cell.row(), cell.column());
+      if (error != null) {
+        edits.changes.error(cell.row(), cell.column(), error);
+      }
     }
   }
 
   /** The pages of positions with edits or undo history; none while nothing is edited. */
   private Set<Long> pinned() {
     var pinned = new HashSet<Long>();
-    kept.keySet().forEach(row -> pinned.add((long) row / PAGE));
-    undoKept.keySet().forEach(row -> pinned.add((long) row / PAGE));
+    originals.keySet().forEach(row -> pinned.add((long) row / PAGE));
+    undone.keySet().forEach(row -> pinned.add((long) row / PAGE));
     return pinned;
-  }
-
-  /**
-   * The rows of a page read: those of a pinned page read again, as when the table grew past its
-   * short end, keep their positions, and only the rows past them are new.
-   */
-  private List<List<Object>> held(long page, List<List<Object>> read) {
-    var have = kept.isEmpty() && undoKept.isEmpty() ? null : pages.get(page);
-    if (have == null || !pinned().contains(page)) {
-      return read;
-    }
-    if (have.size() >= read.size()) {
-      return have.subList(0, read.size());
-    }
-    var rows = new ArrayList<>(have);
-    rows.addAll(read.subList(have.size(), read.size()));
-    return List.copyOf(rows);
   }
 
   /** The page of the cell the open value panel shows, which stays; -1 for none. */
@@ -754,7 +755,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     if (s.guard.asks(
         s,
-        new Guard.Act("refresh", this),
+        new Guard.Act(REFRESH, this),
         table.name() + " is refreshed",
         List.of(this),
         () -> refresh(s),
@@ -771,7 +772,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     if (s.guard.asks(
         s,
-        new Guard.Act("refresh", this),
+        new Guard.Act(REFRESH, this),
         table.name() + " is refreshed",
         List.of(this),
         () -> replace(s, next),
@@ -1449,14 +1450,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   /** The rows in the grid, which counts them in an int. */
   private int gridRows() {
     long n = shown();
-    if (!kept.isEmpty()) {
-      n = Math.max(n, Collections.max(kept.keySet()) + 1L); // an edited row past a shrunk end
+    if (!originals.isEmpty()) {
+      n = Math.max(n, originals.lastKey() + 1L); // an edited row past a shrunk end
     }
     return (int) Math.min(n, DocumentPresentation.GRID_ROWS);
   }
 
   private boolean loaded(int row) {
-    if (!kept.isEmpty() && kept.containsKey(row)) {
+    if (!originals.isEmpty() && originals.containsKey(row)) {
       return true;
     }
     var page = pages.get((long) row / PAGE);
@@ -1464,8 +1465,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   private Object value(int row, int column) {
-    if (!kept.isEmpty()) {
-      var rowValues = kept.get(row);
+    if (!originals.isEmpty()) {
+      var rowValues = originals.get(row);
       if (rowValues != null) {
         return rowValues.get(column);
       }
@@ -1474,8 +1475,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   private List<Object> rowValues(int row) {
-    if (!kept.isEmpty()) {
-      var rowValues = kept.get(row);
+    if (!originals.isEmpty()) {
+      var rowValues = originals.get(row);
       if (rowValues != null) {
         return rowValues;
       }
@@ -1615,7 +1616,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   /** The DML Preview dialog before committing table edits, while it is open; or null. */
-  El preview(State s, App<State> app) {
+  El previewDialog(State s, App<State> app) {
     return ResultEdits.previewDialog(s, this, app);
   }
 
@@ -1715,7 +1716,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       }
       int have = page == null ? 0 : page.size();
       for (int r = Math.max(from, (int) (p * PAGE) + have); r <= to; r++) {
-        if (!kept.containsKey(r)) {
+        if (!originals.containsKey(r)) {
           return true;
         }
       }
@@ -1724,12 +1725,15 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   @Override
-  public void beforeStage(int row) {
-    if (!kept.containsKey(row)) {
-      undoKept.remove(row); // a fresh edit is of the row shown, whatever was undone there
+  public void beforeStage(State s, int row) {
+    if (!originals.containsKey(row)) {
       var shown = pageRow(row);
+      var before = undone.remove(row);
+      if (before != null && !before.equals(shown)) {
+        forgetHistory(s); // its steps here are of another row, which must not replay on this one
+      }
       if (shown != null) {
-        kept.put(row, shown);
+        originals.put(row, shown);
       }
     }
   }
@@ -1738,33 +1742,33 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   public void afterChange() {
     var changes = edits.changes;
     if (changes == null) {
-      kept.clear();
-      undoKept.clear();
+      originals.clear();
+      undone.clear();
       return;
     }
     for (var gc : changes.changes()) {
       keepRow((int) gc.key());
     }
     boolean keepHistory = changes.canUndo() || changes.canRedo();
-    var it = kept.entrySet().iterator();
+    var it = originals.entrySet().iterator();
     while (it.hasNext()) {
       var entry = it.next();
       if (changes.rowStatus(entry.getKey()) == DataGrid.Status.UNCHANGED) {
         if (keepHistory) {
-          undoKept.put(entry.getKey(), entry.getValue());
+          undone.put(entry.getKey(), entry.getValue());
         }
         it.remove();
       }
     }
     if (!keepHistory) {
-      undoKept.clear();
+      undone.clear();
     }
   }
 
   @Override
   public void onCleared() {
-    kept.clear();
-    undoKept.clear();
+    originals.clear();
+    undone.clear();
   }
 
   @Override
@@ -1784,9 +1788,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         updatedPages.put(pageKey, page);
       }
       int offset = rowIndex % PAGE;
-      if (offset >= 0 && offset < page.size()) {
-        var base = rowValues(rowIndex);
-        var updated = new ArrayList<>(base != null ? base : page.get(offset));
+      var original = originals.get(rowIndex);
+      // Not where the page, read again since, holds another row at the edited row's position.
+      if (offset < page.size() && (original == null || original.equals(page.get(offset)))) {
+        var updated = new ArrayList<>(page.get(offset));
         entry.getValue().forEach(updated::set);
         page.set(offset, Collections.unmodifiableList(updated));
       }
@@ -1795,14 +1800,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   private void keepRow(int row) {
-    if (!kept.containsKey(row)) {
+    if (!originals.containsKey(row)) {
       // Undo and redo replay an edit on the row it was made on, also where another shows now.
-      var original = undoKept.get(row);
+      var original = undone.get(row);
       if (original == null) {
         original = pageRow(row);
       }
       if (original != null) {
-        kept.put(row, original);
+        originals.put(row, original);
       }
     }
   }

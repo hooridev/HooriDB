@@ -300,7 +300,7 @@ final class Frame {
       return monitor.question(s);
     }
     if (group.activeTab() instanceof TableTab table) {
-      return table.preview(s, app(s, group));
+      return table.previewDialog(s, app(s, group));
     }
     if (!(group.activeTab() instanceof ConsoleTab console)) {
       return null;

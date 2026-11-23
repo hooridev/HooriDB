@@ -129,7 +129,7 @@ final class ResultEdits {
     }
 
     /** Called before staging a cell edit on {@code row}, so a paged grid can keep its row. */
-    default void beforeStage(int row) {}
+    default void beforeStage(State s, int row) {}
 
     /** Called after staging, reverting, or undo/redo changed staged state. */
     default void afterChange() {}
@@ -483,7 +483,7 @@ final class ResultEdits {
     edits.committedHint = null;
     edits.pasteRefused = null;
     edits.writeProblem = null;
-    t.beforeStage(row);
+    t.beforeStage(s, row);
     edits.changes.set(row, col, stored);
     t.afterChange();
     return null;
@@ -574,7 +574,7 @@ final class ResultEdits {
       edits.committedHint = null;
       edits.writeProblem = null;
       for (var cell : valid) {
-        t.beforeStage(cell.row());
+        t.beforeStage(s, cell.row());
       }
       edits.changes.set(valid);
       t.afterChange();

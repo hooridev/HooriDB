@@ -346,6 +346,32 @@ class TableTabEditTest {
   }
 
   @Test
+  void aFreshEditWhereAnotherRowWasUndoneForgetsTheHistory() throws Exception {
+    var rows = new ArrayList<List<Object>>(1_000);
+    for (long i = 1; i <= 1_000; i++) {
+      rows.add(List.of(i, "name " + i));
+    }
+    servers.values(BIG, rows);
+    var app = t.shop();
+    c.run(app, table("big") + SETTLE);
+    var tab = t.tab(app);
+
+    // Id 1 is edited when its page comes back with id 2 at row 0.
+    c.run(app, "press #cell-0-1\ntype \"Edited 1\"\nkey Enter\nframe\n");
+    servers.values(BIG, rows.subList(1, rows.size()));
+    tab.pages.remove(0L);
+    c.run(app, scroll(0) + SETTLE);
+
+    // Revert the edit of id 1, then edit id 2, shown there now, and undo twice.
+    c.run(
+        app,
+        "press #cell-0-1\nframe\npress #revert-selection\nframe\n"
+            + "press #cell-0-1\ntype \"Fresh\"\nkey Enter\nframe\n"
+            + "key Z control\nframe\nkey Z control\nframe\n");
+    assertEquals(0, tab.pendingChanges());
+  }
+
+  @Test
   void pagesWithEditsLeaveRoomForThoseInView() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);
     for (long i = 1; i <= 3_000; i++) {
@@ -535,11 +561,12 @@ class TableTabEditTest {
 
     // 4. Cancel in-flight write marks outcome unknown and keeps changes.
     var gate = servers.hold(WRITE_CUSTOMERS);
+    long writes = writeCount();
     c.run(
         app,
         "press #commit-changes\nframe\n" + OPENED + "press #preview-commit\nframe\n" + OPENED
             + "frame\n");
-    eventually(() -> servers.calls.contains(WRITE_CUSTOMERS));
+    eventually(() -> writeCount() > writes);
     c.run(app, "frame\nsnap writing\n");
     assertTrue(c.tree("writing").contains("#cancel-write"), c.tree("writing"));
     c.run(app, "press #cancel-write\nframe\n" + OPENED + "snap cancel-write\n");
