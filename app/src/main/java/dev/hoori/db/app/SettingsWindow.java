@@ -259,6 +259,19 @@ final class SettingsWindow {
               m -> m == Settings.CommitMode.AUTO ? "Auto" : "Manual")),
       setting(
           Page.DATABASES,
+          CONNECTIONS,
+          "Open in console",
+          "Append a table's SELECT to an open console on its database, or open a new console",
+          List.of("open", "console", "reuse", "new", "table", "select"),
+          Settings::openInConsole,
+          Settings::withOpenInConsole,
+          segmentedRow(
+              List.of(Settings.OpenInConsole.REUSE, Settings.OpenInConsole.NEW),
+              m -> m == Settings.OpenInConsole.REUSE
+                  ? "Reuse an open console"
+                  : "Always a new console")),
+      setting(
+          Page.DATABASES,
           DATA,
           "Time zone of moments",
           "How timestamps with a time zone show",

@@ -923,6 +923,49 @@ final class State {
   }
 
   /**
+   * Sends a table's SQL to an open console on the same connection and database when {@link
+   * Settings#openInConsole()} reuses one—preferring a console in {@code group}—or opens a new
+   * console in {@code group}.
+   */
+  void openInConsole(UUID id, TabGroups.Group<Tab> group, String database, String sql) {
+    if (settings.openInConsole() == Settings.OpenInConsole.REUSE) {
+      var console = findConsole(id, database, group);
+      if (console != null) {
+        var found = tabs.groupOf(console);
+        tabs.select(found, found.tabs().indexOf(console));
+        var window = found.window() != null ? found.window() : app.windows().of(app);
+        if (window != null) {
+          window.raise();
+        }
+        // At the end after a blank line, closing the statement before it, as one step of Undo.
+        int end = console.text.length();
+        console.editor.select(end, end);
+        var blank = console.text.isBlank() || console.text.endsWith("\n\n");
+        console.insert(app, blank ? sql : "\n" + sql);
+        return;
+      }
+    }
+    openConsole(id, group, database, sql);
+  }
+
+  /** An open console of the connection on the database, one in these tabs first; or null. */
+  private ConsoleTab findConsole(UUID id, String database, TabGroups.Group<Tab> preferred) {
+    var groups = new ArrayList<>(tabs.groups());
+    groups.remove(preferred);
+    groups.addFirst(preferred);
+    for (var group : groups) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof ConsoleTab x
+            && x.id.equals(id)
+            && Objects.equals(x.database, database)) {
+          return x;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * The connection a new console in the window is for: in the main window the one selected in the
    * tree, or that of the node selected, else that of the window's active tab; null for none.
    */
