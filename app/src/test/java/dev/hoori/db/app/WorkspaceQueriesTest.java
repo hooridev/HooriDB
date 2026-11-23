@@ -32,7 +32,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.execution.Result;
@@ -217,7 +219,7 @@ class WorkspaceQueriesTest {
     var q = query("Notes", "# Report notes;\nSELECT 2;", Workspace.Language.SQL);
     var app = c.app(new Workspace(List.of(INVENTORY, q)));
     c.ready(app, INVENTORY);
-    // Before a target the markers split as PostgreSQL does; on MariaDB the first line is a comment.
+    // Before a target the markers split by standard SQL; on MariaDB the first line is a comment.
     c.run(
         app,
         START + open("inventory") + SETTLE
@@ -384,6 +386,120 @@ class WorkspaceQueriesTest {
     assertNull(tab.id);
     assertEquals("", tab.database);
     assertTrue(tab.outputs.isEmpty());
+  }
+
+  @Test
+  void openQueryTabsReopenAtTheNextStartUnconnectedWithTheirLastTarget() throws Exception {
+    var shop = SHOP.withColor(Color.RED);
+    var inv = INVENTORY.withColor(Color.GREEN);
+    var draft = query("Draft", "SELECT 1;", Workspace.Language.SQL);
+    var orders = query("Orders", COUNT, Workspace.Language.SQL);
+    var app = c.app(new Workspace(List.of(shop, inv, draft, orders)));
+    c.ready(app, shop, inv);
+    // Open Draft (untargeted) and Orders (run on shop-prod).
+    c.run(
+        app,
+        START + open("shop-prod") + SETTLE
+            + "press role=treeitem label=\"Draft\"\nkey Enter\nframe\n" + SETTLE
+            + "press role=treeitem label=\"Orders\"\nkey Enter\nframe\n"
+            + "key Enter control\n" + SHOWN + "key Enter\n" + SHOWN + SETTLE);
+    var store = new ConsoleStore(dir.resolve("config"));
+    assertEquals(
+        List.of(
+            StoredConsole.ofQuery(draft.id(), null), StoredConsole.ofQuery(orders.id(), shop.id())),
+        store.load());
+
+    // Restart: both query tabs reopen unconnected, Orders remembers shop-prod for Run on.
+    var callsBefore = k.servers.calls.size();
+    var again = c.restarted();
+    c.run(again, START + "snap reopened\n");
+    var reopened = c.tree("reopened");
+    assertEquals("Draft,Orders", tabs(reopened));
+    assertTrue(line(reopened, "role=tab label=\"Orders\"").contains("value=\"red\""), reopened);
+    assertEquals(callsBefore, k.servers.calls.size(), "nothing connects at start");
+    assertFalse(again.state().catalog.connected(shop.id()));
+    var draftTab = again.state().queryTab(draft.id());
+    var ordersTab = again.state().queryTab(orders.id());
+    assertNotNull(draftTab);
+    assertNotNull(ordersTab);
+    assertNull(draftTab.id);
+    assertEquals("SELECT 1;", draftTab.text);
+    assertEquals(shop.id(), ordersTab.id);
+    assertEquals(COUNT, ordersTab.text);
+    c.run(again, "press #sql\nframe\nkey Enter control\n" + SHOWN + "snap runOn\n");
+    var runOn = c.tree("runOn");
+    assertTrue(runOn.contains("role=menu label=\"Run on\""), runOn);
+    assertEquals(List.of("shop-prod", "inventory"), items(runOn), runOn);
+    assertTrue(line(runOn, "role=menuitem label=\"shop-prod\"").contains("checked"), runOn);
+
+    // Closing a query tab removes it from consoles.json.
+    c.run(again, "key Escape\n" + SHOWN + "key W control\nframe\n" + SETTLE);
+    assertEquals(List.of(StoredConsole.ofQuery(draft.id(), null)), store.load());
+
+    // A stored tab for a deleted query is dropped; one with a deleted target reopens untargeted.
+    store.save(List.of(
+        StoredConsole.ofQuery(UUID.randomUUID(), shop.id()),
+        StoredConsole.ofQuery(orders.id(), UUID.randomUUID())));
+    var third = c.restarted();
+    c.run(third, START + "snap third\n");
+    assertEquals("Orders", tabs(c.tree("third")));
+    var untargeted = third.state().queryTab(orders.id());
+    assertNotNull(untargeted);
+    assertNull(untargeted.id);
+    assertEquals("", untargeted.database);
+    assertEquals(List.of(StoredConsole.ofQuery(orders.id(), null)), store.load());
+  }
+
+  @Test
+  void anUntargetedSqlQuerySplitsNeutrallyAndRescansOnceTargeted() throws Exception {
+    var pgOnly = "SELECT $$a;b$$;\nSELECT 2;";
+    var sql = query("Dollar", pgOnly, Workspace.Language.SQL);
+    var shell = query("Docs", "db.orders.find({});\ndb.items.find({});", Workspace.Language.SHELL);
+    var app = c.app(new Workspace(List.of(SHOP, sql, shell)));
+    c.ready(app, SHOP);
+    k.servers.statement("SELECT $$a;b$$", List.of(FakeServers.made(1, "v: text")));
+    c.run(
+        app,
+        START + open("shop-prod") + SETTLE
+            + "press role=treeitem label=\"Dollar\"\nkey Enter\nframe\nframe\nsnap untargeted\n");
+    var sqlTab = app.state().queryTab(sql.id());
+    assertNotNull(sqlTab);
+    // Before targeting, standard SQL does not treat $$…$$ as dollar-quoted: 3 statements, not 2.
+    assertEquals(
+        3, sqlTab.statements(sqlTab.language(app.state()), null).statements().size());
+    // Before a target, completion offers the key words all servers share.
+    c.run(app, "press #sql\nkey Home control\ntype \"sel\"\nframe\nadvance 1\nframe\nsnap typed\n");
+    assertEquals(List.of("SELECT"), ConsoleEditorTest.options(c.tree("typed")), c.tree("typed"));
+    // Not in a comment, where Enter goes on to the next line.
+    c.run(app, "key Escape\nframe\ntype \" -- sel\"\nframe\nadvance 1\nframe\nsnap comment\n");
+    assertEquals(List.of(), ConsoleEditorTest.options(c.tree("comment")), c.tree("comment"));
+    c.run(app, "key Escape\nframe\n" + "key Backspace\n".repeat(10) + "frame\n");
+    // Once run on PostgreSQL, it rescans with PostgreSQL's rules (2 statements).
+    c.run(
+        app,
+        "press #sql\nkey Home control\nkey Enter control\n" + SHOWN + "key Enter\n" + SHOWN + SETTLE
+            + "frame\nsnap targeted\n");
+    assertEquals(
+        2,
+        sqlTab
+            .statements(sqlTab.language(app.state()), Provider.POSTGRESQL)
+            .statements()
+            .size());
+
+    // An untargeted MongoDB shell query splits and marks statements without naming a provider.
+    c.run(app, "press role=treeitem label=\"Docs\"\nkey Enter\nframe\nframe\nsnap shell\n");
+    var shellTab = app.state().queryTab(shell.id());
+    assertNotNull(shellTab);
+    assertEquals(
+        2,
+        shellTab.statements(shellTab.language(app.state()), null).statements().size());
+    assertEquals(
+        2,
+        c.tree("shell")
+            .lines()
+            .filter(l -> l.contains("label=\"Run statement\""))
+            .count(),
+        c.tree("shell"));
   }
   /** The labels of the Run on menu's items, in their order. */
   private static List<String> items(String tree) {

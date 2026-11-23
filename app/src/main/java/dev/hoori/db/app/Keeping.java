@@ -13,6 +13,7 @@ import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.connection.UiState;
 import dev.hoori.db.core.connection.UiStateStore;
+import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -57,6 +58,8 @@ final class Keeping {
   private List<StoredConsole> restoring;
   // The consoles kept of connections not known, saved along with the others and not shown.
   private List<StoredConsole> unseen = List.of();
+  // The queries whose tabs were closed before the kept ones were restored, which stay closed.
+  private Set<UUID> closedEarly = new HashSet<>();
   private UiState uiState;
   private boolean uiStateUnsaved;
   private Work uiStateSaving;
@@ -78,9 +81,7 @@ final class Keeping {
     consolesKept = new Kept("consoles", () -> {
       var list = new ArrayList<StoredConsole>();
       for (var x : s.consoles(null)) {
-        if (x.queryId == null) {
-          list.add(x.stored());
-        }
+        list.add(x.stored());
       }
       list.addAll(unseen);
       return Kept.writing(list, consoleStore::save);
@@ -359,7 +360,9 @@ final class Keeping {
     var main = s.tabs.main();
     var hidden = new ArrayList<StoredConsole>();
     for (var stored : restoring) {
-      if (s.profile(stored.connection()) != null) {
+      if (stored.query() != null) {
+        restoreQuery(stored);
+      } else if (s.profile(stored.connection()) != null) {
         var console = ConsoleTab.of(s, stored.connection(), stored.database());
         console.text = stored.text();
         s.tabs.add(main, main.tabs().size(), console);
@@ -371,10 +374,37 @@ final class Keeping {
     }
     unseen = List.copyOf(hidden);
     restoring = null;
+    closedEarly = null;
     consolesKept.canSave = true;
     if (consolesKept.unsaved) {
       save(consolesKept);
     }
+  }
+
+  /** A query's tab closed: before the kept tabs are restored, it is not reopened by them. */
+  void queryClosed(UUID query) {
+    if (closedEarly != null) {
+      closedEarly.add(query);
+    }
+  }
+
+  // A query tab opens again where its query is still there and not open, on its last target where
+  // that is still a connection of its language; what it drops is saved.
+  private void restoreQuery(StoredConsole stored) {
+    var query = s.query(stored.query());
+    if (query == null || s.queryTab(query.id()) != null || closedEarly.contains(query.id())) {
+      consolesKept.unsaved = true;
+      return;
+    }
+    UUID target = stored.connection();
+    var profile = target == null ? null : s.profile(target);
+    if (target != null
+        && (profile == null || Workspace.Language.of(profile.provider()) != query.language())) {
+      consolesKept.unsaved = true;
+      target = null;
+    }
+    var main = s.tabs.main();
+    s.tabs.add(main, main.tabs().size(), ConsoleTab.ofQuery(s, query, target));
   }
 
   /** A console's text or database changed: it is saved once it has not changed for a while. */

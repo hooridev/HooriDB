@@ -1,6 +1,7 @@
 package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.SyntaxDialect;
 import dev.hoori.db.core.sql.Statements.Piece;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -103,12 +104,17 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
    * around the statement, and may be cut anywhere, as while it is typed.
    */
   public static Context at(String statement, Provider provider, int caret) {
+    return at(statement, provider.dialect().syntax(), caret);
+  }
+
+  /** As {@link #at(String, Provider, int)}, by the lexical rules of {@code syntax}. */
+  public static Context at(String statement, SyntaxDialect syntax, int caret) {
     int at = Math.clamp(caret, 0, statement.length());
-    var pieces = Statements.pieces(statement, provider);
+    var pieces = Statements.pieces(statement, syntax);
     if (pieces.stream().anyMatch(piece -> piece.kind() != Piece.Kind.CODE && piece.holds(at))) {
       return NOTHING;
     }
-    var tokens = tokens(statement, pieces, provider);
+    var tokens = tokens(statement, pieces, syntax);
     boolean readable = readable(tokens);
     var tables = readable ? tables(tokens) : List.<Reference>of();
     int from = wordStart(statement, at);
@@ -141,7 +147,8 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
 
   /** The tables the statement names, in order; none in a statement with a CTE or a subquery. */
   public static List<Reference> tables(String statement, Provider provider) {
-    var tokens = tokens(statement, Statements.pieces(statement, provider), provider);
+    var tokens = tokens(
+        statement, Statements.pieces(statement, provider), provider.dialect().syntax());
     return readable(tokens) ? tables(tokens, null) : List.of();
   }
 
@@ -155,7 +162,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
       return Optional.empty();
     }
     var pieces = Statements.pieces(statement, provider);
-    var tokens = tokens(statement, pieces, provider);
+    var tokens = tokens(statement, pieces, provider.dialect().syntax());
     int index = tokenAt(tokens, offset);
     if (index < 0) {
       return Optional.empty();
@@ -316,9 +323,9 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
 
   // The statement's tokens from its pieces, by the server's lexical rules; comments and strings
   // are left out, or kept as OTHER where they stand between tokens.
-  private static List<Token> tokens(String text, List<Piece> pieces, Provider provider) {
+  private static List<Token> tokens(String text, List<Piece> pieces, SyntaxDialect syntax) {
     var tokens = new ArrayList<Token>();
-    boolean folds = provider.dialect().syntax().foldsNamesToLowerCase();
+    boolean folds = syntax.foldsNamesToLowerCase();
     int k = 0;
     while (k < pieces.size()) {
       var piece = pieces.get(k);
