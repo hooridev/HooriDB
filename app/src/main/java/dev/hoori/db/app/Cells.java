@@ -63,6 +63,11 @@ final class Cells {
       .append(DATE_TIME)
       .appendOffset("+HH:mm:ss", "+00")
       .toFormatter();
+  // A moment as the grid's editor takes it back: the offset with its minutes (rethinkj/ui#510).
+  private static final DateTimeFormatter DATE_TIME_FULL_OFFSET = new DateTimeFormatterBuilder()
+      .append(DATE_TIME)
+      .appendOffset("+HH:MM:ss", "+00:00")
+      .toFormatter();
   private static final DateTimeFormatter ANY_OFFSET_TIME = new DateTimeFormatterBuilder()
       .append(DateTimeFormatter.ISO_LOCAL_TIME)
       .parseLenient()
@@ -177,6 +182,11 @@ final class Cells {
     return text != null
         && text.length() > Rows.LIMIT
         && (text.length() > 2 * Rows.LIMIT || text.codePointCount(0, text.length()) > Rows.LIMIT);
+  }
+
+  /** A moment, as an edit of it is staged: in the zone, with an offset the grid's editor takes. */
+  static String moment(OffsetDateTime value, ZoneId zone) {
+    return DATE_TIME_FULL_OFFSET.format(value.atZoneSameInstant(zone));
   }
 
   /** Whether a value was read whole (neither {@link Cut} nor a {@link Binary#cut} value). */

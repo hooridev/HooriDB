@@ -452,6 +452,10 @@ class ConsoleEditTest {
     var staged = ResultEdits.staged(field, parsed.value(), null, "2026-01-15 12:00:00", york);
     var again = Cells.parse(field, column, staged, null, java.time.ZoneOffset.UTC);
     assertEquals(parsed.value(), again.value(), staged);
+    // With the offset's minutes, which the grid's editor takes back (rethinkj/ui#510).
+    assertEquals("2026-01-15 12:00:00-05:00", staged);
+    var utc = ResultEdits.staged(field, parsed.value(), null, "x", java.time.ZoneOffset.UTC);
+    assertEquals("2026-01-15 17:00:00+00:00", utc);
   }
 
   @Test

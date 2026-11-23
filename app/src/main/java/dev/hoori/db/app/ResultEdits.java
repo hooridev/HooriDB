@@ -29,6 +29,7 @@ import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.EditableQuery;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -73,6 +74,7 @@ final class ResultEdits {
   GridChanges changes; // non-null once editable != null
   Lane.Asked writing; // the in-flight Changes.write call on the write lane, or null
   ConsoleTab.Problem writeProblem; // why the last commit did not succeed, or null
+  boolean unknown; // whether a commit's outcome is not known, until one commits or all is dropped
   String committedHint; // shown after Committed until the next edit or run
   String pasteRefused; // why a paste/clear was refused, cleared on next edit
   Live live; // the tree's connection the result was found editable on, which writes it
@@ -152,6 +154,7 @@ final class ResultEdits {
       changes.clear();
     }
     writeProblem = null;
+    unknown = false;
     committedHint = null;
     pasteRefused = null;
   }
@@ -386,8 +389,11 @@ final class ResultEdits {
    * change of the zone does not move it; else as typed.
    */
   static String staged(Field field, Object value, Object original, String text, ZoneId zone) {
-    return Objects.equals(value, original) || field.kind() == Kind.DATE_TIME_ZONED
-        ? Cells.cell(value, zone)
+    if (Objects.equals(value, original)) {
+      return Cells.cell(value, zone);
+    }
+    return field.kind() == Kind.DATE_TIME_ZONED && value instanceof OffsetDateTime moment
+        ? Cells.moment(moment, zone)
         : text;
   }
 
@@ -436,6 +442,7 @@ final class ResultEdits {
       return;
     }
     var valid = new ArrayList<DataGrid.CellValue>(cells.size());
+    String leftOut = null;
     for (var cell : cells) {
       if (!cellEditable(o, cell.row(), cell.column())) {
         continue;
@@ -447,11 +454,13 @@ final class ResultEdits {
       if (parsed.valid()) {
         String stored = staged(field, parsed.value(), original, cell.value(), s.zone);
         valid.add(new DataGrid.CellValue(cell.row(), cell.column(), stored));
+      } else if (leftOut == null) {
+        leftOut = "A pasted value was left out: " + parsed.error();
       }
     }
+    o.edits.pasteRefused = leftOut;
     if (!valid.isEmpty()) {
       o.edits.committedHint = null;
-      o.edits.pasteRefused = null;
       o.edits.writeProblem = null;
       o.edits.changes.set(valid);
     }
@@ -471,7 +480,42 @@ final class ResultEdits {
 
   /** Whether any cell in the current selection has a pending change. */
   static boolean hasSelectedChanges(ConsoleTab.Output o) {
-    return !selectedChanges(o).isEmpty();
+    var changes = o.edits.changes;
+    if (changes == null || changes.isEmpty()) {
+      return false;
+    }
+    // Asked at each build: a small selection is looked up cell by cell, a large one by the changes.
+    var ranges = o.selection.ranges();
+    if (ranges.isEmpty()) {
+      return changed(o, o.selection.row(), o.selection.column());
+    }
+    long area = 0;
+    for (var range : ranges) {
+      area += (long) (range.bottom() - range.top() + 1) * (range.right() - range.left() + 1);
+    }
+    if (area > SCAN) {
+      return !selectedChanges(o).isEmpty();
+    }
+    for (var range : ranges) {
+      for (int r = range.top(); r <= range.bottom(); r++) {
+        for (int c = range.left(); c <= range.right(); c++) {
+          if (o.selection.contains(r, c) && changed(o, r, c)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  private static final long SCAN = 10_000;
+
+  private static boolean changed(ConsoleTab.Output o, int row, int column) {
+    return row >= 0
+        && row < o.rows.size()
+        && column >= 0
+        && column < o.fields.size()
+        && o.edits.changes.cellStatus(row, column) != DataGrid.Status.UNCHANGED;
   }
 
   // The changed cells in the selection, as row and column; from the changes, which are few beside
@@ -701,6 +745,7 @@ final class ResultEdits {
           }
           if (error instanceof InterruptedException) {
             // Only a lane that closed gives one up here; a cancel by the user delivers nothing.
+            o.edits.unknown = true;
             o.edits.writeProblem = new ConsoleTab.Problem(
                 ConsoleTab.UNSURE,
                 "The commit was given up as its connection closed: whether the changes took"
@@ -726,6 +771,7 @@ final class ResultEdits {
         }
         o.edits.changes.clear();
         o.edits.writeProblem = null;
+        o.edits.unknown = false;
         o.edits.committedHint = COMMITTED_HINT;
         int n = p.statements.size();
         tab.log.add(new ConsoleTab.Logged(
@@ -791,6 +837,7 @@ final class ResultEdits {
       if (!detail.isEmpty()) {
         body += "\n" + detail;
       }
+      o.edits.unknown = true;
       o.edits.writeProblem = new ConsoleTab.Problem(ConsoleTab.UNSURE, body);
       tab.log.add(new ConsoleTab.Logged(
           ConsoleTab.Level.ERROR, COMMIT_CHANGES, null, "Outcome not known: connection lost"));
@@ -830,6 +877,7 @@ final class ResultEdits {
     }
     o.edits.writing.cancel();
     o.edits.writing = null;
+    o.edits.unknown = true;
     o.edits.writeProblem = new ConsoleTab.Problem(
         ConsoleTab.UNSURE,
         "The commit was cancelled: if the server had already begun committing, whether the changes"

@@ -370,10 +370,8 @@ final class ConsoleView {
     }
     int n = tab.pendingChanges(unpinnedOnly);
     String changes = n == 1 ? "1 change" : n + " changes";
-    boolean unsure = tab.outputs.stream()
-        .anyMatch(o -> (!unpinnedOnly || !o.pinned)
-            && o.edits.writeProblem != null
-            && ConsoleTab.UNSURE.equals(o.edits.writeProblem.title()));
+    boolean unsure =
+        tab.outputs.stream().anyMatch(o -> (!unpinnedOnly || !o.pinned) && o.edits.unknown);
     return new Wording(
         "Discard " + changes + "?",
         name + " has " + (n == 1 ? "1 uncommitted change" : n + " uncommitted changes")
