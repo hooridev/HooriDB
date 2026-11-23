@@ -1752,6 +1752,22 @@ class TableTabTest {
   }
 
   @Test
+  void aSecondHeaderPressWhileASortReadsAddsToIt() throws Exception {
+    servers.rows(ORDERS, 3, OptionalLong.of(3));
+    var app = shop();
+    c.run(app, table("orders") + SETTLE);
+    var held = servers.hold("read " + ORDERS + " 0-200 ORDER BY \"total\" ASC");
+    c.run(
+        app,
+        "press role=columnheader label=\"total\"\nframe\n"
+            + "press role=columnheader label=\"customer_id\" shift\nframe\n");
+    held.countDown();
+    c.run(app, SETTLE + "snap both\n");
+    assertEquals("\"total\" ASC, \"customer_id\" ASC", tab(app).filter.order());
+    assertTrue(line(c.tree("both"), "#column-1").contains("sort=ascending"), c.tree("both"));
+  }
+
+  @Test
   void headerSortUsesBackticksOnMariaDb() throws Exception {
     var app = c.app(INVENTORY);
     c.ready(app, INVENTORY);

@@ -121,6 +121,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   // Fits the columns once they show rows, and again when their names change.
   final DataGrid.Fit fit = new DataGrid.Fit();
   private List<Field> fields; // as the last read gave them, which each page has to match
+  // The kinds of the columns by name as a read last gave them, kept while a new filter reads.
+  private Map<String, Kind> kinds = Map.of();
   long rows; // known to be there, or as estimated
   private boolean more; // a row more in the grid, whose read says whether there are more
   Counted counted = Counted.ESTIMATED;
@@ -280,6 +282,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     columns = opened.columns();
     fields = opened.page().fields();
+    kinds = new HashMap<>();
+    for (int c = 0; c < fields.size(); c++) {
+      kinds.put(columns.get(c).name(), fields.get(c).kind());
+    }
     configureEdits(s, live);
     var estimate = opened.estimate();
     if (!countedFirst) {
@@ -916,7 +922,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var keys = new ArrayList<DataGrid.SortKey>(sorted.size());
     for (var key : sorted) {
       int at = columnIndex(key.column());
-      if (at < 0 || fields != null && !sortable(fields.get(at).kind())) {
+      if (at < 0 || !sortable(kinds.get(key.column()))) {
         return List.of();
       }
       keys.add(new DataGrid.SortKey(at, key.descending()));
@@ -1553,7 +1559,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       var kind = fields == null ? null : fields.get(c).kind();
       int at = c;
       var col = Cells.column(columns.get(c), kind, widths, c, row -> value(row, at), zone);
-      if (!ofDocuments && sortable(kind)) {
+      if (!ofDocuments && sortable(kinds.get(columns.get(c).name()))) {
         col = col.sortable(true);
       }
       shown.add(edited ? ResultEdits.editedColumn(this, col, at, free, false, inserted) : col);
