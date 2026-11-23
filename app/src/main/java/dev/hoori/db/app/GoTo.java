@@ -153,7 +153,9 @@ final class GoTo {
               found.add(new Found.OfQuery(query, above.isEmpty() ? "Workspace" : above, rank));
             }
           }
-          case ConnectionProfile _ -> {}
+          case ConnectionProfile _ -> {
+            // a connection is found by its tables, above
+          }
         }
       }
     }

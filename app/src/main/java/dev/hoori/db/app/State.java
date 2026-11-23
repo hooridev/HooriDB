@@ -162,6 +162,9 @@ final class State {
     tab.close();
     if (tab instanceof ConsoleTab c) {
       keeping.persist(keeping.consolesKept);
+      if (c.queryId != null) {
+        keeping.queryClosed(c.queryId);
+      }
       if (c.queryId != null && unsaved) {
         persist();
       }

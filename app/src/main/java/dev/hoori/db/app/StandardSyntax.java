@@ -20,9 +20,15 @@ record StandardSyntax(Theme.Code colors) implements Highlighter {
 
   /** What a line ends inside of: a string, a quoted identifier or a block comment. */
   private enum Open {
-    STRING,
-    QUOTED,
-    COMMENT
+    STRING(1),
+    QUOTED(1),
+    COMMENT(2);
+
+    final int opening; // the length of what opens it
+
+    Open(int opening) {
+      this.opening = opening;
+    }
   }
 
   /** The colors of the theme in use; called in a view. */
@@ -32,60 +38,86 @@ record StandardSyntax(Theme.Code colors) implements Highlighter {
 
   @Override
   public Object line(String line, Object state, Spans out) {
-    var open = (Open) state;
     int n = line.length();
-    int start = 0;
     int i = 0;
+    var open = (Open) state;
+    if (open != null) {
+      i = close(line, 0, open);
+      color(out, 0, i < 0 ? n : i, open);
+      if (i < 0) {
+        return open;
+      }
+    }
     while (i < n) {
-      if (open != null) {
-        int end = close(line, i, open);
-        if (end < 0) {
-          break;
-        }
-        if (open != Open.QUOTED) {
-          out.color(start, end, open == Open.STRING ? colors.string() : colors.comment());
-        }
-        open = null;
-        i = end;
-        continue;
-      }
-      start = i;
-      char c = line.charAt(i);
-      char next = i + 1 < n ? line.charAt(i + 1) : 0;
-      if (c == '-' && next == '-') {
-        out.color(i, n, colors.comment());
-        return null;
-      } else if (c == '/' && next == '*') {
-        open = Open.COMMENT;
-        i += 2;
-      } else if (c == '\'' || c == '"') {
-        open = c == '\'' ? Open.STRING : Open.QUOTED;
-        i++;
-      } else if (Character.isDigit(c) || c == '.' && Character.isDigit(next)) {
-        i = number(line, i);
-        out.color(start, i, colors.number());
-      } else if (Character.isLetter(c) || c == '_') {
-        while (i < n && (Character.isLetterOrDigit(line.charAt(i)) || line.charAt(i) == '_')) {
-          i++;
-        }
-        var word = line.substring(start, i).toUpperCase(Locale.ROOT);
-        if (SyntaxDialect.STANDARD.offeredWords().contains(word)) {
-          out.color(start, i, colors.keyword());
-        }
+      open = opens(line, i);
+      if (open == null) {
+        i = code(line, i, out);
       } else {
-        if (OPERATORS.indexOf(c) >= 0) {
-          out.color(i, i + 1, colors.operator());
-          if (BRACKETS.indexOf(c) >= 0) {
-            out.bracket(i);
-          }
+        int end = close(line, i + open.opening, open);
+        color(out, i, end < 0 ? n : end, open);
+        if (end < 0) {
+          return open;
         }
-        i++;
+        i = end;
       }
     }
-    if (open == Open.STRING || open == Open.COMMENT) {
-      out.color(start, n, open == Open.STRING ? colors.string() : colors.comment());
+    return null;
+  }
+
+  // What starts at the offset and may go on over lines; null for anything else.
+  private static Open opens(String line, int at) {
+    char c = line.charAt(at);
+    if (c == '\'') {
+      return Open.STRING;
+    } else if (c == '"') {
+      return Open.QUOTED;
     }
-    return open;
+    return c == '/' && line.startsWith("/*", at) ? Open.COMMENT : null;
+  }
+
+  // A quoted identifier keeps the text's color.
+  private void color(Spans out, int from, int to, Open open) {
+    switch (open) {
+      case STRING -> out.color(from, to, colors.string());
+      case COMMENT -> out.color(from, to, colors.comment());
+      case QUOTED -> {
+        // the text's color
+      }
+    }
+  }
+
+  // The token of code at the offset colored; the offset after it.
+  private int code(String line, int at, Spans out) {
+    int n = line.length();
+    char c = line.charAt(at);
+    char next = at + 1 < n ? line.charAt(at + 1) : 0;
+    if (c == '-' && next == '-') {
+      out.color(at, n, colors.comment());
+      return n;
+    }
+    if (Character.isDigit(c) || c == '.' && Character.isDigit(next)) {
+      int end = number(line, at);
+      out.color(at, end, colors.number());
+      return end;
+    }
+    if (Character.isLetter(c) || c == '_') {
+      int end = at + 1;
+      while (end < n && (Character.isLetterOrDigit(line.charAt(end)) || line.charAt(end) == '_')) {
+        end++;
+      }
+      var word = line.substring(at, end).toUpperCase(Locale.ROOT);
+      if (SyntaxDialect.STANDARD.offeredWords().contains(word)) {
+        out.color(at, end, colors.keyword());
+      }
+      return end;
+    }
+    if (OPERATORS.indexOf(c) >= 0) {
+      out.color(at, at + 1, colors.operator());
+      if (BRACKETS.indexOf(c) >= 0) {
+        out.bracket(at);
+      }
+    }
+    return at + 1;
   }
 
   /** The end of what is open, after its closing quote or {@code *}{@code /}; -1 for none here. */
@@ -95,13 +127,14 @@ record StandardSyntax(Theme.Code colors) implements Highlighter {
       return end < 0 ? -1 : end + 2;
     }
     char quote = open == Open.STRING ? '\'' : '"';
-    for (int i = from; i < line.length(); i++) {
-      if (line.charAt(i) == quote) {
-        if (i + 1 < line.length() && line.charAt(i + 1) == quote) {
-          i++; // doubled: the quote itself
-        } else {
-          return i + 1;
-        }
+    int i = from;
+    while (i < line.length()) {
+      if (line.charAt(i) != quote) {
+        i++;
+      } else if (i + 1 < line.length() && line.charAt(i + 1) == quote) {
+        i += 2; // doubled: the quote itself
+      } else {
+        return i + 1;
       }
     }
     return -1;
