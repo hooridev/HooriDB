@@ -260,6 +260,7 @@ class LayoutTest {
         "SELECT 1 AS [gross  /* x */  net];",
         format("SELECT 1 AS [gross  /* x */  net];", MARIADB));
     assertEquals("SELECT \\N,\n       1;", format("SELECT \\N, 1;", MARIADB));
+    assertEquals("SELECT /* x */ \\N,\n       1;", format("SELECT /* x */ \\N, 1;", MARIADB));
     // An escape string's continuation keeps its escapes: no code in it to lay out.
     var continued = "SELECT 'C:\\',\n       E'a'\n'b--\\'\nFROM c  +   d'; -- '";
     assertEquals(continued, format(continued, POSTGRESQL));

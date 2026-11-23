@@ -1030,7 +1030,7 @@ public final class Layout {
     if (isPunct(k, ',') || isPunct(k, ';') || isPunct(k, ')') || isPunct(k, ']') || isOp(k, "::")) {
       return "";
     }
-    if (isPunct(a, '.') || isOp(a, "\\") || isOp(k, "\\")) {
+    if (a == k - 1 && (isPunct(a, '.') || isOp(a, "\\") || isOp(k, "\\"))) {
       // As written: MySQL's @a. AS b names @a., and MariaDB's \N is NULL.
       return text.substring(prev.end(), curr.start());
     }
