@@ -29,6 +29,7 @@ import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.EditableQuery;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -39,6 +40,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -59,6 +61,7 @@ final class ResultEdits {
   static final String COMMITTED_HINT =
       "Committed — run the statement again for the server's values";
   static final String UNLOADED_PASTE = "Scroll to load all target rows before pasting or clearing";
+  private static final String COMMIT_CHANGES = "Commit changes";
   static final String CONNECTION_CHANGED =
       "Read-only: the connection changed; run the statement again to edit";
   static final String REPEATED_ROW =
@@ -369,12 +372,23 @@ final class ResultEdits {
     }
     // Keep GridChanges and core Changes in agreement when a different spelling parses to the
     // original value (e.g. "+5" vs "5").
-    String stored = Objects.equals(parsed.value(), original) ? Cells.cell(original, s.zone) : value;
+    String stored = staged(field, parsed.value(), original, value, s.zone);
     o.edits.committedHint = null;
     o.edits.pasteRefused = null;
     o.edits.writeProblem = null;
     o.edits.changes.set(row, col, stored);
     return null;
+  }
+
+  /**
+   * The text a valid edit is staged as: the original's where it parses to the original value, so
+   * that the grid and core agree that nothing changed; a moment with its offset, so that a later
+   * change of the zone does not move it; else as typed.
+   */
+  static String staged(Field field, Object value, Object original, String text, ZoneId zone) {
+    return Objects.equals(value, original) || field.kind() == Kind.DATE_TIME_ZONED
+        ? Cells.cell(value, zone)
+        : text;
   }
 
   /**
@@ -431,8 +445,7 @@ final class ResultEdits {
       var original = o.rows.get(cell.row()).get(cell.column());
       var parsed = Cells.parse(field, column, cell.value(), original, s.zone);
       if (parsed.valid()) {
-        String stored =
-            Objects.equals(parsed.value(), original) ? Cells.cell(original, s.zone) : cell.value();
+        String stored = staged(field, parsed.value(), original, cell.value(), s.zone);
         valid.add(new DataGrid.CellValue(cell.row(), cell.column(), stored));
       }
     }
@@ -456,34 +469,31 @@ final class ResultEdits {
     return false;
   }
 
-  /** Whether any cell in the current selection has a pending change or error. */
+  /** Whether any cell in the current selection has a pending change. */
   static boolean hasSelectedChanges(ConsoleTab.Output o) {
-    if (o.edits.changes == null || o.edits.changes.isEmpty()) {
-      return false;
+    return !selectedChanges(o).isEmpty();
+  }
+
+  // The changed cells in the selection, as row and column; from the changes, which are few beside
+  // a large selection.
+  private static List<int[]> selectedChanges(ConsoleTab.Output o) {
+    var cells = new ArrayList<int[]>();
+    if (o.edits.changes == null) {
+      return cells;
     }
     var ranges = o.selection.ranges();
-    if (ranges.isEmpty()) {
-      int r = o.selection.row();
-      int c = o.selection.column();
-      return r >= 0
-          && r < o.rows.size()
-          && c >= 0
-          && c < o.fields.size()
-          && o.edits.changes.cellStatus(r, c) != DataGrid.Status.UNCHANGED;
-    }
-    for (var range : ranges) {
-      int bottom = Math.min(range.bottom(), o.rows.size() - 1);
-      int right = Math.min(range.right(), o.fields.size() - 1);
-      for (int r = Math.max(0, range.top()); r <= bottom; r++) {
-        for (int c = Math.max(0, range.left()); c <= right; c++) {
-          if (o.selection.contains(r, c)
-              && o.edits.changes.cellStatus(r, c) != DataGrid.Status.UNCHANGED) {
-            return true;
-          }
+    for (var change : o.edits.changes.changes()) {
+      int r = (int) change.key();
+      for (int c : change.values().keySet()) {
+        boolean selected = ranges.isEmpty()
+            ? r == o.selection.row() && c == o.selection.column()
+            : o.selection.contains(r, c);
+        if (selected && r < o.rows.size()) {
+          cells.add(new int[] {r, c});
         }
       }
     }
-    return false;
+    return cells;
   }
 
   /** Reverts only the changed cells inside the current selection. */
@@ -493,30 +503,9 @@ final class ResultEdits {
     }
     o.selection.cancelEdit();
     var reverts = new ArrayList<DataGrid.CellValue>();
-    var ranges = o.selection.ranges();
-    if (ranges.isEmpty()) {
-      int r = o.selection.row();
-      int c = o.selection.column();
-      if (r >= 0
-          && r < o.rows.size()
-          && c >= 0
-          && c < o.fields.size()
-          && o.edits.changes.cellStatus(r, c) != DataGrid.Status.UNCHANGED) {
-        reverts.add(new DataGrid.CellValue(r, c, Cells.cell(o.rows.get(r).get(c), s.zone)));
-      }
-    } else {
-      for (var range : ranges) {
-        int bottom = Math.min(range.bottom(), o.rows.size() - 1);
-        int right = Math.min(range.right(), o.fields.size() - 1);
-        for (int r = Math.max(0, range.top()); r <= bottom; r++) {
-          for (int c = Math.max(0, range.left()); c <= right; c++) {
-            if (o.selection.contains(r, c)
-                && o.edits.changes.cellStatus(r, c) != DataGrid.Status.UNCHANGED) {
-              reverts.add(new DataGrid.CellValue(r, c, Cells.cell(o.rows.get(r).get(c), s.zone)));
-            }
-          }
-        }
-      }
+    for (var at : selectedChanges(o)) {
+      reverts.add(
+          new DataGrid.CellValue(at[0], at[1], Cells.cell(o.rows.get(at[0]).get(at[1]), s.zone)));
     }
     if (!reverts.isEmpty()) {
       o.edits.changes.set(reverts);
@@ -574,10 +563,7 @@ final class ResultEdits {
   /** Builds core's {@link Changes} and its {@link Changes.Statement} previews from staged edits. */
   private static Preview buildPreview(State s, ConsoleTab.Output o, Provider provider) {
     var editable = o.edits.editable;
-    var core = Changes.of(editable.table(), editable.columns()).orElse(null);
-    if (core == null) {
-      return null;
-    }
+    var updates = new ArrayList<Change>();
     var rowsByKey = new HashMap<List<Object>, List<Integer>>();
     var applied = new LinkedHashMap<Integer, Map<Integer, Object>>();
     var keyCols = keyIndexes(editable.columns());
@@ -595,6 +581,7 @@ final class ResultEdits {
       }
       copies.add(rowIndex);
       var rowNew = new LinkedHashMap<Integer, Object>();
+      var values = new TreeMap<Integer, Object>();
       for (var entry : gc.values().entrySet()) {
         int resultCol = entry.getKey();
         var col = editable.edited().get(resultCol);
@@ -607,11 +594,18 @@ final class ResultEdits {
               new ConsoleTab.Problem("Invalid value", col.name() + ": " + parsed.error());
           return null;
         }
-        core = core.edit(padded, tableCol, parsed.value());
+        if (!Objects.equals(parsed.value(), original)) {
+          values.put(tableCol, parsed.value());
+        }
         rowNew.put(resultCol, parsed.value());
       }
       applied.put(rowIndex, rowNew);
+      if (!values.isEmpty()) {
+        updates.add(new Change.Update(padded, values));
+      }
     }
+    // One Changes for all, checked once, as a paste may stage thousands of rows.
+    var core = new Changes(editable.table(), editable.columns(), updates);
     var statements = core.statements(provider);
     if (statements.isEmpty()) {
       o.edits.changes.clear();
@@ -702,10 +696,18 @@ final class ResultEdits {
         },
         error -> {
           o.edits.writing = null;
-          if (!tab.outputs.contains(o) || error instanceof InterruptedException) {
+          if (!tab.outputs.contains(o)) {
             return;
           }
-          handleFailure(s, tab, o, live, error);
+          if (error instanceof InterruptedException) {
+            // Only a lane that closed gives one up here; a cancel by the user delivers nothing.
+            o.edits.writeProblem = new ConsoleTab.Problem(
+                ConsoleTab.UNSURE,
+                "The commit was given up as its connection closed: whether the changes took"
+                    + " effect is not known. Check the data; your changes are kept.");
+          } else {
+            handleFailure(s, tab, o, live, error);
+          }
           tab.settledFromEdit(s);
         });
   }
@@ -791,7 +793,7 @@ final class ResultEdits {
       }
       o.edits.writeProblem = new ConsoleTab.Problem(ConsoleTab.UNSURE, body);
       tab.log.add(new ConsoleTab.Logged(
-          ConsoleTab.Level.ERROR, "Commit changes", null, "Outcome not known: connection lost"));
+          ConsoleTab.Level.ERROR, COMMIT_CHANGES, null, "Outcome not known: connection lost"));
       return;
     }
     String title;
@@ -818,7 +820,7 @@ final class ResultEdits {
         ? "Nothing was written; your changes are kept."
         : detail + "\nNothing was written; your changes are kept.";
     o.edits.writeProblem = new ConsoleTab.Problem(title, text);
-    tab.log.add(new ConsoleTab.Logged(ConsoleTab.Level.ERROR, "Commit changes", null, title));
+    tab.log.add(new ConsoleTab.Logged(ConsoleTab.Level.ERROR, COMMIT_CHANGES, null, title));
   }
 
   /** Cancels an in-flight write on the write lane; changes stay and outcome is marked unknown. */
@@ -833,7 +835,7 @@ final class ResultEdits {
         "The commit was cancelled: if the server had already begun committing, whether the changes"
             + " took effect is not known. Check the data; your changes are kept.");
     tab.log.add(new ConsoleTab.Logged(
-        ConsoleTab.Level.WARNING, "Commit changes", null, ConsoleTab.CANCELLED_TEXT));
+        ConsoleTab.Level.WARNING, COMMIT_CHANGES, null, ConsoleTab.CANCELLED_TEXT));
     tab.settledFromEdit(s);
   }
 

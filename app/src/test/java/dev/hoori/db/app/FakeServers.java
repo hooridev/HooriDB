@@ -1099,8 +1099,7 @@ final class FakeServers implements Servers {
           done.add(key);
           return new Changes.Outcome.Refused();
         }
-        var statements = changes.statements(made.provider());
-        for (var st : statements) {
+        for (var st : changes.statements(made.provider())) {
           Journal.sql(
               made.provider(), Purpose.CHANGES, st.sql(), _ -> new Outcome.Changed(1), () -> null);
         }
@@ -1110,8 +1109,8 @@ final class FakeServers implements Servers {
         if (tableOutline == null) {
           throw queryFailure(QueryException.Failure.NOT_FOUND);
         }
-        var current = materializeRows(path, changes.columns());
-        var next = new ArrayList<>(current);
+        var stored = materializeRows(path, changes.columns());
+        var next = new ArrayList<>(stored);
         var keyCols = IntStream.range(0, changes.columns().size())
             .filter(i -> changes.columns().get(i).keyPosition() > 0)
             .boxed()

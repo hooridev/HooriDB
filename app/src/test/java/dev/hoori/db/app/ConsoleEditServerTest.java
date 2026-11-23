@@ -45,9 +45,11 @@ class ConsoleEditServerTest {
       try (var statement = connection.createStatement()) {
         statement.execute(
             "CREATE TABLE console_edit_test (id integer PRIMARY KEY, name varchar(100))");
-        statement.execute("INSERT INTO console_edit_test VALUES (1, 'Alice'), (2, 'Bob')");
       }
       try {
+        try (var statement = connection.createStatement()) {
+          statement.execute("INSERT INTO console_edit_test VALUES (1, 'Alice'), (2, 'Bob')");
+        }
         var profile = server.profile();
         Servers real = (p, password, driver, timeout) ->
             Servers.SERVER.open(p, password, server.driver(), timeout);
@@ -96,9 +98,12 @@ class ConsoleEditServerTest {
           assertEquals("Robert", rs.getString(1));
         }
       } finally {
-        c.tearDown();
-        try (var statement = connection.createStatement()) {
-          statement.execute("DROP TABLE console_edit_test");
+        try {
+          c.tearDown();
+        } finally {
+          try (var statement = connection.createStatement()) {
+            statement.execute("DROP TABLE console_edit_test");
+          }
         }
       }
     }

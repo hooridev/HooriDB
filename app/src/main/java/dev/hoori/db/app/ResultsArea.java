@@ -282,7 +282,9 @@ final class ResultsArea {
         button(
                 SECONDARY,
                 "Revert all",
-                count > 0 && !locked ? () -> ResultEdits.revertAll(o) : null)
+                (count > 0 || o.edits.hasOpenEdit(o)) && !locked
+                    ? () -> ResultEdits.revertAll(o)
+                    : null)
             .key("revert-all"),
         "Revert all pending changes"));
     boolean canCommit = (count > 0 || o.selection.isEditing()) && !locked && current;
@@ -492,26 +494,7 @@ final class ResultsArea {
       var field = o.fields.get(c);
       var col = Cells.column(
           field, o.widths, c, row -> row < o.rows.size() ? o.rows.get(row).get(at) : null, zone);
-      if (editable != null && changes != null) {
-        col = col.cell(changes.cell(at));
-        var tableCol = editable.edited().get(c);
-        if (tableCol != null && tableCol.keyPosition() > 0) {
-          col = col.icon(Symbol.KEY, Icon.Variant.WARNING);
-        }
-        if (tableCol != null && field.kind() != Kind.BINARY) {
-          col = col.editable(row -> free.getAsBoolean() && ResultEdits.cellEditable(o, row, at));
-          if (tableCol.nullable()) {
-            col = col.nullable();
-          }
-        }
-        if (field.kind() == Kind.TEXT || field.kind() == Kind.JSON || field.kind() == Kind.OTHER) {
-          col = col.cellIcon(
-              row -> row < o.rows.size() && changes.cellStatus(row, at) == DataGrid.Status.UNCHANGED
-                  ? Cells.icon(o.rows.get(row).get(at))
-                  : null);
-        }
-      }
-      columns.add(col);
+      columns.add(editable != null && changes != null ? edited(o, col, at, free) : col);
     }
     var options = DataGrid.options()
         .select(o.selection)
@@ -526,29 +509,7 @@ final class ResultsArea {
         .loading(row -> row < o.rows.size(), (_, last) -> tab.want(s, o, last));
     int count;
     if (editable != null && changes != null) {
-      options
-          .changes(changes)
-          .history(
-              () -> {
-                if (free.getAsBoolean()) {
-                  changes.undo();
-                }
-              },
-              () -> {
-                if (free.getAsBoolean()) {
-                  changes.redo();
-                }
-              })
-          .onCommit((row, col, value) -> free.getAsBoolean()
-              ? ResultEdits.commitCell(s, o, row, col, value)
-              : "Not now: wait until what runs is done")
-          .onPaste(cells -> {
-            if (free.getAsBoolean()) {
-              ResultEdits.pasteCells(s, o, cells);
-            }
-          })
-          .onInsertRow(null)
-          .onDeleteRows(null);
+      edits(s, o, options, free);
       count = changes.rowCount();
     } else {
       count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), DocumentPresentation.GRID_ROWS);
@@ -561,6 +522,60 @@ final class ResultsArea {
       grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
     }
     return grid;
+  }
+
+  /** The column of an editable result: its staged values, its key, and which cells take edits. */
+  private static DataGrid.Column edited(
+      ConsoleTab.Output o, DataGrid.Column col, int at, BooleanSupplier free) {
+    var field = o.fields.get(at);
+    var changes = o.edits.changes;
+    var column = o.edits.editable.edited().get(at);
+    col = col.cell(changes.cell(at));
+    if (column != null && column.keyPosition() > 0) {
+      col = col.icon(Symbol.KEY, Icon.Variant.WARNING);
+    }
+    if (column != null && field.kind() != Kind.BINARY) {
+      col = col.editable(row -> free.getAsBoolean() && ResultEdits.cellEditable(o, row, at));
+      if (column.nullable()) {
+        col = col.nullable();
+      }
+    }
+    if (field.kind() == Kind.TEXT || field.kind() == Kind.JSON || field.kind() == Kind.OTHER) {
+      col = col.cellIcon(
+          row -> row < o.rows.size() && changes.cellStatus(row, at) == DataGrid.Status.UNCHANGED
+              ? Cells.icon(o.rows.get(row).get(at))
+              : null);
+    }
+    return col;
+  }
+
+  /** The grid takes edits into the result's changes, and only while {@code free}: no new rows. */
+  private static void edits(
+      State s, ConsoleTab.Output o, DataGrid.Options options, BooleanSupplier free) {
+    var changes = o.edits.changes;
+    options
+        .changes(changes)
+        .history(
+            () -> {
+              if (free.getAsBoolean()) {
+                changes.undo();
+              }
+            },
+            () -> {
+              if (free.getAsBoolean()) {
+                changes.redo();
+              }
+            })
+        .onCommit((row, col, value) -> free.getAsBoolean()
+            ? ResultEdits.commitCell(s, o, row, col, value)
+            : "Not now: wait until what runs is done")
+        .onPaste(cells -> {
+          if (free.getAsBoolean()) {
+            ResultEdits.pasteCells(s, o, cells);
+          }
+        })
+        .onInsertRow(null)
+        .onDeleteRows(null);
   }
 
   /**

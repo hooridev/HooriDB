@@ -352,36 +352,50 @@ final class ConsoleView {
         .key("transaction-question");
   }
 
+  /** What the question says before pending changes of a result are lost, or while one commits. */
+  private Wording discarding(State s, String name, Guard.Pending.Question asked) {
+    String before = asked.what();
+    boolean unpinnedOnly = asked.scope() == Guard.Scope.CHANGES;
+    if (tab.writingChanges(unpinnedOnly)) {
+      return new Wording(
+          "Waiting for changes to commit",
+          "Changes are being committed on " + name + ". Wait until the commit finishes, or"
+              + " cancel it: whether it took effect is then not known, and the changes stay.",
+          List.of(button(
+                  SECONDARY,
+                  "Cancel commit",
+                  () -> tab.answer(s, ConsoleTab.STOP_WRITES),
+                  Button.options().tone(Button.Tone.DANGER))
+              .key("answer-cancel-commit")));
+    }
+    int n = tab.pendingChanges(unpinnedOnly);
+    String changes = n == 1 ? "1 change" : n + " changes";
+    boolean unsure = tab.outputs.stream()
+        .anyMatch(o -> (!unpinnedOnly || !o.pinned)
+            && o.edits.writeProblem != null
+            && ConsoleTab.UNSURE.equals(o.edits.writeProblem.title()));
+    return new Wording(
+        "Discard " + changes + "?",
+        name + " has " + (n == 1 ? "1 uncommitted change" : n + " uncommitted changes")
+            + ". Discard " + (n == 1 ? "it" : "them") + " before " + before + "?"
+            + (unsure
+                ? " Whether the last commit took effect is not known: discarding drops the changes"
+                    + " here and undoes nothing on the server."
+                : ""),
+        List.of(button(
+                PRIMARY,
+                "Discard",
+                () -> tab.answer(s, ConsoleTab.DISCARD),
+                Button.options().tone(Button.Tone.DANGER))
+            .key("answer-discard")));
+  }
+
   /** What the question says on the console {@code name} before the act {@code asked}. */
   private Wording wording(
       State s, String name, Guard.Pending.Question asked, boolean waits, boolean discarding) {
     String before = asked.what();
     if (discarding) {
-      boolean unpinnedOnly = asked.scope() == Guard.Scope.CHANGES;
-      if (tab.writingChanges(unpinnedOnly)) {
-        return new Wording(
-            "Waiting for changes to commit",
-            "Changes are being committed on " + name + ". Wait until the commit finishes, or"
-                + " cancel it: whether it took effect is then not known, and the changes stay.",
-            List.of(button(
-                    SECONDARY,
-                    "Cancel commit",
-                    () -> tab.answer(s, ConsoleTab.STOP_WRITES),
-                    Button.options().tone(Button.Tone.DANGER))
-                .key("answer-cancel-commit")));
-      }
-      int n = tab.pendingChanges(unpinnedOnly);
-      String changes = n == 1 ? "1 change" : n + " changes";
-      return new Wording(
-          "Discard " + changes + "?",
-          name + " has " + (n == 1 ? "1 uncommitted change" : n + " uncommitted changes")
-              + ". Discard " + (n == 1 ? "it" : "them") + " before " + before + "?",
-          List.of(button(
-                  PRIMARY,
-                  "Discard",
-                  () -> tab.answer(s, ConsoleTab.DISCARD),
-                  Button.options().tone(Button.Tone.DANGER))
-              .key("answer-discard")));
+      return discarding(s, name, asked);
     }
     if (tab.doubt != null) {
       return new Wording(

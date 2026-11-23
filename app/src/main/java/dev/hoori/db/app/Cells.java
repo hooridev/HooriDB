@@ -285,6 +285,11 @@ final class Cells {
     }
     var local = Format.DATE_TIME.parse(text);
     if (local.valid()) {
+      // A time the zone skips or repeats names no one moment.
+      if (zone.getRules().getValidOffsets(local.value()).size() != 1) {
+        return Parsed.error("This time is skipped or repeated in " + zone.getId()
+            + "; add an offset such as" + " +01:00");
+      }
       return Parsed.of(
           local.value().atZone(zone).toOffsetDateTime().withOffsetSameInstant(ZoneOffset.UTC));
     }

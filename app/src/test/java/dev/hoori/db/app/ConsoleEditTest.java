@@ -89,7 +89,7 @@ class ConsoleEditTest {
   }
 
   private long writeCount() {
-    return servers.calls.stream().filter(k -> k.startsWith("write ")).count();
+    return servers.calls.stream().filter(call -> call.startsWith("write ")).count();
   }
 
   @Test
@@ -145,10 +145,17 @@ class ConsoleEditTest {
   @Test
   void revertSelectionAndRevertAllSendNothing() throws Exception {
     var app = openCustomers();
-    c.run(
-        app,
-        "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n"
-            + "press #cell-1-1\ntype \"Bobby\"\nkey Enter\nframe\nsnap two\n");
+    c.run(app, """
+        press #cell-0-1
+        type "Alicia"
+        key Enter
+        frame
+        press #cell-1-1
+        type "Bobby"
+        key Enter
+        frame
+        snap two
+        """);
     assertTrue(line(c.tree("two"), "#pending-changes").contains("2 changes"), c.tree("two"));
 
     // Revert only the selected cell (#cell-0-1).
@@ -233,9 +240,12 @@ class ConsoleEditTest {
         "press #close-0\nframe\n" + OPENED + "press #answer-discard\nframe\n" + OPENED + SETTLE);
     assertTrue(app.state().consoles(null).isEmpty());
     assertEquals(0, writeCount());
+  }
 
-    // 5. Disconnect, Edit connection, Delete connection, and Exit each ask.
-    app = openCustomers();
+  @Test
+  void discardQuestionsGuardConnectionActsAndExit() throws Exception {
+    // Disconnect, Edit connection, Delete connection, and Exit each ask.
+    var app = openCustomers();
     c.run(app, "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n");
     c.run(app, menu("shop-prod", "Disconnect") + OPENED + "snap disc-asked\n");
     assertTrue(c.tree("disc-asked").contains("Discard 1 change?"), c.tree("disc-asked"));
@@ -258,7 +268,7 @@ class ConsoleEditTest {
     c.run(app, "press #answer-cancel\nframe\n" + OPENED);
     assertEquals(null, app.state().dialogs.deleting);
 
-    String exit = "press role=menuitem label=\"File\"\nframe\nadvance 0.3\nframe\n"
+    String exit = "press role=menuitem label=\"File\"\nframe\nadvance 1\nframe\n"
         + "press role=menuitem label=\"Exit\"\nframe\n" + OPENED;
     c.run(app, exit + "snap exit-asked\n");
     assertTrue(c.tree("exit-asked").contains("Discard 1 change?"), c.tree("exit-asked"));
@@ -427,6 +437,21 @@ class ConsoleEditTest {
     // A fresh grid takes keys before any cell is chosen.
     c.run(app, "focus #grid\nkey ArrowDown\nframe\npress #cell-0-1\nkey C control\nframe\n");
     assertEquals(name, app.clipboard().read());
+  }
+
+  @Test
+  void aZonedTimeIsStagedAsOneMoment() {
+    var field = new Field("at", "timestamptz", Kind.DATE_TIME_ZONED);
+    var column = new dev.hoori.db.core.catalog.Column(null, "at", "timestamptz", true, 0);
+    var york = java.time.ZoneId.of("America/New_York");
+    // Skipped and repeated local times name no one moment.
+    assertFalse(Cells.parse(field, column, "2026-03-08 02:30:00", null, york).valid());
+    assertFalse(Cells.parse(field, column, "2026-11-01 01:30:00", null, york).valid());
+    // A time without an offset is staged with the one it has now, so another zone keeps it.
+    var parsed = Cells.parse(field, column, "2026-01-15 12:00:00", null, york);
+    var staged = ResultEdits.staged(field, parsed.value(), null, "2026-01-15 12:00:00", york);
+    var again = Cells.parse(field, column, staged, null, java.time.ZoneOffset.UTC);
+    assertEquals(parsed.value(), again.value(), staged);
   }
 
   @Test
