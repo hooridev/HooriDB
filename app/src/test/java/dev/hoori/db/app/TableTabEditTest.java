@@ -372,6 +372,28 @@ class TableTabEditTest {
   }
 
   @Test
+  void aDraftWhoseRowWentIsCancelledWhenItsPageComesBack() throws Exception {
+    var rows = new ArrayList<List<Object>>(1_000);
+    for (long i = 1; i <= 1_000; i++) {
+      rows.add(List.of(i, "name " + i));
+    }
+    servers.values(BIG, rows);
+    var app = t.shop();
+    c.run(app, table("big") + SETTLE);
+    var tab = t.tab(app);
+
+    // A draft on id 1, whose page goes and comes back with id 2 at row 0.
+    c.run(app, "press #cell-0-1\ntype \"Draft\"\nframe\n");
+    assertTrue(tab.selection.isEditing());
+    servers.values(BIG, rows.subList(1, rows.size()));
+    tab.pages.remove(0L);
+    c.run(app, scroll(600) + SETTLE + scroll(0) + SETTLE);
+    assertTrue(tab.pages.containsKey(0L), tab.pages.keySet().toString());
+    assertFalse(tab.selection.isEditing());
+    assertEquals(0, tab.pendingChanges());
+  }
+
+  @Test
   void pagesWithEditsLeaveRoomForThoseInView() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);
     for (long i = 1; i <= 3_000; i++) {
