@@ -455,7 +455,7 @@ public final class Statements {
         while (at < text.length() && text.charAt(at) != '\n' && text.charAt(at) != '\r') {
           at++;
         }
-      } else if (Character.isWhitespace(c)) {
+      } else if (whitespace(c)) {
         broken |= c == '\n' || c == '\r';
         at++;
       } else {

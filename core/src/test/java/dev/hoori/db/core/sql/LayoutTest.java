@@ -5,10 +5,12 @@ import static dev.hoori.db.core.connection.Provider.MYSQL;
 import static dev.hoori.db.core.connection.Provider.POSTGRESQL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.sql.Statements.Piece;
+import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -254,6 +256,10 @@ class LayoutTest {
     assertEquals("SELECT @a. AS result;", format("SELECT @a. AS result;", MYSQL));
     assertEquals("SELECT 1 AS [gross  total];", format("SELECT 1 AS [gross  total];", MARIADB));
     assertEquals("SELECT 1 AS [gross , net];", format("SELECT 1 AS [gross , net];", MARIADB));
+    assertEquals(
+        "SELECT 1 AS [gross  /* x */  net];",
+        format("SELECT 1 AS [gross  /* x */  net];", MARIADB));
+    assertEquals("SELECT \\N,\n       1;", format("SELECT \\N, 1;", MARIADB));
     // An escape string's continuation keeps its escapes: no code in it to lay out.
     var continued = "SELECT 'C:\\',\n       E'a'\n'b--\\'\nFROM c  +   d'; -- '";
     assertEquals(continued, format(continued, POSTGRESQL));
@@ -282,6 +288,8 @@ class LayoutTest {
     Layout.of("SELECT * FROM a " + "NATURAL ".repeat(10_000) + "JOIN b", POSTGRESQL);
     var deep = Layout.of("SELECT " + "(SELECT ".repeat(2_000) + "1" + ")".repeat(2_000), MYSQL);
     assertTrue(deep.lines().allMatch(line -> line.length() < 200), deep.substring(0, 400));
+    var comments = "SELECT\n" + "/* x */\n".repeat(80_000) + "1;";
+    assertTimeout(Duration.ofSeconds(2), () -> Layout.of(comments, POSTGRESQL));
   }
 
   @Test

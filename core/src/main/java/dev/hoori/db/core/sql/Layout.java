@@ -212,6 +212,10 @@ public final class Layout {
   private final int[]
       stmtOf; // statement index per token, -1 for non-executable comments/delimiters
   private final boolean[] kept; // tokens on a MySQL/MariaDB DELIMITER command line
+  // The first token from k on, and the last up to k, that is no comment; -1 for none. Found once,
+  // so that a long run of comments is not walked again for each of them.
+  private final int[] codeFrom;
+  private final int[] codeUpTo;
   private final StringBuilder out = new StringBuilder();
   private final ArrayDeque<Frame> frames = new ArrayDeque<>();
   private int lastCode = -1;
@@ -226,6 +230,17 @@ public final class Layout {
     this.tokens = tokens;
     this.stmtOf = new int[tokens.size()];
     this.kept = new boolean[tokens.size()];
+    int n = tokens.size();
+    this.codeFrom = new int[n];
+    this.codeUpTo = new int[n];
+    for (int k = n - 1, code = -1; k >= 0; k--) {
+      code = isPlainComment(tokens.get(k)) ? code : k;
+      codeFrom[k] = code;
+    }
+    for (int k = 0, code = -1; k < n; k++) {
+      code = isPlainComment(tokens.get(k)) ? code : k;
+      codeUpTo[k] = code;
+    }
     Arrays.fill(stmtOf, -1);
     mapStatements(statements);
     frames.push(new Frame(0, 0, false));
@@ -531,9 +546,14 @@ public final class Layout {
       }
       return afterStatement ? "\n\n" : "\n";
     }
+    if (frames.peek().bracketDepth > 0) {
+      // As written, comments too: MariaDB may quote a name in [ ], as [gross  /* x */ net].
+      ownLine = false;
+      return text.substring(tokens.get(k - 1).end(), tokens.get(k).start());
+    }
     var gap = comment ? commentGap(k) : codeGap(k);
     if (isLineComment(k - 1) && gap.indexOf('\n') < 0) {
-      gap = indent(comment ? commentIndent(k) : continuationIndent(k));
+      gap = indent(comment ? commentIndent(k) : continuationIndent());
     } else if (!comment && ownLine && breaks(k) == 0 && gap.indexOf('\n') >= 0) {
       gap = " "; // after a block comment that starts its line, as it stood before the code
     }
@@ -589,7 +609,7 @@ public final class Layout {
   }
 
   // Fallback indentation when a line comment forces the next code token onto a new line.
-  private int continuationIndent(int k) {
+  private int continuationIndent() {
     var frame = frames.peek();
     if (frame.parenDepth == 0 && frame.bracketDepth == 0 && isListClause(frame.clause)) {
       return frame.listIndent;
@@ -598,10 +618,6 @@ public final class Layout {
   }
 
   private String codeGap(int k) {
-    if (lastCode == k - 1 && frames.peek().bracketDepth > 0) {
-      // As written: MariaDB may quote a name in [ ], as [gross , net].
-      return text.substring(tokens.get(lastCode).end(), tokens.get(k).start());
-    }
     if (lastCode == k - 1 && isString(lastCode) && isString(k)) {
       // PostgreSQL joins 'a' and 'b' into one string only over a line break between them.
       return text.substring(tokens.get(lastCode).end(), tokens.get(k).start());
@@ -858,7 +874,7 @@ public final class Layout {
         if (w.equals("FOR") && !isLockingFor(k)) {
           return;
         }
-        if (w.equals("UPDATE") && !isUpdateClause(k)) {
+        if (w.equals("UPDATE") && !isUpdateClause()) {
           return;
         }
         frame.clause = Clause.OTHER;
@@ -899,7 +915,7 @@ public final class Layout {
       case "ON" -> isWord(nextCode(k), "CONFLICT") || isWord(nextCode(k), "DUPLICATE");
       case "USING" -> frame.clause == Clause.FROM && nextCode(k) >= 0 && !isPunct(nextCode(k), '(');
       case "INSERT", "REPLACE", "DELETE" -> lastCode >= 0 && isPunct(lastCode, ')');
-      case "UPDATE" -> isUpdateClause(k);
+      case "UPDATE" -> isUpdateClause();
       case "JOIN", "STRAIGHT_JOIN", "INNER", "CROSS", "LEFT", "RIGHT", "FULL", "NATURAL" ->
         !frame.inJoinPrefix && startsJoin(k);
       default -> false;
@@ -986,17 +1002,13 @@ public final class Layout {
     if (prev < 0) {
       return false;
     }
-    var prevToken = tokens.get(prev);
-    if (prevToken.kind() == Kind.OPERATOR
-        || isPunct(prev, ',')
-        || isPunct(prev, '(')
-        || isWord(prev, "DEFAULT")) {
-      return false;
-    }
-    return true;
+    return tokens.get(prev).kind() != Kind.OPERATOR
+        && !isPunct(prev, ',')
+        && !isPunct(prev, '(')
+        && !isWord(prev, "DEFAULT");
   }
 
-  private boolean isUpdateClause(int k) {
+  private boolean isUpdateClause() {
     return lastCode >= 0 && isPunct(lastCode, ')');
   }
 
@@ -1018,8 +1030,9 @@ public final class Layout {
     if (isPunct(k, ',') || isPunct(k, ';') || isPunct(k, ')') || isPunct(k, ']') || isOp(k, "::")) {
       return "";
     }
-    if (isPunct(a, '.')) {
-      return text.substring(prev.end(), curr.start()); // MySQL's @a. AS b names @a.
+    if (isPunct(a, '.') || isOp(a, "\\") || isOp(k, "\\")) {
+      // As written: MySQL's @a. AS b names @a., and MariaDB's \N is NULL.
+      return text.substring(prev.end(), curr.start());
     }
     if (isPunct(a, '(') || isPunct(a, '[') || isOp(a, "::")) {
       return "";
@@ -1076,10 +1089,9 @@ public final class Layout {
         return true;
       }
     }
-    if (prev.kind() == Kind.QUOTED && frame.clause == Clause.INSERT_HEAD && frame.parenDepth == 0) {
-      return true;
-    }
-    return false;
+    return prev.kind() == Kind.QUOTED
+        && frame.clause == Clause.INSERT_HEAD
+        && frame.parenDepth == 0;
   }
 
   // Whether operator k, written right after operator a, is a sign the server reads apart from it,
@@ -1088,19 +1100,21 @@ public final class Layout {
   // ~!@#%^&|`?.
   private boolean signAfter(int a, int k) {
     int next = k + 1;
+    boolean last = next == tokens.size()
+        || tokens.get(next).kind() != Kind.OPERATOR
+        || tokens.get(next).start() > tokens.get(k).end();
+    if (!last || !isOp(k, "-") && !isOp(k, "+")) {
+      return false;
+    }
     int first = a;
     while (first > 0
         && tokens.get(first - 1).kind() == Kind.OPERATOR
         && tokens.get(first - 1).end() == tokens.get(first).start()) {
       first--;
     }
-    return (isOp(k, "-") || isOp(k, "+"))
-        && text.substring(tokens.get(first).start(), tokens.get(a).end())
-            .chars()
-            .allMatch(c -> "+-*/<>=".indexOf(c) >= 0)
-        && (next == tokens.size()
-            || tokens.get(next).kind() != Kind.OPERATOR
-            || tokens.get(next).start() > tokens.get(k).end());
+    return text.substring(tokens.get(first).start(), tokens.get(a).end())
+        .chars()
+        .allMatch(c -> "+-*/<>=".indexOf(c) >= 0);
   }
 
   private boolean isUnaryOp(int a) {
@@ -1137,21 +1151,11 @@ public final class Layout {
   }
 
   private int nextCode(int k) {
-    for (int j = k + 1; j < tokens.size(); j++) {
-      if (!isPlainComment(tokens.get(j))) {
-        return j;
-      }
-    }
-    return -1;
+    return k + 1 < tokens.size() ? codeFrom[k + 1] : -1;
   }
 
   private int prevCode(int k) {
-    for (int j = k - 1; j >= 0; j--) {
-      if (!isPlainComment(tokens.get(j))) {
-        return j;
-      }
-    }
-    return -1;
+    return k > 0 ? codeUpTo[k - 1] : -1;
   }
 
   private int breaks(int k) {
@@ -1160,9 +1164,7 @@ public final class Layout {
     int count = 0;
     for (int i = from; i < to; i++) {
       char c = text.charAt(i);
-      if (c == '\n') {
-        count++;
-      } else if (c == '\r' && (i + 1 >= to || text.charAt(i + 1) != '\n')) {
+      if (c == '\n' || c == '\r' && (i + 1 >= to || text.charAt(i + 1) != '\n')) {
         count++;
       }
     }
