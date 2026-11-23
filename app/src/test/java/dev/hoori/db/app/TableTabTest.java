@@ -1649,6 +1649,265 @@ class TableTabTest {
     assertFalse(mongo.contains("#filter-bar"), mongo);
     assertFalse(mongo.contains("label=\"WHERE\""), mongo);
     assertFalse(mongo.contains("label=\"ORDER BY\""), mongo);
+    // Column headers on a MongoDB collection tab cannot be sorted.
+    int before = servers.calls.size();
+    c.run(app, "press role=columnheader label=\"total\"\nframe\n" + SETTLE + "snap mongo-sorted\n");
+    assertEquals(before, servers.calls.size(), servers.calls.toString());
+    assertFalse(c.tree("mongo-sorted").contains("sort="), c.tree("mongo-sorted"));
+  }
+
+  @Test
+  void pressingSortableHeadersCyclesAndCombinesOrderByWithoutApplyingWhereDraft() throws Exception {
+    var r1 = List.<Object>of(
+        1L, 20, OffsetDateTime.of(2026, 1, 1, 9, 0, 0, 0, ZoneOffset.UTC), new BigDecimal("50.00"));
+    var r2 = List.<Object>of(
+        2L, 10, OffsetDateTime.of(2026, 1, 1, 9, 1, 0, 0, ZoneOffset.UTC), new BigDecimal("50.00"));
+    var r3 = List.<Object>of(
+        3L, 30, OffsetDateTime.of(2026, 1, 1, 9, 2, 0, 0, ZoneOffset.UTC), new BigDecimal("10.00"));
+    servers.values(ORDERS, List.of(r1, r2, r3));
+    servers.values(ORDERS + " ORDER BY \"total\" ASC", List.of(r3, r1, r2));
+    servers.values(ORDERS + " ORDER BY \"total\" DESC", List.of(r1, r2, r3));
+    servers.values(ORDERS + " ORDER BY \"total\" DESC, \"customer_id\" ASC", List.of(r2, r1, r3));
+    servers.values(
+        ORDERS + " WHERE total > 20 ORDER BY \"total\" DESC, \"customer_id\" ASC", List.of(r2, r1));
+    var app = shop();
+    c.run(app, table("orders") + SETTLE);
+
+    // 1. First press sorts ascending and writes the quoted column into ORDER BY.
+    c.run(app, "press role=columnheader label=\"total\"\nframe\n" + SETTLE + "snap asc\n");
+    String asc = c.tree("asc");
+    assertTrue(line(asc, "#column-3").contains("sort=ascending"), asc);
+    assertTrue(line(asc, "#order").contains("\\\"total\\\" ASC"), asc);
+    assertEquals("\"total\" ASC", tab(app).filter.order());
+    assertTrue(cell(asc, 0, 0).contains("\"3\""), asc);
+
+    // 2. Second press flips to descending; an unapplied WHERE draft is kept in the field, not
+    // applied.
+    c.run(
+        app,
+        clause("WHERE", "total > 999")
+            + "press role=columnheader label=\"total\"\nframe\n"
+            + SETTLE
+            + "snap desc\n");
+    String desc = c.tree("desc");
+    assertTrue(line(desc, "#column-3").contains("sort=descending"), desc);
+    assertTrue(line(desc, "#order").contains("\\\"total\\\" DESC"), desc);
+    assertTrue(line(desc, "#where").contains("\"total > 999\""), desc);
+    assertEquals("", tab(app).filter.where(), "unapplied WHERE draft must not be applied");
+    assertEquals("\"total\" DESC", tab(app).filter.order());
+
+    // 3. Shift+press adds a secondary sort column.
+    c.run(
+        app,
+        "press role=columnheader label=\"customer_id\" shift\nframe\n" + SETTLE + "snap two\n");
+    String two = c.tree("two");
+    assertTrue(line(two, "#column-3").contains("sort=descending"), two);
+    assertTrue(line(two, "#column-1").contains("sort=ascending"), two);
+    assertEquals("\"total\" DESC, \"customer_id\" ASC", tab(app).filter.order());
+    assertTrue(cell(two, 0, 0).contains("\"2\""), two);
+
+    // 4. Applying a WHERE keeps the header sort arrows when ORDER BY still matches.
+    c.run(app, clause("WHERE", "total > 20") + "key Enter\nframe\n" + SETTLE + "snap filtered\n");
+    String filtered = c.tree("filtered");
+    assertTrue(line(filtered, "#column-3").contains("sort=descending"), filtered);
+    assertTrue(line(filtered, "#column-1").contains("sort=ascending"), filtered);
+    assertEquals("total > 20", tab(app).filter.where());
+    assertEquals("\"total\" DESC, \"customer_id\" ASC", tab(app).filter.order());
+
+    // 5. A hand-typed ORDER BY shows no arrows, and a header press replaces it while keeping the
+    // applied WHERE.
+    c.run(app, clause("ORDER BY", "id DESC") + "key Enter\nframe\n" + SETTLE + "snap typed\n");
+    String typed = c.tree("typed");
+    assertFalse(typed.contains("sort="), typed);
+    assertEquals("id DESC", tab(app).filter.order());
+    c.run(app, "press role=columnheader label=\"total\"\nframe\n" + SETTLE + "snap replaced\n");
+    String replaced = c.tree("replaced");
+    assertTrue(line(replaced, "#column-3").contains("sort=ascending"), replaced);
+    assertEquals("total > 20", tab(app).filter.where());
+    assertEquals("\"total\" ASC", tab(app).filter.order());
+
+    // 6. Cycling a single column past descending clears ORDER BY and the arrow.
+    c.run(
+        app,
+        "press role=columnheader label=\"total\"\nframe\n"
+            + SETTLE
+            + "press role=columnheader label=\"total\"\nframe\n"
+            + SETTLE
+            + "snap unsorted\n");
+    String unsorted = c.tree("unsorted");
+    assertFalse(unsorted.contains("sort="), unsorted);
+    assertEquals("", tab(app).filter.order());
+
+    // 7. While disconnected, headers keep no interactive sort handler and do nothing.
+    c.run(
+        app,
+        "press role=columnheader label=\"total\"\nframe\n"
+            + SETTLE
+            + menu("shop-prod", "Disconnect")
+            + "press role=columnheader label=\"id\"\nframe\n"
+            + SETTLE
+            + "snap disconnected\n");
+    assertEquals("\"total\" ASC", tab(app).filter.order());
+    assertTrue(line(c.tree("disconnected"), "#column-3").contains("sort=ascending"));
+  }
+
+  @Test
+  void headerSortUsesBackticksOnMariaDb() throws Exception {
+    var app = c.app(INVENTORY);
+    c.ready(app, INVENTORY);
+    c.run(
+        app,
+        START
+            + open("inventory")
+            + SETTLE
+            + "press role=treeitem label=\"inventory\" level=2\nkey ArrowRight\nframe\n"
+            + SETTLE
+            + table("items")
+            + SETTLE
+            + "press role=columnheader label=\"name\"\nframe\n"
+            + SETTLE
+            + "snap maria-sort\n");
+    assertEquals("`name` ASC", tab(app).filter.order());
+    assertTrue(
+        line(c.tree("maria-sort"), "#column-2").contains("sort=ascending"), c.tree("maria-sort"));
+  }
+
+  @Test
+  void jsonOtherAndConsoleColumnsCannotBeSorted() throws Exception {
+    servers.serve(
+        PG,
+        Provider.POSTGRESQL,
+        "16.4",
+        OUTLINE.replace("      doc: jsonb\n", "      doc: jsonb\n      shape: box\n"));
+    var app = shop();
+    c.run(app, "size 2600 760\nframe\n" + table("kinds") + SETTLE);
+    int before = servers.calls.size();
+    c.run(
+        app,
+        "press role=columnheader label=\"doc\"\nframe\n"
+            + "press role=columnheader label=\"shape\"\nframe\n"
+            + SETTLE
+            + "snap unsortable\n");
+    String unsortable = c.tree("unsortable");
+    assertEquals(before, servers.calls.size(), servers.calls.toString());
+    assertEquals("", tab(app).filter.order());
+    assertFalse(unsortable.contains("sort="), unsortable);
+
+    // A console result grid also stays unsortable.
+    servers.statement(
+        "SELECT id, total FROM orders",
+        List.of(FakeServers.made(2, "id: bigint", "total: numeric(12,2)")));
+    c.run(
+        app,
+        menu("shop-prod", "New console")
+            + "frame\n"
+            + "press #sql\n"
+            + "clipboard \"SELECT id, total FROM orders\"\nkey V control\nframe\n"
+            + "key Enter control\nframe\n"
+            + SETTLE
+            + "press role=columnheader label=\"id\"\nframe\n"
+            + "snap console-grid\n");
+    assertFalse(c.tree("console-grid").contains("sort="), c.tree("console-grid"));
+  }
+
+  @Test
+  void sqlTableBrowsingUsesReadOnlySessionsWhileConsoleAndWritesStayWritable() throws Exception {
+    servers.writes("nextval(");
+    servers.rows(BIG, 1000, OptionalLong.of(1_000_000));
+    servers.statement(
+        "SELECT nextval('orders_seq')", List.of(FakeServers.made(1, "nextval: bigint")));
+    var app = shop();
+    assertFalse(SHOP.readOnly(), "profile itself is writable");
+    assertTrue(servers.readOnly(1), "tree lane is opened read-only");
+
+    // 1. A WHERE calling nextval() fails at the server on the read-only browsing lane.
+    c.run(
+        app,
+        table("orders")
+            + SETTLE
+            + clause("WHERE", "id = nextval('orders_seq')")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "advance 1\nframe\nsnap write-in-where\n");
+    String failed = c.tree("write-in-where");
+    assertTrue(line(failed, "role=note").contains("label=\"Could not be read\""), failed);
+    assertTrue(failed.contains("cannot execute in a read-only transaction"), failed);
+
+    // 2. A clause attempting to turn read-only off is refused before anything is sent, with
+    // wording that does not call a writable connection read-only.
+    int beforeRefused = servers.calls.size();
+    c.run(
+        app,
+        clause("WHERE", "set_config('default_transaction_read_only', 'off', false) IS NOT NULL")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "advance 1\nframe\nsnap bypass-refused\n");
+    String bypass = c.tree("bypass-refused");
+    assertTrue(line(bypass, "role=note").contains("label=\"Clause refused\""), bypass);
+    assertTrue(bypass.contains("The session is read-only"), bypass);
+    assertFalse(bypass.contains("The connection is read-only"), bypass);
+    assertEquals(beforeRefused, servers.calls.size(), servers.calls.toString());
+
+    // 3. Further database tree lane and count lane are also opened read-only.
+    c.run(app, open("analytics") + SETTLE + open("tracking") + SETTLE + table("events") + SETTLE);
+    int analyticsLink = linkOf("columns " + PG + "/analytics.tracking.events");
+    assertTrue(servers.readOnly(analyticsLink), "further database tree lane is read-only");
+    c.run(app, table("big") + SETTLE + scroll(500_000) + SETTLE + SETTLE);
+    int countLink = linkOf("count " + BIG);
+    assertTrue(servers.readOnly(countLink), "count lane is read-only");
+
+    // 4. Console session on the same writable profile is writable and runs nextval().
+    c.run(
+        app,
+        menu("shop-prod", "New console")
+            + "frame\n"
+            + "press #sql\n"
+            + "clipboard \"SELECT nextval('orders_seq')\"\nkey V control\nframe\n"
+            + "key Enter control\nframe\n"
+            + SETTLE
+            + "snap console-write\n");
+    int consoleLink = linkOf("run " + PG + " SELECT nextval('orders_seq')");
+    assertFalse(servers.readOnly(consoleLink), "console session keeps writable profile");
+    assertTrue(cell(c.tree("console-write"), 0, 0).contains("\"1\""), c.tree("console-write"));
+
+    // 5. Planner session keeps the profile's setting (writable), and table edits write on the
+    // writable writer lane.
+    var planner = app.state().catalog.planner(app.state(), SHOP.id(), "shop");
+    planner.submit(l -> l.estimate("shop", "SELECT 1")).get();
+    int plannerLink = linkOf("explain " + PG + " SELECT 1");
+    assertFalse(servers.readOnly(plannerLink), "planner session keeps writable profile");
+
+    c.run(
+        app,
+        table("customers")
+            + SETTLE
+            + "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n"
+            + "press #commit-changes\nframe\nadvance 1\nframe\n"
+            + "press #preview-commit\nframe\nadvance 1\nframe\n"
+            + SETTLE);
+    int writerLink = linkOf("write " + PG + "/shop.public.customers");
+    assertFalse(servers.readOnly(writerLink), "writer lane keeps writable profile");
+    assertEquals("Alicia", servers.rowsOf(PG + "/shop.public.customers").get(0).get(1));
+
+    // 6. MongoDB tree lane keeps the profile's setting (not forced read-only).
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        shop
+          orders
+            _id: ObjectId
+        """);
+    var mongoApp = c.app(DocumentConsoleTest.DOCS);
+    c.ready(mongoApp, DocumentConsoleTest.DOCS);
+    c.run(mongoApp, START + open("docs") + SETTLE);
+    int mongoLink = linkOf("databases " + DocumentConsoleTest.MONGO);
+    assertFalse(servers.readOnly(mongoLink), "MongoDB lane stays as profile says");
+  }
+
+  private int linkOf(String call) {
+    return servers.linked.stream()
+        .filter(entry -> entry.endsWith(" " + call))
+        .mapToInt(entry -> Integer.parseInt(entry.substring(0, entry.indexOf(' '))))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("No link for " + call + " in " + servers.linked));
   }
 
   String snapped(App<State> app, String name) throws Exception {

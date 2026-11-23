@@ -239,6 +239,54 @@ class TableTabEditTest {
   }
 
   @Test
+  void headerSortAsksBeforeDiscardingAndIgnoresPressWhilePreviewIsOpen() throws Exception {
+    servers.values(
+        CUSTOMERS + " ORDER BY \"name\" ASC",
+        List.of(List.of(1L, "Alice"), List.of(2L, "Bob"), List.of(3L, "Carol")));
+    servers.values(
+        CUSTOMERS + " ORDER BY \"name\" DESC",
+        List.of(List.of(3L, "Carol"), List.of(2L, "Bob"), List.of(1L, "Alice")));
+    var app = openCustomers();
+    c.run(app, "press role=columnheader label=\"name\"\nframe\n" + SETTLE);
+    assertEquals("\"name\" ASC", t.tab(app).filter.order());
+
+    // Stage a pending edit, then press the name header: Guard asks before discarding.
+    c.run(app, "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n");
+    int before = servers.calls.size();
+    c.run(app, "press role=columnheader label=\"name\"\nframe\n" + OPENED + "snap sort-asked\n");
+    assertTrue(c.tree("sort-asked").contains("Discard 1 change?"), c.tree("sort-asked"));
+
+    // Cancel keeps the edit, applied ORDER BY, and ascending sort arrow.
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE + "snap sort-cancelled\n");
+    String cancelled = c.tree("sort-cancelled");
+    assertEquals(1, t.tab(app).pendingChanges());
+    assertEquals("\"name\" ASC", t.tab(app).filter.order());
+    assertTrue(line(cancelled, "#column-1").contains("sort=ascending"), cancelled);
+    assertEquals(before, servers.calls.size(), "Cancel must not re-read");
+
+    // While DML Preview is open, the grid has no sort handler.
+    c.run(app, "press #commit-changes\nframe\n" + OPENED);
+    assertTrue(t.tab(app).preview != null);
+    c.run(app, "press #preview-cancel\nframe\n" + OPENED);
+
+    // Pressing the header again and choosing Discard applies the descending sort.
+    c.run(
+        app,
+        "press role=columnheader label=\"name\"\nframe\n"
+            + OPENED
+            + "press #answer-discard\nframe\n"
+            + OPENED
+            + SETTLE
+            + "snap sort-discarded\n");
+    String discarded = c.tree("sort-discarded");
+    assertEquals(0, t.tab(app).pendingChanges());
+    assertEquals("\"name\" DESC", t.tab(app).filter.order());
+    assertTrue(line(discarded, "#column-1").contains("sort=descending"), discarded);
+    assertTrue(cell(discarded, 0, 1).contains("\"Carol\""), discarded);
+    assertEquals(0, writeCount());
+  }
+
+  @Test
   void editedRowsPageStaysAndCommitsRightRow() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);
     for (long i = 1; i <= 3_000; i++) {

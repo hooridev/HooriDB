@@ -35,9 +35,11 @@ tree connects and reads its databases, schemas, tables and views, and columns, o
 as they are opened; several connections are open at once. A double press or Enter on a table or view
 opens its rows in a tab, read late in pages on its connection's lane, with the rows in view in its
 status line, buttons that scroll a page back or on, or to the first or last row, and, on SQL
-servers, WHERE and ORDER BY fields with completion that narrow and order the rows and count, and
-Open in console to add its SELECT and applied clauses to the end of a console open on its database,
-or to a new console where none is or Settings asks for a new one; tabs move and tear off into
+servers, WHERE and ORDER BY fields with completion that narrow and order the rows and count,
+sortable column headers (other than JSON and OTHER; Shift+press adds a column) that write their
+order into ORDER BY and apply it after asking about pending edits while keeping the applied WHERE,
+and Open in console to add its SELECT and applied clauses to the end of a console open on its
+database, or to a new console where none is or Settings asks for a new one; tabs move and tear off into
 windows of their own. The columns of a table and of a console's result fit their
 first rows once, and a table's fit again where a refresh finds other columns. A moment, a timestamp
 with a time zone, shows and is copied in the computer's time zone, with the offset it has there.
@@ -67,11 +69,12 @@ switching auto-commit or the database, disconnecting, changing or deleting its c
 closing HooriDB ask first while one may be open. In Manual, and while a transaction is open, it
 reads each result whole before showing it and keeps the first 100,000 rows of each, asking first
 where the server's plan estimates more; it asks before an UPDATE or DELETE without a WHERE in any
-mode; while a change of its connection is saved or deleted it runs nothing. A connection to a server
-of SQL may be read-only: each of its sessions, the tree's, a console's and the planner's, is
-read-only at the server from its opening, on any database, so that the server refuses what writes,
-and a statement that would turn that off is not sent. What finishing a session's work reports, a
-read's commit as it is given up, Commit's or Rollback's failure or warnings, a closing session's
+mode; while a change of its connection is saved or deleted it runs nothing. The tree's and the
+counts' sessions of a connection to a server of SQL are always read-only at the server from their
+opening, on any database, so that browsing refuses what writes, and a clause that would turn that
+off is not sent; such a connection may also be read-only as a whole, which makes its consoles' and
+planner's sessions read-only too and its tables not editable. What finishing a session's work
+reports, a read's commit as it is given up, Commit's or Rollback's failure or warnings, a closing session's
 failure, and any outcome of a call on its session that the console no longer takes, as when it was
 cancelled or closed, goes to a list of notices in the main window until dismissed, and stops what
 waited on it; a Commit or Rollback that fails or does not answer can be left by ending the
@@ -347,7 +350,8 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   status is keyed `transaction <host>`. The planner's estimate of a console's read runs on that
   connection, keyed `explain <host> <sql>`, with what `plans` gives, on the database `estimatedOn`
   names; `linked` notes every call after the number of the link it ran on, so a test tells the
-  console's session from the tree's.
+  console's session from the tree's, `readOnly(link)` tells whether a link was opened read-only,
+  and `writes` marks a SQL fragment that a read-only link refuses while a writable link runs it.
 - A server monitor's reads run against `FakeServers` too: `sessions`, `variables`, `counters` and
   `locks` give what a host's server has, besides the monitor's own session, numbered as its link;
   the reads are keyed `sessions <host>`, `variables <host>`, `status <host>` and `locks <host>`,

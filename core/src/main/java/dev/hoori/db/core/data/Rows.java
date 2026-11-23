@@ -465,9 +465,7 @@ public final class Rows {
         case MULTIPLE -> "The " + name + " clause holds more than one statement";
         case UNCLOSED -> "The " + name + " clause leaves a string or comment open";
         case PARENTHESES -> "The " + name + " clause has unbalanced parentheses";
-        case READ_ONLY ->
-          "The connection is read-only, and the " + name
-              + " clause may turn that off for the session";
+        case READ_ONLY -> "The session is read-only, and the " + name + " clause may turn that off";
       };
       throw QueryException.of(QueryException.Failure.CLAUSE_REFUSED, detail);
     }
