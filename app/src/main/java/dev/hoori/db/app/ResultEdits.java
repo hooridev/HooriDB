@@ -498,6 +498,8 @@ final class ResultEdits {
       long columns = Math.max(0, Math.min(range.right(), lastColumn) - range.left() + 1);
       area += rows * columns;
     }
+    // shortcut: a large selection walks every staged change at each build; ask the kit once it
+    // can say whether a selection holds one (rethinkj/ui#514).
     if (area > SCAN) {
       return !selectedChanges(o).isEmpty();
     }
