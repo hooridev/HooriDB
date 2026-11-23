@@ -394,6 +394,24 @@ class TableTabEditTest {
   }
 
   @Test
+  void aCommitThatChangesAKeyReadsTheRowsAnew() throws Exception {
+    var app = openCustomers();
+    c.run(app, "press #cell-0-0\ntype \"10\"\nkey Enter\nframe\n");
+    long reads =
+        servers.calls.stream().filter(x -> x.startsWith("read " + CUSTOMERS)).count();
+    c.run(
+        app,
+        "press #commit-changes\nframe\n" + OPENED + "press #preview-commit\nframe\n" + OPENED
+            + SETTLE + "snap rekeyed\n");
+    assertEquals(10L, servers.rowsOf(CUSTOMERS).get(0).get(0));
+    // The rows' places may have changed with their keys: they are read as the server holds them.
+    assertTrue(
+        servers.calls.stream().filter(x -> x.startsWith("read " + CUSTOMERS)).count() > reads,
+        servers.calls.toString());
+    assertEquals(0, t.tab(app).pendingChanges());
+  }
+
+  @Test
   void pagesWithEditsLeaveRoomForThoseInView() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);
     for (long i = 1; i <= 3_000; i++) {

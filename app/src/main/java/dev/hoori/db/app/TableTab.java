@@ -151,6 +151,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   private final Clause where;
   private final Clause order;
   private Whole whole; // the current cell's whole value, for the value panel; or null
+  private boolean keyChanged; // a commit changed a primary key: the rows are read anew
   final ResultEdits edits = new ResultEdits();
   ResultEdits.Preview preview; // the DML Preview dialog before committing edits, or null
   // Original rows (as read) of edited positions, kept also where a shrunk end trims their page.
@@ -1680,6 +1681,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   @Override
   public void settledFromEdit(State s) {
     settle(s);
+    if (keyChanged) {
+      keyChanged = false;
+      open(s, true); // the rows' places may have changed with their keys
+    }
   }
 
   @Override
@@ -1799,6 +1804,13 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   @Override
   public void applyCommitted(Map<Integer, Map<Integer, Object>> applied) {
     whole = null;
+    keyChanged = applied.entrySet().stream().anyMatch(e -> {
+      var original = originals.get(e.getKey());
+      return original != null && changesKey(original, e.getValue());
+    });
+    if (keyChanged) {
+      return; // read anew once settled, as the server holds them
+    }
     var updatedPages = new HashMap<Long, List<List<Object>>>();
     for (var entry : applied.entrySet()) {
       int rowIndex = entry.getKey();
@@ -1814,12 +1826,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       }
       int offset = rowIndex % PAGE;
       var original = originals.get(rowIndex);
-      // Not where the page, read again since, holds another row at the edited row's position;
-      // nor where the key changed, which the server, as by a trigger, may not have taken as given:
-      // Refresh shows what it holds.
-      if (offset < page.size()
-          && (original == null || sameKey(original, page.get(offset)))
-          && !changesKey(page.get(offset), entry.getValue())) {
+      // Not where the page, read again since, holds another row at the edited row's position.
+      if (offset < page.size() && (original == null || sameKey(original, page.get(offset)))) {
         var updated = new ArrayList<>(page.get(offset));
         entry.getValue().forEach(updated::set);
         page.set(offset, Collections.unmodifiableList(updated));
