@@ -335,6 +335,34 @@ class TableTabEditTest {
   }
 
   @Test
+  void editsOutliveALostConnectionAndReadsGoOnOnceConnected() throws Exception {
+    var rows = new ArrayList<List<Object>>(1_000);
+    for (long i = 1; i <= 1_000; i++) {
+      rows.add(List.of(i, "name " + i));
+    }
+    servers.values(BIG, rows);
+    var app = t.shop();
+    c.run(app, table("big") + SETTLE);
+    c.run(app, "press #cell-0-1\ntype \"Edited 1\"\nkey Enter\nframe\n");
+    var key = "read " + BIG + " 600-800";
+    servers.fail(key, FakeServers.queryFailure(QueryException.Failure.CONNECTION_LOST));
+    c.run(app, scroll(600) + SETTLE + "advance 1\nframe\nsnap lost\n");
+    assertTrue(c.tree("lost").contains("role=note label=\"Disconnected\""), c.tree("lost"));
+
+    servers.heal(key);
+    c.run(app, "press role=button label=\"Connect\"\nframe\n" + SETTLE + "frame\nsnap again\n");
+    String again = c.tree("again");
+    assertFalse(again.contains("role=note"), again);
+    assertTrue(cell(again, 600, 1).contains("\"name 601\""), again);
+    assertEquals(1, t.tab(app).pendingChanges());
+    c.run(
+        app,
+        scroll(0) + SETTLE + "press #commit-changes\nframe\n" + OPENED
+            + "press #preview-commit\nframe\n" + OPENED + SETTLE);
+    assertEquals("Edited 1", servers.rowsOf(BIG).get(0).get(1));
+  }
+
+  @Test
   void openEditorKeepsItsPageWhileScrolledAway() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);
     for (long i = 1; i <= 3_000; i++) {

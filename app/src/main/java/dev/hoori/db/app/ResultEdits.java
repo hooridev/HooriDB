@@ -1032,7 +1032,7 @@ final class ResultEdits {
   /**
    * Edit status, pending count badge, Revert and Commit… controls for an editable SQL grid: the
    * status, as why a cell is read-only, goes to {@code status}; the pending
-   * count and the buttons go to {@code actions}, which may be the same list.
+   * count and the buttons go to {@code actions}, which may be the same list, or null for none.
    */
   static void editControls(State s, Host host, Target target, List<El> status, List<El> actions) {
     Theme t = Theme.CURRENT.get();
@@ -1044,12 +1044,14 @@ final class ResultEdits {
           .key("edit-status")
           .child(Progress.spinner().label("Committing"))
           .child(Label.label(Label.Variant.MUTED, "Committing…")));
-      actions.add(button(
-              SECONDARY,
-              ConsoleTab.CANCEL_BUTTON,
-              () -> cancelWrite(s, host, target),
-              Button.options().tone(Button.Tone.DANGER))
-          .key("cancel-write"));
+      if (actions != null) {
+        actions.add(button(
+                SECONDARY,
+                ConsoleTab.CANCEL_BUTTON,
+                () -> cancelWrite(s, host, target),
+                Button.options().tone(Button.Tone.DANGER))
+            .key("cancel-write"));
+      }
       return;
     }
     boolean current = current(s, host, target);
@@ -1061,7 +1063,7 @@ final class ResultEdits {
       status.add(Tooltip.tooltip(
           Label.label(Label.Variant.MUTED, why).key("edit-status").ellipsis(), why));
     }
-    if (edits.editable == null) {
+    if (edits.editable == null || actions == null) {
       return;
     }
     int count = edits.changes.count();

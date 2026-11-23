@@ -150,7 +150,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   private Whole whole; // the current cell's whole value, for the value panel; or null
   final ResultEdits edits = new ResultEdits();
   ResultEdits.Preview preview; // the DML Preview dialog before committing edits, or null
-  // Original rows (as read) of edited positions, kept even when keep() drops their page.
+  // Original rows (as read) of edited positions, kept also where a shrunk end trims their page.
   private final Map<Integer, List<Object>> kept = new HashMap<>();
   // Original rows moved out of kept on undo/revert while GridChanges can still undo/redo them.
   private final Map<Integer, List<Object>> undoKept = new HashMap<>();
@@ -604,6 +604,16 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
   }
 
+  /**
+   * The connection connected anew under edits, which stay: what failed with the old one is read
+   * again on the new one.
+   */
+  void reconnected(State s) {
+    edits.live = s.catalog.live(id); // the same profile, as changing it asks first
+    failure = null;
+    askAgain(s);
+  }
+
   /** A lane closed under a read while connected, as by a refresh in the tree: it is asked again. */
   private void askAgain(State s) {
     if (!s.catalog.connected(id)) {
@@ -884,11 +894,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     El rowsStatus = Label.label(Label.Variant.MUTED, rowsText(ofDocuments))
         .key("rows-status")
         .ellipsis();
-    var edited = new ArrayList<El>();
-    var footer = footer(s, ofDocuments, presented, edited);
     // The edit actions on a line of their own while there is something to commit: the status line
     // has no room for them beside the paging.
-    if (edits.changes != null && (edits.changes.count() > 0 || edits.writing != null)) {
+    boolean bar = edits.changes != null && (edits.changes.count() > 0 || edits.writing != null);
+    var edited = bar ? new ArrayList<El>() : null;
+    var footer = footer(s, ofDocuments, presented, edited);
+    if (bar) {
       content
           .child(Divider.divider())
           .child(row()
