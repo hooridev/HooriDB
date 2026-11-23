@@ -19,6 +19,7 @@ public record Settings(
     Duration connectTimeout,
     boolean newConnectionsReadOnly,
     CommitMode commitMode,
+    OpenInConsole openInConsole,
     ZoneId timeZone,
     CopyNull copyNull,
     DocumentView documentView,
@@ -39,6 +40,7 @@ public record Settings(
       Duration.ofSeconds(10),
       false,
       CommitMode.AUTO,
+      OpenInConsole.REUSE,
       null,
       CopyNull.EMPTY,
       DocumentView.GRID,
@@ -71,6 +73,12 @@ public record Settings(
     MANUAL
   }
 
+  /** Whether Open in console reuses an open console on the table's database or opens a new one. */
+  public enum OpenInConsole {
+    REUSE,
+    NEW
+  }
+
   /** What copying a NULL cell puts on the clipboard. */
   public enum CopyNull {
     EMPTY,
@@ -92,6 +100,7 @@ public record Settings(
     Objects.requireNonNull(keywordCase, "keywordCase");
     Objects.requireNonNull(connectTimeout, "connectTimeout");
     Objects.requireNonNull(commitMode, "commitMode");
+    Objects.requireNonNull(openInConsole, "openInConsole");
     Objects.requireNonNull(copyNull, "copyNull");
     Objects.requireNonNull(documentView, "documentView");
     if (!validConnectTimeout(connectTimeout)) {
@@ -126,6 +135,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -144,6 +154,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -162,6 +173,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -180,6 +192,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -198,6 +211,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -216,6 +230,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -234,6 +249,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -252,6 +268,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -270,6 +287,26 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
+        timeZone,
+        copyNull,
+        documentView,
+        keepHistory,
+        monitorInterval);
+  }
+
+  public Settings withOpenInConsole(OpenInConsole openInConsole) {
+    return new Settings(
+        look,
+        accent,
+        density,
+        highlightOccurrences,
+        keywordCase,
+        checkForUpdates,
+        connectTimeout,
+        newConnectionsReadOnly,
+        commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -288,6 +325,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -306,6 +344,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -324,6 +363,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -342,6 +382,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,
@@ -360,6 +401,7 @@ public record Settings(
         connectTimeout,
         newConnectionsReadOnly,
         commitMode,
+        openInConsole,
         timeZone,
         copyNull,
         documentView,

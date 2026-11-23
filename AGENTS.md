@@ -27,8 +27,9 @@ as they are opened; several connections are open at once. A double press or Ente
 opens its rows in a tab, read late in pages on its connection's lane, with the rows in view in its
 status line, buttons that scroll a page back or on, or to the first or last row, and, on SQL
 servers, WHERE and ORDER BY fields with completion that narrow and order the rows and count, and
-Open in console to open a console on its database with its SELECT and applied clauses; tabs move
-and tear off into windows of their own. The columns of a table and of a console's result fit their
+Open in console to add its SELECT and applied clauses to the end of a console open on its database,
+or to a new console where none is or Settings asks for a new one; tabs move and tear off into
+windows of their own. The columns of a table and of a console's result fit their
 first rows once, and a table's fit again where a refresh finds other columns. A moment, a timestamp
 with a time zone, shows and is copied in the computer's time zone, with the offset it has there.
 Shift+Enter in a grid, or the button in its
@@ -115,7 +116,8 @@ into the application menu, which gives its windows their icon in the dock. The m
 placement, the sidebar's width and the statement log's open state, height and detail split are kept
 (`ui-state.json`). The theme, System, Light or Dark, where System follows the
 computer's scheme, is kept in `settings.json`, read before the first frame, with the accent, the
-rows' density, whether a console marks the word at the caret, the case of SQL keywords it completes
+rows' density, whether a console marks the word at the caret, the case of SQL keywords it completes,
+whether Open in console reuses an open console
 and whether the start looks for an update. File, Settings… (Control+,, or the palette) opens or
 raises a modeless settings window over the shared state, with pages General, Appearance, Editor,
 Databases and History & log, where every change applies at once, a changed row can be reset and
