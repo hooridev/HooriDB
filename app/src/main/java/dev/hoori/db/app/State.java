@@ -1509,7 +1509,9 @@ final class State {
           index(f.entries(), foldersById, queriesById);
         }
         case Workspace.Query q -> queriesById.put(q.id(), q);
-        case ConnectionProfile _ -> {} // a connection is found by its own list, profiles
+        case ConnectionProfile _ -> {
+          // a connection is found by its own list, profiles
+        }
       }
     }
   }
