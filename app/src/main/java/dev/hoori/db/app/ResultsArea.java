@@ -203,7 +203,7 @@ final class ResultsArea {
     if (ofDocuments) {
       footer.add(o.presentation.switcher("result-shown", o.presentation::mode));
     }
-    ResultEdits.editControls(s, tab, o, footer);
+    ResultEdits.editControls(s, tab, o, footer, footer);
     footer.addAll(presented.footer());
     footer.add(pin);
     return col()

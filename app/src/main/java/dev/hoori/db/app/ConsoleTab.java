@@ -1914,7 +1914,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   @Override
   public String connectionChangedReason(State s) {
-    return ResultEdits.CONNECTION_CHANGED;
+    return s.catalog.connected(id) ? ResultEdits.CONNECTION_CHANGED : ResultEdits.NOT_CONNECTED;
   }
 
   @Override

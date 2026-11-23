@@ -458,6 +458,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     long middle = ((long) first + Math.max(first, last)) / 2 / PAGE;
     var far = new ArrayList<>(pages.keySet());
     far.remove(Long.valueOf(panelPage()));
+    if (selection.isEditing()) {
+      far.remove(Long.valueOf(selection.editingRow() / PAGE)); // its draft's row stays
+    }
     if (!presentation.isGrid()) {
       far.remove(Long.valueOf(presentation.page()));
     }
@@ -948,6 +951,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   /** The toolbar's actions: how documents show, Open in console for SQL, and Refresh. */
   private List<El> actions(State s, boolean connected, boolean ofDocuments) {
     var actions = new ArrayList<El>();
+    if (!ofDocuments && fields != null) {
+      // Beside Refresh, as the footer has no room for them beside the paging at narrow widths.
+      ResultEdits.editControls(s, this, this, new ArrayList<>(), actions);
+    }
     if (ofDocuments) {
       actions.add(presentation.switcher("shown", v -> show(s, v)));
     } else {
@@ -1019,7 +1026,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     end.add(read);
     if (!ofDocuments && fields != null) {
-      ResultEdits.editControls(s, this, this, end);
+      ResultEdits.editControls(s, this, this, end, new ArrayList<>());
     }
     if (presented != null) {
       end.addAll(presented.footer());
@@ -1360,7 +1367,11 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   /** The rows in the grid, which counts them in an int. */
   private int gridRows() {
-    return (int) Math.min(shown(), DocumentPresentation.GRID_ROWS);
+    long n = shown();
+    if (!kept.isEmpty()) {
+      n = Math.max(n, Collections.max(kept.keySet()) + 1L); // an edited row past a shrunk end
+    }
+    return (int) Math.min(n, DocumentPresentation.GRID_ROWS);
   }
 
   private boolean loaded(int row) {
@@ -1699,9 +1710,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   private void keepRow(int row) {
     if (!kept.containsKey(row)) {
-      var original = undoKept.get(row);
+      // The row the grid shows; the undone original only where its page was dropped.
+      var original = pageRow(row);
       if (original == null) {
-        original = pageRow(row);
+        original = undoKept.get(row);
       }
       if (original != null) {
         kept.put(row, original);

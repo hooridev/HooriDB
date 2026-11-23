@@ -285,6 +285,27 @@ class TableTabEditTest {
   }
 
   @Test
+  void openEditorKeepsItsPageWhileScrolledAway() throws Exception {
+    var rows = new ArrayList<List<Object>>(3_000);
+    for (long i = 1; i <= 3_000; i++) {
+      rows.add(List.of(i, "name " + i));
+    }
+    servers.values(BIG, rows);
+    var app = t.shop();
+    c.run(app, table("big") + SETTLE);
+    var tab = t.tab(app);
+
+    // A draft typed into row 0, not staged yet.
+    c.run(app, "press #cell-0-1\ntype \"Draft\"\nframe\n");
+    assertTrue(tab.selection.isEditing());
+    for (long r : new long[] {600, 1000, 1400, 1800, 2200, 2600}) {
+      c.run(app, scroll(r) + SETTLE);
+    }
+    assertTrue(tab.pages.containsKey(0L), tab.pages.keySet().toString());
+    assertEquals(1, tab.pendingChanges());
+  }
+
+  @Test
   void readOnlyReasonsShowForViewNoPrimaryKeyReadOnlyConnectionAndCells() throws Exception {
     var app = t.shop();
 

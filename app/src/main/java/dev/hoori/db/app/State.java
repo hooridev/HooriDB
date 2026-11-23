@@ -1095,7 +1095,10 @@ final class State {
   /** The connection connected anew: its tabs read again what they showed, its consoles run. */
   void connected(UUID id) {
     for (var tab : tables(id)) {
-      if (!tab.atStake()) {
+      if (tab.atStake()) {
+        // The same profile, as changing it asks first: the edits write on the new connection.
+        tab.edits.live = catalog.live(id);
+      } else {
         tab.open(this, true);
       }
     }

@@ -350,7 +350,10 @@ final class ResultEdits {
    * another server, must not take its changes.
    */
   static boolean current(State s, Host host, Target t) {
-    return t.edits().live != null && s.catalog.live(host.connectionId()) == t.edits().live;
+    // A lost connection keeps its Live until it connects anew, but has no writer meanwhile.
+    return t.edits().live != null
+        && s.catalog.live(host.connectionId()) == t.edits().live
+        && s.catalog.connected(host.connectionId());
   }
 
   /** GridChanges keyed by row position in the grid, never by primary key. */
@@ -1026,18 +1029,22 @@ final class ResultEdits {
             .key("write-problem"));
   }
 
-  /** Edit status, pending count badge, Revert and Commit… controls for an editable SQL grid. */
-  static void editControls(State s, Host host, Target target, List<El> footer) {
+  /**
+   * Edit status, pending count badge, Revert and Commit… controls for an editable SQL grid: the
+   * status, as why a cell is read-only, goes to {@code status}; the pending
+   * count and the buttons go to {@code actions}, which may be the same list.
+   */
+  static void editControls(State s, Host host, Target target, List<El> status, List<El> actions) {
     Theme t = Theme.CURRENT.get();
     var edits = target.edits();
     if (edits.writing != null) {
-      footer.add(row()
+      status.add(row()
           .gap(t.space().s())
           .align(Style.Align.CENTER)
           .key("edit-status")
           .child(Progress.spinner().label("Committing"))
           .child(Label.label(Label.Variant.MUTED, "Committing…")));
-      footer.add(button(
+      actions.add(button(
               SECONDARY,
               ConsoleTab.CANCEL_BUTTON,
               () -> cancelWrite(s, host, target),
@@ -1046,33 +1053,33 @@ final class ResultEdits {
       return;
     }
     boolean current = current(s, host, target);
-    String status =
+    String why =
         edits.editable != null && !current ? host.connectionChangedReason(s) : editStatus(target);
-    if (status != null) {
+    if (why != null) {
       // The line is short; the whole reason, as how to add an offset, shows on hover.
-      footer.add(Tooltip.tooltip(
-          Label.label(Label.Variant.MUTED, status).key("edit-status").ellipsis(), status));
+      status.add(Tooltip.tooltip(
+          Label.label(Label.Variant.MUTED, why).key("edit-status").ellipsis(), why));
     }
     if (edits.editable == null) {
       return;
     }
     int count = edits.changes.count();
     if (count > 0) {
-      footer.add(Badge.badge(
+      actions.add(Badge.badge(
               count == 1 ? "1 change" : count + " changes",
               Badge.options().toolbar().kind(Badge.Kind.WARNING))
           .key("pending-changes"));
     }
     boolean locked = s.guard.locked(host.guarded()) != null;
     boolean selectedChanges = count > 0 && hasSelectedChanges(target);
-    footer.add(Tooltip.tooltip(
+    actions.add(Tooltip.tooltip(
         button(
                 SECONDARY,
                 "Revert",
                 selectedChanges && !locked ? () -> revertSelection(s, target) : null)
             .key("revert-selection"),
         "Revert selected cells"));
-    footer.add(Tooltip.tooltip(
+    actions.add(Tooltip.tooltip(
         button(
                 SECONDARY,
                 "Revert all",
@@ -1082,7 +1089,7 @@ final class ResultEdits {
             .key("revert-all"),
         "Revert all pending changes"));
     boolean canCommit = (count > 0 || target.selection().isEditing()) && !locked && current;
-    footer.add(button(PRIMARY, "Commit…", canCommit ? () -> askCommit(s, host, target) : null)
+    actions.add(button(PRIMARY, "Commit…", canCommit ? () -> askCommit(s, host, target) : null)
         .key("commit-changes"));
   }
 
