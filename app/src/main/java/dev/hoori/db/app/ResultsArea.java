@@ -200,6 +200,9 @@ final class ResultsArea {
     var presented = o.presentation.view(
         app, s.zone, ofDocuments, () -> gridView(s, app, o), () -> documentPage(s, o));
     var footer = new ArrayList<El>();
+    if (tab.canStopReading(s, o)) {
+      footer.add(button(SECONDARY, "Stop reading", () -> tab.stopReading(s)).key("stop-reading"));
+    }
     if (ofDocuments) {
       footer.add(o.presentation.switcher("result-shown", o.presentation::mode));
     }
@@ -231,22 +234,29 @@ final class ResultsArea {
             Label.label(Label.Variant.MUTED, ConsoleTab.brief(o.statement)).ellipsis(), pin));
   }
 
-  /** What a result's status line says: its statement, and how many of its rows it holds. */
+  /** What a result's status line says: how many of its rows it holds, and its statement. */
   private static String about(ConsoleTab.Output o) {
     boolean whole = !o.documents.isEmpty();
     String count = ConsoleTab.rows(o.rows.size(), whole);
     String held;
     if (o.more) {
-      held = count + " so far, more as it scrolls";
+      held = count + " so far · cursor open, more as it scrolls";
     } else if (o.cut) {
-      held = "the first " + count + "; the rest was not read";
+      held = "the first " + count + "; "
+          + switch (o.cutReason) {
+            case LEFT -> "the rest was not read";
+            case STOPPED -> "reading stopped";
+            case IDLE -> "reading stopped after being idle";
+            case LIMIT -> "limit reached, the rest was not read";
+          };
     } else if (o.dropped > 0) {
       held = "the first " + count + " of " + ConsoleTab.rows(o.rows.size() + o.dropped, whole)
           + "; the rest was read and not kept";
     } else {
       held = count;
     }
-    return ConsoleTab.brief(o.statement) + " · " + held;
+    // The rows first: a long statement is cut short at the end, not the state of its read.
+    return held + " · " + ConsoleTab.brief(o.statement);
   }
 
   /** The page of the result's documents for the JSON and Tree strategies. */

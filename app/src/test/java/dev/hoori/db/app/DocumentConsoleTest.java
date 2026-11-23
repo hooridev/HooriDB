@@ -326,4 +326,53 @@ class DocumentConsoleTest {
     assertFalse(c.tree("no-doc").contains("#documentation"), c.tree("no-doc"));
     assertEquals(0, app.state().tables(DOCS.id()).size());
   }
+
+  @Test
+  void aMongoDbOpenCursorStopsOnStopReadingAndAfterBeingIdle() throws Exception {
+    var docs = java.util.stream.IntStream.rangeClosed(1, 500)
+        .mapToObj(i -> Document.of("_id", i, "customer", "c" + i, "total", (double) i))
+        .toList();
+    var fields = Values.found(docs);
+    var rows = docs.stream().map(d -> Values.row(fields, d)).toList();
+    var query = "db.orders.find()";
+    c.servers.statement(query, List.of(new Result.Rows(fields, 0, rows, docs)));
+    var app = console();
+    c.run(app, type(query) + RUN + "snap open\n");
+    String open = c.tree("open");
+    assertTrue(
+        ConsoleTest.near(open, "#result-status").contains("200 documents so far · cursor open"),
+        open);
+    assertTrue(open.contains("role=button label=\"Stop reading\""), open);
+
+    c.run(app, "press role=button label=\"Stop reading\"\nframe\n" + SETTLE + "snap stopped\n");
+    assertTrue(
+        c.servers.calls.contains("close " + MONGO + " " + query), c.servers.calls.toString());
+    var output = tab(app).outputs.getFirst();
+    assertFalse(output.more);
+    assertTrue(output.cut);
+    assertEquals(200, output.documents.size());
+    assertTrue(
+        ConsoleTest.near(c.tree("stopped"), "#result-status")
+            .contains("the first 200 documents; reading stopped"),
+        c.tree("stopped"));
+    assertFalse(
+        c.tree("stopped").contains("role=button label=\"Stop reading\""), c.tree("stopped"));
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE);
+    assertFalse(
+        c.servers.calls.contains("next " + MONGO + " " + query + " 200"),
+        c.servers.calls.toString());
+
+    // Idle give-up closes the cursor too.
+    c.servers.calls.clear();
+    c.run(
+        app,
+        "press #sql\n" + RUN + "advance " + ConsoleTab.IDLE_SECONDS + "\nframe\n" + SETTLE
+            + "snap idle\n");
+    assertTrue(
+        c.servers.calls.contains("close " + MONGO + " " + query), c.servers.calls.toString());
+    assertTrue(
+        ConsoleTest.near(c.tree("idle"), "#result-status")
+            .contains("the first 200 documents; reading stopped after being idle"),
+        c.tree("idle"));
+  }
 }
