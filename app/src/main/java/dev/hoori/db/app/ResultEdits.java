@@ -304,7 +304,7 @@ final class ResultEdits {
       State s, ConsoleTab tab, ConsoleTab.Output o, boolean temp, boolean retry) {
     // A session that outlived the tree's connection may be on another server than its writer.
     if (!current(s, tab, o)) {
-      o.edits.readOnlyReason = CONNECTION_CHANGED;
+      o.edits.readOnlyReason = tab.connectionChangedReason(s);
       return;
     }
     var lane = s.catalog.writer(s, tab.id, o.edits.database);
@@ -1072,13 +1072,12 @@ final class ResultEdits {
     }
     boolean locked = s.guard.locked(host.guarded()) != null;
     boolean selectedChanges = count > 0 && hasSelectedChanges(target);
-    actions.add(Tooltip.tooltip(
-        button(
-                SECONDARY,
-                "Revert",
-                selectedChanges && !locked ? () -> revertSelection(s, target) : null)
-            .key("revert-selection"),
-        "Revert selected cells"));
+    actions.add(Button.icon(
+            SECONDARY,
+            Symbol.ARROW_UNDO,
+            "Revert selected cells",
+            selectedChanges && !locked ? () -> revertSelection(s, target) : null)
+        .key("revert-selection"));
     actions.add(Tooltip.tooltip(
         button(
                 SECONDARY,

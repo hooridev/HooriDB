@@ -285,6 +285,37 @@ class TableTabEditTest {
   }
 
   @Test
+  void redoWritesTheRowItWasMadeOn() throws Exception {
+    var rows = new ArrayList<List<Object>>(3_000);
+    for (long i = 1; i <= 3_000; i++) {
+      rows.add(List.of(i, "name " + i));
+    }
+    servers.values(BIG, rows);
+    var app = t.shop();
+    c.run(app, table("big") + SETTLE);
+    var tab = t.tab(app);
+
+    // Edit id 1, undo it, and let the server delete id 1 while page 0 is dropped.
+    c.run(app, "press #cell-0-1\ntype \"Edited 1\"\nkey Enter\nframe\nkey Z control\nframe\n");
+    assertEquals(0, tab.pendingChanges());
+    for (long r : new long[] {600, 1000, 1400, 1800, 2200, 2600}) {
+      c.run(app, scroll(r) + SETTLE);
+    }
+    assertFalse(tab.pages.containsKey(0L), tab.pages.keySet().toString());
+    servers.values(BIG, rows.subList(1, rows.size()));
+    c.run(app, scroll(0) + SETTLE + "snap back\n");
+    assertTrue(cell(c.tree("back"), 0, 1).contains("\"name 2\""), c.tree("back"));
+
+    // Redo stages the edit on id 1 again, not on id 2 now shown there: the write misses.
+    c.run(
+        app,
+        "key Y control\nframe\npress #commit-changes\nframe\n" + OPENED
+            + "press #preview-commit\nframe\n" + OPENED + SETTLE + "snap redone\n");
+    assertTrue(line(c.tree("redone"), "#write-problem").contains("Changes not committed"));
+    assertEquals("name 2", servers.rowsOf(BIG).get(0).get(1));
+  }
+
+  @Test
   void openEditorKeepsItsPageWhileScrolledAway() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);
     for (long i = 1; i <= 3_000; i++) {

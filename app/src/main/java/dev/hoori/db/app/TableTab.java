@@ -851,8 +851,22 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     El rowsStatus = Label.label(Label.Variant.MUTED, rowsText(ofDocuments))
         .key("rows-status")
         .ellipsis();
-    return content.child(
-        Card.footer(rowsStatus, footer(s, ofDocuments, presented).toArray(El[]::new)));
+    var edited = new ArrayList<El>();
+    var footer = footer(s, ofDocuments, presented, edited);
+    // The edit actions on a line of their own while there is something to commit: the status line
+    // has no room for them beside the paging.
+    if (edits.changes != null && (edits.changes.count() > 0 || edits.writing != null)) {
+      content
+          .child(Divider.divider())
+          .child(row()
+              .key("edit-bar")
+              .padding(t.space().s(), t.space().xl())
+              .gap(t.space().s())
+              .align(Style.Align.CENTER)
+              .minSize(0, 0)
+              .children(edited.toArray(El[]::new)));
+    }
+    return content.child(Card.footer(rowsStatus, footer.toArray(El[]::new)));
   }
 
   /** The WHERE and ORDER BY clause fields above the grid on an SQL server. */
@@ -951,10 +965,6 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   /** The toolbar's actions: how documents show, Open in console for SQL, and Refresh. */
   private List<El> actions(State s, boolean connected, boolean ofDocuments) {
     var actions = new ArrayList<El>();
-    if (!ofDocuments && fields != null) {
-      // Beside Refresh, as the footer has no room for them beside the paging at narrow widths.
-      ResultEdits.editControls(s, this, this, new ArrayList<>(), actions);
-    }
     if (ofDocuments) {
       actions.add(presentation.switcher("shown", v -> show(s, v)));
     } else {
@@ -1010,7 +1020,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   /** The status line after the number of rows: what it says, the last read, edits, and paging. */
-  private List<El> footer(State s, boolean ofDocuments, DocumentPresentation.View presented) {
+  private List<El> footer(
+      State s, boolean ofDocuments, DocumentPresentation.View presented, List<El> edited) {
     Theme t = Theme.CURRENT.get();
     El read = busy()
         ? row()
@@ -1026,7 +1037,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     end.add(read);
     if (!ofDocuments && fields != null) {
-      ResultEdits.editControls(s, this, this, end, new ArrayList<>());
+      ResultEdits.editControls(s, this, this, end, edited);
     }
     if (presented != null) {
       end.addAll(presented.footer());
@@ -1612,9 +1623,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   @Override
   public boolean hasUnloaded() {
-    return counted != Counted.EXACT
-        || more
-        || (long) pages.size() * PAGE < Math.min(rows, DocumentPresentation.GRID_ROWS);
+    // Up to the last row the grid shows, which may be an edited one past a shrunk end.
+    return counted != Counted.EXACT || more || rangeUnloaded(0, gridRows() - 1);
   }
 
   @Override
@@ -1645,7 +1655,13 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   @Override
   public void beforeStage(int row) {
-    keepRow(row);
+    if (!kept.containsKey(row)) {
+      undoKept.remove(row); // a fresh edit is of the row shown, whatever was undone there
+      var shown = pageRow(row);
+      if (shown != null) {
+        kept.put(row, shown);
+      }
+    }
   }
 
   @Override
@@ -1665,7 +1681,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       var entry = it.next();
       if (changes.rowStatus(entry.getKey()) == DataGrid.Status.UNCHANGED) {
         if (keepHistory) {
-          undoKept.putIfAbsent(entry.getKey(), entry.getValue());
+          undoKept.put(entry.getKey(), entry.getValue());
         }
         it.remove();
       }
@@ -1710,10 +1726,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   private void keepRow(int row) {
     if (!kept.containsKey(row)) {
-      // The row the grid shows; the undone original only where its page was dropped.
-      var original = pageRow(row);
+      // Undo and redo replay an edit on the row it was made on, also where another shows now.
+      var original = undoKept.get(row);
       if (original == null) {
-        original = undoKept.get(row);
+        original = pageRow(row);
       }
       if (original != null) {
         kept.put(row, original);
