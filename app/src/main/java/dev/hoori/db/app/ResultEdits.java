@@ -87,6 +87,8 @@ final class ResultEdits {
       "Read-only: the connection changed; run the statement again to edit";
   static final String TABLE_CONNECTION_CHANGED =
       "Read-only: the connection changed; refresh to edit";
+  static final String INSERT_UNSURE = "Whether an earlier commit took effect is not known: new rows"
+      + " it sent may be in the table already, and Commit would insert them again.";
   static final String REPEATED_ROW =
       "The same row shows more than once in the result; edit only one of its copies.";
 
@@ -469,6 +471,22 @@ final class ResultEdits {
     return set == null ? Map.of() : set;
   }
 
+  /**
+   * The table positions of the first and the last table row in grid rows {@code [top, bottom]},
+   * or null where they hold only new rows.
+   */
+  static int[] positions(GridChanges changes, int top, int bottom) {
+    int first = Math.max(0, top);
+    int last = Math.min(bottom, changes.rowCount() - 1);
+    while (first <= last && changes.key(first) < 0) {
+      first++;
+    }
+    while (last >= first && changes.key(last) < 0) {
+      last--;
+    }
+    return first > last ? null : new int[] {(int) changes.key(first), (int) changes.key(last)};
+  }
+
   /** Whether any non-new row in grid row range {@code [gridTop, gridBottom]} is unloaded. */
   static boolean rangeUnloadedGrid(Target t, int gridTop, int gridBottom) {
     var changes = t.edits().changes;
@@ -478,22 +496,11 @@ final class ResultEdits {
     if (gridTop < 0 || gridBottom < gridTop) {
       return false;
     }
-    int gridCount = changes.rowCount();
-    if (gridBottom >= gridCount) {
+    if (gridBottom >= changes.rowCount()) {
       return true;
     }
-    int first = gridTop;
-    while (first <= gridBottom && changes.key(first) < 0) {
-      first++;
-    }
-    if (first > gridBottom) {
-      return false;
-    }
-    int last = gridBottom;
-    while (last >= first && changes.key(last) < 0) {
-      last--;
-    }
-    return t.rangeUnloaded((int) changes.key(first), (int) changes.key(last));
+    var at = positions(changes, gridTop, gridBottom);
+    return at != null && t.rangeUnloaded(at[0], at[1]);
   }
 
   /** Whether cell ({@code gridRow}, {@code col}) in an editable grid can be edited. */
@@ -835,7 +842,8 @@ final class ResultEdits {
     // shortcut: a large selection walks every staged change at each build; ask the kit once it
     // can say whether a selection holds one (rethinkj/ui#514).
     if (area > SCAN) {
-      return hasAnySelectedChange(t);
+      var rows = new ArrayList<DataGrid.Range>();
+      return !selectedChanges(t, rows, true).isEmpty() || !rows.isEmpty();
     }
     for (var range : ranges) {
       for (int r = range.top(); r <= Math.min(range.bottom(), lastRow); r++) {
@@ -873,42 +881,36 @@ final class ResultEdits {
     return false;
   }
 
-  private static boolean hasAnySelectedChange(Target t) {
+  // The changed cells in the selection, as grid row, column and position, and into rows the new or
+  // deleted rows it touches; from the changes, which are few beside a large selection. With any,
+  // only until the first.
+  private static List<int[]> selectedChanges(Target t, List<DataGrid.Range> rows, boolean any) {
+    var cells = new ArrayList<int[]>();
     var changes = t.edits().changes;
-    if (changes == null) {
-      return false;
-    }
     var selection = t.selection();
     var ranges = selection.ranges();
-    int colCount = t.fields().size();
+    int columns = t.fields().size();
     for (var change : changes.changes()) {
       int gridRow = changes.rowOf(change.key());
-      if (gridRow < 0) {
-        continue;
+      if (gridRow >= 0 && change.kind() != GridChanges.Kind.UPDATE) {
+        if (rowHasSelection(selection, gridRow, columns)) {
+          rows.add(new DataGrid.Range(gridRow, 0, gridRow, DataGrid.Range.ALL));
+        }
+      } else if (gridRow >= 0 && t.rowLoaded((int) change.key())) {
+        for (int c : change.values().keySet()) {
+          boolean selected = ranges.isEmpty()
+              ? gridRow == selection.row() && c == selection.column()
+              : selection.contains(gridRow, c);
+          if (selected) {
+            cells.add(new int[] {gridRow, c, (int) change.key()});
+          }
+        }
       }
-      switch (change.kind()) {
-        case DELETE, INSERT -> {
-          if (rowHasSelection(selection, gridRow, colCount)) {
-            return true;
-          }
-        }
-        case UPDATE -> {
-          int pos = (int) change.key();
-          if (!t.rowLoaded(pos)) {
-            continue;
-          }
-          for (int c : change.values().keySet()) {
-            boolean selected = ranges.isEmpty()
-                ? gridRow == selection.row() && c == selection.column()
-                : selection.contains(gridRow, c);
-            if (selected) {
-              return true;
-            }
-          }
-        }
+      if (any && (!cells.isEmpty() || !rows.isEmpty())) {
+        return cells;
       }
     }
-    return false;
+    return cells;
   }
 
   /** Reverts changed cells, unmarks deleted rows, and removes new rows in the current selection. */
@@ -918,39 +920,11 @@ final class ResultEdits {
       return;
     }
     t.selection().cancelEdit();
-    var changes = edits.changes;
-    var selection = t.selection();
-    var ranges = selection.ranges();
-    int colCount = t.fields().size();
-    var reverts = new ArrayList<DataGrid.CellValue>();
     var rowRanges = new ArrayList<DataGrid.Range>();
-    for (var change : changes.changes()) {
-      int gridRow = changes.rowOf(change.key());
-      if (gridRow < 0) {
-        continue;
-      }
-      switch (change.kind()) {
-        case DELETE, INSERT -> {
-          if (rowHasSelection(selection, gridRow, colCount)) {
-            rowRanges.add(new DataGrid.Range(gridRow, 0, gridRow, DataGrid.Range.ALL));
-          }
-        }
-        case UPDATE -> {
-          int pos = (int) change.key();
-          if (!t.rowLoaded(pos)) {
-            continue;
-          }
-          var rowValues = t.rowAt(pos);
-          for (int c : change.values().keySet()) {
-            boolean selected = ranges.isEmpty()
-                ? gridRow == selection.row() && c == selection.column()
-                : selection.contains(gridRow, c);
-            if (selected) {
-              reverts.add(new DataGrid.CellValue(gridRow, c, Cells.cell(rowValues.get(c), s.zone)));
-            }
-          }
-        }
-      }
+    var reverts = new ArrayList<DataGrid.CellValue>();
+    for (var at : selectedChanges(t, rowRanges, false)) {
+      reverts.add(
+          new DataGrid.CellValue(at[0], at[1], Cells.cell(t.rowAt(at[2]).get(at[1]), s.zone)));
     }
     // Revert cell edits before removing new rows so grid row indices stay valid for both steps.
     if (!reverts.isEmpty()) {
@@ -1129,8 +1103,13 @@ final class ResultEdits {
     int n = p.statements.size();
     var table =
         provider == null ? p.changes.table().name() : Rows.qualified(provider, p.changes.table());
-    String summary = (n == 1 ? "1 statement" : n + " statements")
-        + " will run in one transaction on " + table + ".";
+    var summary = (n == 1 ? "1 statement" : n + " statements") + " will run in one transaction on "
+        + table + ".";
+    // An update or delete checks its row again, a new row cannot: it may be there already.
+    if (p.target.edits().unknown
+        && p.changes.changes().stream().anyMatch(Change.Insert.class::isInstance)) {
+      summary += " " + INSERT_UNSURE;
+    }
     El code = CodeEditor.embedded(CodeEditor.codeEditor(
             app, p.sql, p.editor, provider == null ? null : Syntax.of(provider), null)
         .key("preview-sql")

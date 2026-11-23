@@ -1148,7 +1148,9 @@ final class FakeServers implements Servers {
                 return new Changes.Outcome.Missed(change, count);
               }
             }
-            case Change.Insert _ -> {}
+            case Change.Insert _ -> {
+              // A new row has no row to check.
+            }
           }
         }
         var next = new ArrayList<>(stored);

@@ -1163,6 +1163,16 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     static final InPanel NONE = new InPanel(null, null, false, false);
   }
 
+  // Whether the cell holds a staged value of its own, which the panel shows in place of the row's.
+  private boolean staged(int row, int column) {
+    var changes = edits.changes;
+    if (changes == null || changes.isEmpty()) {
+      return false;
+    }
+    var status = changes.cellStatus(row, column);
+    return status == DataGrid.Status.CHANGED || status == DataGrid.Status.ERROR;
+  }
+
   /** What the open value panel shows of the current cell, read where its page is not held. */
   private InPanel inPanel(State s) {
     int row = selection.row();
@@ -1177,11 +1187,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     var changes = edits.changes;
     if (changes != null && !changes.isEmpty() && changes.isNew(row)) {
-      var cols = ResultEdits.insertedColumns(changes).get(changes.key(row));
-      if (cols == null || !cols.contains(column)) {
-        return new InPanel(cell(column, ValuePanel.DEFAULT), null, false, false);
-      }
-      return new InPanel(cell(column, changes.cell(row, column)), null, false, false);
+      boolean set = ResultEdits.insertedColumns(changes).get(changes.key(row)).contains(column);
+      var v = set ? changes.cell(row, column) : ValuePanel.DEFAULT;
+      return new InPanel(cell(column, v), null, false, false);
     }
     int pos = positionOf(row);
     if (!loaded(pos)) {
@@ -1193,11 +1201,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       boolean waiting = opening != null || reading.containsKey(page);
       return new InPanel(waiting ? cell(column, null) : null, null, waiting, false);
     }
-    if (changes != null && !changes.isEmpty()) {
-      var status = changes.cellStatus(row, column);
-      if (status == DataGrid.Status.CHANGED || status == DataGrid.Status.ERROR) {
-        return new InPanel(cell(column, changes.cell(row, column)), null, false, false);
-      }
+    if (staged(row, column)) {
+      return new InPanel(cell(column, changes.cell(row, column)), null, false, false);
     }
     var values = rowValues(pos);
     var v = values.get(column);
@@ -1286,32 +1291,24 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   /** The rows wholly in view, as "Rows 201–223"; empty before the grid was laid out. */
   private String inViewText(boolean documents) {
     int top = selection.firstRowInView();
-    int last = selection.lastRowInView();
-    if (top < 0 || last < top) {
+    int bottom = selection.lastRowInView();
+    if (top < 0 || bottom < top) {
       return "";
     }
     var changes = edits.changes;
     if (changes != null && !changes.isEmpty()) {
-      int gridCount = changes.rowCount();
-      last = Math.min(last, gridCount - 1);
-      while (top <= last && changes.key(top) < 0) {
-        top++;
-      }
-      if (top > last) {
+      var at = ResultEdits.positions(changes, top, bottom);
+      if (at == null) {
         return "";
       }
-      while (last >= top && changes.key(last) < 0) {
-        last--;
-      }
-      top = (int) changes.key(top);
-      last = (int) changes.key(last);
+      top = at[0];
+      bottom = at[1];
     }
     if (top >= rows) {
       return "";
     }
     // Not the row that asks whether there are more, which is not known to be there.
-    long bottom = Math.min(last + 1L, rows);
-    return DocumentPresentation.range(top + 1L, bottom, documents);
+    return DocumentPresentation.range(top + 1L, Math.min(bottom + 1L, rows), documents);
   }
 
   /**
@@ -1452,19 +1449,15 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var changes = edits.changes;
     BooleanSupplier free = () ->
         edits.writing == null && s.guard.locked(this) == null && ResultEdits.current(s, this, this);
-    int count = editable != null && changes != null ? changes.rowCount() : gridRows();
-    var inserted = editable != null && changes != null
-        ? ResultEdits.insertedColumns(changes)
-        : Map.<Long, Set<Integer>>of();
+    boolean edited = editable != null && changes != null;
+    int count = edited ? changes.rowCount() : gridRows();
+    var inserted = edited ? ResultEdits.insertedColumns(changes) : Map.<Long, Set<Integer>>of();
     var shown = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < columns.size(); c++) {
       var kind = fields == null ? null : fields.get(c).kind();
       int at = c;
       var col = Cells.column(columns.get(c), kind, widths, c, row -> value(row, at), zone);
-      shown.add(
-          editable != null && changes != null
-              ? ResultEdits.editedColumn(this, col, at, free, false, inserted)
-              : col);
+      shown.add(edited ? ResultEdits.editedColumn(this, col, at, free, false, inserted) : col);
     }
     var options = DataGrid.options()
         .select(selection)
@@ -1480,14 +1473,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .loading(this::gridRowLoaded, (from, to) -> wantGrid(s, from, to))
         // Nothing to do: the build it causes brings the footer's rows in view along.
         .onRowsInView((from, to) -> {});
-    if (editable != null && changes != null) {
+    if (edited) {
       ResultEdits.configureGrid(s, this, options, free, true);
     }
     El grid = DataGrid.dataGrid(shown, count, options)
         .key("grid")
         .label("Rows of " + table.name())
         .defaultFocus();
-    if (editable != null && changes != null) {
+    if (edited) {
       Predicate<Key> guard = k -> ResultEdits.rejectUnloadedKey(app, this, k);
       grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
     }
@@ -1529,20 +1522,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       want(s, gridFrom, gridTo);
       return;
     }
-    int gridCount = changes.rowCount();
-    int lo = Math.max(0, gridFrom);
-    int hi = Math.min(gridTo, gridCount - 1);
-    while (lo <= hi && changes.key(lo) < 0) {
-      lo++;
-    }
-    if (lo > hi) {
+    var at = ResultEdits.positions(changes, gridFrom, gridTo);
+    if (at == null) {
       want(s, 0, -1);
-      return;
+    } else {
+      want(s, at[0], at[1]);
     }
-    while (hi >= lo && changes.key(hi) < 0) {
-      hi--;
-    }
-    want(s, (int) changes.key(lo), (int) changes.key(hi));
   }
 
   private boolean loaded(int pos) {
