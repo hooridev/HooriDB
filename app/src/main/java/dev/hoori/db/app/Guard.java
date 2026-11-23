@@ -171,7 +171,11 @@ final class Guard {
   /** Why the tab may start nothing now, or null. */
   String locked(Guarded tab) {
     return pending instanceof Pending.Locked locked
-            && (locked.scope() == null || locked.scope().contains(tab.connectionId()))
+            && (locked.scope() == null
+                || tab.connectionId() != null && locked.scope().contains(tab.connectionId())
+                || tab instanceof ConsoleTab c
+                    && c.queryId != null
+                    && locked.scope().contains(c.queryId))
         ? locked.what()
         : null;
   }

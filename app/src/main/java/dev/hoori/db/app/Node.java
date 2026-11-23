@@ -27,6 +27,7 @@ sealed interface Node {
     return switch (entry) {
       case Workspace.Folder f -> new Folder(f.id());
       case ConnectionProfile p -> new Connection(p.id());
+      case Workspace.Query q -> new Query(q.id());
     };
   }
 
@@ -48,6 +49,13 @@ sealed interface Node {
   }
 
   record Connection(UUID id) implements Node {
+    @Override
+    public Node parent() {
+      return null;
+    }
+  }
+
+  record Query(UUID id) implements Node {
     @Override
     public Node parent() {
       return null;

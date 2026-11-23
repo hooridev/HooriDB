@@ -176,32 +176,30 @@ final class ConsoleView {
     static final Icon STOP = Icon.glyph(FONT, 0xF741, "Stop");
   }
 
-  /** Save query, Saved queries and History. */
+  /** Save to workspace (for consoles not already in the workspace) and History. */
   private List<El> kept(State s) {
-    return List.of(
-        Tooltip.tooltip(
-            Button.icon(
-                    Button.Variant.GHOST,
-                    Symbol.SAVE,
-                    "Save query",
-                    s.keeping.queriesUsable() ? tab::saveQuery : null)
-                .key("query-save-open")
-                .keepFocus(),
-            "Save query: the selection, or else the whole text, under a name"),
-        Tooltip.tooltip(
-            Button.icon(
-                    Button.Variant.GHOST,
-                    Symbol.STAR,
-                    "Saved queries",
-                    s.keeping.queriesUsable() ? tab::openQueries : null)
-                .key("queries-open")
-                .keepFocus(),
-            "Saved queries"),
-        Tooltip.tooltip(
-            Button.icon(Button.Variant.GHOST, Symbol.HISTORY, "History", tab::openHistory)
-                .key("history-open")
-                .keepFocus(),
-            "History"));
+    var items = new ArrayList<El>();
+    if (!tab.isQuery()) {
+      items.add(Tooltip.tooltip(
+          Button.icon(
+                  Button.Variant.GHOST,
+                  Symbol.SAVE,
+                  "Save to workspace",
+                  s.canChange() ? () -> tab.saveToWorkspace(s) : null)
+              .key("query-save-open")
+              .keepFocus(),
+          "Save to workspace: the selection, or else the whole text"));
+    }
+    items.add(Tooltip.tooltip(
+        Button.icon(
+                Button.Variant.GHOST,
+                Symbol.HISTORY,
+                "History",
+                tab.id != null ? tab::openHistory : null)
+            .key("history-open")
+            .keepFocus(),
+        "History"));
+    return items;
   }
 
   /** The databases to switch to: those the tree read, and the one it is on. */
@@ -215,7 +213,7 @@ final class ConsoleView {
             tab.database,
             n -> n.isEmpty() ? "No database" : n,
             databases,
-            n -> tab.use(s, n))
+            tab.id == null ? null : n -> tab.use(s, n))
         .key("database")
         .label("Database")
         .w(6 * t.size().control());

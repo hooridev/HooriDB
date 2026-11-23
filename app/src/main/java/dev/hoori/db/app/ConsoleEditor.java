@@ -214,6 +214,18 @@ final class ConsoleEditor {
     suggestions.close();
   }
 
+  /** The query tab switched target connection: forget old target's outcomes, errors and scans. */
+  void clearForSwitch() {
+    clear();
+    sent.clear();
+    sentFrom = null;
+    outcomes.clear();
+    marked = null;
+    navigable.clear();
+    suggestions.close();
+    suggestions.forget();
+  }
+
   private void clear() {
     tab.editor.noMarkup(ERROR_LAYER);
   }
@@ -249,7 +261,7 @@ final class ConsoleEditor {
   /** Opens the table a navigation {@code Location} points to, in this console's window. */
   private void open(State s, CodeEditor.Location location) {
     Table table = navigable.get(location.document());
-    if (table == null || s.profile(tab.id) == null) {
+    if (table == null || tab.id == null || s.profile(tab.id) == null) {
       return;
     }
     var group = s.tabs.groupOf(tab);

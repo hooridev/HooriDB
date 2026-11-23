@@ -8,10 +8,13 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Highlighter;
 import com.rethinkj.ui.Key;
+import com.rethinkj.ui.Side;
+import com.rethinkj.ui.Style;
 import com.rethinkj.ui.editor.CodeEditor;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Divider;
+import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -22,6 +25,7 @@ import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.StoredConsole;
+import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.Script;
@@ -302,7 +306,11 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   static final String CANCEL_BUTTON = "Cancel";
   static final String ROLL_BACK_FIRST = "Roll back the transaction?";
 
-  final UUID id;
+  UUID id; // changeable on a workspace query tab, and null before its first run
+  final UUID queryId; // non-null when bound to a workspace query entry
+  final Workspace.Language queryLanguage; // non-null when bound to a workspace query entry
+  final Menu.State targets = new Menu.State(); // Run on, at the caret, for a workspace query
+  private List<Menu.Item> targetItems = List.of();
   // The one it runs on: the tree node's, the profile's, the one chosen, or else the one database of
   // the user's the tree read, until the session opens; empty for none.
   // shortcut: a USE the user runs is not followed, so this may name another database than the
@@ -413,20 +421,47 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   private Sent recording;
   private HistoryEntry recorded; // the last statement that went into the history, or null
   HistoryDialog history; // the History dialog, null while closed
-  QueriesDialog queries; // Save query or Saved queries, null while closed
   // Whether this console session has sent a statement that may create a temporary table.
   boolean createdTemporaryTable;
   // The tree's connection the session was opened from: a result edits only through it.
   Live sessionLive;
   ResultEdits.Preview preview; // the DML Preview dialog before committing result edits, or null
 
-  /** A statement of the user's on its way to the server, and since when. */
-  private record Sent(String sql, Instant started) {}
+  /** A statement of the user's on its way to the server, on which connection and since when. */
+  private record Sent(UUID connection, String sql, Instant started) {}
+
+  /** What the user asked to run, held while the target chooser or Guard asks. */
+  private sealed interface PendingRun {
+    record Selection(int from, int to) implements PendingRun {}
+
+    record Caret(int at) implements PendingRun {}
+
+    record All() implements PendingRun {}
+
+    record One(Statement statement) implements PendingRun {}
+
+    // A query's gutter marker, placed before the dialect was known: the statement starting there.
+    record Marker(int at) implements PendingRun {}
+  }
+
+  private record ResolvedRun(int from, List<Statement> chosen) {}
 
   ConsoleTab(UUID id, String database, Mode initial) {
+    this(id, database, initial, null, null);
+  }
+
+  private ConsoleTab(
+      UUID id, String database, Mode initial, UUID queryId, Workspace.Language queryLanguage) {
     this.id = id;
     this.database = database;
     this.mode = initial;
+    this.queryId = queryId;
+    this.queryLanguage = queryLanguage;
+  }
+
+  /** Whether this console tab is bound to a workspace query entry. */
+  boolean isQuery() {
+    return queryId != null;
   }
 
   /** A console starting in the configured commit mode for SQL, and Auto for documents. */
@@ -438,6 +473,18 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         ? Mode.MANUAL
         : Mode.AUTO;
     return new ConsoleTab(id, database, initial);
+  }
+
+  /** A console tab bound to a workspace query, initially with no target connection. */
+  static ConsoleTab ofQuery(State s, Workspace.Query query) {
+    var initial = Language.of(query.language()).transactions()
+            && s.settings.commitMode() == Settings.CommitMode.MANUAL
+        ? Mode.MANUAL
+        : Mode.AUTO;
+    var tab = new ConsoleTab(null, "", initial, query.id(), query.language());
+    tab.text = query.text();
+    tab.editor.select(tab.text.length(), tab.text.length());
+    return tab;
   }
 
   /** The console as it is kept until the next start. */
@@ -457,7 +504,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     recording = null;
     var time = took != null ? took : Duration.between(entry.started(), Instant.now());
     recorded = new HistoryEntry(
-        id,
+        entry.connection(),
         entry.sql(),
         entry.started(),
         time.truncatedTo(ChronoUnit.MILLIS), // as it is kept
@@ -491,43 +538,171 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
    * where the caret is not at its end.
    */
   void run(State s) {
-    var provider = provider(s);
-    if (provider == null) {
-      return;
-    }
-    int from = Math.min(editor.caret(), editor.anchor());
-    int to = Math.max(editor.caret(), editor.anchor());
-    if (from < to) {
-      var selected = text.substring(from, Math.min(to, text.length()));
-      start(s, from, Statements.split(selected, provider));
-    } else {
-      start(s, 0, statements(provider).at(editor.caret()).map(List::of).orElse(List.of()));
-    }
+    int from = selectionStart();
+    int to = selectionEnd();
+    runOrChoose(
+        s, from < to ? new PendingRun.Selection(from, to) : new PendingRun.Caret(editor.caret()));
   }
 
   /** Control+Shift+Enter and Run all: every statement, one after another, to the first error. */
   void runAll(State s) {
-    var provider = provider(s);
-    if (provider != null) {
-      start(s, 0, statements(provider).statements());
-    }
+    runOrChoose(s, new PendingRun.All());
   }
 
   /** Runs one statement from the editor's current text, as its gutter marker does. */
   void runStatement(State s, Statement statement) {
-    if (provider(s) != null) {
-      start(s, 0, List.of(statement));
+    runOrChoose(
+        s,
+        queryId == null ? new PendingRun.One(statement) : new PendingRun.Marker(statement.start()));
+  }
+
+  private void runOrChoose(State s, PendingRun pending) {
+    if (queryId == null) {
+      var provider = provider(s);
+      if (provider != null) {
+        executePending(s, provider, pending);
+      }
+      return;
+    }
+    s.acted();
+    if (busy() || preview != null || locked(s) != null) {
+      return;
+    }
+    if (text.isBlank()) { // what runs is split once the target, and with it the dialect, is known
+      say(s, "No statement to run");
+      return;
+    }
+    if (silentRerun(s)) {
+      executePending(s, provider(s), pending);
+      return;
+    }
+    targetItems = TargetChooser.items(s, queryLanguage, id, target -> {
+      targetItems = List.of();
+      switchAndRun(s, target, pending);
+    });
+    if (targetItems.isEmpty()) {
+      say(s, "No " + QueryDialog.languageLabel(queryLanguage) + " connection in the workspace");
+    } else {
+      targets.openByKey();
     }
   }
 
+  /**
+   * Whether a workspace query may run without asking: only after a previous run, when exactly one
+   * connection of its language is connected and it is that last target.
+   */
+  private boolean silentRerun(State s) {
+    if (id == null || s.profile(id) == null) {
+      return false;
+    }
+    var connected = s.profiles.stream()
+        .filter(p ->
+            Workspace.Language.of(p.provider()) == queryLanguage && s.catalog.connected(p.id()))
+        .toList();
+    return connected.size() == 1 && connected.getFirst().id().equals(id);
+  }
+
+  /** Switches a workspace query's target if needed (asking via Guard first), then runs. */
+  private void switchAndRun(State s, UUID targetId, PendingRun pending) {
+    var targetProfile = s.profile(targetId);
+    if (targetProfile == null) {
+      return;
+    }
+    if (id != null && !targetId.equals(id)) {
+      if (s.guard.asks(
+          s,
+          new Guard.Act("switch target", this),
+          "it switches to " + State.name(targetProfile),
+          List.of(this),
+          () -> switchAndRun(s, targetId, pending))) {
+        return;
+      }
+      end();
+      clearAllResults();
+      help.clearForSwitch();
+      id = targetId;
+      database = State.database(targetProfile);
+      chosen = false;
+      take(s);
+    } else if (id == null) {
+      id = targetId;
+      database = State.database(targetProfile);
+      chosen = false;
+      take(s);
+    }
+    executePending(s, targetProfile.provider(), pending);
+  }
+
+  /** Target connection was deleted or changed language: end session, clear results, untarget. */
+  void detachTarget() {
+    end();
+    clearAllResults();
+    help.clearForSwitch();
+    id = null;
+    database = "";
+    chosen = false;
+    targets.close();
+    history = null; // of the connection that went
+  }
+
+  private void clearAllResults() {
+    for (var o : outputs) {
+      o.stop();
+    }
+    outputs.clear();
+    shown = null;
+    preview = null;
+    problem = null;
+    recorded = null;
+  }
+
+  private void executePending(State s, Provider provider, PendingRun pending) {
+    var resolved = resolve(provider, pending);
+    start(s, resolved.from(), resolved.chosen());
+  }
+
+  private ResolvedRun resolve(Provider provider, PendingRun pending) {
+    return switch (pending) {
+      case PendingRun.Selection(var from, var to) -> {
+        int end = Math.min(to, text.length());
+        int start = Math.min(from, end);
+        var selected = text.substring(start, end);
+        yield new ResolvedRun(start, Statements.split(selected, provider));
+      }
+      case PendingRun.Caret(var at) ->
+        new ResolvedRun(
+            0,
+            statements(provider).at(Math.min(at, text.length())).map(List::of).orElse(List.of()));
+      case PendingRun.All _ -> new ResolvedRun(0, statements(provider).statements());
+      case PendingRun.One(var statement) -> new ResolvedRun(0, List.of(statement));
+      case PendingRun.Marker(var at) ->
+        new ResolvedRun(
+            0,
+            statements(provider)
+                .at(Math.min(at, text.length()))
+                .filter(st -> st.start() == at)
+                .map(List::of)
+                .orElse(List.of()));
+    };
+  }
+
   private Provider provider(State s) {
-    var profile = s.profile(id);
+    var profile = id == null ? null : s.profile(id);
     return profile == null ? null : profile.provider();
+  }
+
+  /** The target connection's provider, or a default for the query's language while untargeted. */
+  Provider editingProvider(State s) {
+    var provider = provider(s);
+    if (provider != null) {
+      return provider;
+    }
+    return queryLanguage == Workspace.Language.SHELL ? Provider.MONGODB : Provider.POSTGRESQL;
   }
 
   /** Whether its statements reach documents, as texts call them, rather than rows. */
   boolean documents(State s) {
-    var provider = provider(s);
+    var provider = editingProvider(s);
     return provider != null && Language.of(provider).documents();
   }
 
@@ -621,9 +796,9 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   /** Takes the one database of the user's the tree read, while no session or choice says else. */
   void take(State s) {
-    if (lane == null && database.isEmpty() && !chosen) {
+    if (id != null && lane == null && database.isEmpty() && !chosen) {
       database = s.catalog.onlyDatabase(id);
-      if (!database.isEmpty()) {
+      if (!database.isEmpty() && queryId == null) {
         s.keeping.edited(); // kept, so that it opens there next time too
       }
     }
@@ -631,7 +806,11 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   /** Whether the session waits for the tree's databases, to open on the one there is. */
   private boolean picks(State s) {
-    return lane == null && database.isEmpty() && !chosen && s.catalog.readsDatabases(id);
+    return id != null
+        && lane == null
+        && database.isEmpty()
+        && !chosen
+        && s.catalog.readsDatabases(id);
   }
 
   /** The tree's connection failed while the console waited for it: it says so, with Try again. */
@@ -755,7 +934,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     sent = held;
     var asked = mode;
     if (s.settings.keepHistory()) { // as the setting is at the send
-      recording = new Sent(sql, Instant.now());
+      recording = new Sent(id, sql, Instant.now());
     } else {
       recording = null;
       recorded = null; // a later failure of this statement's rows changes no earlier entry
@@ -856,7 +1035,12 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       driver = session.driver();
       password = session.password();
       teller = new Teller(
-          s.app, s, State.name(s.profile(id)), password == null ? null : password.clone(), this);
+          s.app,
+          s,
+          id,
+          State.name(s.profile(id)),
+          password == null ? null : password.clone(),
+          this);
     }
     return lane;
   }
@@ -1131,7 +1315,9 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     var used = used(s, sql, portion);
     if (used != null) {
       database = used; // the shell's use: the console runs on there from now on
-      s.keeping.edited();
+      if (queryId == null) {
+        s.keeping.edited();
+      }
     }
     var failure = failure(portion);
     remember(s, outcomeOf(portion), portion.elapsed());
@@ -1853,14 +2039,18 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     var version = s.catalog.version(id);
     if (lane == null) {
       database = name; // the next session opens on it
-      s.keeping.edited();
+      if (queryId == null) {
+        s.keeping.edited();
+      }
       return;
     }
     if (version == null
         || profile.provider().supports(Capability.CONNECTION_PER_DATABASE, version)) {
       closeSession();
       database = name;
-      s.keeping.edited();
+      if (queryId == null) {
+        s.keeping.edited();
+      }
       return;
     }
     leave();
@@ -1882,7 +2072,9 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
           activity = new Idle();
           switching = null;
           database = done;
-          s.keeping.edited();
+          if (queryId == null) {
+            s.keeping.edited();
+          }
           log.add(new Logged(Level.RAN, switched, null, "Switched"));
         },
         error -> {
@@ -1926,6 +2118,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       stop();
     }
     preview = null;
+    targets.close();
     outputs.forEach(Output::stop);
     queue.clear();
     activity = new Idle();
@@ -2528,9 +2721,8 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   /** The tab's content: its toolbar, the editor over the results, and its status line. */
   El view(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
-    var profile = s.profile(id);
-    var provider = profile.provider();
-    // No title: the tab names the connection, and the database starts the row.
+    var provider = editingProvider(s);
+    // No title: the tab names the connection or query, and the database starts the row.
     El top = Card.toolbar(null, null, ui.actions(s, provider).toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     El code = editor(s, app, provider);
@@ -2562,7 +2754,11 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     help.prepare(s, provider);
     El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
           text = v;
-          s.keeping.edited();
+          if (queryId != null) {
+            s.queryEdited(queryId, v);
+          } else {
+            s.keeping.edited();
+          }
         })
         .key("sql")
         .label(Language.of(provider).label())
@@ -2584,6 +2780,13 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       return false;
     };
     code.onKey(code.onKey() == null ? keys : keys.or(code.onKey()));
+    if (targets.isOpen()) {
+      code.overlay(Menu.menu(targets, targetItems)
+          .key("targets")
+          .label(TargetChooser.LABEL)
+          .atCaret()
+          .side(Side.BOTTOM, Style.Align.START, Theme.CURRENT.get().space().xs()));
+    }
     return help.editor(s, app, provider, code);
   }
 
@@ -2640,13 +2843,13 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     history = new HistoryDialog();
   }
 
-  /** Save query: the selection, or else the whole text, under a name. */
-  void saveQuery() {
+  /** Save to workspace: the selection, or else the whole text, in the connection's folder. */
+  void saveToWorkspace(State s) {
     int from = selectionStart();
     int to = selectionEnd();
     var saved = from < to ? text.substring(from, to) : text;
     if (!saved.isBlank()) {
-      queries = QueriesDialog.save(saved);
+      s.saveToWorkspace(this, saved);
     }
   }
 
@@ -2659,11 +2862,6 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   private int selectionEnd() {
     int end = Math.max(editor.caret(), editor.anchor());
     return Math.min(end, text.length());
-  }
-
-  /** Saved queries: those of the connection, to put one into the editor. */
-  void openQueries() {
-    queries = QueriesDialog.list();
   }
 
   /**
@@ -2759,7 +2957,8 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
    * while neither the console nor the tree is, and "Ready" before the first run.
    */
   String status(State s) {
-    var status = !connected() && !s.catalog.connected(id) ? "Not connected" : ran(s);
+    var status =
+        !connected() && (id == null || !s.catalog.connected(id)) ? "Not connected" : ran(s);
     // shortcut: Manual reads every result whole before showing it, as it may not stay open in a
     // transaction; read lazily in Manual too once giving up a read can keep the transaction.
     return mode == Mode.MANUAL ? status + " · " + WHOLE : status;

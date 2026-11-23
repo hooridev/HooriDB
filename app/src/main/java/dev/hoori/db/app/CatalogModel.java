@@ -30,6 +30,9 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       return Tree.ready(
           folder == null ? List.of() : folder.entries().stream().map(Node::of).toList());
     }
+    if (node instanceof Node.Query) {
+      return Tree.ready(List.of());
+    }
     var c = s.catalog;
     var live = c.lives.get(node.id());
     if (live == null) {
@@ -62,7 +65,9 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
 
   @Override
   public boolean isLeaf(Node node) {
-    return node instanceof Node.OfColumn || node instanceof Node.Problem;
+    return node instanceof Node.Query
+        || node instanceof Node.OfColumn
+        || node instanceof Node.Problem;
   }
 
   @Override
@@ -97,6 +102,7 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       case Node.Folder(var id) ->
         icon(s.folderOpen(id) ? Symbol.FOLDER_OPEN : Symbol.FOLDER, false);
       case Node.Connection n -> connection(n);
+      case Node.Query _ -> icon(Symbol.DOCUMENT, false);
       case Node.OfDatabase n -> icon(Symbol.DATABASE, n.database().system());
       case Node.OfSchema n -> icon(Symbol.FOLDER, n.schema().system());
       case Node.OfTable n ->

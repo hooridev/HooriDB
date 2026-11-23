@@ -9,9 +9,10 @@ import java.util.function.Function;
 import java.util.stream.Stream;
 
 /**
- * What the user keeps in HooriDB: a tree of entries, connections and folders of entries, each level
- * in its order. An id is unique in the whole tree, among folders and connections alike. A change
- * makes a new workspace, which rebuilds the folders on the way to what changed.
+ * What the user keeps in HooriDB: a tree of entries, connections, queries and folders of entries,
+ * each level in its order. An id is unique in the whole tree, among folders, connections and
+ * queries alike. A change makes a new workspace, which rebuilds the folders on the way to what
+ * changed.
  */
 public record Workspace(List<Workspace.Entry> entries) {
 
@@ -33,8 +34,19 @@ public record Workspace(List<Workspace.Entry> entries) {
     INTO
   }
 
-  /** A part of the workspace: a folder or a connection. */
-  public sealed interface Entry permits Folder, ConnectionProfile {
+  /** The language a query is written in: SQL, or the shell of a server of documents. */
+  public enum Language {
+    SQL,
+    SHELL;
+
+    /** The language of the provider's statements. */
+    public static Language of(Provider provider) {
+      return provider.keepsDocuments() ? SHELL : SQL;
+    }
+  }
+
+  /** A part of the workspace: a folder, a connection or a query. */
+  public sealed interface Entry permits Folder, ConnectionProfile, Query {
     UUID id();
   }
 
@@ -49,6 +61,29 @@ public record Workspace(List<Workspace.Entry> entries) {
     /** The connections it holds, its folders' too, from the top down. */
     public List<ConnectionProfile> connections() {
       return Workspace.connections(entries);
+    }
+
+    /** The queries it holds, its folders' too, from the top down. */
+    public List<Query> queries() {
+      return Workspace.queries(entries);
+    }
+  }
+
+  /** A query kept in the workspace, not bound to a connection, in SQL or the MongoDB shell. */
+  public record Query(UUID id, String name, String text, Language language) implements Entry {
+    public Query {
+      Objects.requireNonNull(id, "id");
+      Objects.requireNonNull(name, "name");
+      Objects.requireNonNull(text, "text");
+      Objects.requireNonNull(language, "language");
+    }
+
+    public Query withName(String name) {
+      return new Query(id, name, text, language);
+    }
+
+    public Query withText(String text) {
+      return new Query(id, name, text, language);
     }
   }
 
@@ -75,14 +110,32 @@ public record Workspace(List<Workspace.Entry> entries) {
         .toList();
   }
 
-  /** The workspace with the profile in place of the entry of its id, or else last at the top. */
+  /** The queries from the top of the tree down: a folder's after the entries before it. */
+  public List<Query> queries() {
+    return queries(entries);
+  }
+
+  private static List<Query> queries(List<Entry> entries) {
+    return all(entries).filter(Query.class::isInstance).map(Query.class::cast).toList();
+  }
+
+  /** The workspace with the entry in place of the one of its id, or else last at the top. */
   public Workspace put(ConnectionProfile profile) {
-    if (!contains(profile.id())) {
+    return putEntry(profile);
+  }
+
+  /** The workspace with the query in place of the entry of its id, or else last at the top. */
+  public Workspace put(Query query) {
+    return putEntry(query);
+  }
+
+  private Workspace putEntry(Entry entry) {
+    if (!contains(entry.id())) {
       var list = new ArrayList<>(entries);
-      list.add(profile);
+      list.add(entry);
       return new Workspace(list);
     }
-    return replace(profile.id(), old -> List.of(profile));
+    return replace(entry.id(), old -> List.of(entry));
   }
 
   /**
@@ -105,6 +158,11 @@ public record Workspace(List<Workspace.Entry> entries) {
   /** The folder of the id, or null where no folder has it. */
   public Folder folder(UUID id) {
     return entry(id) instanceof Folder folder ? folder : null;
+  }
+
+  /** The query of the id, or null where no query has it. */
+  public Query query(UUID id) {
+    return entry(id) instanceof Query query ? query : null;
   }
 
   /**
@@ -210,13 +268,17 @@ public record Workspace(List<Workspace.Entry> entries) {
   }
 
   /**
-   * The workspace with the folder of the id named anew.
+   * The workspace with the folder or query of the id named anew.
    *
-   * @throws IllegalArgumentException if no folder has the id
+   * @throws IllegalArgumentException if no folder or query has the id
    */
   public Workspace rename(UUID id, String name) {
-    var f = existing(id);
-    return replace(id, old -> List.of(new Folder(id, name, f.open(), f.entries())));
+    return switch (entry(id)) {
+      case Folder f -> replace(id, old -> List.of(new Folder(id, name, f.open(), f.entries())));
+      case Query q -> replace(id, old -> List.of(q.withName(name)));
+      case null, default ->
+        throw new IllegalArgumentException("No folder or query has the id " + id);
+    };
   }
 
   /**
