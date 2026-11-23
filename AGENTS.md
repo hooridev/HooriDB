@@ -49,7 +49,8 @@ their start beyond it, and a MongoDB console's shows the value in its document. 
 carry a color, which marks its row and its tabs. "New console", in a connection's menu or the File
 menu, opens a tab with an SQL editor that runs the statement at the caret, the selection or all of
 them on a connection of its own, with each result's rows read in portions as they scroll, its
-open cursor shown with Stop reading and given up by itself after 30 s idle or at 100,000 rows, a
+open cursor shown with the planner's estimate and Stop reading and given up by itself after 30 s
+idle or at 100,000 rows, a
 count for a change, and a log of what ran in Messages, a gutter marker on each statement's first
 line (before it ran, to run it; after, its last outcome with time and rows or count to run it again,
 moving with edits), an error at the place the server names in its own markup layer so it moves with

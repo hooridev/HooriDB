@@ -130,6 +130,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     boolean cut; // rows were left unread, as the read stopped or the session went on
     CutReason cutReason = CutReason.LEFT; // why rows were left unread, when cut is true
     long dropped; // rows beyond those kept, read to the statement's end and not kept
+    long estimated; // the server's plan estimate for a lazy read, or 0 for none
     boolean pinned; // the next run leaves it
     float[] widths;
     final DataGrid.Fit fit = new DataGrid.Fit(); // once, in the first frame with rows
@@ -332,6 +333,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   // The statement under way, set on the lane once it is about to be sent: null, it never was.
   private AtomicReference<Servers.Run> sent = new AtomicReference<>();
   private Output reading; // the result whose rows it has
+  private Lane.Asked estimating; // the planner's estimate of the open lazy read, or null
   private final ArrayDeque<String> queue = new ArrayDeque<>(); // the run's statements still to run
   Activity activity = new Idle(); // what it does on its session
   // The last call's statement, which Messages and notices name it by also after it ended, as the
@@ -949,7 +951,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         },
         ran -> {
           activity = new Idle();
-          ran(s, sql, ran);
+          ran(s, sql, on, ran);
         },
         error -> {
           activity = new Idle();
@@ -1185,12 +1187,20 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   private void leave(CutReason reason) {
     idleReads++;
+    stopEstimate();
     if (reading != null && reading.more) {
       reading.more = false;
       reading.cut = true;
       reading.cutReason = reason;
     }
     reading = null;
+  }
+
+  private void stopEstimate() {
+    if (estimating != null) {
+      estimating.cancel();
+      estimating = null;
+    }
   }
 
   /** Whether Stop reading is offered for {@code o}: its cursor is open and nothing runs. */
@@ -1300,7 +1310,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         }));
   }
 
-  private void ran(State s, String sql, Session.Ran ran) {
+  private void ran(State s, String sql, String on, Session.Ran ran) {
     var portion = ran.portion();
     var used = used(s, sql, portion);
     if (used != null) {
@@ -1353,6 +1363,42 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     }
     next(s);
     afterPortion(s);
+    if (ran.lazy() && portion.more()) {
+      estimate(s, sql, on);
+    }
+  }
+
+  /**
+   * Asks the planner for the open lazy read's row estimate on the estimates' connection, beside
+   * the read: never before it, with no question, and silent where no estimate comes back.
+   */
+  private void estimate(State s, String sql, String on) {
+    var target = reading;
+    var provider = provider(s);
+    if (closed
+        || target == null
+        || !target.more
+        || provider == null
+        || !Language.of(provider).estimates()) {
+      return;
+    }
+    var planner = s.catalog.planner(s, id, on);
+    if (planner == null) {
+      return;
+    }
+    stopEstimate();
+    // An estimate that fails, is withheld or comes after the read was left shows nothing.
+    estimating = planner.ask(
+        s.app,
+        "estimate a read",
+        Lane.Priority.COUNT,
+        link -> link.estimate(on, sql),
+        rows -> {
+          if (target == reading) {
+            target.estimated = rows.orElse(0);
+          }
+        },
+        _ -> {});
   }
 
   /** A statement not sent: the console says why, and takes what the session has. */
@@ -1656,6 +1702,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   /** The result whose rows it read has ended, as another came after it or the statement ended. */
   private void finished() {
     idleReads++;
+    stopEstimate();
     if (reading != null) {
       reading.more = false;
       reading = null;

@@ -38,7 +38,7 @@ sealed interface Language {
   /** Whether a console may hold a transaction open, and so offers Auto and Manual. */
   boolean transactions();
 
-  /** Whether a read that a console reads whole is first estimated by the server's planner. */
+  /** Whether the server's planner estimates a console's reads. */
   boolean estimates();
 
   /** What a console's editor suggests at the caret. */
