@@ -848,6 +848,34 @@ class ConsoleTest {
   }
 
   @Test
+  void controlAltLFormatsSqlOrMarksAnUnclosedConstruct() throws Exception {
+    var app = console(SHOP);
+    c.run(
+        app,
+        type("SELECT id, total FROM orders WHERE paid = true AND total > 10 ORDER BY id DESC;")
+            + "key L control alt\nframe\nsnap formatted\n");
+    var expected = """
+        SELECT id,
+               total
+        FROM orders
+        WHERE paid = true
+          AND total > 10
+        ORDER BY id DESC;""";
+    assertEquals(expected, tab(app).text);
+    assertTrue(
+        line(c.tree("formatted"), "#sql").contains("SELECT id,\\n       total\\nFROM orders"),
+        c.tree("formatted"));
+
+    c.run(
+        app,
+        "key A control\nkey Delete\n" + type("SELECT 'open")
+            + "key L control alt\nframe\nsnap unclosed\n");
+    assertEquals("SELECT 'open", tab(app).text);
+    assertTrue(
+        c.tree("unclosed").contains("A string without its closing quote"), c.tree("unclosed"));
+  }
+
+  @Test
   void aLazyReadStopsAndIsGivenUpAtKeptRows() throws Exception {
     ConsoleTab.kept = 400;
     try {

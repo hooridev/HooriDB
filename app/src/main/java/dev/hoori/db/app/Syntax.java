@@ -11,8 +11,8 @@ final class Syntax {
 
   static Highlighter of(Provider provider) {
     return switch (provider) {
-      case POSTGRESQL -> Sql.of(Sql.Dialect.POSTGRES);
-      case MARIADB, MYSQL -> Sql.of(Sql.Dialect.MYSQL);
+      case POSTGRESQL -> new SqlSyntax(Sql.of(Sql.Dialect.POSTGRES), provider);
+      case MARIADB, MYSQL -> new SqlSyntax(Sql.of(Sql.Dialect.MYSQL), provider);
       case MONGODB -> ShellSyntax.of();
     };
   }

@@ -2772,7 +2772,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   private El editor(State s, App<State> app, Language language, Provider provider) {
     Highlighter syntax = provider != null ? Syntax.of(provider) : Syntax.of(language);
     var at = target(language, provider); // the lines of the statement Control+Enter runs
-    this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
+    this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end()).blockOutline(true);
     this.editor.occurrences(s.settings.highlightOccurrences());
     help.prepare(s, language, provider);
     El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {

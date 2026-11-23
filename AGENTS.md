@@ -48,8 +48,8 @@ colored, and with its first problem marked and shown after its line where it is 
 whole by its row's primary key, a console's result keeps long values whole up to a budget and
 their start beyond it, and a MongoDB console's shows the value in its document. A connection can
 carry a color, which marks its row and its tabs. "New console", in a connection's menu or the File
-menu, opens a tab with an SQL editor that runs the statement at the caret, the selection or all of
-them on a connection of its own, with each result's rows read in portions as they scroll, its
+menu, opens a tab with an SQL editor that runs the statement at the caret, which it outlines, the
+selection or all of them on a connection of its own, with each result's rows read in portions as they scroll, its
 open cursor shown with the planner's estimate and Stop reading and given up by itself after 30 s
 idle or at 100,000 rows, a
 count for a change, and a log of what ran in Messages, a gutter marker on each statement's first
@@ -58,9 +58,10 @@ moving with edits), an error at the place the server names in its own markup lay
 edits and shows its message after its line with the caret there, quick documentation on hover or
 Control+Q for a table's kind, schema and columns or a column's type and table (reading what the
 tree lacks for the next hover), Control+B and Control+click on a table or column name to open its
-table in a tab, and completions of keywords and of the schemas, tables and
-columns the tree read or reads for it; it switches databases and cancels what runs. It commits each
-statement by itself in Auto, and in Manual Commit and Rollback end the transaction, whose state it
+table in a tab, Control+Alt+L to lay its SQL out, changing only white space, and completions of
+keywords and of the schemas, tables and columns the tree read or reads for it; it switches
+databases and cancels what runs. It commits each statement by itself in Auto, and in Manual Commit
+and Rollback end the transaction, whose state it
 shows as the server says it, and as possibly open where the server has not said; closing it,
 switching auto-commit or the database, disconnecting, changing or deleting its connection and
 closing HooriDB ask first while one may be open. In Manual, and while a transaction is open, it
