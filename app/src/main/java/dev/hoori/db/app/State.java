@@ -154,6 +154,7 @@ final class State {
 
   /** A tab closed, by the user or with its connection: a console's text is no longer kept. */
   private void tabClosed(Tab tab) {
+    guard.drop(tab);
     tab.close();
     if (tab instanceof ConsoleTab) {
       keeping.persist(keeping.consolesKept);
@@ -528,7 +529,7 @@ final class State {
             this,
             deleteAct(profile),
             name(profile) + " is deleted",
-            consoles(profile.id()),
+            guarded(profile.id()),
             this::delete)) {
       return;
     }
@@ -555,9 +556,9 @@ final class State {
       return;
     }
     var held = folder.connections();
-    var consoles = held.stream().flatMap(p -> consoles(p.id()).stream()).toList();
+    var asking = held.stream().flatMap(p -> guarded(p.id()).stream()).toList();
     var act = deleteFolderAct(id);
-    if (guard.asks(this, act, folder.name() + " is deleted", consoles, () -> deleteFolder(id))) {
+    if (guard.asks(this, act, folder.name() + " is deleted", asking, () -> deleteFolder(id))) {
       return;
     }
     remove(act, folder.name() + " is being deleted", held, id);
@@ -738,8 +739,9 @@ final class State {
   }
 
   private void close() {
-    // The consoles first: their answers come back here, and Cancel gives up closing.
-    if (guard.asks(this, Guard.EXIT, "HooriDB closes", consoles(null), this::close)) {
+    // The consoles and edited tables first: their answers come back here, and Cancel gives up
+    // closing.
+    if (guard.asks(this, Guard.EXIT, "HooriDB closes", guarded(null), this::close)) {
       return;
     }
     if (dialogs.dialog != null) {
@@ -869,8 +871,7 @@ final class State {
       window.raise();
     }
     if (!tab.table.equals(table)) {
-      tab.table = table;
-      tab.open(this, true);
+      tab.replace(this, table);
     }
     return group;
   }
@@ -1005,17 +1006,19 @@ final class State {
     }
   }
 
-  /** The user closes a tab, by its cross or Control+W: a console asks first. */
+  /** The user closes a tab, by its cross or Control+W: a console or edited table asks first. */
   private void closeTab(TabGroups.Group<Tab> group, int index) {
-    if (!(group.tabs().get(index) instanceof ConsoleTab x
+    var tab = group.tabs().get(index);
+    if (tab instanceof Guard.Guarded x
         && guard.asks(
             this,
             new Guard.Act("close", x),
-            "the console closes",
+            x instanceof ConsoleTab ? "the console closes" : "the tab closes",
             List.of(x),
-            () -> closeTab(x)))) {
-      tabs.close(group, index);
+            () -> closeTab(tab))) {
+      return;
     }
+    tabs.close(group, index);
   }
 
   private void closeTab(Tab tab) {
@@ -1023,6 +1026,19 @@ final class State {
     if (group != null) {
       closeTab(group, group.tabs().indexOf(tab));
     }
+  }
+
+  /** The tabs that may hold uncommitted work (consoles and tables), of the connection or all. */
+  List<Guard.Guarded> guarded(UUID id) {
+    var all = new ArrayList<Guard.Guarded>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof Guard.Guarded g && (id == null || g.connectionId().equals(id))) {
+          all.add(g);
+        }
+      }
+    }
+    return all;
   }
 
   /** The consoles of every window, of the connection or of all where it is null. */
@@ -1079,7 +1095,11 @@ final class State {
   /** The connection connected anew: its tabs read again what they showed, its consoles run. */
   void connected(UUID id) {
     for (var tab : tables(id)) {
-      tab.open(this, true);
+      if (tab.atStake()) {
+        tab.reconnected(this);
+      } else {
+        tab.open(this, true);
+      }
     }
     for (var console : consoles(id)) {
       console.connected(this);
@@ -1306,6 +1326,7 @@ final class State {
     if (dialogs.dialog != null) {
       dialogs.dialog.close(this); // and what it reads, its driver's dialog's too
     }
+    tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
     catalog.closeAll(); // nothing waits for a server

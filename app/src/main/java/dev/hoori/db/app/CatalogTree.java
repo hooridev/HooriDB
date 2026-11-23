@@ -1034,7 +1034,7 @@ final class CatalogTree {
     var profile = s.profile(id);
     var name = profile == null ? "the connection" : State.name(profile);
     if (s.guard.asks(
-        s, act, name + " disconnects", s.consoles(id), () -> disconnect(s, act, id, then))) {
+        s, act, name + " disconnects", s.guarded(id), () -> disconnect(s, act, id, then))) {
       return;
     }
     var live = lives.get(id);

@@ -113,10 +113,11 @@ and whether the start looks for an update. File, Settings… (Control+,, or the 
 raises a modeless settings window over the shared state, with pages General, Appearance, Editor,
 Databases and History & log, where every change applies at once, a changed row can be reset and
 each page has Restore defaults. A console's result of a SELECT on one table that core finds
-editable can be edited: changed cells are marked, Revert takes back the selection or all, and
-Commit… shows the UPDATEs in a DML Preview and writes them all or nothing on a connection of its
-own, after the console's question where its transaction may be open. Nothing else can be edited
-yet.
+editable, and a SQL table's tab with a primary key, can be edited: changed cells are marked, Revert
+takes back the selection or all, and Commit… shows the UPDATEs in a DML Preview and writes them all
+or nothing on a connection of its own, after the console's question where its transaction may be
+open; a table's tab keeps edited rows across dropped pages and asks before Refresh or a changed
+WHERE or ORDER BY. Nothing else can be edited yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it

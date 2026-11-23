@@ -1,16 +1,12 @@
 package dev.hoori.db.app;
 
 import static com.rethinkj.ui.El.col;
-import static com.rethinkj.ui.El.row;
-import static com.rethinkj.ui.kit.Button.Variant.PRIMARY;
 import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
-import com.rethinkj.ui.Style;
-import com.rethinkj.ui.kit.Badge;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
@@ -24,10 +20,8 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
-import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
-import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.execution.Transaction;
@@ -195,7 +189,6 @@ final class ResultsArea {
 
   /** A result: its rows in the grid, documents whole, or the number of rows it changed. */
   private El output(State s, App<State> app, ConsoleTab.Output o) {
-    Theme t = Theme.CURRENT.get();
     El pin = Button.toggleIcon(
             Symbol.PIN, o.pinned ? "Unpin" : "Pin", o.pinned, on -> o.pinned = on)
         .key("pin");
@@ -210,103 +203,17 @@ final class ResultsArea {
     if (ofDocuments) {
       footer.add(o.presentation.switcher("result-shown", o.presentation::mode));
     }
-    editControls(s, o, footer);
+    ResultEdits.editControls(s, tab, o, footer, footer);
     footer.addAll(presented.footer());
     footer.add(pin);
-    El problem = o.edits.writeProblem == null
-        ? null
-        : col()
-            .padding(t.space().s())
-            .shrink(0)
-            .child(Callout.callout(
-                    Callout.Kind.DANGER,
-                    o.edits.writeProblem.title(),
-                    o.edits.writeProblem.text(),
-                    button(SECONDARY, "Dismiss", () -> o.edits.writeProblem = null)
-                        .key("dismiss-write-problem"))
-                .key("write-problem"));
     return col()
         .grow(1)
         .minSize(0, 0)
-        .child(problem)
+        .child(ResultEdits.writeProblemCallout(o.edits))
         .child(presented.body().grow(1))
         .child(Card.footer(
             Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
             footer.toArray(El[]::new)));
-  }
-
-  /** Edit status, pending count badge, Revert and Commit… controls for an SQL result. */
-  private void editControls(State s, ConsoleTab.Output o, List<El> footer) {
-    Theme t = Theme.CURRENT.get();
-    if (o.edits.writing != null) {
-      footer.add(row()
-          .gap(t.space().s())
-          .align(Style.Align.CENTER)
-          .key("edit-status")
-          .child(Progress.spinner().label("Committing"))
-          .child(Label.label(Label.Variant.MUTED, "Committing…")));
-      footer.add(button(
-              SECONDARY,
-              ConsoleTab.CANCEL_BUTTON,
-              () -> ResultEdits.cancelWrite(s, tab, o),
-              Button.options().tone(Button.Tone.DANGER))
-          .key("cancel-write"));
-      return;
-    }
-    boolean current = ResultEdits.current(s, tab, o);
-    String status =
-        o.edits.editable != null && !current ? ResultEdits.CONNECTION_CHANGED : editStatus(o);
-    if (status != null) {
-      // The line is short; the whole reason, as how to add an offset, shows on hover.
-      footer.add(Tooltip.tooltip(
-          Label.label(Label.Variant.MUTED, status).key("edit-status").ellipsis(), status));
-    }
-    if (o.edits.editable == null) {
-      return;
-    }
-    int count = o.edits.changes.count();
-    if (count > 0) {
-      footer.add(Badge.badge(
-              count == 1 ? "1 change" : count + " changes",
-              Badge.options().toolbar().kind(Badge.Kind.WARNING))
-          .key("pending-changes"));
-    }
-    boolean locked = s.guard.locked(tab) != null;
-    boolean selectedChanges = count > 0 && ResultEdits.hasSelectedChanges(o);
-    footer.add(Tooltip.tooltip(
-        button(
-                SECONDARY,
-                "Revert",
-                selectedChanges && !locked ? () -> ResultEdits.revertSelection(s, o) : null)
-            .key("revert-selection"),
-        "Revert selected cells"));
-    footer.add(Tooltip.tooltip(
-        button(
-                SECONDARY,
-                "Revert all",
-                (count > 0 || o.edits.hasOpenEdit(o)) && !locked
-                    ? () -> ResultEdits.revertAll(o)
-                    : null)
-            .key("revert-all"),
-        "Revert all pending changes"));
-    boolean canCommit = (count > 0 || o.selection.isEditing()) && !locked && current;
-    footer.add(button(PRIMARY, "Commit…", canCommit ? () -> ResultEdits.askCommit(s, tab, o) : null)
-        .key("commit-changes"));
-  }
-
-  /** What the result's status line says about editing: why read-only, paste refusal, or hint. */
-  private static String editStatus(ConsoleTab.Output o) {
-    if (o.edits.pasteRefused != null) {
-      return o.edits.pasteRefused;
-    }
-    if (o.edits.editable != null) {
-      String cellReason = ResultEdits.cellReadOnlyReason(o);
-      if (cellReason != null) {
-        return cellReason;
-      }
-      return o.edits.committedHint;
-    }
-    return o.edits.readOnlyReason;
   }
 
   /** A count: the number of rows, or documents, the statement changed. */
@@ -496,7 +403,10 @@ final class ResultsArea {
       var field = o.fields.get(c);
       var col = Cells.column(
           field, o.widths, c, row -> row < o.rows.size() ? o.rows.get(row).get(at) : null, zone);
-      columns.add(editable != null && changes != null ? edited(o, col, at, free) : col);
+      columns.add(
+          editable != null && changes != null
+              ? ResultEdits.editedColumn(o, col, at, free, true)
+              : col);
     }
     var options = DataGrid.options()
         .select(o.selection)
@@ -511,7 +421,7 @@ final class ResultsArea {
         .loading(row -> row < o.rows.size(), (_, last) -> tab.want(s, o, last));
     int count;
     if (editable != null && changes != null) {
-      edits(s, o, options, free);
+      ResultEdits.configureGrid(s, o, options, free);
       count = changes.rowCount();
     } else {
       count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), DocumentPresentation.GRID_ROWS);
@@ -524,60 +434,6 @@ final class ResultsArea {
       grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
     }
     return grid;
-  }
-
-  /** The column of an editable result: its staged values, its key, and which cells take edits. */
-  private static DataGrid.Column edited(
-      ConsoleTab.Output o, DataGrid.Column col, int at, BooleanSupplier free) {
-    var field = o.fields.get(at);
-    var changes = o.edits.changes;
-    var column = o.edits.editable.edited().get(at);
-    col = col.cell(changes.cell(at));
-    if (column != null && column.keyPosition() > 0) {
-      col = col.icon(Symbol.KEY, Icon.Variant.WARNING);
-    }
-    if (column != null && field.kind() != Kind.BINARY) {
-      col = col.editable(row -> free.getAsBoolean() && ResultEdits.cellEditable(o, row, at));
-      if (column.nullable()) {
-        col = col.nullable();
-      }
-    }
-    if (field.kind() == Kind.TEXT || field.kind() == Kind.JSON || field.kind() == Kind.OTHER) {
-      col = col.cellIcon(
-          row -> row < o.rows.size() && changes.cellStatus(row, at) == DataGrid.Status.UNCHANGED
-              ? Cells.icon(o.rows.get(row).get(at))
-              : null);
-    }
-    return col;
-  }
-
-  /** The grid takes edits into the result's changes, and only while {@code free}: no new rows. */
-  private static void edits(
-      State s, ConsoleTab.Output o, DataGrid.Options options, BooleanSupplier free) {
-    var changes = o.edits.changes;
-    options
-        .changes(changes)
-        .history(
-            () -> {
-              if (free.getAsBoolean()) {
-                changes.undo();
-              }
-            },
-            () -> {
-              if (free.getAsBoolean()) {
-                changes.redo();
-              }
-            })
-        .onCommit((row, col, value) -> free.getAsBoolean()
-            ? ResultEdits.commitCell(s, o, row, col, value)
-            : "Not now: wait until what runs is done")
-        .onPaste(cells -> {
-          if (free.getAsBoolean()) {
-            ResultEdits.pasteCells(s, o, cells);
-          }
-        })
-        .onInsertRow(null)
-        .onDeleteRows(null);
   }
 
   /**
