@@ -304,7 +304,7 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   invalid. Their calls are keyed `run <host> <sql>` for the first portion and
   `next <host> <sql> <from>` for each further one, and a held one that is interrupted ends with a
   cancelled failure, as core's does. A console opens its own connection behind the tree's, so a
-  server's `open` key is called twice, and once more where the first estimate of a read runs, on the
+  server's `open` key is called twice, and once more on a console's first plain SQL read, on the
   connection that only estimates use, and once more where a table's rows are counted other than at
   its opening, on the connection that only such counts use, and once more where a console's result
   is checked for editability or committed, on the writer connection (`editable <host> <sql>` and

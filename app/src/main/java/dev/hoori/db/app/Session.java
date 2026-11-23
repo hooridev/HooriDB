@@ -20,6 +20,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -91,24 +92,42 @@ final class Session {
    */
   static <T> T after(Servers.Link link, Delivery.Tell tell, String left, Lane.Call<T> call)
       throws Exception {
+    return after(link, tell, left, false, call);
+  }
+
+  static <T> T after(
+      Servers.Link link, Delivery.Tell tell, String left, boolean plain, Lane.Call<T> call)
+      throws Exception {
     var ended = link.giveUp();
-    told(ended, left, ENDED, tell);
+    told(ended, left, plain, ENDED, tell);
     if (ended.failure().isPresent()) {
-      throw new GaveUp(left, ended.failure().get());
+      throw new GaveUp(left, plain, ended.failure().get());
     }
     return call.call(link);
   }
 
   /** What giving up a statement said, its failure and the server's warnings, told as notices. */
-  static void told(Abandoned ended, String sql, String how, Delivery.Tell tell) {
-    ended.failure().ifPresent(f -> tell.tell(sql, how + f.message() + MAY_NOT_STAND, true));
+  static void told(Abandoned ended, String sql, boolean plain, String how, Delivery.Tell tell) {
+    ended.failure().ifPresent(f -> tell.tell(sql, how + giveUpText(f, plain), true));
     for (var m : ended.messages()) {
       tell.tell(sql, Delivery.warned(m), false);
     }
   }
 
   static final String ENDED = "Its end, as the console went on, failed: ";
-  static final String MAY_NOT_STAND = ". What it changed may not stand.";
+  static final String MAY_NOT_STAND = "What it changed may not stand.";
+
+  /**
+   * Formats a give-up failure message with one trailing period, appending {@link #MAY_NOT_STAND}
+   * only where the statement was not a plain read.
+   */
+  static String giveUpText(Failure failure, boolean plain) {
+    var text = Delivery.said(failure);
+    if (!text.endsWith(".")) {
+      text += ".";
+    }
+    return plain ? text : text + " " + MAY_NOT_STAND;
+  }
 
   /** Giving up what was still open on the session failed: what wanted to run after it did not. */
   static final class GaveUp extends Exception {
@@ -116,11 +135,13 @@ final class Session {
     private static final long serialVersionUID = 1L;
 
     final String sql;
+    final boolean plain;
     final transient Failure failure; // never serialized, as NotRun's status
 
-    GaveUp(String sql, Failure failure) {
+    GaveUp(String sql, boolean plain, Failure failure) {
       super(failure.message());
       this.sql = sql;
+      this.plain = plain;
       this.failure = failure;
     }
   }
@@ -179,6 +200,12 @@ final class Session {
    */
   static Ran start(Servers.Link link, Send send, AtomicReference<Servers.Run> held)
       throws QueryException, NotRun, TooMany, InterruptedException {
+    return start(link, send, held, null);
+  }
+
+  static Ran start(
+      Servers.Link link, Send send, AtomicReference<Servers.Run> held, AtomicBoolean drained)
+      throws QueryException, NotRun, TooMany, InterruptedException {
     var sql = send.sql();
     var parsed = send.parsed();
     var mode = send.mode();
@@ -191,8 +218,11 @@ final class Session {
     }
     // Read whole, as it is unless it is a lazy read with nothing open, once the session has the
     // mode; estimated before anything is sent on the session, which then stays as it was.
-    if (planner != null
-        && !(lazy && now.transaction() == Transaction.NONE && now.autoCommit() != null)) {
+    boolean whole = !(lazy && now.transaction() == Transaction.NONE && now.autoCommit() != null);
+    if (whole && drained != null) {
+      drained.set(true);
+    }
+    if (planner != null && whole) {
       long rows = estimate(planner, send.database(), sql);
       if (rows > keep) {
         throw new TooMany(rows, now);
@@ -204,6 +234,9 @@ final class Session {
     var first = run.next(ConsoleTab.PORTION);
     if (lazy && Boolean.TRUE.equals(now.autoCommit()) && now.transaction() == Transaction.NONE) {
       return new Ran(first, Collections.nCopies(first.results().size(), 0L), true);
+    }
+    if (drained != null) {
+      drained.set(true);
     }
     return drained(run, first, keep);
   }

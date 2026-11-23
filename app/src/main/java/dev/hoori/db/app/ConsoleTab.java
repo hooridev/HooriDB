@@ -34,6 +34,7 @@ import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.EditableQuery;
 import dev.hoori.db.core.sql.EveryRow;
+import dev.hoori.db.core.sql.Reads;
 import dev.hoori.db.core.sql.Statement;
 import dev.hoori.db.core.sql.Statements;
 import java.time.Duration;
@@ -47,9 +48,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -362,10 +363,11 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   // What is open is the server's own, begun as the user's Commit or Rollback ended theirs, as with
   // MySQL's completion_type=1: no statement ran in it, and it holds nothing.
   boolean empty;
-  // The last call may change data or the transaction: a statement not on the read list, read to
-  // its end, or Commit, Rollback, a switch of auto-commit or of the database. Cut short or lost,
-  // what it did is not known. Of the last call, not the activity: its outcome is taken after it.
-  boolean writes;
+  // The last call is read to its end or may change data or the transaction: a statement not on the
+  // read list, a plain read read whole (also where the server's fresh status forces it to be), or
+  // Commit, Rollback, a switch of auto-commit or of the database. Cut short or lost, what a
+  // non-read did is not known. Of the last call, not the activity: its outcome is taken after it.
+  private AtomicBoolean writes = new AtomicBoolean();
   // The Commit, Rollback or switch of auto-commit under way, or null. Beside the activity, as Run
   // anyway may send a statement while the question's Commit runs, and either outcome comes first.
   Firm firm;
@@ -385,9 +387,13 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   // The session has the console's mode, as a statement sent on it or a switch confirmed: from then
   // on the mode shown follows the session's, before it the user's choice stands.
   private boolean applied;
-  // The read whose rest is still to be read, or given up: set on the lane as its call sends it, so
-  // that one asked for and cancelled before its call began is never named. One a session.
-  private AtomicReference<String> openSql = new AtomicReference<>();
+  // The statement whose rest may still be open on the session, and whether it is a plain read: set
+  // on the lane as its call sends it, so that one asked for and cancelled before its call began is
+  // never named. One a session.
+  private AtomicReference<Left> openSql = new AtomicReference<>();
+
+  /** What is open on the session, and whether it is a plain read. */
+  private record Left(String sql, boolean plain) {}
   // Why the outcome of what may have ended the transaction is not known, until the user has read
   // it; null for nothing in doubt.
   String doubt;
@@ -731,12 +737,12 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     // decides that from the server's word, and all else is read to its end, at stake meanwhile.
     var statement = language instanceof Language.Shell ? parsed : null;
     plain = statement != null ? statement.readsCursor() : reads(sql, provider);
-    boolean lazy = plain && mode == Mode.AUTO && transaction == Transaction.NONE;
-    writes = !lazy;
-    // Not for a read Auto keeps open: no connection is opened for an estimate never asked for.
-    var planner = estimate && plain && !lazy && language.estimates()
-        ? s.catalog.planner(s, id, database)
-        : null;
+    boolean lazy =
+        plain && mode == Mode.AUTO && transaction == Transaction.NONE && unavailable == null;
+    var whole = new AtomicBoolean(!lazy);
+    writes = whole;
+    var planner =
+        estimate && plain && language.estimates() ? s.catalog.planner(s, id, database) : null;
     var on = database;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
@@ -753,13 +759,14 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       recorded = null; // a later failure of this statement's rows changes no earlier entry
     }
     var label = openSql;
+    boolean isPlain = plain;
     activity = new Running(ask(
         s,
         "run a statement",
         link -> {
-          label.set(sql);
+          label.set(new Left(sql, isPlain));
           return Session.start(
-              link, new Session.Send(sql, statement, asked, lazy, kept, planner, on), held);
+              link, new Session.Send(sql, statement, asked, lazy, kept, planner, on), held, whole);
         },
         ran -> {
           activity = new Idle();
@@ -875,7 +882,17 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     open = null; // given up on the lane, also where this call never starts
     leave(); // and its rows end where they are
     var tell = teller;
-    return through(s, what, sql, link -> Session.after(link, tell, left.get(), call), done, failed);
+    return through(
+        s,
+        what,
+        sql,
+        link -> {
+          var was = left.get();
+          return Session.after(
+              link, tell, was == null ? null : was.sql(), was != null && was.plain(), call);
+        },
+        done,
+        failed);
   }
 
   /**
@@ -939,28 +956,12 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   static final String SESSION_ENDED = "As its session ended, giving up its rest failed: ";
 
-  // First words of statements that only read, the same on every provider; anything else may change
-  // data or the transaction, by itself, inside or with an implicit commit, and is treated as such.
-  // SELECT reads, but for what a function it calls does, which no word tells, and INTO, below.
-  // SHOW reads settings and the catalog, on PostgreSQL, MariaDB and MySQL alike. VALUES and
-  // TABLE are a SELECT's own forms. EXPLAIN is not on it: its options, ANALYZE however spelled,
-  // run what it explains; nor DESCRIBE and DESC, the same statement on MariaDB and MySQL.
-  private static final Set<String> READS = Set.of("SELECT", "SHOW", "VALUES", "TABLE");
-  // A word that makes a read write: SELECT … INTO makes a table on PostgreSQL and sets variables or
-  // writes a file on MariaDB and MySQL. A keyword cannot be quoted, so no spelling hides it.
-  private static final Pattern WRITING = Pattern.compile("\\bINTO\\b", Pattern.CASE_INSENSITIVE);
-
   /**
-   * Whether the statement is a plain read: its first word is on the read list, and no word of it
-   * makes it write. Only ever conservative: a statement taken for a change that is none costs a
-   * needless caution.
+   * Whether the statement is a plain read, as {@link Reads#plain} classifies it from its tokens.
+   * Only ever conservative: a statement taken for a change that is none costs a needless caution.
    */
   static boolean reads(String sql, Provider provider) {
-    var word = Statements.firstWord(sql, provider);
-    // ASCII's case alone, as the servers fold keywords: ſELECT is no SELECT.
-    word = word.chars().allMatch(c -> c < 0x80) ? word.toUpperCase(Locale.ROOT) : "";
-    // shortcut: INTO in a literal or comment makes a read count as a change, a needless caution.
-    return READS.contains(word) && !WRITING.matcher(sql).find();
+    return Reads.plain(sql, provider);
   }
 
   // The database that the shell's use switched the session to, or null for any other statement.
@@ -1085,7 +1086,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     var sql = running;
     leave(reason);
     help.updateDetail(sql, rows(target.rows.size(), documents(s)));
-    writes = false;
+    writes = new AtomicBoolean(false);
     plain = true;
     starts++;
     stoppable = false;
@@ -1602,7 +1603,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       problem = heard(
           DISCONNECTED,
           brief(g.sql) + " could not be ended, and the connection was given up: "
-              + g.failure.message() + (gone == null ? "" : "\n" + gone));
+              + Delivery.said(g.failure) + (gone == null ? "" : "\n" + gone));
       log.add(new Logged(Level.ERROR, brief(sql), null, "Not run: the connection ended"));
       closeSession();
       return;
@@ -1611,7 +1612,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     problem = heard(
         NOT_RUN,
         brief(g.sql) + " could not be ended, so " + brief(sql) + " was not sent and nothing"
-            + " more runs: " + g.failure.message() + Session.MAY_NOT_STAND);
+            + " more runs: " + Session.giveUpText(g.failure, g.plain));
     log.add(new Logged(Level.ERROR, brief(sql), null, NOT_RUN));
     transaction = Transaction.UNKNOWN;
     learned++;
@@ -1665,7 +1666,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     var held = open;
     var sql = running;
     idleReads++;
-    writes = false; // only a plain read in Auto, with nothing open, is read so
+    writes = new AtomicBoolean(false); // only a plain read in Auto, with nothing open, is read so
     plain = true;
     // Not through ask, as the read goes on rather than being given up.
     started(s);
@@ -1686,6 +1687,11 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
           messages(portion);
           var failure = failure(portion);
           if (failure != null) {
+            if (before == outputs.size()) {
+              output.cut = true;
+            } else if (outputs.getLast().fields != null) {
+              outputs.getLast().cut = true;
+            }
             heard(Level.ERROR, sql, portion.elapsed(), outcome(portion));
             if (recorded != null) { // the read's own entry, as nothing was sent after it
               var was = recorded;
@@ -1714,6 +1720,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         },
         error -> {
           activity = new Idle();
+          leave();
           failed(s, sql, error);
         }));
   }
@@ -1813,7 +1820,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     switching = name;
     var switched = "Database " + name; // what Messages names the switch by
     running = switched;
-    writes = true;
+    writes = new AtomicBoolean(true);
     plain = false;
     sent = new AtomicReference<>(); // no statement of the user's
     started(s);
@@ -1919,7 +1926,13 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       var reported = new CompletableFuture<Void>();
       lane.close(ended -> {
         try {
-          Session.told(ended, left.get(), SESSION_ENDED, tell);
+          var was = left.get();
+          Session.told(
+              ended,
+              was == null ? null : was.sql(),
+              was != null && was.plain(),
+              SESSION_ENDED,
+              tell);
         } finally {
           tell.wipe();
           reported.complete(null);
@@ -1946,9 +1959,14 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     end();
   }
 
+  /** Whether the call under way is read whole or may change data or the transaction. */
+  boolean writes() {
+    return writes.get();
+  }
+
   /** Whether the call under way may change data or the transaction beyond a plain read. */
   boolean changes() {
-    return writes && !plain;
+    return writes() && !plain;
   }
 
   /** Whether something runs or waits to. */
@@ -2003,7 +2021,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     if (lane == null) {
       return false;
     }
-    if (work() != null && writes || probe != null) {
+    if (work() != null && writes() || probe != null) {
       return true;
     }
     return switch (transaction) {
@@ -2150,7 +2168,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     }
     boolean wasEmpty = empty;
     watchFirm(s);
-    writes = true;
+    writes = new AtomicBoolean(true);
     plain = false;
     running = AUTO_COMMIT;
     activity = new Running(ask(
@@ -2201,7 +2219,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     queue.clear();
     problem = null;
     watchFirm(s);
-    writes = true;
+    writes = new AtomicBoolean(true);
     plain = false;
     running = sql;
     var tell = teller;
