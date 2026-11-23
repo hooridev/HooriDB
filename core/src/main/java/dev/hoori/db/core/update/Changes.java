@@ -9,6 +9,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * Summary of what an {@link Update} brings, read from GitHub's generated release notes across every
@@ -23,12 +24,8 @@ public record Changes(List<String> highlights, int count, int contributors) {
 
   public static final int MAX_HIGHLIGHTS = 5;
 
-  // GitHub generated entry: "<title> by @<login> in <url>".
-  private static final Pattern ENTRY =
-      Pattern.compile("(.+)\\s+by\\s+@(\\S+)\\s+in\\s+https?://\\S+");
-  // Conventional Commit header for a highlight: feat or fix, optional scope, optional '!'.
-  private static final Pattern HIGHLIGHT =
-      Pattern.compile("(feat|fix)(?:\\([^()]+\\))?!?:\\s+(.+)");
+  // A Conventional Commit title that is a highlight: feat or fix, an optional scope and '!'.
+  private static final Pattern HIGHLIGHT = Pattern.compile("(feat|fix)(?:\\([^()]+\\))?!?:\\s");
 
   public Changes {
     highlights = List.copyOf(highlights);
@@ -47,37 +44,48 @@ public record Changes(List<String> highlights, int count, int contributors) {
     int count = 0;
     for (Section section : update.sections()) {
       for (String entry : section.entries()) {
-        Matcher m = ENTRY.matcher(entry.strip());
-        if (!m.matches()) {
+        Change change = change(entry.strip());
+        if (change == null) {
           continue;
         }
         count++;
-        logins.add(m.group(2).toLowerCase(Locale.ROOT));
-        Matcher h = HIGHLIGHT.matcher(m.group(1).strip());
-        if (h.matches()) {
-          String line = sentence(h.group(2));
-          if (!line.isEmpty()) {
-            if (h.group(1).equals("feat")) {
-              if (feats.size() < MAX_HIGHLIGHTS) {
-                feats.add(line);
-              }
-            } else if (fixes.size() < MAX_HIGHLIGHTS) {
-              fixes.add(line);
-            }
-          }
+        logins.add(change.login().toLowerCase(Locale.ROOT));
+        Matcher h = HIGHLIGHT.matcher(change.title());
+        if (h.lookingAt() && !change.title().substring(h.end()).isBlank()) {
+          (h.group(1).equals("feat") ? feats : fixes)
+              .add(sentence(change.title().substring(h.end())));
         }
       }
     }
-    List<String> highlights =
-        new ArrayList<>(Math.min(MAX_HIGHLIGHTS, feats.size() + fixes.size()));
-    highlights.addAll(feats);
-    for (String fix : fixes) {
-      if (highlights.size() >= MAX_HIGHLIGHTS) {
-        break;
-      }
-      highlights.add(fix);
-    }
+    var highlights =
+        Stream.concat(feats.stream(), fixes.stream()).limit(MAX_HIGHLIGHTS).toList();
     return new Changes(highlights, count, logins.size());
+  }
+
+  private record Change(String title, String login) {}
+
+  /**
+   * GitHub's generated entry "{@code <title> by @<login> in <url>}" as its title and login, or
+   * null for another entry.
+   */
+  private static Change change(String entry) {
+    int by = entry.lastIndexOf(" by @");
+    if (by <= 0) {
+      return null;
+    }
+    String rest = entry.substring(by + " by @".length());
+    int in = rest.indexOf(" in ");
+    if (in <= 0) {
+      return null;
+    }
+    String login = rest.substring(0, in);
+    String url = rest.substring(in + " in ".length());
+    if (login.chars().anyMatch(Character::isWhitespace)
+        || !url.startsWith("http")
+        || url.chars().anyMatch(Character::isWhitespace)) {
+      return null;
+    }
+    return new Change(entry.substring(0, by).strip(), login);
   }
 
   private static String sentence(String text) {

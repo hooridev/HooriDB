@@ -491,13 +491,15 @@ final class Frame {
         .key("update");
     var details = notice.details();
     if (details != null) {
-      callout = Tooltip.tooltip(callout, () -> updateChanges(t, notice.title(), details, s.zone));
+      El changes = updateChanges(notice.title(), details, s.zone);
+      callout = Tooltip.tooltip(callout, () -> changes);
     }
     return col().padding(t.space().s()).child(callout);
   }
 
   /** What an offered update brings, for its notice's tooltip. */
-  private static El updateChanges(Theme t, String title, Updates.Details details, ZoneId zone) {
+  private static El updateChanges(String title, Updates.Details details, ZoneId zone) {
+    Theme t = Theme.CURRENT.get();
     var changes = details.changes();
     var date = Format.DATE.text(LocalDate.ofInstant(details.published(), zone));
     var header = col()
