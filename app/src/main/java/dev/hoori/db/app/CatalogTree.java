@@ -113,6 +113,9 @@ final class CatalogTree {
       s.openFolder(id, opens);
       return;
     }
+    if (node instanceof Node.Query) {
+      return;
+    }
     if (!opens) {
       open.remove(node);
       return;
@@ -143,6 +146,7 @@ final class CatalogTree {
           connect(s, id);
         }
       }
+      case Node.Query(var id) -> s.openQuery(id);
       case Node.OfTable(var id, var table) -> s.openTable(id, table);
       default -> {
         // The rest only open and close, which the tree does.
@@ -449,6 +453,7 @@ final class CatalogTree {
       case Node.OfColumn n -> null;
       case Node.Problem n -> null;
       case Node.Folder n -> null;
+      case Node.Query n -> null;
     };
   }
 
@@ -724,7 +729,7 @@ final class CatalogTree {
 
   /** Whether the connection is connected, so that its lanes can be used. */
   boolean connected(UUID id) {
-    var live = lives.get(id);
+    var live = id == null ? null : lives.get(id);
     return live != null && live.phase instanceof Live.Connected;
   }
 
@@ -773,7 +778,7 @@ final class CatalogTree {
 
   /** The names of the connection's databases as the tree read them, or none where it has not. */
   List<String> databases(UUID id) {
-    var live = lives.get(id);
+    var live = id == null ? null : lives.get(id);
     if (live != null && live.levels.get(new Node.Connection(id)) instanceof Read(var children)) {
       return children.stream().map(n -> ((Node.OfDatabase) n).database().name()).toList();
     }
@@ -948,6 +953,7 @@ final class CatalogTree {
     return switch (node) {
       case Node.Folder n -> null;
       case Node.Connection n -> null;
+      case Node.Query n -> null;
       case Node.OfDatabase n -> n.database().name();
       case Node.OfSchema n -> n.schema().database().name();
       case Node.OfTable n -> n.table().container().database().name();
@@ -1212,6 +1218,7 @@ final class CatalogTree {
     return switch (node) {
       case Node.Folder(var id) -> s.folder(id).name();
       case Node.Connection(var id) -> State.name(s.profile(id));
+      case Node.Query(var id) -> s.query(id).name();
       case Node.OfDatabase n -> n.database().name();
       case Node.OfSchema n -> n.schema().name();
       case Node.OfTable n -> n.table().name();
@@ -1235,6 +1242,7 @@ final class CatalogTree {
     return switch (node) {
       case Node.OfColumn n -> n.column().type();
       case Node.Connection(var id) -> s.profile(id).provider().displayName();
+      case Node.Query(var id) -> QueryDialog.languageLabel(s.query(id).language());
       default -> null;
     };
   }
@@ -1351,7 +1359,7 @@ final class CatalogTree {
       if (failedWhole(live, node)
           && group.activeTab() instanceof ConsoleTab x
           && x.activity instanceof ConsoleTab.Stranded
-          && x.id.equals(node.id())) {
+          && node.id().equals(x.id)) {
         return null;
       }
     }
@@ -1385,12 +1393,27 @@ final class CatalogTree {
         yield List.of(
             Menu.item("New connection…", s.canChange() ? s::newConnection : null)
                 .icon(Symbol.ADD),
+            Menu.item("New query…", s.canChange() ? s::newQuery : null).icon(Symbol.DOCUMENT),
             Menu.item("New folder…", s.canAddFolder() ? s::newFolder : null).icon(Symbol.FOLDER),
             Menu.separator(),
             Menu.item("Rename…", () -> s.askRenameFolder(n.id())).icon(Symbol.EDIT),
             moveTo(s, n),
             Menu.separator(),
             Menu.item("Delete…", () -> s.askDeleteFolder(n.id())).icon(Symbol.DELETE));
+      }
+      case Node.Query n -> {
+        var q = s.query(n.id());
+        if (q == null) {
+          yield List.of();
+        }
+        yield List.of(
+            Menu.item("Open", () -> s.openQuery(q.id())).icon(Symbol.DOCUMENT),
+            Menu.separator(),
+            Menu.item("Rename…", () -> s.askRenameQuery(q.id())).icon(Symbol.EDIT),
+            Menu.item("Duplicate", () -> s.duplicateQuery(q)).icon(Symbol.COPY),
+            moveTo(s, n),
+            Menu.separator(),
+            Menu.item("Delete…", () -> s.askDeleteQuery(q.id())).icon(Symbol.DELETE));
       }
       case Node.Connection n -> {
         var p = s.profile(n.id());
@@ -1463,9 +1486,11 @@ final class CatalogTree {
     }
   }
 
-  /** Whether the user may drag the node: a folder or a connection, not what is below one. */
+  /** Whether the user may drag the node: a folder, a connection or a query, not what is below. */
   static boolean canDrag(Node node) {
-    return node instanceof Node.Folder || node instanceof Node.Connection;
+    return node instanceof Node.Folder
+        || node instanceof Node.Connection
+        || node instanceof Node.Query;
   }
 
   /** Whether the node can go where the pointer is; asked at every step of a drag. */

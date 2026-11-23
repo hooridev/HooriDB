@@ -31,7 +31,7 @@ final class Kept {
     return saving != null || unsaved && canSave && !quitAnyway;
   }
 
-  /** What notices call it: "Consoles", "History", "Saved queries". */
+  /** What notices call it: "Consoles", "History", "Settings". */
   String title() {
     return what.substring(0, 1).toUpperCase(Locale.ROOT) + what.substring(1);
   }

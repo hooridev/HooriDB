@@ -82,6 +82,9 @@ final class State {
   List<ConnectionProfile> profiles = List.of();
   // Its folders by id, for the tree, which asks for them at every frame; set with it too.
   private Map<UUID, Workspace.Folder> folders = Map.of();
+  // Its queries by id, for the tree and open query tabs; set with it too.
+  private Map<UUID, Workspace.Query> queries = Map.of();
+  private int queryEdits; // counted for delayed workspace saves on query text edits
   boolean loaded; // whether the workspace was loaded, or failed to
   String loadError; // why the workspace could not be loaded, or null
   // Where what a file that could not be understood held is kept once a save replaced it, or null.
@@ -156,8 +159,12 @@ final class State {
   private void tabClosed(Tab tab) {
     guard.drop(tab);
     tab.close();
-    if (tab instanceof ConsoleTab) {
-      keeping.persist(keeping.consolesKept);
+    if (tab instanceof ConsoleTab c) {
+      if (c.queryId == null) {
+        keeping.persist(keeping.consolesKept);
+      } else if (unsaved) {
+        persist();
+      }
     }
   }
 
@@ -181,7 +188,6 @@ final class State {
           change(found);
           loaded = true;
           setAside = null;
-          keeping.dropOrphanQueries();
           lookForKeyring();
           keeping.restore();
         },
@@ -252,7 +258,12 @@ final class State {
 
   /** The folder of the id, or null where there is none. */
   Workspace.Folder folder(UUID id) {
-    return folders.get(id);
+    return id == null ? null : folders.get(id);
+  }
+
+  /** The query of the id, or null where there is none. */
+  Workspace.Query query(UUID id) {
+    return id == null ? null : queries.get(id);
   }
 
   /**
@@ -279,6 +290,180 @@ final class State {
   boolean folderOpen(UUID id) {
     var folder = folders.get(id);
     return folder != null && folder.open();
+  }
+
+  /** Opens the dialog for a new query, which goes where {@link #folderFor} the selection. */
+  void newQuery() {
+    var language = Workspace.Language.SQL;
+    if (selected instanceof Node.Query(var id)) {
+      var q = query(id);
+      if (q != null) {
+        language = q.language();
+      }
+    } else if (selected != null && !(selected instanceof Node.Folder)) {
+      var p = profile(selected.id());
+      if (p != null) {
+        language = Workspace.Language.of(p.provider());
+      }
+    }
+    dialogs.queryDialog = QueryDialog.create(folderFor(selected), language);
+  }
+
+  /** A new query of the name and language, last in the folder of the id or at the top; selected. */
+  void createQuery(UUID in, String name, Workspace.Language language) {
+    dialogs.queryDialog = null;
+    var query = new Workspace.Query(UUID.randomUUID(), name, "", language);
+    var at = folder(in) == null ? null : in;
+    change(revealing(workspace.into(at, query), query.id()));
+    selected = new Node.Query(query.id());
+    persist();
+  }
+
+  /** Opens Save to workspace for a console's text, placing it in its connection's folder. */
+  void saveToWorkspace(ConsoleTab console, String text) {
+    if (!canChange() || text.isBlank()) {
+      return;
+    }
+    var path = console.id == null ? null : workspace.path(console.id);
+    UUID in = path == null || path.isEmpty() ? null : path.getLast().id();
+    var language = Workspace.Language.of(console.editingProvider(this));
+    dialogs.queryDialog = QueryDialog.save(in, text, language);
+    var window = app == null ? null : app.windows().of(app);
+    if (window != null) {
+      window.raise();
+    }
+  }
+
+  /** Creates a workspace query from a console's text. */
+  void createSavedQuery(UUID in, String name, String text, Workspace.Language language) {
+    dialogs.queryDialog = null;
+    var query = new Workspace.Query(UUID.randomUUID(), name, text, language);
+    var at = folder(in) == null ? null : in;
+    change(revealing(workspace.into(at, query), query.id()));
+    selected = new Node.Query(query.id());
+    persist();
+    tell("Saved the query " + name + " to the workspace");
+  }
+
+  void askRenameQuery(UUID id) {
+    var query = query(id);
+    if (query != null) {
+      dialogs.queryDialog = QueryDialog.rename(id, query.name());
+    }
+  }
+
+  void renameQuery(UUID id, String name) {
+    dialogs.queryDialog = null;
+    if (query(id) != null) {
+      change(workspace.rename(id, name));
+      persist();
+    }
+  }
+
+  /** A copy of the query under a new id, right after it. */
+  void duplicateQuery(Workspace.Query query) {
+    var copy = new Workspace.Query(
+        UUID.randomUUID(), query.name() + " (copy)", query.text(), query.language());
+    change(workspace.after(query.id(), copy));
+    selected = new Node.Query(copy.id());
+    persist();
+  }
+
+  /** The act of deleting the query, which its open tab's question asks for. */
+  static Guard.Act deleteQueryAct(UUID id) {
+    return new Guard.Act("delete query", id);
+  }
+
+  void askDeleteQuery(UUID id) {
+    var query = query(id);
+    if (query != null) {
+      dialogs.queryDialog = QueryDialog.delete(id, query.name());
+    }
+  }
+
+  /** Deletes the query, asking first if its open tab has something at stake, and closes its tab. */
+  void deleteQuery(UUID id) {
+    var query = query(id);
+    if (query == null) {
+      dialogs.queryDialog = null;
+      return;
+    }
+    var tab = queryTab(id);
+    if (tab != null
+        && guard.asks(
+            this,
+            deleteQueryAct(id),
+            query.name() + " is deleted",
+            List.of(tab),
+            () -> deleteQuery(id))) {
+      return;
+    }
+    dialogs.queryDialog = null;
+    if (tab != null) {
+      close(List.of(tab));
+    }
+    change(workspace.remove(id));
+    if (new Node.Query(id).equals(selected)) {
+      selected = null;
+    }
+    persist();
+  }
+
+  /** Opens the workspace query in a console tab, or raises the one already open for it. */
+  void openQuery(UUID id) {
+    var query = query(id);
+    if (query == null) {
+      return;
+    }
+    var existing = queryTab(id);
+    if (existing != null) {
+      var group = tabs.groupOf(existing);
+      tabs.select(group, group.tabs().indexOf(existing));
+      var window = group.window() != null ? group.window() : app.windows().of(app);
+      if (window != null) {
+        window.raise();
+      }
+      return;
+    }
+    var tab = ConsoleTab.ofQuery(this, query);
+    tabs.add(tabs.main(), tabs.main().tabs().size(), tab);
+  }
+
+  /** The open console tab bound to the workspace query, in whichever window; or null. */
+  ConsoleTab queryTab(UUID queryId) {
+    if (queryId == null) {
+      return null;
+    }
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof ConsoleTab x && queryId.equals(x.queryId)) {
+          return x;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** A workspace query's text changed in its tab: kept in memory and saved after a moment. */
+  void queryEdited(UUID id, String text) {
+    var query = query(id);
+    if (query == null || query.text().equals(text)) {
+      return;
+    }
+    change(workspace.put(query.withText(text)));
+    if (!guard.quitting()) {
+      quitAnyway = false;
+    }
+    unsaved = true;
+    if (saving != null) {
+      saveAgain = true; // the save on its way wrote the text before this edit
+    }
+    int at = ++queryEdits;
+    app.after(Keeping.EDIT_SECONDS, () -> {
+      if (queryEdits == at && unsaved && !quitAnyway) {
+        persist();
+      }
+    });
   }
 
   /** Opens the dialog for a new folder, which goes where {@link #folderFor} the selection. */
@@ -335,7 +520,9 @@ final class State {
   }
 
   private static boolean entry(Node node) {
-    return node instanceof Node.Folder || node instanceof Node.Connection;
+    return node instanceof Node.Folder
+        || node instanceof Node.Connection
+        || node instanceof Node.Query;
   }
 
   /**
@@ -449,7 +636,14 @@ final class State {
     }
     if (!color) {
       // Their sessions were opened with what changed; the save asked them first, and locked them.
-      consoles(profile.id()).forEach(ConsoleTab::end);
+      for (var console : consoles(profile.id())) {
+        if (console.queryId != null
+            && Workspace.Language.of(profile.provider()) != console.queryLanguage) {
+          console.detachTarget();
+        } else {
+          console.end();
+        }
+      }
     }
     persist();
   }
@@ -556,7 +750,16 @@ final class State {
       return;
     }
     var held = folder.connections();
-    var asking = held.stream().flatMap(p -> guarded(p.id()).stream()).toList();
+    var asking = new ArrayList<Guard.Guarded>();
+    for (var p : held) {
+      asking.addAll(guarded(p.id()));
+    }
+    for (var q : folder.queries()) {
+      var tab = queryTab(q.id());
+      if (tab != null && !asking.contains(tab)) {
+        asking.add(tab);
+      }
+    }
     var act = deleteFolderAct(id);
     if (guard.asks(this, act, folder.name() + " is deleted", asking, () -> deleteFolder(id))) {
       return;
@@ -571,6 +774,10 @@ final class State {
   private void remove(Guard.Act act, String what, List<ConnectionProfile> profiles, UUID folder) {
     var ids = new HashSet<UUID>();
     profiles.forEach(p -> ids.add(p.id()));
+    var held = folder(folder);
+    if (held != null) { // its queries' tabs, on whatever connection they run
+      held.queries().forEach(q -> ids.add(q.id()));
+    }
     if (!guard.lock(this, act, what, ids)) {
       return;
     }
@@ -584,7 +791,6 @@ final class State {
     closeTabs(profile.id()); // its consoles, and with them their texts
     keeping.forget(profile.id());
     change(workspace.remove(profile.id()));
-    keeping.forgetQueries(profile.id());
     if (selected != null && selected.id().equals(profile.id())) {
       selected = null;
     }
@@ -605,8 +811,14 @@ final class State {
     dialogs.folderDialog = null;
     var folder = folder(id);
     if (folder != null && folder.connections().isEmpty()) {
+      var openQueries = folder.queries().stream()
+          .map(q -> queryTab(q.id()))
+          .filter(Objects::nonNull)
+          .toList();
+      close(openQueries);
       change(workspace.remove(id));
-      if (selected instanceof Node.Folder(var at) && folder(at) == null) {
+      if (selected instanceof Node.Folder(var at) && folder(at) == null
+          || selected instanceof Node.Query(var q) && query(q) == null) {
         selected = null;
       }
       persist();
@@ -956,7 +1168,8 @@ final class State {
     for (var group : groups) {
       for (var tab : group.tabs()) {
         if (tab instanceof ConsoleTab x
-            && x.id.equals(id)
+            && x.queryId == null
+            && id.equals(x.id)
             && Objects.equals(x.database, database)) {
           return x;
         }
@@ -970,7 +1183,10 @@ final class State {
    * tree, or that of the node selected, else that of the window's active tab; null for none.
    */
   UUID consoleFor(TabGroups.Group<Tab> group) {
-    if (group == tabs.main() && selected != null && !(selected instanceof Node.Folder)) {
+    if (group == tabs.main()
+        && selected != null
+        && !(selected instanceof Node.Folder)
+        && !(selected instanceof Node.Query)) {
       return selected.id();
     }
     return switch (group.activeTab()) {
@@ -1076,7 +1292,7 @@ final class State {
     var all = new ArrayList<Guard.Guarded>();
     for (var group : tabs.groups()) {
       for (var tab : group.tabs()) {
-        if (tab instanceof Guard.Guarded g && (id == null || g.connectionId().equals(id))) {
+        if (tab instanceof Guard.Guarded g && (id == null || id.equals(g.connectionId()))) {
           all.add(g);
         }
       }
@@ -1089,7 +1305,7 @@ final class State {
     var all = new ArrayList<ConsoleTab>();
     for (var group : tabs.groups()) {
       for (var tab : group.tabs()) {
-        if (tab instanceof ConsoleTab x && (id == null || x.id.equals(id))) {
+        if (tab instanceof ConsoleTab x && (id == null || id.equals(x.id))) {
           all.add(x);
         }
       }
@@ -1108,10 +1324,16 @@ final class State {
     };
   }
 
-  /** Closes the tabs of the connection, in every window. */
+  /** Closes the tabs of the connection, in every window; query tabs detach their target. */
   private void closeTabs(UUID id) {
     var all = new ArrayList<Tab>(tables(id));
-    all.addAll(consoles(id));
+    for (var console : consoles(id)) {
+      if (console.queryId == null) {
+        all.add(console);
+      } else {
+        console.detachTarget();
+      }
+    }
     all.addAll(monitors(id));
     close(all);
   }
@@ -1177,15 +1399,20 @@ final class State {
   }
 
   /**
-   * A console's title: its connection and its database, numbered where another console has the
-   * same.
+   * A console's title: a workspace query's name, else its connection and its database, numbered
+   * where another console has the same.
    */
   String title(ConsoleTab tab) {
+    if (tab.queryId != null) {
+      var query = query(tab.queryId);
+      return query != null ? query.name() : "";
+    }
     var profile = profile(tab.id);
     var title = (profile == null ? "" : name(profile))
         + (tab.database.isEmpty() ? "" : ": " + tab.database);
     var same = consoles(null).stream()
-        .filter(x -> x.id.equals(tab.id) && x.database.equals(tab.database))
+        .filter(x ->
+            x.queryId == null && Objects.equals(x.id, tab.id) && x.database.equals(tab.database))
         .toList();
     return same.size() < 2 ? title : title + " (" + (same.indexOf(tab) + 1) + ")";
   }
@@ -1256,21 +1483,33 @@ final class State {
   private void change(Workspace changed) {
     workspace = changed;
     profiles = changed.connections();
-    var byId = new HashMap<UUID, Workspace.Folder>();
-    index(changed.entries(), byId);
-    folders = byId;
+    var foldersById = new HashMap<UUID, Workspace.Folder>();
+    var queriesById = new HashMap<UUID, Workspace.Query>();
+    index(changed.entries(), foldersById, queriesById);
+    folders = foldersById;
+    queries = queriesById;
   }
 
-  private static void index(List<Workspace.Entry> entries, Map<UUID, Workspace.Folder> byId) {
+  private static void index(
+      List<Workspace.Entry> entries,
+      Map<UUID, Workspace.Folder> foldersById,
+      Map<UUID, Workspace.Query> queriesById) {
     for (var entry : entries) {
-      if (entry instanceof Workspace.Folder f) {
-        byId.put(f.id(), f);
-        index(f.entries(), byId);
+      switch (entry) {
+        case Workspace.Folder f -> {
+          foldersById.put(f.id(), f);
+          index(f.entries(), foldersById, queriesById);
+        }
+        case Workspace.Query q -> queriesById.put(q.id(), q);
+        case ConnectionProfile _ -> {}
       }
     }
   }
 
   ConnectionProfile profile(UUID id) {
+    if (id == null) {
+      return null;
+    }
     int at = indexOf(id);
     return at < 0 ? null : profiles.get(at);
   }

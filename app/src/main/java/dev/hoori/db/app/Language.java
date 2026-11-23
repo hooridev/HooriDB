@@ -1,6 +1,7 @@
 package dev.hoori.db.app;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.dialect.Dialect;
 import dev.hoori.db.core.dialect.DocumentDialect;
 
@@ -15,6 +16,13 @@ sealed interface Language {
     return switch (provider.traits()) {
       case Dialect _ -> new Sql();
       case DocumentDialect _ -> new Shell();
+    };
+  }
+
+  static Language of(Workspace.Language language) {
+    return switch (language) {
+      case SQL -> new Sql();
+      case SHELL -> new Shell();
     };
   }
 

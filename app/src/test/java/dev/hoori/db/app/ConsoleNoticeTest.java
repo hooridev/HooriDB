@@ -687,8 +687,8 @@ class ConsoleNoticeTest extends ConsoleTransactions {
   @Test
   void aTellerWipedPostsNoUncheckedWords() throws Exception {
     var app = k.console(SHOP);
-    var teller =
-        new Teller(app, app.state(), "shop-prod", ConnectionsTest.PASSWORD.toCharArray(), null);
+    var teller = new Teller(
+        app, app.state(), null, "shop-prod", ConnectionsTest.PASSWORD.toCharArray(), null);
     teller.wipe();
     teller.tell(PAY, "password authentication failed for " + ConnectionsTest.PASSWORD, true);
     c.run(app, SETTLE);

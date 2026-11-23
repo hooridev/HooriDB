@@ -158,7 +158,7 @@ final class ResultsArea {
 
   /** The tree's connection failed while the console waited for it: why, with Try again. */
   private El strandedNote(State s) {
-    var trouble = s.catalog.problem(s, new Node.Connection(tab.id));
+    var trouble = tab.id == null ? null : s.catalog.problem(s, new Node.Connection(tab.id));
     var actions = new ArrayList<El>();
     if (trouble != null && trouble.password()) {
       actions.add(button(SECONDARY, "Enter password…", () -> tab.retry(s, true)));
