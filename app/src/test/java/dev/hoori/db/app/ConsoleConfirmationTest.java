@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
@@ -189,6 +190,22 @@ class ConsoleConfirmationTest {
     assertEquals(200, read.rows.size());
     c.run(app, ANYWAY);
     assertTrue(ran(WIPE), servers.calls.toString());
+  }
+
+  /** Where giving up the open read fails, the statement that waited for it says it did not run. */
+  @Test
+  void aFailedGiveUpBeforeAQuestionSaysTheStatementDidNotRun() throws Exception {
+    servers.failsAtGiveUp(BIG, FakeServers.serverError(Failure.Kind.CONSTRAINT, "no end"));
+    var app = t.k.console(SHOP);
+    c.run(app, type(String.join(";\n", BIG, WIPE)) + RUN_ALL + "snap failed\n");
+    assertFalse(c.tree("failed").contains(EVERY), c.tree("failed"));
+    assertFalse(ran(WIPE), servers.calls.toString());
+    assertTrue(
+        tab(app)
+            .log
+            .contains(
+                new ConsoleTab.Logged(ConsoleTab.Level.ERROR, WIPE, null, ConsoleTab.NOT_RUN)),
+        tab(app).log.toString());
   }
 
   /** Cancelled in the empty transaction a chained Commit began, it leaves that empty. */

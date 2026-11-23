@@ -683,7 +683,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       if (reading != null && reading.more && lane != null) {
         // The read before is given up first, as the question may wait long; it asks once that
         // ended.
-        giveUp(s, CutReason.LEFT, ask);
+        giveUp(s, CutReason.LEFT, sql, ask);
       } else {
         ask.run();
       }
@@ -1070,11 +1070,14 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
    * marked partial with {@code reason} and keeping the session open where the give-up allows.
    */
   private void giveUp(State s, CutReason reason) {
-    giveUp(s, reason, () -> {});
+    giveUp(s, reason, null, () -> {});
   }
 
-  /** As {@link #giveUp(State, CutReason)}, and then, where it ended well, {@code then}. */
-  private void giveUp(State s, CutReason reason, Runnable then) {
+  /**
+   * As {@link #giveUp(State, CutReason)}, and then, where it ended well, {@code then}; where it
+   * failed, the statement {@code waiting} for it, if any, says it did not run.
+   */
+  private void giveUp(State s, CutReason reason, String waiting, Runnable then) {
     var target = reading;
     if (target == null || !target.more || lane == null) {
       return;
@@ -1097,6 +1100,10 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         },
         error -> {
           activity = new Idle();
+          if (waiting != null) {
+            failed(s, waiting, error);
+            return;
+          }
           queue.clear(); // nothing that waited for it runs
           if (error instanceof Session.GaveUp g) {
             if (g.failure.kind() == Failure.Kind.CONNECTION_LOST) {
