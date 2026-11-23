@@ -47,6 +47,15 @@ class StatementsTest {
   }
 
   @Test
+  void anEscapeStringContinuesOverALineBreakAndLineCommentsByItsRules() {
+    assertSplit(
+        POSTGRESQL,
+        "SELECT E'a' -- note\n'b\\'c'; SELECT 2;",
+        "SELECT E'a' -- note\n'b\\'c'",
+        "SELECT 2");
+  }
+
+  @Test
   void theFirstWordComesAfterCommentsAndParentheses() {
     assertEquals("VACUUM", Statements.firstWord("-- SELECT\nVACUUM t", POSTGRESQL));
     assertEquals("VACUUM", Statements.firstWord("/* a /* SELECT */ b */ VACUUM", POSTGRESQL));

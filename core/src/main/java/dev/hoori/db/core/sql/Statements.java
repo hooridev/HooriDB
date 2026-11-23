@@ -399,6 +399,11 @@ public final class Statements {
       kind = Piece.Kind.STRING;
       i++;
       skipQuoted('\'', true);
+      // Continued over a line break, as 'b' in E'a'\n'b', it is read by the same rules.
+      for (int at = continued(); !open && at > 0; at = continued()) {
+        i = at;
+        skipQuoted('\'', true);
+      }
     } else if (c == syntax.identifierQuote()) {
       kind = Piece.Kind.QUOTED;
       skipQuoted(c, false);
@@ -408,6 +413,27 @@ public final class Statements {
         || !skipDollarQuoted()) {
       i++;
     }
+  }
+
+  // Where the quote of a string's continuation is, after white space with a line break; 0 if none.
+  // PostgreSQL takes line comments in that white space too.
+  private int continued() {
+    boolean broken = false;
+    int at = i;
+    while (at < text.length()) {
+      char c = text.charAt(at);
+      if (c == '-' && charAt(at + 1) == '-') {
+        while (at < text.length() && text.charAt(at) != '\n' && text.charAt(at) != '\r') {
+          at++;
+        }
+      } else if (Character.isWhitespace(c)) {
+        broken |= c == '\n' || c == '\r';
+        at++;
+      } else {
+        break;
+      }
+    }
+    return broken && charAt(at) == '\'' ? at : 0;
   }
 
   private void skipLine() {

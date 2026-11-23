@@ -232,6 +232,19 @@ class WorkspaceQueriesTest {
   }
 
   @Test
+  void anUntargetedQueryIsNotLaidOutByAnotherServersRules() throws Exception {
+    // On MariaDB the WHERE is in a comment; PostgreSQL's layout would move it out of it.
+    var q = query("Notes", "SELECT 1 FROM t # WHERE 1=0", Workspace.Language.SQL);
+    var app = c.app(new Workspace(List.of(SHOP, q)));
+    c.run(
+        app,
+        START + "press role=treeitem label=\"Notes\"\nkey Enter\nframe\nframe\n"
+            + "press #sql\nkey L control alt\nframe\nsnap kept\n");
+    assertTrue(
+        line(c.tree("kept"), "#sql").contains("SELECT 1 FROM t # WHERE 1=0"), c.tree("kept"));
+  }
+
+  @Test
   void choosingADisconnectedTargetConnectsItThenRuns() throws Exception {
     var shop = SHOP.withColor(Color.RED);
     var q = query("Orders", COUNT, Workspace.Language.SQL);

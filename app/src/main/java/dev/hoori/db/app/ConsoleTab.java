@@ -2748,6 +2748,9 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   private El editor(State s, App<State> app, Provider provider) {
     Highlighter syntax = Syntax.of(provider);
+    if (provider(s) == null && syntax instanceof SqlSyntax sql) {
+      syntax = sql.sql(); // no layout before a target: its server's comments and quotes differ
+    }
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
     this.editor.occurrences(s.settings.highlightOccurrences());

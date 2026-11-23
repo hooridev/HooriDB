@@ -57,8 +57,8 @@ moving with edits), an error at the place the server names in its own markup lay
 edits and shows its message after its line with the caret there, quick documentation on hover or
 Control+Q for a table's kind, schema and columns or a column's type and table (reading what the
 tree lacks for the next hover), Control+B and Control+click on a table or column name to open its
-table in a tab, and completions of keywords and of the schemas, tables and
-columns the tree read or reads for it; it switches databases and cancels what runs. It commits each
+table in a tab, Control+Alt+L to lay its SQL out, changing only white space, and completions of
+keywords and of the schemas, tables and columns the tree read or reads for it; it switches databases and cancels what runs. It commits each
 statement by itself in Auto, and in Manual Commit and Rollback end the transaction, whose state it
 shows as the server says it, and as possibly open where the server has not said; closing it,
 switching auto-commit or the database, disconnecting, changing or deleting its connection and
