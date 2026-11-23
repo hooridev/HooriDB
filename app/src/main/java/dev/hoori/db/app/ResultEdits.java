@@ -1106,8 +1106,9 @@ final class ResultEdits {
     var summary = (n == 1 ? "1 statement" : n + " statements") + " will run in one transaction on "
         + table + ".";
     // An update or delete checks its row again, a new row cannot: it may be there already.
-    if (p.target.edits().unknown
-        && p.changes.changes().stream().anyMatch(Change.Insert.class::isInstance)) {
+    boolean unsure = p.target.edits().unknown
+        && p.changes.changes().stream().anyMatch(Change.Insert.class::isInstance);
+    if (unsure) {
       summary += " " + INSERT_UNSURE;
     }
     El code = CodeEditor.embedded(CodeEditor.codeEditor(
@@ -1128,7 +1129,8 @@ final class ResultEdits {
             content,
             List.of(cancel, commit),
             () -> host.preview(null),
-            Dialog.options().defaultButton(commit))
+            // Where rows may be inserted twice, Enter does not commit: Commit is pressed.
+            unsure ? Dialog.options() : Dialog.options().defaultButton(commit))
         .key("dml-preview");
   }
 

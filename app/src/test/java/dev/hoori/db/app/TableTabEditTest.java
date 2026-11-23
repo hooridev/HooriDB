@@ -1005,5 +1005,8 @@ class TableTabEditTest {
     assertTrue(
         c.tree("unsure-preview").contains("new rows it sent may be in the table already"),
         c.tree("unsure-preview"));
+    // Enter does not commit them: Commit must be pressed.
+    c.run(app, "key Enter\nframe\n" + SETTLE);
+    assertEquals(0, writeCount(), servers.calls.toString());
   }
 }
