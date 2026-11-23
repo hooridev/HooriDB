@@ -718,7 +718,7 @@ class ConsoleTest {
     c.run(app, type(both) + RUN + "scroll #grid row 180\nframe\nframe\n" + SETTLE + "snap ended\n");
     String ended = c.tree("ended");
     assertTrue(tabs(ended).endsWith("Result 1,Result 2,Messages"), tabs(ended));
-    assertTrue(near(ended, "#result-status").contains("· 250 rows\""), ended);
+    assertTrue(near(ended, "#result-status").contains("\"250 rows ·"), ended);
     // Not a plain read, it was read to its end: two portions' time.
     assertTrue(status(ended).contains("\"Ran in 8 ms · 250 rows · 5 rows changed\""), ended);
   }
@@ -759,6 +759,123 @@ class ConsoleTest {
     String behind = c.tree("behind");
     assertFalse(behind.contains("#unconnected"), behind);
     assertEquals(1, notes(behind), behind);
+  }
+
+  @Test
+  void anOpenReadShowsItsCursorAndStopsAfterBeingIdle() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(ORDERS) + RUN + "snap open\n");
+    String open = c.tree("open");
+    assertTrue(near(open, "#result-status").contains("200 rows so far · cursor open"), open);
+    assertTrue(open.contains("role=button label=\"Stop reading\""), open);
+    var output = tab(app).outputs.getFirst();
+    assertTrue(output.more);
+    assertFalse(output.cut);
+
+    c.run(app, "advance " + ConsoleTab.IDLE_SECONDS + "\nframe\n" + SETTLE + "snap idle\n");
+    assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+    assertFalse(output.more);
+    assertTrue(output.cut);
+    assertEquals(200, output.rows.size());
+    String idle = c.tree("idle");
+    assertTrue(
+        near(idle, "#result-status")
+            .contains("the first 200 rows; reading stopped after being idle"),
+        idle);
+    assertFalse(idle.contains("role=button label=\"Stop reading\""), idle);
+    assertTrue(tab(app).connected());
+    assertTrue(servers.closed.isEmpty(), servers.closed.toString());
+
+    // Scrolling past the loaded rows reads nothing more.
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE);
+    assertFalse(
+        servers.calls.contains("next " + PG + " " + ORDERS + " 200"), servers.calls.toString());
+    assertEquals(200, output.rows.size());
+  }
+
+  @Test
+  void readingAnotherPortionRestartsTheIdleBoundAndStopReadingGivesUpAtOnce() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(ORDERS) + RUN);
+    var output = tab(app).outputs.getFirst();
+    c.run(app, "advance 20\nframe\n");
+    assertFalse(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+    assertTrue(output.more);
+
+    // While a portion is being read, Stop reading is not offered.
+    var next = "next " + PG + " " + ORDERS + " 200";
+    var gate = servers.hold(next);
+    try {
+      c.run(app, "scroll #grid row 180\nframe\nframe\n");
+      eventually(() -> servers.calls.contains(next));
+      c.run(app, "advance 1\nframe\nsnap reading\n");
+      assertFalse(
+          c.tree("reading").contains("role=button label=\"Stop reading\""), c.tree("reading"));
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE + "snap more\n");
+    assertEquals(400, output.rows.size());
+    assertTrue(c.tree("more").contains("role=button label=\"Stop reading\""), c.tree("more"));
+
+    // 20 s more (40 s since the first portion, 20 s since the second): still open.
+    c.run(app, "advance 20\nframe\n");
+    assertFalse(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+    assertTrue(output.more);
+
+    // Stop reading gives it up at once without closing the session.
+    c.run(app, "press role=button label=\"Stop reading\"\nframe\n" + SETTLE + "snap stopped\n");
+    assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+    assertFalse(output.more);
+    assertTrue(output.cut);
+    assertEquals(400, output.rows.size());
+    String stopped = c.tree("stopped");
+    assertTrue(
+        near(stopped, "#result-status").contains("the first 400 rows; reading stopped"), stopped);
+    assertFalse(stopped.contains("role=button label=\"Stop reading\""), stopped);
+    assertTrue(tab(app).connected());
+    assertTrue(servers.closed.isEmpty(), servers.closed.toString());
+
+    // Scrolling reads nothing more, and the next statement runs on the same session.
+    c.run(app, "scroll #grid row 380\nframe\nframe\n" + SETTLE);
+    assertFalse(
+        servers.calls.contains("next " + PG + " " + ORDERS + " 400"), servers.calls.toString());
+    c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN + "snap next\n");
+    assertTrue(status(c.tree("next")).contains("\"Ran in 4 ms · 1 row\""), c.tree("next"));
+    // The tree's, the console's and the estimates' connection: the session is the same.
+    assertEquals(
+        3, servers.calls.stream().filter(k -> k.equals("open " + PG + "/shop")).count());
+  }
+
+  @Test
+  void aLazyReadStopsAndIsGivenUpAtKeptRows() throws Exception {
+    ConsoleTab.kept = 400;
+    try {
+      var app = console(SHOP);
+      c.run(app, type(ORDERS) + RUN);
+      var output = tab(app).outputs.getFirst();
+      assertTrue(output.more);
+      assertEquals(200, output.rows.size());
+
+      // Second portion reaches the limit; a second SETTLE waits for the give-up it starts.
+      c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE + SETTLE + "snap capped\n");
+      assertEquals(400, output.rows.size());
+      assertFalse(output.more);
+      assertTrue(output.cut);
+      assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+      String capped = c.tree("capped");
+      assertTrue(
+          near(capped, "#result-status")
+              .contains("the first 400 rows; limit reached, the rest was not read"),
+          capped);
+      assertFalse(capped.contains("role=button label=\"Stop reading\""), capped);
+
+      c.run(app, "scroll #grid row 380\nframe\nframe\n" + SETTLE);
+      assertFalse(
+          servers.calls.contains("next " + PG + " " + ORDERS + " 400"), servers.calls.toString());
+    } finally {
+      ConsoleTab.kept = ConsoleTab.KEPT;
+    }
   }
 
   /** The callouts that say the server cannot be reached. */

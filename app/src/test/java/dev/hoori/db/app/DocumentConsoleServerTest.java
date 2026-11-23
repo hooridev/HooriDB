@@ -245,4 +245,30 @@ class DocumentConsoleServerTest {
     var options = ConsoleEditorTest.options(c.tree("offered"));
     assertEquals("orders", options.getFirst(), options.toString());
   }
+
+  @Test
+  void stopReadingFreesTheOpenCursorAndLeavesTheLoadedDocuments() throws Exception {
+    var app = console(docs());
+    c.run(app, type("db.orders.find()") + RUN + "snap open\n");
+    String open = c.tree("open");
+    assertTrue(near(open, "#result-status").contains("200 documents so far · cursor open"), open);
+    assertTrue(open.contains("role=button label=\"Stop reading\""), open);
+    c.run(app, "press role=button label=\"Stop reading\"\nframe\n" + SETTLE + "snap stopped\n");
+    String stopped = c.tree("stopped");
+    assertTrue(
+        near(stopped, "#result-status").contains("the first 200 documents; reading stopped"),
+        stopped);
+    assertFalse(stopped.contains("role=button label=\"Stop reading\""), stopped);
+    // In JSON view, Next page is disabled because no more documents will be read.
+    c.run(app, "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap json\n");
+    assertTrue(
+        line(c.tree("json"), "role=button label=\"Next page\"").contains("disabled"),
+        c.tree("json"));
+    // The session stays usable for the next statement.
+    c.run(
+        app,
+        "press #sql\nkey A control\nkey Delete\n" + type("db.orders.countDocuments({})") + RUN
+            + "snap count\n");
+    assertTrue(cell(c.tree("count"), 0, 0).contains("\"250\""), c.tree("count"));
+  }
 }

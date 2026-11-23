@@ -843,4 +843,37 @@ class ConsoleNoticeTest extends ConsoleTransactions {
     assertEquals(1, s.notices.size(), noticed(app));
     assertTrue(noticed(app).contains("came during the press"), noticed(app));
   }
+
+  /** A failed Stop reading or idle give-up posts a notice, and the next Run still runs. */
+  @Test
+  void aFailedStopReadingOrIdleGiveUpPostsANoticeAndTheNextRunRuns() throws Exception {
+    servers.failsAtGiveUp(ORDERS, FakeServers.serverError(Failure.Kind.CONSTRAINT, DUPLICATE));
+    for (var trigger : List.of(
+        "press role=button label=\"Stop reading\"\nframe\n" + SETTLE,
+        "advance " + ConsoleTab.IDLE_SECONDS + "\nframe\n" + SETTLE)) {
+      var app = k.console(SHOP);
+      c.run(app, type(ORDERS) + RUN + trigger + "snap failed\n");
+      assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+      assertTrue(noticed(app).contains(Session.ENDED + DUPLICATE), trigger + noticed(app));
+      assertFalse(k.tab(app).outputs.getFirst().more);
+      assertTrue(k.tab(app).outputs.getFirst().cut);
+      c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN + "snap next\n");
+      assertTrue(
+          ConsoleTest.status(c.tree("next")).contains("\"Ran in 4 ms · 1 row\""), c.tree("next"));
+      servers.calls.clear();
+    }
+    // A give-up that lost the connection closes the session so the next Run opens a new one.
+    servers.failsAtGiveUp(
+        ORDERS, FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "server gone"));
+    var app = k.console(SHOP);
+    c.run(app, type(ORDERS) + RUN + "press role=button label=\"Stop reading\"\nframe\n" + SETTLE);
+    assertFalse(k.tab(app).connected());
+    assertTrue(noticed(app).contains(Session.ENDED + "server gone"), noticed(app));
+    c.run(
+        app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN + "snap reconnected\n");
+    assertTrue(k.tab(app).connected());
+    assertTrue(
+        ConsoleTest.status(c.tree("reconnected")).contains("\"Ran in 4 ms · 1 row\""),
+        c.tree("reconnected"));
+  }
 }
