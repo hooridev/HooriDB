@@ -312,6 +312,29 @@ class TableTabEditTest {
   }
 
   @Test
+  void pagesWithEditsLeaveRoomForThoseInView() throws Exception {
+    var rows = new ArrayList<List<Object>>(3_000);
+    for (long i = 1; i <= 3_000; i++) {
+      rows.add(List.of(i, "name " + i));
+    }
+    servers.values(BIG, rows);
+    var app = t.shop();
+    c.run(app, table("big") + SETTLE);
+    var tab = t.tab(app);
+
+    // One edit on each of as many pages as are kept.
+    for (int page = 0; page < TableTab.KEPT; page++) {
+      int row = page * TableTab.PAGE;
+      c.run(
+          app, scroll(row) + SETTLE + "press #cell-" + row + "-1\ntype \"E\"\nkey Enter\nframe\n");
+    }
+    assertEquals(TableTab.KEPT, tab.pendingChanges());
+
+    c.run(app, scroll(2_600) + SETTLE + "snap far\n");
+    assertTrue(cell(c.tree("far"), 2_600, 1).contains("\"name 2601\""), c.tree("far"));
+  }
+
+  @Test
   void openEditorKeepsItsPageWhileScrolledAway() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);
     for (long i = 1; i <= 3_000; i++) {

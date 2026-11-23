@@ -41,11 +41,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongPredicate;
@@ -402,7 +404,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     long from = page * PAGE;
     if (n > 0) {
-      pages.put(page, read.rows());
+      pages.put(page, held(page, read.rows()));
       documents.put(page, read.documents());
     } else {
       pages.remove(page);
@@ -461,18 +463,45 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (selection.isEditing()) {
       far.remove(Long.valueOf(selection.editingRow() / PAGE)); // its draft's row stays
     }
-    // Pages with edits, or edits undo may bring back, stay: a page read again may hold other rows
-    // at those positions, which the undo history, kept by position, would then change.
-    kept.keySet().forEach(row -> far.remove(Long.valueOf(row / PAGE)));
-    undoKept.keySet().forEach(row -> far.remove(Long.valueOf(row / PAGE)));
+    // Pages with edits, or edits undo may bring back, stay, beside the pages kept: a page read
+    // again may hold other rows at those positions, which the undo history, kept by position,
+    // would then change.
+    var pinned = pinned();
+    pinned.retainAll(pages.keySet());
+    far.removeAll(pinned);
     if (!presentation.isGrid()) {
       far.remove(Long.valueOf(presentation.page()));
     }
     far.sort(Comparator.comparingLong(p -> -Math.abs(p - middle)));
-    for (int i = 0; i < far.size() && pages.size() > KEPT; i++) {
+    for (int i = 0; i < far.size() && pages.size() > KEPT + pinned.size(); i++) {
       pages.remove(far.get(i));
       documents.remove(far.get(i));
     }
+  }
+
+  /** The pages of positions with edits or undo history; none while nothing is edited. */
+  private Set<Long> pinned() {
+    var pinned = new HashSet<Long>();
+    kept.keySet().forEach(row -> pinned.add((long) row / PAGE));
+    undoKept.keySet().forEach(row -> pinned.add((long) row / PAGE));
+    return pinned;
+  }
+
+  /**
+   * The rows of a page read: those of a pinned page read again, as when the table grew past its
+   * short end, keep their positions, and only the rows past them are new.
+   */
+  private List<List<Object>> held(long page, List<List<Object>> read) {
+    var have = kept.isEmpty() && undoKept.isEmpty() ? null : pages.get(page);
+    if (have == null || !pinned().contains(page)) {
+      return read;
+    }
+    if (have.size() >= read.size()) {
+      return have.subList(0, read.size());
+    }
+    var rows = new ArrayList<>(have);
+    rows.addAll(read.subList(have.size(), read.size()));
+    return List.copyOf(rows);
   }
 
   /** The page of the cell the open value panel shows, which stays; -1 for none. */
