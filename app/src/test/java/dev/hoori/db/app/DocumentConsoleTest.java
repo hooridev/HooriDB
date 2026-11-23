@@ -22,6 +22,7 @@ import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.Values;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Result;
 import java.nio.file.Path;
 import java.util.List;
@@ -253,5 +254,76 @@ class DocumentConsoleTest {
     var resultJson = c.tree("result-json");
     assertTrue(line(resultJson, "role=radio label=\"JSON\"").contains("checked"), resultJson);
     assertTrue(line(resultJson, "#json").contains("\\\"customer\\\": \\\"Ada\\\""), resultJson);
+  }
+
+  @Test
+  void errorsStayWithInlineDiagnosticsAndGutterMarkersWorkInMongoDbConsole() throws Exception {
+    var orderDocs = List.of(Document.of("_id", 1, "customer", "Ada", "total", 12.5));
+    var fields = Values.found(orderDocs);
+    var rows = orderDocs.stream().map(d -> Values.row(fields, d)).toList();
+    var ok = "db.orders.find()";
+    var bad = "db.orders.find({ a: 1 b: 2 })";
+    c.servers.statement(ok, List.of(new Result.Rows(fields, 0, rows, orderDocs)));
+    c.servers.statement(
+        bad,
+        List.of(new Failure(
+            Failure.Kind.INVALID,
+            "A comma or } is missing",
+            "",
+            0,
+            bad.indexOf("b:") + 1,
+            "",
+            0,
+            0,
+            "",
+            "",
+            "",
+            "")));
+    var app = console();
+    var text = ok + ";\n" + bad + ";";
+    int badAt = text.indexOf(bad) + bad.indexOf("b:");
+    c.run(app, type(text) + "frame\nsnap before\n");
+    String before = c.tree("before");
+    assertTrue(
+        ConsoleEditorTest.gutterLine(before, 0).contains("role=button label=\"Run statement\""),
+        before);
+    assertTrue(
+        ConsoleEditorTest.gutterLine(before, 1).contains("role=button label=\"Run statement\""),
+        before);
+
+    // Run all: line 0 succeeds with 1 document, line 1 fails with persistent error & inline text.
+    c.run(app, ConsoleTest.RUN_ALL + "snap ran\n");
+    String ran = c.tree("ran");
+    assertTrue(
+        ConsoleEditorTest.gutterLine(ran, 0)
+            .contains("role=button label=\"Ran in 4 ms · 1 document\""),
+        ran);
+    assertTrue(
+        ConsoleEditorTest.gutterLine(ran, 1).contains("role=button label=\"Failed after 4 ms\""),
+        ran);
+    assertTrue(line(ran, "#sql").contains("squiggle " + badAt + "-" + (badAt + 1)), ran);
+    assertTrue(line(ran, "#end-1").contains("A comma or } is missing"), ran);
+
+    // Inserting a line at the top shifts error, inline diagnostic, and both markers down a line.
+    c.run(app, "press #sql\nkey Home control\nkey Enter\nframe\nsnap moved\n");
+    String moved = c.tree("moved");
+    assertTrue(line(moved, "#sql").contains("squiggle " + (badAt + 1) + "-" + (badAt + 2)), moved);
+    assertTrue(line(moved, "#end-2").contains("A comma or } is missing"), moved);
+    assertTrue(
+        ConsoleEditorTest.gutterLine(moved, 1)
+            .contains("role=button label=\"Ran in 4 ms · 1 document\""),
+        moved);
+    assertTrue(
+        ConsoleEditorTest.gutterLine(moved, 2).contains("role=button label=\"Failed after 4 ms\""),
+        moved);
+
+    // SQL-only quick documentation and go-to-table do not activate in a MongoDB console.
+    int ordersAt = tab(app).text.indexOf("orders") + 2;
+    tab(app).editor.select(ordersAt, ordersAt);
+    app.invalidate();
+    c.run(
+        app, "frame\nkey Q control\nframe\nadvance 1\nframe\nsnap no-doc\nkey B control\nframe\n");
+    assertFalse(c.tree("no-doc").contains("#documentation"), c.tree("no-doc"));
+    assertEquals(0, app.state().tables(DOCS.id()).size());
   }
 }

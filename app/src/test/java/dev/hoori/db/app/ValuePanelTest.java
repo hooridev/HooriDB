@@ -151,9 +151,11 @@ class ValuePanelTest {
         app,
         "press #cell-0-" + DOC + "\npress role=button label=\"Value\"\nadvance 1\nframe\n"
             + "snap invalid\n");
-    var editor = editor(t.c.tree("invalid"));
+    var invalid = t.c.tree("invalid");
+    var editor = editor(invalid);
     assertTrue(editor.contains("\"" + dumped("{\"a\": }") + "\""), editor);
     assertTrue(editor.contains("squiggle 6-7"), editor);
+    assertTrue(invalid.contains("#end-0"), invalid);
   }
 
   @Test
