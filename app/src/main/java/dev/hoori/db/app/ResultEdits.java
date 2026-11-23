@@ -480,25 +480,30 @@ final class ResultEdits {
 
   /** Whether any cell in the current selection has a pending change. */
   static boolean hasSelectedChanges(ConsoleTab.Output o) {
-    var changes = o.edits.changes;
-    if (changes == null || changes.isEmpty()) {
+    if (o.edits.changes == null) {
       return false;
     }
-    // Asked at each build: a small selection is looked up cell by cell, a large one by the changes.
+    // Asked at each build, where there are changes: a small selection is looked up cell by cell, a
+    // large one by the changes.
     var ranges = o.selection.ranges();
     if (ranges.isEmpty()) {
       return changed(o, o.selection.row(), o.selection.column());
     }
+    // A whole row or column reaches to the end, which the bounds of what is loaded cut.
+    int lastRow = o.rows.size() - 1;
+    int lastColumn = o.fields.size() - 1;
     long area = 0;
     for (var range : ranges) {
-      area += (long) (range.bottom() - range.top() + 1) * (range.right() - range.left() + 1);
+      long rows = Math.max(0, Math.min(range.bottom(), lastRow) - range.top() + 1);
+      long columns = Math.max(0, Math.min(range.right(), lastColumn) - range.left() + 1);
+      area += rows * columns;
     }
     if (area > SCAN) {
       return !selectedChanges(o).isEmpty();
     }
     for (var range : ranges) {
-      for (int r = range.top(); r <= range.bottom(); r++) {
-        for (int c = range.left(); c <= range.right(); c++) {
+      for (int r = range.top(); r <= Math.min(range.bottom(), lastRow); r++) {
+        for (int c = range.left(); c <= Math.min(range.right(), lastColumn); c++) {
           if (o.selection.contains(r, c) && changed(o, r, c)) {
             return true;
           }

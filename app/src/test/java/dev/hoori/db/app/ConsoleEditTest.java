@@ -459,6 +459,18 @@ class ConsoleEditTest {
   }
 
   @Test
+  void selectingWholeRowsFindsTheChangesInThem() throws Exception {
+    var app = openCustomers();
+    c.run(app, "press #cell-1-1\ntype \"Bobby\"\nkey Enter\nframe\n");
+    // The first row whole, which reaches to the last column there is.
+    var o = k.tab(app).outputs.getFirst();
+    o.selection.selectAll(1);
+    assertFalse(ResultEdits.hasSelectedChanges(o));
+    c.run(app, "press #cell-1-2\nkey A control\nframe\nframe\nsnap all\n");
+    assertFalse(line(c.tree("all"), "#revert-selection").contains("disabled"), c.tree("all"));
+  }
+
+  @Test
   void aRowShownTwiceIsNotWrittenFromBothCopies() throws Exception {
     var twice = "SELECT id, name, email FROM customers WHERE id = 1";
     servers.statement(twice, () -> {

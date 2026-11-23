@@ -257,7 +257,9 @@ final class ResultsArea {
     String status =
         o.edits.editable != null && !current ? ResultEdits.CONNECTION_CHANGED : editStatus(o);
     if (status != null) {
-      footer.add(Label.label(Label.Variant.MUTED, status).key("edit-status").ellipsis());
+      // The line is short; the whole reason, as how to add an offset, shows on hover.
+      footer.add(Tooltip.tooltip(
+          Label.label(Label.Variant.MUTED, status).key("edit-status").ellipsis(), status));
     }
     if (o.edits.editable == null) {
       return;
@@ -270,7 +272,7 @@ final class ResultsArea {
           .key("pending-changes"));
     }
     boolean locked = s.guard.locked(tab) != null;
-    boolean selectedChanges = ResultEdits.hasSelectedChanges(o);
+    boolean selectedChanges = count > 0 && ResultEdits.hasSelectedChanges(o);
     footer.add(Tooltip.tooltip(
         button(
                 SECONDARY,
