@@ -9,8 +9,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.sql.Context.Asked;
 import dev.hoori.db.core.sql.Context.Reference;
+import dev.hoori.db.core.sql.Context.Symbol;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Random;
 import org.junit.jupiter.api.Test;
 
@@ -172,6 +174,7 @@ class ContextTest {
             var before = text.substring(0, Math.clamp(caret, 0, text.length()));
             var typed = Context.at(text, provider, caret).typed();
             assertTrue(before.endsWith(typed), () -> provider + ": " + text);
+            Context.symbol(text, provider, caret);
             var around = split.around(caret);
             assertTrue(
                 0 <= around.start()
@@ -246,5 +249,64 @@ class ContextTest {
         Ranking.rank(candidates, Named::name, Named::ofStatement, "id").stream()
             .map(Named::name)
             .toList());
+  }
+
+  /** The symbol at the "|" of the text, which is taken out. */
+  static Optional<Symbol> symbolAt(String text, Provider provider) {
+    int offset = text.indexOf('|');
+    return Context.symbol(text.replace("|", ""), provider, offset);
+  }
+
+  @Test
+  void symbolFindsIdentifiersWithQualifiersAndTableReferences() {
+    var col = symbolAt("SELECT o.to|tal FROM public.orders o", POSTGRESQL).orElseThrow();
+    assertEquals(List.of("o"), col.path());
+    assertEquals("total", col.name());
+    assertEquals(false, col.table());
+    assertEquals(false, col.qualifier());
+    assertEquals(List.of(ref("public", "orders", "o")), col.tables());
+
+    var alias = symbolAt("SELECT |o.total FROM public.orders o", POSTGRESQL).orElseThrow();
+    assertEquals(List.of(), alias.path());
+    assertEquals("o", alias.name());
+    assertEquals(true, alias.qualifier());
+
+    var schema = symbolAt("SELECT o.total FROM pub|lic.orders o", POSTGRESQL).orElseThrow();
+    assertEquals("public", schema.name());
+    assertEquals(true, schema.qualifier());
+    assertEquals(false, schema.table());
+
+    var table = symbolAt("SELECT o.total FROM public.ord|ers o", POSTGRESQL).orElseThrow();
+    assertEquals(List.of("public"), table.path());
+    assertEquals("orders", table.name());
+    assertEquals(true, table.table());
+    assertEquals(false, table.qualifier());
+
+    // Second table in a comma-separated FROM list is also in table position.
+    var second = symbolAt("SELECT id FROM orders, cust|omers", POSTGRESQL).orElseThrow();
+    assertEquals("customers", second.name());
+    assertEquals(true, second.table());
+
+    // Quoted identifiers keep their case and mark quoted=true.
+    var quoted =
+        symbolAt("SELECT * FROM \"Sales\".\"Order |Items\"", POSTGRESQL).orElseThrow();
+    assertEquals(List.of("Sales"), quoted.path());
+    assertEquals("Order Items", quoted.name());
+    assertEquals(true, quoted.quoted());
+    assertEquals(true, quoted.table());
+
+    // MariaDB backtick-quoted identifiers.
+    var maria =
+        symbolAt("SELECT `i`.`sk|u` FROM `inventory`.`items` i", MARIADB).orElseThrow();
+    assertEquals(List.of("i"), maria.path());
+    assertEquals("sku", maria.name());
+    assertEquals(true, maria.quoted());
+
+    // Comments, strings, numbers, punctuation and whitespace give empty.
+    assertTrue(symbolAt("SELECT 1 -- ord|ers", POSTGRESQL).isEmpty());
+    assertTrue(symbolAt("SELECT 'ord|ers'", POSTGRESQL).isEmpty());
+    assertTrue(symbolAt("SELECT 1|23 FROM orders", POSTGRESQL).isEmpty());
+    assertTrue(symbolAt("SELECT | FROM orders", POSTGRESQL).isEmpty());
+    assertTrue(symbolAt("SELECT o|.total FROM orders o", POSTGRESQL).isEmpty());
   }
 }

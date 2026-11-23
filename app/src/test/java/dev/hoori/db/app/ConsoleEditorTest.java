@@ -18,6 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
+import com.rethinkj.ui.Cursor;
+import com.rethinkj.ui.El;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Color;
@@ -25,6 +27,7 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.execution.Failure;
+import dev.hoori.db.core.execution.Result;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -127,13 +130,24 @@ class ConsoleEditorTest {
     assertEquals(String.valueOf(at), caret(failed), line(failed, "#sql"));
     assertTrue(line(failed, "#sql").contains("squiggle " + at + "-" + (at + 5)), failed);
     assertTrue(failed.contains("\"syntax error at or near \\\"WHERE\\\"\""), failed);
-    // Typing drops it, and the message stays.
+    assertTrue(line(failed, "#end-3").contains("syntax error at or near"), failed);
+    // Typing before it moves the underline and keeps its inline message.
     console.c.run(app, "type \" \"\nframe\nsnap typed\n");
+    assertEquals(new Failure.Place(at + 1, at + 6), underlined(app));
+    assertTrue(line(console.c.tree("typed"), "#end-3").contains("syntax error at or near"));
+    // Inserting a line above moves the underline and its inline message down a line.
+    console.c.run(app, "key Home control\nkey Enter\nframe\nsnap shifted\n");
+    assertEquals(new Failure.Place(at + 2, at + 7), underlined(app));
+    assertTrue(line(console.c.tree("shifted"), "#end-4").contains("syntax error at or near"));
+    // Editing the underlined text itself drops the underline and inline message.
+    console.c.run(app, "key Z control\nframe\n");
+    console.tab(app).editor.select(at + 2, at + 2);
+    app.invalidate();
+    console.c.run(app, "frame\ntype \"X\"\nframe\nsnap edited\n");
     assertNull(underlined(app));
-    assertTrue(
-        console.c.tree("typed").contains("syntax error at or near"), console.c.tree("typed"));
-    // Run again, it comes back; while the next run runs, it is gone.
-    console.c.run(app, "key Backspace\n" + RUN_ALL);
+    assertFalse(console.c.tree("edited").contains("#end-"), console.c.tree("edited"));
+    // Undoing back to the sent text restores the underline; while a new run runs, it is gone.
+    console.c.run(app, "key Z control\nframe\nkey Z control\nframe\n");
     assertEquals(new Failure.Place(at, at + 5), underlined(app));
     var held = servers.hold("run " + PG + " " + COUNT);
     console.c.run(app, "key Home control\nkey Enter control\nframe\n");
@@ -649,6 +663,243 @@ class ConsoleEditorTest {
         app,
         "key A control\nkey Delete\ntype \"sel\"\nframe\nadvance 1\nframe\nkey Enter\nframe\n");
     assertEquals("SELECT", console.tab(app).text);
+  }
+
+  /** Finds an element with {@code key} in the tree, storing its window origin in {@code origin}. */
+  static El find(El el, String key, float[] origin) {
+    if (el == null) {
+      return null;
+    }
+    float x = origin[0] + el.x();
+    float y = origin[1] + el.y();
+    if (key.equals(el.key())) {
+      origin[0] = x;
+      origin[1] = y;
+      return el;
+    }
+    for (var child : el.children()) {
+      float[] childOrigin = {x, y};
+      var found = find(child, key, childOrigin);
+      if (found != null) {
+        origin[0] = childOrigin[0];
+        origin[1] = childOrigin[1];
+        return found;
+      }
+    }
+    return null;
+  }
+
+  /** Finds logical window coordinates inside {@code #sql} whose text offset is {@code offset}. */
+  static String pointAt(App<State> app, int offset) {
+    float[] origin = new float[2];
+    var sql = find(app.tree(), "sql", origin);
+    for (int y = 4; y < sql.height() - 4; y += 6) {
+      for (int x = 4; x < sql.width() - 4; x += 2) {
+        if (sql.textPositionAt(x, y) == offset) {
+          return Math.round(origin[0] + x) + "," + Math.round(origin[1] + y);
+        }
+      }
+    }
+    throw new AssertionError("No point for offset " + offset + " in " + sql);
+  }
+
+  /** The portion of the tree dump for the gutter line {@code #line-<index>}. */
+  static String gutterLine(String tree, int index) {
+    var lines = tree.lines().toList();
+    String key = "#line-" + index + " ";
+    for (int i = 0; i < lines.size(); i++) {
+      if (lines.get(i).contains(key)) {
+        int end = i + 1;
+        while (end < lines.size()) {
+          String next = lines.get(end);
+          int nextIndent = next.length() - next.stripLeading().length();
+          if (nextIndent <= lines.get(i).length() - lines.get(i).stripLeading().length()) {
+            break;
+          }
+          end++;
+        }
+        return String.join("\n", lines.subList(i, end));
+      }
+    }
+    throw new AssertionError("No #line-" + index + " in\n" + tree);
+  }
+
+  @Test
+  void quickDocumentationShowsTableAndColumnInfoAndReadsWhatIsMissing() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT o.total, customer_id FROM orders o";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Hover over table name `orders`: shows kind, schema and columns with types.
+    String ordersPt = pointAt(app, sql.indexOf("orders") + 2);
+    console.c.run(
+        app, "move " + ordersPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap table-doc\n");
+    String tableDoc = console.c.tree("table-doc");
+    assertTrue(tableDoc.contains("#documentation"), tableDoc);
+    assertTrue(tableDoc.contains("Table public.orders"), tableDoc);
+    assertTrue(tableDoc.contains("id bigint"), tableDoc);
+    assertTrue(tableDoc.contains("total numeric(12,2)"), tableDoc);
+
+    // Move away and hover over qualified column `o.total`: shows type and table.
+    String totalPt = pointAt(app, sql.indexOf("total") + 2);
+    console.c.run(
+        app,
+        "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\nmove " + totalPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap col-doc\n");
+    String colDoc = console.c.tree("col-doc");
+    assertTrue(colDoc.contains("#documentation"), colDoc);
+    assertTrue(colDoc.contains("Column total numeric(12,2)"), colDoc);
+    assertTrue(colDoc.contains("In table public.orders"), colDoc);
+
+    // Ctrl+Q on unqualified column `customer_id` shows its documentation too.
+    console.tab(app).editor.select(sql.indexOf("customer_id") + 2, sql.indexOf("customer_id") + 2);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\nsnap key-doc\n");
+    String keyDoc = console.c.tree("key-doc");
+    assertTrue(keyDoc.contains("#documentation"), keyDoc);
+    assertTrue(keyDoc.contains("Column customer_id integer"), keyDoc);
+    assertTrue(keyDoc.contains("In table public.orders"), keyDoc);
+
+    // Unread table (`customers` has no columns read yet): first hover shows the table and triggers
+    // reading its columns on the tree's connection; next hover shows the columns.
+    var customersSql = "SELECT * FROM customers";
+    console.c.run(app, "key Escape\nkey A control\nkey Delete\n" + type(customersSql) + "frame\n");
+    String custPt = pointAt(app, customersSql.indexOf("customers") + 2);
+    console.c.run(
+        app, "move " + custPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-first\n");
+    String custFirst = console.c.tree("cust-first");
+    assertTrue(custFirst.contains("Table public.customers"), custFirst);
+    assertFalse(custFirst.contains("email"), custFirst);
+    console.c.run(
+        app,
+        SETTLE + "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\nmove " + custPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-second\n");
+    assertTrue(
+        servers.calls.contains("columns " + PG + "/shop.public.customers"),
+        servers.calls.toString());
+    String custSecond = console.c.tree("cust-second");
+    assertTrue(custSecond.contains("email character varying(255)"), custSecond);
+  }
+
+  @Test
+  void quickDocumentationOfAQualifiedTableReadsTheSchemasFirst() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT * FROM public.orders";
+    // The connection's databases are read, but not the schemas of shop.
+    console.c.run(app, open("shop-prod") + SETTLE + type(sql) + "frame\n");
+    String at = pointAt(app, sql.indexOf("orders") + 2);
+    String hover = "move " + at + "\nframe\nadvance 1\nframe\nadvance 1\nframe\n";
+    String away = "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\n";
+    console.c.run(app, hover + "snap first\n");
+    assertFalse(console.c.tree("first").contains("Table public.orders"), console.c.tree("first"));
+    console.c.run(app, SETTLE + away + hover + SETTLE + away + hover + "snap read\n");
+    assertTrue(console.c.tree("read").contains("Table public.orders"), console.c.tree("read"));
+  }
+
+  @Test
+  void goToTableOpensTheTableOnControlBAndControlClick() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT o.total, c.email FROM orders o JOIN customers c ON c.id = o.customer_id";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Ctrl+B on table name `orders` opens its table tab.
+    int ordersAt = sql.indexOf("orders") + 2;
+    console.tab(app).editor.select(ordersAt, ordersAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap orders-tab\n");
+    String ordersTab = console.c.tree("orders-tab");
+    assertTrue(line(ordersTab, "role=tab label=\"orders\"").contains("selected"), ordersTab);
+
+    // Switch back to the console; Ctrl+B on column `o.total` opens its table (`orders`).
+    console.c.run(
+        app,
+        "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\npress #sql\nframe\n");
+    int totalAt = sql.indexOf("total") + 2;
+    console.tab(app).editor.select(totalAt, totalAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap col-tab\n");
+    assertTrue(
+        line(console.c.tree("col-tab"), "role=tab label=\"orders\"").contains("selected"),
+        console.c.tree("col-tab"));
+
+    // Switch back to the console; Ctrl+hover marks `customers` navigable, Ctrl+click opens it.
+    console.c.run(app, "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\n");
+    String customersPt = pointAt(app, sql.indexOf("customers") + 2);
+    console.c.run(app, "move " + customersPt + " control\nframe\n");
+    assertEquals(Cursor.POINTER, app.cursor());
+    console.c.run(app, "press " + customersPt + " control\nframe\n" + SETTLE + "snap click-tab\n");
+    String clickTab = console.c.tree("click-tab");
+    assertTrue(line(clickTab, "role=tab label=\"customers\"").contains("selected"), clickTab);
+  }
+
+  @Test
+  void gutterMarkersRunEachStatementShowLastOutcomeAndMoveWithEdits() throws Exception {
+    servers.statement(ConsoleTest.PAY, List.of(new Result.Count(3)));
+    var app = console.console(SHOP);
+    var text = COUNT + ";\n" + WRONG + ";\n" + ConsoleTest.PAY + ";";
+    console.c.run(app, type(text) + "frame\nsnap before\n");
+    String before = console.c.tree("before");
+    assertTrue(gutterLine(before, 0).contains("role=button label=\"Run statement\""), before);
+    assertTrue(gutterLine(before, 1).contains("role=button label=\"Run statement\""), before);
+    assertTrue(gutterLine(before, 4).contains("role=button label=\"Run statement\""), before);
+
+    // Markers are not rebuilt on frames when text, provider and outcomes are unchanged.
+    int builtBefore = console.tab(app).help.markersBuilt;
+    console.c.run(app, "key ArrowLeft\nframe\nkey ArrowRight\nframe\n");
+    assertEquals(builtBefore, console.tab(app).help.markersBuilt);
+
+    // Run statement 1 and statement 2 with Run all: line 0 succeeds, line 1 fails, line 4 unrun.
+    console.c.run(app, RUN_ALL + "snap ran\n");
+    String ran = console.c.tree("ran");
+    assertTrue(
+        gutterLine(ran, 0).contains("role=button label=\"Ran in 4 ms · 1 row\""),
+        gutterLine(ran, 0));
+    assertTrue(
+        gutterLine(ran, 1).contains("role=button label=\"Failed after 4 ms\""), gutterLine(ran, 1));
+    assertTrue(
+        gutterLine(ran, 4).contains("role=button label=\"Run statement\""), gutterLine(ran, 4));
+
+    // Pressing line 4's unique "Run statement" marker runs the UPDATE statement alone.
+    console.c.run(
+        app, "press role=button label=\"Run statement\"\nframe\n" + SETTLE + "snap pay\n");
+    String pay = console.c.tree("pay");
+    assertTrue(
+        gutterLine(pay, 4).contains("role=button label=\"Ran in 4 ms · 3 rows changed\""),
+        gutterLine(pay, 4));
+
+    // Inserting a line at the top moves every marker down by one line.
+    console.c.run(app, "press #sql\nkey Home control\nkey Enter\nframe\nsnap moved\n");
+    String moved = console.c.tree("moved");
+    assertTrue(
+        gutterLine(moved, 1).contains("role=button label=\"Ran in 4 ms · 1 row\""),
+        gutterLine(moved, 1));
+    assertTrue(
+        gutterLine(moved, 2).contains("role=button label=\"Failed after 4 ms\""),
+        gutterLine(moved, 2));
+    assertTrue(
+        gutterLine(moved, 5).contains("role=button label=\"Ran in 4 ms · 3 rows changed\""),
+        gutterLine(moved, 5));
+
+    // Clicking the moved succeeded marker runs statement 1 again at its current offsets.
+    long runsBefore =
+        servers.calls.stream().filter(("run " + PG + " " + COUNT)::equals).count();
+    console.c.run(app, "press role=button label=\"Ran in 4 ms · 1 row\"\nframe\n" + SETTLE);
+    long runsAfter =
+        servers.calls.stream().filter(("run " + PG + " " + COUNT)::equals).count();
+    assertEquals(runsBefore + 1, runsAfter, servers.calls.toString());
+
+    // Editing inside statement 1 changes its text and resets its gutter marker to Run statement.
+    int countEnd = console.tab(app).text.indexOf(COUNT) + COUNT.length();
+    console.tab(app).editor.select(countEnd, countEnd);
+    app.invalidate();
+    console.c.run(app, "frame\ntype \" o\"\nframe\nsnap edited-stmt\n");
+    String editedStmt = console.c.tree("edited-stmt");
+    assertTrue(
+        gutterLine(editedStmt, 1).contains("role=button label=\"Run statement\""),
+        gutterLine(editedStmt, 1));
+    assertTrue(
+        gutterLine(editedStmt, 2).contains("role=button label=\"Failed after 4 ms\""),
+        gutterLine(editedStmt, 2));
   }
 
   /** The tree of the snap of the window other than the main one. */

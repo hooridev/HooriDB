@@ -3,8 +3,10 @@ package dev.hoori.db.core.sql;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.sql.Statements.Piece;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -42,6 +44,19 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
    * a quoted one as quoted, an unquoted one on PostgreSQL in lower case.
    */
   public record Reference(String schema, String name, String alias) {}
+
+  /**
+   * The identifier at an offset in a statement, with any dot-separated qualifiers before it,
+   * whether it is quoted, whether it stands where a table is named, whether a dot follows it, and
+   * the tables the statement names.
+   */
+  public record Symbol(
+      List<String> path,
+      String name,
+      boolean quoted,
+      boolean table,
+      boolean qualifier,
+      List<Reference> tables) {}
 
   // The words that end a table's name in a FROM list, so that they are not taken for its alias.
   private static final Set<String> CLAUSES = Set.of(
@@ -127,7 +142,57 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
   /** The tables the statement names, in order; none in a statement with a CTE or a subquery. */
   public static List<Reference> tables(String statement, Provider provider) {
     var tokens = tokens(statement, Statements.pieces(statement, provider), provider);
-    return readable(tokens) ? tables(tokens) : List.of();
+    return readable(tokens) ? tables(tokens, null) : List.of();
+  }
+
+  /**
+   * The identifier at the character {@code offset} in the statement, or empty where the offset
+   * lies outside an identifier (such as in whitespace, punctuation, a number, a comment or a
+   * string).
+   */
+  public static Optional<Symbol> symbol(String statement, Provider provider, int offset) {
+    if (offset < 0 || offset >= statement.length()) {
+      return Optional.empty();
+    }
+    var pieces = Statements.pieces(statement, provider);
+    var tokens = tokens(statement, pieces, provider);
+    int index = -1;
+    for (int i = 0; i < tokens.size(); i++) {
+      var t = tokens.get(i);
+      if (t.start() <= offset && offset < t.end()) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) {
+      return Optional.empty();
+    }
+    var token = tokens.get(index);
+    if (!token.name()
+        || token.kind() == Kind.WORD && Character.isDigit(token.text().charAt(0))) {
+      return Optional.empty();
+    }
+    boolean readable = readable(tokens);
+    var tableTokens = new HashSet<Integer>();
+    var tables = readable ? tables(tokens, tableTokens) : List.<Reference>of();
+    var path = new ArrayList<String>();
+    int left = index;
+    while (left >= 2
+        && tokens.get(left - 1).kind() == Kind.DOT
+        && tokens.get(left - 2).name()) {
+      path.addFirst(tokens.get(left - 2).identifier());
+      left -= 2;
+    }
+    boolean qualifier = index + 1 < tokens.size() && tokens.get(index + 1).kind() == Kind.DOT;
+    boolean table = tableTokens.contains(index)
+        || !qualifier && left > 0 && INTRODUCERS.contains(tokens.get(left - 1).upper());
+    return Optional.of(new Symbol(
+        List.copyOf(path),
+        token.identifier(),
+        token.kind() == Kind.QUOTED,
+        table,
+        qualifier,
+        tables));
   }
 
   // Whether it is no statement with a CTE, WITH at its start, or a subquery, "(" before SELECT.
@@ -144,11 +209,15 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
   }
 
   private static List<Reference> tables(List<Token> tokens) {
+    return tables(tokens, null);
+  }
+
+  private static List<Reference> tables(List<Token> tokens, Set<Integer> tableTokens) {
     var found = new ArrayList<Reference>();
     for (int i = 0; i < tokens.size(); i++) {
       var introducer = tokens.get(i).upper();
       if (INTRODUCERS.contains(introducer)) {
-        introduced(tokens, i + 1, introducer.equals("FROM"), found);
+        introduced(tokens, i + 1, introducer.equals("FROM"), found, tableTokens);
       }
     }
     return List.copyOf(found);
@@ -156,10 +225,10 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
 
   // Adds the tables named from the index on, after an introducer; a list goes on after a comma.
   private static void introduced(
-      List<Token> tokens, int from, boolean list, List<Reference> found) {
+      List<Token> tokens, int from, boolean list, List<Reference> found, Set<Integer> tableTokens) {
     int j = from;
     while (j < tokens.size() && tokens.get(j).name()) {
-      j = reference(tokens, j, found);
+      j = reference(tokens, j, found, tableTokens);
       // FROM a x, b y: the list goes on after a comma.
       if (j < 0 || !list || j + 1 >= tokens.size() || tokens.get(j).kind() != Kind.COMMA) {
         return;
@@ -170,7 +239,8 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
 
   // Adds the table named at the index, with its alias; the index after it, or -1 for a name still
   // being written, such as "public." before the caret.
-  private static int reference(List<Token> tokens, int from, List<Reference> found) {
+  private static int reference(
+      List<Token> tokens, int from, List<Reference> found, Set<Integer> tableTokens) {
     var names = new ArrayList<String>();
     int j = from;
     names.add(tokens.get(j++).identifier());
@@ -182,6 +252,9 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     }
     if (j < tokens.size() && tokens.get(j).kind() == Kind.DOT) {
       return -1;
+    }
+    if (tableTokens != null) {
+      tableTokens.add(j - 1);
     }
     if (j < tokens.size() && tokens.get(j).upper().equals("AS")) {
       j++;
@@ -217,7 +290,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
    * A token of code: a word, a quoted name, or a character. {@code identifier} is what the server
    * takes a word or a quoted name for, null for a name whose closing quote is missing.
    */
-  private record Token(Kind kind, String text, String identifier, int end) {
+  private record Token(Kind kind, String text, String identifier, int start, int end) {
     boolean name() {
       return identifier != null;
     }
@@ -240,7 +313,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
         case COMMENT -> {
           // left out
         }
-        case STRING -> tokens.add(new Token(Kind.OTHER, "", null, piece.end()));
+        case STRING -> tokens.add(new Token(Kind.OTHER, "", null, piece.start(), piece.end()));
         case QUOTED -> tokens.add(quoted(text, piece));
         case CODE -> {
           char c = text.charAt(piece.start());
@@ -249,9 +322,9 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
             int end = pieces.get(next - 1).end();
             var word = text.substring(piece.start(), end);
             var name = folds ? word.toLowerCase(Locale.ROOT) : word;
-            tokens.add(new Token(Kind.WORD, word, name, end));
+            tokens.add(new Token(Kind.WORD, word, name, piece.start(), end));
           } else {
-            tokens.add(new Token(kind(c), String.valueOf(c), null, piece.end()));
+            tokens.add(new Token(kind(c), String.valueOf(c), null, piece.start(), piece.end()));
           }
         }
       }
@@ -267,7 +340,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
       var quote = quoted.substring(0, 1);
       name = quoted.substring(1, quoted.length() - 1).replace(quote + quote, quote);
     }
-    return new Token(Kind.QUOTED, quoted, name, piece.end());
+    return new Token(Kind.QUOTED, quoted, name, piece.start(), piece.end());
   }
 
   // The index after the last piece of the word that begins at piece k: the characters of code

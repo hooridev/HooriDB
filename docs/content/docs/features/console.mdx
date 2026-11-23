@@ -31,6 +31,7 @@ If the console has an open transaction, HooriDB asks what to do with it before s
 
 - Press **Run** or `Ctrl+Enter` to run the selected SQL, or the single statement at the caret if nothing is selected. The editor marks the lines of the statement that `Ctrl+Enter` will run.
 - Press **Run all** or `Ctrl+Shift+Enter` to run every statement in the editor from top to bottom, stopping at the first error.
+- Click the run marker in the gutter on a statement's first line to run that statement on its own. Once a statement has run, its gutter marker shows whether it succeeded or failed, its tooltip gives the time and row or change count, clicking it runs the statement again, and it moves with edits elsewhere in the editor.
 - Press **Cancel** while a statement runs to cancel it on the server. Rows already read stay visible in the result tab. When you cancel or disconnect during a change, it may already have taken effect; if HooriDB says the outcome is not known, check the data before running the statement again.
 
 ## Read results and Messages
@@ -65,7 +66,14 @@ When a PostgreSQL, MySQL, or MariaDB `SELECT` reads directly from a single perma
   alt="A console showing an unknown column error underlined at line 4 with the error message below the editor and logged in Messages"
 />
 
-When a statement fails and the server reports where the error occurred, HooriDB underlines that location in the editor, moves the caret there, and displays the server's message above the results tabs. The underline clears as soon as you edit the text.
+When a statement fails and the server reports where the error occurred, HooriDB underlines that location in the editor, moves the caret there, shows the server's message inline after its line as well as above the results tabs, and marks it in the gutter and along the scrollbar. The error moves with edits elsewhere in the text and clears when its own text is edited or a new run starts. Press `F8` or `Shift+F8` to jump between errors.
+
+## Quick documentation and go to table
+
+In an SQL console, the editor uses what Workspace has read to inspect and navigate to tables, views, and columns:
+
+- **Quick documentation**: rest the pointer over a table, view, or column name — or place the caret on it and press `Ctrl+Q` — to see a table's kind, schema, and columns with their types, or a column's type and table. If its tables or columns have not been loaded yet, HooriDB fetches them in the background and shows them on the next hover.
+- **Go to table**: press `Ctrl+B` or `Ctrl+click` on a table, view, or column name to open that table's rows in a tab (the same as pressing `Enter` in Workspace or choosing it from `Ctrl+P`). Holding `Ctrl` while pointing at a navigable name underlines it.
 
 ## Read-only connections
 

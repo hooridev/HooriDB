@@ -287,7 +287,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   // session's; ask the session for its database after each run once that misleads.
   String database;
   String text = "";
-  final CodeEditor.State editor = new CodeEditor.State();
+  final CodeEditor.State editor = new CodeEditor.State().inlineDiagnostics(true);
   final ConsoleEditor help = new ConsoleEditor(this); // the error's place, completions
   private final ResultsArea area = new ResultsArea(this);
   private final ConsoleView ui = new ConsoleView(this);
@@ -481,6 +481,13 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     var provider = provider(s);
     if (provider != null) {
       start(s, 0, statements(provider).statements());
+    }
+  }
+
+  /** Runs one statement from the editor's current text, as its gutter marker does. */
+  void runStatement(State s, Statement statement) {
+    if (provider(s) != null) {
+      start(s, 0, List.of(statement));
     }
   }
 
@@ -765,6 +772,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     } else if (error instanceof Session.GaveUp) {
       recording = null; // not sent
     } else {
+      help.recorded(sql, true, null, "");
       remember(
           s, new Outcome.Failed(problem.text().isEmpty() ? problem.title() : problem.text()), null);
     }
@@ -998,11 +1006,16 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       if (changes() && failure.kind() == Failure.Kind.CONNECTION_LOST) {
         doubt(sql, "the connection was lost while it ran");
       }
+      if (failure.kind() != Failure.Kind.CANCELLED) {
+        help.recorded(sql, true, portion.elapsed(), markerDetail(portion, documents(s)));
+      }
       help.failed(sql, failure, provider(s), words(failure.message()));
       fail(s, failure);
       if (before == outputs.size()) {
         shown = null; // nothing but the error: Messages says what ran
       }
+    } else {
+      help.recorded(sql, false, portion.elapsed(), markerDetail(portion, documents(s)));
     }
     if (transaction == Transaction.UNKNOWN && !portion.more() && lane != null) {
       check(s);
@@ -1527,12 +1540,19 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
                   was.connection(), was.statement(), was.started(), was.took(), outcomeOf(portion));
               s.keeping.ranAgain(was, recorded);
             }
+            if (failure.kind() != Failure.Kind.CANCELLED) {
+              help.recorded(sql, true, portion.elapsed(), rows(output.rows.size(), documents(s)));
+            }
             // Where the server says, also in its later rows.
             help.failed(sql, failure, provider(s), words(failure.message()));
             fail(s, failure);
-          } else if (before < outputs.size()) {
-            // Results after the rows: what the statement gave next.
-            heard(Level.RAN, sql, portion.elapsed(), outcome(portion));
+          } else {
+            help.updateDetail(
+                sql, rows(output.rows.size(), documents(s)) + (output.more ? " so far" : ""));
+            if (before < outputs.size()) {
+              // Results after the rows: what the statement gave next.
+              heard(Level.RAN, sql, portion.elapsed(), outcome(portion));
+            }
           }
           if (transaction == Transaction.UNKNOWN && !portion.more() && lane != null) {
             check(s);
@@ -2229,6 +2249,19 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     return line.length() <= SHORT ? line : line.substring(0, SHORT - 1) + "…";
   }
 
+  private String markerDetail(Portion portion, boolean documents) {
+    var parts = new ArrayList<String>();
+    for (var result : portion.results()) {
+      switch (result) {
+        case Result.Rows r ->
+          parts.add(rows(r.rows().size(), documents) + (portion.more() ? " so far" : ""));
+        case Result.Count(var count) -> parts.add(rows(count, documents) + CHANGED);
+        case Failure _ -> {}
+      }
+    }
+    return String.join(", ", parts);
+  }
+
   private String outcome(Portion portion) {
     var parts = new ArrayList<String>();
     for (var result : portion.results()) {
@@ -2307,6 +2340,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     var at = target(provider); // the lines of the statement Control+Enter runs
     this.editor.block(at == null ? 0 : at.start(), at == null ? 0 : at.end());
     this.editor.occurrences(s.settings.highlightOccurrences());
+    help.prepare(s, provider);
     El code = CodeEditor.codeEditor(app, text, this.editor, syntax, v -> {
           text = v;
           s.keeping.edited();

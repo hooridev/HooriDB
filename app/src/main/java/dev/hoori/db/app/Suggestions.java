@@ -124,6 +124,12 @@ final class Suggestions {
     entries = null;
   }
 
+  /** What the tree has read of the console's connection and database, asking for what it lacks. */
+  Known known(State s, Provider provider) {
+    var strategy = Language.of(provider).completion();
+    return new Known(s, provider, tab.database, strategy.exactNames(provider));
+  }
+
   private List<Completion.Entry> make(
       State s, Provider provider, String database, String statement, int caret, String word) {
     var strategy = Language.of(provider).completion();
@@ -275,6 +281,9 @@ final class Suggestions {
       if (!schemas) {
         container = database(name);
       } else if (database != null) {
+        if (CatalogTree.unread(live.levels.get(database))) {
+          want(database); // its schemas, as tables() reads them
+        }
         for (var node : read(database)) {
           if (node instanceof Node.OfSchema x && same(x.schema().name(), name)) {
             container = node;

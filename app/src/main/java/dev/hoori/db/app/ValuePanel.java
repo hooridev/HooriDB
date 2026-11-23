@@ -47,7 +47,7 @@ final class ValuePanel {
 
   boolean open;
   private Split.Position split; // as the user moved it; null for the first width
-  private CodeEditor.State editor = new CodeEditor.State().readOnly(true);
+  private CodeEditor.State editor = new CodeEditor.State().readOnly(true).inlineDiagnostics(true);
   // The value the text was made of, compared by identity: a value of a row, or a whole text.
   private Object made = NOTHING;
   private Kind madeKind;
@@ -76,7 +76,7 @@ final class ValuePanel {
       made = NOTHING;
       madeZone = null;
       text = "";
-      editor = new CodeEditor.State().readOnly(true);
+      editor = new CodeEditor.State().readOnly(true).inlineDiagnostics(true);
     }
     if (open) {
       var first = Split.Position.second(WIDTH * unit);
