@@ -48,6 +48,7 @@ import java.util.function.Function;
 final class CatalogTree {
 
   static final String TRY_AGAIN = "Try again";
+  private static final String DELETE = "Delete…";
 
   /** What is known of a node's children. */
   sealed interface Level {}
@@ -1399,7 +1400,7 @@ final class CatalogTree {
             Menu.item("Rename…", () -> s.askRenameFolder(n.id())).icon(Symbol.EDIT),
             moveTo(s, n),
             Menu.separator(),
-            Menu.item("Delete…", () -> s.askDeleteFolder(n.id())).icon(Symbol.DELETE));
+            Menu.item(DELETE, () -> s.askDeleteFolder(n.id())).icon(Symbol.DELETE));
       }
       case Node.Query n -> {
         var q = s.query(n.id());
@@ -1413,7 +1414,7 @@ final class CatalogTree {
             Menu.item("Duplicate", () -> s.duplicateQuery(q)).icon(Symbol.COPY),
             moveTo(s, n),
             Menu.separator(),
-            Menu.item("Delete…", () -> s.askDeleteQuery(q.id())).icon(Symbol.DELETE));
+            Menu.item(DELETE, () -> s.askDeleteQuery(q.id())).icon(Symbol.DELETE));
       }
       case Node.Connection n -> {
         var p = s.profile(n.id());
@@ -1432,7 +1433,7 @@ final class CatalogTree {
             Menu.item("Duplicate", () -> s.duplicate(p)).icon(Symbol.COPY),
             moveTo(s, n),
             Menu.separator(),
-            Menu.item("Delete…", () -> change(s, p, Then.DELETE)).icon(Symbol.DELETE));
+            Menu.item(DELETE, () -> change(s, p, Then.DELETE)).icon(Symbol.DELETE));
       }
       case Node.Problem n ->
         List.of(Menu.item(TRY_AGAIN, () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));

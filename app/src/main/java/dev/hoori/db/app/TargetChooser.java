@@ -31,7 +31,11 @@ final class TargetChooser {
       }
       boolean live = s.catalog.connected(profile.id());
       var item = item(s, profile, live, choose).checked(profile.id().equals(last));
-      (profile.id().equals(last) ? first : live ? connected : others).add(item);
+      if (profile.id().equals(last)) {
+        first.add(item);
+      } else {
+        (live ? connected : others).add(item);
+      }
     }
     var items = new ArrayList<>(first);
     items.addAll(connected);

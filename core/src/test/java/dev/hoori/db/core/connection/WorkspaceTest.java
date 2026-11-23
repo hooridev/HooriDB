@@ -231,7 +231,8 @@ class WorkspaceTest {
 
     // Unique id across queries, connections, and folders.
     var dup = new Workspace.Query(A.id(), "Dup", "", Workspace.Language.SQL);
-    assertThrows(IllegalArgumentException.class, () -> new Workspace(List.of(A, dup)));
+    var both = List.<Workspace.Entry>of(A, dup);
+    assertThrows(IllegalArgumentException.class, () -> new Workspace(both));
     assertEquals(Workspace.Language.SQL, Workspace.Language.of(Provider.POSTGRESQL));
     assertEquals(Workspace.Language.SHELL, Workspace.Language.of(Provider.MONGODB));
   }

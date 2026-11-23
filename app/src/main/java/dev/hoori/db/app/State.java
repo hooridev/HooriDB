@@ -90,6 +90,7 @@ final class State {
   // Where what a file that could not be understood held is kept once a save replaced it, or null.
   private String setAside;
   String saveError; // why the workspace could not be saved, or null
+  private static final String IS_DELETED = " is deleted";
   private boolean unsaved; // the workspace differs from what was last written
   Keyring keyring; // null while it is looked up
   private boolean lookingForKeyring;
@@ -393,7 +394,7 @@ final class State {
         && guard.asks(
             this,
             deleteQueryAct(id),
-            query.name() + " is deleted",
+            query.name() + IS_DELETED,
             List.of(tab),
             () -> deleteQuery(id))) {
       return;
@@ -635,17 +636,24 @@ final class State {
       catalog.drop(this, profile.id()); // what failed before the change is out of date
     }
     if (!color) {
-      // Their sessions were opened with what changed; the save asked them first, and locked them.
-      for (var console : consoles(profile.id())) {
-        if (console.queryId != null
-            && Workspace.Language.of(profile.provider()) != console.queryLanguage) {
-          console.detachTarget();
-        } else {
-          console.end();
-        }
-      }
+      changed(profile);
     }
     persist();
+  }
+
+  /**
+   * Its consoles' sessions were opened with what changed; the save asked them first, and locked
+   * them. A query tab of another language than the connection's now lets go of it.
+   */
+  private void changed(ConnectionProfile profile) {
+    for (var console : consoles(profile.id())) {
+      if (console.queryId != null
+          && Workspace.Language.of(profile.provider()) != console.queryLanguage) {
+        console.detachTarget();
+      } else {
+        console.end();
+      }
+    }
   }
 
   /**
@@ -722,7 +730,7 @@ final class State {
         || guard.asks(
             this,
             deleteAct(profile),
-            name(profile) + " is deleted",
+            name(profile) + IS_DELETED,
             guarded(profile.id()),
             this::delete)) {
       return;
@@ -761,7 +769,7 @@ final class State {
       }
     }
     var act = deleteFolderAct(id);
-    if (guard.asks(this, act, folder.name() + " is deleted", asking, () -> deleteFolder(id))) {
+    if (guard.asks(this, act, folder.name() + IS_DELETED, asking, () -> deleteFolder(id))) {
       return;
     }
     remove(act, folder.name() + " is being deleted", held, id);
@@ -1501,15 +1509,12 @@ final class State {
           index(f.entries(), foldersById, queriesById);
         }
         case Workspace.Query q -> queriesById.put(q.id(), q);
-        case ConnectionProfile _ -> {}
+        case ConnectionProfile _ -> {} // a connection is found by its own list, profiles
       }
     }
   }
 
   ConnectionProfile profile(UUID id) {
-    if (id == null) {
-      return null;
-    }
     int at = indexOf(id);
     return at < 0 ? null : profiles.get(at);
   }

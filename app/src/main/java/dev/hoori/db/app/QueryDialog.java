@@ -110,32 +110,33 @@ final class QueryDialog {
         .key("query-name")
         .label("Name")
         .wFull();
-    El body;
-    if (kind == Kind.CREATE) {
-      El lang = Segmented.segmented(
-              List.of(Workspace.Language.values()),
-              language,
-              QueryDialog::languageLabel,
-              l -> language = l)
-          .key("query-language")
-          .label("Language");
-      body = col()
-          .w(t.size().field())
-          .child(Form.form(
-              Form.Labels.ABOVE,
-              Form.field("Name", field).required(),
-              Form.field("Language", lang)));
-    } else if (kind == Kind.SAVE) {
-      body = col()
-          .w(ConnectionDialog.width())
-          .gap(t.space().m())
-          .child(Form.form(Form.Labels.ABOVE, Form.field("Name", field).required()))
-          .child(label(Label.Variant.MUTED, first(text)).ellipsis().key("query-preview"));
-    } else {
-      body = col()
-          .w(t.size().field())
-          .child(Form.form(Form.Labels.ABOVE, Form.field("Name", field).required()));
-    }
+    El body = switch (kind) {
+      case CREATE -> {
+        El lang = Segmented.segmented(
+                List.of(Workspace.Language.values()),
+                language,
+                QueryDialog::languageLabel,
+                l -> language = l)
+            .key("query-language")
+            .label("Language");
+        yield col()
+            .w(t.size().field())
+            .child(Form.form(
+                Form.Labels.ABOVE,
+                Form.field("Name", field).required(),
+                Form.field("Language", lang)));
+      }
+      case SAVE ->
+        col()
+            .w(ConnectionDialog.width())
+            .gap(t.space().m())
+            .child(Form.form(Form.Labels.ABOVE, Form.field("Name", field).required()))
+            .child(label(Label.Variant.MUTED, first(text)).ellipsis().key("query-preview"));
+      case RENAME, DELETE ->
+        col()
+            .w(t.size().field())
+            .child(Form.form(Form.Labels.ABOVE, Form.field("Name", field).required()));
+    };
     return Dialog.dialog(title, body, List.of(button(SECONDARY, "Cancel", close), ok), ok, close);
   }
 
