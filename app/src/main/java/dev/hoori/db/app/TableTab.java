@@ -38,6 +38,7 @@ import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.query.QueryException;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -1556,13 +1557,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var inserted = edited ? ResultEdits.insertedColumns(changes) : Map.<Long, Set<Integer>>of();
     var shown = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < columns.size(); c++) {
-      var kind = fields == null ? null : fields.get(c).kind();
-      int at = c;
-      var col = Cells.column(columns.get(c), kind, widths, c, row -> value(row, at), zone);
-      if (!ofDocuments && sortable(kinds.get(columns.get(c).name()))) {
-        col = col.sortable(true);
-      }
-      shown.add(edited ? ResultEdits.editedColumn(this, col, at, free, false, inserted) : col);
+      var col = column(c, ofDocuments, zone);
+      shown.add(edited ? ResultEdits.editedColumn(this, col, c, free, false, inserted) : col);
     }
     var options = DataGrid.options()
         .select(selection)
@@ -1579,9 +1575,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         // Nothing to do: the build it causes brings the footer's rows in view along.
         .onRowsInView((from, to) -> {});
     if (!ofDocuments) {
-      var profile = s.profile(id);
-      var keys = profile == null ? List.<DataGrid.SortKey>of() : sortKeys(profile.provider());
-      options.sort(keys, canApply(s) ? next -> sort(s, next) : null);
+      sorting(s, options);
     }
     if (edited) {
       ResultEdits.configureGrid(s, this, options, free, true);
@@ -1595,6 +1589,20 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
     }
     return grid;
+  }
+
+  /** The grid's column c, sortable from its header where it is a SQL table's of a sortable kind. */
+  private DataGrid.Column column(int c, boolean ofDocuments, ZoneId zone) {
+    var kind = fields == null ? null : fields.get(c).kind();
+    var col = Cells.column(columns.get(c), kind, widths, c, row -> value(row, c), zone);
+    return !ofDocuments && sortable(kinds.get(columns.get(c).name())) ? col.sortable(true) : col;
+  }
+
+  /** The header sort of a SQL table's grid: its arrows, and presses while the tab can apply. */
+  private void sorting(State s, DataGrid.Options options) {
+    var profile = s.profile(id);
+    var keys = profile == null ? List.<DataGrid.SortKey>of() : sortKeys(profile.provider());
+    options.sort(keys, canApply(s) ? next -> sort(s, next) : null);
   }
 
   /** Base table rows in the grid (excluding staged new rows), which counts them in an int. */

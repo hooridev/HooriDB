@@ -16,6 +16,7 @@ import static dev.hoori.db.app.TableTabTest.scroll;
 import static dev.hoori.db.app.TableTabTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
@@ -264,9 +265,14 @@ class TableTabEditTest {
     assertTrue(line(cancelled, "#column-1").contains("sort=ascending"), cancelled);
     assertEquals(before, servers.calls.size(), "Cancel must not re-read");
 
-    // While DML Preview is open, the grid has no sort handler.
+    // While DML Preview is open, its dialog keeps the headers out of reach.
     c.run(app, "press #commit-changes\nframe\n" + OPENED);
     assertTrue(t.tab(app).preview != null);
+    assertThrows(
+        Exception.class, () -> c.run(app, "press role=columnheader label=\"name\"\nframe\n"));
+    assertEquals("\"name\" ASC", t.tab(app).filter.order());
+    assertEquals(1, t.tab(app).pendingChanges());
+    assertEquals(before, servers.calls.size(), "A press under Preview must not read");
     c.run(app, "press #preview-cancel\nframe\n" + OPENED);
 
     // Pressing the header again and choosing Discard applies the descending sort.
