@@ -245,7 +245,7 @@ class SettingsWindowTest {
     assertFalse(savedEditor.highlightOccurrences());
     assertEquals(Settings.KeywordCase.LOWER, savedEditor.keywordCase());
 
-    // Databases: change all 6 rows (including typing in Time zone ComboBox and checking preview).
+    // Databases: change all 7 rows (including typing in Time zone ComboBox and checking preview).
     Script.run("""
         window "Settings"
         press role=option label="Databases"
@@ -257,6 +257,8 @@ class SettingsWindowTest {
         press role=switch label="New connections start read-only"
         frame
         press role=radio label="Manual"
+        frame
+        press role=radio label="Always a new console"
         frame
         press role=combobox label="Time zone of moments"
         """ + OPENED + """
@@ -273,11 +275,13 @@ class SettingsWindowTest {
     var databasesChanged = Files.readString(out.resolve("settings-databases-changed.tree.txt"));
     assertTrue(databasesChanged.contains("2026-06-15 12:00:00+00"), databasesChanged);
     assertTrue(databasesChanged.contains("label=\"Reset Connect timeout\""), databasesChanged);
+    assertTrue(databasesChanged.contains("label=\"Reset Open in console\""), databasesChanged);
     assertTrue(databasesChanged.contains("label=\"Reset Time zone of moments\""), databasesChanged);
     var savedDb = new SettingsStore(config).load().settings();
     assertEquals(Duration.ofSeconds(25), savedDb.connectTimeout());
     assertTrue(savedDb.newConnectionsReadOnly());
     assertEquals(Settings.CommitMode.MANUAL, savedDb.commitMode());
+    assertEquals(Settings.OpenInConsole.NEW, savedDb.openInConsole());
     assertEquals(ZoneId.of("UTC"), savedDb.timeZone());
     assertEquals(Settings.CopyNull.NULL, savedDb.copyNull());
     assertEquals(Settings.DocumentView.JSON, savedDb.documentView());

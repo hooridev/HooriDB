@@ -1220,11 +1220,11 @@ class TableTabTest {
     // Typing goes right after the table name.
     c.run(app, "type \" LIMIT 5\"\nframe\n");
     assertEquals(expected + " LIMIT 5", console.text);
-    // Still available while disconnected, and opens in the tab's own window.
+    // Still available while disconnected, and opens in the tab's own window when none matches.
     c.run(
         app,
-        menu("shop-prod", "Disconnect")
-            + "press role=tab label=\"events\"\nframe\nadvance 1\nframe\n"
+        "key W control\nframe\nadvance 1\nframe\n"
+            + menu("shop-prod", "Disconnect")
             + "press #tab-0 right\nframe\nadvance 1\nframe\n"
             + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
             + "window \"events\"\n"
@@ -1234,6 +1234,176 @@ class TableTabTest {
     assertEquals("analytics", tornConsole.database);
     assertEquals(expected, tornConsole.text);
     assertEquals(expected.length(), tornConsole.editor.caret());
+  }
+
+  @Test
+  void openInConsoleReusesAnOpenConsoleOfTheTablesDatabase() throws Exception {
+    var app = shop();
+    // An empty open console on shop takes the SELECT with no leading blank line.
+    c.run(
+        app,
+        menu("shop-prod", "New console")
+            + "frame\n"
+            + table("orders")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + "snap reused-empty\n");
+    var main = app.state().tabs.main();
+    assertEquals(2, main.tabs().size(), "reused the open console instead of opening a second");
+    var console = assertInstanceOf(ConsoleTab.class, main.activeTab());
+    // Inserted as a statement of its own, so closed with a terminator.
+    var ordersSql = "SELECT * FROM \"public\".\"orders\";";
+    assertEquals(ordersSql, console.text);
+    assertEquals(ordersSql.length(), console.editor.caret());
+    assertEquals(ordersSql.length(), console.editor.anchor());
+    var emptyTree = c.tree("reused-empty");
+    assertTrue(
+        line(emptyTree, "role=tab label=\"shop-prod: shop\"").contains("selected"), emptyTree);
+
+    // A second table appends after a blank line, keeping the console's existing text and caret at
+    // the end.
+    c.run(
+        app,
+        table("customers")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + "snap reused-appended\n");
+    assertEquals(3, main.tabs().size(), "still only one console tab");
+    assertEquals(console, main.activeTab());
+    var customersSql = "SELECT * FROM \"public\".\"customers\";";
+    var appended = ordersSql + "\n\n" + customersSql;
+    assertEquals(appended, console.text);
+    assertEquals(appended.length(), console.editor.caret());
+    assertEquals(appended.length(), console.editor.anchor());
+    var appendedTree = c.tree("reused-appended");
+    assertTrue(
+        line(appendedTree, "role=tab label=\"shop-prod: shop\"").contains("selected"),
+        appendedTree);
+    assertTrue(line(appendedTree, "#sql").contains("focused"), appendedTree);
+    // Typing goes right after the appended statement.
+    c.run(app, "type \" LIMIT 10\"\nframe\n");
+    assertEquals(appended + " LIMIT 10", console.text);
+
+    // A statement left open is closed before the blank line; a blank line at the end is kept as
+    // the one before the statement.
+    var open = "SELECT * FROM \"public\".\"orders\"";
+    var again = """
+        press role=tab label="customers"
+        frame
+        advance 1
+        frame
+        press role=button label="Open in console"
+        frame
+        advance 1
+        frame
+        """;
+    console.text = open + "\n";
+    c.run(app, again);
+    assertEquals(ordersSql + "\n\n" + customersSql, console.text);
+    console.text = open + "\n\n";
+    c.run(app, again);
+    assertEquals(ordersSql + "\n\n" + customersSql, console.text);
+
+    // Tear off customers into a second window: with no console in its own window, Open in console
+    // reuses the main window's console and raises main.
+    c.run(app, """
+        press role=tab label="customers"
+        frame
+        advance 1
+        frame
+        press role=tab label="customers" right
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Move to new window"
+        frame
+        advance 1
+        frame
+        window "customers"
+        press role=button label="Open in console"
+        frame
+        advance 1
+        frame
+        """);
+    var tornGroup =
+        app.state().tabs.groups().stream().filter(g -> g != main).findFirst().orElseThrow();
+    assertEquals(1, tornGroup.tabs().size(), "no new console opened in the torn-off window");
+    assertEquals(console, main.activeTab());
+    assertEquals(ordersSql + "\n\n" + customersSql + "\n\n" + customersSql, console.text);
+
+    // With a matching console in the torn-off window as well, the table's own window is preferred.
+    app.post(() -> app.state().openConsole(SHOP.id(), tornGroup, "shop", "SELECT 1"));
+    c.run(app, "await\nframe\n");
+    c.run(
+        app,
+        "window \""
+            + tornGroup.window().title()
+            + "\"\nframe\n"
+            + "press role=tab label=\"customers\"\nframe\nadvance 1\nframe\n"
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    var localConsole = assertInstanceOf(ConsoleTab.class, tornGroup.activeTab());
+    assertEquals("SELECT 1;\n\n" + customersSql, localConsole.text);
+    assertEquals(
+        ordersSql + "\n\n" + customersSql + "\n\n" + customersSql,
+        console.text,
+        "main window's console left untouched when the table's window has its own");
+  }
+
+  @Test
+  void openInConsoleDoesNotReuseAConsoleOnAnotherDatabase() throws Exception {
+    var app = shop();
+    c.run(
+        app,
+        table("orders")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + open("analytics")
+            + SETTLE
+            + open("tracking")
+            + SETTLE
+            + table("events")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + "snap other-db\n");
+    var main = app.state().tabs.main();
+    var consoles = app.state().consoles(SHOP.id());
+    assertEquals(2, consoles.size(), "console on shop was not reused for analytics");
+    var shopConsole =
+        consoles.stream().filter(x -> "shop".equals(x.database)).findFirst().orElseThrow();
+    var analyticsConsole = assertInstanceOf(ConsoleTab.class, main.activeTab());
+    assertEquals("analytics", analyticsConsole.database);
+    assertEquals("SELECT * FROM \"public\".\"orders\"", shopConsole.text);
+    assertEquals("SELECT * FROM \"tracking\".\"events\"", analyticsConsole.text);
+    var tree = c.tree("other-db");
+    assertTrue(line(tree, "role=tab label=\"shop-prod: analytics\"").contains("selected"), tree);
+  }
+
+  @Test
+  void openInConsoleAlwaysOpensANewConsoleWhenConfigured() throws Exception {
+    var app = shop();
+    app.post(() ->
+        app.state().choose(app.state().settings.withOpenInConsole(Settings.OpenInConsole.NEW)));
+    c.run(
+        app,
+        "await\nframe\n"
+            + table("orders")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + table("customers")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + "snap always-new\n");
+    var consoles = app.state().consoles(SHOP.id());
+    assertEquals(
+        2, consoles.size(), "Always a new console opens a second tab on the same database");
+    assertEquals("SELECT * FROM \"public\".\"orders\"", consoles.get(0).text);
+    var second = assertInstanceOf(ConsoleTab.class, app.state().tabs.main().activeTab());
+    assertEquals(consoles.get(1), second);
+    var expected = "SELECT * FROM \"public\".\"customers\"";
+    assertEquals(expected, second.text);
+    assertEquals(expected.length(), second.editor.caret());
+    var tree = c.tree("always-new");
+    assertTrue(line(tree, "#sql").contains("focused"), tree);
   }
 
   @Test

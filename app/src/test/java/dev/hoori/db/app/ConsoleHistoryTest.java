@@ -44,6 +44,7 @@ import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -130,6 +131,39 @@ class ConsoleHistoryTest {
         List.of(restored.getFirst(), new StoredConsole(gone, "", "-- gone")),
         consoles(),
         "a console closed is no longer kept, and the unseen one is");
+  }
+
+  @Test
+  @Disabled("An edit asked of an editor never built is lost: rethinkj/ui#545")
+  void openInConsoleAddsToAKeptConsoleNeverShown() throws Exception {
+    // The last one kept is the one shown; the console on shop was never built.
+    new ConsoleStore(config())
+        .save(List.of(
+            new StoredConsole(SHOP.id(), "shop", "SELECT 3"),
+            new StoredConsole(SHOP.id(), "inventory", "SELECT 2;")));
+    var app = c.again(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START
+            + CatalogTreeTest.open("shop-prod")
+            + SETTLE
+            + CatalogTreeTest.open("shop")
+            + SETTLE
+            + CatalogTreeTest.open("public")
+            + SETTLE
+            + TableTabTest.table("orders")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + SAVED);
+    var shop = app.state().consoles(SHOP.id()).getFirst();
+    assertEquals(shop, app.state().tabs.main().activeTab());
+    var text = "SELECT 3;\n\nSELECT * FROM \"public\".\"orders\";";
+    assertEquals(text, shop.text, "not lost at the first press");
+    assertEquals(text.length(), shop.editor.caret());
+    assertEquals(new StoredConsole(SHOP.id(), "shop", text), consoles().getFirst());
+    c.run(app, "key Z control\nframe\n");
+    assertEquals("SELECT 3", shop.text, "one step of Undo");
   }
 
   @Test

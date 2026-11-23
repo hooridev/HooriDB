@@ -35,6 +35,12 @@ Use the four paging buttons to move the view without changing your selection:
 - **Next page** (down chevron): scroll down by one screen of rows.
 - **Last page** (down arrow): jump to the known end of the table.
 
+## Open in console
+
+On SQL connections, press **Open in console** in the tab toolbar to send the table's `SELECT` statement (including any applied `WHERE` and `ORDER BY` clauses) to an SQL console on the table's database.
+
+By default, HooriDB reuses a console that is already open on the same connection and database, preferring one in the same window. It brings that console to the front and adds the statement at the end of its text, after a blank line and closed with a semicolon, with the caret after it; a statement left without a semicolon at the end is closed first. **Undo** takes the addition back. If no such console is open, a new one opens. To always open a new console instead, choose **Always a new console** for **Open in console** under **File > Settings… > Databases**.
+
 ## How values are displayed
 
 - Numbers are displayed without thousands separators.

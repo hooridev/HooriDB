@@ -18,8 +18,9 @@ import tools.jackson.databind.JsonNode;
  * <p>The file is a JSON object in UTF-8 with a {@code version} and only the keys whose values
  * differ from {@link Settings#DEFAULT}: {@code theme}, {@code accent}, {@code density}, {@code
  * highlightOccurrences}, {@code keywordCase}, {@code checkForUpdates}, {@code
- * connectTimeoutSeconds}, {@code newConnectionsReadOnly}, {@code commitMode}, {@code timeZone},
- * {@code copyNull}, {@code documentView}, {@code keepHistory} and {@code monitorIntervalSeconds}.
+ * connectTimeoutSeconds}, {@code newConnectionsReadOnly}, {@code commitMode}, {@code
+ * openInConsole}, {@code timeZone}, {@code copyNull}, {@code documentView}, {@code keepHistory} and
+ * {@code monitorIntervalSeconds}.
  * Unknown keys are ignored; a key whose value is of the wrong type, unknown or out of range falls
  * back to its default and is reported by its name alone.
  */
@@ -45,6 +46,7 @@ public final class SettingsStore {
   private static final String CONNECT_TIMEOUT_SECONDS = "connectTimeoutSeconds";
   private static final String NEW_CONNECTIONS_READ_ONLY = "newConnectionsReadOnly";
   private static final String COMMIT_MODE = "commitMode";
+  private static final String OPEN_IN_CONSOLE = "openInConsole";
   private static final String TIME_ZONE = "timeZone";
   private static final String COPY_NULL = "copyNull";
   private static final String DOCUMENT_VIEW = "documentView";
@@ -123,6 +125,13 @@ public final class SettingsStore {
             Settings.CommitMode.values(),
             SettingsStore::stored,
             Settings.DEFAULT.commitMode(),
+            fellBack),
+        choice(
+            root,
+            OPEN_IN_CONSOLE,
+            Settings.OpenInConsole.values(),
+            SettingsStore::stored,
+            Settings.DEFAULT.openInConsole(),
             fellBack),
         timeZone(root, fellBack),
         choice(
@@ -259,6 +268,9 @@ public final class SettingsStore {
     if (settings.commitMode() != Settings.DEFAULT.commitMode()) {
       root.put(COMMIT_MODE, stored(settings.commitMode()));
     }
+    if (settings.openInConsole() != Settings.DEFAULT.openInConsole()) {
+      root.put(OPEN_IN_CONSOLE, stored(settings.openInConsole()));
+    }
     if (settings.timeZone() != null) {
       root.put(TIME_ZONE, settings.timeZone().getId());
     }
@@ -305,6 +317,13 @@ public final class SettingsStore {
     return switch (commitMode) {
       case AUTO -> "auto";
       case MANUAL -> "manual";
+    };
+  }
+
+  private static String stored(Settings.OpenInConsole openInConsole) {
+    return switch (openInConsole) {
+      case REUSE -> "reuse";
+      case NEW -> "new";
     };
   }
 

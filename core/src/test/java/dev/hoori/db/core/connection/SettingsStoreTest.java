@@ -44,6 +44,7 @@ class SettingsStoreTest {
         .withConnectTimeout(Duration.ofSeconds(45))
         .withNewConnectionsReadOnly(true)
         .withCommitMode(Settings.CommitMode.MANUAL)
+        .withOpenInConsole(Settings.OpenInConsole.NEW)
         .withTimeZone(ZoneId.of("Europe/Berlin"))
         .withCopyNull(Settings.CopyNull.BACKSLASH_N)
         .withDocumentView(Settings.DocumentView.JSON)
@@ -63,6 +64,7 @@ class SettingsStoreTest {
           "connectTimeoutSeconds" : 45,
           "newConnectionsReadOnly" : true,
           "commitMode" : "manual",
+          "openInConsole" : "new",
           "timeZone" : "Europe/Berlin",
           "copyNull" : "backslashN",
           "documentView" : "json",
@@ -121,6 +123,7 @@ class SettingsStoreTest {
           "connectTimeoutSeconds": 301,
           "newConnectionsReadOnly": "false",
           "commitMode": "deferred",
+          "openInConsole": "always",
           "timeZone": "Mars/Olympus",
           "copyNull": "backslashn",
           "documentView": ["grid"],
@@ -141,6 +144,7 @@ class SettingsStoreTest {
             "connectTimeoutSeconds",
             "newConnectionsReadOnly",
             "commitMode",
+            "openInConsole",
             "timeZone",
             "copyNull",
             "documentView",
@@ -222,6 +226,7 @@ class SettingsStoreTest {
     assertThrows(IllegalArgumentException.class, () -> Settings.DEFAULT.withMonitorInterval(3));
     assertThrows(NullPointerException.class, () -> Settings.DEFAULT.withLook(null));
     assertThrows(NullPointerException.class, () -> Settings.DEFAULT.withAccent(null));
+    assertThrows(NullPointerException.class, () -> Settings.DEFAULT.withOpenInConsole(null));
   }
 
   private String readNormalized() throws IOException {

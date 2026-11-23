@@ -64,6 +64,7 @@ final class SettingsWindow {
   static final String TITLE = "Settings";
   private static final String CONNECTIONS = "Connections";
   private static final String DATA = "Data";
+  private static final String CONSOLE = "console";
 
   // Sample moment for the time zone preview, formatted as the grid formats moments.
   private static final OffsetDateTime SAMPLE_MOMENT =
@@ -251,12 +252,25 @@ final class SettingsWindow {
           CONNECTIONS,
           "Commit mode of new consoles",
           "Auto commits each statement by itself; Manual waits for Commit or Rollback",
-          List.of("commit", "autocommit", "manual", "transaction", "console"),
+          List.of("commit", "autocommit", "manual", "transaction", CONSOLE),
           Settings::commitMode,
           Settings::withCommitMode,
           segmentedRow(
               List.of(Settings.CommitMode.AUTO, Settings.CommitMode.MANUAL),
               m -> m == Settings.CommitMode.AUTO ? "Auto" : "Manual")),
+      setting(
+          Page.DATABASES,
+          CONNECTIONS,
+          "Open in console",
+          "Append a table's SELECT to an open console on its database, or open a new console",
+          List.of("open", CONSOLE, "reuse", "new", "table", "select"),
+          Settings::openInConsole,
+          Settings::withOpenInConsole,
+          segmentedRow(
+              List.of(Settings.OpenInConsole.REUSE, Settings.OpenInConsole.NEW),
+              m -> m == Settings.OpenInConsole.REUSE
+                  ? "Reuse an open console"
+                  : "Always a new console")),
       setting(
           Page.DATABASES,
           DATA,
@@ -298,7 +312,7 @@ final class SettingsWindow {
           "Statements",
           "Keep statement history",
           "Remember statements run from consoles, up to 1,000 per connection",
-          List.of("history", "statements", "console", "remember", "keep"),
+          List.of("history", "statements", CONSOLE, "remember", "keep"),
           Settings::keepHistory,
           Settings::withKeepHistory,
           SettingsWindow::toggleRow),

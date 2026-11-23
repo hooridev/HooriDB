@@ -1069,7 +1069,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return actions;
   }
 
-  /** Opens a console on this table's connection and database with its SELECT and caret at end. */
+  /**
+   * Opens a console on this table's connection and database with its SELECT and caret at end, or
+   * appends it to an open console on that database when the setting reuses one.
+   */
   private void openInConsole(State s) {
     var profile = s.profile(id);
     var group = s.tabs.groupOf(this);
@@ -1087,7 +1090,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (filter.hasOrder()) {
       sql.append("\nORDER BY ").append(filter.order());
     }
-    s.openConsole(id, group, table.container().database().name(), sql.toString());
+    s.openInConsole(id, group, table.container().database().name(), sql.toString());
   }
 
   /** Placeholder body before columns are known: spinner while opening, else empty. */
