@@ -51,10 +51,17 @@ public final class ConsoleStore {
     for (int i = 0; i < list.size(); i++) {
       var where = "console " + (i + 1);
       var node = list.get(i);
-      consoles.add(new StoredConsole(
-          json.uuid(node, where, "connection"),
-          json.text(node, where, "database"),
-          json.text(node, where, "text")));
+      if (node.get("query") != null) {
+        var query = json.uuid(node, where, "query");
+        var connection =
+            node.get("connection") != null ? json.uuid(node, where, "connection") : null;
+        consoles.add(StoredConsole.ofQuery(query, connection));
+      } else {
+        consoles.add(new StoredConsole(
+            json.uuid(node, where, "connection"),
+            json.text(node, where, "database"),
+            json.text(node, where, "text")));
+      }
     }
     return consoles;
   }
@@ -68,10 +75,18 @@ public final class ConsoleStore {
     var root = JsonFile.newRoot(VERSION);
     var list = root.putArray(CONSOLES);
     for (var console : consoles) {
-      list.addObject()
-          .put("connection", console.connection().toString())
-          .put("database", console.database())
-          .put("text", console.text());
+      var object = list.addObject();
+      if (console.query() != null) {
+        object.put("query", console.query().toString());
+        if (console.connection() != null) {
+          object.put("connection", console.connection().toString());
+        }
+      } else {
+        object
+            .put("connection", console.connection().toString())
+            .put("database", console.database())
+            .put("text", console.text());
+      }
     }
     var bytes = JsonFile.bytes(root);
     if (bytes.capacity() > MAX_SIZE) {

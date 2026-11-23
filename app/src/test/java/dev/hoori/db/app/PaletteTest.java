@@ -7,7 +7,9 @@ import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
 import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.line;
+import static dev.hoori.db.app.FoldersTest.folder;
 import static dev.hoori.db.app.TableTabTest.tabs;
+import static dev.hoori.db.app.WorkspaceQueriesTest.query;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -25,6 +27,7 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Workspace;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -770,6 +773,43 @@ class PaletteTest {
         List.of("orders", "order_totals", "stock", "customers", "low_stock"),
         all.subList(0, 5),
         c.tree("ties"));
+  }
+
+  @Test
+  void atFindsWorkspaceQueriesByNameShowsTheirFolderPathAndOpensTheirTab() throws Exception {
+    var summary = query("Order summary", "SELECT 1;", Workspace.Language.SQL);
+    var quick = query("Quick check", "SELECT 2;", Workspace.Language.SQL);
+    var reports = folder("Reports", true, folder("Monthly", true, summary));
+    var app = c.app(new Workspace(List.of(SHOP, reports, quick)));
+    c.ready(app, SHOP);
+
+    // Works even with no connection open: top-level query shows Workspace and opens on Enter.
+    c.run(
+        app,
+        START + GO_TO + "type \"quick\"\nframe\nsnap quick\nkey Enter\n" + SHOWN + SETTLE
+            + "snap openedQuick\n");
+    var quickTree = c.tree("quick");
+    assertEquals("Quick check", options(quickTree).getFirst(), quickTree);
+    assertTrue(option(quickTree, "Quick check").contains("\"Workspace\""), quickTree);
+    assertEquals("Quick check", tabs(c.tree("openedQuick")));
+    assertTrue(focused(c.tree("openedQuick")).contains("#sql"), focused(c.tree("openedQuick")));
+
+    // With a connection open, tables and nested queries rank together; folder path shows as where.
+    c.run(
+        app,
+        open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE + GO_TO
+            + "type \"ord\"\nframe\nsnap ord\n"
+            + "press role=option label=\"Order summary\"\n" + SHOWN + SETTLE
+            + "snap openedSummary\n"
+            + GO_TO + "type \"order summary\"\nframe\nkey Enter\n" + SHOWN + "snap again\n");
+    var ord = c.tree("ord");
+    assertEquals(
+        List.of("orders", "order_totals", "Order summary"), options(ord).subList(0, 3), ord);
+    assertTrue(option(ord, "Order summary").contains("\"Reports / Monthly\""), ord);
+    assertEquals("Quick check,Order summary", tabs(c.tree("openedSummary")));
+    assertEquals("Order summary", active(c.tree("openedSummary")));
+    assertTrue(focused(c.tree("openedSummary")).contains("#sql"), focused(c.tree("openedSummary")));
+    assertEquals("Quick check,Order summary", tabs(c.tree("again")), "one tab per query");
   }
 
   /** The active tab's label. */

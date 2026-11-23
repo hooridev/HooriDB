@@ -24,7 +24,6 @@ import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.text.Font;
-import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Transaction;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -67,13 +66,13 @@ final class ConsoleView {
    * statements kept at the end. All stay in place whatever the mode or the transaction, so nothing
    * moves when they change; what cannot be used is off.
    */
-  List<El> actions(State s, Provider provider) {
+  List<El> actions(State s, Language language) {
     boolean busy = tab.busy();
     var locked = s.guard.locked(tab);
     var actions = new ArrayList<El>();
     actions.add(databases(s));
     actions.add(runs(s, locked));
-    if (Language.of(provider).transactions()) {
+    if (language.transactions()) {
       // Off where Manual cannot be made sure of, which its tooltip and a note say.
       boolean switchable = !busy && locked == null && tab.unavailable == null;
       actions.add(modes(s, switchable));

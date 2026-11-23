@@ -16,16 +16,17 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Workspace;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
 /**
- * Go to table: the palette after {@code @} finds the tables and views that the tree has read of
- * every connected connection, by name, and opens the chosen one in its tab. A database whose
- * tables are not read yet says so below them; choosing it reads them in the background, and the
- * palette stays open and shows that it waits.
+ * Go to table or query: the palette after {@code @} finds the tables and views that the tree has
+ * read of every connected connection and every workspace query, by name, and opens the chosen one
+ * in its tab. A database whose tables are not read yet says so below them; choosing it reads them
+ * in the background, and the palette stays open and shows that it waits.
  */
 final class GoTo {
 
@@ -36,15 +37,44 @@ final class GoTo {
 
   private GoTo() {}
 
-  /** What the palette of the window finds after {@code @}, opening tables in that window. */
+  /** What the palette of the window finds after {@code @}, opening tables and queries there. */
   static CommandPalette.Source source(State s, TabGroups.Group<Tab> group) {
     return new CommandPalette.Source(
-        PREFIX, "to open a table", FilterList.Entries.by(query -> entries(s, group, query)));
+        PREFIX,
+        "to open a table or query",
+        FilterList.Entries.by(query -> entries(s, group, query)));
   }
 
-  private record Found(UUID id, Table table, String where, int rank, boolean system) {}
+  private sealed interface Found {
+    String name();
 
-  /** The tables that match, best first, and then what is not read yet. */
+    String where();
+
+    int rank();
+
+    boolean system();
+
+    record OfTable(UUID id, Table table, String where, int rank, boolean system) implements Found {
+      @Override
+      public String name() {
+        return table.name();
+      }
+    }
+
+    record OfQuery(Workspace.Query query, String where, int rank) implements Found {
+      @Override
+      public String name() {
+        return query.name();
+      }
+
+      @Override
+      public boolean system() {
+        return false;
+      }
+    }
+  }
+
+  /** The tables and queries that match, best first, and then what is not read yet. */
   static List<FilterList.Entry> entries(State s, TabGroups.Group<Tab> group, String query) {
     var search = new Search(s, group, query.strip());
     var connected = s.catalog.lives.values().stream()
@@ -56,20 +86,37 @@ final class GoTo {
         search.connection(live, label(live.profile, connected));
       }
     }
+    search.queries(s.workspace().entries(), "");
     var found = search.found;
     found.sort(Comparator.comparingInt(Found::rank)
         .thenComparing(Found::system)
-        .thenComparingInt(f -> f.table().name().length()));
+        .thenComparingInt(f -> f.name().length()));
     var entries = new ArrayList<FilterList.Entry>(found.size() + search.notes.size() + 1);
     for (var f : found) {
-      var table = f.table();
-      var symbol = table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE;
-      var color = s.color(f.id());
-      entries.add(FilterList.entry(
-              table.name(), () -> Frame.focusContentSoon(s, s.openTable(f.id(), table, group)))
-          .key(key(f.id(), table))
-          .detail(f.where())
-          .leading(() -> lead(color, Icon.icon(symbol, Icon.Variant.MUTED))));
+      switch (f) {
+        case Found.OfTable t -> {
+          var table = t.table();
+          var symbol = table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE;
+          var color = s.color(t.id());
+          entries.add(FilterList.entry(
+                  table.name(), () -> Frame.focusContentSoon(s, s.openTable(t.id(), table, group)))
+              .key(key(t.id(), table))
+              .detail(t.where())
+              .leading(() -> lead(color, Icon.icon(symbol, Icon.Variant.MUTED))));
+        }
+        case Found.OfQuery q -> {
+          var item = q.query();
+          entries.add(FilterList.entry(item.name(), () -> {
+                var opened = s.openQuery(item.id(), group);
+                if (opened != null) {
+                  Frame.focusContentSoon(s, opened);
+                }
+              })
+              .key("query\0" + item.id())
+              .detail(q.where())
+              .leading(() -> lead(null, Icon.icon(Symbol.DOCUMENT, Icon.Variant.MUTED))));
+        }
+      }
     }
     if (connected.isEmpty()) {
       entries.add(FilterList.entry("No connection is open", null)
@@ -80,7 +127,7 @@ final class GoTo {
     return entries;
   }
 
-  /** One search of the palette: the tables that match, and the databases not read yet. */
+  /** One search of the palette: the tables and queries that match, and unread databases. */
   private static final class Search {
     private final State s;
     private final TabGroups.Group<Tab> group;
@@ -92,6 +139,23 @@ final class GoTo {
       this.s = s;
       this.group = group;
       this.q = q;
+    }
+
+    /** Every workspace query in the tree that matches, with its folder path as where. */
+    void queries(List<Workspace.Entry> entries, String above) {
+      for (var entry : entries) {
+        switch (entry) {
+          case Workspace.Folder f ->
+            queries(f.entries(), above.isEmpty() ? f.name() : above + " / " + f.name());
+          case Workspace.Query query -> {
+            int rank = rank(query.name(), q);
+            if (rank >= 0) {
+              found.add(new Found.OfQuery(query, above.isEmpty() ? "Workspace" : above, rank));
+            }
+          }
+          case ConnectionProfile _ -> {}
+        }
+      }
     }
 
     /** A connected connection, by the name the palette calls it. */
@@ -117,7 +181,7 @@ final class GoTo {
           var table = t.table();
           int rank = rank(table.name(), q);
           if (rank >= 0) {
-            found.add(new Found(live.id(), table, where(name, table), rank, system(table)));
+            found.add(new Found.OfTable(live.id(), table, where(name, table), rank, system(table)));
           }
         }
       }

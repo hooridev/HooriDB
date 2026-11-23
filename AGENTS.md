@@ -23,7 +23,8 @@ holds up a level or deletes it, each connection as its own Delete… does after 
 their consoles and open query tabs, and then the folder; one whose password the keyring did not
 delete stays, with its folder, and the dialog names it. Opening a query opens a console tab bound
 to it (one tab per query, titled by its name, colored by its current target, autosaving text edits
-into `workspace.json`); running it asks for the target connection in a menu at the caret
+into `workspace.json`, colored, split and completed by standard SQL until it has a target);
+running it asks for the target connection in a menu at the caret
 (connections of its language, the last target first, then connected ones, with color mark, folder
 path and read-only note), silently re-running only when exactly one connection of that language is connected and is
 the last target, and switching targets asks via the console's existing question before ending the
@@ -78,11 +79,12 @@ another; one that does not answer can be given up, and what is asked of the keyr
 behind it; a saved password it does not give in time is asked of the user, and where the dialog does
 not know what the keyring holds, not keeping the password there deletes it. A command palette
 (Control+Shift+P, or the View menu) runs the menus' commands in its window, and after `@`
-(Control+P) finds the tables and views the tree has read by name and opens one, reading a database
-it has not read when chosen; the menus give keys to a new console, closing a tab, the next and
-previous tab, and the focus on the tree or the tab. Consoles are kept: their texts, connections and
-databases are saved a moment after each change, beside the workspace, and reopened unconnected at
-the next start; each statement run from a console goes into its connection's history
+(Control+P) finds the tables and views the tree has read and workspace queries by name and opens
+one, reading a database it has not read when chosen; the menus give keys to a new console, closing
+a tab, the next and previous tab, and the focus on the tree or the tab. Consoles and open workspace
+query tabs are kept: a console's text, connection and database, and a query tab's id and last
+target (with its text kept in `workspace.json` alone), are saved beside the workspace and reopened
+unconnected at the next start; each statement run from a console goes into its connection's history
 (`history.json`, at most 1,000 a connection, owner-only), which History lists, searches, inserts
 from and clears; Save to workspace saves a console's selection, or else its whole text, as a query
 in its connection's folder in `workspace.json`. The

@@ -7,6 +7,7 @@ import dev.hoori.db.core.document.Script;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 
@@ -68,16 +69,20 @@ public final class Statements {
   // PostgreSQL only with standard_conforming_strings off.
   private boolean escapes;
 
-  private Statements(String text, Provider provider) {
+  private Statements(String text, SyntaxDialect syntax) {
     this.text = text;
-    // A server of documents has the shell's statements, which Script splits.
-    this.syntax = provider.keepsDocuments() ? null : provider.dialect().syntax();
+    this.syntax = syntax;
     this.escapes = syntax != null && syntax.backslashEscapes();
   }
 
   /** The statements of the text, in order. */
   public static List<Statement> split(String text, Provider provider) {
     return scan(text, provider).found;
+  }
+
+  /** The statements of the SQL text, in order, split by the lexical rules of {@code syntax}. */
+  public static List<Statement> split(String text, SyntaxDialect syntax) {
+    return of(text, syntax).found;
   }
 
   /**
@@ -99,12 +104,31 @@ public final class Statements {
     return scan(text, provider).at(caret);
   }
 
+  /** As {@link #at(String, Provider, int)}, split by the lexical rules of {@code syntax}. */
+  public static Optional<Statement> at(String text, SyntaxDialect syntax, int caret) {
+    return of(text, syntax).at(caret);
+  }
+
   /**
    * The text scanned once, for a caret that moves while the text stays: {@link #at(int)} then
    * costs no scan.
    */
   public static Statements of(String text, Provider provider) {
     return scan(text, provider);
+  }
+
+  /** As {@link #of(String, Provider)}, split by the lexical rules of {@code syntax}. */
+  public static Statements of(String text, SyntaxDialect syntax) {
+    var scan = new Statements(text, Objects.requireNonNull(syntax, "syntax"));
+    scan.run();
+    return scan;
+  }
+
+  /** The statements of a document shell text, as {@link Script#split} splits them. */
+  public static Statements ofShell(String text) {
+    var scan = new Statements(text, null);
+    scan.shell();
+    return scan;
   }
 
   /** The statements of the text, in order. */
@@ -220,7 +244,16 @@ public final class Statements {
    * MariaDB's and MySQL's NO_BACKSLASH_ESCAPES or PostgreSQL's standard_conforming_strings say.
    */
   static List<Piece> pieces(String text, Provider provider, boolean escapes) {
-    var scan = new Statements(text, provider);
+    return pieces(text, provider.keepsDocuments() ? null : provider.dialect().syntax(), escapes);
+  }
+
+  /** As {@link #pieces(String, Provider)}, by the lexical rules of {@code syntax}. */
+  public static List<Piece> pieces(String text, SyntaxDialect syntax) {
+    return pieces(text, Objects.requireNonNull(syntax, "syntax"), syntax.backslashEscapes());
+  }
+
+  private static List<Piece> pieces(String text, SyntaxDialect syntax, boolean escapes) {
+    var scan = new Statements(text, syntax);
     scan.escapes = escapes;
     var pieces = new ArrayList<Piece>();
     int n = text.length();
@@ -274,13 +307,9 @@ public final class Statements {
   }
 
   private static Statements scan(String text, Provider provider) {
-    var scan = new Statements(text, provider);
-    if (scan.syntax == null) {
-      scan.shell();
-    } else {
-      scan.run();
-    }
-    return scan;
+    return provider.keepsDocuments()
+        ? ofShell(text)
+        : of(text, provider.dialect().syntax());
   }
 
   // The statements of the MongoDB shell, as Script splits them, without their semicolons.

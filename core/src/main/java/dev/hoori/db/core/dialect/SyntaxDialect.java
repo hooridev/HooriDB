@@ -6,6 +6,9 @@ import java.util.Set;
 /** The lexical rules of a provider's SQL, and how its server reads names and key words. */
 public interface SyntaxDialect {
 
+  /** Dialect-neutral standard SQL lexical rules, used before a target connection is chosen. */
+  SyntaxDialect STANDARD = new StandardSql();
+
   /** The character that quotes an identifier, doubled inside it. */
   char identifierQuote();
 

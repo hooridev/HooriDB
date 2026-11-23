@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import com.rethinkj.ui.Formatted;
 import com.rethinkj.ui.Formatted.Kind;
 import com.rethinkj.ui.Formatted.Problem;
+import com.rethinkj.ui.Highlighter;
 import com.rethinkj.ui.Spans;
 import com.rethinkj.ui.kit.Theme;
 import java.util.ArrayList;
@@ -26,7 +27,11 @@ class ShellSyntaxTest {
 
   /** The colored parts of each line, as kind and text, the state carried from line to line. */
   static List<String> colored(String... lines) {
-    var syntax = new ShellSyntax(CODE);
+    return colored(new ShellSyntax(CODE), lines);
+  }
+
+  /** As {@link #colored(String...)}, by another highlighter. */
+  static List<String> colored(Highlighter syntax, String... lines) {
     var out = new ArrayList<String>();
     Object state = null;
     for (var line : lines) {

@@ -161,9 +161,8 @@ final class State {
     guard.drop(tab);
     tab.close();
     if (tab instanceof ConsoleTab c) {
-      if (c.queryId == null) {
-        keeping.persist(keeping.consolesKept);
-      } else if (unsaved) {
+      keeping.persist(keeping.consolesKept);
+      if (c.queryId != null && unsaved) {
         persist();
       }
     }
@@ -327,7 +326,7 @@ final class State {
     }
     var path = console.id == null ? null : workspace.path(console.id);
     UUID in = path == null || path.isEmpty() ? null : path.getLast().id();
-    var language = Workspace.Language.of(console.editingProvider(this));
+    var language = console.language(this).workspace();
     dialogs.queryDialog = QueryDialog.save(in, text, language);
     var window = app == null ? null : app.windows().of(app);
     if (window != null) {
@@ -412,9 +411,17 @@ final class State {
 
   /** Opens the workspace query in a console tab, or raises the one already open for it. */
   void openQuery(UUID id) {
+    openQuery(id, tabs.main());
+  }
+
+  /**
+   * As {@link #openQuery(UUID)}, opening a new tab in the window of these tabs; returns the tabs
+   * that hold it, or null when no query has the id.
+   */
+  TabGroups.Group<Tab> openQuery(UUID id, TabGroups.Group<Tab> into) {
     var query = query(id);
     if (query == null) {
-      return;
+      return null;
     }
     var existing = queryTab(id);
     if (existing != null) {
@@ -424,10 +431,12 @@ final class State {
       if (window != null) {
         window.raise();
       }
-      return;
+      return group;
     }
     var tab = ConsoleTab.ofQuery(this, query);
-    tabs.add(tabs.main(), tabs.main().tabs().size(), tab);
+    tabs.add(into, into.tabs().size(), tab);
+    keeping.persist(keeping.consolesKept);
+    return into;
   }
 
   /** The open console tab bound to the workspace query, in whichever window; or null. */
@@ -649,7 +658,7 @@ final class State {
     for (var console : consoles(profile.id())) {
       if (console.queryId != null
           && Workspace.Language.of(profile.provider()) != console.queryLanguage) {
-        console.detachTarget();
+        console.detachTarget(this);
       } else {
         console.end();
       }
@@ -1339,7 +1348,7 @@ final class State {
       if (console.queryId == null) {
         all.add(console);
       } else {
-        console.detachTarget();
+        console.detachTarget(this);
       }
     }
     all.addAll(monitors(id));

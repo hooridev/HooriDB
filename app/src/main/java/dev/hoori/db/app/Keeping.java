@@ -13,6 +13,7 @@ import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.connection.UiState;
 import dev.hoori.db.core.connection.UiStateStore;
+import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -78,9 +79,7 @@ final class Keeping {
     consolesKept = new Kept("consoles", () -> {
       var list = new ArrayList<StoredConsole>();
       for (var x : s.consoles(null)) {
-        if (x.queryId == null) {
-          list.add(x.stored());
-        }
+        list.add(x.stored());
       }
       list.addAll(unseen);
       return Kept.writing(list, consoleStore::save);
@@ -359,7 +358,22 @@ final class Keeping {
     var main = s.tabs.main();
     var hidden = new ArrayList<StoredConsole>();
     for (var stored : restoring) {
-      if (s.profile(stored.connection()) != null) {
+      if (stored.query() != null) {
+        var query = s.query(stored.query());
+        if (query == null || s.queryTab(query.id()) != null) {
+          consolesKept.unsaved = true;
+          continue;
+        }
+        UUID target = stored.connection();
+        var profile = target == null ? null : s.profile(target);
+        if (profile == null || Workspace.Language.of(profile.provider()) != query.language()) {
+          if (target != null) {
+            consolesKept.unsaved = true;
+          }
+          target = null;
+        }
+        s.tabs.add(main, main.tabs().size(), ConsoleTab.ofQuery(s, query, target));
+      } else if (s.profile(stored.connection()) != null) {
         var console = ConsoleTab.of(s, stored.connection(), stored.database());
         console.text = stored.text();
         s.tabs.add(main, main.tabs().size(), console);
