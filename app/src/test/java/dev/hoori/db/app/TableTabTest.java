@@ -1647,6 +1647,35 @@ class TableTabTest {
   }
 
   @Test
+  void lastPageOfAFilteredCollectionCountsFirst() throws Exception {
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    var many = IntStream.rangeClosed(1, 650)
+        .mapToObj(i -> Document.of("_id", i, "customer", "many", "total", (double) i))
+        .toList();
+    servers.documents(path, many);
+    servers.documents(path + " FILTER { total: { $gt: 0 } }", many);
+    var app = mongoOrders();
+    c.run(
+        app,
+        clause("Filter", "{ total: { $gt: 0 } }")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + """
+            press role=radio label="JSON"
+            frame
+            advance 1
+            frame
+            press role=button label="Last page"
+            frame
+            """
+            + SETTLE
+            + "advance 1\nframe\nsnap last\n");
+    String last = c.tree("last");
+    assertTrue(line(last, "#rows-in-view").contains("\"Documents 601–650\""), last);
+    assertTrue(status(last).contains("\"650 documents\""), last);
+  }
+
+  @Test
   void documentCollectionFilterAndSortApplyAcrossViewsAndClearWithEmptyDocument() throws Exception {
     var path = DocumentConsoleTest.MONGO + "/hoori.orders";
     var all = IntStream.rangeClosed(1, 210)

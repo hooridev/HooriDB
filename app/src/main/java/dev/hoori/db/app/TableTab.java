@@ -140,6 +140,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   // An empty page past what is known: the count says where the end is, and no page is read until
   // then, so that finding it takes one read and not one per page.
   private boolean ending;
+  private boolean toLast; // Last page asked while only a lower bound was known: turns at the count
   private boolean closed;
   private int first; // the rows the grid built last
   private int last = -1;
@@ -613,8 +614,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
           documents.keySet().retainAll(pages.keySet());
           want(s, first, last);
           if (!presentation.isGrid()) {
-            turn(s, Math.min(presentation.page(), Math.max(0, (n - 1) / PAGE)));
+            long end = Math.max(0, (n - 1) / PAGE);
+            turn(s, toLast ? end : Math.min(presentation.page(), end));
           }
+          toLast = false;
         },
         error -> {
           counting = null;
@@ -896,6 +899,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     sorted = nextSorted;
     filter = checked;
     query++;
+    toLast = false;
     fields = null; // read anew, also where the opening is asked again
     took = -1;
     got = 0;
@@ -1007,6 +1011,16 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
           Math.min(presentation.page() * PAGE + PAGE - 1, DocumentPresentation.GRID_ROWS));
     } else {
       turn(s, presentation.page());
+    }
+  }
+
+  /** The last page of documents, counted first where only a lower bound of them is known. */
+  private void lastPage(State s) {
+    if (counted == Counted.AT_LEAST) {
+      toLast = true;
+      counted(s, true);
+    } else {
+      turn(s, (shown() - 1) / PAGE);
     }
   }
 
@@ -1503,7 +1517,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         () -> turn(s, 0),
         () -> turn(s, page - 1),
         () -> turn(s, page + 1),
-        () -> turn(s, (shown() - 1) / PAGE));
+        () -> lastPage(s));
     return new DocumentPresentation.DocumentPage(
         "q" + query + "-p" + page,
         read,
