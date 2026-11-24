@@ -160,6 +160,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   private int query; // counts the applied queries, so that JSON and Tree start anew with each
   private List<Sort> sorted = List.of(); // the header sort that made the applied order
   private String refused; // why the clauses last submitted were refused, or null
+  private String unapplied; // why a WHERE from foreign key navigation was not applied, or null
   private final Clause where;
   private final Clause order;
   private Whole whole; // the current cell's whole value, for the value panel; or null
@@ -831,7 +832,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         Guard.Scope.CHANGES)) {
       return;
     }
-    open(s, true);
+    s.catalog.forgetForeignKeys(id, table);
+    keysFailed = false;
+    open(s, true); // which gives up a read of the keys under way
   }
 
   /** Replaces the table metadata (e.g. table became a view) and re-opens, asking first if edited. */
@@ -875,7 +878,31 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   /** Applies a WHERE clause from foreign key navigation, keeping the applied ORDER BY. */
   void applyWhere(State s, String clause) {
-    apply(s, new Rows.Filter(clause.strip(), filter.order()), sorted, true, false);
+    var trimmed = clause.strip();
+    if (!closed && s.catalog.connected(id) && s.profile(id) != null) {
+      var locked = s.guard.locked(this);
+      if (preview != null || locked != null) {
+        where.text = trimmed;
+        where.caret = where.text.length();
+        where.completion.close();
+        refused = null;
+        unapplied = preview != null
+            ? "The filter was not applied while DML Preview is open. Press Enter in WHERE once it"
+                + " closes to apply it."
+            : locked
+                + ": the filter was not applied. Press Enter in WHERE once that finishes to apply"
+                + " it.";
+        return;
+      }
+    }
+    apply(s, new Rows.Filter(trimmed, filter.order()), sorted, true, false);
+  }
+
+  /** Drops the note of an unapplied WHERE once the WHERE field holds the applied one. */
+  private void settleUnapplied() {
+    if (where.text.strip().equals(filter.where())) {
+      unapplied = null;
+    }
   }
 
   /** Reads this table's foreign keys on its lane in the background when the context menu opens. */
@@ -944,6 +971,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       refused = null;
     } catch (QueryException e) {
       refused = e.detail(); // the applied filter and its reads go on
+      unapplied = null;
       return;
     }
     if (checked.equals(filter) && failure == null) {
@@ -958,6 +986,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         order.completion.close();
         sorted = nextSorted;
       }
+      settleUnapplied();
       return;
     }
     if (s.guard.asks(
@@ -981,6 +1010,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     sorted = nextSorted;
     filter = checked;
+    settleUnapplied();
     query++;
     toLast = false;
     fields = null; // read anew, also where the opening is asked again
@@ -1711,11 +1741,17 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
               ? new El[0]
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
-    // The refused clauses beside, not in place of, why the applied ones could not be read.
-    var title = ofDocuments ? "Filter refused" : "Clause refused";
-    El refusal = refused == null ? null : Callout.callout(Callout.Kind.DANGER, title, refused);
+    // The refused or unapplied clauses beside, not in place of, why the applied ones could not be
+    // read.
+    El clauseNote = null;
+    if (refused != null) {
+      clauseNote = Callout.callout(
+          Callout.Kind.DANGER, ofDocuments ? "Filter refused" : "Clause refused", refused);
+    } else if (unapplied != null) {
+      clauseNote = Callout.callout(Callout.Kind.WARNING, "Filter not applied", unapplied);
+    }
     if (failure == null) {
-      return refusal;
+      return clauseNote;
     }
     var words = switch (failure.problem()) {
       case GONE ->
@@ -1740,9 +1776,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var text = CatalogTree.join(words[1], failure.detail());
     El failed = Callout.callout(
         Callout.Kind.DANGER, words[0], text, button(SECONDARY, "Try again", () -> refresh(s)));
-    return refusal == null
+    return clauseNote == null
         ? failed
-        : col().gap(Theme.CURRENT.get().space().s()).child(refusal).child(failed);
+        : col().gap(Theme.CURRENT.get().space().s()).child(clauseNote).child(failed);
   }
 
   /** The rows in the grid, late: a row not read yet shows the grid's loading cells. */

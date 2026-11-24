@@ -5,6 +5,7 @@ import static dev.hoori.db.app.CatalogTreeTest.MARIA;
 import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.eventually;
 import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.ConsoleTransactions.OPENED;
@@ -12,6 +13,7 @@ import static dev.hoori.db.app.TableTabTest.cell;
 import static dev.hoori.db.app.TableTabTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
@@ -474,5 +476,152 @@ class TableTabForeignKeyTest {
     assertEquals(0, tabNamed(app, "orders").pendingChanges());
     assertEquals("\"id\" = 2", tabNamed(app, "orders").filter.where());
     assertTrue(cell(c.tree("self-filtered"), 0, 0).contains("\"2\""), c.tree("self-filtered"));
+  }
+
+  @Test
+  void refreshDropsCachedForeignKeysAndCancelsInFlightKeyRead() throws Exception {
+    var app = openOrders();
+    var orders = tabNamed(app, "orders");
+
+    // Context menu offers the cached outgoing key on customer_id (col 2).
+    c.run(app, rightClick(0, 2) + "snap before-refresh\n");
+    assertTrue(
+        c.tree("before-refresh").contains("role=menuitem label=\"Go to customers\""),
+        c.tree("before-refresh"));
+
+    // Drop the customer_id foreign key on the server and Refresh from the grid's context menu.
+    String withoutCustomerFk = FK_OUTLINE.replace(
+        "customer_id: integer > customers.id on delete cascade", "customer_id: integer");
+    assertFalse(withoutCustomerFk.equals(FK_OUTLINE));
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", withoutCustomerFk);
+    long keysBefore = servers.calls.stream()
+        .filter(call -> call.equals("foreign keys " + ORDERS))
+        .count();
+    c.run(app, "press role=menuitem label=\"Refresh\"\n" + SHOWN + SETTLE);
+    assertNull(app.state().catalog.foreignKeys(orders.id, orders.table));
+
+    // Reopening the context menu reads keys anew: the dropped key is gone, Referenced by remains.
+    c.run(app, rightClick(0, 2) + SETTLE + "snap after-refresh\n");
+    String afterRefresh = c.tree("after-refresh");
+    assertEquals(
+        keysBefore + 1,
+        servers.calls.stream()
+            .filter(call -> call.equals("foreign keys " + ORDERS))
+            .count(),
+        servers.calls.toString());
+    assertFalse(afterRefresh.contains("label=\"Go to customers\""), afterRefresh);
+    assertTrue(afterRefresh.contains("role=menuitem label=\"Referenced by\""), afterRefresh);
+
+    // An in-flight key read cancelled by Refresh must not write stale keys back into the cache.
+    c.run(app, "key Escape\n" + SHOWN);
+    app.state().catalog.forgetForeignKeys(orders.id, orders.table);
+    var key = "foreign keys " + ORDERS;
+    var gate = servers.hold(key);
+    servers.dead = true;
+    try {
+      c.run(app, rightClick(0, 3));
+      eventually(() -> servers.calls.stream().filter(key::equals).count() == keysBefore + 2);
+      c.run(app, "press role=menuitem label=\"Refresh\"\n" + SHOWN);
+      gate.countDown();
+      c.run(app, SETTLE);
+    } finally {
+      servers.dead = false;
+    }
+    assertNull(
+        app.state().catalog.foreignKeys(orders.id, orders.table),
+        "stale in-flight key read must not repopulate cache after Refresh");
+
+    // Next context menu reads the latest keys after another key is dropped too.
+    String withoutParentFk = withoutCustomerFk.replace(
+        "parent_id: bigint > orders.id on update set null", "parent_id: bigint");
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", withoutParentFk);
+    c.run(app, rightClick(0, 3) + SETTLE + "snap after-inflight\n");
+    assertFalse(
+        c.tree("after-inflight").contains("label=\"Go to orders\""), c.tree("after-inflight"));
+  }
+
+  @Test
+  void followingKeyWhileTargetDmlPreviewIsOpenShowsCalloutAndKeepsClauseInWhere() throws Exception {
+    var app = openOrders();
+    // Open customers, tear it off into its own window, edit a cell, and leave DML Preview open.
+    c.run(
+        app,
+        table("customers")
+            + SETTLE
+            + "press role=tab label=\"customers\" right\n"
+            + SHOWN
+            + "press role=menuitem label=\"Move to new window\"\n"
+            + SHOWN);
+    c.run(
+        app,
+        "window \"customers\"\n"
+            + "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n"
+            + "press #commit-changes\nframe\n"
+            + OPENED);
+    var customers = tabNamed(app, "customers");
+    assertTrue(customers.preview != null, "DML Preview must be open");
+
+    // From orders in the main window, follow customer_id = 10 -> customers.
+    int callsBefore = servers.calls.size();
+    c.run(
+        app,
+        "window main\nframe\n"
+            + rightClick(0, 2)
+            + "press role=menuitem label=\"Go to customers\"\n"
+            + SHOWN
+            + SETTLE
+            + "snap blocked\n");
+    assertEquals(
+        callsBefore,
+        servers.calls.size(),
+        "must not read target with new filter while DML Preview is open: "
+            + servers.calls.subList(callsBefore, servers.calls.size()));
+    assertEquals("", customers.filter.where(), "applied filter must stay untouched");
+    assertEquals(1, customers.pendingChanges());
+    assertTrue(customers.preview != null, "DML Preview must stay open");
+
+    // Dismiss DML Preview in the detached window: WHERE holds the clause and the callout shows.
+    c.run(
+        app,
+        "window \"customers\"\n"
+            + "press #preview-cancel\nframe\n"
+            + OPENED
+            + "snap after-preview\n");
+    String afterPreview = c.tree("customers-after-preview");
+    assertTrue(afterPreview.contains("Filter not applied"), afterPreview);
+    assertTrue(afterPreview.contains("DML Preview"), afterPreview);
+    assertTrue(
+        line(afterPreview, "#where role=textbox").contains("\"\\\"id\\\" = 10\""), afterPreview);
+
+    // Cancelling the question about the pending edit keeps the notice: nothing was applied.
+    c.run(
+        app,
+        "window \"customers\"\n"
+            + "press role=textbox label=\"WHERE\"\nkey Enter\nframe\n"
+            + OPENED
+            + "press #answer-cancel\nframe\n"
+            + OPENED
+            + "snap cancelled\n");
+    assertTrue(c.tree("customers-cancelled").contains("Filter not applied"));
+    assertEquals("", customers.filter.where());
+
+    // Pressing Enter in WHERE (and discarding the pending edit) applies the filter and clears the
+    // notice.
+    c.run(
+        app,
+        "window \"customers\"\n"
+            + "press role=textbox label=\"WHERE\"\nkey Enter\nframe\n"
+            + OPENED
+            + "press #answer-discard\nframe\n"
+            + OPENED
+            + SETTLE
+            + "snap applied\n");
+    String applied = c.tree("customers-applied");
+    assertFalse(applied.contains("Filter not applied"), applied);
+    assertEquals("\"id\" = 10", customers.filter.where());
+    assertTrue(
+        servers.calls.contains("read " + CUSTOMERS + " 0-200 WHERE \"id\" = 10"),
+        servers.calls.toString());
+    assertTrue(cell(applied, 0, 1).contains("\"Alice\""), applied);
   }
 }
