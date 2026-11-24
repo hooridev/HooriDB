@@ -22,6 +22,8 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.SettingsStore;
+import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.execution.Failure;
@@ -271,6 +273,66 @@ class DocumentConsoleTest {
         resultJson);
     assertTrue(ConsoleTest.near(resultJson, "#result-shown").contains("\"JSON\""), resultJson);
     assertTrue(line(resultJson, "#json").contains("\\\"customer\\\": \\\"Ada\\\""), resultJson);
+  }
+
+  /**
+   * An empty MongoDB console result keeps the view switcher, says 0 documents, and opens in the
+   * configured {@code documentView}, while an empty SQL result stays a plain grid saying 0 rows.
+   */
+  @Test
+  void anEmptyResultUsesTheConsoleLanguageForTheSwitcherAndFirstView() throws Exception {
+    var mongoQuery = "db.orders.find({ _id: \"none\" })";
+    var sqlQuery = "SELECT id FROM orders WHERE 1 = 0";
+    c.servers.statement(mongoQuery, List.of(new Result.Rows(List.of(), 0, List.of(), List.of())));
+    c.servers.statement(
+        sqlQuery,
+        List.of(new Result.Rows(List.of(new Field("id", "int4", Kind.INTEGER)), 0, List.of())));
+
+    new SettingsStore(dir.resolve("config"))
+        .save(Settings.DEFAULT.withDocumentView(Settings.DocumentView.JSON));
+    var app = c.app(DOCS, SHOP);
+    c.ready(app, DOCS, SHOP);
+    c.run(
+        app,
+        START + open(DOCS.name()) + SETTLE + menu(DOCS.name(), "New console") + SETTLE
+            + type(mongoQuery) + RUN + "snap empty-json\n");
+    var emptyJson = c.tree("empty-json");
+    assertTrue(
+        line(emptyJson, "#result-shown ").contains("role=combobox label=\"Show documents as\""),
+        emptyJson);
+    assertTrue(ConsoleTest.near(emptyJson, "#result-shown").contains("\"JSON\""), emptyJson);
+    assertTrue(emptyJson.contains("#no-documents"), emptyJson);
+    assertTrue(line(emptyJson, "#rows-in-view").contains("\"No documents\""), emptyJson);
+    assertTrue(ConsoleTest.near(emptyJson, "#result-status").contains("0 documents"), emptyJson);
+    assertTrue(line(emptyJson, "role=button label=\"Next page\"").contains("disabled"), emptyJson);
+
+    c.run(app, show("Tree") + "snap empty-tree\n" + show("Grid") + "snap empty-grid\n");
+    var emptyTree = c.tree("empty-tree");
+    assertTrue(ConsoleTest.near(emptyTree, "#result-shown").contains("\"Tree\""), emptyTree);
+    assertTrue(emptyTree.contains("#no-documents"), emptyTree);
+    var emptyGrid = c.tree("empty-grid");
+    assertTrue(ConsoleTest.near(emptyGrid, "#result-shown").contains("\"Grid\""), emptyGrid);
+    assertTrue(emptyGrid.contains("#grid"), emptyGrid);
+    assertTrue(ConsoleTest.near(emptyGrid, "#result-status").contains("0 documents"), emptyGrid);
+
+    app.post(() ->
+        app.state().choose(app.state().settings.withDocumentView(Settings.DocumentView.TREE)));
+    c.run(app, "await\nframe\npress #sql\n" + RUN + "snap empty-default-tree\n");
+    var emptyDefaultTree = c.tree("empty-default-tree");
+    assertTrue(
+        ConsoleTest.near(emptyDefaultTree, "#result-shown").contains("\"Tree\""), emptyDefaultTree);
+    assertTrue(emptyDefaultTree.contains("#no-documents"), emptyDefaultTree);
+
+    // An empty SQL result opens in Grid without a view switcher even when documentView is TREE.
+    c.run(
+        app,
+        open(SHOP.name()) + SETTLE + menu(SHOP.name(), "New console") + SETTLE + type(sqlQuery)
+            + RUN + "snap empty-sql\n");
+    var emptySql = c.tree("empty-sql");
+    assertTrue(emptySql.contains("#grid"), emptySql);
+    assertFalse(emptySql.contains("#result-shown"), emptySql);
+    assertFalse(emptySql.contains("#no-documents"), emptySql);
+    assertTrue(ConsoleTest.near(emptySql, "#result-status").contains("0 rows"), emptySql);
   }
 
   @Test

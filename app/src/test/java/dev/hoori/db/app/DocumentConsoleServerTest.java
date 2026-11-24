@@ -90,6 +90,29 @@ class DocumentConsoleServerTest {
   }
 
   @Test
+  void anEmptyFindStillShowsTheViewSwitcherAndZeroDocuments() throws Exception {
+    var app = console(docs());
+    c.run(app, type("db.orders.find({ _id: \"none\" })") + RUN + "snap empty-grid\n");
+    var grid = c.tree("empty-grid");
+    assertTrue(near(grid, "#result-status").contains("0 documents"), grid);
+    assertTrue(
+        line(grid, "#result-shown ").contains("role=combobox label=\"Show documents as\""), grid);
+    assertTrue(near(grid, "#result-shown").contains("\"Grid\""), grid);
+    c.run(app, show("Tree") + "snap empty-tree\n");
+    var tree = c.tree("empty-tree");
+    assertTrue(near(tree, "#result-shown").contains("\"Tree\""), tree);
+    assertTrue(tree.contains("#no-documents"), tree);
+    assertTrue(line(tree, "#rows-in-view").contains("\"No documents\""), tree);
+    assertTrue(line(tree, "role=button label=\"Next page\"").contains("disabled"), tree);
+    c.run(app, show("JSON") + "snap empty-json\n");
+    var json = c.tree("empty-json");
+    assertTrue(near(json, "#result-shown").contains("\"JSON\""), json);
+    assertTrue(json.contains("#no-documents"), json);
+    assertTrue(line(json, "#rows-in-view").contains("\"No documents\""), json);
+    assertTrue(near(json, "#result-status").contains("0 documents"), json);
+  }
+
+  @Test
   void aFieldADocumentLacksIsAnEmptyCellAndANullIsNull() throws Exception {
     var app = console(docs());
     c.run(app, type("db.customers.find({}, { email: 1 }).sort({ _id: 1 })") + RUN + "snap grid\n");
