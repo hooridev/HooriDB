@@ -887,6 +887,22 @@ final class CatalogTree {
     return live == null ? null : live.keys.get(table);
   }
 
+  /** The table's foreign keys as read elsewhere, cached for the tree, consoles and table tabs. */
+  void foreignKeysRead(UUID id, Table table, List<ForeignKey> keys) {
+    var live = lives.get(id);
+    if (live != null) {
+      live.keys.put(table, keys);
+    }
+  }
+
+  /** Drops the table's cached foreign keys so the next reader fetches them anew. */
+  void forgetForeignKeys(UUID id, Table table) {
+    var live = lives.get(id);
+    if (live != null) {
+      live.keys.remove(table);
+    }
+  }
+
   /** The table's columns as read anew elsewhere, which the tree shows where it showed them. */
   void columnsRead(UUID id, Table table, List<Column> columns) {
     var live = lives.get(id);

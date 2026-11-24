@@ -136,6 +136,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   final Map<Long, Lane.Asked> reading = new HashMap<>(); // the pages asked for
   Lane.Asked opening; // the columns, the estimate and the first page, or null
   Lane.Asked counting; // the exact count, or null
+  private Lane.Asked readingKeys; // the table's foreign keys, read on demand for the context menu
+  private boolean keysFailed; // a failed read of the keys is tried again at the menu's next opening
   // The count asked for while the table opened came first: it is newer than the opening's estimate.
   private boolean countedFirst;
   // An empty page past what is known: the count says where the end is, and no page is read until
@@ -158,6 +160,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   private int query; // counts the applied queries, so that JSON and Tree start anew with each
   private List<Sort> sorted = List.of(); // the header sort that made the applied order
   private String refused; // why the clauses last submitted were refused, or null
+  private String unapplied; // why a WHERE from foreign key navigation was not applied, or null
   private final Clause where;
   private final Clause order;
   private Whole whole; // the current cell's whole value, for the value panel; or null
@@ -785,6 +788,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       counting = null;
       toLast = false; // its jump to the end goes with the count
     }
+    if (readingKeys != null) {
+      gone.add(readingKeys);
+      readingKeys = null;
+    }
     Lane.cancel(gone);
   }
 
@@ -825,7 +832,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         Guard.Scope.CHANGES)) {
       return;
     }
-    open(s, true);
+    s.catalog.forgetForeignKeys(id, table);
+    keysFailed = false;
+    open(s, true); // which gives up a read of the keys under way
   }
 
   /** Replaces the table metadata (e.g. table became a view) and re-opens, asking first if edited. */
@@ -864,7 +873,73 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var kept = !sorted.isEmpty() && next.order().equals(orderText(profile.provider(), sorted))
         ? sorted
         : List.<Sort>of();
-    apply(s, next, kept, false);
+    apply(s, next, kept, false, false);
+  }
+
+  /** Applies a WHERE clause from foreign key navigation, keeping the applied ORDER BY. */
+  void applyWhere(State s, String clause) {
+    var trimmed = clause.strip();
+    if (!closed && s.catalog.connected(id) && s.profile(id) != null) {
+      var locked = s.guard.locked(this);
+      if (preview != null || locked != null) {
+        where.text = trimmed;
+        where.caret = where.text.length();
+        where.completion.close();
+        refused = null;
+        unapplied = preview != null
+            ? "The filter was not applied while DML Preview is open. Press Enter in WHERE once it"
+                + " closes to apply it."
+            : locked
+                + ": the filter was not applied. Press Enter in WHERE once that finishes to apply"
+                + " it.";
+        return;
+      }
+    }
+    apply(s, new Rows.Filter(trimmed, filter.order()), sorted, true, false);
+  }
+
+  /** Drops the note of an unapplied WHERE once the WHERE field holds the applied one. */
+  private void settleUnapplied() {
+    if (where.text.strip().equals(filter.where())) {
+      unapplied = null;
+    }
+  }
+
+  /** Reads this table's foreign keys on its lane in the background when the context menu opens. */
+  void readForeignKeys(State s) {
+    if (closed || keysFailed || readingKeys != null || table.kind() != Table.Kind.TABLE) {
+      return;
+    }
+    var lane = s.catalog.lane(s, id, table);
+    if (lane == null) {
+      return;
+    }
+    var live = s.catalog.live(id);
+    var of = table;
+    readingKeys = lane.ask(
+        s.app,
+        "read foreign keys of " + table.name(),
+        Lane.Priority.VIEW,
+        link -> link.foreignKeys(of),
+        keys -> {
+          readingKeys = null;
+          if (!closed && s.catalog.live(id) == live) {
+            s.catalog.foreignKeysRead(id, of, keys);
+          }
+        },
+        error -> {
+          readingKeys = null;
+          if (closed || error instanceof InterruptedException) {
+            return;
+          }
+          var problem = problem(error);
+          if (problem == Problem.LOST || problem == Problem.DISCARDED) {
+            s.catalog.lost(
+                s, live, CatalogTree.words(live, detail(error)), problem == Problem.DISCARDED);
+          } else {
+            keysFailed = true;
+          }
+        });
   }
 
   /** Applies a header sort by writing it into ORDER BY or Sort while keeping the applied filter. */
@@ -881,10 +956,11 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       nextSorted.add(new Sort(columns.get(key.column()).name(), key.descending()));
     }
     var next = new Rows.Filter(filter.where(), orderText(profile.provider(), nextSorted));
-    apply(s, next, List.copyOf(nextSorted), true);
+    apply(s, next, List.copyOf(nextSorted), false, true);
   }
 
-  private void apply(State s, Rows.Filter next, List<Sort> nextSorted, boolean fromHeader) {
+  private void apply(
+      State s, Rows.Filter next, List<Sort> nextSorted, boolean syncWhere, boolean syncOrder) {
     var profile = s.profile(id);
     if (!canApply(s) || profile == null) {
       return;
@@ -895,15 +971,22 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       refused = null;
     } catch (QueryException e) {
       refused = e.detail(); // the applied filter and its reads go on
+      unapplied = null;
       return;
     }
     if (checked.equals(filter) && failure == null) {
-      if (fromHeader) {
+      if (syncWhere) {
+        where.text = checked.where();
+        where.caret = where.text.length();
+        where.completion.close();
+      }
+      if (syncOrder) {
         order.text = checked.order();
         order.caret = order.text.length();
         order.completion.close();
         sorted = nextSorted;
       }
+      settleUnapplied();
       return;
     }
     if (s.guard.asks(
@@ -911,17 +994,23 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         new Guard.Act("filter", this),
         "the filter is applied",
         List.of(this),
-        () -> apply(s, checked, nextSorted, fromHeader),
+        () -> apply(s, checked, nextSorted, syncWhere, syncOrder),
         Guard.Scope.CHANGES)) {
       return;
     }
-    if (fromHeader) {
+    if (syncWhere) {
+      where.text = checked.where();
+      where.caret = where.text.length();
+      where.completion.close();
+    }
+    if (syncOrder) {
       order.text = checked.order();
       order.caret = order.text.length();
       order.completion.close();
     }
     sorted = nextSorted;
     filter = checked;
+    settleUnapplied();
     query++;
     toLast = false;
     fields = null; // read anew, also where the opening is asked again
@@ -1007,7 +1096,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return keys;
   }
 
-  private int columnIndex(String name) {
+  int columnIndex(String name) {
     if (columns == null) {
       return -1;
     }
@@ -1388,6 +1477,21 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return status == DataGrid.Status.CHANGED || status == DataGrid.Status.ERROR;
   }
 
+  /** Whether the cell (or its row) has an uncommitted staged change or modified open editor. */
+  boolean isCellEdited(int row, int column) {
+    var changes = edits.changes;
+    if (changes == null) {
+      return false;
+    }
+    if (!changes.isEmpty() && changes.cellStatus(row, column) != DataGrid.Status.UNCHANGED) {
+      return true;
+    }
+    return selection.isEditing()
+        && selection.editingRow() == row
+        && selection.editingColumn() == column
+        && !Objects.equals(selection.draft(), changes.cell(row, column));
+  }
+
   /** What the open value panel shows of the current cell, read where its page is not held. */
   private InPanel inPanel(State s) {
     int row = selection.row();
@@ -1637,11 +1741,17 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
               ? new El[0]
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
-    // The refused clauses beside, not in place of, why the applied ones could not be read.
-    var title = ofDocuments ? "Filter refused" : "Clause refused";
-    El refusal = refused == null ? null : Callout.callout(Callout.Kind.DANGER, title, refused);
+    // The refused or unapplied clauses beside, not in place of, why the applied ones could not be
+    // read.
+    El clauseNote = null;
+    if (refused != null) {
+      clauseNote = Callout.callout(
+          Callout.Kind.DANGER, ofDocuments ? "Filter refused" : "Clause refused", refused);
+    } else if (unapplied != null) {
+      clauseNote = Callout.callout(Callout.Kind.WARNING, "Filter not applied", unapplied);
+    }
     if (failure == null) {
-      return refusal;
+      return clauseNote;
     }
     var words = switch (failure.problem()) {
       case GONE ->
@@ -1666,9 +1776,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var text = CatalogTree.join(words[1], failure.detail());
     El failed = Callout.callout(
         Callout.Kind.DANGER, words[0], text, button(SECONDARY, "Try again", () -> refresh(s)));
-    return refusal == null
+    return clauseNote == null
         ? failed
-        : col().gap(Theme.CURRENT.get().space().s()).child(refusal).child(failed);
+        : col().gap(Theme.CURRENT.get().space().s()).child(clauseNote).child(failed);
   }
 
   /** The rows in the grid, late: a row not read yet shows the grid's loading cells. */
@@ -1686,6 +1796,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       var col = column(c, ofDocuments, zone);
       shown.add(edited ? ResultEdits.editedColumn(this, col, c, free, false, inserted) : col);
     }
+    keysFailed &= menu.isOpen();
     var options = DataGrid.options()
         .select(selection)
         .onResize((c, w) -> widths[c] = w)
@@ -1695,8 +1806,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .nullText(Cells.nullText(s.settings.copyNull()))
         .copyLimit(
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
-        .contextMenu(
-            menu, List.of(Menu.item("Refresh", () -> refresh(s)).icon(Symbol.ARROW_CLOCKWISE)))
+        .contextMenu(menu, ForeignKeys.gridMenu(s, this, ofDocuments))
         // The user's newer place, by key, press or editor: no jump to the end at the count.
         // shortcut: the wheel cannot cancel it yet, until the kit tells user scrolling
         // (rethinkj/ui#576).
@@ -1743,13 +1853,13 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   /** Total rows shown in the grid, including staged new rows. */
-  private int gridRowCount() {
+  int gridRowCount() {
     var changes = edits.changes;
     return changes == null || changes.isEmpty() ? gridRows() : changes.rowCount();
   }
 
   /** Table position for a grid row, or -1 if it is a staged new row or out of range. */
-  private int positionOf(int gridRow) {
+  int positionOf(int gridRow) {
     return ResultEdits.position(edits.changes, gridRow);
   }
 
@@ -1776,7 +1886,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
   }
 
-  private boolean loaded(int pos) {
+  boolean loaded(int pos) {
     if (!originals.isEmpty() && originals.containsKey(pos)) {
       return true;
     }
@@ -1798,7 +1908,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return pages.get((long) pos / PAGE).get(pos % PAGE).get(column);
   }
 
-  private List<Object> rowValues(int row) {
+  List<Object> rowValues(int row) {
     if (!originals.isEmpty()) {
       var rowValues = originals.get(row);
       if (rowValues != null) {

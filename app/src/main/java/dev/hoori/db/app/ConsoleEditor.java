@@ -252,13 +252,17 @@ final class ConsoleEditor {
 
   /** Go-to-table location for a SQL table or column at the character offset, or null. */
   private CodeEditor.Location declaration(State s, Provider provider, int offset) {
-    var target = resolve(suggestions.known(s, provider), provider, offset);
+    var known = suggestions.known(s, provider);
+    var target = resolve(known, provider, offset);
     if (target == null) {
       return null;
     }
     Table table = switch (target) {
       case Target.OfTable(var t) -> t;
-      case Target.OfColumn(var c) -> c.table();
+      case Target.OfColumn(var c) -> {
+        var outgoing = ForeignKeys.outgoing(c.table(), c.name(), known.foreignKeys(c.table()));
+        yield outgoing.size() == 1 ? outgoing.getFirst().referenced() : c.table();
+      }
     };
     String key = tableKey(table);
     navigable.put(key, table);

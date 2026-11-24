@@ -26,9 +26,13 @@ final class Suggestions {
 
   /**
    * A name it may suggest, as it is listed, and as it is put in, quoted where it needs to be; and
-   * whether it belongs to the statement's tables.
+   * its ranking priority (higher ranks first within prefix or substring matches).
    */
-  record Candidate(String name, String shown, String text, Icon symbol, String kind, boolean own) {}
+  record Candidate(String name, String shown, String text, Icon symbol, String kind, int priority) {
+    Candidate(String name, String shown, String text, Icon symbol, String kind, boolean own) {
+      this(name, shown, text, symbol, kind, own ? 1 : 0);
+    }
+  }
 
   /** What a language suggests: its words, and the names of what the tree has read. */
   sealed interface Strategy permits SqlCompletion, ShellCompletion {
@@ -143,7 +147,7 @@ final class Suggestions {
     return Ranking.rank(
             strategy.candidates(known, statement, caret, word),
             Candidate::name,
-            Candidate::own,
+            Candidate::priority,
             word)
         .stream()
         .map(c -> new Completion.Entry(c.shown(), c.symbol(), c.kind(), c.text()))
@@ -313,20 +317,38 @@ final class Suggestions {
     }
 
     /**
+     * Whether a bare table name could resolve to the schema: it is on the search path, and every
+     * earlier existing schema on the path has been read (so it cannot shadow it).
+     */
+    boolean unshadowed(String schema) {
+      if (!schemas || !path.contains(schema)) {
+        return false;
+      }
+      var database = database();
+      if (database == null || !(live.levels.get(database) instanceof CatalogTree.Read)) {
+        return false;
+      }
+      for (var first : path) {
+        if (same(first, schema)) {
+          return true;
+        }
+        var container = schema(database, first);
+        if (container != null && !(live.levels.get(container) instanceof CatalogTree.Read)) {
+          return false;
+        }
+      }
+      return false;
+    }
+
+    /**
      * The table of that name in the schema, or without one where the server finds it: on
-     * PostgreSQL in the first schema of the search path that has it, on MariaDB and MySQL in the
-     * current database; null for none.
+     * PostgreSQL in the first schema of the search path that has it (null while an earlier
+     * existing schema on the path is not read yet), on MariaDB and MySQL in the current database;
+     * null for none.
      */
     Table table(String schema, String name) {
       if (schema == null && schemas) {
-        tables(); // reads the database's tables where it has not
-        for (var first : path) {
-          var found = table(first, name);
-          if (found != null) {
-            return found;
-          }
-        }
-        return null;
+        return onPath(name);
       }
       var in = schema == null ? Optional.of(tables()) : tablesIn(schema);
       if (in.isEmpty()) {
@@ -344,6 +366,27 @@ final class Suggestions {
         }
       }
       return found;
+    }
+
+    // The table in the first schema of the search path that has it; null while one before it that
+    // exists is not read yet, as its own table of that name would come first.
+    private Table onPath(String name) {
+      tables(); // reads the database's tables where it has not
+      var database = database();
+      for (var first : path) {
+        var container = schema(database, first);
+        if (container == null) {
+          continue;
+        }
+        if (!(live.levels.get(container) instanceof CatalogTree.Read)) {
+          return null;
+        }
+        var found = table(first, name);
+        if (found != null) {
+          return found;
+        }
+      }
+      return null;
     }
 
     /** The table's columns, with their types; none yet where it reads them now. */

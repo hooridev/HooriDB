@@ -40,6 +40,8 @@ status line, buttons that scroll a page back or on, or to the first or last row,
 servers, WHERE and ORDER BY fields with completion that narrow and order the rows and count,
 sortable column headers (other than JSON and OTHER; Shift+press adds a column) that write their
 order into ORDER BY and apply it after asking about pending edits while keeping the applied WHERE,
+grid context menu items to follow outgoing and incoming foreign keys from a row (opening or reusing
+the related table's tab filtered to its key values, keeping ORDER BY and asking about pending edits),
 and Open in console to add its SELECT and applied clauses to the end of a console open on its
 database, or to a new console where none is or Settings asks for a new one; tabs move and tear off into
 windows of their own. The columns of a table and of a console's result fit their
@@ -63,8 +65,9 @@ edits and shows its message after its line with the caret there, quick documenta
 Control+Q for a table's kind, schema, columns and foreign keys or a column's type, table and
 foreign key references (reading what the
 tree lacks for the next hover), Control+B and Control+click on a table or column name to open its
-table in a tab, Control+Alt+L to lay its SQL out, changing only white space, and completions of
-keywords and of the schemas, tables and columns the tree read or reads for it; it switches
+table in a tab (or the referenced table where the column is in one outgoing foreign key), Control+Alt+L to lay its SQL out, changing only white space, and completions of
+keywords, foreign-key joins and ON conditions, and the schemas, tables and columns the tree read or
+reads for it; it switches
 databases and cancels what runs. It commits each statement by itself in Auto, and in Manual Commit
 and Rollback end the transaction, whose state it
 shows as the server says it, and as possibly open where the server has not said; closing it,

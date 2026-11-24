@@ -833,6 +833,80 @@ class ConsoleEditorTest {
   }
 
   @Test
+  void controlBOnColumnFollowsSingleOutgoingForeignKeyAndFallsBackForNoneOrSeveral()
+      throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", """
+        shop
+          public
+            customers
+              *id: integer
+              name: text
+            partners
+              *id: integer
+              name: text
+            orders
+              *id: bigint
+              customer_id: integer > customers.id on delete cascade
+              dual_id: integer > fk_cust: customers.id > fk_part: partners.id
+              region_a: integer > region_fk: billing.regions.a
+              region_b: integer > region_fk: billing.regions.b
+              total: numeric(12,2)
+            order_items
+              *order_id: bigint > orders.id
+              *line: integer
+          billing
+            regions
+              *a: integer
+              *b: integer
+        """);
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id, o.customer_id, o.region_a, o.dual_id, o.total FROM orders o";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Single outgoing FK (`o.customer_id` -> `customers`): Ctrl+B opens `customers`.
+    int custAt = sql.indexOf("customer_id") + 2;
+    console.tab(app).editor.select(custAt, custAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap fk-one\n");
+    assertTrue(
+        line(console.c.tree("fk-one"), "role=tab label=\"customers\"").contains("selected"),
+        console.c.tree("fk-one"));
+
+    // Column in a single composite cross-schema FK (`o.region_a` -> `billing.regions`): Ctrl+click
+    // opens `regions`.
+    console.c.run(app, "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\n");
+    String regionPt = pointAt(app, sql.indexOf("region_a") + 2);
+    console.c.run(app, "press " + regionPt + " control\nframe\n" + SETTLE + "snap fk-composite\n");
+    assertTrue(
+        line(console.c.tree("fk-composite"), "role=tab label=\"regions\"").contains("selected"),
+        console.c.tree("fk-composite"));
+
+    // Column in TWO outgoing FKs (`o.dual_id`): Ctrl+B opens its own table (`orders`).
+    console.c.run(
+        app,
+        "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\npress #sql\nframe\n");
+    int dualAt = sql.indexOf("dual_id") + 2;
+    console.tab(app).editor.select(dualAt, dualAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap fk-multi\n");
+    assertTrue(
+        line(console.c.tree("fk-multi"), "role=tab label=\"orders\"").contains("selected"),
+        console.c.tree("fk-multi"));
+
+    // Column with NO outgoing FK (only incoming: `o.id`, and plain: `o.total`): opens `orders`.
+    console.c.run(
+        app,
+        "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\npress #sql\nframe\n");
+    int idAt = sql.indexOf("o.id") + 3;
+    console.tab(app).editor.select(idAt, idAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap fk-incoming-only\n");
+    assertTrue(
+        line(console.c.tree("fk-incoming-only"), "role=tab label=\"orders\"").contains("selected"),
+        console.c.tree("fk-incoming-only"));
+  }
+
+  @Test
   void gutterMarkersRunEachStatementShowLastOutcomeAndMoveWithEdits() throws Exception {
     servers.statement(ConsoleTest.PAY, List.of(new Result.Count(3)));
     var app = console.console(SHOP);
