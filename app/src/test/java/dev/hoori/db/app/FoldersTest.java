@@ -256,7 +256,7 @@ class FoldersTest {
     assertEquals(expected, rows(moved));
     assertTrue(line(moved, "#connected").contains("1 connected"), moved);
     assertTrue(moved.contains("role=tab label=\"customers"), moved);
-    assertEquals(2, app.state().tabs.main().tabs().size(), moved);
+    assertEquals(2, app.state().tabs.main().active().tabs().size(), moved);
     c.run(
         app,
         drag("shop", before("team"), "database") + "snap stays\n"
@@ -266,7 +266,7 @@ class FoldersTest {
     var back = c.tree("back");
     assertEquals(before, rows(back), "before the folder again");
     assertTrue(line(back, "#connected").contains("1 connected"), back);
-    assertEquals(2, app.state().tabs.main().tabs().size(), back);
+    assertEquals(2, app.state().tabs.main().active().tabs().size(), back);
   }
 
   /** New folder… waits where a folder would nest deeper than a save takes. */

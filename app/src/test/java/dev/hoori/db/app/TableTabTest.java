@@ -1273,7 +1273,8 @@ class TableTabTest {
             + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
             + "snap pg-console\n");
     var expected = "SELECT * FROM \"tracking\".\"events\"";
-    var console = assertInstanceOf(ConsoleTab.class, app.state().tabs.main().activeTab());
+    var console =
+        assertInstanceOf(ConsoleTab.class, app.state().tabs.main().active().activeTab());
     assertEquals(SHOP.id(), console.id);
     assertEquals("analytics", console.database);
     assertEquals(expected, console.text);
@@ -1312,7 +1313,7 @@ class TableTabTest {
             + SETTLE
             + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
             + "snap reused-empty\n");
-    var main = app.state().tabs.main();
+    var main = app.state().tabs.main().active();
     assertEquals(2, main.tabs().size(), "reused the open console instead of opening a second");
     var console = assertInstanceOf(ConsoleTab.class, main.activeTab());
     // Inserted as a statement of its own, so closed with a terminator.
@@ -1429,7 +1430,7 @@ class TableTabTest {
             + SETTLE
             + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
             + "snap other-db\n");
-    var main = app.state().tabs.main();
+    var main = app.state().tabs.main().active();
     var consoles = app.state().consoles(SHOP.id());
     assertEquals(2, consoles.size(), "console on shop was not reused for analytics");
     var shopConsole =
@@ -1461,7 +1462,8 @@ class TableTabTest {
     assertEquals(
         2, consoles.size(), "Always a new console opens a second tab on the same database");
     assertEquals("SELECT * FROM \"public\".\"orders\"", consoles.get(0).text);
-    var second = assertInstanceOf(ConsoleTab.class, app.state().tabs.main().activeTab());
+    var second =
+        assertInstanceOf(ConsoleTab.class, app.state().tabs.main().active().activeTab());
     assertEquals(consoles.get(1), second);
     var expected = "SELECT * FROM \"public\".\"customers\"";
     assertEquals(expected, second.text);
@@ -1485,7 +1487,8 @@ class TableTabTest {
             + SETTLE
             + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
     var expected = "SELECT * FROM `inventory`.`items`";
-    var console = assertInstanceOf(ConsoleTab.class, app.state().tabs.main().activeTab());
+    var console =
+        assertInstanceOf(ConsoleTab.class, app.state().tabs.main().active().activeTab());
     assertEquals(INVENTORY.id(), console.id);
     assertEquals("inventory", console.database);
     assertEquals(expected, console.text);
@@ -1683,7 +1686,8 @@ class TableTabTest {
             // Unapplied edit after applying is ignored by Open in console.
             + clause("WHERE", "total > 999")
             + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
-    var console = assertInstanceOf(ConsoleTab.class, app.state().tabs.main().activeTab());
+    var console =
+        assertInstanceOf(ConsoleTab.class, app.state().tabs.main().active().activeTab());
     var expected = "SELECT * FROM \"public\".\"orders\" AS r\nWHERE total > 50\nORDER BY id DESC";
     assertEquals(expected, console.text);
     assertEquals(expected.length(), console.editor.caret());

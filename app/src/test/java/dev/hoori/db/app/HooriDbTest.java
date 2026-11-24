@@ -142,7 +142,7 @@ class HooriDbTest {
     // The menus behind a dialog take no presses, so the item is looked at where they are made.
     String busy = Files.readString(out.resolve("busy.tree.txt"));
     assertTrue(busy.contains("role=dialog label=\"New connection\""), busy);
-    var menus = Frame.menus(app.state(), app.state().tabs.main(), true);
+    var menus = Frame.menus(app.state(), app.state().tabs.main().active(), true);
     var view = menus.get(1);
     assertEquals("&View", view.label());
     assertEquals(
