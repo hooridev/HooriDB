@@ -4,6 +4,7 @@ import dev.hoori.db.core.catalog.CatalogException.Failure;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.dialect.CatalogDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -145,6 +146,81 @@ public final class Catalog {
       requireExists(connection, provider, catalog.tableExists(), schema, table.name());
     }
     return columns;
+  }
+
+  /**
+   * The foreign keys whose referencing or referenced table is {@code table}, each once (a
+   * self-reference appears once), ordered by constraint name and then referencing table. Views and
+   * foreign tables have none and return an empty list without querying the server.
+   *
+   * <p>A key holds the columns the server shows the user: where MySQL's column privileges hide
+   * some columns of a key of several, the key comes without them.
+   */
+  public static List<ForeignKey> foreignKeys(Connection connection, Provider provider, Table table)
+      throws CatalogException {
+    if (table.kind() != Table.Kind.TABLE) {
+      return List.of();
+    }
+    requireConnectedTo(connection, provider, table.container().database());
+    var catalog = provider.dialect().catalog();
+    var schemas = hasSchemas(provider);
+    var database = table.container().database();
+    Row<ForeignKey> pair = rows -> new ForeignKey(
+        rows.getString(1),
+        tableOf(schemas, database, catalog, rows.getString(2), rows.getString(3)),
+        List.of(rows.getString(6)),
+        tableOf(schemas, database, catalog, rows.getString(4), rows.getString(5)),
+        List.of(rows.getString(7)),
+        rule(rows.getString(8)),
+        rule(rows.getString(9)));
+    var container = table.container().name();
+    var pairs = query(
+        connection,
+        provider,
+        catalog.foreignKeys(),
+        pair,
+        container,
+        table.name(),
+        container,
+        table.name());
+    // A key of several columns comes as consecutive rows, one per pair of columns.
+    var keys = new ArrayList<ForeignKey>();
+    for (var next : pairs) {
+      var last = keys.isEmpty() ? null : keys.getLast();
+      if (last != null && last.name().equals(next.name()) && last.table().equals(next.table())) {
+        keys.set(
+            keys.size() - 1,
+            new ForeignKey(
+                last.name(),
+                last.table(),
+                concat(last.columns(), next.columns()),
+                last.referenced(),
+                concat(last.referencedColumns(), next.referencedColumns()),
+                last.onUpdate(),
+                last.onDelete()));
+      } else {
+        keys.add(next);
+      }
+    }
+    return List.copyOf(keys);
+  }
+
+  private static ForeignKey.Rule rule(String word) {
+    return word == null ? null : ForeignKey.Rule.valueOf(word.replace(' ', '_'));
+  }
+
+  private static List<String> concat(List<String> first, List<String> second) {
+    var both = new ArrayList<>(first);
+    both.addAll(second);
+    return both;
+  }
+
+  private static Table tableOf(
+      boolean schemas, Database database, CatalogDialect catalog, String container, String name) {
+    Container holder = schemas
+        ? new Schema(database, container, catalog.systemSchema(container))
+        : new Database(container, catalog.systemDatabase(container));
+    return new Table(holder, name, Table.Kind.TABLE);
   }
 
   private static boolean hasSchemas(Provider provider) {

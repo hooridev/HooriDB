@@ -7,9 +7,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.catalog.CatalogException.Failure;
+import dev.hoori.db.core.catalog.ForeignKey.Rule;
 import dev.hoori.db.core.catalog.Table.Kind;
 import dev.hoori.db.core.connect.Connector;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.log.Sent;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -17,11 +22,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /** Reading the catalog of real servers, with the sample schema of {@link TestServer}. */
@@ -287,6 +294,8 @@ class CatalogServerTest {
             Failure.WRONG_DATABASE, () -> Catalog.tables(connection, provider, container));
         assertFailure(
             Failure.WRONG_DATABASE, () -> Catalog.columns(connection, provider, customer));
+        assertFailure(
+            Failure.WRONG_DATABASE, () -> Catalog.foreignKeys(connection, provider, customer));
         var spaced = new Database(TestServer.SPACED_DATABASE, false);
         assertEquals(
             new Schema(spaced, "public", false),
@@ -536,6 +545,351 @@ class CatalogServerTest {
             "DROP DOMAIN over_required",
             "DROP DOMAIN required",
             "DROP DOMAIN optional");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void sampleForeignKeysAreReadInBothDirectionsAndRecordedAsCatalogReads(Provider provider)
+      throws Exception {
+    var server = TestServer.of(provider);
+    var container = sample(provider);
+    var customer = new Table(container, "customer", Kind.TABLE);
+    var purchase = new Table(container, "purchase", Kind.TABLE);
+    var line = new Table(container, "purchase_line", Kind.TABLE);
+    var reading = new Table(container, "reading", Kind.TABLE);
+    var view = new Table(container, "active_customer", Kind.VIEW);
+    try (var connection = open(server, TestServer.DATABASE)) {
+      var recorded = new CopyOnWriteArrayList<Sent>();
+      var keys = Journal.recording(
+          recorded::add, () -> Catalog.foreignKeys(connection, provider, purchase));
+      assertEquals(2, keys.size(), keys.toString());
+      var outgoing =
+          keys.stream().filter(k -> k.table().equals(purchase)).findFirst().orElseThrow();
+      var incoming =
+          keys.stream().filter(k -> k.referenced().equals(purchase)).findFirst().orElseThrow();
+      assertEquals(customer, outgoing.referenced());
+      assertEquals(List.of("customer_id"), outgoing.columns());
+      assertEquals(List.of("id"), outgoing.referencedColumns());
+      assertEquals(line, incoming.table());
+      assertEquals(List.of("purchase_id"), incoming.columns());
+      assertEquals(List.of("id"), incoming.referencedColumns());
+
+      assertEquals(1, recorded.size(), recorded.toString());
+      assertEquals(Purpose.CATALOG, recorded.getFirst().purpose());
+      assertEquals(Outcome.rows(2), recorded.getFirst().outcome());
+
+      assertEquals(List.of(outgoing), Catalog.foreignKeys(connection, provider, customer));
+      assertEquals(List.of(), Catalog.foreignKeys(connection, provider, reading));
+
+      recorded.clear();
+      assertEquals(
+          List.of(),
+          Journal.recording(recorded::add, () -> Catalog.foreignKeys(connection, provider, view)));
+      assertTrue(recorded.isEmpty(), recorded.toString());
+    }
+  }
+
+  // MariaDB hides a key's rules from a user who may only read its table, MySQL does not.
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aUserWhoMayOnlyReadSeesTheKeys(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var root = server.profile().withUser("root");
+    var reader = server.profile().withUser("fk_reader");
+    var purchase = new Table(HOORI, "purchase", Kind.TABLE);
+    var customer = new Table(HOORI, "customer", Kind.TABLE);
+    try (var admin = Connector.open(
+            root, ("root-" + TestServer.PASSWORD).toCharArray(), server.driver(), TIMEOUT)
+        .connection()) {
+      execute(
+          admin,
+          "CREATE USER IF NOT EXISTS 'fk_reader'@'%' IDENTIFIED BY '" + TestServer.PASSWORD + "'",
+          "GRANT SELECT ON hoori.* TO 'fk_reader'@'%'");
+      try (var connection = Connector.open(reader, TestServer.password(), server.driver(), TIMEOUT)
+          .connection()) {
+        var rule = provider == Provider.MARIADB ? null : Rule.NO_ACTION;
+        var keys = Catalog.foreignKeys(connection, provider, customer);
+        // The sample's key is unnamed, and MariaDB and MySQL name it each their own way.
+        assertEquals(
+            List.of(new ForeignKey(
+                keys.getFirst().name(),
+                purchase,
+                List.of("customer_id"),
+                customer,
+                List.of("id"),
+                rule,
+                rule)),
+            keys);
+      } finally {
+        execute(admin, "DROP USER 'fk_reader'@'%'");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void compositeSelfReferencingAndUniqueForeignKeysAreRead(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var container = sample(provider);
+    var parent = new Table(container, "fk_parent", Kind.TABLE);
+    var child = new Table(container, "fk_child", Kind.TABLE);
+    try (var connection = open(server, TestServer.DATABASE)) {
+      execute(
+          connection,
+          "CREATE TABLE fk_parent ("
+              + "id integer PRIMARY KEY, "
+              + "code varchar(20) NOT NULL UNIQUE, "
+              + "a integer NOT NULL, "
+              + "b integer NOT NULL, "
+              + "UNIQUE (b, a))",
+          "CREATE TABLE fk_child ("
+              + "id integer PRIMARY KEY, "
+              + "parent_code varchar(20), "
+              + "ca integer, "
+              + "cb integer, "
+              + "self_id integer, "
+              + "CONSTRAINT fk_unique FOREIGN KEY (parent_code) REFERENCES fk_parent (code), "
+              + "CONSTRAINT fk_comp FOREIGN KEY (cb, ca) REFERENCES fk_parent (b, a), "
+              + "CONSTRAINT fk_self FOREIGN KEY (self_id) REFERENCES fk_child (id))");
+      try {
+        var childKeys = Catalog.foreignKeys(connection, provider, child);
+        assertEquals(
+            List.of("fk_comp", "fk_self", "fk_unique"),
+            childKeys.stream().map(ForeignKey::name).toList());
+        var comp = childKeys.get(0);
+        assertEquals(child, comp.table());
+        assertEquals(List.of("cb", "ca"), comp.columns());
+        assertEquals(parent, comp.referenced());
+        assertEquals(List.of("b", "a"), comp.referencedColumns());
+
+        var self = childKeys.get(1);
+        assertEquals(child, self.table());
+        assertEquals(child, self.referenced());
+        assertEquals(List.of("self_id"), self.columns());
+        assertEquals(List.of("id"), self.referencedColumns());
+
+        var unique = childKeys.get(2);
+        assertEquals(child, unique.table());
+        assertEquals(parent, unique.referenced());
+        assertEquals(List.of("parent_code"), unique.columns());
+        assertEquals(List.of("code"), unique.referencedColumns());
+
+        assertEquals(List.of(comp, unique), Catalog.foreignKeys(connection, provider, parent));
+      } finally {
+        execute(connection, "DROP TABLE IF EXISTS fk_child", "DROP TABLE IF EXISTS fk_parent");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void foreignKeyRulesAreReadBack(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var container = sample(provider);
+    var parent = new Table(container, "fk_rule_parent", Kind.TABLE);
+    var child = new Table(container, "fk_rule_child", Kind.TABLE);
+    boolean pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(server, TestServer.DATABASE)) {
+      // InnoDB on MySQL and MariaDB rejects SET DEFAULT, so SET DEFAULT is covered on PostgreSQL.
+      execute(
+          connection,
+          "CREATE TABLE fk_rule_parent (id integer PRIMARY KEY)",
+          "CREATE TABLE fk_rule_child ("
+              + "id integer PRIMARY KEY, "
+              + "a integer, b integer, c integer, d integer"
+              + (pg ? ", e integer DEFAULT 0" : "")
+              + ", CONSTRAINT fk_r1 FOREIGN KEY (a) REFERENCES fk_rule_parent (id)"
+              + " ON UPDATE NO ACTION ON DELETE RESTRICT"
+              + ", CONSTRAINT fk_r2 FOREIGN KEY (b) REFERENCES fk_rule_parent (id)"
+              + " ON UPDATE RESTRICT ON DELETE NO ACTION"
+              + ", CONSTRAINT fk_r3 FOREIGN KEY (c) REFERENCES fk_rule_parent (id)"
+              + " ON UPDATE CASCADE ON DELETE SET NULL"
+              + ", CONSTRAINT fk_r4 FOREIGN KEY (d) REFERENCES fk_rule_parent (id)"
+              + " ON UPDATE SET NULL ON DELETE CASCADE"
+              + (pg
+                  ? ", CONSTRAINT fk_r5 FOREIGN KEY (e) REFERENCES fk_rule_parent (id)"
+                      + " ON UPDATE SET DEFAULT ON DELETE SET DEFAULT"
+                  : "")
+              + ")");
+      try {
+        var expected = new ArrayList<ForeignKey>();
+        expected.add(new ForeignKey(
+            "fk_r1", child, List.of("a"), parent, List.of("id"), Rule.NO_ACTION, Rule.RESTRICT));
+        expected.add(new ForeignKey(
+            "fk_r2", child, List.of("b"), parent, List.of("id"), Rule.RESTRICT, Rule.NO_ACTION));
+        expected.add(new ForeignKey(
+            "fk_r3", child, List.of("c"), parent, List.of("id"), Rule.CASCADE, Rule.SET_NULL));
+        expected.add(new ForeignKey(
+            "fk_r4", child, List.of("d"), parent, List.of("id"), Rule.SET_NULL, Rule.CASCADE));
+        if (pg) {
+          expected.add(new ForeignKey(
+              "fk_r5",
+              child,
+              List.of("e"),
+              parent,
+              List.of("id"),
+              Rule.SET_DEFAULT,
+              Rule.SET_DEFAULT));
+        }
+        assertEquals(expected, Catalog.foreignKeys(connection, provider, child));
+        assertEquals(expected, Catalog.foreignKeys(connection, provider, parent));
+      } finally {
+        execute(
+            connection,
+            "DROP TABLE IF EXISTS fk_rule_child",
+            "DROP TABLE IF EXISTS fk_rule_parent");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void foreignKeysCrossSchemasOnPostgresqlAndDatabasesOnMysqlFamily(Provider provider)
+      throws Exception {
+    var server = TestServer.of(provider);
+    var local = sample(provider);
+    Container other = provider == Provider.POSTGRESQL
+        ? new Schema(HOORI, "fk_other", false)
+        : new Database(TestServer.SPACED_DATABASE, false);
+    var localParent = new Table(local, "fk_local_parent", Kind.TABLE);
+    var localChild = new Table(local, "fk_local_child", Kind.TABLE);
+    var remoteParent = new Table(other, "fk_remote_parent", Kind.TABLE);
+    var remoteChild = new Table(other, "fk_remote_child", Kind.TABLE);
+    try (var connection = open(server, TestServer.DATABASE)) {
+      if (other instanceof Schema) {
+        execute(connection, "CREATE SCHEMA " + provider.quote(other.name()));
+      }
+      try {
+        execute(
+            connection,
+            "CREATE TABLE " + qualified(provider, other, remoteParent.name())
+                + " (id integer PRIMARY KEY)",
+            "CREATE TABLE " + qualified(provider, local, localParent.name())
+                + " (id integer PRIMARY KEY)",
+            "CREATE TABLE " + qualified(provider, local, localChild.name())
+                + " (id integer PRIMARY KEY, rp integer,"
+                + " CONSTRAINT fk_to_other FOREIGN KEY (rp) REFERENCES "
+                + qualified(provider, other, remoteParent.name()) + " (id))",
+            "CREATE TABLE " + qualified(provider, other, remoteChild.name())
+                + " (id integer PRIMARY KEY, lp integer,"
+                + " CONSTRAINT fk_from_other FOREIGN KEY (lp) REFERENCES "
+                + qualified(provider, local, localParent.name()) + " (id))");
+        var toOther = Catalog.foreignKeys(connection, provider, localChild);
+        assertEquals(1, toOther.size(), toOther.toString());
+        assertEquals("fk_to_other", toOther.getFirst().name());
+        assertEquals(localChild, toOther.getFirst().table());
+        assertEquals(remoteParent, toOther.getFirst().referenced());
+        assertEquals(toOther, Catalog.foreignKeys(connection, provider, remoteParent));
+
+        var fromOther = Catalog.foreignKeys(connection, provider, remoteChild);
+        assertEquals(1, fromOther.size(), fromOther.toString());
+        assertEquals("fk_from_other", fromOther.getFirst().name());
+        assertEquals(remoteChild, fromOther.getFirst().table());
+        assertEquals(localParent, fromOther.getFirst().referenced());
+        assertEquals(fromOther, Catalog.foreignKeys(connection, provider, localParent));
+      } finally {
+        if (other instanceof Schema) {
+          execute(
+              connection,
+              "DROP TABLE IF EXISTS " + qualified(provider, local, localChild.name()),
+              "DROP SCHEMA IF EXISTS " + provider.quote(other.name()) + " CASCADE",
+              "DROP TABLE IF EXISTS " + qualified(provider, local, localParent.name()));
+        } else {
+          execute(
+              connection,
+              "DROP TABLE IF EXISTS " + qualified(provider, local, localChild.name()),
+              "DROP TABLE IF EXISTS " + qualified(provider, other, remoteChild.name()),
+              "DROP TABLE IF EXISTS " + qualified(provider, other, remoteParent.name()),
+              "DROP TABLE IF EXISTS " + qualified(provider, local, localParent.name()));
+        }
+      }
+    }
+  }
+
+  @Test
+  void aPartitionedPostgresqlTableListsItsForeignKeysOnce() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var schema = sample(provider);
+    var parent = new Table(schema, "fk_part_parent", Kind.TABLE);
+    var child = new Table(schema, "fk_part_child", Kind.TABLE);
+    try (var connection = open(TestServer.of(provider), TestServer.DATABASE)) {
+      execute(
+          connection,
+          "CREATE TABLE fk_part_parent (id integer PRIMARY KEY) PARTITION BY RANGE (id)",
+          "CREATE TABLE fk_part_parent_1 PARTITION OF fk_part_parent FOR VALUES FROM (0) TO (100)",
+          "CREATE TABLE fk_part_parent_2 PARTITION OF fk_part_parent FOR VALUES FROM (100) TO (200)",
+          "CREATE TABLE fk_part_child ("
+              + "id integer, parent_id integer, PRIMARY KEY (id, parent_id), "
+              + "CONSTRAINT fk_part FOREIGN KEY (parent_id) REFERENCES fk_part_parent (id))"
+              + " PARTITION BY RANGE (id)",
+          "CREATE TABLE fk_part_child_1 PARTITION OF fk_part_child FOR VALUES FROM (0) TO (100)",
+          "CREATE TABLE fk_part_child_2 PARTITION OF fk_part_child FOR VALUES FROM (100) TO (200)");
+      try {
+        var expected = List.of(new ForeignKey(
+            "fk_part",
+            child,
+            List.of("parent_id"),
+            parent,
+            List.of("id"),
+            Rule.NO_ACTION,
+            Rule.NO_ACTION));
+        assertEquals(expected, Catalog.foreignKeys(connection, provider, child));
+        assertEquals(expected, Catalog.foreignKeys(connection, provider, parent));
+      } finally {
+        execute(
+            connection,
+            "DROP TABLE IF EXISTS fk_part_child",
+            "DROP TABLE IF EXISTS fk_part_parent");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void tablesWhoseNamesDifferOnlyInCaseKeepTheirOwnForeignKeys(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var lowerParent = new Table(HOORI, "fk_case_p", Kind.TABLE);
+    var upperParent = new Table(HOORI, "FK_CASE_P", Kind.TABLE);
+    var lowerChild = new Table(HOORI, "fk_case_c", Kind.TABLE);
+    var upperChild = new Table(HOORI, "FK_CASE_C", Kind.TABLE);
+    try (var connection = open(server, TestServer.DATABASE)) {
+      execute(
+          connection,
+          "CREATE TABLE `fk_case_p` (a integer, b integer, PRIMARY KEY (a, b))",
+          "CREATE TABLE `FK_CASE_P` (a integer, b integer, PRIMARY KEY (a, b))",
+          "CREATE TABLE `fk_case_c` (id integer PRIMARY KEY, a integer, b integer,"
+              + " CONSTRAINT fk_case_lo FOREIGN KEY (a, b) REFERENCES `fk_case_p` (a, b))",
+          "CREATE TABLE `FK_CASE_C` (id integer PRIMARY KEY, a integer, b integer,"
+              + " CONSTRAINT fk_case_hi FOREIGN KEY (a, b) REFERENCES `FK_CASE_P` (a, b))");
+      try {
+        var lo = Catalog.foreignKeys(connection, provider, lowerChild);
+        assertEquals(1, lo.size(), lo.toString());
+        assertEquals("fk_case_lo", lo.getFirst().name());
+        assertEquals(lowerChild, lo.getFirst().table());
+        assertEquals(lowerParent, lo.getFirst().referenced());
+        assertEquals(List.of("a", "b"), lo.getFirst().columns());
+        assertEquals(lo, Catalog.foreignKeys(connection, provider, lowerParent));
+
+        var hi = Catalog.foreignKeys(connection, provider, upperChild);
+        assertEquals(1, hi.size(), hi.toString());
+        assertEquals("fk_case_hi", hi.getFirst().name());
+        assertEquals(upperChild, hi.getFirst().table());
+        assertEquals(upperParent, hi.getFirst().referenced());
+        assertEquals(List.of("a", "b"), hi.getFirst().columns());
+        assertEquals(hi, Catalog.foreignKeys(connection, provider, upperParent));
+      } finally {
+        execute(
+            connection,
+            "DROP TABLE IF EXISTS `fk_case_c`",
+            "DROP TABLE IF EXISTS `FK_CASE_C`",
+            "DROP TABLE IF EXISTS `fk_case_p`",
+            "DROP TABLE IF EXISTS `FK_CASE_P`");
       }
     }
   }
