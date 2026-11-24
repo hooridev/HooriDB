@@ -6,6 +6,7 @@ import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.START;
 import static dev.hoori.db.app.CatalogTreeTest.eventually;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.ConsoleTransactions.OPENED;
@@ -19,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
@@ -540,6 +542,103 @@ class TableTabForeignKeyTest {
     c.run(app, rightClick(0, 3) + SETTLE + "snap after-inflight\n");
     assertFalse(
         c.tree("after-inflight").contains("label=\"Go to orders\""), c.tree("after-inflight"));
+  }
+
+  @Test
+  void gridRefreshIgnoresInFlightTreeForeignKeyRead() throws Exception {
+    var app = t.shop();
+    c.run(app, table("orders") + SETTLE);
+    var orders = tabNamed(app, "orders");
+
+    var key = "foreign keys " + ORDERS;
+    var gate = servers.hold(key);
+    try {
+      // Expand orders in the tree; its read fetches the old keys and blocks at the gate.
+      c.run(app, open("orders"));
+      eventually(() -> servers.calls.contains(key));
+
+      // Drop the customer_id foreign key on the server and Refresh the grid while the tree read
+      // is still in flight.
+      String withoutCustomerFk = FK_OUTLINE.replace(
+          "customer_id: integer > customers.id on delete cascade", "customer_id: integer");
+      assertNotEquals(FK_OUTLINE, withoutCustomerFk);
+      servers.serve(PG, Provider.POSTGRESQL, "16.4", withoutCustomerFk);
+      c.run(app, rightClick(0, 2) + "press role=menuitem label=\"Refresh\"\n" + SHOWN);
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE);
+
+    assertNull(
+        app.state().catalog.foreignKeys(orders.id, orders.table),
+        "in-flight tree read must not restore stale keys after grid Refresh");
+
+    // Next context menu reads keys anew and does not offer the dropped key.
+    c.run(app, rightClick(0, 2) + SETTLE + "snap after-tree-race\n");
+    String after = c.tree("after-tree-race");
+    assertEquals(2, servers.calls.stream().filter(key::equals).count(), servers.calls.toString());
+    assertFalse(after.contains("label=\"Go to customers\""), after);
+    assertTrue(after.contains("role=menuitem label=\"Referenced by\""), after);
+  }
+
+  @Test
+  void gridRefreshOfAnotherTableKeepsInFlightTreeForeignKeyRead() throws Exception {
+    var app = t.shop();
+    c.run(app, table("customers") + SETTLE);
+    var customers = tabNamed(app, "customers");
+    var orders = new Table(customers.table.container(), "orders", Table.Kind.TABLE);
+
+    // The tree's read of orders is in flight while the customers grid is refreshed.
+    var gate = servers.hold("foreign keys " + ORDERS);
+    try {
+      c.run(app, open("orders"));
+      eventually(() -> servers.calls.contains("foreign keys " + ORDERS));
+      c.run(app, rightClick(0, 1) + "press role=menuitem label=\"Refresh\"\n" + SHOWN);
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE);
+
+    assertNotNull(
+        app.state().catalog.foreignKeys(customers.id, orders),
+        "a Refresh of customers must not drop the keys read for orders");
+  }
+
+  @Test
+  void treeRefreshIgnoresInFlightTableTabForeignKeyRead() throws Exception {
+    var app = t.shop();
+    c.run(app, table("orders") + SETTLE);
+    var orders = tabNamed(app, "orders");
+
+    var key = "foreign keys " + ORDERS;
+    var gate = servers.hold(key);
+    try {
+      // Open the grid context menu; the tab's key read fetches the old keys and blocks at the gate.
+      c.run(app, rightClick(0, 2));
+      eventually(() -> servers.calls.contains(key));
+
+      // Drop the customer_id foreign key on the server and Refresh the schema in the tree while
+      // the tab's key read is still in flight.
+      String withoutCustomerFk = FK_OUTLINE.replace(
+          "customer_id: integer > customers.id on delete cascade", "customer_id: integer");
+      assertNotEquals(FK_OUTLINE, withoutCustomerFk);
+      servers.serve(PG, Provider.POSTGRESQL, "16.4", withoutCustomerFk);
+      c.run(app, "key Escape\n" + SHOWN + menu("public", "Refresh"));
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE);
+
+    assertNull(
+        app.state().catalog.foreignKeys(orders.id, orders.table),
+        "in-flight table-tab read must not restore stale keys after tree Refresh");
+
+    // Next context menu reads keys anew and does not offer the dropped key.
+    c.run(app, rightClick(0, 2) + SETTLE + "snap after-tab-race\n");
+    String after = c.tree("after-tab-race");
+    assertEquals(2, servers.calls.stream().filter(key::equals).count(), servers.calls.toString());
+    assertFalse(after.contains("label=\"Go to customers\""), after);
+    assertTrue(after.contains("role=menuitem label=\"Referenced by\""), after);
   }
 
   @Test

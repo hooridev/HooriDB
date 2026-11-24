@@ -44,6 +44,10 @@ final class Live {
   final Map<Node, CatalogTree.Level> levels = new HashMap<>();
   // All foreign keys touching each table (both directions), read lazily with its columns.
   final Map<Table, List<ForeignKey>> keys = new HashMap<>();
+  // When the keys of a table, or of the tables below a node, were last forgotten, by a count that
+  // rises with each forgetting; a read asked before then must not put the old keys back.
+  final Map<Node, Long> forgotten = new HashMap<>();
+  long forgetting;
   // The background reads of go to table and of completions: a database's tables, a table's
   // columns.
   final Map<Node, CatalogTree.Scan> scans = new HashMap<>();
