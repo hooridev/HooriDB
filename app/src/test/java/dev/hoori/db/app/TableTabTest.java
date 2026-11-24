@@ -2049,6 +2049,38 @@ class TableTabTest {
   }
 
   @Test
+  void documentTreeNumbersDocumentsWithoutIdAcrossPages() throws Exception {
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    var all = IntStream.rangeClosed(1, TableTab.PAGE + 50)
+        .mapToObj(i -> Document.of("customer", "c" + i, "total", (double) i))
+        .toList();
+    servers.documents(path, all);
+    var app = mongoOrders();
+    c.run(app, """
+        press role=radio label="Tree"
+        frame
+        advance 1
+        frame
+        snap tree-page-1
+        press role=button label="Next page"
+        frame
+        """ + SETTLE + """
+            advance 1
+            frame
+            snap tree-page-2
+            """);
+    String page1 = c.tree("tree-page-1");
+    assertTrue(line(page1, "#rows-in-view").contains("\"Documents 1–200\""), page1);
+    assertEquals("Document 1", DocumentsServerTest.documents(page1).getFirst(), page1);
+
+    String page2 = c.tree("tree-page-2");
+    assertTrue(line(page2, "#rows-in-view").contains("\"Documents 201–250\""), page2);
+    var page2Docs = DocumentsServerTest.documents(page2);
+    assertEquals("Document 201", page2Docs.getFirst(), page2);
+    assertEquals("Document 202", page2Docs.get(1), page2);
+  }
+
+  @Test
   void invalidDocumentFilterOrSortIsRefusedWithoutSendingAnything() throws Exception {
     var path = DocumentConsoleTest.MONGO + "/hoori.orders";
     servers.documents(path, List.of(Document.of("_id", 1, "customer", "Ada", "total", 12.5)));
