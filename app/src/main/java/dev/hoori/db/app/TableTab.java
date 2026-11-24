@@ -915,6 +915,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       return;
     }
     var live = s.catalog.live(id);
+    var asked = live.forgetting;
     var of = table;
     readingKeys = lane.ask(
         s.app,
@@ -924,7 +925,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         keys -> {
           readingKeys = null;
           if (!closed && s.catalog.live(id) == live) {
-            s.catalog.foreignKeysRead(id, of, keys);
+            s.catalog.foreignKeysRead(id, of, keys, asked);
           }
         },
         error -> {
