@@ -266,7 +266,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           + " k.COLUMN_NAME, k.REFERENCED_COLUMN_NAME,"
           + " r.UPDATE_RULE, r.DELETE_RULE, k.ORDINAL_POSITION"
           + " FROM information_schema.KEY_COLUMN_USAGE k"
-          + " JOIN information_schema.REFERENTIAL_CONSTRAINTS r"
+          // MariaDB shows a key's rules only to a user with more than SELECT on its table.
+          + " LEFT JOIN information_schema.REFERENTIAL_CONSTRAINTS r"
           + " ON r.CONSTRAINT_SCHEMA = CAST(k.CONSTRAINT_SCHEMA AS BINARY)"
           + " AND r.CONSTRAINT_NAME = CAST(k.CONSTRAINT_NAME AS BINARY)"
           + " AND r.TABLE_NAME = CAST(k.TABLE_NAME AS BINARY)";

@@ -591,6 +591,45 @@ class CatalogServerTest {
     }
   }
 
+  // MariaDB hides a key's rules from a user who may only read its table, MySQL does not.
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void aUserWhoMayOnlyReadSeesTheKeys(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var root = server.profile().withUser("root");
+    var reader = server.profile().withUser("fk_reader");
+    var purchase = new Table(HOORI, "purchase", Kind.TABLE);
+    var customer = new Table(HOORI, "customer", Kind.TABLE);
+    try (var admin = Connector.open(
+            root, ("root-" + TestServer.PASSWORD).toCharArray(), server.driver(), TIMEOUT)
+        .connection()) {
+      execute(
+          admin,
+          "CREATE USER IF NOT EXISTS 'fk_reader'@'%' IDENTIFIED BY '" + TestServer.PASSWORD + "'",
+          "GRANT SELECT ON hoori.* TO 'fk_reader'@'%'");
+      try (var connection = Connector.open(reader, TestServer.password(), server.driver(), TIMEOUT)
+          .connection()) {
+        var rule = provider == Provider.MARIADB ? null : Rule.NO_ACTION;
+        var keys = Catalog.foreignKeys(connection, provider, customer);
+        // The sample's key is unnamed, and MariaDB and MySQL name it each their own way.
+        assertEquals(
+            List.of(new ForeignKey(
+                keys.getFirst().name(),
+                purchase,
+                List.of("customer_id"),
+                customer,
+                List.of("id"),
+                rule,
+                rule)),
+            keys);
+      } finally {
+        execute(admin, "DROP USER 'fk_reader'@'%'");
+      }
+    }
+  }
+
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void compositeSelfReferencingAndUniqueForeignKeysAreRead(Provider provider) throws Exception {

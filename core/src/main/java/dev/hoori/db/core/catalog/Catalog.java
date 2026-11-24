@@ -168,8 +168,8 @@ public final class Catalog {
         List.of(rows.getString(6)),
         tableOf(schemas, database, catalog, rows.getString(4), rows.getString(5)),
         List.of(rows.getString(7)),
-        ForeignKey.Rule.valueOf(rows.getString(8).replace(' ', '_')),
-        ForeignKey.Rule.valueOf(rows.getString(9).replace(' ', '_')));
+        rule(rows.getString(8)),
+        rule(rows.getString(9)));
     var container = table.container().name();
     var pairs = query(
         connection,
@@ -200,6 +200,10 @@ public final class Catalog {
       }
     }
     return List.copyOf(keys);
+  }
+
+  private static ForeignKey.Rule rule(String word) {
+    return word == null ? null : ForeignKey.Rule.valueOf(word.replace(' ', '_'));
   }
 
   private static List<String> concat(List<String> first, List<String> second) {

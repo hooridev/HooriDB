@@ -60,7 +60,7 @@ public interface CatalogDialect {
    * the container name and table name twice (once for each direction). Each row is one column pair:
    * constraint name, referencing container, referencing table, referenced container, referenced
    * table, referencing column, referenced column, update rule and delete rule, the rules written as
-   * {@code NO ACTION}, {@code RESTRICT}, {@code CASCADE}, {@code SET NULL} or {@code SET DEFAULT},
+   * {@code NO ACTION}, {@code RESTRICT}, {@code CASCADE}, {@code SET NULL} or {@code SET DEFAULT}, or NULL where the server does not tell them,
    * ordered by constraint name, referencing container, referencing table and key order so that each
    * key's pairs are consecutive and in key order.
    */
