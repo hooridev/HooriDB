@@ -43,13 +43,15 @@ final class DocumentTree {
   private String scope = ""; // the documents shown, such as a page; what is open is theirs
   private List<Document> of = List.of(); // what they are a part of
   private int from;
+  private long offset; // 0-based start of these documents in the whole collection or result
   private List<Document> documents = List.of();
 
   /**
    * Shows the documents from {@code from} to before {@code to} of {@code of}, which only grow, as
-   * the scope: what was open stays open where the scope is the same.
+   * the scope, starting at {@code offset} in the whole collection or result: what was open stays
+   * open where the scope is the same.
    */
-  void show(String scope, List<Document> of, int from, int to) {
+  void show(String scope, List<Document> of, int from, int to, long offset) {
     boolean other = !scope.equals(this.scope);
     if (other) {
       open.clear();
@@ -61,6 +63,7 @@ final class DocumentTree {
     this.scope = scope;
     this.of = of;
     this.from = from;
+    this.offset = offset;
   }
 
   /** The tree of the documents, with dates in the zone. */
@@ -119,7 +122,7 @@ final class DocumentTree {
         var document = (Document) node.value();
         return document.has("_id")
             ? Shell.scalar(document.get("_id"))
-            : "Document " + (node.document() + 1);
+            : "Document " + (offset + node.document() + 1);
       }
 
       @Override
