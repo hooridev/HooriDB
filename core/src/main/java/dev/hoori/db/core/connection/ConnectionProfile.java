@@ -200,11 +200,13 @@ public record ConnectionProfile(
     return problems;
   }
 
-  // One DNS name, with or without the final dot and with "_" as Docker Compose names have it, an
-  // IPv4 address in four decimal parts, or an IPv6
-  // address with or without brackets and zone. Drivers read anything else in the host's place of
-  // their URL as more of the URL: a path, parameters, more hosts.
-  private static boolean isHost(String host) {
+  /**
+   * Whether the text is one DNS name (with or without the final dot and with "_" as Docker Compose
+   * names have it), an IPv4 address in four decimal parts, or an IPv6 address with or without
+   * brackets and zone. Drivers read anything else in the host's place of their URL as more of the
+   * URL: a path, parameters, more hosts.
+   */
+  public static boolean isHost(String host) {
     if (host.indexOf(':') >= 0) {
       return isIpv6(host);
     }
