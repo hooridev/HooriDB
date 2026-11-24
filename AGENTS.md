@@ -113,16 +113,18 @@ driver; its host may name a DNS SRV record that lists the servers, as `mongodb+s
 port; its user may be defined in a database other than `admin`, which it names (`authSource`); pasting a `mongodb://` or `mongodb+srv://` connection string into the connection dialog's Host field switches to MongoDB and fills its fields (keeping the password in the password field alone, naming unused options and further hosts in a note, and reporting an invalid string without echoing credentials); it
 may be read-only, which sends only commands that read, as find, aggregate without `$out` or `$merge`
 and counts, and refuses the others unsent. Its databases and collections show in the tree, with the
-fields that a sample of their documents has; a collection opens in a tab as a grid of its fields,
+fields that a sample of their documents has and their indexes under an Indexes node; a collection opens in a tab as a grid of its fields,
 read in pages, with a document or an array in a cell as Relaxed Extended JSON and a field a
 document does not have as an empty cell, where a `null` shows NULL, or a page of documents at a
 time as Relaxed Extended JSON or as a tree of their fields, with Filter and Sort fields (each one
 shell document with colors and completion; blank or `{}` clears it) above all three views that
 narrow and order the documents and counts (with `_id: 1` appended as tie-breaker unless Sort names
-`_id`, and no estimate while filtered) and sortable grid headers (for fields without `.` and not
-starting with `$`) that write their sort document into Sort. Its console runs
-statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls, `aggregate`,
-counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their documents in
+`_id`, and no estimate while filtered), sortable grid headers (for fields without `.` and not
+starting with `$`) that write their sort document into Sort, and Open in console to add its
+`db.getCollection(…).find(…)` with the applied Filter and Sort to a console as SQL's does. Its
+console runs statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls,
+`aggregate`, counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their
+documents in
 the same three ways, marks where a statement goes wrong in its own markup layer with its message
 after its line, puts run and last-outcome markers in the gutter on each statement's first line, lays
 its statements out with

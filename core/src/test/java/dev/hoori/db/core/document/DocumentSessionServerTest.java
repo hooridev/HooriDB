@@ -11,11 +11,15 @@ import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.DocumentConnector;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.log.Sent;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -71,6 +75,50 @@ class DocumentSessionServerTest {
           session.fields(new Table(HOORI, "empty", Table.Kind.TABLE)).stream()
               .filter(c -> !c.name().equals("_id"))
               .toList());
+    }
+  }
+
+  @Test
+  void aCollectionsIndexesIncludeCompoundUniqueTtlAndTextAndViewsHaveNone() throws Exception {
+    try (var session = session(true)) {
+      var logged = new ArrayList<Sent>();
+      var ordersIndexes = Journal.recording(logged::add, () -> session.indexes(ORDERS));
+      assertEquals(
+          List.of(
+              new Index("_id_", ORDERS, List.of("_id: 1"), true, true, ""),
+              new Index("customer_1", ORDERS, List.of("customer: 1"), false, false, ""),
+              new Index(
+                  "customer_1_total_-1",
+                  ORDERS,
+                  List.of("customer: 1", "total: -1"),
+                  false,
+                  false,
+                  "partial"),
+              new Index(
+                  "expiresAt_1", ORDERS, List.of("expiresAt: 1"), false, false, "TTL 3600 s")),
+          ordersIndexes);
+      assertEquals(1, logged.size());
+      assertEquals(Purpose.CATALOG, logged.getFirst().purpose());
+      assertTrue(
+          logged.getFirst().text().contains("listIndexes"), logged.getFirst().text());
+
+      assertEquals(
+          List.of(
+              new Index("_id_", CUSTOMERS, List.of("_id: 1"), true, true, ""),
+              new Index("email_1", CUSTOMERS, List.of("email: 1"), true, false, "sparse"),
+              new Index(
+                  "name_text_tags_text",
+                  CUSTOMERS,
+                  List.of("name: text", "tags: text"),
+                  false,
+                  false,
+                  "")),
+          session.indexes(CUSTOMERS));
+
+      logged.clear();
+      assertEquals(List.of(), Journal.recording(logged::add, () -> session.indexes(PAID)));
+      assertTrue(logged.isEmpty(), logged.toString());
+      assertEquals(List.of(), session.indexes(new Table(HOORI, "missing", Table.Kind.TABLE)));
     }
   }
 

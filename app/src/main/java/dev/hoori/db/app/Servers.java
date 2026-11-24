@@ -316,8 +316,13 @@ interface Servers {
     }
 
     @Override
-    public List<Index> indexes(Table table) {
-      return List.of();
+    public List<Index> indexes(Table table) throws CatalogException {
+      readable();
+      try {
+        return session.indexes(table);
+      } catch (CatalogException e) {
+        throw saw(e);
+      }
     }
 
     /** Parsed filter and sort documents of a {@link Rows.Filter}. */
