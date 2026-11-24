@@ -98,7 +98,9 @@ The completion list suggests SQL keywords for your database dialect along with s
 - The list opens automatically from the second letter of a word, or right after typing `.` following a schema, table, or alias name.
 - Press `Ctrl+Space` anywhere in the editor to open the list manually.
 - Press `Enter` or `Tab` to insert the highlighted item, or `Escape` to close the list.
+- After `JOIN` (other than `CROSS JOIN` and `NATURAL JOIN`), tables linked by a foreign key to a table earlier in the statement appear first in both directions, inserting the table and its full `ON` condition (for example, `customers c ON c.id = o.customer_id`). Aliases follow the rest of the statement; plain tables stay listed below.
+- After the `ON` of a join, foreign-key conditions between the joined table and the tables before it appear first above the usual completions.
 
 Names that require quoting are quoted automatically for PostgreSQL (`"..."`) or MySQL and MariaDB (`` `...` ``).
 
-If a database's tables or a table's columns have not been loaded in Workspace yet, HooriDB reads them automatically when completions ask for them. Keep typing or press `Ctrl+Space` again to see the newly loaded names.
+If a database's tables or a table's columns or foreign keys have not been loaded in Workspace yet, HooriDB reads them automatically when completions ask for them. Keep typing or press `Ctrl+Space` again to see the newly loaded suggestions.

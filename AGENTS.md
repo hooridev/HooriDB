@@ -64,7 +64,8 @@ Control+Q for a table's kind, schema, columns and foreign keys or a column's typ
 foreign key references (reading what the
 tree lacks for the next hover), Control+B and Control+click on a table or column name to open its
 table in a tab, Control+Alt+L to lay its SQL out, changing only white space, and completions of
-keywords and of the schemas, tables and columns the tree read or reads for it; it switches
+keywords, foreign-key joins and ON conditions, and the schemas, tables and columns the tree read or
+reads for it; it switches
 databases and cancels what runs. It commits each statement by itself in Auto, and in Manual Commit
 and Rollback end the transaction, whose state it
 shows as the server says it, and as possibly open where the server has not said; closing it,

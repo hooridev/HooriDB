@@ -19,10 +19,12 @@ import java.util.Set;
  *     {@code public.} or {@code [o]} after {@code o.}; else empty
  * @param typed the part of the word before the caret, as written
  * @param tables the tables the statement names, also after the caret
+ * @param before how many of {@code tables} end before the word at the caret
  */
 // shortcut: no parser, so a statement with a CTE or a subquery is not read: it names no tables,
 // and nothing follows a dot in it; parse statements once completion should reach into them.
-public record Context(Asked asked, List<String> path, String typed, List<Reference> tables) {
+public record Context(
+    Asked asked, List<String> path, String typed, List<Reference> tables, int before) {
 
   /** What kind of name fits at the caret. */
   public enum Asked {
@@ -33,8 +35,15 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     NOTHING,
     /** A keyword, a schema, a table or a column. */
     ANY,
-    /** A table or a schema: after {@code FROM}, {@code JOIN}, {@code INTO}, {@code UPDATE}. */
+    /**
+     * A table or a schema: after {@code FROM}, {@code INTO}, {@code UPDATE}, {@code CROSS JOIN},
+     * or {@code NATURAL […] JOIN}.
+     */
     TABLE,
+    /** A table after a conditional {@code JOIN} (one that takes an {@code ON} condition). */
+    JOIN,
+    /** Right after the {@code ON} of a conditional {@code JOIN}. */
+    ON,
     /** What is in the thing the path names: a schema's tables, or a table's or alias's columns. */
     MEMBER
   }
@@ -97,7 +106,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
       "WITH",
       "AS");
   private static final Set<String> INTRODUCERS = Set.of("FROM", "JOIN", "INTO", "UPDATE");
-  private static final Context NOTHING = new Context(Asked.NOTHING, List.of(), "", List.of());
+  private static final Context NOTHING = new Context(Asked.NOTHING, List.of(), "", List.of(), 0);
 
   /**
    * What the caret, an offset in the statement's text, asks for. The text may hold comments
@@ -116,7 +125,6 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     }
     var tokens = tokens(statement, pieces, syntax);
     boolean readable = readable(tokens);
-    var tables = readable ? tables(tokens) : List.<Reference>of();
     int from = wordStart(statement, at);
     var typed = statement.substring(from, at);
     // The tokens before the word that is typed.
@@ -124,16 +132,27 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     while (n < tokens.size() && tokens.get(n).end() <= from) {
       n++;
     }
+    int cursor = n;
     var path = new ArrayList<String>();
     while (n >= 2 && tokens.get(n - 1).kind() == Kind.DOT && tokens.get(n - 2).name()) {
       path.addFirst(tokens.get(n - 2).identifier());
       n -= 2;
     }
+    var scan = readable ? scan(tokens, null, cursor) : Scan.EMPTY;
     if (!path.isEmpty()) {
-      return readable ? new Context(Asked.MEMBER, List.copyOf(path), typed, tables) : NOTHING;
+      return readable
+          ? new Context(Asked.MEMBER, List.copyOf(path), typed, scan.tables, scan.before)
+          : NOTHING;
     }
-    boolean table = n > 0 && introduces(tokens, n - 1);
-    return new Context(table ? Asked.TABLE : Asked.ANY, List.of(), typed, tables);
+    Asked asked;
+    if (n > 0 && introduces(tokens, n - 1)) {
+      asked = conditionalJoin(tokens, n - 1) ? Asked.JOIN : Asked.TABLE;
+    } else if (scan.joinOn) {
+      asked = Asked.ON;
+    } else {
+      asked = Asked.ANY;
+    }
+    return new Context(asked, List.of(), typed, scan.tables, scan.before);
   }
 
   // Where the word that ends at the offset begins.
@@ -149,7 +168,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
   public static List<Reference> tables(String statement, Provider provider) {
     var tokens = tokens(
         statement, Statements.pieces(statement, provider), provider.dialect().syntax());
-    return readable(tokens) ? tables(tokens, null) : List.of();
+    return readable(tokens) ? scan(tokens, null, -1).tables : List.of();
   }
 
   /**
@@ -174,7 +193,7 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     }
     boolean readable = readable(tokens);
     var tableTokens = new HashSet<Integer>();
-    var tables = readable ? tables(tokens, tableTokens) : List.<Reference>of();
+    var tables = readable ? scan(tokens, tableTokens, -1).tables : List.<Reference>of();
     var path = new ArrayList<String>();
     int left = index;
     while (left >= 2
@@ -200,6 +219,24 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     boolean distinct = word(tokens, i - 1, "DISTINCT")
         && (word(tokens, i - 2, "IS") || word(tokens, i - 2, "NOT") && word(tokens, i - 3, "IS"));
     return INTRODUCERS.contains(tokens.get(i).upper()) && !distinct;
+  }
+
+  // Whether the token is a JOIN that takes an ON condition (not CROSS JOIN or NATURAL […] JOIN).
+  private static boolean conditionalJoin(List<Token> tokens, int i) {
+    if (!word(tokens, i, "JOIN") || word(tokens, i - 1, "CROSS")) {
+      return false;
+    }
+    int k = i - 1;
+    if (word(tokens, k, "OUTER")) {
+      k--;
+    }
+    if (word(tokens, k, "INNER")
+        || word(tokens, k, "LEFT")
+        || word(tokens, k, "RIGHT")
+        || word(tokens, k, "FULL")) {
+      k--;
+    }
+    return !word(tokens, k, "NATURAL");
   }
 
   private static boolean word(List<Token> tokens, int i, String upper) {
@@ -229,33 +266,41 @@ public record Context(Asked asked, List<String> path, String typed, List<Referen
     return true;
   }
 
-  private static List<Reference> tables(List<Token> tokens) {
-    return tables(tokens, null);
+  private record Scan(List<Reference> tables, int before, boolean joinOn) {
+    static final Scan EMPTY = new Scan(List.of(), 0, false);
   }
 
-  private static List<Reference> tables(List<Token> tokens, Set<Integer> tableTokens) {
+  private static Scan scan(List<Token> tokens, Set<Integer> tableTokens, int cursor) {
     var found = new ArrayList<Reference>();
+    int before = 0;
+    boolean joinOn = false;
     for (int i = 0; i < tokens.size(); i++) {
       var introducer = tokens.get(i).upper();
-      if (introduces(tokens, i)) {
-        introduced(tokens, i + 1, introducer.equals("FROM"), found, tableTokens);
+      if (!introduces(tokens, i)) {
+        continue;
+      }
+      boolean list = introducer.equals("FROM");
+      boolean join = conditionalJoin(tokens, i);
+      int j = i + 1;
+      while (j < tokens.size() && tokens.get(j).name()) {
+        j = reference(tokens, j, found, tableTokens);
+        if (j < 0) {
+          break;
+        }
+        if (cursor >= 0 && j <= cursor) {
+          before++;
+        }
+        if (join && cursor > 0 && j == cursor - 1 && word(tokens, j, "ON")) {
+          joinOn = true;
+        }
+        // FROM a x, b y: the list goes on after a comma.
+        if (!list || j + 1 >= tokens.size() || tokens.get(j).kind() != Kind.COMMA) {
+          break;
+        }
+        j++;
       }
     }
-    return List.copyOf(found);
-  }
-
-  // Adds the tables named from the index on, after an introducer; a list goes on after a comma.
-  private static void introduced(
-      List<Token> tokens, int from, boolean list, List<Reference> found, Set<Integer> tableTokens) {
-    int j = from;
-    while (j < tokens.size() && tokens.get(j).name()) {
-      j = reference(tokens, j, found, tableTokens);
-      // FROM a x, b y: the list goes on after a comma.
-      if (j < 0 || !list || j + 1 >= tokens.size() || tokens.get(j).kind() != Kind.COMMA) {
-        return;
-      }
-      j++;
-    }
+    return new Scan(List.copyOf(found), before, joinOn);
   }
 
   // Adds the table named at the index, with its alias; the index after it, or -1 for a name still
