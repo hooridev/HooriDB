@@ -317,8 +317,8 @@ public record Context(
         depth++;
       } else if (token.text().equals(")") || token.text().equals("]")) {
         depth--;
-      } else if (token.upper().equals("FROM") && introduces(tokens, i)) {
-        item = i;
+      } else if (token.upper().equals("FROM") && introduces(tokens, i) && depth <= 0) {
+        item = i; // not the FROM of EXTRACT(YEAR FROM …)
         depth = 0;
       } else if (token.kind() == Kind.COMMA && depth == 0 && item >= 0) {
         item = i;
