@@ -153,8 +153,10 @@ public final class Catalog {
    * self-reference appears once), ordered by constraint name and then referencing table. Views and
    * foreign tables have none and return an empty list without querying the server.
    *
-   * <p>A key holds the columns the server shows the user: where MySQL's column privileges hide
-   * some columns of a key of several, the key comes without them.
+   * <p>Where column privileges on MySQL hide part of a composite key, that key is left out rather
+   * than returned partial. Because MySQL does not expose a key's hidden columns, a whole key is
+   * also left out under column privileges when every one of its columns shares an index on the
+   * referencing table with a column the user cannot see.
    */
   public static List<ForeignKey> foreignKeys(Connection connection, Provider provider, Table table)
       throws CatalogException {
@@ -165,14 +167,17 @@ public final class Catalog {
     var catalog = provider.dialect().catalog();
     var schemas = hasSchemas(provider);
     var database = table.container().database();
-    Row<ForeignKey> pair = rows -> new ForeignKey(
-        rows.getString(1),
-        tableOf(schemas, database, catalog, rows.getString(2), rows.getString(3)),
-        List.of(rows.getString(6)),
-        tableOf(schemas, database, catalog, rows.getString(4), rows.getString(5)),
-        List.of(rows.getString(7)),
-        rule(rows.getString(8)),
-        rule(rows.getString(9)));
+    record ReadKey(ForeignKey key, boolean maybePartial) {}
+    Row<ReadKey> pair = rows -> new ReadKey(
+        new ForeignKey(
+            rows.getString(1),
+            tableOf(schemas, database, catalog, rows.getString(2), rows.getString(3)),
+            List.of(rows.getString(6)),
+            tableOf(schemas, database, catalog, rows.getString(4), rows.getString(5)),
+            List.of(rows.getString(7)),
+            rule(rows.getString(8)),
+            rule(rows.getString(9))),
+        rows.getBoolean(10));
     var container = table.container().name();
     var pairs = query(
         connection,
@@ -184,25 +189,32 @@ public final class Catalog {
         container,
         table.name());
     // A key of several columns comes as consecutive rows, one per pair of columns.
-    var keys = new ArrayList<ForeignKey>();
+    var merged = new ArrayList<ReadKey>();
     for (var next : pairs) {
-      var last = keys.isEmpty() ? null : keys.getLast();
-      if (last != null && last.name().equals(next.name()) && last.table().equals(next.table())) {
-        keys.set(
-            keys.size() - 1,
-            new ForeignKey(
-                last.name(),
-                last.table(),
-                concat(last.columns(), next.columns()),
-                last.referenced(),
-                concat(last.referencedColumns(), next.referencedColumns()),
-                last.onUpdate(),
-                last.onDelete()));
+      var last = merged.isEmpty() ? null : merged.getLast();
+      if (last != null
+          && last.key().name().equals(next.key().name())
+          && last.key().table().equals(next.key().table())) {
+        merged.set(
+            merged.size() - 1,
+            new ReadKey(
+                new ForeignKey(
+                    last.key().name(),
+                    last.key().table(),
+                    concat(last.key().columns(), next.key().columns()),
+                    last.key().referenced(),
+                    concat(last.key().referencedColumns(), next.key().referencedColumns()),
+                    last.key().onUpdate(),
+                    last.key().onDelete()),
+                last.maybePartial() && next.maybePartial()));
       } else {
-        keys.add(next);
+        merged.add(next);
       }
     }
-    return List.copyOf(keys);
+    return merged.stream()
+        .filter(read -> !read.maybePartial())
+        .map(ReadKey::key)
+        .toList();
   }
 
   private static ForeignKey.Rule rule(String word) {

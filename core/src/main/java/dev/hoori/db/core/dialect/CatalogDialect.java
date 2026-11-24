@@ -59,8 +59,11 @@ public interface CatalogDialect {
    * The foreign keys referencing or referenced by the table in the schema or database named, taking
    * the container name and table name twice (once for each direction). Each row is one column pair:
    * constraint name, referencing container, referencing table, referenced container, referenced
-   * table, referencing column, referenced column, update rule and delete rule, the rules written as
-   * {@code NO ACTION}, {@code RESTRICT}, {@code CASCADE}, {@code SET NULL} or {@code SET DEFAULT}, or NULL where the server does not tell them,
+   * table, referencing column, referenced column, update rule, delete rule and a boolean that is
+   * {@code true} where the referencing column shares an index on its table with a column the user
+   * cannot see (so that a key whose every row carries {@code true} may be missing columns and is
+   * left out). The rules are written as {@code NO ACTION}, {@code RESTRICT}, {@code CASCADE},
+   * {@code SET NULL} or {@code SET DEFAULT}, or NULL where the server does not tell them. Rows are
    * ordered by constraint name, referencing container, referencing table and key order so that each
    * key's pairs are consecutive and in key order.
    */

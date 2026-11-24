@@ -71,6 +71,7 @@ public final class MySql extends MySqlFamily {
   private final Driver driver =
       new Driver("com.mysql", "mysql-connector-j", "com.mysql.cj.jdbc.Driver");
   private final ConnectDialect connecting = new Connect();
+  private final CatalogDialect catalog = new MySqlFamily.Catalog(true);
   private final SyntaxDialect syntax = new MySqlFamily.Syntax(
       RESERVED, Words.union(RESERVED, Words.TYPED, Syntax.TYPED), List.of("/*!"));
   private final PlanDialect planning = new Plan();
@@ -122,6 +123,11 @@ public final class MySql extends MySqlFamily {
   @Override
   public ConnectDialect connecting() {
     return connecting;
+  }
+
+  @Override
+  public CatalogDialect catalog() {
+    return catalog;
   }
 
   @Override
