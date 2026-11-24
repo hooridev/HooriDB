@@ -292,6 +292,33 @@ class TableTabEditTest {
     assertEquals(0, writeCount());
   }
 
+  /** A narrow footer keeps its paging inside while a commit runs and a page is read. */
+  @Test
+  void aNarrowFooterKeepsThePagingWhileCommittingAndReading() throws Exception {
+    var rows = new ArrayList<List<Object>>(3_000);
+    for (long i = 1; i <= 3_000; i++) {
+      rows.add(List.of(i, "name " + i));
+    }
+    servers.values(BIG, rows);
+    var app = t.shop();
+    t.narrow(app, "press #cell-0-1\ntype \"Edited 1\"\nkey Enter\nframe\n");
+    var write = servers.hold(WRITE_BIG);
+    var read = servers.hold("read " + BIG + " 1000-1200");
+    c.run(
+        app,
+        "press #commit-changes\nframe\n" + OPENED + "press #preview-commit\nframe\n" + OPENED
+            + "frame\n");
+    eventually(() -> servers.calls.contains(WRITE_BIG));
+    c.run(app, scroll(1100) + "advance 1\nframe\nsnap both\n");
+    String both = c.tree("both");
+    assertTrue(line(both, "#edit-status ").contains("\"Committing…\""), both);
+    assertTrue(line(both, "#read-status ").contains("\"Reading rows…\""), both);
+    assertTrue(TableTabTest.end(both, "#value-toggle ") <= TableTabTest.end(both, "#grid "), both);
+    write.countDown();
+    read.countDown();
+    c.run(app, SETTLE);
+  }
+
   @Test
   void editedRowsPageStaysAndCommitsRightRow() throws Exception {
     var rows = new ArrayList<List<Object>>(3_000);

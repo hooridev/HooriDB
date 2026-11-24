@@ -1141,6 +1141,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       rowsStatus =
           Tooltip.tooltip(rowsStatus, CatalogTree.join(rowsText(ofDocuments), countFailure));
     }
+    // What the rows rest on keeps half the footer, so the texts at its end give way first; a
+    // longer status, such as an estimate, is still cut and leaves the paging inside the card.
+    rowsStatus.style().minWidth = Len.percent(0.5f);
     // The edit actions on a line of their own while there is something to commit: the status line
     // has no room for them beside the paging.
     boolean bar = edits.changes != null && (edits.changes.count() > 0 || edits.writing != null);
@@ -1325,20 +1328,16 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   /** The status line after the number of rows: what it says, the last read, edits, and paging. */
   private List<El> footer(
       State s, boolean ofDocuments, DocumentPresentation.View presented, List<El> edited) {
-    Theme t = Theme.CURRENT.get();
-    El read = busy()
-        ? row()
-            .gap(t.space().s())
-            .align(Style.Align.CENTER)
-            .child(Progress.spinner().label("Reading"))
-            .child(Label.label(Label.Variant.MUTED, "Reading rows…"))
-            .key("read-status")
-        : Label.label(Label.Variant.MUTED, readText(ofDocuments)).key("read-status");
     var end = new ArrayList<El>();
     if (said != null) {
       end.add(Label.label(Label.Variant.MUTED, said).key("said"));
     }
-    end.add(read);
+    // The spinner apart from its text, so that the footer can shorten the text in a narrow tab.
+    if (busy()) {
+      end.add(Progress.spinner().label("Reading"));
+    }
+    String read = busy() ? "Reading rows…" : readText(ofDocuments);
+    end.add(Label.label(Label.Variant.MUTED, read).key("read-status"));
     if (!ofDocuments && fields != null) {
       ResultEdits.editControls(s, this, this, end, edited);
     }
@@ -1603,7 +1602,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
           + " are shown";
     }
     if (counting != null) {
-      return text + " · counting…";
+      // First, as a failure below, so that a narrow line cuts the number short and not this.
+      return "Counting… · " + Character.toLowerCase(text.charAt(0)) + text.substring(1);
     }
     if (countFailure != null) {
       // First, so that a narrow line cuts the number short and not this; why is in its tooltip.

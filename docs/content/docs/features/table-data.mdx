@@ -25,8 +25,8 @@ The tab toolbar shows the table's path (`database.schema.table` or `database.tab
 
 The bottom status bar of a table tab shows:
 
-- On the left: the row count. For tables estimated below 100,000 rows, HooriDB counts the exact total automatically. For larger tables, it shows the server's estimate (`About … rows, as the server estimates`), or `At least …` where the server gives no estimate. Press **Count rows** to run an exact count, or press **Stop counting** to cancel it while it runs.
-- On the right: how long the last page read took, which rows are currently visible (for example, `Rows 5,001–5,024`), four paging buttons, and the **Value** panel toggle.
+- On the left: the row count. For tables estimated below 100,000 rows, HooriDB counts the exact total automatically. For larger tables, it shows the server's estimate (`About … rows, as the server estimates`), or `At least …` where the server gives no estimate. Press **Count rows** to run an exact count, or press **Stop counting** to cancel it while it runs. While a count runs, the line starts with `Counting…`, and after a count failed with `Count failed`, whose reason shows when you hover it.
+- On the right: how long the last page read took, which rows are currently visible (for example, `Rows 5,001–5,024`), four paging buttons, and the **Value** panel toggle. In a narrow tab, the texts on the right are shortened first, so that the row count keeps at least half of the status bar.
 
 Use the four paging buttons to move the view without changing your selection:
 
