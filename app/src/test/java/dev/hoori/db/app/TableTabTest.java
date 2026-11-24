@@ -1764,8 +1764,7 @@ class TableTabTest {
     assertTrue(line(stayed, "#rows-in-view").contains("\"Documents 201–400\""), stayed);
   }
 
-  @Test
-  void lastPageOfAFilteredGridCountsFirst() throws Exception {
+  private App<State> filteredMongoGrid() throws Exception {
     var path = DocumentConsoleTest.MONGO + "/hoori.orders";
     var many = IntStream.rangeClosed(1, 1200)
         .mapToObj(i -> Document.of("_id", i, "customer", "many", "total", (double) i))
@@ -1773,17 +1772,57 @@ class TableTabTest {
     servers.documents(path, many);
     servers.documents(path + " FILTER { total: { $gt: 0 } }", many);
     var app = mongoOrders();
-    c.run(
-        app,
-        clause("Filter", "{ total: { $gt: 0 } }")
-            + "key Enter\nframe\n"
-            + SETTLE
-            + page("Last page")
-            + SETTLE
-            + "frame\nframe\n"
-            + SETTLE
-            + "snap end\n");
+    c.run(app, clause("Filter", "{ total: { $gt: 0 } }") + "key Enter\nframe\n" + SETTLE);
+    return app;
+  }
+
+  @Test
+  void lastPageOfAFilteredGridCountsFirst() throws Exception {
+    var app = filteredMongoGrid();
+    c.run(app, page("Last page") + SETTLE + "frame\nframe\n" + SETTLE + "snap end\n");
     String end = c.tree("end");
+    assertTrue(inView(end).contains("1,200\""), end);
+  }
+
+  @Test
+  void keyboardNavigationWhileLastPageCountsCancelsTheJump() throws Exception {
+    var app = filteredMongoGrid();
+    c.run(app, "press #cell-0-0\nadvance 1\nframe\n");
+    assertEquals(0, tab(app).selection.row());
+    var countKey =
+        "count " + DocumentConsoleTest.MONGO + "/hoori.orders FILTER { total: { $gt: 0 } }";
+    var held = servers.hold(countKey);
+    c.run(app, page("Last page"));
+    eventually(() -> servers.calls.contains(countKey));
+    c.run(app, "press #cell-0-0\nframe\n");
+    assertEquals(0, tab(app).selection.row());
+    c.run(app, "key ArrowDown\nframe\nframe\n");
+    assertEquals(1, tab(app).selection.row());
+    held.countDown();
+    c.run(app, SETTLE + "frame\nframe\n" + SETTLE + "snap stayed\n");
+    String stayed = c.tree("stayed");
+    assertTrue(status(stayed).contains("\"1,200 documents\""), stayed);
+    assertFalse(inView(stayed).contains("1,200\""), stayed);
+    assertTrue(inView(stayed).contains("\"Documents 1–"), stayed);
+  }
+
+  @Test
+  void openingStatementLogWhileLastPageCountsKeepsTheJump() throws Exception {
+    var app = filteredMongoGrid();
+    var countKey =
+        "count " + DocumentConsoleTest.MONGO + "/hoori.orders FILTER { total: { $gt: 0 } }";
+    var held = servers.hold(countKey);
+    c.run(app, page("Last page"));
+    eventually(() -> servers.calls.contains(countKey));
+    int beforeLast = tab(app).selection.lastRowInView();
+    c.run(app, "press role=button label=\"Statement log\"\nframe\nadvance 1\nframe\nframe\n");
+    assertTrue(
+        tab(app).selection.lastRowInView() < beforeLast,
+        "opening the statement log shrinks the rows in view");
+    held.countDown();
+    c.run(app, SETTLE + "frame\nframe\n" + SETTLE + "snap end\n");
+    String end = c.tree("end");
+    assertTrue(status(end).contains("\"1,200 documents\""), end);
     assertTrue(inView(end).contains("1,200\""), end);
   }
 
