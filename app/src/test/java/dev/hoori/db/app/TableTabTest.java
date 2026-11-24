@@ -11,6 +11,7 @@ import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.CatalogTreeTest.rows;
 import static dev.hoori.db.app.ConnectionsTest.line;
+import static dev.hoori.db.app.LayoutTest.widthOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -18,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import com.rethinkj.ui.kit.Split;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.data.Binary;
@@ -50,6 +52,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class TableTabTest {
 
   private static final Pattern LABEL = Pattern.compile("label=\"([^\"]*)\"");
+  private static final Pattern BOX = Pattern.compile(" (-?[\\d.]+),-?[\\d.]+ ([\\d.]+)x");
   private static final Pattern READ = Pattern.compile("\"Read 200 rows in \\d+ ms\"");
 
   static final String OUTLINE = """
@@ -1098,6 +1101,61 @@ class TableTabTest {
     assertFalse(status(healed).contains("Count failed"), healed);
   }
 
+  /** In a narrow tab the status line keeps room for the count; the texts at its end give way. */
+  @Test
+  void aNarrowFooterKeepsRoomForTheCount() throws Exception {
+    servers.rows(BIG, 1000, OptionalLong.empty());
+    servers.fail("count " + BIG, FakeServers.queryFailure(QueryException.Failure.OTHER));
+    String tree = narrow(shop(), page("Last page") + SETTLE);
+    assertTrue(status(tree).contains("\"Count failed · at least 400 rows\""), tree);
+    assertTrue(widthOf(tree, "#rows-status ") >= 190, tree);
+    assertTrue(widthOf(tree, "#rows-status ") > widthOf(tree, "#read-status "), tree);
+  }
+
+  /** A status longer than half a narrow footer is cut and leaves the paging inside the tab. */
+  @Test
+  void aNarrowFooterCutsALongStatus() throws Exception {
+    servers.rows(BIG, 1_000_000, OptionalLong.of(1_000_000));
+    String tree = narrow(shop(), "");
+    assertTrue(status(tree).contains("About 1,000,000 rows, as the server estimates"), tree);
+    assertTrue(widthOf(tree, "#rows-status ") >= 190, tree);
+    assertTrue(end(tree, "#value-toggle ") <= end(tree, "#grid "), tree);
+  }
+
+  /** While a page is read, its spinner stays and its text gives way with the paging inside. */
+  @Test
+  void aNarrowFooterKeepsThePagingWhileReading() throws Exception {
+    servers.rows(BIG, 1_000_000, OptionalLong.of(1_000_000));
+    var held = servers.hold("read " + BIG + " 400-600");
+    var app = shop();
+    String tree = narrow(app, scroll(450));
+    assertTrue(line(tree, "#read-status ").contains("\"Reading rows…\""), tree);
+    assertTrue(widthOf(tree, "#rows-status ") >= 190, tree);
+    assertTrue(end(tree, "#value-toggle ") <= end(tree, "#grid "), tree);
+    held.countDown();
+    c.run(app, SETTLE);
+  }
+
+  /** Opens big beside a 400 px sidebar in an 850 px window, runs the script and snaps it. */
+  String narrow(App<State> app, String script) throws Exception {
+    app.state().sidebar = Split.Position.first(400);
+    c.run(
+        app,
+        "size 850 760\nframe\n"
+            + table("big")
+            + SETTLE
+            + script
+            + "advance 1\nframe\nsnap narrow-footer\n");
+    return c.tree("narrow-footer");
+  }
+
+  /** Where the first element that matches ends at the right. */
+  static float end(String tree, String match) {
+    var box = BOX.matcher(line(tree, match));
+    assertTrue(box.find(), tree);
+    return Float.parseFloat(box.group(1)) + Float.parseFloat(box.group(2));
+  }
+
   /** A count that fails after the pages found the end leaves the exact rows without a warning. */
   @Test
   void aCountThatFailsAfterThePagesEndedIsNotShown() throws Exception {
@@ -1115,7 +1173,7 @@ class TableTabTest {
       c.run(app, "frame\nframe\n");
     }
     c.run(app, "snap ended\n");
-    assertTrue(status(c.tree("ended")).contains("\"1,000 rows · counting…\""), c.tree("ended"));
+    assertTrue(status(c.tree("ended")).contains("\"Counting… · 1,000 rows\""), c.tree("ended"));
     held.countDown();
     c.run(app, SETTLE + "snap failed\n");
     assertTrue(status(c.tree("failed")).contains("\"1,000 rows\""), c.tree("failed"));
@@ -1824,6 +1882,84 @@ class TableTabTest {
     String end = c.tree("end");
     assertTrue(status(end).contains("\"1,200 documents\""), end);
     assertTrue(inView(end).contains("1,200\""), end);
+  }
+
+  @Test
+  void wheelScrollWhileLastPageCountsCancelsTheJump() throws Exception {
+    var app = filteredMongoGrid();
+    c.run(app, "press #cell-0-0\nadvance 1\nframe\n");
+    assertEquals(0, tab(app).selection.row());
+    var countKey =
+        "count " + DocumentConsoleTest.MONGO + "/hoori.orders FILTER { total: { $gt: 0 } }";
+    var held = servers.hold(countKey);
+    c.run(app, page("Last page"));
+    eventually(() -> servers.calls.contains(countKey));
+    c.run(app, "wheel #rows 0 72\nframe\nframe\n");
+    int scrolledTo = tab(app).selection.firstRowInView();
+    assertTrue(scrolledTo > 0, "wheel scrolled the grid");
+    assertEquals(0, tab(app).selection.row(), "wheel leaves selection unchanged");
+    assertEquals(0, tab(app).selection.column(), "wheel leaves selection unchanged");
+    held.countDown();
+    c.run(app, SETTLE + "frame\nframe\n" + SETTLE + "snap stayed\n");
+    String stayed = c.tree("stayed");
+    assertTrue(status(stayed).contains("\"1,200 documents\""), stayed);
+    assertFalse(inView(stayed).contains("1,200\""), stayed);
+    assertEquals(scrolledTo, tab(app).selection.firstRowInView(), stayed);
+  }
+
+  @Test
+  void scrollbarTrackPressWhileLastPageCountsCancelsTheJump() throws Exception {
+    var app = filteredMongoGrid();
+    c.run(app, "press #cell-0-0\nadvance 1\nframe\n");
+    assertEquals(0, tab(app).selection.row());
+    var countKey =
+        "count " + DocumentConsoleTest.MONGO + "/hoori.orders FILTER { total: { $gt: 0 } }";
+    var held = servers.hold(countKey);
+    c.run(app, page("Last page"));
+    eventually(() -> servers.calls.contains(countKey));
+    c.run(app, "press #rows at right-4,bottom-24\nframe\nframe\n");
+    int scrolledTo = tab(app).selection.firstRowInView();
+    assertTrue(scrolledTo > 0, "scrollbar track press scrolled the grid");
+    assertEquals(0, tab(app).selection.row(), "scrollbar press leaves selection unchanged");
+    assertEquals(0, tab(app).selection.column(), "scrollbar press leaves selection unchanged");
+    held.countDown();
+    c.run(app, SETTLE + "frame\nframe\n" + SETTLE + "snap stayed\n");
+    String stayed = c.tree("stayed");
+    assertTrue(status(stayed).contains("\"1,200 documents\""), stayed);
+    assertFalse(inView(stayed).contains("1,200\""), stayed);
+    assertEquals(scrolledTo, tab(app).selection.firstRowInView(), stayed);
+  }
+
+  @Test
+  void controlHomeScrollingSidewaysWhileLastPageCountsCancelsTheJump() throws Exception {
+    var app = filteredMongoGrid();
+    c.run(app, "size 640 760\nframe\npress #cell-0-0\nadvance 1\nframe\n");
+    assertEquals(0, tab(app).selection.row());
+    assertEquals(0, tab(app).selection.column());
+    c.run(app, "wheel #rows 200 0\nframe\nframe\n");
+    assertTrue(sideways(app) > 0, "grid scrolled sideways before Last page");
+    var countKey =
+        "count " + DocumentConsoleTest.MONGO + "/hoori.orders FILTER { total: { $gt: 0 } }";
+    var held = servers.hold(countKey);
+    c.run(app, page("Last page"));
+    eventually(() -> servers.calls.contains(countKey));
+    c.run(app, "focus #grid\nframe\n");
+    assertTrue(sideways(app) > 0, "focusing the grid kept the sideways scroll");
+    c.run(app, "key Home control\nframe\nframe\n");
+    assertEquals(0.0, sideways(app), "Control+Home scrolled back to the left");
+    assertEquals(0, tab(app).selection.row(), "selection stayed on row 0");
+    assertEquals(0, tab(app).selection.column(), "selection stayed on column 0");
+    held.countDown();
+    c.run(app, SETTLE + "frame\nframe\n" + SETTLE + "snap stayed\n");
+    String stayed = c.tree("stayed");
+    assertTrue(status(stayed).contains("\"1,200 documents\""), stayed);
+    assertFalse(inView(stayed).contains("1,200\""), stayed);
+    assertTrue(inView(stayed).contains("\"Documents 1–"), stayed);
+  }
+
+  /** How far the grid is scrolled sideways. */
+  private static double sideways(App<State> app) {
+    return ConsoleEditorTest.find(app.tree(), "grid", new float[2]).scrollX();
   }
 
   @Test
