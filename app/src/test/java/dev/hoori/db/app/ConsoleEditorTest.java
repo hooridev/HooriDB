@@ -1089,6 +1089,81 @@ class ConsoleEditorTest {
     assertTrue(both.contains("payments(order_id) → (id) · ON DELETE RESTRICT"), both);
   }
 
+  @Test
+  void quickDocumentationShowsIndexesForTableAndReadsWhenMissing() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.INDEX_OUTLINE);
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id FROM orders o";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Hover over already-read table `orders`: lists Indexes with columns and unique / primary key.
+    String ordersPt = pointAt(app, sql.indexOf("orders") + 2);
+    console.c.run(
+        app, "move " + ordersPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap orders-idx\n");
+    String ordersTree = console.c.tree("orders-idx");
+    assertTrue(ordersTree.contains("#documentation"), ordersTree);
+    String ordersDoc = ordersTree.substring(ordersTree.indexOf("#documentation"));
+    assertTrue(ordersDoc.contains("References"), ordersDoc);
+    assertTrue(ordersDoc.contains("Indexes"), ordersDoc);
+    assertTrue(ordersDoc.indexOf("References") < ordersDoc.indexOf("Indexes"), ordersDoc);
+    assertTrue(ordersDoc.contains("orders_pkey (id) · primary key"), ordersDoc);
+    assertTrue(ordersDoc.contains("orders_code_expr_idx (lower(code)) · unique"), ordersDoc);
+    assertTrue(
+        ordersDoc.contains("orders_customer_placed_idx (customer_id, placed_at)"), ordersDoc);
+
+    // Unread table (`customers`): first hover triggers reading columns/keys/indexes; next shows
+    // them.
+    var custSql = "SELECT c.id FROM customers c";
+    console.c.run(app, "key Escape\nkey A control\nkey Delete\n" + type(custSql) + "frame\n");
+    String custPt = pointAt(app, custSql.indexOf("customers") + 2);
+    console.c.run(
+        app, "move " + custPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-first\n");
+    String custFirstTree = console.c.tree("cust-first");
+    assertTrue(custFirstTree.contains("#documentation"), custFirstTree);
+    String custFirst = custFirstTree.substring(custFirstTree.indexOf("#documentation"));
+    assertFalse(custFirst.contains("Indexes"), custFirst);
+    console.c.run(
+        app,
+        SETTLE
+            + "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\nmove "
+            + custPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-second\n");
+    String custSecondTree = console.c.tree("cust-second");
+    String custSecond = custSecondTree.substring(custSecondTree.indexOf("#documentation"));
+    assertTrue(custSecond.contains("Indexes"), custSecond);
+    assertTrue(custSecond.contains("customers_pkey (id) · primary key"), custSecond);
+    assertTrue(custSecond.contains("customers_email_uidx (email) · unique"), custSecond);
+  }
+
+  @Test
+  void quickDocumentationReadsIndexesWhenColumnsWereAlreadyReadWithoutThem() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.INDEX_OUTLINE);
+    var idxCall = "indexes " + PG + "/shop.public.orders";
+    servers.fail(
+        idxCall,
+        FakeServers.notRead(dev.hoori.db.core.catalog.CatalogException.Failure.ACCESS_DENIED));
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id FROM orders o";
+    // Opening orders in the tree reads columns and foreign keys while indexes fails alone.
+    console.c.run(app, TREE + type(sql) + "frame\n");
+    servers.heal(idxCall);
+
+    // First Ctrl+Q on `orders` triggers a scan for the missing indexes.
+    console.tab(app).editor.select(sql.indexOf("orders") + 2, sql.indexOf("orders") + 2);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\n" + SETTLE);
+    assertEquals(
+        2, servers.calls.stream().filter(idxCall::equals).count(), servers.calls.toString());
+
+    // Next Ctrl+Q on `orders` shows the Indexes section.
+    console.c.run(
+        app, "key Escape\nframe\nkey Q control\nframe\nadvance 1\nframe\nsnap idx-loaded\n");
+    String loadedTree = console.c.tree("idx-loaded");
+    String loaded = loadedTree.substring(loadedTree.indexOf("#documentation"));
+    assertTrue(loaded.contains("Indexes"), loaded);
+    assertTrue(loaded.contains("orders_pkey (id) · primary key"), loaded);
+  }
+
   /** The tree of the snap of the window other than the main one. */
   String window(String snap) throws IOException {
     try (var files = Files.list(dir.resolve("out"))) {

@@ -72,7 +72,7 @@ When a statement fails and the server reports where the error occurred, HooriDB 
 
 In an SQL console, the editor uses what Workspace has read to inspect and navigate to tables, views, and columns:
 
-- **Quick documentation**: rest the pointer over a table, view, or column name — or place the caret on it and press `Ctrl+Q` — to see a table's kind, schema, columns with their types, and foreign keys in both directions, or a column's type, table, and foreign key references. If its tables, columns, or foreign keys have not been loaded yet, HooriDB fetches them in the background and shows them on the next hover.
+- **Quick documentation**: rest the pointer over a table, view, or column name — or place the caret on it and press `Ctrl+Q` — to see a table's kind, schema, columns with their types, foreign keys in both directions, and indexes with their columns, or a column's type, table, and foreign key references. If its tables, columns, foreign keys, or indexes have not been loaded yet, HooriDB fetches them in the background and shows them on the next hover.
 - **Go to table**: press `Ctrl+B` or `Ctrl+click` on a table, view, or column name to open a table's rows in a tab (the same as pressing `Enter` in Workspace or choosing it from `Ctrl+P`). On a column that belongs to a single outgoing foreign key, this opens the referenced table; otherwise it opens the column's own table. Holding `Ctrl` while pointing at a navigable name underlines it.
 
 ## Read-only connections

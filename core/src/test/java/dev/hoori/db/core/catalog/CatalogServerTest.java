@@ -220,6 +220,11 @@ class CatalogServerTest {
                   new Column(table, "Key \"Two\"", integer(provider), false, 2),
                   new Column(table, "key `one`", integer(provider), false, 1)),
               Catalog.columns(connection, provider, table));
+          var indexes = Catalog.indexes(connection, provider, table);
+          assertEquals(1, indexes.size(), indexes.toString());
+          assertTrue(indexes.getFirst().primary());
+          assertTrue(indexes.getFirst().unique());
+          assertEquals(List.of("key `one`", "Key \"Two\""), indexes.getFirst().columns());
         }
       } finally {
         if (container instanceof Schema) {
@@ -296,6 +301,8 @@ class CatalogServerTest {
             Failure.WRONG_DATABASE, () -> Catalog.columns(connection, provider, customer));
         assertFailure(
             Failure.WRONG_DATABASE, () -> Catalog.foreignKeys(connection, provider, customer));
+        assertFailure(
+            Failure.WRONG_DATABASE, () -> Catalog.indexes(connection, provider, customer));
         var spaced = new Database(TestServer.SPACED_DATABASE, false);
         assertEquals(
             new Schema(spaced, "public", false),
@@ -506,6 +513,9 @@ class CatalogServerTest {
             Catalog.columns(connection, provider, table).stream()
                 .map(Column::keyPosition)
                 .toList());
+        assertEquals(
+            List.of(new Index("included_pkey", table, List.of("id"), true, true)),
+            Catalog.indexes(connection, provider, table));
       } finally {
         execute(connection, "DROP TABLE included");
       }
@@ -961,6 +971,189 @@ class CatalogServerTest {
             "DROP USER IF EXISTS 'fk_col_reader'@'%'",
             "DROP TABLE IF EXISTS hoori.fk_col_child",
             "DROP TABLE IF EXISTS hoori.fk_col_parent");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void sampleIndexesAreReadPrimaryFirstAndRecordedAsCatalogReads(Provider provider)
+      throws Exception {
+    var server = TestServer.of(provider);
+    var container = sample(provider);
+    var customer = new Table(container, "customer", Kind.TABLE);
+    var line = new Table(container, "purchase_line", Kind.TABLE);
+    var reading = new Table(container, "reading", Kind.TABLE);
+    var view = new Table(container, "active_customer", Kind.VIEW);
+    boolean pg = provider == Provider.POSTGRESQL;
+    try (var connection = open(server, TestServer.DATABASE)) {
+      var recorded = new CopyOnWriteArrayList<Sent>();
+      var customerIndexes =
+          Journal.recording(recorded::add, () -> Catalog.indexes(connection, provider, customer));
+      assertEquals(
+          List.of(
+              new Index(pg ? "customer_pkey" : "PRIMARY", customer, List.of("id"), true, true),
+              new Index("customer_email_idx", customer, List.of("email"), true, false)),
+          customerIndexes);
+      assertEquals(1, recorded.size(), recorded.toString());
+      assertEquals(Purpose.CATALOG, recorded.getFirst().purpose());
+      assertEquals(Outcome.rows(2), recorded.getFirst().outcome());
+
+      assertEquals(
+          List.of(
+              new Index(pg ? "reading_pkey" : "PRIMARY", reading, List.of("id"), true, true),
+              new Index(
+                  "reading_label_amount_idx", reading, List.of("label", "amount"), false, false)),
+          Catalog.indexes(connection, provider, reading));
+
+      assertEquals(
+          List.of(new Index(
+              pg ? "purchase_line_pkey" : "PRIMARY",
+              line,
+              List.of("purchase_id", "line"),
+              true,
+              true)),
+          Catalog.indexes(connection, provider, line));
+
+      recorded.clear();
+      assertEquals(
+          List.of(),
+          Journal.recording(recorded::add, () -> Catalog.indexes(connection, provider, view)));
+      assertTrue(recorded.isEmpty(), recorded.toString());
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void compositeUniqueExpressionAndEmptyTableIndexesAreRead(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var container = sample(provider);
+    var indexed = new Table(container, "idx_sample", Kind.TABLE);
+    var plain = new Table(container, "idx_none", Kind.TABLE);
+    try (var connection = open(server, TestServer.DATABASE)) {
+      execute(
+          connection,
+          "CREATE TABLE idx_none (a integer)",
+          "CREATE TABLE idx_sample ("
+              + "a integer NOT NULL, "
+              + "b integer NOT NULL, "
+              + "c varchar(40), "
+              + "d integer, "
+              + "PRIMARY KEY (b, a))",
+          "CREATE INDEX idx_z_plain ON idx_sample (d, c)",
+          "CREATE UNIQUE INDEX idx_a_unique ON idx_sample (c, d)");
+      if (provider == Provider.POSTGRESQL) {
+        execute(
+            connection,
+            "CREATE INDEX idx_m_expr ON idx_sample (lower(c), a) INCLUDE (d)",
+            "CREATE INDEX idx_n_long ON idx_sample"
+                + " ((coalesce(c, 'longer than the sixty-three bytes of a name')))");
+      } else if (provider == Provider.MYSQL) {
+        execute(connection, "CREATE INDEX idx_m_expr ON idx_sample ((lower(c)), a)");
+      }
+      try {
+        assertEquals(List.of(), Catalog.indexes(connection, provider, plain));
+        var indexes = Catalog.indexes(connection, provider, indexed);
+        var expected = new ArrayList<Index>();
+        expected.add(new Index(
+            provider == Provider.POSTGRESQL ? "idx_sample_pkey" : "PRIMARY",
+            indexed,
+            List.of("b", "a"),
+            true,
+            true));
+        expected.add(new Index("idx_a_unique", indexed, List.of("c", "d"), true, false));
+        if (provider == Provider.POSTGRESQL) {
+          expected.add(
+              new Index("idx_m_expr", indexed, List.of("lower(c::text)", "a"), false, false));
+        } else if (provider == Provider.MYSQL) {
+          // Verify expression index separately below since MySQL formats expressions with
+          // backticks.
+        }
+        expected.add(new Index("idx_z_plain", indexed, List.of("d", "c"), false, false));
+        if (provider == Provider.MYSQL) {
+          assertEquals(
+              List.of("PRIMARY", "idx_a_unique", "idx_m_expr", "idx_z_plain"),
+              indexes.stream().map(Index::name).toList());
+          assertEquals(expected.get(0), indexes.get(0));
+          assertEquals(expected.get(1), indexes.get(1));
+          var expr = indexes.get(2);
+          assertFalse(expr.unique());
+          assertFalse(expr.primary());
+          assertEquals(2, expr.columns().size(), expr.columns().toString());
+          assertTrue(
+              expr.columns().getFirst().toLowerCase().contains("lower"),
+              expr.columns().toString());
+          assertEquals("a", expr.columns().get(1));
+          assertEquals(expected.get(2), indexes.get(3));
+        } else if (provider == Provider.POSTGRESQL) {
+          // An expression longer than a name comes whole.
+          var longest = indexes.get(3);
+          assertEquals("idx_n_long", longest.name());
+          assertTrue(
+              longest.columns().getFirst().contains("sixty-three bytes of a name'"),
+              longest.columns().toString());
+          var rest = new ArrayList<>(indexes);
+          rest.remove(3);
+          assertEquals(expected, rest);
+        } else {
+          assertEquals(expected, indexes);
+        }
+      } finally {
+        execute(connection, "DROP TABLE IF EXISTS idx_sample", "DROP TABLE IF EXISTS idx_none");
+      }
+    }
+  }
+
+  @Test
+  void aPartitionedPostgresqlTableListsItsIndexes() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var schema = sample(provider);
+    var table = new Table(schema, "idx_part", Kind.TABLE);
+    try (var connection = open(TestServer.of(provider), TestServer.DATABASE)) {
+      execute(
+          connection,
+          "CREATE TABLE idx_part (id integer, code varchar(20), PRIMARY KEY (id))"
+              + " PARTITION BY RANGE (id)",
+          "CREATE TABLE idx_part_1 PARTITION OF idx_part FOR VALUES FROM (0) TO (100)",
+          "CREATE INDEX idx_part_code ON idx_part (code)");
+      try {
+        assertEquals(
+            List.of(
+                new Index("idx_part_pkey", table, List.of("id"), true, true),
+                new Index("idx_part_code", table, List.of("code"), false, false)),
+            Catalog.indexes(connection, provider, table));
+      } finally {
+        execute(connection, "DROP TABLE IF EXISTS idx_part");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = Provider.class,
+      names = {"MARIADB", "MYSQL"})
+  void tablesWhoseNamesDifferOnlyInCaseKeepTheirOwnIndexes(Provider provider) throws Exception {
+    var server = TestServer.of(provider);
+    var lower = new Table(HOORI, "idx_case", Kind.TABLE);
+    var upper = new Table(HOORI, "IDX_CASE", Kind.TABLE);
+    try (var connection = open(server, TestServer.DATABASE)) {
+      execute(
+          connection,
+          "CREATE TABLE `idx_case` (id integer PRIMARY KEY, a integer, KEY idx_lo (a))",
+          "CREATE TABLE `IDX_CASE` (id integer PRIMARY KEY, b integer, KEY idx_hi (b))");
+      try {
+        assertEquals(
+            List.of(
+                new Index("PRIMARY", lower, List.of("id"), true, true),
+                new Index("idx_lo", lower, List.of("a"), false, false)),
+            Catalog.indexes(connection, provider, lower));
+        assertEquals(
+            List.of(
+                new Index("PRIMARY", upper, List.of("id"), true, true),
+                new Index("idx_hi", upper, List.of("b"), false, false)),
+            Catalog.indexes(connection, provider, upper));
+      } finally {
+        execute(connection, "DROP TABLE IF EXISTS `idx_case`", "DROP TABLE IF EXISTS `IDX_CASE`");
       }
     }
   }

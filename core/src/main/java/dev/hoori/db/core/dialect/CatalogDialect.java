@@ -70,6 +70,15 @@ public interface CatalogDialect {
   String foreignKeys();
 
   /**
+   * The indexes of the table in the schema or database named, taking the container name and table
+   * name. Each row is one key position: index name, column name or expression, whether the index is
+   * unique and whether it is the primary key. Non-key included columns are omitted. Rows are
+   * ordered with the primary key first, then by index name, and by key order within each index so
+   * that each index's columns are consecutive and in key order.
+   */
+  String indexes();
+
+  /**
    * Whether the server treats {@code RESTRICT} as {@code NO ACTION} and reports it for an
    * unspecified referential action, as MariaDB and MySQL do.
    */

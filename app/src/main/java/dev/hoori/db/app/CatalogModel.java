@@ -61,6 +61,16 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
     if (node instanceof Node.OfKey) {
       return Tree.ready(List.of());
     }
+    if (node instanceof Node.Indexes(var id, var table)) {
+      var indexes = live.indexes.get(table);
+      return Tree.ready(
+          indexes == null
+              ? List.of()
+              : indexes.stream().map(i -> (Node) new Node.OfIndex(id, table, i)).toList());
+    }
+    if (node instanceof Node.OfIndex) {
+      return Tree.ready(List.of());
+    }
     if (CatalogTree.failedWhole(live, node)) {
       return CatalogTree.ended(live.phase)
           ? Tree.ready(List.of(new Node.Problem(node)))
@@ -70,10 +80,18 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
     if (level instanceof CatalogTree.Read(var children)) {
       if (node instanceof Node.OfTable(var id, var table)) {
         var keys = live.keys.get(table);
-        if (keys != null && !keys.isEmpty()) {
-          var all = new ArrayList<Node>(children.size() + 1);
+        var indexes = live.indexes.get(table);
+        boolean hasKeys = keys != null && !keys.isEmpty();
+        boolean hasIndexes = indexes != null && !indexes.isEmpty();
+        if (hasKeys || hasIndexes) {
+          var all = new ArrayList<Node>(children.size() + 2);
           all.addAll(children);
-          all.add(new Node.ForeignKeys(id, table));
+          if (hasKeys) {
+            all.add(new Node.ForeignKeys(id, table));
+          }
+          if (hasIndexes) {
+            all.add(new Node.Indexes(id, table));
+          }
           return Tree.ready(all);
         }
       }
@@ -100,6 +118,7 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
     return node instanceof Node.Query
         || node instanceof Node.OfColumn
         || node instanceof Node.OfKey
+        || node instanceof Node.OfIndex
         || node instanceof Node.Problem;
   }
 
@@ -144,6 +163,11 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       case Node.ForeignKeys _ -> icon(Symbol.LINK, false);
       case Node.KeyGroup n -> icon(n.incoming() ? Symbol.ARROW_LEFT : Symbol.ARROW_RIGHT, false);
       case Node.OfKey _ -> icon(Symbol.LINK, false);
+      case Node.Indexes _ -> icon(Symbol.KEY_MULTIPLE, false);
+      case Node.OfIndex n ->
+        n.index().primary()
+            ? Icon.icon(Symbol.KEY, Icon.Variant.WARNING)
+            : icon(Symbol.KEY_MULTIPLE, false);
       case Node.Problem n -> Icon.icon(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
     };
   }

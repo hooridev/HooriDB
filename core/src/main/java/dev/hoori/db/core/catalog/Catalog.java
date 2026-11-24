@@ -217,6 +217,49 @@ public final class Catalog {
         .toList();
   }
 
+  /**
+   * The indexes of {@code table}, primary key first and then by name, each with its key columns or
+   * expressions in key order. Views and foreign tables have none and return an empty list without
+   * querying the server.
+   */
+  public static List<Index> indexes(Connection connection, Provider provider, Table table)
+      throws CatalogException {
+    if (table.kind() != Table.Kind.TABLE) {
+      return List.of();
+    }
+    requireConnectedTo(connection, provider, table.container().database());
+    var catalog = provider.dialect().catalog();
+    Row<Index> part = rows -> {
+      var column = rows.getString(2);
+      return new Index(
+          rows.getString(1),
+          table,
+          column == null ? List.of() : List.of(column),
+          rows.getBoolean(3),
+          rows.getBoolean(4));
+    };
+    var parts = query(
+        connection, provider, catalog.indexes(), part, table.container().name(), table.name());
+    // An index of several columns comes as consecutive rows, one per key position.
+    var merged = new ArrayList<Index>();
+    for (var next : parts) {
+      var last = merged.isEmpty() ? null : merged.getLast();
+      if (last != null && last.name().equals(next.name())) {
+        merged.set(
+            merged.size() - 1,
+            new Index(
+                last.name(),
+                last.table(),
+                concat(last.columns(), next.columns()),
+                last.unique(),
+                last.primary()));
+      } else {
+        merged.add(next);
+      }
+    }
+    return List.copyOf(merged);
+  }
+
   private static ForeignKey.Rule rule(String word) {
     return word == null ? null : ForeignKey.Rule.valueOf(word.replace(' ', '_'));
   }

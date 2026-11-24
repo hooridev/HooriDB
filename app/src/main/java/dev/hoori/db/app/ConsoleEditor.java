@@ -11,6 +11,7 @@ import com.rethinkj.ui.kit.MarkdownDocument;
 import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
@@ -34,6 +35,8 @@ import java.util.Map;
  * read. Only the app's thread uses it.
  */
 final class ConsoleEditor {
+
+  private static final String PRIMARY_KEY = " · primary key";
 
   private static final String ERROR_LAYER = "error";
   private static final String STATEMENTS_LAYER = "statements";
@@ -244,7 +247,8 @@ final class ConsoleEditor {
     }
     return switch (target) {
       case Target.OfTable(var table) ->
-        tableDoc(table, known.columns(table), known.foreignKeys(table), provider);
+        tableDoc(
+            table, known.columns(table), known.foreignKeys(table), known.indexes(table), provider);
       case Target.OfColumn(var column) ->
         columnDoc(column, known.foreignKeys(column.table()), provider);
     };
@@ -401,7 +405,11 @@ final class ConsoleEditor {
   }
 
   private static MarkdownDocument tableDoc(
-      Table table, List<Column> columns, List<ForeignKey> keys, Provider provider) {
+      Table table,
+      List<Column> columns,
+      List<ForeignKey> keys,
+      List<Index> indexes,
+      Provider provider) {
     var md = new StringBuilder();
     md.append("**").append(kind(table.kind())).append("** ").append(code(qualified(table)));
     if (!columns.isEmpty()) {
@@ -413,12 +421,13 @@ final class ConsoleEditor {
         var c = columns.get(i);
         md.append("- ").append(code(c.name())).append(' ').append(code(c.type()));
         if (c.keyPosition() > 0) {
-          md.append(" · primary key");
+          md.append(PRIMARY_KEY);
         }
       }
     }
     appendKeys(md, "References", table, ForeignKeys.outgoing(table, keys), false, provider);
     appendKeys(md, "Referenced by", table, ForeignKeys.incoming(table, keys), true, provider);
+    appendIndexes(md, indexes);
     return Markdown.parse(md.toString());
   }
 
@@ -427,7 +436,7 @@ final class ConsoleEditor {
     var md = new StringBuilder();
     md.append("**Column** ").append(code(column.name())).append(' ').append(code(column.type()));
     if (column.keyPosition() > 0) {
-      md.append(" · primary key");
+      md.append(PRIMARY_KEY);
     } else if (!column.nullable()) {
       md.append(" · not null");
     }
@@ -477,6 +486,32 @@ final class ConsoleEditor {
           .append(" · ")
           .append(code(ForeignKeys.mapping(table, key, incoming)))
           .append(ForeignKeys.rules(key, provider));
+    }
+  }
+
+  private static void appendIndexes(StringBuilder md, List<Index> indexes) {
+    if (indexes.isEmpty()) {
+      return;
+    }
+    md.append("\n\n**Indexes**\n\n");
+    for (int i = 0; i < indexes.size(); i++) {
+      if (i > 0) {
+        md.append('\n');
+      }
+      var index = indexes.get(i);
+      md.append("- ").append(code(index.name())).append(" (");
+      for (int c = 0; c < index.columns().size(); c++) {
+        if (c > 0) {
+          md.append(", ");
+        }
+        md.append(code(index.columns().get(c)));
+      }
+      md.append(')');
+      if (index.primary()) {
+        md.append(PRIMARY_KEY);
+      } else if (index.unique()) {
+        md.append(" · unique");
+      }
     }
   }
 

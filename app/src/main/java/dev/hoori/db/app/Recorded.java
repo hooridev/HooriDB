@@ -5,6 +5,7 @@ import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -187,6 +188,11 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     @Override
     public List<ForeignKey> foreignKeys(Table table) throws CatalogException {
       return recorded(of(table), () -> link.foreignKeys(table));
+    }
+
+    @Override
+    public List<Index> indexes(Table table) throws CatalogException {
+      return recorded(of(table), () -> link.indexes(table));
     }
 
     @Override

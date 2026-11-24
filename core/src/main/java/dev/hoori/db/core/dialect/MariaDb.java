@@ -90,7 +90,7 @@ public final class MariaDb extends MySqlFamily {
           + " ORDER BY 1, 2");
 
   private MariaDb() {
-    super(false);
+    super(false, false);
   }
 
   @Override

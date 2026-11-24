@@ -5,6 +5,7 @@ import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -82,7 +83,9 @@ import java.util.stream.IntStream;
  * <name>} to {@code <table>_<column>_fkey}; columns on one table sharing a name form a composite
  * key in column order; unspecified rules default to {@link ForeignKey.Rule#NO_ACTION}). Reading a
  * table's foreign keys is keyed {@code foreign keys <host>/<path>}, with the path as of {@code
- * columns}.
+ * columns}. An index line under a table is written as {@code #<name> (<col1>, <col2>)
+ * [unique|primary]} (ordered primary key first, then by name). Reading a table's indexes is keyed
+ * {@code indexes <host>/<path>}, with the path as of {@code columns}.
  *
  * <p>A table has rows made up from their position, of the kinds its columns' types say, 3 unless
  * {@link #rows} says how many, or the rows {@link #values} gives. Its rows' calls are keyed {@code
@@ -779,6 +782,17 @@ final class FakeServers implements Servers {
       });
     }
 
+    @Override
+    public List<Index> indexes(Table t) throws CatalogException {
+      if (made.provider().keepsDocuments() || t.kind() != Table.Kind.TABLE) {
+        return List.of();
+      }
+      return read("indexes " + path(t), t.container().database(), () -> {
+        var table = find(container(t.container()), t.name());
+        return table == null ? List.of() : tableIndexes(t, table);
+      });
+    }
+
     private String path(Table t) {
       var c = t.container();
       return host + "/"
@@ -948,6 +962,7 @@ final class FakeServers implements Servers {
       return rows("read " + path + " " + from + "-" + to + suffix, t, isWrite(filter), table -> {
         // As core reads: the columns given must be the table's now, by name, order and type.
         var now = table.children().stream()
+            .filter(line -> !isIndexLine(line.text()))
             .map(line -> {
               var parsed = columnLine(line.text());
               return List.of(parsed.name(), parsed.type());
@@ -1168,15 +1183,88 @@ final class FakeServers implements Servers {
       return new ColumnLine(parts[0], rest.substring(0, arrow).stripTrailing(), inKey, refs);
     }
 
+    private static boolean isIndexLine(String text) {
+      return text.startsWith("#");
+    }
+
     private static List<Column> tableColumns(Table t, Outline table) {
       var list = new ArrayList<Column>();
       int key = 0;
       for (var line : table.children()) {
+        if (isIndexLine(line.text())) {
+          continue;
+        }
         var parsed = columnLine(line.text());
         list.add(new Column(
             t, parsed.name(), parsed.type(), !parsed.inKey(), parsed.inKey() ? ++key : 0));
       }
       return list;
+    }
+
+    private static List<Index> tableIndexes(Table t, Outline table) {
+      var found = new ArrayList<Index>();
+      for (var line : table.children()) {
+        var text = line.text();
+        if (!isIndexLine(text)) {
+          continue;
+        }
+        int open = text.indexOf('(');
+        int close = text.lastIndexOf(')');
+        if (open < 2 || close <= open) {
+          throw new IllegalArgumentException("Bad index: " + text);
+        }
+        var indexName = text.substring(1, open).strip();
+        var columns = splitIndexColumns(text.substring(open + 1, close));
+        if (indexName.isEmpty() || columns.isEmpty()) {
+          throw new IllegalArgumentException("Bad index: " + text);
+        }
+        var kind = text.substring(close + 1).strip().toLowerCase(Locale.ROOT);
+        boolean primary;
+        boolean unique;
+        switch (kind) {
+          case "" -> {
+            unique = false;
+            primary = false;
+          }
+          case "unique" -> {
+            unique = true;
+            primary = false;
+          }
+          case "primary" -> {
+            unique = true;
+            primary = true;
+          }
+          default -> throw new IllegalArgumentException("Bad index: " + text);
+        }
+        found.add(new Index(indexName, t, columns, unique, primary));
+      }
+      found.sort(Comparator.comparing(Index::primary).reversed().thenComparing(Index::name));
+      return List.copyOf(found);
+    }
+
+    private static List<String> splitIndexColumns(String spec) {
+      var parts = new ArrayList<String>();
+      int depth = 0;
+      int start = 0;
+      for (int i = 0; i < spec.length(); i++) {
+        char ch = spec.charAt(i);
+        if (ch == '(') {
+          depth++;
+        } else if (ch == ')') {
+          depth--;
+        } else if (ch == ',' && depth == 0) {
+          var part = spec.substring(start, i).strip();
+          if (!part.isEmpty()) {
+            parts.add(part);
+          }
+          start = i + 1;
+        }
+      }
+      var last = spec.substring(start).strip();
+      if (!last.isEmpty()) {
+        parts.add(last);
+      }
+      return parts;
     }
 
     private static final java.util.regex.Pattern FK_RULE = java.util.regex.Pattern.compile(
@@ -1235,6 +1323,9 @@ final class FakeServers implements Servers {
         var table = new Table(container, name(tableOutline), Table.Kind.TABLE);
         var byName = new LinkedHashMap<String, PendingKey>();
         for (var line : tableOutline.children()) {
+          if (isIndexLine(line.text())) {
+            continue;
+          }
           var parsed = columnLine(line.text());
           var references = parsed.references();
           for (int r = 0; r < references.size(); r++) {

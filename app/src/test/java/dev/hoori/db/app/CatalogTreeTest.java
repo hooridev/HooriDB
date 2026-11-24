@@ -1388,5 +1388,142 @@ class CatalogTreeTest {
     assertFalse(
         servers.calls.stream().anyMatch(c -> c.startsWith("foreign keys ")),
         servers.calls.toString());
+    assertFalse(
+        servers.calls.stream().anyMatch(c -> c.startsWith("indexes ")), servers.calls.toString());
+  }
+
+  static final String INDEX_OUTLINE = """
+      shop
+        public
+          customers
+            *id: integer
+            email: text
+            #customers_email_uidx (email) unique
+            #customers_pkey (id) primary
+          orders
+            *id: bigint
+            customer_id: integer > customers.id on delete cascade
+            placed_at: timestamp
+            code: text
+            #orders_customer_placed_idx (customer_id, placed_at)
+            #orders_code_expr_idx (lower(code)) unique
+            #orders_pkey (id) primary
+          notes
+            body: text
+      """;
+
+  @Test
+  void indexesShowUnderIndexesNodeBesideForeignKeysWithDetailsIconsAndCopyName() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", INDEX_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("Indexes")
+            + open("notes")
+            + SETTLE
+            + "snap indexes-tree\n");
+    var idxTree = tree("indexes-tree");
+    assertEquals(
+        List.of(
+            "shop-prod",
+            "  shop",
+            "    public",
+            "      customers",
+            "      orders",
+            "        id",
+            "        customer_id",
+            "        placed_at",
+            "        code",
+            "        Foreign keys",
+            "        Indexes",
+            "          orders_pkey",
+            "          orders_code_expr_idx",
+            "          orders_customer_placed_idx",
+            "      notes",
+            "        body"),
+        rows(idxTree));
+
+    // Icons and muted details for Indexes and its leaf entries.
+    assertTrue(
+        row(idxTree, "Indexes").contains("label=\"" + Symbol.KEY_MULTIPLE.label() + "\""),
+        row(idxTree, "Indexes"));
+    assertTrue(
+        row(idxTree, "orders_pkey").contains("label=\"" + Symbol.KEY.label() + "\""),
+        row(idxTree, "orders_pkey"));
+    assertTrue(
+        row(idxTree, "orders_pkey").contains("\"(id) · primary key\""),
+        row(idxTree, "orders_pkey"));
+    assertTrue(
+        row(idxTree, "orders_code_expr_idx")
+            .contains("label=\"" + Symbol.KEY_MULTIPLE.label() + "\""),
+        row(idxTree, "orders_code_expr_idx"));
+    assertTrue(
+        row(idxTree, "orders_code_expr_idx").contains("\"(lower(code)) · unique\""),
+        row(idxTree, "orders_code_expr_idx"));
+    assertTrue(
+        row(idxTree, "orders_customer_placed_idx").contains("\"(customer_id, placed_at)\""),
+        row(idxTree, "orders_customer_placed_idx"));
+
+    // Enter on an index row opens no tab; Copy name copies the index name.
+    int tabsBefore = app.state().tabs.main().active().tabs().size();
+    run(
+        app,
+        "press role=treeitem label=\"orders_customer_placed_idx\"\nkey Enter\nframe\n"
+            + menu("orders_customer_placed_idx", "Copy name"));
+    assertEquals(tabsBefore, app.state().tabs.main().active().tabs().size());
+    assertEquals("orders_customer_placed_idx", app.clipboard().read());
+
+    // Refresh on Indexes refreshes the parent table and re-reads its indexes.
+    var ordersIdx = "indexes " + PG + "/shop.public.orders";
+    assertEquals(
+        1, servers.calls.stream().filter(ordersIdx::equals).count(), servers.calls.toString());
+    run(app, menu("Indexes", "Refresh") + SETTLE);
+    assertEquals(
+        2, servers.calls.stream().filter(ordersIdx::equals).count(), servers.calls.toString());
+  }
+
+  @Test
+  void refreshReadsIndexesAgainAndIndexFailureKeepsColumnsAndForeignKeys() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", INDEX_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var customersIdx = "indexes " + PG + "/shop.public.customers";
+    servers.fail(customersIdx, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("customers")
+            + SETTLE
+            + "snap initial\n");
+    var initial = tree("initial");
+    assertTrue(rows(initial).contains("        email"), initial);
+    assertTrue(rows(initial).contains("        Foreign keys"), initial);
+    assertFalse(rows(initial).contains("        Indexes"), initial);
+    var pub = new dev.hoori.db.core.catalog.Schema(
+        new dev.hoori.db.core.catalog.Database("shop", false), "public", false);
+    var customers = new dev.hoori.db.core.catalog.Table(
+        pub, "customers", dev.hoori.db.core.catalog.Table.Kind.TABLE);
+    assertEquals(null, app.state().catalog.indexes(SHOP.id(), customers));
+
+    servers.heal(customersIdx);
+    run(app, menu("customers", "Refresh") + SETTLE + "snap healed\n");
+    assertEquals(2, app.state().catalog.indexes(SHOP.id(), customers).size());
+    assertTrue(rows(tree("healed")).contains("        Indexes"), tree("healed"));
   }
 }
