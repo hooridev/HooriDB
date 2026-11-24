@@ -8,6 +8,7 @@ import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.ForeignKey.Rule;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.catalog.Table.Kind;
@@ -215,5 +216,54 @@ class FakeServersTest {
             """);
     var badLink = bad.open(profile.withHost("pg-bad"), new char[0], null, TIMEOUT);
     assertThrows(IllegalArgumentException.class, () -> badLink.foreignKeys(orders));
+  }
+
+  @Test
+  void indexOutlineSupportsPrimaryUniqueCompositeAndExpressionIndexes() throws Exception {
+    var servers = new FakeServers().serve("pg-idx", Provider.POSTGRESQL, "18.0", """
+            shop
+              public
+                orders
+                  *id: integer
+                  customer_id: integer
+                  code: text
+                  #orders_z_idx (customer_id, id)
+                  #orders_code_uidx (lower(code), coalesce(customer_id, 0)) unique
+                  #orders_pkey (id) primary
+                @recent_orders
+                  id: integer
+            """);
+    var profile = ConnectionProfile.of(Provider.POSTGRESQL)
+        .withHost("pg-idx")
+        .withDatabase("shop")
+        .withUser("hoori");
+    var link = servers.open(profile, new char[0], null, TIMEOUT);
+    var pub = new Schema(new Database("shop", false), "public", false);
+    var orders = new Table(pub, "orders", Kind.TABLE);
+    var view = new Table(pub, "recent_orders", Kind.VIEW);
+
+    // Index lines are ignored by columns().
+    assertEquals(
+        List.of("id", "customer_id", "code"),
+        link.columns(orders).stream().map(Column::name).toList());
+
+    var recorded = new CopyOnWriteArrayList<Sent>();
+    var indexes = Journal.recording(recorded::add, () -> link.indexes(orders));
+    assertEquals(
+        List.of(
+            new Index("orders_pkey", orders, List.of("id"), true, true),
+            new Index(
+                "orders_code_uidx",
+                orders,
+                List.of("lower(code)", "coalesce(customer_id, 0)"),
+                true,
+                false),
+            new Index("orders_z_idx", orders, List.of("customer_id", "id"), false, false)),
+        indexes);
+    assertTrue(
+        servers.calls.contains("indexes pg-idx/shop.public.orders"), servers.calls.toString());
+    assertEquals(1, recorded.size());
+    assertEquals(Purpose.CATALOG, recorded.getFirst().purpose());
+    assertEquals(List.of(), link.indexes(view));
   }
 }

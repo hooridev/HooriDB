@@ -3,6 +3,7 @@ package dev.hoori.db.app;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.TabGroups;
 import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -44,6 +45,8 @@ final class Live {
   final Map<Node, CatalogTree.Level> levels = new HashMap<>();
   // All foreign keys touching each table (both directions), read lazily with its columns.
   final Map<Table, List<ForeignKey>> keys = new HashMap<>();
+  // Indexes of each table, read lazily with its columns.
+  final Map<Table, List<Index>> indexes = new HashMap<>();
   // When the keys of a table, or of the tables below a node, were last forgotten, by a count that
   // rises with each forgetting; a read asked before then must not put the old keys back.
   final Map<Node, Long> forgotten = new HashMap<>();

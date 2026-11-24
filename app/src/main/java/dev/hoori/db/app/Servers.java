@@ -6,6 +6,7 @@ import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -108,6 +109,8 @@ interface Servers {
     List<Column> columns(Table table) throws CatalogException;
 
     List<ForeignKey> foreignKeys(Table table) throws CatalogException;
+
+    List<Index> indexes(Table table) throws CatalogException;
 
     /** The server's estimate of the table's rows, or empty where it has none, as {@link Rows}. */
     default OptionalLong estimate(Table table) throws QueryException {
@@ -309,6 +312,11 @@ interface Servers {
 
     @Override
     public List<ForeignKey> foreignKeys(Table table) {
+      return List.of();
+    }
+
+    @Override
+    public List<Index> indexes(Table table) {
       return List.of();
     }
 
@@ -575,6 +583,12 @@ interface Servers {
     public List<ForeignKey> foreignKeys(Table table) throws CatalogException {
       readable();
       return Catalog.foreignKeys(connection, provider, table);
+    }
+
+    @Override
+    public List<Index> indexes(Table table) throws CatalogException {
+      readable();
+      return Catalog.indexes(connection, provider, table);
     }
 
     @Override

@@ -658,6 +658,9 @@ class TableTabForeignKeyTest {
     assertNull(
         app.state().catalog.foreignKeys(orders.id, orders.table),
         "in-flight tree read must not restore stale keys after grid Refresh");
+    assertNotNull(
+        app.state().catalog.indexes(orders.id, orders.table),
+        "a grid Refresh forgets keys alone, so the tree read's indexes stay");
 
     // Next context menu reads keys anew and does not offer the dropped key.
     c.run(app, rightClick(0, 2) + SETTLE + "snap after-tree-race\n");

@@ -24,8 +24,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   private final CatalogDialect catalog;
   private final ErrorDialect errors = new Errors();
 
-  MySqlFamily(boolean flagsHiddenIndexColumns) {
-    catalog = new Catalog(flagsHiddenIndexColumns);
+  MySqlFamily(boolean flagsHiddenIndexColumns, boolean functionalIndexExpressions) {
+    catalog = new Catalog(flagsHiddenIndexColumns, functionalIndexExpressions);
   }
 
   @Override
@@ -212,9 +212,11 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
         + " AND c.COLUMN_NAME = CAST(h.COLUMN_NAME AS BINARY)))";
 
     private final boolean flagHiddenIndexColumns;
+    private final boolean functionalIndexExpressions;
 
-    Catalog(boolean flagHiddenIndexColumns) {
+    Catalog(boolean flagHiddenIndexColumns, boolean functionalIndexExpressions) {
       this.flagHiddenIndexColumns = flagHiddenIndexColumns;
+      this.functionalIndexExpressions = functionalIndexExpressions;
     }
 
     @Override
@@ -319,6 +321,20 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           + ") f"
           + " ORDER BY CAST(CONSTRAINT_NAME AS BINARY), CAST(TABLE_SCHEMA AS BINARY),"
           + " CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION";
+    }
+
+    // MySQL 8+ stores functional key parts with COLUMN_NAME NULL and an EXPRESSION column, which
+    // MariaDB lacks. Exact binary comparisons and sort prevent names that differ only in case or
+    // accents from matching or interleaving.
+    @Override
+    public String indexes() {
+      var column = functionalIndexExpressions ? "COALESCE(COLUMN_NAME, EXPRESSION)" : "COLUMN_NAME";
+      return "SELECT INDEX_NAME, " + column + ", NON_UNIQUE = 0,"
+          + " INDEX_NAME = CAST('PRIMARY' AS BINARY)"
+          + " FROM information_schema.STATISTICS"
+          + " WHERE TABLE_SCHEMA = CAST(? AS BINARY) AND TABLE_NAME = CAST(? AS BINARY)"
+          + " ORDER BY INDEX_NAME = CAST('PRIMARY' AS BINARY) DESC,"
+          + " CAST(INDEX_NAME AS BINARY), SEQ_IN_INDEX";
     }
 
     @Override

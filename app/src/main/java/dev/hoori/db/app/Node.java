@@ -3,6 +3,7 @@ package dev.hoori.db.app;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -115,6 +116,22 @@ sealed interface Node {
     @Override
     public Node parent() {
       return new KeyGroup(id, table, incoming);
+    }
+  }
+
+  /** The node holding a table's indexes, under its {@link OfTable} row. */
+  record Indexes(UUID id, Table table) implements Node {
+    @Override
+    public Node parent() {
+      return new OfTable(id, table);
+    }
+  }
+
+  /** One index of a table, under its {@link Indexes} row. */
+  record OfIndex(UUID id, Table table, Index index) implements Node {
+    @Override
+    public Node parent() {
+      return new Indexes(id, table);
     }
   }
 

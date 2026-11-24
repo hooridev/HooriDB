@@ -51,6 +51,21 @@ class CatalogTest {
   }
 
   @Test
+  void viewsAndForeignTablesHaveNoIndexesWithoutQueryingTheServer() throws Exception {
+    var database = new Database("hoori", false);
+    var schema = new Schema(database, "public", false);
+    assertEquals(
+        List.of(),
+        Catalog.indexes(null, Provider.POSTGRESQL, new Table(schema, "v", Table.Kind.VIEW)));
+    assertEquals(
+        List.of(),
+        Catalog.indexes(null, Provider.POSTGRESQL, new Table(schema, "f", Table.Kind.FOREIGN)));
+    assertEquals(
+        List.of(),
+        Catalog.indexes(null, Provider.MYSQL, new Table(database, "v", Table.Kind.VIEW)));
+  }
+
+  @Test
   void aQueryThatACancelDoesNotStopAbortsTheConnection() throws Exception {
     var executing = new CountDownLatch(1);
     var closed = new CountDownLatch(1);

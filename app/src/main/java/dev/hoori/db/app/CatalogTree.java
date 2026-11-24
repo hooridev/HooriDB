@@ -14,6 +14,7 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -394,19 +395,31 @@ final class CatalogTree {
     read(s, live, new Node.Connection(live.id()));
   }
 
-  /** A table's columns and, unless that read failed alone, its foreign keys in both directions. */
-  private record TableRead(List<Column> columns, List<ForeignKey> keys) {}
+  /**
+   * A table's columns and, unless either read failed alone, its foreign keys in both directions
+   * and its indexes.
+   */
+  private record TableRead(List<Column> columns, List<ForeignKey> keys, List<Index> indexes) {}
 
   private static TableRead readTable(Servers.Link link, Table table) throws CatalogException {
     var columns = link.columns(table);
+    List<ForeignKey> keys = null;
     try {
-      return new TableRead(columns, link.foreignKeys(table));
+      keys = link.foreignKeys(table);
     } catch (CatalogException e) {
-      if (readAlone(e) && !Thread.currentThread().isInterrupted()) {
-        return new TableRead(columns, null);
+      if (!readAlone(e) || Thread.currentThread().isInterrupted()) {
+        throw e;
       }
-      throw e;
     }
+    List<Index> indexes = null;
+    try {
+      indexes = link.indexes(table);
+    } catch (CatalogException e) {
+      if (!readAlone(e) || Thread.currentThread().isInterrupted()) {
+        throw e;
+      }
+    }
+    return new TableRead(columns, keys, indexes);
   }
 
   private static List<Node> columnNodes(UUID id, List<Column> columns) {
@@ -432,6 +445,10 @@ final class CatalogTree {
         live.levels.put(node, new Read(columnNodes(id, found.columns())));
         if (found.keys() != null && !forgottenSince(live, table, asked)) {
           live.keys.put(table, found.keys());
+        }
+        // Forgetting a table's keys leaves its indexes: they follow its columns.
+        if (found.indexes() != null) {
+          live.indexes.put(table, found.indexes());
         }
       });
       return;
@@ -490,6 +507,8 @@ final class CatalogTree {
           Node.ForeignKeys _,
           Node.KeyGroup _,
           Node.OfKey _,
+          Node.Indexes _,
+          Node.OfIndex _,
           Node.Problem _,
           Node.Folder _,
           Node.Query _ -> null;
@@ -573,11 +592,15 @@ final class CatalogTree {
         "read the columns of " + table.name(),
         link -> readTable(link, table),
         found -> {
-          if (unread(live.levels.get(node))) {
+          var columnsUnread = unread(live.levels.get(node));
+          if (columnsUnread) {
             live.levels.put(node, new Read(columnNodes(id, found.columns())));
           }
           if (found.keys() != null && !forgottenSince(live, table, asked)) {
             live.keys.put(table, found.keys());
+          }
+          if (found.indexes() != null && (columnsUnread || !live.indexes.containsKey(table))) {
+            live.indexes.put(table, found.indexes());
           }
         });
   }
@@ -889,6 +912,12 @@ final class CatalogTree {
     return live == null ? null : live.keys.get(table);
   }
 
+  /** The table's indexes as the tree read them, or null where it has not. */
+  List<Index> indexes(UUID id, Table table) {
+    var live = lives.get(id);
+    return live == null ? null : live.indexes.get(table);
+  }
+
   /**
    * The table's foreign keys as read elsewhere, cached for the tree, consoles and table tabs
    * unless they were forgotten after the read was asked, at {@code asked}, a {@link
@@ -1050,6 +1079,8 @@ final class CatalogTree {
       case Node.ForeignKeys n -> n.table().container().database().name();
       case Node.KeyGroup n -> n.table().container().database().name();
       case Node.OfKey n -> n.table().container().database().name();
+      case Node.Indexes n -> n.table().container().database().name();
+      case Node.OfIndex n -> n.table().container().database().name();
       case Node.Problem(var of) -> database(of);
     };
   }
@@ -1093,6 +1124,7 @@ final class CatalogTree {
       }
     }
     live.keys.keySet().removeIf(t -> new Node.OfTable(node.id(), t).within(node));
+    live.indexes.keySet().removeIf(t -> new Node.OfTable(node.id(), t).within(node));
     forget(live, node);
     Lane.cancel(gone);
     if (node instanceof Node.Connection) {
@@ -1207,6 +1239,7 @@ final class CatalogTree {
     Lane.cancel(gone);
     live.levels.clear();
     live.keys.clear();
+    live.indexes.clear();
     if (live.lane != null) {
       live.lane.close();
       live.lane = null;
@@ -1321,6 +1354,8 @@ final class CatalogTree {
       case Node.ForeignKeys _ -> "Foreign keys";
       case Node.KeyGroup n -> n.incoming() ? "Referenced by" : "References";
       case Node.OfKey n -> n.key().name();
+      case Node.Indexes _ -> "Indexes";
+      case Node.OfIndex n -> n.index().name();
       case Node.Problem(var of) -> name(s, of);
     };
   }
@@ -1345,10 +1380,22 @@ final class CatalogTree {
         yield ForeignKeys.detail(
             n.table(), n.key(), n.incoming(), profile == null ? null : profile.provider());
       }
+      case Node.OfIndex n -> indexDetail(n.index());
       case Node.Connection(var id) -> s.profile(id).provider().displayName();
       case Node.Query(var id) -> QueryDialog.languageLabel(s.query(id).language());
       default -> null;
     };
+  }
+
+  private static String indexDetail(Index index) {
+    var columns = "(" + String.join(", ", index.columns()) + ")";
+    if (index.primary()) {
+      return columns + " · primary key";
+    }
+    if (index.unique()) {
+      return columns + " · unique";
+    }
+    return columns;
   }
 
   /**
@@ -1555,6 +1602,11 @@ final class CatalogTree {
                 "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
             .icon(Symbol.ARROW_CLOCKWISE));
       case Node.OfKey _ -> List.of(copy);
+      case Node.Indexes(var id, var table) ->
+        List.of(Menu.item(
+                "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
+            .icon(Symbol.ARROW_CLOCKWISE));
+      case Node.OfIndex _ -> List.of(copy);
       default -> List.of(refresh, copy);
     };
   }

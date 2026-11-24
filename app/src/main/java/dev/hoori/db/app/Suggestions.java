@@ -4,6 +4,7 @@ import com.rethinkj.ui.kit.Completion;
 import com.rethinkj.ui.kit.Icon;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
@@ -414,6 +415,18 @@ final class Suggestions {
         return List.of();
       }
       return keys;
+    }
+
+    /** The table's indexes, primary key first; none yet where it reads them now. */
+    List<Index> indexes(Table table) {
+      var indexes = s.catalog.indexes(connection, table);
+      if (indexes == null) {
+        if (live != null) {
+          want(new Node.OfTable(connection, table));
+        }
+        return List.of();
+      }
+      return indexes;
     }
   }
 }

@@ -93,7 +93,7 @@ public final class MySql extends MySqlFamily {
           + " ORDER BY 1, 2");
 
   private MySql() {
-    super(true);
+    super(true, true);
   }
 
   @Override

@@ -377,6 +377,30 @@ public final class PostgreSql implements Dialect {
           + " END";
     }
 
+    // Key columns only (up to indnkeyatts, omitting INCLUDE columns); ordinary columns use their
+    // unquoted attname while expression key parts (attnum = 0) come from pg_get_indexdef, as text,
+    // which a name would cut at 63 bytes. Not yet valid indexes count, as psql's \d shows them.
+    @Override
+    public String indexes() {
+      return "SELECT ic.relname,"
+          + " COALESCE(a.attname::pg_catalog.text,"
+          + " pg_catalog.pg_get_indexdef(i.indexrelid, k.pos::pg_catalog.int4, true)),"
+          + " i.indisunique, i.indisprimary"
+          + " FROM pg_catalog.pg_index i"
+          + " JOIN pg_catalog.pg_class c ON c.oid" + EQ + "i.indrelid"
+          + JOIN_SCHEMA
+          + " JOIN pg_catalog.pg_class ic ON ic.oid" + EQ + "i.indexrelid"
+          + " CROSS JOIN LATERAL pg_catalog.unnest(i.indkey) WITH ORDINALITY AS k (attnum, pos)"
+          + " LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid" + EQ + "i.indrelid"
+          + " AND a.attnum" + EQ + "k.attnum"
+          + " AND k.attnum OPERATOR(pg_catalog.>) 0"
+          + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "?"
+          + " AND c.relkind" + EQ + "ANY ('{r,p}'::pg_catalog.\"char\"[])"
+          + " AND k.pos OPERATOR(pg_catalog.<=) i.indnkeyatts"
+          + " AND i.indislive"
+          + " ORDER BY i.indisprimary DESC, ic.relname, k.pos";
+    }
+
     @Override
     public boolean restrictIsNoAction() {
       return false;
