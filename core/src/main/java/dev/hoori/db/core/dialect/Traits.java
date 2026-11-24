@@ -1,8 +1,10 @@
 package dev.hoori.db.core.dialect;
 
 import dev.hoori.db.core.connection.Capability;
+import dev.hoori.db.core.connection.ConnectionString;
 import dev.hoori.db.core.driver.Driver;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * What every provider has, whatever its servers speak: its name, port, driver and capabilities. A
@@ -29,4 +31,15 @@ public sealed interface Traits permits Dialect, DocumentDialect {
 
   /** Its driver's name as its makers call it. */
   String driverName();
+
+  /**
+   * Reads a connection string of its servers; empty where the text is not one (its scheme is not
+   * the provider's).
+   *
+   * @throws IllegalArgumentException where the text has the provider's scheme but cannot be read;
+   *     its message says what is wrong and holds none of the text
+   */
+  default Optional<ConnectionString> connectionString(String text) {
+    return Optional.empty();
+  }
 }

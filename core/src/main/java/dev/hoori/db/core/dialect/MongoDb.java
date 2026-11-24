@@ -1,6 +1,7 @@
 package dev.hoori.db.core.dialect;
 
 import dev.hoori.db.core.connection.Capability;
+import dev.hoori.db.core.connection.ConnectionString;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.ExtendedJson;
 import dev.hoori.db.core.driver.Driver;
@@ -13,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /** MongoDB, with its Java driver, through core's bridge to it. */
@@ -69,6 +71,17 @@ public final class MongoDb implements DocumentDialect {
   @Override
   public String driverName() {
     return "MongoDB Java Driver";
+  }
+
+  @Override
+  public Optional<ConnectionString> connectionString(String text) {
+    var parsed = MongoConnectionString.parse(text, defaultPort());
+    parsed.ifPresent(p -> {
+      if (!isDatabaseName(p.database()) || !isDatabaseName(p.authDatabase())) {
+        throw new IllegalArgumentException("Not a name of a database that MongoDB takes.");
+      }
+    });
+    return parsed;
   }
 
   @Override
