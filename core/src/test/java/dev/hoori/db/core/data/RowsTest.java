@@ -280,6 +280,20 @@ class RowsTest {
         berlin);
     assertEquals("(id > 0 -- active rows\n) AND \"name\" IS NOT NULL", commented);
     Rows.check(Provider.POSTGRESQL, new Rows.Filter(commented, ""), true);
+    assertEquals(
+        "(id > 0 --\n) AND `name` IS NOT NULL",
+        Rows.where(
+            Provider.MYSQL,
+            "id > 0 --",
+            List.of(new ColumnFilter(plain, new ColumnFilter.Null(false))),
+            berlin));
+    assertEquals(
+        "(note = 'a--b') AND \"name\" IS NOT NULL",
+        Rows.where(
+            Provider.POSTGRESQL,
+            "note = 'a--b'",
+            List.of(new ColumnFilter(plain, new ColumnFilter.Null(false))),
+            berlin));
 
     // MySQL and MariaDB: backticks, LOWER LIKE LOWER ESCAPE '!', REGEXP '(?i)...', CAST AS CHAR.
     var tick = new Field("na`me", "varchar(64)", Kind.TEXT);

@@ -126,6 +126,9 @@ class DocumentFiltersTest {
     Shell.document(combined);
     // A line comment at the end is ended before the generated part.
     Shell.document(DocumentFilters.filterText("{ total: 1 } // paid", List.of(f), BERLIN));
+    assertEquals(
+        "{ $and: [ { url: 'http://a' }, { customer: { $regex: 'Ada', $options: 'i' } } ] }",
+        DocumentFilters.filterText("{ url: 'http://a' }", List.of(f), BERLIN));
 
     assertEquals(
         "{ customer: { $regex: 'Ada', $options: 'i' } }",
@@ -150,6 +153,9 @@ class DocumentFiltersTest {
             new Field("amount", "decimal", Kind.DECIMAL),
             new ColumnFilter.Text(
                 ColumnFilter.Match.EQUALS, "1.00000000000000000000000000000000001")),
+        new ColumnFilter(
+            new Field("amount", "decimal", Kind.DECIMAL),
+            new ColumnFilter.Text(ColumnFilter.Match.EQUALS, "100e2147483647")),
         new ColumnFilter(count, new ColumnFilter.Text(ColumnFilter.Match.EQUALS, "abc")),
         new ColumnFilter(count, new ColumnFilter.Text(ColumnFilter.Match.EQUALS, "1.5")),
         new ColumnFilter(total, new ColumnFilter.Between("abc", "10")),

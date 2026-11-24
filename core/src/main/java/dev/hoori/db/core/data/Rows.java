@@ -899,11 +899,18 @@ public final class Rows {
     if (trimmed.isEmpty()) {
       return added;
     }
-    // A line comment at the end would take in what follows; a line break ends it.
-    var last = trimmed.substring(trimmed.lastIndexOf('\n') + 1);
-    var comment =
-        last.contains("--") || (provider.dialect().syntax().hashComments() && last.contains("#"));
-    return "(" + trimmed + (comment ? "\n" : "") + ")" + AND + added;
+    // A line comment at the end takes in what follows, which the check refuses; a line break ends
+    // it. MySQL's bare -- at the end, which needs the break it lost to strip(), passes the check.
+    var joined = "(" + trimmed + ")" + AND + added;
+    try {
+      if (!trimmed.endsWith("--")) {
+        checkClause("WHERE", joined, provider, true);
+        return joined;
+      }
+    } catch (QueryException _) {
+      // Ended below.
+    }
+    return "(" + trimmed + "\n)" + AND + added;
   }
 
   private static String condition(

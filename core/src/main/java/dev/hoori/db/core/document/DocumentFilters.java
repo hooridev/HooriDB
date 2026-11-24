@@ -91,9 +91,14 @@ public final class DocumentFilters {
       throw refused("Filter: " + e.getMessage());
     }
     // The hand-written text goes in as written, so that its form is kept.
-    // A line comment at the end would take in what follows; a line break ends it.
-    var comment = trimmed.substring(trimmed.lastIndexOf('\n') + 1).contains("//");
-    return "{ $and: [ " + trimmed + (comment ? "\n" : "") + ", " + Shell.compact(added) + " ] }";
+    var joined = "{ $and: [ " + trimmed + ", " + Shell.compact(added) + " ] }";
+    try {
+      Shell.document(joined);
+      return joined;
+    } catch (SyntaxException _) {
+      // A line comment at the end took in what follows; a line break ends it.
+      return "{ $and: [ " + trimmed + "\n, " + Shell.compact(added) + " ] }";
+    }
   }
 
   private static Document.Entry entry(ColumnFilter filter, ZoneId zone) throws QueryException {
@@ -282,8 +287,12 @@ public final class DocumentFilters {
       throw refused(name, "expects a decimal number: " + raw);
     }
     // A Decimal128 keeps 34 digits, and BSON refuses to round.
-    if (number.signum() != 0 && number.stripTrailingZeros().precision() > 34) {
-      throw refused(name, "takes at most 34 significant digits: " + raw);
+    try {
+      if (number.signum() != 0 && number.stripTrailingZeros().precision() > 34) {
+        throw refused(name, "takes at most 34 significant digits: " + raw);
+      }
+    } catch (ArithmeticException _) {
+      throw refused(name, "expects a decimal number: " + raw);
     }
     return new Bson.Decimal128(s);
   }
