@@ -228,7 +228,7 @@ class DocumentConsoleTest {
         line(collectionJson, "role=radio label=\"JSON\"").contains("checked"), collectionJson);
     assertTrue(
         line(collectionJson, "#json").contains("\\\"customer\\\": \\\"Ada\\\""), collectionJson);
-    assertFalse(collectionJson.contains("label=\"Open in console\""), collectionJson);
+    assertTrue(collectionJson.contains("label=\"Open in console\""), collectionJson);
 
     // SQL tables still open in Grid even when documentView is JSON.
     c.run(
