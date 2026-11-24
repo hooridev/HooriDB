@@ -2498,6 +2498,391 @@ class TableTabTest {
             + "press role=columnheader label=\"id\"\nframe\n"
             + "snap console-grid\n");
     assertFalse(c.tree("console-grid").contains("sort="), c.tree("console-grid"));
+    assertFalse(c.tree("console-grid").contains("#filter-0"), c.tree("console-grid"));
+  }
+
+  /** Opens the header filter popover for the given column index via Alt+ArrowDown on row 0. */
+  private static String openFilter(int column) {
+    return "press #cell-0-" + column + "\nframe\nkey ArrowDown alt\nframe\nadvance 1\nframe\n";
+  }
+
+  @Test
+  void sqlHeaderFiltersWriteWhereApplyWithChipsAndPreserveHandWrittenClause() throws Exception {
+    servers.serve(
+        PG,
+        Provider.POSTGRESQL,
+        "16.4",
+        OUTLINE.replace("      doc: jsonb\n", "      doc: jsonb\n      shape: box\n"));
+    var ada = Arrays.<Object>asList(
+        1L,
+        new BigDecimal("10.00"),
+        1.5,
+        "Ada",
+        "vip",
+        true,
+        LocalDate.of(2026, 5, 14),
+        LocalTime.of(13, 45),
+        LocalDateTime.of(2026, 5, 14, 14, 30),
+        OffsetDateTime.of(2026, 5, 14, 12, 30, 0, 0, ZoneOffset.UTC),
+        new Binary(new byte[] {1, 2}, 2),
+        "{}",
+        "(1,2)");
+    var grace = Arrays.<Object>asList(
+        2L,
+        new BigDecimal("50.00"),
+        2.5,
+        "Grace",
+        "std",
+        false,
+        LocalDate.of(2026, 6, 1),
+        LocalTime.of(9, 0),
+        LocalDateTime.of(2026, 6, 1, 9, 0),
+        OffsetDateTime.of(2026, 6, 1, 7, 0, 0, 0, ZoneOffset.UTC),
+        new Binary(new byte[] {3, 4}, 2),
+        "{}",
+        "(3,4)");
+    servers.values(KINDS, List.of(ada, grace));
+    var nameWhere = "\"name\" ILIKE '%ada%' ESCAPE '!'";
+    var bothWhere = nameWhere + " AND \"id\" >= 1 AND \"id\" <= 10";
+    var idWhere = "\"id\" >= 1 AND \"id\" <= 10";
+    var handWhere = "id > 0 OR paid = TRUE";
+    var joinedWhere = "(" + handWhere + ") AND \"name\" ILIKE 'a%' ESCAPE '!'";
+    servers.values(KINDS + " WHERE " + nameWhere, List.of(ada));
+    servers.values(KINDS + " WHERE " + bothWhere, List.of(ada));
+    servers.values(KINDS + " WHERE " + idWhere, List.of(ada, grace));
+    servers.values(KINDS + " WHERE " + handWhere, List.of(ada, grace));
+    servers.values(KINDS + " WHERE " + joinedWhere, List.of(ada));
+
+    var app = shop();
+    c.run(app, "size 2600 760\nframe\n" + table("kinds") + SETTLE);
+
+    // 1. BINARY (col 10), JSON (col 11) and OTHER (col 12) columns offer no header filter.
+    String opened = snapped(app, "kinds-opened");
+    assertTrue(opened.contains("#filter-3 "), opened);
+    assertFalse(opened.contains("#filter-10 "), opened);
+    assertFalse(opened.contains("#filter-11 "), opened);
+    assertFalse(opened.contains("#filter-12 "), opened);
+
+    // 2. Filter `name` (col 3) with Contains "ada" -> writes WHERE, applies, shows chip.
+    c.run(
+        app,
+        openFilter(3)
+            + "type \"ada\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap one-filter\n");
+    String one = c.tree("one-filter");
+    assertEquals(nameWhere, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + KINDS + " 0-200 WHERE " + nameWhere),
+        servers.calls.toString());
+    assertTrue(one.contains("#filters role=list label=\"Filters\""), one);
+    assertTrue(one.contains("name contains ada"), one);
+    assertTrue(cell(one, 0, 3).contains("\"Ada\""), one);
+
+    // 3. Open filter popover on `id` (col 0, Between) while chip bar is visible and snap it,
+    // then apply range 1 to 10.
+    c.run(
+        app,
+        openFilter(0)
+            + "type \"1\"\nframe\npress #to\nframe\ntype \"10\"\nframe\n"
+            + "snap sql-header-filter-popover\n"
+            + "key Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap two-filters\n");
+    String popover = c.tree("sql-header-filter-popover");
+    assertTrue(popover.contains("#filter role=dialog label=\"Filter id\""), popover);
+    assertTrue(popover.contains("#filters role=list label=\"Filters\""), popover);
+    String two = c.tree("two-filters");
+    assertEquals(bothWhere, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + KINDS + " 0-200 WHERE " + bothWhere),
+        servers.calls.toString());
+    assertTrue(two.contains("#clear-filters "), two);
+
+    // 4. Removing the `name` chip leaves only the `id` range filter.
+    c.run(
+        app,
+        "press role=button label=\"Remove name contains ada\"\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap removed-one\n");
+    String removedOne = c.tree("removed-one");
+    assertEquals(idWhere, tab(app).filter.where());
+    assertFalse(removedOne.contains("name contains ada"), removedOne);
+    assertTrue(removedOne.contains("id 1 – 10"), removedOne);
+
+    // 5. Removing the last chip clears WHERE and hides the chip bar.
+    c.run(
+        app,
+        "press role=button label=\"Remove id 1 – 10\"\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap cleared\n");
+    assertEquals("", tab(app).filter.where());
+    assertFalse(c.tree("cleared").contains("#filters "), c.tree("cleared"));
+
+    // 6. Hand-written WHERE survives setting and clearing header filters.
+    c.run(app, clause("WHERE", handWhere) + "key Enter\nframe\n" + SETTLE);
+    assertEquals(handWhere, tab(app).filter.where());
+    c.run(
+        app,
+        openFilter(3)
+            + "press #kind\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Starts with\"\nframe\nadvance 1\nframe\n"
+            + "press #value\nframe\ntype \"a\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap joined\n");
+    assertEquals(joinedWhere, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + KINDS + " 0-200 WHERE " + joinedWhere),
+        servers.calls.toString());
+    c.run(
+        app,
+        "press role=button label=\"Remove name starts with a\"\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap hand-restored\n");
+    assertEquals(handWhere, tab(app).filter.where());
+    assertFalse(c.tree("hand-restored").contains("#filters "), c.tree("hand-restored"));
+
+    // 7. Hand-editing WHERE and pressing Enter drops header filter marks and keeps the text.
+    c.run(
+        app,
+        openFilter(3)
+            + "type \"ada\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + clause("WHERE", "id = 2")
+            + "frame\nadvance 1\nframe\nsnap hand-draft\n"
+            + "key Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap hand-edited\n");
+    // The draft takes the marks off at once, so no chip can remove what the text still holds.
+    assertFalse(c.tree("hand-draft").contains("#filters "), c.tree("hand-draft"));
+    assertEquals("id = 2", tab(app).filter.where());
+    assertFalse(c.tree("hand-edited").contains("#filters "), c.tree("hand-edited"));
+
+    // 8. MariaDB uses backticks and compares UTF-8 text by LIKE with a binary collation.
+    var maria = c.app(INVENTORY);
+    c.ready(maria, INVENTORY);
+    c.run(
+        maria,
+        START
+            + open("inventory")
+            + SETTLE
+            + "press role=treeitem label=\"inventory\" level=2\nkey ArrowRight\nframe\n"
+            + SETTLE
+            + table("items")
+            + SETTLE
+            + openFilter(2)
+            + "type \"50%\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE);
+    assertEquals(
+        "LOWER(CONVERT(`name` USING utf8mb4)) LIKE LOWER(CONVERT('%50!%%' USING utf8mb4)) COLLATE utf8mb4_bin ESCAPE '!'",
+        tab(maria).filter.where());
+  }
+
+  @Test
+  void documentGridHeaderFiltersWriteTypedFilterDocumentAndPreserveHandWrittenFilter()
+      throws Exception {
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        hoori
+          orders
+            _id: objectId
+            customer: string
+            total: double
+            count: int
+            paid: bool
+            created: date
+            meta.tag: string
+            $score: double
+        """);
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    var oid1 = new dev.hoori.db.core.document.Bson.ObjectId("507f1f77bcf86cd799439011");
+    var oid2 = new dev.hoori.db.core.document.Bson.ObjectId("507f1f77bcf86cd799439012");
+    var d1 = Document.of(
+        "_id",
+        oid1,
+        "customer",
+        "Ada",
+        "total",
+        25.5,
+        "count",
+        3,
+        "paid",
+        true,
+        "created",
+        java.time.Instant.parse("2026-05-14T12:30:00Z"));
+    var d2 = Document.of(
+        "_id",
+        oid2,
+        "customer",
+        "Grace",
+        "total",
+        80.0,
+        "count",
+        1,
+        "paid",
+        false,
+        "created",
+        java.time.Instant.parse("2026-06-01T07:00:00Z"));
+    var customerFilter = "{ customer: { $regex: 'Ada', $options: 'i' } }";
+    var rangeAndCustomer =
+        "{ customer: { $regex: 'Ada', $options: 'i' }, total: { $gte: 10.0, $lte: 50.0 } }";
+    var oidFilter = "{ _id: ObjectId('507f1f77bcf86cd799439011') }";
+    var dateFilter = "{ created: ISODate('2026-05-14T12:30:00.000Z') }";
+    var boolFilter = "{ paid: { $in: [ true ] } }";
+    var handFilter = "{ count: { $gt: 0 } }";
+    var joinedFilter =
+        "{ $and: [ { count: { $gt: 0 } }, { customer: { $regex: 'Ada', $options: 'i' } } ] }";
+    servers.documents(path, List.of(d1, d2));
+    servers.documents(path + " FILTER " + customerFilter, List.of(d1));
+    servers.documents(path + " FILTER " + rangeAndCustomer, List.of(d1));
+    servers.documents(path + " FILTER " + oidFilter, List.of(d1));
+    servers.documents(path + " FILTER " + dateFilter, List.of(d1));
+    servers.documents(path + " FILTER " + boolFilter, List.of(d1));
+    servers.documents(path + " FILTER " + handFilter, List.of(d1, d2));
+    servers.documents(path + " FILTER " + joinedFilter, List.of(d1));
+
+    var app = c.app(DocumentConsoleTest.DOCS);
+    c.ready(app, DocumentConsoleTest.DOCS);
+    c.run(
+        app,
+        START
+            + "size 2200 760\nframe\n"
+            + open("docs")
+            + SETTLE
+            + open("hoori")
+            + SETTLE
+            + table("orders")
+            + SETTLE);
+
+    // 1. Dotted (`meta.tag`, col 6) and `$`-prefixed (`$score`, col 7) fields offer no filter.
+    String opened = snapped(app, "mongo-opened");
+    assertTrue(opened.contains("#filter-1 "), opened);
+    assertFalse(opened.contains("#filter-6 "), opened);
+    assertFalse(opened.contains("#filter-7 "), opened);
+
+    // 2. String Contains on `customer` (col 1) writes $regex with $options: 'i'.
+    c.run(
+        app,
+        openFilter(1)
+            + "type \"Ada\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap mongo-one\n");
+    assertEquals(customerFilter, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + path + " 0-200 FILTER " + customerFilter),
+        servers.calls.toString());
+    assertTrue(c.tree("mongo-one").contains("customer contains Ada"), c.tree("mongo-one"));
+
+    // 3. Open range popover on `total` (col 2, double) with chip bar visible, snap, then apply.
+    c.run(
+        app,
+        openFilter(2)
+            + "type \"10\"\nframe\npress #to\nframe\ntype \"50\"\nframe\n"
+            + "snap mongo-header-filter-popover\n"
+            + "key Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE);
+    String mongoPopover = c.tree("mongo-header-filter-popover");
+    assertTrue(mongoPopover.contains("#filter role=dialog label=\"Filter total\""), mongoPopover);
+    assertTrue(mongoPopover.contains("#filters role=list label=\"Filters\""), mongoPopover);
+    assertEquals(rangeAndCustomer, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + path + " 0-200 FILTER " + rangeAndCustomer),
+        servers.calls.toString());
+
+    // Clear all chips.
+    c.run(app, "press #clear-filters\nframe\nadvance 1\nframe\n" + SETTLE);
+    assertEquals("", tab(app).filter.where());
+
+    // 4. Boolean OneOf on `paid` (col 4): uncheck false -> { paid: { $in: [ true ] } }.
+    c.run(
+        app,
+        openFilter(4)
+            + "press #value-false\nframe\npress role=button label=\"Apply\"\nframe\nadvance 1\nframe\n"
+            + SETTLE);
+    assertEquals(boolFilter, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + path + " 0-200 FILTER " + boolFilter),
+        servers.calls.toString());
+    c.run(
+        app, "press role=button label=\"Remove paid = true\"\nframe\nadvance 1\nframe\n" + SETTLE);
+
+    // 5. Date Equals on `created` (col 5): local Europe/Berlin time -> ISODate UTC.
+    c.run(
+        app,
+        openFilter(5)
+            + "press #kind\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Equals\"\nframe\nadvance 1\nframe\n"
+            + "press #value\nframe\ntype \"2026-05-14 14:30:00\"\nframe\n"
+            + "key Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE);
+    assertEquals(dateFilter, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + path + " 0-200 FILTER " + dateFilter),
+        servers.calls.toString());
+    c.run(
+        app,
+        "press role=button label=\"Remove created = 2026-05-14 14:30:00\"\nframe\nadvance 1\nframe\n"
+            + SETTLE);
+
+    // 6. ObjectId Equals on `_id` (col 0): valid ObjectId applies; invalid is refused unsent.
+    int beforeInvalid = servers.calls.size();
+    c.run(
+        app,
+        openFilter(0)
+            + "press #kind\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Equals\"\nframe\nadvance 1\nframe\n"
+            + "press #value\nframe\ntype \"not-an-oid\"\nframe\n"
+            + "key Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap bad-oid\n");
+    assertTrue(line(c.tree("bad-oid"), "role=note").contains("label=\"Filter refused\""));
+    assertEquals(beforeInvalid, servers.calls.size(), servers.calls.toString());
+    assertEquals("", tab(app).filter.where());
+
+    c.run(
+        app,
+        openFilter(0)
+            + "press #kind\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Equals\"\nframe\nadvance 1\nframe\n"
+            + "press #value\nframe\ntype \"507f1f77bcf86cd799439011\"\nframe\n"
+            + "key Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE);
+    assertEquals(oidFilter, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + path + " 0-200 FILTER " + oidFilter),
+        servers.calls.toString());
+    c.run(
+        app,
+        "press role=button label=\"Remove _id = 507f1f77bcf86cd799439011\"\nframe\nadvance 1\nframe\n"
+            + SETTLE);
+
+    // 7. Hand-written Filter survives setting and clearing header filters, and hand-editing drops
+    // marks.
+    c.run(app, clause("Filter", handFilter) + "key Enter\nframe\n" + SETTLE);
+    c.run(
+        app, openFilter(1) + "type \"Ada\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n" + SETTLE);
+    assertEquals(joinedFilter, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + path + " 0-200 FILTER " + joinedFilter),
+        servers.calls.toString());
+    c.run(
+        app,
+        "press role=button label=\"Remove customer contains Ada\"\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap hand-back\n");
+    assertEquals(handFilter, tab(app).filter.where());
+    assertFalse(c.tree("hand-back").contains("#filters "), c.tree("hand-back"));
+
+    c.run(
+        app,
+        openFilter(1)
+            + "type \"Ada\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + clause("Filter", "{ count: 1 }")
+            + "key Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap mongo-edited\n");
+    assertEquals("{ count: 1 }", tab(app).filter.where());
+    assertFalse(c.tree("mongo-edited").contains("#filters "), c.tree("mongo-edited"));
   }
 
   @Test

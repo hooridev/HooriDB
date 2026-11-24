@@ -118,6 +118,26 @@ public abstract class RowsDialect {
    */
   abstract String literal(Object value);
 
+  /** A case-insensitive {@code LIKE} of the quoted column as text, {@code !} escaping. */
+  abstract String like(String column, Field field, String pattern);
+
+  /** The quoted column as text equal to {@code value}, whatever the case. */
+  abstract String equalsIgnoringCase(String column, Field field, String value);
+
+  /** The quoted column as text equal to {@code value}, case and all. */
+  abstract String equalsExactly(String column, Field field, String value);
+
+  /** A case-insensitive regular expression match of the quoted column as text. */
+  abstract String matches(String column, Field field, String expression);
+
+  /**
+   * The quoted column compared by {@code operator} ({@code =}, {@code >=} or {@code <=}) with a
+   * value of its kind, at the precision the column keeps.
+   */
+  String compare(String column, Field field, String operator, Object value) {
+    return column + " " + operator + " " + literal(value);
+  }
+
   /** The parameter that takes the value in a statement: {@code ?}, or an expression of it. */
   abstract String parameter(Object value);
 
