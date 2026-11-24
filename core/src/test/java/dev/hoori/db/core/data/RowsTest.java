@@ -273,6 +273,13 @@ class RowsTest {
         berlin);
     assertEquals("(total > 20 OR id = 1) AND \"name\" ILIKE '%ada%' ESCAPE '!'", joined);
     Rows.check(Provider.POSTGRESQL, new Rows.Filter(joined, ""), true);
+    var commented = Rows.where(
+        Provider.POSTGRESQL,
+        "id > 0 -- active rows",
+        List.of(new ColumnFilter(plain, new ColumnFilter.Null(false))),
+        berlin);
+    assertEquals("(id > 0 -- active rows\n) AND \"name\" IS NOT NULL", commented);
+    Rows.check(Provider.POSTGRESQL, new Rows.Filter(commented, ""), true);
 
     // MySQL and MariaDB: backticks, LOWER LIKE LOWER ESCAPE '!', REGEXP '(?i)...', CAST AS CHAR.
     var tick = new Field("na`me", "varchar(64)", Kind.TEXT);

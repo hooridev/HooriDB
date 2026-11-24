@@ -1483,15 +1483,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         + clause.sqlKeyword + " ";
   }
 
-  /** The toolbar's actions: how documents show, Open in console for SQL, and Refresh. */
+  /** The toolbar's actions: how documents show, Open in console, and Refresh. */
   private List<El> actions(State s, boolean connected, boolean ofDocuments) {
     var actions = new ArrayList<El>();
     if (ofDocuments) {
       actions.add(presentation.switcher("shown", v -> show(s, v)));
-    } else {
-      actions.add(Button.icon(GHOST, Symbol.CODE, "Open in console", () -> openInConsole(s))
-          .key("open-in-console"));
     }
+    actions.add(Button.icon(GHOST, Symbol.CODE, "Open in console", () -> openInConsole(s))
+        .key("open-in-console"));
     actions.add(Button.icon(
             GHOST,
             Symbol.ARROW_CLOCKWISE,
@@ -1504,8 +1503,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   /**
-   * Opens a console on this table's connection and database with its SELECT and caret at end, or
-   * appends it to an open console on that database when the setting reuses one.
+   * Opens a console on this table's or collection's connection and database with its query and
+   * caret at end, or appends it to an open console on that database when the setting reuses one.
    */
   private void openInConsole(State s) {
     var profile = s.profile(id);
@@ -1513,8 +1512,15 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (profile == null || group == null) {
       return;
     }
+    var text = Language.of(profile.provider()).documents()
+        ? documentStatement()
+        : sqlStatement(profile.provider());
+    s.openInConsole(id, group, table.container().database().name(), text);
+  }
+
+  private String sqlStatement(Provider provider) {
     // By the alias the grid's reads give the table, each clause on lines of its own, as they read.
-    var sql = new StringBuilder("SELECT * FROM ").append(Rows.qualified(profile.provider(), table));
+    var sql = new StringBuilder("SELECT * FROM ").append(Rows.qualified(provider, table));
     if (!filter.empty()) {
       sql.append(" AS ").append(Rows.ALIAS);
     }
@@ -1524,7 +1530,26 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (filter.hasOrder()) {
       sql.append("\nORDER BY ").append(filter.order());
     }
-    s.openInConsole(id, group, table.container().database().name(), sql.toString());
+    return sql.toString();
+  }
+
+  private String documentStatement() {
+    Servers.Documents.Parsed parsed;
+    try {
+      parsed = Servers.Documents.parse(filter);
+    } catch (QueryException e) { // the applied filter passed check() before it was applied
+      throw new IllegalStateException("Applied filter did not parse", e);
+    }
+    var statement =
+        new StringBuilder("db.getCollection(").append(Shell.quote(table.name())).append(").find(");
+    if (!parsed.filter().isEmpty()) {
+      statement.append(Shell.pretty(parsed.filter()));
+    }
+    statement.append(')');
+    if (!parsed.sort().isEmpty()) {
+      statement.append(".sort(").append(Shell.pretty(parsed.sort())).append(')');
+    }
+    return statement.toString();
   }
 
   /** Placeholder body before columns are known: spinner while opening, else empty. */

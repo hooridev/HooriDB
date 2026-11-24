@@ -1388,14 +1388,17 @@ final class CatalogTree {
   }
 
   private static String indexDetail(Index index) {
-    var columns = "(" + String.join(", ", index.columns()) + ")";
+    var detail =
+        new StringBuilder("(").append(String.join(", ", index.columns())).append(')');
     if (index.primary()) {
-      return columns + " · primary key";
+      detail.append(" · primary key");
+    } else if (index.unique()) {
+      detail.append(" · unique");
     }
-    if (index.unique()) {
-      return columns + " · unique";
+    if (!index.detail().isEmpty()) {
+      detail.append(" · ").append(index.detail());
     }
-    return columns;
+    return detail.toString();
   }
 
   /**

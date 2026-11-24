@@ -25,11 +25,14 @@ import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.Bson;
 import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -2190,6 +2193,143 @@ class TableTabTest {
         """ + SETTLE + "snap unsortable\n");
     assertEquals(before, servers.calls.size(), servers.calls.toString());
     assertFalse(c.tree("unsortable").contains("sort="), c.tree("unsortable"));
+  }
+
+  @Test
+  void openInConsoleForDocumentCollectionOpensAndReusesConsoleAsConfigured() throws Exception {
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        hoori
+          orders
+            _id: objectId
+            total: double
+          customers
+            _id: objectId
+            name: string
+        """);
+    var app = c.app(DocumentConsoleTest.DOCS);
+    c.ready(app, DocumentConsoleTest.DOCS);
+    c.run(
+        app,
+        START
+            + open("docs")
+            + SETTLE
+            + open("hoori")
+            + SETTLE
+            + table("orders")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + "snap mongo-new-console\n");
+    var main = app.state().tabs.main().active();
+    var console = assertInstanceOf(ConsoleTab.class, main.activeTab());
+    var expectedOrders = "db.getCollection('orders').find()";
+    assertEquals(DocumentConsoleTest.DOCS.id(), console.id);
+    assertEquals("hoori", console.database);
+    assertEquals(expectedOrders, console.text);
+    assertEquals(expectedOrders.length(), console.editor.caret());
+    assertEquals(expectedOrders.length(), console.editor.anchor());
+    assertTrue(line(c.tree("mongo-new-console"), "#sql").contains("focused"));
+    assertEquals(Document.of("find", "orders"), Script.parse(console.text).command());
+
+    // A second collection with Sort only reuses the open console on the same database.
+    c.run(
+        app,
+        table("customers")
+            + SETTLE
+            + clause("Sort", "{ name: 1 }")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    assertEquals(1, app.state().consoles(DocumentConsoleTest.DOCS.id()).size());
+    assertEquals(console, main.activeTab());
+    var expectedReused =
+        expectedOrders + ";\n\ndb.getCollection('customers').find().sort({ name: 1 });";
+    assertEquals(expectedReused, console.text);
+    assertEquals(expectedReused.length(), console.editor.caret());
+    var pieces = Script.split(console.text);
+    assertEquals(2, pieces.size(), pieces.toString());
+    assertEquals(
+        Document.of("find", "customers", "sort", Document.of("name", 1)),
+        Script.parse(pieces.get(1).text()).command());
+
+    // Always a new console opens a second console tab instead of reusing.
+    app.post(() ->
+        app.state().choose(app.state().settings.withOpenInConsole(Settings.OpenInConsole.NEW)));
+    c.run(app, """
+        await
+        frame
+        press role=tab label="customers"
+        frame
+        advance 1
+        frame
+        press role=button label="Open in console"
+        frame
+        advance 1
+        frame
+        """);
+    assertEquals(2, app.state().consoles(DocumentConsoleTest.DOCS.id()).size());
+    var second = assertInstanceOf(ConsoleTab.class, main.activeTab());
+    assertEquals("db.getCollection('customers').find().sort({ name: 1 })", second.text);
+  }
+
+  @Test
+  void openInConsoleForDocumentCollectionQuotesNameAndFormatsFilterAndSort() throws Exception {
+    var weirdName = "weird \"quote\" 'orders'";
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        hoori
+          weird "quote" 'orders'
+            _id: objectId
+            createdAt: date
+            total: double
+        """);
+    var app = c.app(DocumentConsoleTest.DOCS);
+    c.ready(app, DocumentConsoleTest.DOCS);
+    c.run(
+        app,
+        START
+            + open("docs")
+            + SETTLE
+            + open("hoori")
+            + SETTLE
+            + table(weirdName.replace("\"", "\\\""))
+            + SETTLE
+            + clause(
+                "Filter",
+                "{ _id: ObjectId(\"507f1f77bcf86cd799439011\"),"
+                    + " createdAt: new Date(\"2026-01-15T10:30:00Z\") }")
+            + clause("Sort", "{ total: -1 }")
+            + "key Enter\nframe\n"
+            + SETTLE
+            // Unapplied draft after applying is ignored by Open in console.
+            + clause("Filter", "{ total: 999 }")
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    var console =
+        assertInstanceOf(ConsoleTab.class, app.state().tabs.main().active().activeTab());
+    var expected = """
+        db.getCollection('weird "quote" \\'orders\\'').find({
+          _id: ObjectId('507f1f77bcf86cd799439011'),
+          createdAt: ISODate('2026-01-15T10:30:00.000Z')
+        }).sort({ total: -1 })""";
+    assertEquals(expected, console.text);
+    assertEquals(expected.length(), console.editor.caret());
+    assertEquals(expected.length(), console.editor.anchor());
+
+    // The shell splits and reads the generated statement back with exact values.
+    var pieces = Script.split(console.text);
+    assertEquals(1, pieces.size(), pieces.toString());
+    var request = Script.parse(pieces.getFirst().text());
+    assertEquals(
+        Document.of(
+            "find",
+            weirdName,
+            "filter",
+            Document.of(
+                "_id",
+                Bson.ObjectId.of("507f1f77bcf86cd799439011"),
+                "createdAt",
+                Instant.parse("2026-01-15T10:30:00Z")),
+            "sort",
+            Document.of("total", -1)),
+        request.command());
   }
 
   @Test

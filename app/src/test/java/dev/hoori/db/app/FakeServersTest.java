@@ -267,4 +267,50 @@ class FakeServersTest {
     assertEquals(Purpose.CATALOG, recorded.getFirst().purpose());
     assertEquals(List.of(), link.indexes(view));
   }
+
+  @Test
+  void documentServerIndexesSupportKeySpecsAndDetails() throws Exception {
+    var servers = new FakeServers().serve("mongo-idx", Provider.MONGODB, "8.0.4", """
+            hoori
+              orders
+                *_id: objectId
+                customer: int
+                total: decimal
+                email: string
+                expiresAt: date
+                name: string
+                #customer_1_total_-1 (customer: 1, total: -1) | partial
+                #email_1 (email: 1) unique | sparse (made up)
+                #expiresAt_1 (expiresAt: 1) | TTL 3600 s
+                #name_text (name: text)
+                #_id_ (_id: 1) primary
+              @paid_orders
+                _id: objectId
+            """);
+    var profile = ConnectionProfile.of(Provider.MONGODB)
+        .withHost("mongo-idx")
+        .withDatabase("hoori")
+        .withUser("hoori");
+    var link = servers.open(profile, new char[0], null, TIMEOUT);
+    var db = new Database("hoori", false);
+    var orders = new Table(db, "orders", Kind.TABLE);
+    var view = new Table(db, "paid_orders", Kind.VIEW);
+
+    assertEquals(
+        List.of(
+            new Index("_id_", orders, List.of("_id: 1"), true, true, ""),
+            new Index(
+                "customer_1_total_-1",
+                orders,
+                List.of("customer: 1", "total: -1"),
+                false,
+                false,
+                "partial"),
+            new Index("email_1", orders, List.of("email: 1"), true, false, "sparse (made up)"),
+            new Index("expiresAt_1", orders, List.of("expiresAt: 1"), false, false, "TTL 3600 s"),
+            new Index("name_text", orders, List.of("name: text"), false, false, "")),
+        link.indexes(orders));
+    assertTrue(servers.calls.contains("indexes mongo-idx/hoori.orders"), servers.calls.toString());
+    assertEquals(List.of(), link.indexes(view));
+  }
 }

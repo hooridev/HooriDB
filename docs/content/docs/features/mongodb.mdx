@@ -34,6 +34,7 @@ Expanding a MongoDB connection in the tree shows its databases, then their colle
 - The databases your user can see are listed; `admin`, `config`, and `local` are shown in muted text. Collections whose names start with `system.` are omitted.
 - Views show an eye icon, as in SQL databases.
 - A collection's fields come from a sample of 100 documents (or the first 100 when the server cannot sample, such as for some views). `_id` comes first and is marked as the key; every other field shows the types it held in the sample, such as `string` or `int | null`. A field that some sampled documents lack is shown as nullable.
+- Collections show an **Indexes** node after their fields listing each index with its key fields and directions or types (`_id_` first, marked `primary key`, `unique`, and TTL, partial, or sparse where applicable). Views have no indexes.
 
 **Refresh** reads the sample again. Fields absent from the sampled documents do not appear in the tree or the grid.
 

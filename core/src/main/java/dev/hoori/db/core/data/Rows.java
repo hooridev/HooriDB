@@ -896,7 +896,14 @@ public final class Rows {
       condition.add(condition(provider, dialect, filter, zone));
     }
     var added = condition.toString();
-    return trimmed.isEmpty() ? added : "(" + trimmed + ") AND " + added;
+    if (trimmed.isEmpty()) {
+      return added;
+    }
+    // A line comment at the end would take in what follows; a line break ends it.
+    var last = trimmed.substring(trimmed.lastIndexOf('\n') + 1);
+    var comment =
+        last.contains("--") || (provider.dialect().syntax().hashComments() && last.contains("#"));
+    return "(" + trimmed + (comment ? "\n" : "") + ")" + AND + added;
   }
 
   private static String condition(

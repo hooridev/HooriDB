@@ -91,7 +91,9 @@ public final class DocumentFilters {
       throw refused("Filter: " + e.getMessage());
     }
     // The hand-written text goes in as written, so that its form is kept.
-    return "{ $and: [ " + trimmed + ", " + Shell.compact(added) + " ] }";
+    // A line comment at the end would take in what follows; a line break ends it.
+    var comment = trimmed.substring(trimmed.lastIndexOf('\n') + 1).contains("//");
+    return "{ $and: [ " + trimmed + (comment ? "\n" : "") + ", " + Shell.compact(added) + " ] }";
   }
 
   private static Document.Entry entry(ColumnFilter filter, ZoneId zone) throws QueryException {

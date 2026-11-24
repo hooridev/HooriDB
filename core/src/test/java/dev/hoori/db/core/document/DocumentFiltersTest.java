@@ -124,6 +124,8 @@ class DocumentFiltersTest {
         "{ $and: [ { total: { $gt: 0 } }, { customer: { $regex: 'Ada', $options: 'i' } } ] }",
         combined);
     Shell.document(combined);
+    // A line comment at the end is ended before the generated part.
+    Shell.document(DocumentFilters.filterText("{ total: 1 } // paid", List.of(f), BERLIN));
 
     assertEquals(
         "{ customer: { $regex: 'Ada', $options: 'i' } }",
