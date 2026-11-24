@@ -2254,11 +2254,18 @@ class TableTabTest {
     // Always a new console opens a second console tab instead of reusing.
     app.post(() ->
         app.state().choose(app.state().settings.withOpenInConsole(Settings.OpenInConsole.NEW)));
-    c.run(
-        app,
-        "await\nframe\n"
-            + "press role=tab label=\"customers\"\nframe\nadvance 1\nframe\n"
-            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n");
+    c.run(app, """
+        await
+        frame
+        press role=tab label="customers"
+        frame
+        advance 1
+        frame
+        press role=button label="Open in console"
+        frame
+        advance 1
+        frame
+        """);
     assertEquals(2, app.state().consoles(DocumentConsoleTest.DOCS.id()).size());
     var second = assertInstanceOf(ConsoleTab.class, main.activeTab());
     assertEquals("db.getCollection('customers').find().sort({ name: 1 })", second.text);
