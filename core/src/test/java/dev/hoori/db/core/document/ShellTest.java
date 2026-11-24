@@ -160,6 +160,25 @@ class ShellTest {
   }
 
   @Test
+  void aWideDocumentParses() throws Exception {
+    int keys = 16_000;
+    var text = new StringBuilder("{");
+    for (int i = 0; i < keys; i++) {
+      if (i > 0) {
+        text.append(',');
+      }
+      text.append('k').append(i).append(':').append(i);
+    }
+    text.append(",k0:-1}");
+    var document = Shell.document(text.toString());
+    assertEquals(keys, document.size());
+    assertEquals("k0", document.entries().getFirst().name());
+    assertEquals(-1, document.entries().getFirst().value());
+    assertEquals("k15999", document.entries().getLast().name());
+    assertEquals(keys - 1, document.entries().getLast().value());
+  }
+
+  @Test
   void aPatternTheLiteralCannotHoldIsWrittenAsAConstructor() throws Exception {
     for (var pattern : List.of("a\\/b", "", "line\nbreak", "end\\")) {
       var regex = new Bson.Regex(pattern, "i");

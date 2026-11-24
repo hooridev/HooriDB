@@ -195,5 +195,11 @@ class ShellSyntaxTest {
     assertEquals(
         new Formatted(null, new Problem(0, 0, Kind.TOO_LARGE)),
         ShellSyntax.format("db.c.find({ a: " + "[".repeat(deep) + "]".repeat(deep) + " })"));
+    assertEquals(
+        new Formatted(null, new Problem(0, 0, Kind.TOO_LARGE)),
+        ShellSyntax.format("db.c" + ".explain()".repeat(5_000) + ".find()"));
+    assertEquals(
+        new Formatted(null, new Problem(0, 0, Kind.TOO_LARGE)),
+        ShellSyntax.format("db" + ".getSiblingDB('a')".repeat(5_000) + ".c.find()"));
   }
 }
