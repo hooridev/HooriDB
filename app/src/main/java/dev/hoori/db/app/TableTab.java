@@ -1095,24 +1095,23 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         });
   }
 
-  /** The fields offered in the condition builder: SQL columns, or sampled MongoDB paths. */
+  /**
+   * The fields offered in the condition builder: the grid's columns (top-level ones on MongoDB), so
+   * that an applied header filter keeps its field, then the sampled paths they lack.
+   */
   private List<Field> builderFields(Provider provider) {
-    if (Language.of(provider).documents()) {
-      if (documentPaths != null && !documentPaths.isEmpty()) {
-        return documentPaths;
-      }
-      var fallback = new ArrayList<Field>(columns.size());
-      for (int c = 0; c < columns.size(); c++) {
-        var col = columns.get(c);
-        if (!col.name().isEmpty() && col.name().indexOf('.') < 0 && !col.name().startsWith("$")) {
-          fallback.add(fieldOf(c, provider));
-        }
-      }
-      return fallback;
-    }
+    boolean ofDocuments = Language.of(provider).documents();
     var list = new ArrayList<Field>(columns.size());
+    var names = new HashSet<String>();
     for (int c = 0; c < columns.size(); c++) {
-      list.add(fieldOf(c, provider));
+      var name = columns.get(c).name();
+      if (!ofDocuments || (!name.isEmpty() && name.indexOf('.') < 0 && !name.startsWith("$"))) {
+        list.add(fieldOf(c, provider));
+        names.add(name);
+      }
+    }
+    if (ofDocuments && documentPaths != null) {
+      documentPaths.stream().filter(p -> names.add(p.name())).forEach(list::add);
     }
     return list;
   }

@@ -18,6 +18,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.ColumnFilter;
 import dev.hoori.db.core.data.Condition;
 import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.DocumentFilters;
 import java.util.ArrayList;
@@ -157,7 +158,7 @@ final class ConditionsDialog {
       if (field == null) {
         return EMPTY;
       }
-      var comp = comparisonOf(f.column(), f.spec());
+      var comp = comparisonOf(f.column(), field, f.spec());
       if (comp == null) {
         return EMPTY;
       }
@@ -171,7 +172,7 @@ final class ConditionsDialog {
   }
 
   private static ConditionBuilder.Comparison comparisonOf(
-      String column, DataGrid.Filter.Spec spec) {
+      String column, Field field, DataGrid.Filter.Spec spec) {
     return switch (spec) {
       case DataGrid.Filter.TextMatch(var kind, var value) ->
         switch (kind) {
@@ -184,6 +185,12 @@ final class ConditionsDialog {
           case EQUALS ->
             new ConditionBuilder.Comparison(
                 column, ColumnFilter.Operator.EQUALS.name(), List.of(value), true);
+          // Only text tells the case apart; other values compare the same either way.
+          case EXACTLY ->
+            field.kind() == Kind.TEXT
+                ? null
+                : new ConditionBuilder.Comparison(
+                    column, ColumnFilter.Operator.EQUALS.name(), List.of(value), true);
           default -> null;
         };
       case DataGrid.Filter.Between(var from, var to) -> {

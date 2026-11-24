@@ -1773,6 +1773,29 @@ class TableTabTest {
   }
 
   @Test
+  void conditionsKeepAHeaderFilterOnAFieldTheSampleLacks() throws Exception {
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    var doc = Document.of("_id", 1, "customer", "Ada");
+    var atLeast = "{ total: { $gte: 7.0 } }";
+    servers.documents(path, List.of(doc));
+    servers.documents(path + " FILTER " + atLeast, List.of(doc));
+    var app = mongoOrders();
+    c.run(app, openFilter(2) + "type \"7\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n" + SETTLE);
+    assertEquals(atLeast, tab(app).filter.where());
+
+    c.run(
+        app,
+        "press #conditions\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "press #conditions-apply\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap kept\n");
+    assertTrue(servers.calls.contains("paths " + path), servers.calls.toString());
+    assertEquals(atLeast, tab(app).filter.where());
+    assertTrue(c.tree("kept").contains("#filters "), c.tree("kept"));
+  }
+
+  @Test
   void lastPageOfAFilteredCollectionCountsFirst() throws Exception {
     var path = DocumentConsoleTest.MONGO + "/hoori.orders";
     var many = IntStream.rangeClosed(1, 650)
