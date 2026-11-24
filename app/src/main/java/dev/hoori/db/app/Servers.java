@@ -18,9 +18,12 @@ import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.DocumentRun;
 import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.document.Script;
+import dev.hoori.db.core.document.Shell;
+import dev.hoori.db.core.document.SyntaxException;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
@@ -301,19 +304,35 @@ interface Servers {
       }
     }
 
-    private static void requireUnfiltered(Rows.Filter filter) throws QueryException {
-      if (filter != null && !filter.empty()) {
+    /** Parsed filter and sort documents of a {@link Rows.Filter}. */
+    record Parsed(Document filter, Document sort) {}
+
+    /** Parses the filter and sort documents, refusing invalid syntax before anything is sent. */
+    static Parsed parse(Rows.Filter filter) throws QueryException {
+      if (filter == null || filter.empty()) {
+        return new Parsed(Document.EMPTY, Document.EMPTY);
+      }
+      return new Parsed(document(filter.where(), "Filter"), document(filter.order(), "Sort"));
+    }
+
+    private static Document document(String text, String field) throws QueryException {
+      if (text == null || text.isBlank()) {
+        return Document.EMPTY;
+      }
+      try {
+        return Shell.document(text);
+      } catch (SyntaxException e) {
         throw QueryException.of(
-            QueryException.Failure.OTHER, "A server of documents does not take a SQL filter");
+            QueryException.Failure.CLAUSE_REFUSED, field + ": " + e.getMessage());
       }
     }
 
     @Override
     public OptionalLong estimate(Table table, Rows.Filter filter) throws QueryException {
       usable();
-      requireUnfiltered(filter);
+      var parsed = parse(filter);
       try {
-        return session.estimate(table);
+        return session.estimate(table, parsed.filter());
       } catch (QueryException e) {
         throw saw(e);
       }
@@ -322,9 +341,9 @@ interface Servers {
     @Override
     public long count(Table table, Rows.Filter filter) throws QueryException {
       usable();
-      requireUnfiltered(filter);
+      var parsed = parse(filter);
       try {
-        return session.count(table);
+        return session.count(table, parsed.filter());
       } catch (QueryException e) {
         throw saw(e);
       }
@@ -340,9 +359,9 @@ interface Servers {
     public Page read(Table table, List<Column> columns, long from, long to, Rows.Filter filter)
         throws QueryException {
       usable();
-      requireUnfiltered(filter);
+      var parsed = parse(filter);
       try {
-        return session.read(table, columns, from, to);
+        return session.read(table, columns, from, to, parsed.filter(), parsed.sort());
       } catch (QueryException e) {
         throw saw(e);
       }

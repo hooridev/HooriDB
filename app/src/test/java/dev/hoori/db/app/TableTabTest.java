@@ -22,6 +22,8 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.nio.file.Path;
@@ -36,6 +38,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.OptionalLong;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -1625,35 +1628,252 @@ class TableTabTest {
     assertEquals(expected.length(), console.editor.caret());
   }
 
-  @Test
-  void aDocumentCollectionTabHasNoSqlFilterFields() throws Exception {
+  /** Opens the fake MongoDB collection tab used by document filter/sort tests. */
+  private App<State> mongoOrders() throws Exception {
     servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
-        shop
+        hoori
           orders
-            _id: ObjectId
-            total: Int32
+            _id: objectId
+            customer: string
+            total: double
+            order name: string
+            meta.tag: string
+            $score: double
         """);
     var app = c.app(DocumentConsoleTest.DOCS);
     c.ready(app, DocumentConsoleTest.DOCS);
+    c.run(app, START + open("docs") + SETTLE + open("hoori") + SETTLE + table("orders") + SETTLE);
+    return app;
+  }
+
+  @Test
+  void documentCollectionFilterAndSortApplyAcrossViewsAndClearWithEmptyDocument() throws Exception {
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    var all = IntStream.rangeClosed(1, 210)
+        .mapToObj(i -> Document.of("_id", i, "customer", "c" + i, "total", (double) i))
+        .toList();
+    var matched = List.of(
+        Document.of("_id", 210, "customer", "Ada", "total", 210.0),
+        Document.of("_id", 205, "customer", "Ada", "total", 205.0));
+    var many = IntStream.rangeClosed(1, 205)
+        .mapToObj(i -> Document.of("_id", i, "customer", "many", "total", (double) i))
+        .toList();
+    servers.documents(path, all);
+    servers.documents(path + " FILTER { customer: 'Ada' } SORT { total: -1 }", matched);
+    servers.documents(path + " FILTER { total: { $gt: 0 } }", many);
+    var app = mongoOrders();
+    String initial = snapped(app, "mongo-initial");
+    assertTrue(initial.contains("#filter-bar"), initial);
+    assertTrue(initial.contains("label=\"Filter\""), initial);
+    assertTrue(initial.contains("label=\"Sort\""), initial);
+    assertFalse(initial.contains("label=\"WHERE\""), initial);
+    assertFalse(initial.contains("label=\"ORDER BY\""), initial);
+
+    // Filtered collection with > 200 matches has no estimate ("At least 200 documents").
     c.run(
         app,
-        START
-            + open("docs")
+        clause("Filter", "{ total: { $gt: 0 } }")
+            + "key Enter\nframe\n"
             + SETTLE
-            + open("shop")
+            + "snap many-filtered\n");
+    assertTrue(
+        status(c.tree("many-filtered")).contains("\"At least 200 documents\""),
+        c.tree("many-filtered"));
+
+    // Turn to page 2 in JSON, then apply Filter + Sort: resets to page 1 across JSON and Tree.
+    c.run(
+        app,
+        """
+        press role=radio label="JSON"
+        frame
+        advance 1
+        frame
+        press role=button label="Next page"
+        frame
+        """
             + SETTLE
-            + table("orders")
+            + """
+            advance 1
+            frame
+            """
+            + clause("Filter", "{ customer: 'Ada' }")
+            + clause("Sort", "{ total: -1 }")
+            + "key Enter\nframe\n"
             + SETTLE
-            + "snap mongo\n");
-    String mongo = c.tree("mongo");
-    assertFalse(mongo.contains("#filter-bar"), mongo);
-    assertFalse(mongo.contains("label=\"WHERE\""), mongo);
-    assertFalse(mongo.contains("label=\"ORDER BY\""), mongo);
-    // Column headers on a MongoDB collection tab cannot be sorted.
+            + """
+            advance 1
+            frame
+            snap filtered-json
+            press role=radio label="Tree"
+            frame
+            advance 1
+            frame
+            snap filtered-tree
+            """);
+    String json = c.tree("filtered-json");
+    assertTrue(line(json, "#rows-in-view").contains("\"Documents 1–2\""), json);
+    assertTrue(line(json, "#json").contains("\\\"_id\\\": 210"), json);
+    assertTrue(status(json).contains("\"2 documents\""), json);
+    String tree = c.tree("filtered-tree");
+    assertEquals(List.of("210", "205"), DocumentsServerTest.documents(tree));
+
+    // Clearing with {} returns to the unfiltered collection.
+    c.run(
+        app,
+        clause("Filter", "{}")
+            + clause("Sort", "{}")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "advance 1\nframe\nsnap cleared\n");
+    assertEquals(Rows.Filter.NONE, tab(app).filter);
+    assertTrue(status(c.tree("cleared")).contains("\"210 documents\""), c.tree("cleared"));
+  }
+
+  @Test
+  void invalidDocumentFilterOrSortIsRefusedWithoutSendingAnything() throws Exception {
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    servers.documents(path, List.of(Document.of("_id", 1, "customer", "Ada", "total", 12.5)));
+    var app = mongoOrders();
     int before = servers.calls.size();
-    c.run(app, "press role=columnheader label=\"total\"\nframe\n" + SETTLE + "snap mongo-sorted\n");
+    c.run(
+        app,
+        clause("Filter", "{ customer: }")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "advance 1\nframe\nsnap bad-filter\n");
+    String badFilter = c.tree("bad-filter");
+    assertTrue(line(badFilter, "role=note").contains("label=\"Filter refused\""), badFilter);
+    assertTrue(badFilter.contains("Filter:"), badFilter);
+    assertTrue(cell(badFilter, 0, 1).contains("\"Ada\""), badFilter);
+    assertNull(tab(app).failure);
     assertEquals(before, servers.calls.size(), servers.calls.toString());
-    assertFalse(c.tree("mongo-sorted").contains("sort="), c.tree("mongo-sorted"));
+
+    // Non-document in Filter and syntax error in Sort are also refused before anything is sent.
+    c.run(
+        app,
+        clause("Filter", "[1]")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "advance 1\nframe\nsnap not-doc\n");
+    assertTrue(c.tree("not-doc").contains("A document in braces is needed"), c.tree("not-doc"));
+    c.run(
+        app,
+        clause("Filter", "")
+            + clause("Sort", "{ total: -")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + "advance 1\nframe\nsnap bad-sort\n");
+    String badSort = c.tree("bad-sort");
+    assertTrue(line(badSort, "role=note").contains("label=\"Filter refused\""), badSort);
+    assertTrue(badSort.contains("Sort:"), badSort);
+    assertEquals(before, servers.calls.size(), servers.calls.toString());
+  }
+
+  @Test
+  void completionInDocumentFilterAndSortOffersFieldsOperatorsAndConstructors() throws Exception {
+    var app = mongoOrders();
+    c.run(app, """
+        press role=textbox label="Filter"
+        frame
+        type "{ cu"
+        frame
+        advance 1
+        frame
+        snap field-complete
+        """);
+    var fieldOptions = ConsoleEditorTest.options(c.tree("field-complete"));
+    assertEquals("customer", fieldOptions.getFirst(), fieldOptions.toString());
+    int before = servers.calls.size();
+    c.run(app, "key Enter\nframe\nsnap accepted-field\n");
+    assertTrue(
+        line(c.tree("accepted-field"), "#where").contains("\"{ customer\""),
+        c.tree("accepted-field"));
+    assertEquals(before, servers.calls.size(), "Enter took completion without querying");
+
+    // Dollar opens query operators immediately; value constructors are also offered.
+    c.run(
+        app,
+        clause("Filter", "{ total: { ")
+            + "type \"$\"\nframe\nadvance 1\nframe\nsnap op-complete\n"
+            + "type \"g\"\nframe\nsnap gt-complete\n");
+    var opOptions = ConsoleEditorTest.options(c.tree("op-complete"));
+    assertTrue(
+        opOptions.containsAll(List.of("$addFields", "$eq", "$exists")), opOptions.toString());
+    var gtOptions = ConsoleEditorTest.options(c.tree("gt-complete"));
+    assertTrue(gtOptions.containsAll(List.of("$gt", "$gte")), gtOptions.toString());
+    c.run(
+        app,
+        "key Escape\nframe\nadvance 1\nframe\n"
+            + clause("Filter", "{ _id: ")
+            + "type \"Obj\"\nframe\nadvance 1\nframe\nsnap ctor-complete\n");
+    var ctorOptions = ConsoleEditorTest.options(c.tree("ctor-complete"));
+    assertEquals("ObjectId", ctorOptions.getFirst(), ctorOptions.toString());
+
+    // Sort field completes the collection's fields too.
+    c.run(app, """
+        key Escape
+        frame
+        advance 1
+        frame
+        press role=textbox label="Sort"
+        frame
+        type "{ to"
+        frame
+        advance 1
+        frame
+        snap sort-complete
+        """);
+    var sortOptions = ConsoleEditorTest.options(c.tree("sort-complete"));
+    assertEquals("total", sortOptions.getFirst(), sortOptions.toString());
+  }
+
+  @Test
+  void documentGridHeaderSortWritesSortDocumentAndSkipsDottedOrDollarFields() throws Exception {
+    var app = mongoOrders();
+    c.run(app, "size 1600 760\nframe\n");
+
+    // 1. First press sorts ascending and writes { total: 1 } into Sort.
+    c.run(app, "press role=columnheader label=\"total\"\nframe\n" + SETTLE + "snap asc\n");
+    String asc = c.tree("asc");
+    assertTrue(line(asc, "#column-2").contains("sort=ascending"), asc);
+    assertTrue(line(asc, "#order").contains("\"{ total: 1 }\""), asc);
+    assertEquals("{ total: 1 }", tab(app).filter.order());
+
+    // 2. Second press flips to descending; unapplied Filter draft stays unapplied.
+    c.run(
+        app,
+        clause("Filter", "{ customer: 'Ada' }")
+            + "press role=columnheader label=\"total\"\nframe\n"
+            + SETTLE
+            + "snap desc\n");
+    String desc = c.tree("desc");
+    assertTrue(line(desc, "#column-2").contains("sort=descending"), desc);
+    assertTrue(line(desc, "#order").contains("\"{ total: -1 }\""), desc);
+    assertEquals("", tab(app).filter.where());
+
+    // 3. Shift+press adds a secondary field, quoted by Shell.name where needed.
+    c.run(
+        app, "press role=columnheader label=\"order name\" shift\nframe\n" + SETTLE + "snap two\n");
+    String two = c.tree("two");
+    assertTrue(line(two, "#column-2").contains("sort=descending"), two);
+    assertTrue(line(two, "#column-3").contains("sort=ascending"), two);
+    assertEquals("{ total: -1, 'order name': 1 }", tab(app).filter.order());
+
+    // 4. Hand-typed Sort clears arrows.
+    c.run(app, clause("Sort", "{ _id: -1 }") + "key Enter\nframe\n" + SETTLE + "snap typed\n");
+    assertFalse(c.tree("typed").contains("sort="), c.tree("typed"));
+    assertEquals("{ _id: -1 }", tab(app).filter.order());
+
+    // 5. Fields holding '.' or starting with '$' cannot be sorted from the header.
+    int before = servers.calls.size();
+    c.run(app, """
+        press role=columnheader label="meta.tag"
+        frame
+        press role=columnheader label="$score"
+        frame
+        """ + SETTLE + "snap unsortable\n");
+    assertEquals(before, servers.calls.size(), servers.calls.toString());
+    assertFalse(c.tree("unsortable").contains("sort="), c.tree("unsortable"));
   }
 
   @Test

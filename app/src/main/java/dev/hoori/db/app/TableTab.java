@@ -37,6 +37,7 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.Shell;
 import dev.hoori.db.core.query.QueryException;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -151,7 +152,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   final Menu.State menu = new Menu.State();
   final ValuePanel value = new ValuePanel();
   Rows.Filter filter = Rows.Filter.NONE; // the clauses applied to reads and counts
-  private List<Sort> sorted = List.of(); // the header sort that produced the applied ORDER BY
+  private int query; // counts the applied queries, so that JSON and Tree start anew with each
+  private List<Sort> sorted = List.of(); // the header sort that made the applied order
   private String refused; // why the clauses last submitted were refused, or null
   private final Clause where;
   private final Clause order;
@@ -165,19 +167,25 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   // them.
   private final Map<Integer, List<Object>> undone = new HashMap<>();
 
-  /** One clause field (WHERE or ORDER BY) with its caret and SQL completions. */
+  /** One clause field (WHERE/ORDER BY or Filter/Sort) with its caret and completions. */
   private static final class Clause {
     final String key;
-    final String keyword;
+    final String sqlKeyword;
+    final String documentLabel;
     String text = "";
     int caret;
     final Completion.State completion = new Completion.State().openAfter(".");
     final Suggestions suggestions;
 
-    Clause(TableTab tab, String key, String keyword) {
+    Clause(TableTab tab, String key, String sqlKeyword, String documentLabel) {
       this.key = key;
-      this.keyword = keyword;
+      this.sqlKeyword = sqlKeyword;
+      this.documentLabel = documentLabel;
       this.suggestions = new Suggestions(tab);
+    }
+
+    String label(boolean ofDocuments) {
+      return ofDocuments ? documentLabel : sqlKeyword;
     }
 
     void close() {
@@ -186,7 +194,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
   }
 
-  /** One column of a header-driven sort, kept by column name so arrows track applied ORDER BY. */
+  /** One column of a header sort, by name, so that its arrow follows the applied order. */
   private record Sort(String column, boolean descending) {}
 
   /**
@@ -200,8 +208,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     this.id = id;
     this.table = table;
     this.presentation = new DocumentPresentation(initial);
-    this.where = new Clause(this, "where", "WHERE");
-    this.order = new Clause(this, "order", "ORDER BY");
+    this.where = new Clause(this, "where", "WHERE", "Filter");
+    this.order = new Clause(this, "order", "ORDER BY", "Sort");
   }
 
   /** A tab for the table or collection, starting in the configured view for documents. */
@@ -816,9 +824,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   /**
-   * Applies the clauses in the WHERE and ORDER BY fields: asks first while changes are pending,
-   * then cancels reads in flight, drops old pages and count, scrolls to the top, clears the
-   * selection, and reads the table again with its known columns.
+   * Applies the clauses in the WHERE/ORDER BY or Filter/Sort fields: asks first while changes are
+   * pending, then cancels reads in flight, drops old pages and count, resets to the first row or
+   * document, clears the selection, and reads the table again with its known columns.
    */
   void apply(State s) {
     var profile = s.profile(id);
@@ -826,13 +834,13 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       return;
     }
     var next = new Rows.Filter(where.text.strip(), order.text.strip());
-    var kept = !sorted.isEmpty() && next.order().equals(orderSql(profile.provider(), sorted))
+    var kept = !sorted.isEmpty() && next.order().equals(orderText(profile.provider(), sorted))
         ? sorted
         : List.<Sort>of();
     apply(s, next, kept, false);
   }
 
-  /** Applies a header sort by writing it into ORDER BY while keeping the applied WHERE clause. */
+  /** Applies a header sort by writing it into ORDER BY or Sort while keeping the applied filter. */
   private void sort(State s, List<DataGrid.SortKey> keys) {
     var profile = s.profile(id);
     if (!canApply(s) || profile == null || columns == null) {
@@ -845,7 +853,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       }
       nextSorted.add(new Sort(columns.get(key.column()).name(), key.descending()));
     }
-    var next = new Rows.Filter(filter.where(), orderSql(profile.provider(), nextSorted));
+    var next = new Rows.Filter(filter.where(), orderText(profile.provider(), nextSorted));
     apply(s, next, List.copyOf(nextSorted), true);
   }
 
@@ -854,17 +862,17 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (!canApply(s) || profile == null) {
       return;
     }
+    Rows.Filter checked;
     try {
-      // The tree's and counts' SQL lanes are always read-only at the server.
-      Rows.check(profile.provider(), next, true); // refused before anything is sent
+      checked = check(profile.provider(), next); // refused before anything is sent
       refused = null;
     } catch (QueryException e) {
       refused = e.detail(); // the applied filter and its reads go on
       return;
     }
-    if (next.equals(filter) && failure == null) {
+    if (checked.equals(filter) && failure == null) {
       if (fromHeader) {
-        order.text = next.order();
+        order.text = checked.order();
         order.caret = order.text.length();
         order.completion.close();
         sorted = nextSorted;
@@ -876,17 +884,18 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         new Guard.Act("filter", this),
         "the filter is applied",
         List.of(this),
-        () -> apply(s, next, nextSorted, fromHeader),
+        () -> apply(s, checked, nextSorted, fromHeader),
         Guard.Scope.CHANGES)) {
       return;
     }
     if (fromHeader) {
-      order.text = next.order();
+      order.text = checked.order();
       order.caret = order.text.length();
       order.completion.close();
     }
     sorted = nextSorted;
-    filter = next;
+    filter = checked;
+    query++;
     fields = null; // read anew, also where the opening is asked again
     took = -1;
     got = 0;
@@ -895,9 +904,29 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     counted = Counted.ESTIMATED;
     first = 0;
     last = -1;
+    presentation.page(0);
     selection.clear();
     selection.scrollToRow(0);
     open(s, false);
+  }
+
+  private static Rows.Filter check(Provider provider, Rows.Filter filter) throws QueryException {
+    if (Language.of(provider).documents()) {
+      var parsed = Servers.Documents.parse(filter);
+      return new Rows.Filter(
+          parsed.filter().isEmpty() ? "" : filter.where(),
+          parsed.sort().isEmpty() ? "" : filter.order());
+    }
+    // The tree's and counts' SQL lanes are always read-only at the server.
+    Rows.check(provider, filter, true);
+    return filter;
+  }
+
+  private static String orderText(Provider provider, List<Sort> keys) {
+    if (keys.isEmpty()) {
+      return "";
+    }
+    return Language.of(provider).documents() ? orderDocument(keys) : orderSql(provider, keys);
   }
 
   private static String orderSql(Provider provider, List<Sort> keys) {
@@ -911,19 +940,37 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return text.toString();
   }
 
+  private static String orderDocument(List<Sort> keys) {
+    var text = new StringBuilder("{ ");
+    for (int i = 0; i < keys.size(); i++) {
+      if (i > 0) {
+        text.append(", ");
+      }
+      var key = keys.get(i);
+      text.append(Shell.name(key.column())).append(key.descending() ? ": -1" : ": 1");
+    }
+    return text.append(" }").toString();
+  }
+
   /** Same orderability rule as {@link Rows} uses for its tie-breaker columns. */
   private static boolean sortable(Kind kind) {
     return kind != null && kind != Kind.JSON && kind != Kind.OTHER;
   }
 
+  /** Whether a column header can sort: SQL by kind, documents for top-level names without . or $. */
+  private boolean sortable(String name, boolean ofDocuments) {
+    return ofDocuments ? name.indexOf('.') < 0 && !name.startsWith("$") : sortable(kinds.get(name));
+  }
+
   private List<DataGrid.SortKey> sortKeys(Provider provider) {
-    if (sorted.isEmpty() || !filter.order().equals(orderSql(provider, sorted))) {
+    boolean ofDocuments = Language.of(provider).documents();
+    if (sorted.isEmpty() || !filter.order().equals(orderText(provider, sorted))) {
       return List.of();
     }
     var keys = new ArrayList<DataGrid.SortKey>(sorted.size());
     for (var key : sorted) {
       int at = columnIndex(key.column());
-      if (at < 0 || !sortable(kinds.get(key.column()))) {
+      if (at < 0 || !sortable(key.column(), ofDocuments)) {
         return List.of();
       }
       keys.add(new DataGrid.SortKey(at, key.descending()));
@@ -1015,11 +1062,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         Card.toolbar(path(), connection, actions(s, connected, ofDocuments).toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
     El content = col().grow(1).minSize(0, 0).child(top);
-    if (!ofDocuments) {
-      content.child(Card.filters(filters(s, app)).shrink(0));
-    }
+    content.child(Card.filters(filters(s, app, ofDocuments)).shrink(0));
     content.child(line == null ? Divider.divider() : line);
-    El note = note(s, connected);
+    El note = note(s, connected, ofDocuments);
     if (note != null) {
       content.child(col().padding(t.space().m()).shrink(0).child(note));
     }
@@ -1056,8 +1101,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return content.child(Card.footer(rowsStatus, footer.toArray(El[]::new)));
   }
 
-  /** The WHERE and ORDER BY clause fields above the grid on an SQL server. */
-  private El filters(State s, App<State> app) {
+  /** The WHERE/ORDER BY or Filter/Sort fields above the view. */
+  private El filters(State s, App<State> app, boolean ofDocuments) {
     Theme t = Theme.CURRENT.get();
     return row()
         .key("filter-bar")
@@ -1065,13 +1110,13 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .minSize(0, 0)
         .gap(t.space().m())
         .align(Style.Align.CENTER)
-        .child(clauseGroup(s, app, where, 3))
-        .child(clauseGroup(s, app, order, 2));
+        .child(clauseGroup(s, app, where, 3, ofDocuments))
+        .child(clauseGroup(s, app, order, 2, ofDocuments));
   }
 
-  private El clauseGroup(State s, App<State> app, Clause clause, float grow) {
+  private El clauseGroup(State s, App<State> app, Clause clause, float grow, boolean ofDocuments) {
     Theme t = Theme.CURRENT.get();
-    El heading = Label.label(Label.Variant.MUTED, clause.keyword)
+    El heading = Label.label(Label.Variant.MUTED, clause.label(ofDocuments))
         .font(t.type().mono().font().get())
         .fontSize(t.type().mono().size())
         .shrink(0);
@@ -1082,10 +1127,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .gap(t.space().s())
         .align(Style.Align.CENTER)
         .child(heading)
-        .child(clauseField(s, app, clause));
+        .child(clauseField(s, app, clause, ofDocuments));
   }
 
-  private El clauseField(State s, App<State> app, Clause clause) {
+  private El clauseField(State s, App<State> app, Clause clause, boolean ofDocuments) {
     Theme t = Theme.CURRENT.get();
     var profile = s.profile(id);
     boolean connected = profile != null && s.catalog.connected(id);
@@ -1094,7 +1139,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     El field = TextField.textField(clause.text, null, connected ? v -> clause.text = v : null)
         .key(clause.key)
-        .label(clause.keyword)
+        .label(clause.label(ofDocuments))
         .font(t.type().mono().font().get())
         .fontSize(t.type().mono().size())
         .codeWords()
@@ -1115,7 +1160,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   /**
    * The field applies the clauses with Enter, and completes them as the console does a statement
-   * of the table's SELECT, whose list takes Enter first while it is open.
+   * of the table's SELECT or collection's find/sort, whose list takes Enter first while it is open.
    */
   private El completing(State s, App<State> app, Provider provider, Clause clause, El field) {
     field.onKey(k -> {
@@ -1125,8 +1170,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       }
       return false;
     });
-    var prefix = "SELECT * FROM " + Rows.qualified(provider, table) + " AS " + Rows.ALIAS + " "
-        + clause.keyword + " ";
+    clause.completion.openAfter(Language.of(provider).opensCompletion());
+    var prefix = completionPrefix(provider, clause);
     var database = table.container().database().name();
     El completing = Completion.complete(
         app,
@@ -1147,6 +1192,15 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       }
       return keys != null && keys.test(k);
     });
+  }
+
+  private String completionPrefix(Provider provider, Clause clause) {
+    if (Language.of(provider).documents()) {
+      var target = "db.getCollection(" + Shell.quote(table.name()) + ")";
+      return clause == where ? target + ".find(" : target + ".find({}).sort(";
+    }
+    return "SELECT * FROM " + Rows.qualified(provider, table) + " AS " + Rows.ALIAS + " "
+        + clause.sqlKeyword + " ";
   }
 
   /** The toolbar's actions: how documents show, Open in console for SQL, and Refresh. */
@@ -1451,7 +1505,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         () -> turn(s, page + 1),
         () -> turn(s, (shown() - 1) / PAGE));
     return new DocumentPresentation.DocumentPage(
-        "p" + page,
+        "q" + query + "-p" + page,
         read,
         0,
         read == null ? 0 : read.size(),
@@ -1496,7 +1550,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   /** Why the tab cannot read, with what the user can do; null while it can. */
-  private El note(State s, boolean connected) {
+  private El note(State s, boolean connected, boolean ofDocuments) {
     var name = table.name();
     if (!connected) {
       boolean connecting = s.catalog.active(id);
@@ -1512,8 +1566,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
     // The refused clauses beside, not in place of, why the applied ones could not be read.
-    El refusal =
-        refused == null ? null : Callout.callout(Callout.Kind.DANGER, "Clause refused", refused);
+    El refusal = refused == null
+        ? null
+        : Callout.callout(
+            Callout.Kind.DANGER, ofDocuments ? "Filter refused" : "Clause refused", refused);
     if (failure == null) {
       return refusal;
     }
@@ -1574,9 +1630,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .loading(this::gridRowLoaded, (from, to) -> wantGrid(s, from, to))
         // Nothing to do: the build it causes brings the footer's rows in view along.
         .onRowsInView((from, to) -> {});
-    if (!ofDocuments) {
-      sorting(s, options);
-    }
+    sorting(s, options);
     if (edited) {
       ResultEdits.configureGrid(s, this, options, free, true);
     }
@@ -1591,14 +1645,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return grid;
   }
 
-  /** The grid's column c, sortable from its header where it is a SQL table's of a sortable kind. */
+  /** The grid's column c, sortable from its header where the language and column allow it. */
   private DataGrid.Column column(int c, boolean ofDocuments, ZoneId zone) {
     var kind = fields == null ? null : fields.get(c).kind();
     var col = Cells.column(columns.get(c), kind, widths, c, row -> value(row, c), zone);
-    return !ofDocuments && sortable(kinds.get(columns.get(c).name())) ? col.sortable(true) : col;
+    return sortable(columns.get(c).name(), ofDocuments) ? col.sortable(true) : col;
   }
 
-  /** The header sort of a SQL table's grid: its arrows, and presses while the tab can apply. */
+  /** The header sort of the grid: its arrows, and presses while the tab can apply. */
   private void sorting(State s, DataGrid.Options options) {
     var profile = s.profile(id);
     var keys = profile == null ? List.<DataGrid.SortKey>of() : sortKeys(profile.provider());
