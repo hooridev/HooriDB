@@ -169,7 +169,6 @@ class TableTabForeignKeyTest {
     c.run(app, rightClick(0, 2) + SETTLE + "snap key-col\n");
     String keyCol = c.tree("key-col");
     assertTrue(servers.calls.contains("foreign keys " + ORDERS), servers.calls.toString());
-    assertTrue(keyCol.contains("role=menuitem label=\"Go to customers\""), keyCol);
     assertFalse(
         line(keyCol, "role=menuitem label=\"Go to customers\"").contains("disabled"), keyCol);
     assertTrue(keyCol.contains("role=menuitem label=\"Referenced by\""), keyCol);
@@ -202,14 +201,36 @@ class TableTabForeignKeyTest {
     assertFalse(plain.contains("label=\"Go to"), plain);
     assertTrue(plain.contains("role=menuitem label=\"Referenced by\""), plain);
 
+    // Right-click `dual_id` (col 6, in TWO outgoing FKs): shows "Go to" submenu with both targets.
+    c.run(app, "key Escape\n" + SHOWN + rightClick(0, 6) + "snap multi-fk\n");
+    String multi = c.tree("multi-fk");
+    assertTrue(multi.contains("role=menuitem label=\"Go to\""), multi);
+    c.run(app, "press role=menuitem label=\"Go to\"\n" + SHOWN + "snap multi-sub\n");
+    String multiSub = c.tree("multi-sub");
+    assertTrue(multiSub.contains("role=menuitem label=\"customers (dual_id → id)\""), multiSub);
+    assertTrue(multiSub.contains("role=menuitem label=\"partners (dual_id → id)\""), multiSub);
+
+    // Choose customers (dual_id → id) from the Go to submenu: opens customers filtered to "id" =
+    // 20.
+    c.run(
+        app,
+        "press role=menuitem label=\"customers (dual_id → id)\"\n" + SHOWN + SETTLE
+            + "snap cust-tab\n");
+    assertEquals("\"id\" = 20", tabNamed(app, "customers").filter.where());
+    assertTrue(cell(c.tree("cust-tab"), 0, 1).contains("\"Bob\""), c.tree("cust-tab"));
+  }
+
+  @Test
+  void contextMenuFollowsTheCellOrRowItOpenedOn() throws Exception {
+    var app = openOrders();
+
     // Rows 0 and 1 selected, active cell in row 1 (customer_id = NULL): pressing row 0's cell
     // follows row 0 (customer_id = 10), not the active cell.
     c.run(
         app,
-        "key Escape\n" + SHOWN + "press #cell-0-2\nframe\npress #cell-1-2 shift\nframe\n"
-            + rightClick(0, 2) + "snap two-rows\n");
+        "press #cell-0-2\nframe\npress #cell-1-2 shift\nframe\n" + rightClick(0, 2)
+            + "snap two-rows\n");
     String twoRows = c.tree("two-rows");
-    assertTrue(twoRows.contains("role=menuitem label=\"Go to customers\""), twoRows);
     assertFalse(
         line(twoRows, "role=menuitem label=\"Go to customers\"").contains("disabled"), twoRows);
     assertTrue(twoRows.contains("role=menuitem label=\"Referenced by\""), twoRows);
@@ -227,28 +248,9 @@ class TableTabForeignKeyTest {
             + "press #cell-1-2 shift\nframe\npress #cell-1-2 control\nframe\n"
             + rightClick(0, 2) + "snap deselected\n");
     String deselected = c.tree("deselected");
-    assertTrue(deselected.contains("role=menuitem label=\"Go to customers\""), deselected);
     assertFalse(
         line(deselected, "role=menuitem label=\"Go to customers\"").contains("disabled"),
         deselected);
-
-    // Right-click `dual_id` (col 6, in TWO outgoing FKs): shows "Go to" submenu with both targets.
-    c.run(app, "key Escape\n" + SHOWN + rightClick(0, 6) + "snap multi-fk\n");
-    String multi = c.tree("multi-fk");
-    assertTrue(multi.contains("role=menuitem label=\"Go to\""), multi);
-    c.run(app, "press role=menuitem label=\"Go to\"\n" + SHOWN + "snap multi-sub\n");
-    String multiSub = c.tree("multi-sub");
-    assertTrue(multiSub.contains("role=menuitem label=\"customers (dual_id → id)\""), multiSub);
-    assertTrue(multiSub.contains("role=menuitem label=\"partners (dual_id → id)\""), multiSub);
-
-    // Choose customers (dual_id → id) from the Go to submenu: reuses customers filtered to "id" =
-    // 20.
-    c.run(
-        app,
-        "press role=menuitem label=\"customers (dual_id → id)\"\n" + SHOWN + SETTLE
-            + "snap cust-tab\n");
-    assertEquals("\"id\" = 20", tabNamed(app, "customers").filter.where());
-    assertTrue(cell(c.tree("cust-tab"), 0, 1).contains("\"Bob\""), c.tree("cust-tab"));
 
     // Back to orders, row 0 selected, right-click row 1's number: shows all outgoing keys in
     // "Go to" plus "Referenced by", acting on row 1 (customer_id NULL -> disabled; dual_id = 10 ->
@@ -295,8 +297,8 @@ class TableTabForeignKeyTest {
     // "Go to orders" directly (no submenu).
     c.run(
         app,
-        "press role=tab label=\"order_items\"\n" + SHOWN + "press #number-0 right\n" + SHOWN
-            + SETTLE + "snap single-out-number\n");
+        table("order_items") + SETTLE + "press #number-0 right\n" + SHOWN + SETTLE
+            + "snap single-out-number\n");
     String singleOut = c.tree("single-out-number");
     assertTrue(singleOut.contains("role=menuitem label=\"Go to orders\""), singleOut);
     assertFalse(singleOut.contains("label=\"Referenced by\""), singleOut);
@@ -309,7 +311,6 @@ class TableTabForeignKeyTest {
         "press role=tab label=\"orders\"\n" + SHOWN + "press #cell-0-2\nframe\n"
             + "key ContextMenu\n" + SHOWN + "snap menu-key\n");
     String menuKey = c.tree("menu-key");
-    assertTrue(menuKey.contains("role=menuitem label=\"Go to customers\""), menuKey);
     assertFalse(
         line(menuKey, "role=menuitem label=\"Go to customers\"").contains("disabled"), menuKey);
     assertTrue(menuKey.contains("role=menuitem label=\"Referenced by\""), menuKey);
