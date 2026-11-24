@@ -50,6 +50,16 @@ class ShellSyntaxTest {
   }
 
   @Test
+  void aDocumentIsLaidOutWithoutEvaluatingItsConstructorsOrDroppingComments() {
+    assertEquals(
+        new Formatted("{\n  created: ISODate() /* save time */,\n  n: Long('5')\n}", null),
+        ShellSyntax.formatDocument("{created:ISODate()/* save time */,n:Long('5')}"));
+    assertEquals(
+        new Formatted(null, new Problem(10, 11, Kind.UNEXPECTED)),
+        ShellSyntax.formatDocument("{ a: 1, b }"));
+  }
+
+  @Test
   void wordsStringsNumbersOperatorsAndComments() {
     assertEquals(
         List.of(

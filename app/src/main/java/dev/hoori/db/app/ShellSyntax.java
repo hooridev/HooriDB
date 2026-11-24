@@ -64,16 +64,25 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
     };
   }
 
-  /** A single shell document laid out with {@link Shell#pretty}, or where it fails to parse. */
+  // A document is laid out as the argument of a statement, so that, as in a console, only white
+  // space changes: its comments stay, and ObjectId() or ISODate() in it are not evaluated.
+  private static final String AROUND = "db.c.insertOne(";
+
+  /** A single shell document laid out as {@link Layout} does, or where it fails to parse. */
   static Formatted formatDocument(String text) {
-    try {
-      return new Formatted(Shell.pretty(Shell.document(text)), null);
-    } catch (SyntaxException e) {
-      if (e.tooLarge()) {
-        return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
-      }
-      return new Formatted(null, problem(text, Math.clamp(e.offset(), 0, text.length())));
+    var laid = format(AROUND + text + "\n)");
+    if (laid.text() == null) {
+      var at = laid.problem();
+      return at.kind() == Formatted.Kind.TOO_LARGE
+          ? laid
+          : new Formatted(
+              null, problem(text, Math.clamp(at.from() - AROUND.length(), 0, text.length())));
     }
+    var out = laid.text();
+    if (!out.startsWith(AROUND) || !out.endsWith(")")) {
+      return new Formatted(text, null); // not one document: left as it is
+    }
+    return new Formatted(out.substring(AROUND.length(), out.length() - 1).strip(), null);
   }
 
   @Override
