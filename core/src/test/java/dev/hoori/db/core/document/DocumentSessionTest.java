@@ -9,6 +9,8 @@ import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.log.Sent;
@@ -194,5 +196,57 @@ class DocumentSessionTest {
     }
     assertEquals(2, logged.size());
     assertTrue(logged.stream().allMatch(s -> s.purpose() == Purpose.CATALOG), logged.toString());
+  }
+
+  @Test
+  void samplesNestedFieldPathsBoundedByDepthAndCountSkippingInvalidKeys() {
+    var oid1 = new Bson.ObjectId("507f1f77bcf86cd799439011");
+    var oid2 = new Bson.ObjectId("507f1f77bcf86cd799439012");
+    var d1 = Document.of(
+        "customer",
+        "Ada",
+        "_id",
+        oid1,
+        "meta.tag",
+        "skip-dot",
+        "$score",
+        1.5,
+        "address",
+        Document.of(
+            "city",
+            "Berlin",
+            "zip",
+            10115,
+            "bad.key",
+            "x",
+            "$op",
+            1,
+            "geo",
+            Document.of("lat", 52.5, "tooDeep", Document.of("x", 1))));
+    var d2 =
+        Document.of("_id", oid2, "customer", "Grace", "address", Document.of("city", "Vienna"));
+
+    var paths = DocumentSession.paths(List.of(d1, d2));
+    assertEquals(
+        List.of(
+            new Field("_id", "objectId", Kind.OTHER),
+            new Field("customer", "string", Kind.TEXT),
+            new Field("address", "object", Kind.JSON),
+            new Field("address.city", "string", Kind.TEXT),
+            new Field("address.zip", "int | null", Kind.INTEGER),
+            new Field("address.geo", "object | null", Kind.JSON),
+            new Field("address.geo.lat", "double | null", Kind.DECIMAL),
+            new Field("address.geo.tooDeep", "object | null", Kind.JSON)),
+        paths);
+
+    // Count bound caps the total number of sampled paths.
+    var capped = DocumentSession.paths(List.of(d1, d2), DocumentSession.MAX_PATH_DEPTH, 4);
+    assertEquals(
+        List.of("_id", "customer", "address", "address.city"),
+        capped.stream().map(Field::name).toList());
+
+    // Empty sample yields _id as fields() does.
+    assertEquals(
+        List.of(new Field("_id", "objectId", Kind.OTHER)), DocumentSession.paths(List.of()));
   }
 }

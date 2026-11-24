@@ -108,6 +108,14 @@ interface Servers {
 
     List<Column> columns(Table table) throws CatalogException;
 
+    /**
+     * Filterable field paths of a collection's documents, including subdocuments, as {@link
+     * DocumentSession#paths(Table)}; empty for SQL servers.
+     */
+    default List<Field> paths(Table table) throws CatalogException {
+      return List.of();
+    }
+
     List<ForeignKey> foreignKeys(Table table) throws CatalogException;
 
     List<Index> indexes(Table table) throws CatalogException;
@@ -305,6 +313,16 @@ interface Servers {
       readable();
       try {
         return session.fields(table);
+      } catch (CatalogException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public List<Field> paths(Table table) throws CatalogException {
+      readable();
+      try {
+        return session.paths(table);
       } catch (CatalogException e) {
         throw saw(e);
       }

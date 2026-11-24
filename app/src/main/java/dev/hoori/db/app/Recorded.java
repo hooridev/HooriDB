@@ -186,6 +186,11 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     @Override
+    public List<Field> paths(Table table) throws CatalogException {
+      return recorded(of(table), () -> link.paths(table));
+    }
+
+    @Override
     public List<ForeignKey> foreignKeys(Table table) throws CatalogException {
       return recorded(of(table), () -> link.foreignKeys(table));
     }

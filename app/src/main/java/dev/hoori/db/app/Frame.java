@@ -288,7 +288,8 @@ final class Frame {
    */
   private static boolean asks(State s, TabGroups.Group<Tab> group) {
     return questioned(s, group) != null
-        || group.activeTab() instanceof TableTab table && table.preview != null
+        || group.activeTab() instanceof TableTab table
+            && (table.preview != null || table.conditions.open)
         || group.activeTab() instanceof ConsoleTab console
             && (console.confirming != null || console.preview != null || console.history != null)
         || group.activeTab() instanceof MonitorTab monitor && monitor.asked != null
@@ -304,7 +305,8 @@ final class Frame {
       return monitor.question(s);
     }
     if (group.activeTab() instanceof TableTab table) {
-      return table.previewDialog(s, app(s, group));
+      El preview = table.previewDialog(s, app(s, group));
+      return preview != null ? preview : table.conditionsDialog(s);
     }
     if (!(group.activeTab() instanceof ConsoleTab console)) {
       return null;

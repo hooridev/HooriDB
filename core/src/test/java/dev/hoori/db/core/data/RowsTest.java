@@ -401,5 +401,103 @@ class RowsTest {
               .failure(),
           badBase);
     }
+    // Exists is MongoDB-only and refused by SQL.
+    assertEquals(
+        QueryException.Failure.CLAUSE_REFUSED,
+        assertThrows(
+                QueryException.class,
+                () -> Rows.where(
+                    Provider.POSTGRESQL,
+                    new ColumnFilter(id, new ColumnFilter.Exists(true)),
+                    berlin))
+            .failure());
+  }
+
+  @Test
+  void conditionGroupsNegationAndOperatorsWorkAcrossSqlDialects() throws Exception {
+    var berlin = ZoneId.of("Europe/Berlin");
+    var id = new Field("id", "integer", Kind.INTEGER);
+    var name = new Field("name", "text", Kind.TEXT);
+    var paid = new Field("paid", "boolean", Kind.BOOLEAN);
+    var doc = new Field("doc", "jsonb", Kind.JSON);
+    var bin = new Field("photo", "bytea", Kind.BINARY);
+    var other = new Field("shape", "box", Kind.OTHER);
+
+    // Operators per kind.
+    assertEquals(
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.CONTAINS,
+            ColumnFilter.Operator.STARTS_WITH,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL),
+        Rows.operators(Provider.POSTGRESQL, name));
+    assertEquals(
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.AT_LEAST,
+            ColumnFilter.Operator.AT_MOST,
+            ColumnFilter.Operator.BETWEEN,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL),
+        Rows.operators(Provider.MYSQL, id));
+    assertEquals(
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL),
+        Rows.operators(Provider.MARIADB, paid));
+    for (var unsupported : List.of(doc, bin, other)) {
+      assertEquals(
+          List.of(ColumnFilter.Operator.IS_NULL, ColumnFilter.Operator.IS_NOT_NULL),
+          Rows.operators(Provider.POSTGRESQL, unsupported));
+    }
+
+    // OR with nested AND group and Not equal.
+    var condition = Condition.Group.or(List.of(
+        new ColumnFilter(name, ColumnFilter.Operator.NOT_EQUAL.spec(List.of("Grace"))),
+        Condition.Group.and(List.of(
+            new ColumnFilter(id, ColumnFilter.Operator.AT_LEAST.spec(List.of("10"))),
+            new ColumnFilter(paid, ColumnFilter.Operator.EQUALS.spec(List.of("true")))))));
+    var pgWhere = Rows.where(Provider.POSTGRESQL, condition, berlin);
+    assertEquals(
+        "NOT (LOWER(\"name\") = LOWER('Grace')) OR (\"id\" >= 10 AND \"paid\" = TRUE)", pgWhere);
+    Rows.check(Provider.POSTGRESQL, new Rows.Filter(pgWhere, ""), true);
+
+    // Joining a top-level OR condition onto hand-written base parenthesizes the OR group.
+    var joinedOr = Rows.where(Provider.POSTGRESQL, "id > 0", condition, berlin);
+    assertEquals(
+        "(id > 0) AND (NOT (LOWER(\"name\") = LOWER('Grace')) OR (\"id\" >= 10 AND \"paid\" ="
+            + " TRUE))",
+        joinedOr);
+    Rows.check(Provider.POSTGRESQL, new Rows.Filter(joinedOr, ""), true);
+
+    // Two-bound Between inside OR is parenthesized; empty nested groups are ignored.
+    var rangeOr = Condition.Group.or(List.of(
+        new ColumnFilter(id, ColumnFilter.Operator.BETWEEN.spec(List.of("1", "5"))),
+        new ColumnFilter(id, ColumnFilter.Operator.AT_MOST.spec(List.of("0"))),
+        Condition.Group.and(List.of())));
+    assertEquals(
+        "(\"id\" >= 1 AND \"id\" <= 5) OR \"id\" <= 0",
+        Rows.where(Provider.POSTGRESQL, rangeOr, berlin));
+    assertEquals("", Rows.where(Provider.POSTGRESQL, Condition.Group.or(List.of()), berlin));
+    assertEquals(
+        "id > 0",
+        Rows.where(Provider.POSTGRESQL, "id > 0", Condition.Group.and(List.of()), berlin));
+
+    // MySQL / MariaDB dialect with backticks and NOT (...).
+    var mysqlWhere = Rows.where(
+        Provider.MYSQL,
+        Condition.Group.and(List.of(
+            new ColumnFilter(id, ColumnFilter.Operator.NOT_EQUAL.spec(List.of("7"))),
+            Condition.Group.or(List.of(
+                new ColumnFilter(paid, ColumnFilter.Operator.IS_NULL.spec(List.of())),
+                new ColumnFilter(paid, ColumnFilter.Operator.EQUALS.spec(List.of("false"))))))),
+        berlin);
+    assertEquals("NOT (`id` = 7) AND (`paid` IS NULL OR `paid` = FALSE)", mysqlWhere);
+    Rows.check(Provider.MYSQL, new Rows.Filter(mysqlWhere, ""), true);
   }
 }

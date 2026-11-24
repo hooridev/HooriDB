@@ -23,6 +23,7 @@ import dev.hoori.db.core.data.Origin;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
@@ -748,6 +749,28 @@ final class FakeServers implements Servers {
           throw CatalogException.of(CatalogException.Failure.NOT_FOUND, t.name());
         }
         return tableColumns(t, table);
+      });
+    }
+
+    @Override
+    public List<Field> paths(Table t) throws CatalogException {
+      if (!made.provider().keepsDocuments()) {
+        return List.of();
+      }
+      return read("paths " + path(t), t.container().database(), () -> {
+        var table = find(container(t.container()), t.name());
+        if (table == null) {
+          throw CatalogException.of(CatalogException.Failure.NOT_FOUND, t.name());
+        }
+        var docs = documents.get(path(t));
+        if (docs != null) {
+          return DocumentSession.paths(docs);
+        }
+        return tableColumns(t, table).stream()
+            .filter(c ->
+                !c.name().isEmpty() && c.name().indexOf('.') < 0 && !c.name().startsWith("$"))
+            .map(c -> new Field(c.name(), c.type(), Values.kind(c.type())))
+            .toList();
       });
     }
 

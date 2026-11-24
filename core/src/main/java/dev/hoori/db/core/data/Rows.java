@@ -5,7 +5,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
-import dev.hoori.db.core.dialect.ErrorDialect.Condition;
+import dev.hoori.db.core.dialect.ErrorDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -112,6 +112,7 @@ public final class Rows {
       .toFormatter(Locale.ROOT)
       .withResolverStyle(ResolverStyle.STRICT);
   private static final String AND = " AND ";
+  private static final String OR = " OR ";
   private static final Pattern FILTER_INTEGER = Pattern.compile("[+-]?\\d+");
   private static final Pattern FILTER_DECIMAL =
       Pattern.compile("[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?");
@@ -462,7 +463,7 @@ public final class Rows {
   private static boolean columnGone(Provider provider, QueryException e) {
     return e.failure() == QueryException.Failure.NOT_FOUND
         && e.getCause() instanceof SQLException sql
-        && Condition.COLUMN_GONE.in(
+        && ErrorDialect.Condition.COLUMN_GONE.in(
             provider, sql.getSQLState() == null ? "" : sql.getSQLState(), sql.getErrorCode());
   }
 
@@ -857,6 +858,18 @@ public final class Rows {
   }
 
   /**
+   * The condition builder operators the provider's dialect offers for {@code field}, in display
+   * order.
+   *
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static List<ColumnFilter.Operator> operators(Provider provider, Field field) {
+    Objects.requireNonNull(provider, "provider");
+    Objects.requireNonNull(field, "field");
+    return provider.dialect().rows().operators(field);
+  }
+
+  /**
    * A {@code WHERE} condition (without {@code WHERE}) for the given column filters, formatted in
    * the provider's SQL dialect and joined with {@code AND}; empty when {@code filters} is empty.
    *
@@ -880,25 +893,50 @@ public final class Rows {
   public static String where(
       Provider provider, String base, List<ColumnFilter> filters, ZoneId zone)
       throws QueryException {
-    Objects.requireNonNull(provider, "provider");
     Objects.requireNonNull(filters, "filters");
+    return where(provider, base, Condition.Group.and(filters), zone);
+  }
+
+  /**
+   * A {@code WHERE} condition (without {@code WHERE}) for {@code condition}, formatted in the
+   * provider's SQL dialect; empty when {@code condition} is an empty group.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when a column cannot be
+   *     filtered or a value is invalid for the column's kind
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(Provider provider, Condition condition, ZoneId zone)
+      throws QueryException {
+    return where(provider, "", condition, zone);
+  }
+
+  /**
+   * As {@link #where(Provider, Condition, ZoneId)}, joining {@code condition} onto an optional
+   * hand-written {@code base} clause with {@code (<base>) AND <conditions>}, parenthesizing a
+   * top-level {@code OR} group so precedence is preserved.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when {@code base} is
+   *     refused by {@link Clauses} or any filter is invalid
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(Provider provider, String base, Condition condition, ZoneId zone)
+      throws QueryException {
+    Objects.requireNonNull(provider, "provider");
+    Objects.requireNonNull(condition, "condition");
     Objects.requireNonNull(zone, "zone");
     var dialect = provider.dialect().rows();
     var trimmed = base == null ? "" : base.strip();
-    if (filters.isEmpty()) {
+    var rendered = render(provider, dialect, condition, zone);
+    if (rendered.sql().isEmpty()) {
       return trimmed;
     }
     if (!trimmed.isEmpty()) {
       checkClause("WHERE", trimmed, provider, true);
     }
-    var condition = new StringJoiner(AND);
-    for (var filter : filters) {
-      condition.add(condition(provider, dialect, filter, zone));
-    }
-    var added = condition.toString();
     if (trimmed.isEmpty()) {
-      return added;
+      return rendered.sql();
     }
+    var added = rendered.disjunction() ? "(" + rendered.sql() + ")" : rendered.sql();
     // A line comment at the end takes in what follows, which the check refuses; a line break ends
     // it. MySQL's bare -- at the end, which needs the break it lost to strip(), passes the check.
     var joined = "(" + trimmed + ")" + AND + added;
@@ -911,6 +949,46 @@ public final class Rows {
       // Ended below.
     }
     return "(" + trimmed + "\n)" + AND + added;
+  }
+
+  // Rendered SQL and whether it is a multi-term group or a top-level OR disjunction.
+  private record Rendered(String sql, boolean group, boolean disjunction, boolean compound) {
+    static final Rendered EMPTY = new Rendered("", false, false, false);
+  }
+
+  private static Rendered render(
+      Provider provider, RowsDialect dialect, Condition condition, ZoneId zone)
+      throws QueryException {
+    return switch (condition) {
+      case ColumnFilter filter -> {
+        var sql = condition(provider, dialect, filter, zone);
+        boolean twoBound = filter.spec() instanceof ColumnFilter.Between(var from, var to)
+            && !from.isBlank()
+            && !to.isBlank();
+        yield new Rendered(sql, false, false, twoBound);
+      }
+      case Condition.Group(boolean any, var children) -> {
+        var parts = new ArrayList<Rendered>(children.size());
+        for (var child : children) {
+          var rendered = render(provider, dialect, child, zone);
+          if (!rendered.sql().isEmpty()) {
+            parts.add(rendered);
+          }
+        }
+        if (parts.isEmpty()) {
+          yield Rendered.EMPTY;
+        }
+        if (parts.size() == 1) {
+          yield parts.getFirst();
+        }
+        var joiner = new StringJoiner(any ? OR : AND);
+        for (var part : parts) {
+          boolean wrap = part.group() || (any && part.compound());
+          joiner.add(wrap ? "(" + part.sql() + ")" : part.sql());
+        }
+        yield new Rendered(joiner.toString(), true, any, true);
+      }
+    };
   }
 
   private static String condition(
@@ -926,12 +1004,19 @@ public final class Rows {
     if (filter.spec() instanceof ColumnFilter.Null(boolean isNull)) {
       return quoted + (isNull ? " IS NULL" : " IS NOT NULL");
     }
+    if (filter.spec() instanceof ColumnFilter.Exists) {
+      throw refused(name, "does not support existence checks");
+    }
+    if (filter.spec() instanceof ColumnFilter.Not(var inner)) {
+      return "NOT (" + condition(provider, dialect, new ColumnFilter(field, inner), zone) + ")";
+    }
     // Binary data shows as hex, which no text of the server's matches.
     if (kind == null || kind == Kind.JSON || kind == Kind.OTHER || kind == Kind.BINARY) {
       throw refused(name, "cannot be filtered");
     }
     return switch (filter.spec()) {
-      case ColumnFilter.Null _ -> throw new AssertionError();
+      case ColumnFilter.Null _, ColumnFilter.Exists _, ColumnFilter.Not _ ->
+        throw new AssertionError();
       case ColumnFilter.Text(var match, var value) ->
         textCondition(dialect, quoted, field, match, value, zone);
       case ColumnFilter.Regex(var expression) -> {
