@@ -437,9 +437,7 @@ class DocumentConsoleTest {
       assertTrue(tree.contains("#paging "), tree);
       assertEquals(0, widthOf(tree, "#rows-in-view "), tree);
       float statusWidth = widthOf(tree, "#result-status ");
-      if (sidebar == 0) {
-        assertTrue(statusWidth >= 70, "status=" + statusWidth + "\n" + tree);
-      }
+      assertTrue(statusWidth >= (sidebar > 0 ? 50 : 70), "status=" + statusWidth + "\n" + tree);
       float edge = TableTabTest.end(tree, view.equals("json") ? "#json " : "#documents ");
       for (String control : List.of("#stop-reading ", "#result-shown ", "#paging ", "#pin ")) {
         assertTrue(TableTabTest.end(tree, control) <= edge, control + "\n" + tree);
