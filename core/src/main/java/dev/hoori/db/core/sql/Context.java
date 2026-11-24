@@ -149,7 +149,7 @@ public record Context(
           ? new Context(Asked.MEMBER, List.copyOf(path), typed, scan.tables, scan.left)
           : NOTHING;
     }
-    var asked = asked(tokens, n, scan.joinOn && free(tokens, wordEnd(statement, at)));
+    var asked = asked(tokens, n, scan.joinOn && free(statement, tokens, at));
     return new Context(asked, List.of(), typed, scan.tables, scan.left);
   }
 
@@ -182,25 +182,23 @@ public record Context(
     return word(tokens, i, "ON") || word(tokens, i, "USING");
   }
 
-  // Whether no condition follows the offset: nothing, a clause, a comma or the statement's end.
-  private static boolean free(List<Token> tokens, int offset) {
-    for (var token : tokens) {
-      if (token.start() >= offset) {
-        return token.kind() == Kind.WORD && CLAUSES.contains(token.upper())
-            || token.kind() == Kind.COMMA
-            || token.text().equals(";");
+  // Whether no condition follows the caret: nothing, a clause (not the function LEFT() or
+  // RIGHT()), a comma or the statement's end; and no word goes on from the caret.
+  private static boolean free(String statement, List<Token> tokens, int at) {
+    if (at < statement.length() && word(statement.codePointAt(at))) {
+      return false;
+    }
+    for (int i = 0; i < tokens.size(); i++) {
+      var token = tokens.get(i);
+      if (token.start() >= at) {
+        boolean call = (word(tokens, i, "LEFT") || word(tokens, i, "RIGHT"))
+            && i + 1 < tokens.size()
+            && tokens.get(i + 1).kind() == Kind.OPEN;
+        boolean clause = token.kind() == Kind.WORD && CLAUSES.contains(token.upper()) && !call;
+        return clause || token.kind() == Kind.COMMA || token.text().equals(";");
       }
     }
     return true;
-  }
-
-  // Where the word that goes on from the offset ends.
-  private static int wordEnd(String statement, int at) {
-    int to = at;
-    while (to < statement.length() && word(statement.codePointAt(to))) {
-      to += Character.charCount(statement.codePointAt(to));
-    }
-    return to;
   }
 
   // Where the word that ends at the offset begins.
@@ -321,18 +319,22 @@ public record Context(
     int depth = 0;
     for (int i = 0; i < cursor; i++) {
       var token = tokens.get(i);
-      if (token.kind() == Kind.OPEN || token.text().equals("[")) {
-        depth++;
-      } else if (token.text().equals(")") || token.text().equals("]")) {
-        depth--;
-      } else if (token.upper().equals("FROM") && introduces(tokens, i) && depth <= 0) {
-        item = i; // not the FROM of EXTRACT(YEAR FROM …)
-        depth = 0;
-      } else if (token.kind() == Kind.COMMA && depth == 0 && item >= 0) {
+      depth += nesting(token);
+      // Not the FROM of EXTRACT(YEAR FROM …); a FROM after an unclosed call while it is typed.
+      if (token.upper().equals("FROM") && introduces(tokens, i) && depth <= 0
+          || token.kind() == Kind.COMMA && depth == 0 && item >= 0) {
         item = i;
       }
     }
     return item;
+  }
+
+  // How the token changes the depth of parentheses and brackets.
+  private static int nesting(Token token) {
+    if (token.kind() == Kind.OPEN || token.text().equals("[")) {
+      return 1;
+    }
+    return token.text().equals(")") || token.text().equals("]") ? -1 : 0;
   }
 
   private record Scan(List<Reference> tables, List<Reference> left, boolean joinOn) {

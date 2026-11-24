@@ -433,6 +433,8 @@ class ContextTest {
         "SELECT * FROM orders o JOIN customers c ON|",
         "SELECT * FROM orders o JOIN customers c ON c.id = |",
         "SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id AND |",
+        "SELECT * FROM orders o JOIN customers c ON |TRUE",
+        "SELECT * FROM orders o JOIN customers c ON | LEFT(o.code, 1) = 'A'",
         "SELECT * FROM orders o CROSS JOIN customers c ON |",
         "SELECT * FROM orders o NATURAL JOIN customers c ON |",
         "SELECT * FROM orders o ON |",
@@ -466,6 +468,14 @@ class ContextTest {
         Asked.ON,
         at("SELECT * FROM orders o JOIN order_items oi ON |;", POSTGRESQL).asked());
     assertEquals(
+        Asked.ON,
+        at("SELECT * FROM orders o JOIN order_items oi ON | LEFT JOIN items i ON true", POSTGRESQL)
+            .asked());
+    assertEquals(
+        Asked.ON,
+        at("SELECT * FROM orders o JOIN order_items oi ON | WHERE (o.id = 1)", POSTGRESQL)
+            .asked());
+    assertEquals(
         Asked.TABLE,
         at("SELECT * FROM orders o JOIN | ON o.customer_id = 1", POSTGRESQL).asked());
   }
@@ -495,9 +505,13 @@ class ContextTest {
         at("SELECT * FROM a JOIN b ON ARRAY[a.id, 2] = ARRAY[1, 2] JOIN |", POSTGRESQL)
             .left());
     assertEquals(
-        ref(null, "a", null),
+        List.of(ref(null, "a", null), ref(null, "b", null)),
         at("SELECT * FROM a JOIN b ON EXTRACT(YEAR FROM a.at) = 2020 JOIN |", POSTGRESQL)
             .left()
-            .getFirst());
+            .subList(0, 2));
+    // A FROM after a call still being typed names its tables.
+    assertEquals(
+        List.of(ref(null, "orders", "o")),
+        at("SELECT COUNT(o.| FROM orders o", POSTGRESQL).tables());
   }
 }
