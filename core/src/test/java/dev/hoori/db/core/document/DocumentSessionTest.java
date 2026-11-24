@@ -115,7 +115,9 @@ class DocumentSessionTest {
       }
 
       @Override
-      public void close() {}
+      public void close() {
+        // A made-up client holds nothing to release.
+      }
     };
     try (var session = new DocumentSession(client, Provider.MONGODB.documents(), true)) {
       assertEquals(List.of(), session.indexes(VIEW));
@@ -137,7 +139,9 @@ class DocumentSessionTest {
       }
 
       @Override
-      public void close() {}
+      public void close() {
+        // A made-up client holds nothing to release.
+      }
     };
     try (var session = new DocumentSession(unauthorized, Provider.MONGODB.documents(), true)) {
       var error = assertThrows(CatalogException.class, () -> session.indexes(ORDERS));
@@ -175,7 +179,9 @@ class DocumentSessionTest {
       }
 
       @Override
-      public void close() {}
+      public void close() {
+        // A made-up client holds nothing to release.
+      }
     };
     var logged = new ArrayList<Sent>();
     try (var session = new DocumentSession(paged, Provider.MONGODB.documents(), true)) {

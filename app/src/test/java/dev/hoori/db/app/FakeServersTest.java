@@ -280,7 +280,7 @@ class FakeServersTest {
                 expiresAt: date
                 name: string
                 #customer_1_total_-1 (customer: 1, total: -1) | partial
-                #email_1 (email: 1) unique | sparse
+                #email_1 (email: 1) unique | sparse (made up)
                 #expiresAt_1 (expiresAt: 1) | TTL 3600 s
                 #name_text (name: text)
                 #_id_ (_id: 1) primary
@@ -306,7 +306,7 @@ class FakeServersTest {
                 false,
                 false,
                 "partial"),
-            new Index("email_1", orders, List.of("email: 1"), true, false, "sparse"),
+            new Index("email_1", orders, List.of("email: 1"), true, false, "sparse (made up)"),
             new Index("expiresAt_1", orders, List.of("expiresAt: 1"), false, false, "TTL 3600 s"),
             new Index("name_text", orders, List.of("name: text"), false, false, "")),
         link.indexes(orders));

@@ -1208,6 +1208,10 @@ final class FakeServers implements Servers {
         if (!isIndexLine(text)) {
           continue;
         }
+        // The detail comes after the last " | ", so that it may hold parentheses of its own.
+        int pipe = text.lastIndexOf(" | ");
+        var detail = pipe < 0 ? "" : text.substring(pipe + 3).strip();
+        text = pipe < 0 ? text : text.substring(0, pipe);
         int open = text.indexOf('(');
         int close = text.lastIndexOf(')');
         if (open < 2 || close <= open) {
@@ -1218,10 +1222,7 @@ final class FakeServers implements Servers {
         if (indexName.isEmpty() || columns.isEmpty()) {
           throw new IllegalArgumentException("Bad index: " + text);
         }
-        var tail = text.substring(close + 1);
-        int pipe = tail.indexOf('|');
-        var kind = (pipe < 0 ? tail : tail.substring(0, pipe)).strip().toLowerCase(Locale.ROOT);
-        var detail = pipe < 0 ? "" : tail.substring(pipe + 1).strip();
+        var kind = text.substring(close + 1).strip().toLowerCase(Locale.ROOT);
         boolean primary;
         boolean unique;
         switch (kind) {
