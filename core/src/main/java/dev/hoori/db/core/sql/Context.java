@@ -113,14 +113,14 @@ public record Context(
       "WITH",
       "AS");
   // Top-level words that end a FROM clause, so commas after them (as in GROUP BY or ORDER BY)
-  // are not read as FROM-list items; reserved words alone, as a column may be named LOCK or SET.
+  // are not read as FROM-list items; reserved words alone, as a column may be named LOCK, SET or,
+  // on MySQL, OFFSET.
   private static final Set<String> FROM_ENDERS = Set.of(
       "WHERE",
       "GROUP",
       "ORDER",
       "HAVING",
       "LIMIT",
-      "OFFSET",
       "UNION",
       "EXCEPT",
       "INTERSECT",

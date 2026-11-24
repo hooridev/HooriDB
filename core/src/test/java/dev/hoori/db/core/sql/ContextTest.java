@@ -508,7 +508,12 @@ class ContextTest {
         List.of(ref(null, "c", null), ref(null, "d", null)),
         at("SELECT * FROM a JOIN b ON a.offset = b.offset, c JOIN d ON |", POSTGRESQL)
             .left());
-    // A column named as a non-reserved word, such as lock, does not end the FROM clause.
+    // A column named as a non-reserved word, such as lock or MySQL's offset, does not end the FROM
+    // clause.
+    assertEquals(
+        List.of(ref(null, "c", null), ref(null, "d", null)),
+        at("SELECT * FROM a JOIN b ON a.id = b.a_id AND offset = 0, c JOIN d ON |", MYSQL)
+            .left());
     assertEquals(
         List.of(ref(null, "c", null), ref(null, "d", null)),
         at("SELECT * FROM a JOIN b ON a.id = b.a_id AND lock IS NULL, c JOIN d ON |", POSTGRESQL)
