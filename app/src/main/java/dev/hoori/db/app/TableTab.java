@@ -930,15 +930,16 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         where.caret = where.text.length();
         where.completion.close();
         refused = null;
-        unapplied = preview != null
-            ? "The filter was not applied while DML Preview is open. Press Enter in WHERE once it"
-                + " closes to apply it."
-            : documentDialog != null
-                ? "The filter was not applied while a document dialog is open. Press Enter once it"
-                    + " closes to apply it."
-                : locked
-                    + ": the filter was not applied. Press Enter in WHERE once that finishes to"
-                    + " apply it.";
+        if (preview != null) {
+          unapplied = "The filter was not applied while DML Preview is open. Press Enter in WHERE"
+              + " once it closes to apply it.";
+        } else if (documentDialog != null) {
+          unapplied = "The filter was not applied while a document dialog is open. Press Enter"
+              + " once it closes to apply it.";
+        } else {
+          unapplied = locked
+              + ": the filter was not applied. Press Enter in WHERE once that finishes to apply it.";
+        }
         return;
       }
     }
@@ -1547,18 +1548,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (writeProblem != null) {
       content.child(writeProblem);
     }
-    if (documentProblem != null) {
-      content.child(col()
-          .padding(t.space().s())
-          .shrink(0)
-          .child(Callout.callout(
-                  Callout.Kind.DANGER,
-                  documentProblem.title(),
-                  documentProblem.text(),
-                  button(SECONDARY, "Dismiss", () -> documentProblem = null)
-                      .key("dismiss-document-problem"))
-              .key("document-tab-problem")));
-    }
+    content.child(documentProblem(t));
     content.child(presented != null ? presented.body() : openingBody());
     El rowsStatus = Label.label(Label.Variant.MUTED, rowsText(ofDocuments))
         .key("rows-status")
@@ -1713,35 +1703,30 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         + clause.sqlKeyword + " ";
   }
 
+  // Why an edit, copy or delete dialog did not open, until dismissed; or null.
+  private El documentProblem(Theme t) {
+    if (documentProblem == null) {
+      return null;
+    }
+    return col()
+        .padding(t.space().s())
+        .shrink(0)
+        .child(Callout.callout(
+                Callout.Kind.DANGER,
+                documentProblem.title(),
+                documentProblem.text(),
+                button(SECONDARY, "Dismiss", () -> documentProblem = null)
+                    .key("dismiss-document-problem"))
+            .key("document-tab-problem"));
+  }
+
   /** The toolbar's actions: how documents show, document edits, Open in console, and Refresh. */
   private List<El> actions(State s, boolean connected, boolean ofDocuments) {
     var actions = new ArrayList<El>();
     if (ofDocuments) {
       actions.add(presentation.switcher("shown", v -> show(s, v)));
       if (canEditDocuments(s)) {
-        boolean free = connected && documentDialog == null && s.guard.locked(this) == null;
-        Document current = currentDocument();
-        actions.add(Button.icon(
-                GHOST, Symbol.ADD, "Insert document", free ? () -> openInsertDocument(s) : null)
-            .key("insert-document"));
-        actions.add(Button.icon(
-                GHOST,
-                Symbol.EDIT,
-                "Edit document",
-                free && current != null ? () -> openEditDocument(s, current) : null)
-            .key("edit-document"));
-        actions.add(Button.icon(
-                GHOST,
-                Symbol.COPY,
-                "Copy document",
-                free && current != null ? () -> openCopyDocument(s, current) : null)
-            .key("copy-document"));
-        actions.add(Button.icon(
-                GHOST,
-                Symbol.DELETE,
-                "Delete document",
-                free && current != null ? () -> openDeleteDocument(s, current) : null)
-            .key("delete-document"));
+        actions.addAll(documentActions(s, connected));
       }
     }
     actions.add(Button.icon(GHOST, Symbol.CODE, "Open in console", () -> openInConsole(s))
@@ -1755,6 +1740,33 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
                 .state(opening != null && connected ? Button.State.BUSY : Button.State.READY))
         .key("refresh"));
     return actions;
+  }
+
+  // Insert, and Edit, Copy and Delete of the current document.
+  private List<El> documentActions(State s, boolean connected) {
+    boolean free = connected && documentDialog == null && s.guard.locked(this) == null;
+    Document current = free ? currentDocument() : null;
+    return List.of(
+        Button.icon(GHOST, Symbol.ADD, "Insert document", free ? () -> openInsertDocument(s) : null)
+            .key("insert-document"),
+        Button.icon(
+                GHOST,
+                Symbol.EDIT,
+                "Edit document",
+                current != null ? () -> openEditDocument(s, current) : null)
+            .key("edit-document"),
+        Button.icon(
+                GHOST,
+                Symbol.COPY,
+                "Copy document",
+                current != null ? () -> openCopyDocument(s, current) : null)
+            .key("copy-document"),
+        Button.icon(
+                GHOST,
+                Symbol.DELETE,
+                "Delete document",
+                current != null ? () -> openDeleteDocument(s, current) : null)
+            .key("delete-document"));
   }
 
   /**
@@ -2570,7 +2582,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   /** The edit, insert, copy, preview, or delete dialog for a collection, while open; or null. */
-  El documentDialog(State s, App<State> app) {
+  El documentView(State s, App<State> app) {
     return documentDialog == null ? null : documentDialog.view(s, app);
   }
 

@@ -69,10 +69,7 @@ public sealed interface DocumentEdit {
    * symbol of the same text, still matches under the server's equality.
    */
   static Document exactFilter(Document original) {
-    Objects.requireNonNull(original, "original");
-    if (!original.has("_id")) {
-      throw new IllegalArgumentException("The document has no _id");
-    }
+    requireId(original);
     return Document.of(
         "_id",
         original.get("_id"),
@@ -80,10 +77,17 @@ public sealed interface DocumentEdit {
         Document.of("$eq", Document.array("$$ROOT", Document.of("$literal", original))));
   }
 
-  // Compares strings by their bytes, not by a collation the collection may have, under which a
-  // string changed in case alone would still match.
-  private static Document simple() {
-    return Document.of("locale", "simple");
+  private static void requireId(Document original) {
+    Objects.requireNonNull(original, "original");
+    if (!original.has("_id")) {
+      throw new IllegalArgumentException("The document has no _id");
+    }
+  }
+
+  // The options of a statement of a replace or delete: a collation that compares strings by their
+  // bytes, not by one the collection may have, under which a change of case alone would match.
+  private static Document collated(Object... namesAndValues) {
+    return Document.of(namesAndValues).with("collation", Document.of("locale", "simple"));
   }
 
   private static void requireCollection(Table collection) {
@@ -111,11 +115,8 @@ public sealed interface DocumentEdit {
 
     public Replace {
       requireCollection(collection);
-      Objects.requireNonNull(original, "original");
+      requireId(original);
       Objects.requireNonNull(replacement, "replacement");
-      if (!original.has("_id")) {
-        throw new IllegalArgumentException("The document has no _id");
-      }
       if (replacement.has("_id") && !Objects.equals(replacement.get("_id"), original.get("_id"))) {
         throw new IllegalArgumentException("_id cannot be changed");
       }
@@ -131,17 +132,8 @@ public sealed interface DocumentEdit {
           "update",
           collection.name(),
           "updates",
-          Document.array(Document.of(
-              "q",
-              exactFilter(original),
-              "u",
-              replacement,
-              "multi",
-              false,
-              "upsert",
-              false,
-              "collation",
-              simple())));
+          Document.array(collated(
+              "q", exactFilter(original), "u", replacement, "multi", false, "upsert", false)));
     }
 
     @Override
@@ -152,7 +144,7 @@ public sealed interface DocumentEdit {
           + ", "
           + Shell.compact(replacement)
           + ", "
-          + Shell.compact(Document.of("collation", simple()))
+          + Shell.compact(collated())
           + ")");
     }
   }
@@ -181,10 +173,7 @@ public sealed interface DocumentEdit {
 
     public Delete {
       requireCollection(collection);
-      Objects.requireNonNull(original, "original");
-      if (!original.has("_id")) {
-        throw new IllegalArgumentException("The document has no _id");
-      }
+      requireId(original);
     }
 
     @Override
@@ -193,8 +182,7 @@ public sealed interface DocumentEdit {
           "delete",
           collection.name(),
           "deletes",
-          Document.array(
-              Document.of("q", exactFilter(original), "limit", 1, "collation", simple())));
+          Document.array(collated("q", exactFilter(original), "limit", 1)));
     }
 
     @Override
@@ -203,7 +191,7 @@ public sealed interface DocumentEdit {
           + ".deleteOne("
           + Shell.compact(exactFilter(original))
           + ", "
-          + Shell.compact(Document.of("collation", simple()))
+          + Shell.compact(collated())
           + ")");
     }
   }

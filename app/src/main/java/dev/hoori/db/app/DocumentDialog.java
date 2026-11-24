@@ -219,41 +219,18 @@ final class DocumentDialog {
       content.child(Callout.callout(Callout.Kind.DANGER, problem.title(), problem.text())
           .key("document-problem"));
     }
-    content.child(code.h(Math.min(12, Math.max(4, lines + 1)) * t.size().control())
-        .wFull());
+    content.child(code.h(Math.clamp(lines + 1L, 4, 12) * t.size().control()).wFull());
     if (writing != null) {
-      content.child(row()
-          .gap(t.space().s())
-          .align(Style.Align.CENTER)
-          .child(Progress.spinner().label(mode == Mode.DELETE ? "Deleting" : "Saving"))
-          .child(Label.label(
-              Label.Variant.MUTED,
-              mode == Mode.DELETE ? "Deleting document…" : "Saving document…")));
+      content.child(progress(t));
     }
     Runnable dismiss = writing != null ? () -> cancelWrite(s) : () -> tab.closeDocumentDialog();
-    boolean free = writing == null && s.guard.locked(tab) == null && s.catalog.connected(tab.id);
     var buttons = new ArrayList<El>();
     if (mode != Mode.DELETE) {
       buttons.add(button(SECONDARY, "Back", writing == null ? this::back : null)
           .key("document-preview-back"));
     }
     buttons.add(button(SECONDARY, CANCEL, dismiss).key("document-preview-cancel"));
-    String confirmLabel = switch (mode) {
-      case EDIT -> "Replace";
-      case INSERT, COPY -> "Insert";
-      case DELETE -> "Delete";
-    };
-    var confirmOptions =
-        Button.options().state(writing != null ? Button.State.BUSY : Button.State.READY);
-    if (mode == Mode.DELETE) {
-      confirmOptions.tone(Button.Tone.DANGER);
-    }
-    El confirm = button(
-            PRIMARY,
-            confirmLabel,
-            free && !(mode == Mode.DELETE && conflict) ? () -> send(s) : null,
-            confirmOptions)
-        .key("document-preview-confirm");
+    El confirm = confirm(s);
     buttons.add(confirm);
     String title = mode == Mode.DELETE ? "Delete document" : "Command Preview";
     String key = mode == Mode.DELETE ? "document-delete" : "document-preview";
@@ -264,6 +241,32 @@ final class DocumentDialog {
             dismiss,
             mode == Mode.DELETE ? Dialog.options() : Dialog.options().defaultButton(confirm))
         .key(key);
+  }
+
+  private El progress(Theme t) {
+    boolean deleting = mode == Mode.DELETE;
+    return row()
+        .gap(t.space().s())
+        .align(Style.Align.CENTER)
+        .child(Progress.spinner().label(deleting ? "Deleting" : "Saving"))
+        .child(
+            Label.label(Label.Variant.MUTED, deleting ? "Deleting document…" : "Saving document…"));
+  }
+
+  private El confirm(State s) {
+    boolean free = writing == null && s.guard.locked(tab) == null && s.catalog.connected(tab.id);
+    String label = switch (mode) {
+      case EDIT -> "Replace";
+      case INSERT, COPY -> "Insert";
+      case DELETE -> "Delete";
+    };
+    var options = Button.options().state(writing != null ? Button.State.BUSY : Button.State.READY);
+    if (mode == Mode.DELETE) {
+      options.tone(Button.Tone.DANGER);
+    }
+    boolean sendable = free && !(mode == Mode.DELETE && conflict);
+    return button(PRIMARY, label, sendable ? () -> send(s) : null, options)
+        .key("document-preview-confirm");
   }
 
   private String editorSummary() {
@@ -458,47 +461,58 @@ final class DocumentDialog {
   }
 
   private void handleFailure(State s, Live live, Exception error) {
-    ConsoleTab.Problem next;
-    if (error instanceof InterruptedException) {
-      next = new ConsoleTab.Problem(
-          ConsoleTab.UNSURE,
-          "The write was given up as its connection closed: whether it took effect is not known."
-              + " Refresh the collection to check.");
-    } else if (error instanceof QueryException qe
-        && (qe.failure() == QueryException.Failure.CONNECTION_LOST
-            || qe.failure() == QueryException.Failure.ABORTED)) {
-      String detail = CatalogTree.words(live, qe.detail());
-      String body =
-          "The connection was lost while saving: whether the write took effect is not known."
-              + " Refresh the collection before trying again.";
-      if (!detail.isEmpty()) {
-        body += "\n" + detail;
-      }
-      next = new ConsoleTab.Problem(ConsoleTab.UNSURE, body);
-    } else if (error instanceof QueryException qe) {
-      String title = switch (qe.failure()) {
-        case ACCESS_DENIED -> "Access denied";
-        case NOT_FOUND -> "Collection not found";
-        case CANCELLED -> ConsoleTab.CANCELLED_TEXT;
-        default -> mode == Mode.DELETE ? "Delete failed" : "Save failed";
-      };
-      String detail = CatalogTree.words(live, qe.detail());
-      next = new ConsoleTab.Problem(title, detail.isEmpty() ? "Nothing was written." : detail);
-    } else if (error instanceof ConnectionException ce) {
-      var profile = s.profile(tab.id);
-      String title = Words.title(ce.failure());
-      String detail = profile == null
-          ? CatalogTree.words(live, ce.detail())
-          : Words.note(ce.failure(), profile, true, s.settings.connectTimeout());
-      next = new ConsoleTab.Problem(title, detail);
-    } else {
-      String detail = CatalogTree.words(live, State.messageOf(error));
-      next = new ConsoleTab.Problem(
-          mode == Mode.DELETE ? "Delete failed" : "Save failed",
-          detail.isEmpty() ? "Nothing was written." : detail);
-    }
+    var next = switch (error) {
+      case InterruptedException _ ->
+        new ConsoleTab.Problem(
+            ConsoleTab.UNSURE,
+            "The write was given up as its connection closed: whether it took effect is not known."
+                + " Refresh the collection to check.");
+      case QueryException qe when lost(qe) -> lostProblem(CatalogTree.words(live, qe.detail()));
+      case QueryException qe ->
+        new ConsoleTab.Problem(failedTitle(qe), written(CatalogTree.words(live, qe.detail())));
+      case ConnectionException ce -> connectionProblem(s, live, ce);
+      default ->
+        new ConsoleTab.Problem(failed(), written(CatalogTree.words(live, State.messageOf(error))));
+    };
     returnToEditor(next);
     tab.settledFromDocumentEdit(s, false);
+  }
+
+  private static boolean lost(QueryException e) {
+    return e.failure() == QueryException.Failure.CONNECTION_LOST
+        || e.failure() == QueryException.Failure.ABORTED;
+  }
+
+  private static ConsoleTab.Problem lostProblem(String detail) {
+    String body = "The connection was lost while saving: whether the write took effect is not"
+        + " known. Refresh the collection before trying again.";
+    return new ConsoleTab.Problem(
+        ConsoleTab.UNSURE, detail.isEmpty() ? body : body + "\n" + detail);
+  }
+
+  private String failedTitle(QueryException e) {
+    return switch (e.failure()) {
+      case ACCESS_DENIED -> "Access denied";
+      case NOT_FOUND -> "Collection not found";
+      case CANCELLED -> ConsoleTab.CANCELLED_TEXT;
+      default -> failed();
+    };
+  }
+
+  private String failed() {
+    return mode == Mode.DELETE ? "Delete failed" : "Save failed";
+  }
+
+  private static String written(String detail) {
+    return detail.isEmpty() ? "Nothing was written." : detail;
+  }
+
+  private ConsoleTab.Problem connectionProblem(State s, Live live, ConnectionException e) {
+    var profile = s.profile(tab.id);
+    String detail = profile == null
+        ? CatalogTree.words(live, e.detail())
+        : Words.note(e.failure(), profile, true, s.settings.connectTimeout());
+    return new ConsoleTab.Problem(Words.title(e.failure()), detail);
   }
 
   private void returnToEditor(ConsoleTab.Problem next) {
@@ -533,23 +547,8 @@ final class DocumentDialog {
     int depth = 0;
     for (int i = 0; i < tokens.size(); i++) {
       var token = tokens.get(i);
-      if (token.kind() == Lexer.Kind.PUNCTUATION) {
-        char c = text.charAt(token.start());
-        if (c == '{' || c == '[' || c == '(') {
-          depth++;
-        } else if (c == '}' || c == ']' || c == ')') {
-          depth--;
-        }
-        continue;
-      }
-      if (depth != 1) {
-        continue;
-      }
-      boolean isId = token.kind() == Lexer.Kind.NAME
-              && text.substring(token.start(), token.end()).equals("_id")
-          || token.kind() == Lexer.Kind.STRING
-              && isIdString(text.substring(token.start(), token.end()));
-      if (isId && nextCodeIsColon(tokens, i)) {
+      depth += nesting(token);
+      if (depth == 1 && isIdKey(tokens, i)) {
         editor.markup(
             ERROR_LAYER,
             text,
@@ -560,6 +559,27 @@ final class DocumentDialog {
         return;
       }
     }
+  }
+
+  // How far a token opens (1) or closes (-1) a document, an array or a call.
+  private int nesting(Lexer.Token token) {
+    if (token.kind() != Lexer.Kind.PUNCTUATION) {
+      return 0;
+    }
+    char c = text.charAt(token.start());
+    if ("{[(".indexOf(c) >= 0) {
+      return 1;
+    }
+    return ")]}".indexOf(c) >= 0 ? -1 : 0;
+  }
+
+  // Whether the token is the name _id, bare or quoted, before its colon.
+  private boolean isIdKey(List<Lexer.Token> tokens, int at) {
+    var token = tokens.get(at);
+    var word = text.substring(token.start(), token.end());
+    boolean id = token.kind() == Lexer.Kind.NAME && word.equals("_id")
+        || token.kind() == Lexer.Kind.STRING && isIdString(word);
+    return id && nextCodeIsColon(tokens, at);
   }
 
   private boolean nextCodeIsColon(List<Lexer.Token> tokens, int from) {

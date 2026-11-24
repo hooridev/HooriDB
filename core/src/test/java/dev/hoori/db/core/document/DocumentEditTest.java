@@ -176,18 +176,17 @@ class DocumentEditTest {
     assertThrows(IllegalArgumentException.class, () -> new DocumentEdit.Delete(ITEMS, noId));
 
     // Changing _id value or type is refused.
+    var otherId = Document.of("_id", 2, "name", "Ada");
     assertThrows(
-        IllegalArgumentException.class,
-        () -> new DocumentEdit.Replace(ITEMS, original, Document.of("_id", 2, "name", "Ada")));
+        IllegalArgumentException.class, () -> new DocumentEdit.Replace(ITEMS, original, otherId));
+    var otherType = Document.of("_id", 1L, "name", "Ada");
     assertThrows(
-        IllegalArgumentException.class,
-        () -> new DocumentEdit.Replace(ITEMS, original, Document.of("_id", 1L, "name", "Ada")));
+        IllegalArgumentException.class, () -> new DocumentEdit.Replace(ITEMS, original, otherType));
 
     // Top-level $ field in replacement is refused so update cannot run operators.
+    var operator = Document.of("$set", Document.of("name", "B"));
     assertThrows(
-        IllegalArgumentException.class,
-        () -> new DocumentEdit.Replace(
-            ITEMS, original, Document.of("$set", Document.of("name", "B"))));
+        IllegalArgumentException.class, () -> new DocumentEdit.Replace(ITEMS, original, operator));
   }
 
   @Test
@@ -203,7 +202,9 @@ class DocumentEditTest {
       }
 
       @Override
-      public void close() {}
+      public void close() {
+        // nothing to close
+      }
     };
 
     var doc = Document.of("_id", 1, "name", "Ada", "pwd", "top-secret");

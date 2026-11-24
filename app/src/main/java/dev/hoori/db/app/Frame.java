@@ -305,7 +305,7 @@ final class Frame {
       return monitor.question(s);
     }
     if (group.activeTab() instanceof TableTab table) {
-      El document = table.documentDialog(s, app(s, group));
+      El document = table.documentView(s, app(s, group));
       if (document != null) {
         return document;
       }

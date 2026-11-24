@@ -179,7 +179,6 @@ final class DocumentPresentation {
     private int count;
     private String text;
     private int[] starts = new int[0];
-    private int[] ends = new int[0];
 
     @Override
     public Mode mode() {
@@ -198,7 +197,6 @@ final class DocumentPresentation {
         slice = List.of();
         text = null;
         starts = new int[0];
-        ends = new int[0];
         return new View(emptyOrLoading(page), footer);
       }
       String formatted = text(page);
@@ -213,31 +211,17 @@ final class DocumentPresentation {
       return new View(body, footer);
     }
 
-    /** The document in the current JSON page at the editor caret, or null when empty/outside. */
+    /** The document in the current JSON page at the editor caret: the last that starts before. */
     Document currentDocument() {
       if (text == null || slice.isEmpty() || starts.length != slice.size()) {
         return null;
       }
-      int caret = Math.clamp(editor.caret(), 0, text.length());
-      for (int i = 0; i < starts.length; i++) {
-        if (caret >= starts[i] && caret <= ends[i]) {
-          return slice.get(i);
-        }
+      int caret = editor.caret();
+      int i = 0;
+      while (i + 1 < starts.length && starts[i + 1] <= caret) {
+        i++;
       }
-      if (caret < starts[0]) {
-        return slice.getFirst();
-      }
-      for (int i = 0; i < starts.length; i++) {
-        int before = i == 0 ? 0 : ends[i - 1];
-        int lineStart = Math.max(before, text.lastIndexOf('\n', starts[i]) + 1);
-        int after = i + 1 < starts.length ? starts[i + 1] : text.length();
-        int nl = text.indexOf('\n', ends[i]);
-        int lineEnd = Math.min(after, nl < 0 ? text.length() : nl);
-        if (caret >= lineStart && caret <= lineEnd) {
-          return slice.get(i);
-        }
-      }
-      return null;
+      return slice.get(i);
     }
 
     private String text(DocumentPage page) {
@@ -255,7 +239,7 @@ final class DocumentPresentation {
         var json = ExtendedJson.array(slice);
         var formatted = com.rethinkj.ui.json.Json.format(json);
         text = formatted.valid() ? formatted.text() : json;
-        scanSpans(text, slice.size());
+        starts = starts(text, slice.size());
         scope = page.scope();
         source = page.source();
         from = page.sliceFrom();
@@ -264,45 +248,32 @@ final class DocumentPresentation {
       return text;
     }
 
-    private void scanSpans(String json, int expected) {
-      int[] s = new int[expected];
-      int[] e = new int[expected];
-      int found = 0;
+    // Where each document of the array starts, or none where they cannot all be found.
+    private static int[] starts(String json, int expected) {
+      var found = new int[expected];
+      int n = 0;
       int depth = 0;
-      boolean inString = false;
-      for (int i = 0; i < json.length() && found < expected; i++) {
+      boolean quoted = false;
+      boolean escaped = false;
+      for (int i = 0; i < json.length() && n < expected; i++) {
         char c = json.charAt(i);
-        if (inString) {
-          if (c == '\\') {
-            i++;
-          } else if (c == '"') {
-            inString = false;
+        if (escaped) {
+          escaped = false;
+        } else if (quoted) {
+          escaped = c == '\\';
+          quoted = c != '"';
+        } else if (c == '"') {
+          quoted = true;
+        } else if (c == '{' || c == '[') {
+          if (c == '{' && depth == 1) {
+            found[n++] = i;
           }
-          continue;
-        }
-        switch (c) {
-          case '"' -> inString = true;
-          case '[' -> depth++;
-          case '{' -> {
-            if (depth == 1) {
-              s[found] = i;
-            }
-            depth++;
-          }
-          case '}' -> {
-            depth--;
-            if (depth == 1) {
-              e[found++] = i + 1;
-            }
-          }
-          case ']' -> depth--;
-          default -> {
-            // Other characters do not affect nesting.
-          }
+          depth++;
+        } else if (c == '}' || c == ']') {
+          depth--;
         }
       }
-      starts = found == expected ? s : new int[0];
-      ends = found == expected ? e : new int[0];
+      return n == expected ? found : new int[0];
     }
   }
 

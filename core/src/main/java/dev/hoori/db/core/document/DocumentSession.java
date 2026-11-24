@@ -110,13 +110,14 @@ public final class DocumentSession implements AutoCloseable {
     if (ok instanceof Number n && n.doubleValue() == 0) {
       var code = reply.get("code") instanceof Number c ? c.intValue() : 0;
       var name = reply.get("codeName") instanceof String s ? s : "";
-      var message = reply.get("errmsg") instanceof String s ? s : "";
+      var message = reply.get(ERRMSG) instanceof String s ? s : "";
       throw DocumentException.server(code, name, message);
     }
     return reply;
   }
 
   private static final Set<String> WRITES = Set.of("insert", "update", "delete");
+  private static final String ERRMSG = "errmsg";
 
   // What a reply says the command came to: the documents of its cursor's batch, those a write
   // changed, or nothing more.
@@ -134,7 +135,7 @@ public final class DocumentSession implements AutoCloseable {
           ? errors.getFirst()
           : reply.get("writeConcernError");
       if (failed instanceof Document error) {
-        var message = error.get("errmsg") instanceof String s && !s.isBlank() ? s : "Write error";
+        var message = error.get(ERRMSG) instanceof String s && !s.isBlank() ? s : "Write error";
         return new Outcome.Failed(message);
       }
       var changed = reply.get("nModified") instanceof Number m ? m : reply.get("n");
@@ -623,7 +624,7 @@ public final class DocumentSession implements AutoCloseable {
       var reply = command(Purpose.CHANGES, database(edit.collection()), edit.command());
       checkWriteErrors(reply);
       if (reply.get("writeConcernError") instanceof Document concern) {
-        var message = concern.get("errmsg") instanceof String m && !m.isBlank()
+        var message = concern.get(ERRMSG) instanceof String m && !m.isBlank()
             ? m
             : "The write concern failed";
         return new DocumentEdit.Outcome.Unconfirmed(message);
@@ -653,7 +654,7 @@ public final class DocumentSession implements AutoCloseable {
   private static DocumentException writeError(Document error, String fallback) {
     int code = error.get("code") instanceof Number n ? n.intValue() : 0;
     var name = error.get("codeName") instanceof String s ? s : "";
-    var message = error.get("errmsg") instanceof String s && !s.isBlank() ? s : fallback;
+    var message = error.get(ERRMSG) instanceof String s && !s.isBlank() ? s : fallback;
     return DocumentException.server(code, name, message);
   }
 
