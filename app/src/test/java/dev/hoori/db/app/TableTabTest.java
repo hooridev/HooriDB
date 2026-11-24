@@ -1051,7 +1051,8 @@ class TableTabTest {
     var app = shop();
     c.run(app, table("logs") + SETTLE + "advance 1\nframe\n");
     var held = servers.hold("read " + logs + " 200-400");
-    c.run(app, page("Last page") + "snap asking\n");
+    // Control+End scrolls to the row that asks; Last page would count first.
+    c.run(app, "press #cell-0-0\nadvance 1\nframe\nkey End control\nframe\nframe\nsnap asking\n");
     String asking = c.tree("asking");
     assertTrue(inView(asking).contains("–200\""), asking);
     assertTrue(off(asking, "Next page") && off(asking, "Last page"), asking);
@@ -1673,6 +1674,53 @@ class TableTabTest {
     String last = c.tree("last");
     assertTrue(line(last, "#rows-in-view").contains("\"Documents 601–650\""), last);
     assertTrue(status(last).contains("\"650 documents\""), last);
+  }
+
+  @Test
+  void anotherPageWhileTheLastWaitsForItsCountStays() throws Exception {
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    var many = IntStream.rangeClosed(1, 650)
+        .mapToObj(i -> Document.of("_id", i, "customer", "many", "total", (double) i))
+        .toList();
+    servers.documents(path, many);
+    servers.documents(path + " FILTER { total: { $gt: 0 } }", many);
+    var app = mongoOrders();
+    c.run(app, clause("Filter", "{ total: { $gt: 0 } }") + "key Enter\nframe\n" + SETTLE + """
+            press role=radio label="JSON"
+            frame
+            advance 1
+            frame
+            """);
+    var held = servers.hold("count " + path + " FILTER { total: { $gt: 0 } }");
+    c.run(app, "press role=button label=\"Last page\"\nframe\n");
+    c.run(app, "press role=button label=\"Next page\"\nframe\n");
+    held.countDown();
+    c.run(app, SETTLE + "advance 1\nframe\nsnap stayed\n");
+    String stayed = c.tree("stayed");
+    assertTrue(line(stayed, "#rows-in-view").contains("\"Documents 201–400\""), stayed);
+  }
+
+  @Test
+  void lastPageOfAFilteredGridCountsFirst() throws Exception {
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    var many = IntStream.rangeClosed(1, 1200)
+        .mapToObj(i -> Document.of("_id", i, "customer", "many", "total", (double) i))
+        .toList();
+    servers.documents(path, many);
+    servers.documents(path + " FILTER { total: { $gt: 0 } }", many);
+    var app = mongoOrders();
+    c.run(
+        app,
+        clause("Filter", "{ total: { $gt: 0 } }")
+            + "key Enter\nframe\n"
+            + SETTLE
+            + page("Last page")
+            + SETTLE
+            + "frame\nframe\n"
+            + SETTLE
+            + "snap end\n");
+    String end = c.tree("end");
+    assertTrue(inView(end).contains("1,200\""), end);
   }
 
   @Test

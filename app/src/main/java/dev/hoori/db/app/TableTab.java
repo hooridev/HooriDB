@@ -613,11 +613,11 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
           pages.keySet().removeIf(p -> p * PAGE >= n);
           documents.keySet().retainAll(pages.keySet());
           want(s, first, last);
-          if (!presentation.isGrid()) {
-            long end = Math.max(0, (n - 1) / PAGE);
-            turn(s, toLast ? end : Math.min(presentation.page(), end));
+          if (toLast) {
+            toEnd(s);
+          } else if (!presentation.isGrid()) {
+            turn(s, Math.min(presentation.page(), Math.max(0, (n - 1) / PAGE)));
           }
-          toLast = false;
         },
         error -> {
           counting = null;
@@ -1014,11 +1014,21 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
   }
 
-  /** The last page of documents, counted first where only a lower bound of them is known. */
+  /** The last page or rows, counted first where only a lower bound of them is known. */
   private void lastPage(State s) {
     if (counted == Counted.AT_LEAST) {
       toLast = true;
       counted(s, true);
+    } else {
+      toEnd(s);
+    }
+  }
+
+  private void toEnd(State s) {
+    toLast = false;
+    if (presentation.isGrid()) {
+      // As Control+End: an estimate too high shows the end once the reads there correct it.
+      selection.scrollToRow(gridRowCount());
     } else {
       turn(s, (shown() - 1) / PAGE);
     }
@@ -1026,6 +1036,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   /** Shows the page of documents whole, read where it is not. */
   void turn(State s, long to) {
+    toLast = false; // another page chosen: no jump to the end once counted
     presentation.page(to);
     long page = presentation.page();
     if (closed || columns == null || opening != null || failure != null) {
@@ -1323,7 +1334,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         shows.note(),
         shows.waiting(),
         () -> inViewText(ofDocuments),
-        this::gridPaging);
+        () -> gridPaging(s));
   }
 
   /**
@@ -1486,22 +1497,28 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
    * Paging that scrolls the grid a page, the rows in view, back or on, or to its start or end; the
    * selection stays. Each is off where the grid shows its first or last row already.
    */
-  private DocumentPresentation.Paging gridPaging() {
+  private DocumentPresentation.Paging gridPaging(State s) {
     int total = gridRowCount();
     int top = selection.firstRowInView();
     int bottom = selection.lastRowInView();
     return new DocumentPresentation.Paging(
         top > 0,
         bottom >= 0 && bottom < total - 1,
-        () -> selection.scrollToRow(0),
         () -> {
+          toLast = false;
+          selection.scrollToRow(0);
+        },
+        () -> {
+          toLast = false;
           int from = selection.firstRowInView();
           int to = selection.lastRowInView();
           selection.scrollToRow(Math.max(0, from - (to - from + 1)));
         },
-        () -> selection.scrollToRow(selection.lastRowInView() + 1),
-        // As Control+End: an estimate too high shows the end once the reads there correct it.
-        () -> selection.scrollToRow(gridRowCount()));
+        () -> {
+          toLast = false;
+          selection.scrollToRow(selection.lastRowInView() + 1);
+        },
+        () -> lastPage(s));
   }
 
   /** The page of documents for the JSON and Tree strategies. */

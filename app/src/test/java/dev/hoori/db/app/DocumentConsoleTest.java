@@ -124,6 +124,9 @@ class DocumentConsoleTest {
     assertTrue(fields.contains("ObjectId"), fields.toString());
     var named = offered(app, "db.getCollection('orders').find({ ");
     assertEquals(List.of("_id", "customer", "total"), named.subList(0, 3), named.toString());
+    // The name's escapes are read, as the server reads them (the script reads one backslash).
+    var escaped = offered(app, "db.getCollection('\\\\x6frders').find({ ");
+    assertEquals(List.of("_id", "customer", "total"), escaped.subList(0, 3), escaped.toString());
     var operators = offered(app, "db.orders.find({ total: { $g");
     assertTrue(operators.containsAll(List.of("$gt", "$gte")), operators.toString());
     assertTrue(operators.stream().allMatch(o -> o.startsWith("$")), operators.toString());

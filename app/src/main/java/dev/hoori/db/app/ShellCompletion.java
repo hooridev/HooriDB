@@ -6,6 +6,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.document.Lexer;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.document.Shell;
+import dev.hoori.db.core.document.SyntaxException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -241,8 +242,9 @@ record ShellCompletion() implements Suggestions.Strategy {
         && !code.get(k + 4).open()) {
       var quoted = code.get(k + 4);
       int close = is(text, code, k + 5, ",") ? k + 6 : k + 5; // a comma may end its arguments
-      if (is(text, code, close, ")")) {
-        return new Named(text.substring(quoted.start() + 1, quoted.end() - 1), close + 1);
+      if (is(text, code, close, ")")
+          && name(text.substring(quoted.start(), quoted.end())) instanceof String named) {
+        return new Named(named, close + 1);
       }
     }
     // shortcut: a name with dots is the collection's up to a name called after it.
@@ -257,6 +259,15 @@ record ShellCompletion() implements Suggestions.Strategy {
       j += 2;
     }
     return new Named(dotted.toString(), j);
+  }
+
+  // The string a closed string token holds, its escapes read, or null where it reads as none.
+  private static Object name(String quoted) {
+    try {
+      return Shell.parse(quoted);
+    } catch (SyntaxException e) {
+      return null;
+    }
   }
 
   // Whether the token at k is there and is the text.
