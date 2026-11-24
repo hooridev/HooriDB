@@ -357,7 +357,7 @@ final class Keeping {
     if (restoring == null || !s.loaded || s.loadError != null || settingsLoading) {
       return;
     }
-    var main = s.tabs.main();
+    var main = s.tabs.main().active();
     var hidden = new ArrayList<StoredConsole>();
     for (var stored : restoring) {
       if (stored.query() != null) {
@@ -403,7 +403,7 @@ final class Keeping {
       consolesKept.unsaved = true;
       target = null;
     }
-    var main = s.tabs.main();
+    var main = s.tabs.main().active();
     s.tabs.add(main, main.tabs().size(), ConsoleTab.ofQuery(s, query, target));
   }
 

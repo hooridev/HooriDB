@@ -157,7 +157,7 @@ class ConsoleHistoryTest {
             + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
             + SAVED);
     var shop = app.state().consoles(SHOP.id()).getFirst();
-    assertEquals(shop, app.state().tabs.main().activeTab());
+    assertEquals(shop, app.state().tabs.main().active().activeTab());
     var text = "SELECT 3;\n\nSELECT * FROM \"public\".\"orders\";";
     assertEquals(text, shop.text, "not lost at the first press");
     assertEquals(text.length(), shop.editor.caret());

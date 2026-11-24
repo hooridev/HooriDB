@@ -435,7 +435,7 @@ class PaletteTest {
             + "window main\nframe\n" + SHOWN + "snap main\n");
     var main = c.tree("main");
     assertTrue(main.contains("role=dialog label=\"New connection\""), main);
-    assertFalse(app.state().palette(app.state().tabs.main()).isOpen());
+    assertFalse(app.state().palette(app.state().tabs.main().active()).isOpen());
     CatalogTreeTest.eventually(() -> c.servers.interrupted.contains(key));
     held.countDown();
     c.run(app, "key Escape\n" + SHOWN + SETTLE + GO_TO + "type \"ev\"\nframe\nsnap after\n");
@@ -743,7 +743,7 @@ class PaletteTest {
             + "type \"close tab\"\nframe\nkey Enter\n" + SHOWN + SETTLE);
     assertEquals(1, app.windows().all().size());
     var s = app.state();
-    assertEquals(java.util.Set.of(s.tabs.main()), s.palettes.keySet());
+    assertEquals(java.util.Set.of(s.tabs.main().active()), s.palettes.keySet());
   }
 
   @Test
