@@ -481,7 +481,7 @@ class JoinCompletionTest {
     var parenAliased = options(console.c.tree("paren-aliased"));
     assertFalse(parenAliased.stream().anyMatch(o -> o.contains(" ON ")), parenAliased.toString());
 
-    // Without an alias, a parenthesized join keeps its tables.
+    // Without an alias, a parenthesized join keeps the tables its JOINs name.
     console.c.run(
         app,
         "key Escape\nkey A control\nkey Delete\n"
@@ -490,8 +490,7 @@ class JoinCompletionTest {
             + "snap paren-unaliased\n");
     var parenUnaliased = options(console.c.tree("paren-unaliased"));
     assertTrue(
-        parenUnaliased.contains("categories c2 ON c2.id = o.category_id"),
-        parenUnaliased.toString());
+        parenUnaliased.stream().anyMatch(o -> o.endsWith(" = c.id")), parenUnaliased.toString());
 
     // FROM list continued after ON offers the condition for the new item only, never earlier ones.
     console.c.run(

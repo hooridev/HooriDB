@@ -113,7 +113,7 @@ public record Context(
       "WITH",
       "AS");
   // Top-level words that end a FROM clause, so commas after them (as in GROUP BY or ORDER BY)
-  // are not read as FROM-list items.
+  // are not read as FROM-list items; reserved words alone, as a column may be named LOCK or SET.
   private static final Set<String> FROM_ENDERS = Set.of(
       "WHERE",
       "GROUP",
@@ -126,12 +126,9 @@ public record Context(
       "INTERSECT",
       "WINDOW",
       "FOR",
-      "SET",
-      "VALUES",
       "RETURNING",
       "FETCH",
       "SELECT",
-      "LOCK",
       "INTO");
   private static final Set<String> INTRODUCERS = Set.of("FROM", "JOIN", "INTO", "UPDATE");
   private static final Context NOTHING =
@@ -351,15 +348,23 @@ public record Context(
     return true;
   }
 
-  // The index of the last FROM, or comma between the items of its list, before the cursor: what
-  // a JOIN at the cursor joins comes after it. FROM a JOIN b ON a.id = b.a_id, c JOIN d: d joins c.
+  // The index of the last FROM, or comma between the items of its list, or of the "(" still open
+  // before the cursor: what a JOIN at the cursor joins comes after it. FROM a JOIN b ON a.id =
+  // b.a_id, c JOIN d: d joins c; FROM a JOIN (b JOIN c: c joins b alone.
   private static int item(List<Token> tokens, int cursor) {
     int item = -1;
     int depth = 0;
     boolean inFrom = false;
+    var open = new ArrayDeque<Integer>();
     for (int i = 0; i < cursor; i++) {
       var token = tokens.get(i);
-      depth = Math.max(0, depth + nesting(token));
+      int nesting = nesting(token);
+      if (nesting > 0) {
+        open.push(i);
+      } else if (nesting < 0 && !open.isEmpty()) {
+        open.pop();
+      }
+      depth = Math.max(0, depth + nesting);
       // Not the FROM of EXTRACT(YEAR FROM …); a FROM after an unclosed call while it is typed.
       if (token.upper().equals("FROM") && introduces(tokens, i) && depth == 0) {
         item = i;
@@ -372,7 +377,7 @@ public record Context(
         }
       }
     }
-    return item;
+    return open.isEmpty() ? item : Math.max(item, open.peek());
   }
 
   private static boolean endsFrom(List<Token> tokens, int i) {
@@ -419,10 +424,9 @@ public record Context(
         if (from && depth == 0) {
           inFrom = true;
         }
-        boolean paren = from || token.upper().equals("JOIN");
-        readTable(tokens, i + 1, i, paren, skip, found, spans, tableTokens);
+        readTable(tokens, i + 1, i, skip, found, spans, tableTokens);
       } else if (depth == 0 && inFrom && token.kind() == Kind.COMMA) {
-        readTable(tokens, i + 1, i, true, skip, found, spans, tableTokens);
+        readTable(tokens, i + 1, i, skip, found, spans, tableTokens);
       }
     }
     int item = item(tokens, cursor);
@@ -443,23 +447,15 @@ public record Context(
     return new Scan(List.copyOf(found), List.copyOf(left), joinOn);
   }
 
-  // Reads the table reference after an introducer or FROM-list comma, skipping leading "(" of a
-  // parenthesized join where allowed.
+  // Reads the table reference after an introducer or FROM-list comma, but not the one at skip.
   private static void readTable(
       List<Token> tokens,
-      int from,
+      int j,
       int introducer,
-      boolean allowParen,
       int skip,
       List<Reference> found,
       List<Span> spans,
       Set<Integer> tableTokens) {
-    int j = from;
-    if (allowParen) {
-      while (j < tokens.size() && tokens.get(j).kind() == Kind.OPEN) {
-        j++;
-      }
-    }
     if (j >= tokens.size()
         || j == skip
         || !tokens.get(j).name()

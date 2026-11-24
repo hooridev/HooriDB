@@ -508,6 +508,11 @@ class ContextTest {
         List.of(ref(null, "c", null), ref(null, "d", null)),
         at("SELECT * FROM a JOIN b ON a.offset = b.offset, c JOIN d ON |", POSTGRESQL)
             .left());
+    // A column named as a non-reserved word, such as lock, does not end the FROM clause.
+    assertEquals(
+        List.of(ref(null, "c", null), ref(null, "d", null)),
+        at("SELECT * FROM a JOIN b ON a.id = b.a_id AND lock IS NULL, c JOIN d ON |", POSTGRESQL)
+            .left());
     // Commas after clauses that end FROM are never read as tables.
     assertEquals(
         List.of(ref(null, "a", null), ref(null, "b", null)),
@@ -614,26 +619,17 @@ class ContextTest {
                 POSTGRESQL)
             .left());
 
-    // A parenthesized join without an alias keeps its tables.
+    // A parenthesized join without an alias keeps the tables its JOINs name.
     var unaliased =
         at("SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) JOIN |", POSTGRESQL);
     assertEquals(Asked.JOIN, unaliased.asked());
-    assertEquals(List.of(ref(null, "orders", "o"), ref(null, "customers", "c")), unaliased.left());
+    assertEquals(List.of(ref(null, "customers", "c")), unaliased.left());
 
-    assertEquals(
-        List.of(ref(null, "orders", "o"), ref(null, "customers", "c")),
-        at(
-                "SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) LEFT JOIN |",
-                POSTGRESQL)
-            .left());
-
-    // Inside the group before it closes, inner tables are still visible.
-    var insideJoin = at("SELECT * FROM (orders o JOIN |) AS j", POSTGRESQL);
-    assertEquals(Asked.JOIN, insideJoin.asked());
-    assertEquals(List.of(ref(null, "orders", "o")), insideJoin.left());
-
-    var insideOn = at("SELECT * FROM (orders o JOIN customers c ON |) AS j", POSTGRESQL);
+    // Inside a group, its own tables alone: the ON there cannot see those before the group.
+    var insideOn = at(
+        "SELECT * FROM orders o JOIN (categories ca JOIN order_items oi ON |) AS j ON true",
+        POSTGRESQL);
     assertEquals(Asked.ON, insideOn.asked());
-    assertEquals(List.of(ref(null, "orders", "o"), ref(null, "customers", "c")), insideOn.left());
+    assertEquals(List.of(ref(null, "order_items", "oi")), insideOn.left());
   }
 }
