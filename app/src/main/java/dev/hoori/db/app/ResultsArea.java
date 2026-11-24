@@ -209,16 +209,30 @@ final class ResultsArea {
       footer.add(o.presentation.switcher("result-shown", o.presentation::mode));
     }
     ResultEdits.editControls(s, tab, o, footer, footer);
+    // The read-only explanation gives way before the status, which the footer shrinks first, and
+    // is in the status's tooltip. shortcut: outweighs the kit's shrink of the start (1e9); a
+    // minimum width on the status replaces it once that yields to the controls (rethinkj/ui#589).
+    String why = null;
+    if (o.edits.editable == null) {
+      for (El e : footer) {
+        if ("edit-status".equals(e.key())) {
+          e.shrink(1e15f);
+          why = e.text().string();
+        }
+      }
+    }
     footer.addAll(presented.footer());
     footer.add(pin);
+    El status = Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis();
     return col()
         .grow(1)
         .minSize(0, 0)
         .child(ResultEdits.writeProblemCallout(o.edits))
         .child(presented.body().grow(1))
         .child(Card.footer(
-            Tooltip.whenShortened(
-                Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(), about),
+            why == null
+                ? Tooltip.whenShortened(status, about)
+                : Tooltip.tooltip(status, about + "\n" + why),
             footer.toArray(El[]::new)));
   }
 

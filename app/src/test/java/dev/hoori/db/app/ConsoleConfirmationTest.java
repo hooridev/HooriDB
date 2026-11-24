@@ -19,6 +19,7 @@ import static dev.hoori.db.app.ConsoleTransactions.CHAIN;
 import static dev.hoori.db.app.ConsoleTransactions.MANUAL;
 import static dev.hoori.db.app.ConsoleTransactions.OPENED;
 import static dev.hoori.db.app.ConsoleTransactions.badge;
+import static dev.hoori.db.app.LayoutTest.widthOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,6 +27,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Result;
@@ -39,6 +41,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /** What a console asks before a statement: a large read it reads whole, a change of every row. */
@@ -474,6 +477,36 @@ class ConsoleConfirmationTest {
     // A read that finishes in its first portion needs no estimate and asks none.
     c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN);
     assertFalse(servers.calls.contains("explain " + PG + " " + COUNT), servers.calls.toString());
+  }
+
+  /**
+   * In a narrow tab the read-only explanation gives way before the count and the estimate, and is
+   * in the status's tooltip, also where the status itself is not cut short.
+   */
+  @ParameterizedTest
+  @CsvSource({"800, 0", "800, 400", "1173, 0"})
+  void aNarrowResultFooterKeepsRoomForTheStatusLine(int width, int sidebar) throws Exception {
+    servers.plans(BIG, 2_400_000);
+    var app = t.k.console(SHOP);
+    if (sidebar > 0) {
+      app.state().sidebar = Split.Position.first(sidebar);
+    }
+    c.run(
+        app,
+        "size " + width + " 760\nframe\n" + type(BIG) + RUN + "advance 1\nframe\nsnap narrow\n");
+    String narrow = c.tree("narrow");
+    assertTrue(
+        ConsoleTest.near(narrow, "#result-status")
+            .contains("200 of about 2,400,000 rows so far · cursor open, more as it scrolls"),
+        narrow);
+    assertTrue(narrow.contains("#stop-reading "), narrow);
+    assertEquals(0, widthOf(narrow, "#edit-status "), narrow);
+    assertTrue(widthOf(narrow, "#result-status ") >= (sidebar > 0 ? 80 : 160), narrow);
+    assertTrue(TableTabTest.end(narrow, "#pin ") <= TableTabTest.end(narrow, "#grid "), narrow);
+    c.run(app, "move #result-status\nframe\nadvance 1\nframe\nframe\nsnap tip\n");
+    String tip = c.tree("tip");
+    assertTrue(
+        ConnectionsTest.line(tip, "role=tooltip").contains(ResultEdits.NOT_EDITABLE_RESULT), tip);
   }
 
   @Test
