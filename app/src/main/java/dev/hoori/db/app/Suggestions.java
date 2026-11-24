@@ -348,22 +348,7 @@ final class Suggestions {
      */
     Table table(String schema, String name) {
       if (schema == null && schemas) {
-        tables(); // reads the database's tables where it has not
-        var database = database();
-        for (var first : path) {
-          var container = schema(database, first);
-          if (container == null) {
-            continue;
-          }
-          if (!(live.levels.get(container) instanceof CatalogTree.Read)) {
-            return null;
-          }
-          var found = table(first, name);
-          if (found != null) {
-            return found;
-          }
-        }
-        return null;
+        return onPath(name);
       }
       var in = schema == null ? Optional.of(tables()) : tablesIn(schema);
       if (in.isEmpty()) {
@@ -381,6 +366,27 @@ final class Suggestions {
         }
       }
       return found;
+    }
+
+    // The table in the first schema of the search path that has it; null while one before it that
+    // exists is not read yet, as its own table of that name would come first.
+    private Table onPath(String name) {
+      tables(); // reads the database's tables where it has not
+      var database = database();
+      for (var first : path) {
+        var container = schema(database, first);
+        if (container == null) {
+          continue;
+        }
+        if (!(live.levels.get(container) instanceof CatalogTree.Read)) {
+          return null;
+        }
+        var found = table(first, name);
+        if (found != null) {
+          return found;
+        }
+      }
+      return null;
     }
 
     /** The table's columns, with their types; none yet where it reads them now. */

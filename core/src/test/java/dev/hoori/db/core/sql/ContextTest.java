@@ -516,8 +516,29 @@ class ContextTest {
             .left());
     assertEquals(
         List.of(ref(null, "c", null), ref(null, "d", null)),
+        at("SELECT * FROM a JOIN b ON a.id = b.a_id AND returning = 1, c JOIN d ON |", MYSQL)
+            .left());
+    // Where the server reserves it, RETURNING ends the FROM list.
+    assertEquals(
+        List.of(ref(null, "t", null)), Context.tables("DELETE FROM t RETURNING a, b", POSTGRESQL));
+    assertEquals(
+        List.of(ref(null, "c", null), ref(null, "d", null)),
         at("SELECT * FROM a JOIN b ON a.id = b.a_id AND lock IS NULL, c JOIN d ON |", POSTGRESQL)
             .left());
+    // A table may be named as a non-reserved word.
+    assertEquals(
+        List.of(ref(null, "lock", "l")),
+        at("SELECT * FROM lock l JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref("partition", "orders", "o")),
+        at("SELECT * FROM partition.orders o JOIN |", POSTGRESQL).left());
+    // LATERAL names no table.
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null), ref(null, "orders", "customers")),
+        Context.tables(
+            "SELECT * FROM a JOIN b ON true, LATERAL customers() AS feed"
+                + " JOIN orders AS customers ON true",
+            POSTGRESQL));
     // Commas after clauses that end FROM are never read as tables.
     assertEquals(
         List.of(ref(null, "a", null), ref(null, "b", null)),
@@ -586,6 +607,13 @@ class ContextTest {
     assertEquals(Asked.ANY, joinedWithCols.asked());
     assertEquals(
         List.of(ref(null, "orders", "o"), ref(null, "categories", "ca")), joinedWithCols.left());
+
+    // A function that returns a table is no table to join, also after a comma.
+    assertEquals(
+        List.of(), at("SELECT * FROM customers() AS c JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(),
+        at("SELECT * FROM orders o, customers() AS c JOIN |", POSTGRESQL).left());
 
     // Unclosed column alias list while typing does not throw.
     assertEquals(
