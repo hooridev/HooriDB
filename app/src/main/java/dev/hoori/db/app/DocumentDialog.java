@@ -386,6 +386,12 @@ final class DocumentDialog {
     }
     var live = s.catalog.live(tab.id);
     var edit = pending;
+    if (edit instanceof DocumentEdit.Insert insert) {
+      // The text takes the _id sent, as ObjectId() in it made it: whatever the outcome, a later
+      // save of this text, edited or not, cannot insert the document again under another _id.
+      text = Shell.pretty(insert.document());
+      editor.select(0, 0);
+    }
     sent = edit;
     sentText = text;
     problem = null;

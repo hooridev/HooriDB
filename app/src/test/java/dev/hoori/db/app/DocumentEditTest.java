@@ -474,6 +474,17 @@ class DocumentEditTest {
             + OPENED);
     assertEquals(
         made, ((DocumentEdit.Insert) tab.documentDialog.pending).document().get("_id"));
+
+    // The text holds that _id now, so an edited retry keeps it too.
+    c.run(
+        app,
+        "press #document-preview-back\nframe\n"
+            + OPENED
+            + replaceEditor(tab.documentDialog.text.replace("Barbara", "Barbara L"))
+            + "press #document-save\nframe\n"
+            + OPENED);
+    assertEquals(
+        made, ((DocumentEdit.Insert) tab.documentDialog.pending).document().get("_id"));
   }
 
   @Test
