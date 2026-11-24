@@ -740,4 +740,120 @@ class ContextTest {
         List.of(),
         at("SELECT * FROM customers AS c(customer_pk) JOIN |", POSTGRESQL).parenthesized());
   }
+
+  @Test
+  void nonReservedClauseWordsAreReadAsAliasesAfterAsAndAsTablesAtJoinSlots() {
+    // PostgreSQL does not reserve LOCK, PARTITION, SET or VALUES: after AS they are aliases, so
+    // a column alias list hides the table and a plain alias is kept.
+    var colAlias = at("SELECT * FROM customers AS lock(customer_pk) JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, colAlias.asked());
+    assertEquals(List.of(ref(null, "customers", "lock")), colAlias.tables());
+    assertEquals(List.of(), colAlias.left());
+
+    var plainAlias = at("SELECT * FROM a JOIN b ON true, lock AS partition JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, plainAlias.asked());
+    assertEquals(List.of(ref(null, "lock", "partition")), plainAlias.left());
+
+    assertEquals(
+        List.of(ref(null, "orders", "set")),
+        at("SELECT * FROM orders AS set JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref(null, "orders", "values")),
+        at("SELECT * FROM orders AS values JOIN |", POSTGRESQL).left());
+
+    // Parenthesized group aliased to a non-reserved word hides its inner tables and records its
+    // alias.
+    var parenAlias = at(
+        "SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) AS lock JOIN |",
+        POSTGRESQL);
+    assertEquals(List.of(), parenAlias.left());
+    assertEquals(
+        List.of(ref(null, null, "lock"), ref(null, "orders", "o")), parenAlias.parenthesized());
+
+    // Without AS, clause words still end the table reference instead of becoming an alias.
+    assertEquals(
+        List.of(ref(null, "customers", null)),
+        at("SELECT * FROM customers lock JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref(null, "customers", null)),
+        at("SELECT * FROM customers PARTITION (p0) JOIN |", MYSQL).left());
+
+    // A table named like a non-reserved clause word before USING or ON is already conditioned.
+    var usingLock = at("SELECT * FROM a JOIN b ON true, lock l JOIN |lock USING (id)", POSTGRESQL);
+    assertEquals(Asked.TABLE, usingLock.asked());
+    assertEquals(List.of(ref(null, "lock", "l")), usingLock.left());
+    assertEquals(
+        Asked.TABLE,
+        at("SELECT * FROM a JOIN b ON true, lock l JOIN |lock ON lock.id = l.id", POSTGRESQL)
+            .asked());
+    assertEquals(
+        Asked.JOIN,
+        at("SELECT * FROM a JOIN b ON true, lock l JOIN |lock", POSTGRESQL).asked());
+
+    // Reserved words are still not read as unquoted aliases or tables (quoted ones always are).
+    assertEquals(
+        List.of(ref(null, "customers", null)),
+        at("SELECT * FROM customers AS where JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref(null, "customers", "where")),
+        at("SELECT * FROM customers AS \"where\" JOIN |", POSTGRESQL).left());
+
+    // MySQL reserves LOCK and PARTITION, so they are not taken as unquoted aliases or as a table
+    // at the JOIN slot.
+    assertEquals(
+        List.of(ref(null, "customers", null)),
+        at("SELECT * FROM customers AS lock(customer_pk) JOIN |", MYSQL).tables());
+    assertEquals(
+        List.of(ref(null, "customers", null)),
+        at("SELECT * FROM customers AS partition JOIN |", MYSQL).left());
+    assertEquals(
+        List.of(ref(null, "customers", "lock")),
+        at("SELECT * FROM customers AS `lock` JOIN |", MYSQL).left());
+    assertEquals(
+        Asked.JOIN,
+        at("SELECT * FROM a JOIN b ON true, lock l JOIN |lock USING (id)", MYSQL)
+            .asked());
+    assertEquals(
+        List.of(ref(null, "orders", "o")),
+        at(
+                "SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) AS lock JOIN |",
+                MYSQL)
+            .parenthesized());
+  }
+
+  @Test
+  void tableModifiersOnlyAndStarKeepTheTableAndItsAlias() {
+    var only = at("SELECT * FROM ONLY orders o JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, only.asked());
+    assertEquals(List.of(ref(null, "orders", "o")), only.tables());
+    assertEquals(List.of(ref(null, "orders", "o")), only.left());
+
+    var star = at("SELECT * FROM orders * o JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, star.asked());
+    assertEquals(List.of(ref(null, "orders", "o")), star.tables());
+    assertEquals(List.of(ref(null, "orders", "o")), star.left());
+
+    assertEquals(
+        List.of(ref("public", "orders", "o")),
+        at("SELECT * FROM ONLY public.orders * AS o JOIN |", POSTGRESQL).left());
+    assertEquals(
+        Asked.TABLE,
+        at("SELECT * FROM orders o JOIN |ONLY customers c ON c.id = o.customer_id", POSTGRESQL)
+            .asked());
+    assertEquals(
+        Asked.TABLE,
+        at("SELECT * FROM orders o JOIN |ONLY customers", POSTGRESQL).asked());
+    var starOn = at("SELECT * FROM orders o JOIN customers * ON |", POSTGRESQL);
+    assertEquals(Asked.ON, starOn.asked());
+    assertEquals(List.of(ref(null, "orders", "o"), ref(null, "customers", null)), starOn.left());
+
+    // Quoted "only" on PostgreSQL and unquoted only on MySQL (which does not reserve ONLY) stay
+    // table names.
+    assertEquals(
+        List.of(ref(null, "only", "o")),
+        at("SELECT * FROM \"only\" o JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref(null, "only", "o")),
+        at("SELECT * FROM only o JOIN |", MYSQL).left());
+  }
 }

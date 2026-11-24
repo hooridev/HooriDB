@@ -85,7 +85,8 @@ public record Context(
       List<Reference> tables) {}
 
   private static final String SELECT = "SELECT";
-  // The words that end a table's name in a FROM list, so that they are not taken for its alias.
+  // Words that start a clause, so they are not taken for an alias without AS, nor for a condition
+  // after ON.
   private static final Set<String> CLAUSES = Set.of(
       "WHERE",
       "JOIN",
@@ -174,39 +175,43 @@ public record Context(
       path.addFirst(tokens.get(n - 2).identifier());
       n -= 2;
     }
-    int skip =
-        path.isEmpty() && !typed.isEmpty() && asked(tokens, n, false) == Asked.JOIN ? cursor : -1;
-    var scan = readable ? scan(tokens, syntax.reservedWords(), null, cursor, skip) : Scan.EMPTY;
+    var reserved = syntax.reservedWords();
+    int skip = path.isEmpty() && !typed.isEmpty() && asked(tokens, reserved, n, false) == Asked.JOIN
+        ? cursor
+        : -1;
+    var scan = readable ? scan(tokens, reserved, null, cursor, skip) : Scan.EMPTY;
     if (!path.isEmpty()) {
       return readable
           ? new Context(
               Asked.MEMBER, List.copyOf(path), typed, scan.tables, scan.left, scan.parenthesized)
           : NOTHING;
     }
-    var asked = asked(tokens, n, scan.joinOn && free(statement, tokens, at));
+    var asked = asked(tokens, reserved, n, scan.joinOn && free(statement, tokens, at));
     return new Context(asked, List.of(), typed, scan.tables, scan.left, scan.parenthesized);
   }
 
   // What the word after the n tokens asks for, where no dot comes before it.
-  private static Asked asked(List<Token> tokens, int n, boolean on) {
+  private static Asked asked(List<Token> tokens, Set<String> reserved, int n, boolean on) {
     if (n > 0 && introduces(tokens, n - 1)) {
-      return conditionalJoin(tokens, n - 1) && !conditioned(tokens, n) ? Asked.JOIN : Asked.TABLE;
+      return conditionalJoin(tokens, n - 1) && !conditioned(tokens, reserved, n)
+          ? Asked.JOIN
+          : Asked.TABLE;
     }
     return on ? Asked.ON : Asked.ANY;
   }
 
-  // Whether the table named at the index already has its alias, ON or USING, as while one is
-  // replaced.
-  private static boolean conditioned(List<Token> tokens, int i) {
-    if (condition(tokens, i)) {
+  // Whether the table named at the index already has its alias, ON or USING, or a leading ONLY,
+  // as while one is replaced; a word the server reserves is not read as a table name.
+  private static boolean conditioned(List<Token> tokens, Set<String> reserved, int i) {
+    if (condition(tokens, i) || onlyBeforeTable(tokens, reserved, i)) {
       return true;
     }
     if (i >= tokens.size()
         || !tokens.get(i).name()
-        || tokens.get(i).kind() == Kind.WORD && CLAUSES.contains(tokens.get(i).upper())) {
+        || tokens.get(i).kind() == Kind.WORD && reserved.contains(tokens.get(i).upper())) {
       return false;
     }
-    var parsed = reference(tokens, i, null);
+    var parsed = reference(tokens, reserved, i, null);
     return parsed != null
         && (parsed.reference().alias() != null || condition(tokens, parsed.end()));
   }
@@ -430,7 +435,7 @@ public record Context(
     var parenthesized = new ArrayList<Reference>();
     named(tokens, reserved, tableTokens, skip, found, spans, parenthesized);
     int item = item(tokens, reserved, cursor);
-    var hidden = cursor > 0 ? aliasedGroups(tokens, cursor) : List.<int[]>of();
+    var hidden = cursor > 0 ? aliasedGroups(tokens, reserved, cursor) : List.<int[]>of();
     var left = new ArrayList<Reference>();
     boolean joinOn = false;
     for (int k = 0; k < found.size(); k++) {
@@ -467,14 +472,14 @@ public record Context(
       if (introduces(tokens, i)) {
         boolean from = token.upper().equals("FROM");
         inFrom |= from && depth == 0;
-        readTable(tokens, i + 1, i, skip, found, spans, tableTokens);
+        readTable(tokens, reserved, i + 1, i, skip, found, spans, tableTokens);
         // Not the FROM of EXTRACT(YEAR FROM (…)).
         if (!from || depth == 0) {
-          readParen(tokens, i + 1, skip, parenthesized);
+          readParen(tokens, reserved, i + 1, skip, parenthesized);
         }
       } else if (depth == 0 && inFrom && token.kind() == Kind.COMMA) {
-        readTable(tokens, i + 1, i, skip, found, spans, tableTokens);
-        readParen(tokens, i + 1, skip, parenthesized);
+        readTable(tokens, reserved, i + 1, i, skip, found, spans, tableTokens);
+        readParen(tokens, reserved, i + 1, skip, parenthesized);
       }
     }
   }
@@ -483,11 +488,11 @@ public record Context(
   // leaves out: each group's alias, the table after its opening parentheses, and the table after
   // each comma of a group's own list, as MySQL's (a, b).
   private static void readParen(
-      List<Token> tokens, int from, int skip, List<Reference> parenthesized) {
+      List<Token> tokens, Set<String> reserved, int from, int skip, List<Reference> parenthesized) {
     int j = from;
     while (j < tokens.size() && tokens.get(j).kind() == Kind.OPEN) {
       int close = skipParens(tokens, j);
-      int after = aliasAfter(tokens, close);
+      int after = aliasAfter(tokens, reserved, close);
       if (after >= 0) {
         parenthesized.add(new Reference(null, null, tokens.get(after - 1).identifier()));
       }
@@ -495,20 +500,21 @@ public record Context(
       for (int k = j + 1; k < close; k++) {
         depth += nesting(tokens.get(k));
         if (depth == 0 && tokens.get(k).kind() == Kind.COMMA) {
-          readTable(tokens, k + 1, k, skip, parenthesized, new ArrayList<>(), null);
-          readParen(tokens, k + 1, skip, parenthesized);
+          readTable(tokens, reserved, k + 1, k, skip, parenthesized, new ArrayList<>(), null);
+          readParen(tokens, reserved, k + 1, skip, parenthesized);
         }
       }
       j++;
     }
     if (j > from) {
-      readTable(tokens, j, j - 1, skip, parenthesized, new ArrayList<>(), null);
+      readTable(tokens, reserved, j, j - 1, skip, parenthesized, new ArrayList<>(), null);
     }
   }
 
   // Reads the table reference after an introducer or FROM-list comma, but not the one at skip.
   private static void readTable(
       List<Token> tokens,
+      Set<String> reserved,
       int j,
       int introducer,
       int skip,
@@ -519,7 +525,7 @@ public record Context(
     if (j >= tokens.size() || j == skip || !tokens.get(j).name() || word(tokens, j, "LATERAL")) {
       return;
     }
-    var parsed = reference(tokens, j, tableTokens);
+    var parsed = reference(tokens, reserved, j, tableTokens);
     if (parsed == null) {
       return;
     }
@@ -529,7 +535,7 @@ public record Context(
 
   // Parenthesized groups closed before the cursor that carry an alias (") AS j" or ") j"), whose
   // inner tables are hidden behind that alias.
-  private static List<int[]> aliasedGroups(List<Token> tokens, int cursor) {
+  private static List<int[]> aliasedGroups(List<Token> tokens, Set<String> reserved, int cursor) {
     var open = new ArrayDeque<Integer>();
     var hidden = new ArrayList<int[]>();
     for (int i = 0; i < cursor; i++) {
@@ -538,7 +544,7 @@ public record Context(
         open.push(i);
       } else if (token.text().equals(")") && !open.isEmpty()) {
         int start = open.pop();
-        if (aliasAfter(tokens, i + 1) >= 0) {
+        if (aliasAfter(tokens, reserved, i + 1) >= 0) {
           hidden.add(new int[] {start, i});
         }
       }
@@ -555,18 +561,29 @@ public record Context(
     return false;
   }
 
-  // The index after an optional [AS] alias starting at j, or -1 for none.
-  private static int aliasAfter(List<Token> tokens, int j) {
-    if (j < tokens.size() && tokens.get(j).upper().equals("AS")) {
+  // The index after an optional [AS] alias starting at j, or -1 for none: after AS, any name the
+  // server does not reserve is an alias; without AS, words that start a clause are not.
+  private static int aliasAfter(List<Token> tokens, Set<String> reserved, int j) {
+    boolean explicit = j < tokens.size() && tokens.get(j).upper().equals("AS");
+    if (explicit) {
       j++;
     }
     if (j < tokens.size()
         && tokens.get(j).name()
         && (tokens.get(j).kind() == Kind.QUOTED
-            || !CLAUSES.contains(tokens.get(j).upper()))) {
+            || !(explicit ? reserved : CLAUSES).contains(tokens.get(j).upper()))) {
       return j + 1;
     }
     return -1;
+  }
+
+  // Whether the token is a leading ONLY modifier (where the server reserves it) before a table.
+  private static boolean onlyBeforeTable(List<Token> tokens, Set<String> reserved, int i) {
+    return word(tokens, i, "ONLY")
+        && reserved.contains("ONLY")
+        && i + 1 < tokens.size()
+        && tokens.get(i + 1).name()
+        && !reserved.contains(tokens.get(i + 1).upper());
   }
 
   // The index after the balanced parenthesized group starting at from, or tokens.size() if
@@ -588,11 +605,16 @@ public record Context(
     return j;
   }
 
-  // The table named at the index, with its alias and optional column alias list; null for a name
-  // still being written, such as "public." before the caret.
-  private static Parsed reference(List<Token> tokens, int from, Set<Integer> tableTokens) {
+  // The table named at the index (skipping PostgreSQL's leading ONLY and trailing * modifiers),
+  // with its alias and optional column alias list; null for a name still being written, such as
+  // "public." before the caret.
+  private static Parsed reference(
+      List<Token> tokens, Set<String> reserved, int from, Set<Integer> tableTokens) {
     var names = new ArrayList<String>();
     int j = from;
+    if (onlyBeforeTable(tokens, reserved, j)) {
+      j++;
+    }
     names.add(tokens.get(j++).identifier());
     while (j + 1 < tokens.size()
         && tokens.get(j).kind() == Kind.DOT
@@ -606,10 +628,13 @@ public record Context(
     if (tableTokens != null) {
       tableTokens.add(j - 1);
     }
+    if (j < tokens.size() && tokens.get(j).text().equals("*")) {
+      j++;
+    }
     // A call, as of a function that returns a table: customers() AS c.
     boolean hidesColumns = j < tokens.size() && tokens.get(j).kind() == Kind.OPEN;
     String alias = null;
-    int afterAlias = aliasAfter(tokens, j);
+    int afterAlias = aliasAfter(tokens, reserved, j);
     if (afterAlias >= 0) {
       alias = tokens.get(afterAlias - 1).identifier();
       j = afterAlias;
