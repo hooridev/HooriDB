@@ -234,7 +234,8 @@ final class DocumentPresentation {
       if (page.empty()) {
         return new View(emptyOrLoading(page), footer);
       }
-      documentTree.show(page.scope(), page.source(), page.sliceFrom(), page.sliceTo());
+      documentTree.show(
+          page.scope(), page.source(), page.sliceFrom(), page.sliceTo(), page.rangeFrom());
       El body = col()
           .grow(1)
           .minSize(0, 0)
