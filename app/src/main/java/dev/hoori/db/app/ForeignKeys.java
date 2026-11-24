@@ -1,14 +1,20 @@
 package dev.hoori.db.app;
 
+import com.rethinkj.ui.kit.DataGrid;
+import com.rethinkj.ui.kit.Menu;
+import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.Missing;
+import dev.hoori.db.core.data.Rows;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Shared formatting and filtering for foreign keys in the catalog tree and quick documentation.
+ * Shared formatting, filtering and grid navigation for foreign keys in the catalog tree, quick
+ * documentation, console editor and table tabs.
  */
 final class ForeignKeys {
 
@@ -23,6 +29,20 @@ final class ForeignKeys {
       return List.of();
     }
     return keys.stream().filter(k -> k.table().equals(table)).toList();
+  }
+
+  /** Outgoing foreign keys of {@code table} whose referencing columns include {@code column}. */
+  static List<ForeignKey> outgoing(Table table, String column, List<ForeignKey> keys) {
+    if (keys == null || keys.isEmpty()) {
+      return List.of();
+    }
+    var result = new ArrayList<ForeignKey>();
+    for (var key : keys) {
+      if (key.table().equals(table) && key.columns().contains(column)) {
+        result.add(key);
+      }
+    }
+    return result;
   }
 
   /** Keys whose referenced table is {@code table} (self-references included). */
@@ -118,7 +138,190 @@ final class ForeignKeys {
     return sb.toString();
   }
 
-  private static String otherTable(Table self, Table other) {
+  /**
+   * Context menu items for a table tab's grid: outgoing and incoming foreign key navigation for
+   * the current cell and row, followed by Refresh. Reads missing keys on the lane only while the
+   * menu is open.
+   */
+  static List<Menu.Item> gridMenu(State s, TableTab tab, boolean ofDocuments) {
+    var refresh = Menu.item("Refresh", () -> tab.refresh(s)).icon(Symbol.ARROW_CLOCKWISE);
+    var profile = s.profile(tab.id);
+    if (!tab.menu.isOpen()
+        || ofDocuments
+        || profile == null
+        || tab.table.kind() != Table.Kind.TABLE) {
+      return List.of(refresh);
+    }
+    var keys = s.catalog.foreignKeys(tab.id, tab.table);
+    if (keys == null) {
+      if (s.catalog.connected(tab.id)) {
+        tab.readForeignKeys(s);
+      }
+      return List.of(refresh);
+    }
+    int gridRow = tab.selection.row();
+    int col = tab.selection.column();
+    // Which cell a press inside a selection of several was on, the grid does not say
+    // (rethinkj/ui#577): only the active cell selected alone is surely the pressed one.
+    if (tab.columns == null
+        || gridRow < 0
+        || gridRow >= tab.gridRowCount()
+        || col < 0
+        || col >= tab.columns.size()
+        || !tab.selection
+            .ranges()
+            .equals(List.of(new DataGrid.Range(gridRow, col, gridRow, col)))) {
+      return List.of(refresh);
+    }
+    var outgoing = outgoing(tab.table, tab.columns.get(col).name(), keys);
+    var incoming = incoming(tab.table, keys);
+    if (outgoing.isEmpty() && incoming.isEmpty()) {
+      return List.of(refresh);
+    }
+    var items = new ArrayList<Menu.Item>();
+    var provider = profile.provider();
+    boolean connected = s.catalog.connected(tab.id);
+    if (outgoing.size() == 1) {
+      var fk = outgoing.getFirst();
+      items.add(Menu.item(
+              "Go to " + otherTable(tab.table, fk.referenced()),
+              action(
+                  s,
+                  tab,
+                  provider,
+                  connected,
+                  gridRow,
+                  fk.columns(),
+                  fk.referenced(),
+                  fk.referencedColumns()))
+          .icon(Symbol.ARROW_RIGHT));
+    } else if (outgoing.size() > 1) {
+      var children = new ArrayList<Menu.Item>(outgoing.size());
+      for (var fk : outgoing) {
+        children.add(Menu.item(
+            label(otherTable(tab.table, fk.referenced()), fk),
+            action(
+                s,
+                tab,
+                provider,
+                connected,
+                gridRow,
+                fk.columns(),
+                fk.referenced(),
+                fk.referencedColumns())));
+      }
+      items.add(Menu.submenu("Go to", children).icon(Symbol.ARROW_RIGHT));
+    }
+    if (!incoming.isEmpty()) {
+      var children = new ArrayList<Menu.Item>(incoming.size());
+      for (var fk : incoming) {
+        children.add(Menu.item(
+            label(otherTable(tab.table, fk.table()), fk),
+            action(
+                s,
+                tab,
+                provider,
+                connected,
+                gridRow,
+                fk.referencedColumns(),
+                fk.table(),
+                fk.columns())));
+      }
+      items.add(Menu.submenu("Referenced by", children).icon(Symbol.ARROW_LEFT));
+    }
+    items.add(Menu.separator());
+    items.add(refresh);
+    return items;
+  }
+
+  /** A submenu item's label, by both column lists, which tell apart keys between two tables. */
+  private static String label(String table, ForeignKey fk) {
+    return table + " (" + String.join(", ", fk.columns()) + " → "
+        + String.join(", ", fk.referencedColumns()) + ")";
+  }
+
+  private static Runnable action(
+      State s,
+      TableTab tab,
+      Provider provider,
+      boolean connected,
+      int gridRow,
+      List<String> sourceColumns,
+      Table target,
+      List<String> targetColumns) {
+    if (!connected || sourceColumns.isEmpty() || sourceColumns.size() != targetColumns.size()) {
+      return null;
+    }
+    var values = valuesFor(tab, gridRow, sourceColumns);
+    if (values == null) {
+      return null;
+    }
+    String where;
+    try {
+      where = Rows.where(provider, targetColumns, values);
+    } catch (IllegalArgumentException _) {
+      return null;
+    }
+    return () -> follow(s, tab, target, where);
+  }
+
+  private static List<Object> valuesFor(TableTab tab, int gridRow, List<String> sourceColumns) {
+    int pos = tab.positionOf(gridRow);
+    if (pos < 0 || !tab.loaded(pos)) {
+      return null;
+    }
+    var row = tab.rowValues(pos);
+    if (row == null) {
+      return null;
+    }
+    var values = new ArrayList<Object>(sourceColumns.size());
+    for (var name : sourceColumns) {
+      int index = tab.columnIndex(name);
+      if (index < 0 || index >= row.size() || tab.isCellEdited(gridRow, index)) {
+        return null;
+      }
+      var value = row.get(index);
+      if (value == null || value == Missing.FIELD || !Cells.whole(value)) {
+        return null;
+      }
+      values.add(value);
+    }
+    return values;
+  }
+
+  /**
+   * Opens {@code target} (reusing its open tab if any, in whichever window) and applies {@code
+   * where} through the tab's normal filter path, asking about pending edits first and keeping its
+   * {@code ORDER BY}.
+   */
+  private static void follow(State s, TableTab source, Table target, String where) {
+    var open = s.tables(source.id).stream()
+        .filter(x ->
+            x.table.container().equals(target.container()) && x.table.name().equals(target.name()))
+        .findFirst();
+    if (open.isEmpty()) {
+      var into = s.tabs.groupOf(source);
+      if (into == null) {
+        into = s.tabs.main();
+      }
+      var tab = TableTab.of(s, source.id, target);
+      s.tabs.add(into, into.tabs().size(), tab);
+      Frame.focusContentSoon(s, into);
+      tab.applyWhere(s, where);
+      return;
+    }
+    var tab = open.get();
+    var group = s.tabs.groupOf(tab);
+    s.tabs.select(group, group.tabs().indexOf(tab));
+    var window = group.window() != null ? group.window() : s.app.windows().of(s.app);
+    if (window != null) {
+      window.raise();
+    }
+    Frame.focusContentSoon(s, group);
+    tab.applyWhere(s, where);
+  }
+
+  static String otherTable(Table self, Table other) {
     return other.container().equals(self.container())
         ? other.name()
         : other.container().name() + "." + other.name();
