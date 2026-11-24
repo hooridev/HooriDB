@@ -474,6 +474,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       rows = from + n;
       counted = Counted.EXACT;
       more = false;
+      ending = false; // found here: a count still asked for it no longer holds the pages
       countFailure = null;
     } else {
       // Empty, and what is before it not read: the end is somewhere before.
@@ -640,7 +641,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
           } else {
             // The count itself failed, not the connection: keep the pages and let paging go on.
             toLast = false;
-            countFailure = Objects.requireNonNullElse(CatalogTree.words(live, detail(error)), "");
+            // A page that found the end meanwhile left nothing to count.
+            countFailure = counted == Counted.EXACT
+                ? null
+                : Objects.requireNonNullElse(CatalogTree.words(live, detail(error)), "");
           }
         });
   }

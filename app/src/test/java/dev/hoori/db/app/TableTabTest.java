@@ -1098,6 +1098,29 @@ class TableTabTest {
     assertFalse(status(healed).contains("Count failed"), healed);
   }
 
+  /** A count that fails after the pages found the end leaves the exact rows without a warning. */
+  @Test
+  void aCountThatFailsAfterThePagesEndedIsNotShown() throws Exception {
+    servers.rows(BIG, 1000, OptionalLong.empty());
+    var app = shop();
+    c.run(app, table("big") + SETTLE);
+    var key = "count " + BIG;
+    var held = servers.hold(key);
+    servers.fail(key, FakeServers.queryFailure(QueryException.Failure.OTHER));
+    c.run(app, page("Last page"));
+    eventually(() -> servers.calls.contains(key));
+    for (long row : new long[] {399, 599, 799, 1000}) {
+      c.run(app, scroll(row));
+      app.await("read rows of big", Duration.ofSeconds(10));
+      c.run(app, "frame\nframe\n");
+    }
+    c.run(app, "snap ended\n");
+    assertTrue(status(c.tree("ended")).contains("\"1,000 rows · counting…\""), c.tree("ended"));
+    held.countDown();
+    c.run(app, SETTLE + "snap failed\n");
+    assertTrue(status(c.tree("failed")).contains("\"1,000 rows\""), c.tree("failed"));
+  }
+
   // The lane
 
   @Test
