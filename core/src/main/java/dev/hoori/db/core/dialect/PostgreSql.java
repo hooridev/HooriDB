@@ -347,7 +347,7 @@ public final class PostgreSql implements Dialect {
     public String foreignKeys() {
       return "SELECT con.conname, n.nspname, c.relname, fn.nspname, fc.relname,"
           + " ra.attname, fa.attname, "
-          + action("con.confupdtype") + ", " + action("con.confdeltype")
+          + action("con.confupdtype") + ", " + action("con.confdeltype") + ", FALSE"
           + " FROM pg_catalog.pg_constraint con"
           + " JOIN pg_catalog.pg_class c ON c.oid" + EQ + "con.conrelid"
           + JOIN_SCHEMA

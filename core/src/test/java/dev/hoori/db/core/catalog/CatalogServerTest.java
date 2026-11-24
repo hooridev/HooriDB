@@ -894,6 +894,77 @@ class CatalogServerTest {
     }
   }
 
+  @Test
+  void aCompositeForeignKeyWithHiddenColumnsIsLeftOutOnMysql() throws Exception {
+    var provider = Provider.MYSQL;
+    var server = TestServer.of(provider);
+    var root = server.profile().withUser("root");
+    var reader = server.profile().withUser("fk_col_reader");
+    var parent = new Table(HOORI, "fk_col_parent", Kind.TABLE);
+    var child = new Table(HOORI, "fk_col_child", Kind.TABLE);
+    try (var admin = Connector.open(
+            root, ("root-" + TestServer.PASSWORD).toCharArray(), server.driver(), TIMEOUT)
+        .connection()) {
+      execute(
+          admin,
+          "CREATE TABLE hoori.fk_col_parent ("
+              + "a integer NOT NULL, b integer NOT NULL, c integer NOT NULL, "
+              + "PRIMARY KEY (a, b, c))",
+          "CREATE TABLE hoori.fk_col_child ("
+              + "id integer PRIMARY KEY, "
+              + "a integer, b integer, c integer, self_id integer, secret integer, "
+              + "KEY idx_a_secret (a, secret), "
+              + "KEY idx_func ((id + 1), self_id), "
+              + "CONSTRAINT fk_partial FOREIGN KEY (a, b, c)"
+              + " REFERENCES hoori.fk_col_parent (a, b, c), "
+              + "CONSTRAINT fk_whole FOREIGN KEY (self_id)"
+              + " REFERENCES hoori.fk_col_child (id))",
+          "CREATE USER IF NOT EXISTS 'fk_col_reader'@'%' IDENTIFIED BY '" + TestServer.PASSWORD
+              + "'",
+          "GRANT SELECT ON hoori.fk_col_parent TO 'fk_col_reader'@'%'",
+          "GRANT SELECT (id, a, c, self_id) ON hoori.fk_col_child TO 'fk_col_reader'@'%'");
+      try {
+        var whole = new ForeignKey(
+            "fk_whole",
+            child,
+            List.of("self_id"),
+            child,
+            List.of("id"),
+            Rule.NO_ACTION,
+            Rule.NO_ACTION);
+        var composite = new ForeignKey(
+            "fk_partial",
+            child,
+            List.of("a", "b", "c"),
+            parent,
+            List.of("a", "b", "c"),
+            Rule.NO_ACTION,
+            Rule.NO_ACTION);
+        try (var connection = Connector.open(
+                reader, TestServer.password(), server.driver(), TIMEOUT)
+            .connection()) {
+          assertEquals(List.of(whole), Catalog.foreignKeys(connection, provider, child));
+          assertEquals(List.of(), Catalog.foreignKeys(connection, provider, parent));
+        }
+        // Granting the missing column of the composite key brings it back even while another
+        // column ("secret") remains hidden in a separate index that shares "a".
+        execute(admin, "GRANT SELECT (b) ON hoori.fk_col_child TO 'fk_col_reader'@'%'");
+        try (var connection = Connector.open(
+                reader, TestServer.password(), server.driver(), TIMEOUT)
+            .connection()) {
+          assertEquals(List.of(composite, whole), Catalog.foreignKeys(connection, provider, child));
+          assertEquals(List.of(composite), Catalog.foreignKeys(connection, provider, parent));
+        }
+      } finally {
+        execute(
+            admin,
+            "DROP USER IF EXISTS 'fk_col_reader'@'%'",
+            "DROP TABLE IF EXISTS hoori.fk_col_child",
+            "DROP TABLE IF EXISTS hoori.fk_col_parent");
+      }
+    }
+  }
+
   private static Container sample(Provider provider) {
     return provider == Provider.POSTGRESQL ? new Schema(HOORI, "public", false) : HOORI;
   }
