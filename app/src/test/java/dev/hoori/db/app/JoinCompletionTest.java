@@ -331,4 +331,65 @@ class JoinCompletionTest {
         "`order` o ON o.id = oi.order_id",
         options(console.c.tree("maria-quoted")).getFirst());
   }
+
+  @Test
+  void theNewAliasAvoidsAliasesAfterTheCaretAndJoinsRankFirstWhateverTheirPrefix()
+      throws Exception {
+    var app = console.console(SHOP);
+    console.c.run(
+        app,
+        TREE
+            + type("SELECT * FROM orders o JOIN cu JOIN categories c ON c.id = o.category_id")
+            + "key Home\n"
+            + "key ArrowRight\n".repeat(30)
+            + COMPLETE
+            + "snap later-alias\n");
+    assertEquals(
+        "customers c2 ON c2.id = o.customer_id",
+        options(console.c.tree("later-alias")).getFirst());
+
+    // The condition holds "id" without starting with it, and still ranks above the column id.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM orders o JOIN order_items oi ON id")
+            + COMPLETE
+            + "snap inner-match\n");
+    assertEquals("oi.order_id = o.id", options(console.c.tree("inner-match")).getFirst());
+  }
+
+  @Test
+  void aTargetThatAnEarlierSchemaOnThePathShadowsIsWrittenWithItsSchema() throws Exception {
+    servers.serve(QUOTED, Provider.POSTGRESQL, "16.4", """
+        shop
+          shop_app
+            customers
+              *id: integer
+          public
+            customers
+              *id: integer
+            orders
+              *id: bigint
+              customer_id: integer > customers.id
+        """);
+    var app = console.console(ODD);
+    console.c.run(
+        app,
+        open("odd")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("shop_app")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + type("SELECT * FROM orders o JOIN ")
+            + COMPLETE
+            + "snap shadowed\n");
+    assertEquals(
+        "public.customers c ON c.id = o.customer_id",
+        options(console.c.tree("shadowed")).getFirst());
+  }
 }

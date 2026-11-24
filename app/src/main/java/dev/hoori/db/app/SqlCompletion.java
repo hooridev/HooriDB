@@ -11,6 +11,7 @@ import dev.hoori.db.core.dialect.SyntaxDialect;
 import dev.hoori.db.core.sql.Context;
 import dev.hoori.db.core.sql.Keywords;
 import dev.hoori.db.core.sql.Names;
+import dev.hoori.db.core.sql.Ranking;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -26,8 +27,6 @@ import java.util.Set;
  * tables; and else the keywords, schemas, tables, and the columns of the statement's tables.
  */
 record SqlCompletion() implements Suggestions.Strategy {
-
-  private static final int JOIN_PRIORITY = 2;
 
   @Override
   public boolean exactNames(Provider provider) {
@@ -114,11 +113,16 @@ record SqlCompletion() implements Suggestions.Strategy {
    */
   private static void joins(
       Suggestions.Known known, Context context, List<Suggestions.Candidate> into) {
-    var prior = context.tables().subList(0, context.before());
+    var prior = context.left();
     if (prior.isEmpty()) {
       return;
     }
     boolean aliased = prior.stream().anyMatch(r -> r.alias() != null);
+    // The names the new alias must not take: the statement's, but for the word being typed.
+    var typed = context.typed();
+    var used = context.tables().stream()
+        .filter(r -> typed.isEmpty() || r.alias() != null || !r.name().equalsIgnoreCase(typed))
+        .toList();
     for (var ref : prior) {
       var table = known.table(ref.schema(), ref.name());
       if (table == null) {
@@ -130,6 +134,7 @@ record SqlCompletion() implements Suggestions.Strategy {
         addJoin(
             known,
             prior,
+            used,
             aliased,
             source,
             new Link(key.referenced(), key.referencedColumns(), key.columns()),
@@ -139,6 +144,7 @@ record SqlCompletion() implements Suggestions.Strategy {
         addJoin(
             known,
             prior,
+            used,
             aliased,
             source,
             new Link(key.table(), key.columns(), key.referencedColumns()),
@@ -150,6 +156,7 @@ record SqlCompletion() implements Suggestions.Strategy {
   private static void addJoin(
       Suggestions.Known known,
       List<Context.Reference> prior,
+      List<Context.Reference> used,
       boolean aliased,
       Side source,
       Link link,
@@ -158,12 +165,12 @@ record SqlCompletion() implements Suggestions.Strategy {
       return;
     }
     var provider = known.provider;
-    var tableRef = tableName(link.other(), source.table(), known);
+    var tableRef = tableName(link.other(), known);
     boolean needsAlias = aliased || alreadyUnaliased(prior, known, link.other());
     String tableClause;
     String newQual;
     if (needsAlias) {
-      var alias = Names.quoted(alias(link.other().name(), prior, known), provider);
+      var alias = Names.quoted(alias(link.other().name(), used, known), provider);
       tableClause = tableRef + " " + alias;
       newQual = alias;
     } else {
@@ -175,7 +182,7 @@ record SqlCompletion() implements Suggestions.Strategy {
         + on
         + condition(newQual, link.newCols(), source.qualifier(), link.existingCols(), known);
     into.add(new Suggestions.Candidate(
-        link.other().name(), full, full, Symbol.LINK, "join", JOIN_PRIORITY));
+        link.other().name(), full, full, Symbol.LINK, "join", Ranking.FIRST));
   }
 
   /**
@@ -184,19 +191,18 @@ record SqlCompletion() implements Suggestions.Strategy {
    */
   private static void conditions(
       Suggestions.Known known, Context context, List<Suggestions.Candidate> into) {
-    int before = context.before();
-    if (before < 2) {
+    var left = context.left();
+    if (left.size() < 2) {
       return;
     }
-    var joinedRef = context.tables().get(before - 1);
+    var joinedRef = left.getLast();
     var joined = new Side(
         joinedRef,
         known.table(joinedRef.schema(), joinedRef.name()),
         qualifier(joinedRef, known.provider));
     var joinedKeys =
         joined.table() == null ? List.<ForeignKey>of() : known.foreignKeys(joined.table());
-    for (int i = 0; i < before - 1; i++) {
-      var prevRef = context.tables().get(i);
+    for (var prevRef : left.subList(0, left.size() - 1)) {
       var prev = new Side(
           prevRef,
           known.table(prevRef.schema(), prevRef.name()),
@@ -247,7 +253,7 @@ record SqlCompletion() implements Suggestions.Strategy {
       return;
     }
     var cond = condition(leftQual, leftCols, rightQual, rightCols, known);
-    into.add(new Suggestions.Candidate(cond, cond, cond, Symbol.LINK, "condition", JOIN_PRIORITY));
+    into.add(new Suggestions.Candidate(cond, cond, cond, Symbol.LINK, "condition", Ranking.FIRST));
   }
 
   private static String condition(
@@ -286,21 +292,14 @@ record SqlCompletion() implements Suggestions.Strategy {
   }
 
   /**
-   * How a joined table is written: schema-qualified when its schema is off the search path, or
-   * database-qualified when a database-only server links across databases.
+   * How a joined table is written: as it is where its name alone finds it, else with its schema,
+   * or on a server without schemas its database.
    */
-  private static String tableName(Table other, Table source, Suggestions.Known known) {
-    var provider = known.provider;
-    if (other.container() instanceof Schema x) {
-      return known.path.contains(x.name())
-          ? Names.quoted(other.name(), provider)
-          : Names.quoted(x.name(), provider) + "." + Names.quoted(other.name(), provider);
-    }
-    return other.container().equals(source.container())
-        ? Names.quoted(other.name(), provider)
-        : Names.quoted(other.container().name(), provider)
-            + "."
-            + Names.quoted(other.name(), provider);
+  private static String tableName(Table other, Suggestions.Known known) {
+    var name = Names.quoted(other.name(), known.provider);
+    return other.equals(known.table(null, other.name()))
+        ? name
+        : Names.quoted(other.container().name(), known.provider) + "." + name;
   }
 
   private static boolean alreadyUnaliased(

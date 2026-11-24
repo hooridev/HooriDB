@@ -19,12 +19,13 @@ import java.util.Set;
  *     {@code public.} or {@code [o]} after {@code o.}; else empty
  * @param typed the part of the word before the caret, as written
  * @param tables the tables the statement names, also after the caret
- * @param before how many of {@code tables} end before the word at the caret
+ * @param left the tables of the FROM item the caret is in, named before its word: those a JOIN
+ *     there joins to, the last of them the one an ON there joins
  */
 // shortcut: no parser, so a statement with a CTE or a subquery is not read: it names no tables,
 // and nothing follows a dot in it; parse statements once completion should reach into them.
 public record Context(
-    Asked asked, List<String> path, String typed, List<Reference> tables, int before) {
+    Asked asked, List<String> path, String typed, List<Reference> tables, List<Reference> left) {
 
   /** What kind of name fits at the caret. */
   public enum Asked {
@@ -40,9 +41,12 @@ public record Context(
      * or {@code NATURAL […] JOIN}.
      */
     TABLE,
-    /** A table after a conditional {@code JOIN} (one that takes an {@code ON} condition). */
+    /**
+     * A table after a conditional {@code JOIN}, one that takes an {@code ON} condition, which has
+     * none yet.
+     */
     JOIN,
-    /** Right after the {@code ON} of a conditional {@code JOIN}. */
+    /** Right after the {@code ON} of a conditional {@code JOIN}, where no condition follows. */
     ON,
     /** What is in the thing the path names: a schema's tables, or a table's or alias's columns. */
     MEMBER
@@ -106,7 +110,8 @@ public record Context(
       "WITH",
       "AS");
   private static final Set<String> INTRODUCERS = Set.of("FROM", "JOIN", "INTO", "UPDATE");
-  private static final Context NOTHING = new Context(Asked.NOTHING, List.of(), "", List.of(), 0);
+  private static final Context NOTHING =
+      new Context(Asked.NOTHING, List.of(), "", List.of(), List.of());
 
   /**
    * What the caret, an offset in the statement's text, asks for. The text may hold comments
@@ -141,18 +146,48 @@ public record Context(
     var scan = readable ? scan(tokens, null, cursor) : Scan.EMPTY;
     if (!path.isEmpty()) {
       return readable
-          ? new Context(Asked.MEMBER, List.copyOf(path), typed, scan.tables, scan.before)
+          ? new Context(Asked.MEMBER, List.copyOf(path), typed, scan.tables, scan.left)
           : NOTHING;
     }
     Asked asked;
     if (n > 0 && introduces(tokens, n - 1)) {
-      asked = conditionalJoin(tokens, n - 1) ? Asked.JOIN : Asked.TABLE;
-    } else if (scan.joinOn) {
+      asked = conditionalJoin(tokens, n - 1) && !conditioned(tokens, n) ? Asked.JOIN : Asked.TABLE;
+    } else if (scan.joinOn && free(tokens, wordEnd(statement, at))) {
       asked = Asked.ON;
     } else {
       asked = Asked.ANY;
     }
-    return new Context(asked, List.of(), typed, scan.tables, scan.before);
+    return new Context(asked, List.of(), typed, scan.tables, scan.left);
+  }
+
+  // Whether the table named at the index already has its ON or USING, as while one is replaced.
+  private static boolean conditioned(List<Token> tokens, int i) {
+    if (i >= tokens.size()
+        || !tokens.get(i).name()
+        || tokens.get(i).kind() == Kind.WORD && CLAUSES.contains(tokens.get(i).upper())) {
+      return false;
+    }
+    int j = reference(tokens, i, new ArrayList<>(), null);
+    return j >= 0 && (word(tokens, j, "ON") || word(tokens, j, "USING"));
+  }
+
+  // Whether no condition follows the offset: nothing, or a clause, comes next.
+  private static boolean free(List<Token> tokens, int offset) {
+    for (var token : tokens) {
+      if (token.start() >= offset) {
+        return token.kind() == Kind.WORD && CLAUSES.contains(token.upper());
+      }
+    }
+    return true;
+  }
+
+  // Where the word that goes on from the offset ends.
+  private static int wordEnd(String statement, int at) {
+    int to = at;
+    while (to < statement.length() && word(statement.codePointAt(to))) {
+      to += Character.charCount(statement.codePointAt(to));
+    }
+    return to;
   }
 
   // Where the word that ends at the offset begins.
@@ -240,7 +275,7 @@ public record Context(
   }
 
   private static boolean word(List<Token> tokens, int i, String upper) {
-    return i >= 0 && tokens.get(i).upper().equals(upper);
+    return i >= 0 && i < tokens.size() && tokens.get(i).upper().equals(upper);
   }
 
   // The index of the token the offset is in, or -1 for none.
@@ -266,12 +301,13 @@ public record Context(
     return true;
   }
 
-  private record Scan(List<Reference> tables, int before, boolean joinOn) {
-    static final Scan EMPTY = new Scan(List.of(), 0, false);
+  private record Scan(List<Reference> tables, List<Reference> left, boolean joinOn) {
+    static final Scan EMPTY = new Scan(List.of(), List.of(), false);
   }
 
   private static Scan scan(List<Token> tokens, Set<Integer> tableTokens, int cursor) {
     var found = new ArrayList<Reference>();
+    int start = 0; // where the FROM item of the cursor begins in found
     int before = 0;
     boolean joinOn = false;
     for (int i = 0; i < tokens.size(); i++) {
@@ -280,6 +316,9 @@ public record Context(
         continue;
       }
       boolean list = introducer.equals("FROM");
+      if (list && i < cursor) {
+        start = found.size();
+      }
       boolean join = conditionalJoin(tokens, i);
       int j = i + 1;
       while (j < tokens.size() && tokens.get(j).name()) {
@@ -288,7 +327,7 @@ public record Context(
           break;
         }
         if (cursor >= 0 && j <= cursor) {
-          before++;
+          before = found.size();
         }
         if (join && cursor > 0 && j == cursor - 1 && word(tokens, j, "ON")) {
           joinOn = true;
@@ -298,9 +337,13 @@ public record Context(
           break;
         }
         j++;
+        if (j <= cursor) {
+          start = found.size(); // FROM a, b JOIN c: c joins b alone
+        }
       }
     }
-    return new Scan(List.copyOf(found), before, joinOn);
+    var left = start < before ? found.subList(start, before) : List.<Reference>of();
+    return new Scan(List.copyOf(found), List.copyOf(left), joinOn);
   }
 
   // Adds the table named at the index, with its alias; the index after it, or -1 for a name still
