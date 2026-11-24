@@ -413,6 +413,8 @@ final class Frame {
                     (node, open) -> c.toggle(s, node, open))
                 .select(s.selected, node -> s.selected = node)
                 .onActivate(node -> c.activate(s, node))
+                // A table opens its tab: reading its columns and keys would hold its first rows.
+                .toggleOnDoublePress(node -> !(node instanceof Node.OfTable))
                 .drag(
                     c.dragging,
                     CatalogTree::canDrag,

@@ -77,11 +77,12 @@ import java.util.stream.IntStream;
  * <p>An outline has a database per line, its schemas indented under it where the provider has
  * schemas, then the tables, then the columns as {@code name: type}. A {@code ~} before a name marks
  * a system database or schema, {@code @} a view and {@code *} a column of the primary key. A
- * column line may end with {@code > [<name>:] [<container>.]<table>.<column>} to declare a foreign
- * key ({@code <container>} defaults to the column's own, {@code <name>} to {@code
- * <table>_<column>_fkey}; columns on one table sharing a name form a composite key in column
- * order; rules are {@link ForeignKey.Rule#NO_ACTION}). Reading a table's foreign keys is keyed
- * {@code foreign keys <host>/<path>}, with the path as of {@code columns}.
+ * column line may end with {@code > [<name>:] [<container>.]<table>.<column> [on delete|update
+ * <rule>]...} to declare a foreign key ({@code <container>} defaults to the column's own, {@code
+ * <name>} to {@code <table>_<column>_fkey}; columns on one table sharing a name form a composite
+ * key in column order; unspecified rules default to {@link ForeignKey.Rule#NO_ACTION}). Reading a
+ * table's foreign keys is keyed {@code foreign keys <host>/<path>}, with the path as of {@code
+ * columns}.
  *
  * <p>A table has rows made up from their position, of the kinds its columns' types say, 3 unless
  * {@link #rows} says how many, or the rows {@link #values} gives. Its rows' calls are keyed {@code
@@ -1178,8 +1179,47 @@ final class FakeServers implements Servers {
       return list;
     }
 
-    private record PendingKey(
-        Table table, Table referenced, List<String> columns, List<String> referencedColumns) {}
+    private static final java.util.regex.Pattern FK_RULE = java.util.regex.Pattern.compile(
+        "(?i)\\s*on\\s+(delete|update)\\s+(cascade|restrict|no\\s+action|set\\s+null|set\\s+default)");
+
+    private static final class PendingKey {
+      final Table table;
+      final Table referenced;
+      final List<String> columns = new ArrayList<>();
+      final List<String> referencedColumns = new ArrayList<>();
+      ForeignKey.Rule onUpdate = ForeignKey.Rule.NO_ACTION;
+      ForeignKey.Rule onDelete = ForeignKey.Rule.NO_ACTION;
+
+      PendingKey(Table table, Table referenced) {
+        this.table = table;
+        this.referenced = referenced;
+      }
+    }
+
+    private static void applyRules(PendingKey pending, String text) {
+      int pos = 0;
+      var m = FK_RULE.matcher(text);
+      while (pos < text.length()) {
+        m.region(pos, text.length());
+        if (!m.lookingAt()) {
+          throw new IllegalArgumentException("Bad foreign key rule: " + text);
+        }
+        var rule = switch (m.group(2).toUpperCase(Locale.ROOT).replaceAll("\\s+", "_")) {
+          case "CASCADE" -> ForeignKey.Rule.CASCADE;
+          case "RESTRICT" -> ForeignKey.Rule.RESTRICT;
+          case "NO_ACTION" -> ForeignKey.Rule.NO_ACTION;
+          case "SET_NULL" -> ForeignKey.Rule.SET_NULL;
+          case "SET_DEFAULT" -> ForeignKey.Rule.SET_DEFAULT;
+          default -> throw new IllegalArgumentException("Bad foreign key rule: " + text);
+        };
+        if (m.group(1).equalsIgnoreCase("delete")) {
+          pending.onDelete = rule;
+        } else {
+          pending.onUpdate = rule;
+        }
+        pos = m.end();
+      }
+    }
 
     private static void collectForeignKeys(
         Table target,
@@ -1210,7 +1250,10 @@ final class FakeServers implements Servers {
             keyName = table.name() + "_" + parsed.name() + "_fkey";
             spec = ref;
           }
-          var parts = spec.split("\\.", -1);
+          int space = spec.indexOf(' ');
+          var targetSpec = space < 0 ? spec : spec.substring(0, space);
+          var rulesSpec = space < 0 ? "" : spec.substring(space + 1).strip();
+          var parts = targetSpec.split("\\.", -1);
           if (parts.length != 2 && parts.length != 3) {
             throw new IllegalArgumentException("Bad foreign key reference: " + ref);
           }
@@ -1224,23 +1267,24 @@ final class FakeServers implements Servers {
               ? new Schema(container.database(), refContainerName, refSystem)
               : new Database(refContainerName, refSystem);
           var referenced = new Table(refContainer, refTableName, Table.Kind.TABLE);
-          var pending = byName.computeIfAbsent(
-              keyName,
-              _ -> new PendingKey(table, referenced, new ArrayList<>(), new ArrayList<>()));
-          pending.columns().add(parsed.name());
-          pending.referencedColumns().add(refColumnName);
+          var pending = byName.computeIfAbsent(keyName, _ -> new PendingKey(table, referenced));
+          pending.columns.add(parsed.name());
+          pending.referencedColumns.add(refColumnName);
+          if (!rulesSpec.isEmpty()) {
+            applyRules(pending, rulesSpec);
+          }
         }
         for (var entry : byName.entrySet()) {
           var p = entry.getValue();
-          if (p.table().equals(target) || p.referenced().equals(target)) {
+          if (p.table.equals(target) || p.referenced.equals(target)) {
             found.add(new ForeignKey(
                 entry.getKey(),
-                p.table(),
-                p.columns(),
-                p.referenced(),
-                p.referencedColumns(),
-                ForeignKey.Rule.NO_ACTION,
-                ForeignKey.Rule.NO_ACTION));
+                p.table,
+                p.columns,
+                p.referenced,
+                p.referencedColumns,
+                p.onUpdate,
+                p.onDelete));
           }
         }
       }

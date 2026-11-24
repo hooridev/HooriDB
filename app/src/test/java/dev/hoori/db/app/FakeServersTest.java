@@ -1,6 +1,7 @@
 package dev.hoori.db.app;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.catalog.Column;
@@ -158,5 +159,61 @@ class FakeServersTest {
     assertEquals(List.of(orderKeys.get(1)), link.foreignKeys(help));
     assertTrue(
         servers.calls.contains("foreign keys my/billing.accounts"), servers.calls.toString());
+  }
+
+  @Test
+  void foreignKeyOutlineSupportsReferentialRules() throws Exception {
+    var servers = new FakeServers().serve("pg-rules", Provider.POSTGRESQL, "18.0", """
+            shop
+              public
+                customers
+                  *id: integer
+                regions
+                  *a: integer
+                  *b: integer
+                orders
+                  *id: integer
+                  customer_id: integer > customers.id on delete cascade on update set null
+                  region_a: integer > region_fk: regions.a on delete restrict on update set default
+                  region_b: integer > region_fk: regions.b
+            """);
+    var profile = ConnectionProfile.of(Provider.POSTGRESQL)
+        .withHost("pg-rules")
+        .withDatabase("shop")
+        .withUser("hoori");
+    var link = servers.open(profile, new char[0], null, TIMEOUT);
+    var pub = new Schema(new Database("shop", false), "public", false);
+    var customers = new Table(pub, "customers", Kind.TABLE);
+    var regions = new Table(pub, "regions", Kind.TABLE);
+    var orders = new Table(pub, "orders", Kind.TABLE);
+
+    assertEquals(
+        List.of(
+            new ForeignKey(
+                "orders_customer_id_fkey",
+                orders,
+                List.of("customer_id"),
+                customers,
+                List.of("id"),
+                Rule.SET_NULL,
+                Rule.CASCADE),
+            new ForeignKey(
+                "region_fk",
+                orders,
+                List.of("region_a", "region_b"),
+                regions,
+                List.of("a", "b"),
+                Rule.SET_DEFAULT,
+                Rule.RESTRICT)),
+        link.foreignKeys(orders));
+
+    var bad = new FakeServers().serve("pg-bad", Provider.POSTGRESQL, "18.0", """
+            shop
+              public
+                orders
+                  customer_id: integer > customers.id on delete bogus
+            """);
+    var badLink = bad.open(profile.withHost("pg-bad"), new char[0], null, TIMEOUT);
+    assertThrows(IllegalArgumentException.class, () -> badLink.foreignKeys(orders));
   }
 }

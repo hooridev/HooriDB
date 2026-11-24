@@ -13,6 +13,7 @@ import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -149,6 +150,8 @@ final class CatalogTree {
       }
       case Node.Query(var id) -> s.openQuery(id);
       case Node.OfTable(var id, var table) -> s.openTable(id, table);
+      case Node.OfKey(var id, var _, var key, var incoming) ->
+        s.openTable(id, incoming ? key.table() : key.referenced());
       default -> {
         // The rest only open and close, which the tree does.
       }
@@ -391,6 +394,25 @@ final class CatalogTree {
     read(s, live, new Node.Connection(live.id()));
   }
 
+  /** A table's columns and, unless that read failed alone, its foreign keys in both directions. */
+  private record TableRead(List<Column> columns, List<ForeignKey> keys) {}
+
+  private static TableRead readTable(Servers.Link link, Table table) throws CatalogException {
+    var columns = link.columns(table);
+    try {
+      return new TableRead(columns, link.foreignKeys(table));
+    } catch (CatalogException e) {
+      if (readAlone(e) && !Thread.currentThread().isInterrupted()) {
+        return new TableRead(columns, null);
+      }
+      throw e;
+    }
+  }
+
+  private static List<Node> columnNodes(UUID id, List<Column> columns) {
+    return columns.stream().map(x -> (Node) new Node.OfColumn(id, x)).toList();
+  }
+
   /** Reads the children of the node on the connection that reads its database. */
   private void read(State s, Live live, Node node) {
     // The databases are read on the first connection, also while it opens.
@@ -398,16 +420,32 @@ final class CatalogTree {
     if (live.lane == null || c == null && !(node instanceof Node.Connection)) {
       return;
     }
+    if (node instanceof Node.OfTable t) {
+      // The columns are read once at a time: a read of them in the background gives way.
+      if (live.scans.remove(node) instanceof Scan x && x.asked != null) {
+        x.asked.cancel();
+      }
+      var id = live.id();
+      var table = t.table();
+      read(s, live, t, link -> readTable(link, table), found -> {
+        live.levels.put(node, new Read(columnNodes(id, found.columns())));
+        if (found.keys() != null) {
+          live.keys.put(table, found.keys());
+        }
+      });
+      return;
+    }
     var call = children(live.id(), node, c);
     if (call == null) {
       return;
     }
-    // The columns are read once at a time: a read of them in the background gives way.
-    if (node instanceof Node.OfTable
-        && live.scans.remove(node) instanceof Scan x
-        && x.asked != null) {
-      x.asked.cancel();
-    }
+    read(s, live, node, call, children -> {
+      live.levels.put(node, new Read(children));
+      databasesRead(s, node);
+    });
+  }
+
+  private <T> void read(State s, Live live, Node node, Lane.Call<T> call, Consumer<T> onRead) {
     var timeout = s.settings.connectTimeout();
     var lane = lane(s, live, database(node));
     var reading = new Reading();
@@ -417,10 +455,9 @@ final class CatalogTree {
         "read " + label(s, node),
         Lane.Priority.VIEW,
         call,
-        children -> {
+        result -> {
           if (live.levels.get(node) == reading) {
-            live.levels.put(node, new Read(children));
-            databasesRead(s, node);
+            onRead.accept(result);
           }
         },
         error -> {
@@ -447,14 +484,14 @@ final class CatalogTree {
             .toList();
       case Node.OfDatabase n -> tables(id, n.database());
       case Node.OfSchema n -> tables(id, n.schema());
-      case Node.OfTable n ->
-        link -> link.columns(n.table()).stream()
-            .map(x -> (Node) new Node.OfColumn(id, x))
-            .toList();
-      case Node.OfColumn n -> null;
-      case Node.Problem n -> null;
-      case Node.Folder n -> null;
-      case Node.Query n -> null;
+      case Node.OfTable _,
+          Node.OfColumn _,
+          Node.ForeignKeys _,
+          Node.KeyGroup _,
+          Node.OfKey _,
+          Node.Problem _,
+          Node.Folder _,
+          Node.Query _ -> null;
     };
   }
 
@@ -514,8 +551,9 @@ final class CatalogTree {
   }
 
   /**
-   * Reads the table's columns where the tree has not, as {@link #scan(State, Node.OfDatabase)}
-   * reads tables, for the completions of a console, which {@link #stop}s it as it closes.
+   * Reads the table's columns and foreign keys where the tree has not, as {@link
+   * #scan(State, Node.OfDatabase)} reads tables, for the completions and quick documentation of a
+   * console, which {@link #stop}s it as it closes.
    */
   Scan scan(State s, Node.OfTable node) {
     var live = lives.get(node.id());
@@ -525,18 +563,19 @@ final class CatalogTree {
       return null; // the tree reads them already
     }
     var id = live.id();
+    var table = node.table();
     return scan(
         s,
         live,
         node,
-        "read the columns of " + node.table().name(),
-        link -> link.columns(node.table()),
-        columns -> {
+        "read the columns of " + table.name(),
+        link -> readTable(link, table),
+        found -> {
           if (unread(live.levels.get(node))) {
-            live.levels.put(
-                node,
-                new Read(
-                    columns.stream().map(x -> (Node) new Node.OfColumn(id, x)).toList()));
+            live.levels.put(node, new Read(columnNodes(id, found.columns())));
+          }
+          if (found.keys() != null) {
+            live.keys.put(table, found.keys());
           }
         });
   }
@@ -842,6 +881,12 @@ final class CatalogTree {
     return null; // not read, which differs from a table without columns
   }
 
+  /** The table's foreign keys as the tree read them, or null where it has not. */
+  List<ForeignKey> foreignKeys(UUID id, Table table) {
+    var live = lives.get(id);
+    return live == null ? null : live.keys.get(table);
+  }
+
   /** The table's columns as read anew elsewhere, which the tree shows where it showed them. */
   void columnsRead(UUID id, Table table, List<Column> columns) {
     var live = lives.get(id);
@@ -969,6 +1014,9 @@ final class CatalogTree {
       case Node.OfSchema n -> n.schema().database().name();
       case Node.OfTable n -> n.table().container().database().name();
       case Node.OfColumn n -> n.column().table().container().database().name();
+      case Node.ForeignKeys n -> n.table().container().database().name();
+      case Node.KeyGroup n -> n.table().container().database().name();
+      case Node.OfKey n -> n.table().container().database().name();
       case Node.Problem(var of) -> database(of);
     };
   }
@@ -1011,6 +1059,7 @@ final class CatalogTree {
         live.levels.remove(entry.getKey());
       }
     }
+    live.keys.keySet().removeIf(t -> new Node.OfTable(node.id(), t).within(node));
     Lane.cancel(gone);
     if (node instanceof Node.Connection) {
       // The databases are read anew: their connections go, those still opening too.
@@ -1123,6 +1172,7 @@ final class CatalogTree {
     stopScans(live, new Node.Connection(live.id()), gone);
     Lane.cancel(gone);
     live.levels.clear();
+    live.keys.clear();
     if (live.lane != null) {
       live.lane.close();
       live.lane = null;
@@ -1234,6 +1284,9 @@ final class CatalogTree {
       case Node.OfSchema n -> n.schema().name();
       case Node.OfTable n -> n.table().name();
       case Node.OfColumn n -> n.column().name();
+      case Node.ForeignKeys _ -> "Foreign keys";
+      case Node.KeyGroup n -> n.incoming() ? "Referenced by" : "References";
+      case Node.OfKey n -> n.key().name();
       case Node.Problem(var of) -> name(s, of);
     };
   }
@@ -1248,10 +1301,16 @@ final class CatalogTree {
     };
   }
 
-  /** The muted text after a node's name: a column's type, a connection's kind of server. */
+  /** The muted text after a node's name: a column's type, a key's mapping, a server's kind. */
   String detail(State s, Node node) {
     return switch (node) {
-      case Node.OfColumn n -> n.column().type();
+      case Node.OfColumn n ->
+        ForeignKeys.columnDetail(n.column(), foreignKeys(n.id(), n.column().table()));
+      case Node.OfKey n -> {
+        var profile = s.profile(n.id());
+        yield ForeignKeys.detail(
+            n.table(), n.key(), n.incoming(), profile == null ? null : profile.provider());
+      }
       case Node.Connection(var id) -> s.profile(id).provider().displayName();
       case Node.Query(var id) -> QueryDialog.languageLabel(s.query(id).language());
       default -> null;
@@ -1452,6 +1511,15 @@ final class CatalogTree {
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
             refresh,
             copy);
+      case Node.ForeignKeys(var id, var table) ->
+        List.of(Menu.item(
+                "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
+            .icon(Symbol.ARROW_CLOCKWISE));
+      case Node.KeyGroup(var id, var table, var _) ->
+        List.of(Menu.item(
+                "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
+            .icon(Symbol.ARROW_CLOCKWISE));
+      case Node.OfKey _ -> List.of(copy);
       default -> List.of(refresh, copy);
     };
   }

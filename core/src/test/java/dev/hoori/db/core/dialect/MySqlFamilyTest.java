@@ -1,7 +1,10 @@
 package dev.hoori.db.core.dialect;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import java.sql.SQLException;
 import org.junit.jupiter.api.Test;
@@ -50,5 +53,12 @@ class MySqlFamilyTest {
       assertEquals("", failure.near(), failure.message());
       assertEquals(0, failure.line(), failure.message());
     }
+  }
+
+  @Test
+  void restrictIsNoActionOnMysqlFamilyOnly() {
+    assertTrue(Provider.MYSQL.dialect().catalog().restrictIsNoAction());
+    assertTrue(Provider.MARIADB.dialect().catalog().restrictIsNoAction());
+    assertFalse(Provider.POSTGRESQL.dialect().catalog().restrictIsNoAction());
   }
 }

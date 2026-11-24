@@ -25,7 +25,8 @@ In the tree:
 - A connected server has a green icon; a connection that failed or dropped has a red icon.
 - System databases and system schemas (such as `pg_catalog`, `information_schema`, `mysql`, `performance_schema`, and `sys`, or `admin`, `config`, and `local` on MongoDB) are shown in muted text.
 - Tables show a table icon, and views show an eye icon.
-- Each column shows its server data type. Primary key columns are marked with a key icon.
+- Each column shows its server data type. Primary key columns are marked with a key icon, and columns in outgoing foreign keys show a link icon and their referenced column (such as `bigint → customers.id`).
+- Tables with foreign keys show a **Foreign keys** node after their columns with **References** and **Referenced by** groups listing each constraint's mapping and non-default rules. Double-click an entry or press `Enter` on it to open the related table.
 
 ## Open a table or view
 

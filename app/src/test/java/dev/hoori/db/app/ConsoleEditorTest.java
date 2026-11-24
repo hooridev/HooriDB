@@ -902,6 +902,119 @@ class ConsoleEditorTest {
         gutterLine(editedStmt, 2));
   }
 
+  @Test
+  void quickDocumentationShowsForeignKeysForTableAndColumnInBothDirections() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.FK_OUTLINE);
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id, o.customer_id FROM orders o JOIN order_items oi ON oi.order_id = o.id";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Hover over table `orders`: lists References (with rules + composite cross-schema) and
+    // Referenced by.
+    String ordersPt = pointAt(app, sql.indexOf("orders") + 2);
+    console.c.run(
+        app,
+        "move " + ordersPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap foreign-keys-doc\n");
+    String tableDoc = console.c.tree("foreign-keys-doc");
+    assertTrue(tableDoc.contains("#documentation"), tableDoc);
+    assertTrue(tableDoc.contains("Table public.orders"), tableDoc);
+    assertTrue(tableDoc.contains("References"), tableDoc);
+    assertTrue(tableDoc.contains("orders_customer_id_fkey"), tableDoc);
+    assertTrue(tableDoc.contains("(customer_id) → customers(id) · ON DELETE CASCADE"), tableDoc);
+    assertTrue(tableDoc.contains("region_fk"), tableDoc);
+    assertTrue(
+        tableDoc.contains("(region_a, region_b) → billing.regions(a, b) · ON DELETE RESTRICT"),
+        tableDoc);
+    assertTrue(tableDoc.contains("Referenced by"), tableDoc);
+    assertTrue(tableDoc.contains("order_items_order_id_fkey"), tableDoc);
+    assertTrue(tableDoc.contains("order_items(order_id) → (id) · ON DELETE CASCADE"), tableDoc);
+
+    // Ctrl+Q on outgoing key column `o.customer_id`: lists its target and non-default rule.
+    console.tab(app).editor.select(sql.indexOf("customer_id") + 2, sql.indexOf("customer_id") + 2);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\nsnap fk-col-out\n");
+    String outColDoc = console.c.tree("fk-col-out");
+    assertTrue(outColDoc.contains("Column customer_id integer"), outColDoc);
+    assertTrue(outColDoc.contains("References"), outColDoc);
+    assertTrue(outColDoc.contains("→ customers.id · ON DELETE CASCADE"), outColDoc);
+
+    // Ctrl+Q on referenced key column `o.id`: lists incoming keys that reference it.
+    console.tab(app).editor.select(sql.indexOf("o.id") + 3, sql.indexOf("o.id") + 3);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\nsnap fk-col-in\n");
+    String inColDoc = console.c.tree("fk-col-in");
+    assertTrue(inColDoc.contains("Column id bigint"), inColDoc);
+    assertTrue(inColDoc.contains("Referenced by"), inColDoc);
+    assertTrue(inColDoc.contains("order_items_order_id_fkey"), inColDoc);
+    assertTrue(inColDoc.contains("order_items(order_id) → (id) · ON DELETE CASCADE"), inColDoc);
+    assertTrue(inColDoc.contains("orders_parent_id_fkey"), inColDoc);
+
+    // Unread table (`customers`): first hover triggers reading columns and foreign keys; next shows
+    // them.
+    var custSql = "SELECT c.id FROM customers c";
+    console.c.run(app, "key Escape\nkey A control\nkey Delete\n" + type(custSql) + "frame\n");
+    String custPt = pointAt(app, custSql.indexOf("customers") + 2);
+    console.c.run(
+        app, "move " + custPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-first\n");
+    assertFalse(
+        console.c.tree("cust-first").contains("Referenced by"), console.c.tree("cust-first"));
+    console.c.run(
+        app,
+        SETTLE
+            + "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\nmove "
+            + custPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-second\n");
+    String custSecond = console.c.tree("cust-second");
+    assertTrue(custSecond.contains("Referenced by"), custSecond);
+    assertTrue(custSecond.contains("orders_customer_id_fkey"), custSecond);
+    assertTrue(custSecond.contains("orders(customer_id) → (id) · ON DELETE CASCADE"), custSecond);
+  }
+
+  @Test
+  void
+      quickDocumentationReadsKeysWhenColumnsWereAlreadyReadWithoutThemAndShowsBothDirectionsOnColumn()
+          throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", """
+        shop
+          public
+            customers
+              *id: integer
+            orders
+              *id: integer > customers.id on delete cascade
+            payments
+              *id: integer
+              order_id: integer > orders.id on delete restrict
+        """);
+    var keysCall = "foreign keys " + PG + "/shop.public.orders";
+    servers.fail(
+        keysCall,
+        FakeServers.notRead(dev.hoori.db.core.catalog.CatalogException.Failure.ACCESS_DENIED));
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id FROM orders o";
+    // Opening orders in the tree reads its columns while its foreign key read fails alone.
+    console.c.run(app, TREE + type(sql) + "frame\n");
+    servers.heal(keysCall);
+
+    // First Ctrl+Q on `o.id` sees columns already Read, but triggers a scan to fetch missing keys.
+    console.tab(app).editor.select(sql.indexOf("o.id") + 3, sql.indexOf("o.id") + 3);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\n" + SETTLE);
+    assertEquals(
+        2, servers.calls.stream().filter(keysCall::equals).count(), servers.calls.toString());
+
+    // Next Ctrl+Q on `o.id` shows both outgoing and incoming keys for the column.
+    console.c.run(
+        app, "key Escape\nframe\nkey Q control\nframe\nadvance 1\nframe\nsnap both-col\n");
+    String both = console.c.tree("both-col");
+    assertTrue(both.contains("Column id integer"), both);
+    assertTrue(both.contains("References"), both);
+    assertTrue(both.contains("→ customers.id · ON DELETE CASCADE"), both);
+    assertTrue(both.contains("Referenced by"), both);
+    assertTrue(both.contains("payments_order_id_fkey"), both);
+    assertTrue(both.contains("payments(order_id) → (id) · ON DELETE RESTRICT"), both);
+  }
+
   /** The tree of the snap of the window other than the main one. */
   String window(String snap) throws IOException {
     try (var files = Files.list(dir.resolve("out"))) {

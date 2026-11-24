@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
@@ -1118,5 +1119,274 @@ class CatalogTreeTest {
     assertTrue(timed.contains("No answer in time"), timed);
     assertTrue(timed.contains("did not answer on port 5432 within 1 second."), timed);
     assertEquals(List.of(Duration.ofSeconds(1)), servers.timeouts);
+  }
+
+  static final String FK_OUTLINE = """
+      shop
+        public
+          customers
+            *id: integer
+            name: text
+          orders
+            *id: bigint
+            customer_id: integer > customers.id on delete cascade
+            parent_id: bigint > orders.id on update set null
+            region_a: integer > region_fk: billing.regions.a on delete restrict
+            region_b: integer > region_fk: billing.regions.b
+            total: numeric(12,2)
+          order_items
+            *order_id: bigint > orders.id on delete cascade
+            *line: integer
+          @order_totals
+            customer_id: integer
+            total: numeric
+        billing
+          regions
+            *a: integer
+            *b: integer
+      """;
+
+  @Test
+  void foreignKeysShowOnColumnsAndUnderForeignKeysNodeAndEnterOpensRelatedTable() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", FK_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("Foreign keys")
+            + open("References")
+            + open("Referenced by")
+            + "snap foreign-keys-tree\n");
+    var fkTree = tree("foreign-keys-tree");
+    assertEquals(
+        List.of(
+            "shop-prod",
+            "  shop",
+            "    public",
+            "      customers",
+            "      orders",
+            "        id",
+            "        customer_id",
+            "        parent_id",
+            "        region_a",
+            "        region_b",
+            "        total",
+            "        Foreign keys",
+            "          References",
+            "            orders_customer_id_fkey",
+            "            orders_parent_id_fkey",
+            "            region_fk",
+            "          Referenced by",
+            "            order_items_order_id_fkey",
+            "            orders_parent_id_fkey",
+            "      order_items",
+            "      order_totals",
+            "    billing"),
+        rows(fkTree));
+
+    // Column icons and details: key columns show link icon and target(s), plain columns only type.
+    assertTrue(
+        row(fkTree, "id").contains("label=\"" + Symbol.KEY.label() + "\""), row(fkTree, "id"));
+    assertTrue(row(fkTree, "id").contains("\"bigint\""), row(fkTree, "id"));
+    assertFalse(row(fkTree, "id").contains("→"), row(fkTree, "id"));
+    assertTrue(
+        row(fkTree, "customer_id").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(fkTree, "customer_id"));
+    assertTrue(
+        row(fkTree, "customer_id").contains("\"integer → customers.id\""),
+        row(fkTree, "customer_id"));
+    assertTrue(
+        row(fkTree, "parent_id").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(fkTree, "parent_id"));
+    assertTrue(
+        row(fkTree, "parent_id").contains("\"bigint → orders.id\""), row(fkTree, "parent_id"));
+    assertTrue(
+        row(fkTree, "region_a").contains("\"integer → billing.regions.a\""),
+        row(fkTree, "region_a"));
+    assertTrue(
+        row(fkTree, "region_b").contains("\"integer → billing.regions.b\""),
+        row(fkTree, "region_b"));
+    assertTrue(
+        row(fkTree, "total").contains("label=\"" + Symbol.COLUMN_SINGLE.label() + "\""),
+        row(fkTree, "total"));
+    assertTrue(row(fkTree, "total").contains("\"numeric(12,2)\""), row(fkTree, "total"));
+
+    // Foreign keys node, group icons, and constraint rows with mapping and non-default rules.
+    assertTrue(
+        row(fkTree, "Foreign keys").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(fkTree, "Foreign keys"));
+    assertTrue(
+        row(fkTree, "References").contains("label=\"" + Symbol.ARROW_RIGHT.label() + "\""),
+        row(fkTree, "References"));
+    assertTrue(
+        row(fkTree, "Referenced by").contains("label=\"" + Symbol.ARROW_LEFT.label() + "\""),
+        row(fkTree, "Referenced by"));
+    assertTrue(
+        row(fkTree, "orders_customer_id_fkey").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(fkTree, "orders_customer_id_fkey"));
+    assertTrue(
+        row(fkTree, "orders_customer_id_fkey")
+            .contains("\"(customer_id) → customers(id) · ON DELETE CASCADE\""),
+        row(fkTree, "orders_customer_id_fkey"));
+    assertTrue(
+        row(fkTree, "region_fk")
+            .contains("\"(region_a, region_b) → billing.regions(a, b) · ON DELETE RESTRICT\""),
+        row(fkTree, "region_fk"));
+    assertTrue(
+        row(fkTree, "order_items_order_id_fkey")
+            .contains("\"order_items(order_id) → (id) · ON DELETE CASCADE\""),
+        row(fkTree, "order_items_order_id_fkey"));
+
+    // Enter on an outgoing entry opens the referenced table; Enter on incoming opens referencing.
+    run(
+        app,
+        "press role=treeitem label=\"orders_customer_id_fkey\"\nkey Enter\nframe\n"
+            + SETTLE
+            + "snap opened-ref\n");
+    assertTrue(
+        line(tree("opened-ref"), "role=tab label=\"customers\"").contains("selected"),
+        tree("opened-ref"));
+
+    run(
+        app,
+        "press role=treeitem label=\"order_items_order_id_fkey\"\nkey Enter\nframe\n"
+            + SETTLE
+            + "snap opened-inc\n");
+    assertTrue(
+        line(tree("opened-inc"), "role=tab label=\"order_items\"").contains("selected"),
+        tree("opened-inc"));
+
+    // A column that is both primary key and foreign key keeps the primary key icon and shows
+    // target.
+    run(app, open("order_items") + SETTLE + "snap pk-fk\n");
+    var pkFk = tree("pk-fk");
+    assertTrue(
+        row(pkFk, "order_id").contains("label=\"" + Symbol.KEY.label() + "\""),
+        row(pkFk, "order_id"));
+    assertFalse(
+        row(pkFk, "order_id").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(pkFk, "order_id"));
+    assertTrue(row(pkFk, "order_id").contains("\"bigint → orders.id\""), row(pkFk, "order_id"));
+  }
+
+  @Test
+  void mariadbHidesRestrictRuleAsDefaultInTree() throws Exception {
+    servers.serve(MARIA, Provider.MARIADB, "11.4.2-MariaDB", """
+        warehouse
+          items
+            *id: int(11)
+          stock
+            *item_id: int(11) > items.id on delete restrict on update cascade
+        """);
+    var app = app(INVENTORY);
+    ready(app, INVENTORY);
+    run(
+        app,
+        START
+            + open("inventory")
+            + SETTLE
+            + open("warehouse")
+            + SETTLE
+            + open("stock")
+            + SETTLE
+            + open("Foreign keys")
+            + open("References")
+            + "snap maria-fk\n");
+    var mariaFk = row(tree("maria-fk"), "stock_item_id_fkey");
+    assertTrue(mariaFk.contains("\"(item_id) → items(id) · ON UPDATE CASCADE\""), mariaFk);
+    assertFalse(mariaFk.contains("RESTRICT"), mariaFk);
+  }
+
+  @Test
+  void refreshReadsForeignKeysAgainAndKeyFailureKeepsColumns() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", FK_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var ordersKey = "foreign keys " + PG + "/shop.public.orders";
+    var customersKey = "foreign keys " + PG + "/shop.public.customers";
+    servers.fail(customersKey, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("customers")
+            + SETTLE
+            + "snap initial\n");
+    assertEquals(
+        1, servers.calls.stream().filter(ordersKey::equals).count(), servers.calls.toString());
+    // customers' key read failed alone: its columns are still shown, no Foreign keys node, not
+    // cached.
+    var initial = tree("initial");
+    assertTrue(rows(initial).contains("        name"), initial);
+    assertEquals(
+        1, rows(initial).stream().filter("        Foreign keys"::equals).count(), initial);
+    var pub = new dev.hoori.db.core.catalog.Schema(
+        new dev.hoori.db.core.catalog.Database("shop", false), "public", false);
+    var customers = new dev.hoori.db.core.catalog.Table(
+        pub, "customers", dev.hoori.db.core.catalog.Table.Kind.TABLE);
+    assertEquals(null, app.state().catalog.foreignKeys(SHOP.id(), customers));
+
+    // Refresh on orders reads its foreign keys again.
+    run(app, menu("orders", "Refresh") + SETTLE);
+    assertEquals(
+        2, servers.calls.stream().filter(ordersKey::equals).count(), servers.calls.toString());
+
+    // Healing customers and refreshing it reads and caches its keys.
+    servers.heal(customersKey);
+    run(app, menu("customers", "Refresh") + SETTLE);
+    assertEquals(1, app.state().catalog.foreignKeys(SHOP.id(), customers).size());
+  }
+
+  @Test
+  void openingATableTabAndExpandingAViewReadNoForeignKeys() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", FK_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + "press role=treeitem label=\"orders\"\nkey Enter\nframe\n"
+            + SETTLE
+            // A double press opens the table's tab and leaves its columns shut.
+            + "press role=treeitem label=\"customers\" clicks 2\nframe\n"
+            + SETTLE
+            + open("order_totals")
+            + SETTLE
+            + "snap end\n");
+    assertTrue(
+        servers.calls.stream().anyMatch(c -> c.startsWith("read " + PG + "/shop.public.orders ")),
+        servers.calls.toString());
+    assertTrue(
+        servers.calls.stream()
+            .anyMatch(c -> c.startsWith("read " + PG + "/shop.public.customers ")),
+        servers.calls.toString());
+    assertTrue(
+        servers.calls.contains("columns " + PG + "/shop.public.order_totals"),
+        servers.calls.toString());
+    assertFalse(
+        servers.calls.stream().anyMatch(c -> c.startsWith("foreign keys ")),
+        servers.calls.toString());
   }
 }
