@@ -1144,6 +1144,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         !conditions.applied.conditions().isEmpty() && where.text.strip().equals(filter.where());
     String base = replace ? manualWhere : where.text.strip();
     boolean empty = applicable.conditions().isEmpty();
+    if (empty && !replace) {
+      return; // the builder adds nothing and owns nothing in the field
+    }
     String clause;
     try {
       if (empty) {

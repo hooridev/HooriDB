@@ -1793,6 +1793,24 @@ class TableTabTest {
     assertTrue(servers.calls.contains("paths " + path), servers.calls.toString());
     assertEquals(atLeast, tab(app).filter.where());
     assertTrue(c.tree("kept").contains("#filters "), c.tree("kept"));
+
+    // Header filters the builder cannot all show (Equals exactly) keep their chips on an empty
+    // Apply.
+    var exact = "{ total: { $gte: 7.0 }, customer: 'Ada' }";
+    servers.documents(path + " FILTER " + exact, List.of(doc));
+    c.run(
+        app,
+        openFilter(1)
+            + "press #kind\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Equals exactly\"\nframe\nadvance 1\nframe\n"
+            + "press #value\nframe\ntype \"Ada\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "press #conditions\nframe\nadvance 1\nframe\n"
+            + "press #conditions-apply\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap exact\n");
+    assertEquals(exact, tab(app).filter.where());
+    assertTrue(c.tree("exact").contains("#filters "), c.tree("exact"));
   }
 
   @Test
