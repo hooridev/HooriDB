@@ -6,9 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.mongodb.MongoClientSettings;
+import com.mongodb.MongoCredential;
+import com.mongodb.ServerAddress;
+import com.mongodb.client.MongoClients;
+import com.mongodb.connection.ClusterConnectionMode;
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.log.Sent;
@@ -17,6 +23,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import org.bson.BsonBinaryWriter;
+import org.bson.RawBsonDocument;
+import org.bson.io.BasicOutputBuffer;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -307,6 +316,48 @@ class DocumentEditServerTest {
         session.write(new DocumentEdit.Insert(collection, Document.of("_id", 1, "p", pointer)));
         var read = session.read(collection, session.fields(collection), 0, 10).documents();
         assertEquals(List.of(Document.of("_id", 1, "p", pointer)), read);
+        assertTrue(DocumentEdit.roundTripped(read.getFirst()).isEmpty());
+      } finally {
+        drop(session, collection);
+      }
+    }
+  }
+
+  @Test
+  void aDocumentWithDuplicateFieldNamesKeepsBothFieldsAndIsNotOpenedForEditing() throws Exception {
+    var collection = tempCollection();
+    var buffer = new BasicOutputBuffer();
+    try (var writer = new BsonBinaryWriter(buffer)) {
+      writer.writeStartDocument();
+      writer.writeInt32("_id", 1);
+      writer.writeString("name", "first");
+      writer.writeString("name", "second");
+      writer.writeEndDocument();
+    }
+    var raw = new RawBsonDocument(buffer.toByteArray());
+    var server = TestServer.of(Provider.MONGODB);
+    var settings = MongoClientSettings.builder()
+        .applyToClusterSettings(cluster -> cluster
+            .hosts(List.of(new ServerAddress(server.host(), server.port())))
+            .mode(ClusterConnectionMode.SINGLE))
+        .credential(
+            MongoCredential.createCredential(TestServer.USER, "admin", TestServer.password()))
+        .build();
+    try (var session = DocumentSessionServerTest.session(false)) {
+      try {
+        try (var direct = MongoClients.create(settings)) {
+          direct
+              .getDatabase(HOORI.name())
+              .getCollection(collection.name(), RawBsonDocument.class)
+              .insertOne(raw);
+        }
+        var read = session.read(collection, session.fields(collection), 0, 10).documents();
+        assertEquals(
+            List.of(new Document(List.of(
+                new Document.Entry("_id", 1),
+                new Document.Entry("name", "first"),
+                new Document.Entry("name", "second")))),
+            read);
         assertTrue(DocumentEdit.roundTripped(read.getFirst()).isEmpty());
       } finally {
         drop(session, collection);

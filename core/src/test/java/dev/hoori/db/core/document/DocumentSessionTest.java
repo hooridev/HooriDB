@@ -26,6 +26,26 @@ class DocumentSessionTest {
   private static final Table VIEW = new Table(HOORI, "paid_orders", Table.Kind.VIEW);
 
   @Test
+  void aNameADocumentRepeatsIsSampledOnceAsItsFirst() {
+    var table = new Table(new Database("hoori", false), "items", Table.Kind.TABLE);
+    var repeated = new Document(List.of(
+        new Document.Entry("_id", 1),
+        new Document.Entry("score", 42),
+        new Document.Entry("score", "legacy"),
+        new Document.Entry(
+            "a", new Document(List.of(new Document.Entry("b", 1), new Document.Entry("b", "x")))),
+        new Document.Entry("a", 5)));
+    var first = Document.of("_id", 1, "score", 42, "a", Document.of("b", 1));
+    var other = Document.of("_id", 2);
+    assertEquals(
+        DocumentSession.fields(table, List.of(first, other)),
+        DocumentSession.fields(table, List.of(repeated, other)));
+    assertEquals(
+        DocumentSession.paths(List.of(first, other)),
+        DocumentSession.paths(List.of(repeated, other)));
+  }
+
+  @Test
   void mapsIndexKeysTextWeightsDetailsAndOrder() {
     var docs = List.of(
         Document.of(
