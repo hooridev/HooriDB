@@ -9,9 +9,8 @@ import java.math.BigInteger;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -30,8 +29,7 @@ public final class DocumentFilters {
   private static final BigInteger MAX_INT = BigInteger.valueOf(Integer.MAX_VALUE);
   private static final BigInteger MIN_LONG = BigInteger.valueOf(Long.MIN_VALUE);
   private static final BigInteger MAX_LONG = BigInteger.valueOf(Long.MAX_VALUE);
-  private static final Set<String> NUMERIC_TYPES =
-      Set.of("int", "int32", "long", "int64", "double", "decimal", "decimal128");
+  private static final Set<String> NUMERIC_TYPES = Set.of("int", "long", "double", "decimal");
 
   private enum ValueType {
     STRING,
@@ -100,7 +98,7 @@ public final class DocumentFilters {
     var field = filter.field();
     var name = field.name();
     if (name == null || name.isEmpty() || name.indexOf('.') >= 0 || name.startsWith("$")) {
-      throw refused("Field " + name + " cannot be filtered");
+      throw refused(name, "cannot be filtered");
     }
     if (filter.spec() instanceof ColumnFilter.Null(boolean isNull)) {
       // A field a document lacks shows as an empty cell, not as NULL.
@@ -113,12 +111,12 @@ public final class DocumentFilters {
       case ColumnFilter.Text(var match, var value) -> textEntry(field, type, match, value, zone);
       case ColumnFilter.Regex(var expression) -> {
         if (type != ValueType.STRING) {
-          throw refused("Field " + name + " does not support regular expression matching");
+          throw refused(name, "does not support regular expression matching");
         }
         if (expression.isEmpty()) {
           throw refused("Regular expression for " + name + " cannot be empty");
         }
-        yield new Document.Entry(name, Document.of("$regex", expression, "$options", "i"));
+        yield new Document.Entry(name, regex(expression));
       }
       case ColumnFilter.Between(var from, var to) -> betweenEntry(field, type, from, to, zone);
       case ColumnFilter.OneOf(var values) -> oneOfEntry(field, type, values, zone);
@@ -131,25 +129,24 @@ public final class DocumentFilters {
     var name = field.name();
     if (match == ColumnFilter.Match.EQUALS || match == ColumnFilter.Match.EXACTLY) {
       if (type == ValueType.STRING && match == ColumnFilter.Match.EQUALS) {
-        return new Document.Entry(
-            name, Document.of("$regex", "^" + escapeRegex(value) + "\\z", "$options", "i"));
+        return new Document.Entry(name, regex("^" + escapeRegex(value) + "\\z"));
       }
       return new Document.Entry(name, parseValue(field, type, value, zone));
     }
     if (type != ValueType.STRING) {
-      throw refused("Field " + name + " of type " + field.type()
-          + " does not support text matching; use Equals");
+      throw refused(
+          name, "of type " + field.type() + " does not support text matching; use Equals");
     }
     var pattern =
         match == ColumnFilter.Match.STARTS_WITH ? "^" + escapeRegex(value) : escapeRegex(value);
-    return new Document.Entry(name, Document.of("$regex", pattern, "$options", "i"));
+    return new Document.Entry(name, regex(pattern));
   }
 
   private static Document.Entry betweenEntry(
       Field field, ValueType type, String from, String to, ZoneId zone) throws QueryException {
     var name = field.name();
     if (type == ValueType.UNSUPPORTED || type == ValueType.BOOL) {
-      throw refused("Field " + name + " does not support range filters");
+      throw refused(name, "does not support range filters");
     }
     var lo = from.strip();
     var hi = to.strip();
@@ -169,7 +166,7 @@ public final class DocumentFilters {
   private static Document.Entry oneOfEntry(
       Field field, ValueType type, List<String> values, ZoneId zone) throws QueryException {
     if (type == ValueType.UNSUPPORTED) {
-      throw refused("Field " + field.name() + " does not support value list filters");
+      throw refused(field.name(), "does not support value list filters");
     }
     var parsed = new ArrayList<Object>(values.size());
     for (var v : values) {
@@ -178,45 +175,41 @@ public final class DocumentFilters {
     return new Document.Entry(field.name(), Document.of("$in", Document.array(parsed)));
   }
 
+  // The sampled types as Values names them, such as "int | null": one type, numbers of any
+  // width, or text among others.
   private static ValueType valueType(String sampled) {
-    if (sampled == null || sampled.isBlank()) {
-      return ValueType.STRING;
-    }
-    var types = new LinkedHashSet<String>();
-    for (var part : sampled.split("\\|")) {
-      var trimmed = part.strip().toLowerCase(Locale.ROOT);
-      if (!trimmed.isEmpty() && !trimmed.equals("null")) {
-        types.add(trimmed);
+    var types = new HashSet<String>();
+    for (var part : (sampled == null ? "" : sampled).split("\\|")) {
+      var type = part.strip();
+      if (!type.isEmpty() && !type.equals("null")) {
+        types.add(type);
       }
     }
-    if (types.isEmpty()) {
+    if (types.isEmpty() || types.contains("string")) {
       return ValueType.STRING;
-    }
-    if (types.equals(Set.of("objectid"))) {
-      return ValueType.OBJECT_ID;
-    }
-    if (types.equals(Set.of("bool")) || types.equals(Set.of("boolean"))) {
-      return ValueType.BOOL;
-    }
-    if (types.equals(Set.of("date"))) {
-      return ValueType.DATE;
     }
     if (NUMERIC_TYPES.containsAll(types)) {
-      if (types.contains("double")) {
-        return ValueType.DOUBLE;
-      }
-      if (types.contains("decimal") || types.contains("decimal128")) {
-        return ValueType.DECIMAL;
-      }
-      if (types.contains("long") || types.contains("int64")) {
-        return ValueType.LONG;
-      }
-      return ValueType.INT;
+      return widest(types);
     }
-    if (types.contains("string")) {
-      return ValueType.STRING;
+    return types.size() > 1
+        ? ValueType.UNSUPPORTED
+        : switch (types.iterator().next()) {
+          case "objectId" -> ValueType.OBJECT_ID;
+          case "bool" -> ValueType.BOOL;
+          case "date" -> ValueType.DATE;
+          default -> ValueType.UNSUPPORTED;
+        };
+  }
+
+  // The widest of number types, so that every sampled value fits.
+  private static ValueType widest(Set<String> numbers) {
+    if (numbers.contains("double")) {
+      return ValueType.DOUBLE;
     }
-    return ValueType.UNSUPPORTED;
+    if (numbers.contains("decimal")) {
+      return ValueType.DECIMAL;
+    }
+    return numbers.contains("long") ? ValueType.LONG : ValueType.INT;
   }
 
   private static Object parseValue(Field field, ValueType type, String raw, ZoneId zone)
@@ -232,15 +225,14 @@ public final class DocumentFilters {
       case DATE -> parseDate(name, raw, zone);
       case OBJECT_ID -> parseObjectId(name, raw);
       case UNSUPPORTED ->
-        throw refused("Field " + name + " of type " + field.type()
-            + " only supports Is NULL and Is not NULL");
+        throw refused(name, "of type " + field.type() + " only supports Is NULL and Is not NULL");
     };
   }
 
   private static Object parseInt(String name, String raw) throws QueryException {
     var s = raw.strip();
     if (!INTEGER.matcher(s).matches()) {
-      throw refused("Field " + name + " expects a whole number: " + raw);
+      throw refused(name, "expects a whole number: " + raw);
     }
     var n = new BigInteger(s);
     if (n.compareTo(MIN_INT) >= 0 && n.compareTo(MAX_INT) <= 0) {
@@ -249,17 +241,17 @@ public final class DocumentFilters {
     if (n.compareTo(MIN_LONG) >= 0 && n.compareTo(MAX_LONG) <= 0) {
       return n.longValueExact();
     }
-    throw refused("Field " + name + " number is out of 64-bit range: " + raw);
+    throw refused(name, "number is out of 64-bit range: " + raw);
   }
 
   private static Long parseLong(String name, String raw) throws QueryException {
     var s = raw.strip();
     if (!INTEGER.matcher(s).matches()) {
-      throw refused("Field " + name + " expects a whole number: " + raw);
+      throw refused(name, "expects a whole number: " + raw);
     }
     var n = new BigInteger(s);
     if (n.compareTo(MIN_LONG) < 0 || n.compareTo(MAX_LONG) > 0) {
-      throw refused("Field " + name + " number is out of 64-bit range: " + raw);
+      throw refused(name, "number is out of 64-bit range: " + raw);
     }
     return n.longValueExact();
   }
@@ -267,11 +259,11 @@ public final class DocumentFilters {
   private static Double parseDouble(String name, String raw) throws QueryException {
     var s = raw.strip();
     if (!DECIMAL.matcher(s).matches()) {
-      throw refused("Field " + name + " expects a number: " + raw);
+      throw refused(name, "expects a number: " + raw);
     }
     double d = Double.parseDouble(s);
     if (!Double.isFinite(d)) {
-      throw refused("Field " + name + " expects a finite number: " + raw);
+      throw refused(name, "expects a finite number: " + raw);
     }
     return d;
   }
@@ -279,13 +271,13 @@ public final class DocumentFilters {
   private static Bson.Decimal128 parseDecimal(String name, String raw) throws QueryException {
     var s = raw.strip();
     if (!DECIMAL.matcher(s).matches()) {
-      throw refused("Field " + name + " expects a decimal number: " + raw);
+      throw refused(name, "expects a decimal number: " + raw);
     }
     try {
       new BigDecimal(s);
       return new Bson.Decimal128(s);
     } catch (NumberFormatException _) {
-      throw refused("Field " + name + " expects a decimal number: " + raw);
+      throw refused(name, "expects a decimal number: " + raw);
     }
   }
 
@@ -310,7 +302,7 @@ public final class DocumentFilters {
         // Fall through to refusal.
       }
     }
-    throw refused("Field " + name + " expects an ObjectId (24 hexadecimal digits): " + raw);
+    throw refused(name, "expects an ObjectId (24 hexadecimal digits): " + raw);
   }
 
   private static String escapeRegex(String value) {
@@ -327,5 +319,13 @@ public final class DocumentFilters {
 
   private static QueryException refused(String detail) {
     return QueryException.of(QueryException.Failure.CLAUSE_REFUSED, detail);
+  }
+
+  private static QueryException refused(String field, String detail) {
+    return refused("Field " + field + " " + detail);
+  }
+
+  private static Document regex(String pattern) {
+    return Document.of("$regex", pattern, "$options", "i");
   }
 }

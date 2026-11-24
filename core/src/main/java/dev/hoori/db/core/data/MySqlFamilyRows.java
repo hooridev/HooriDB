@@ -274,7 +274,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
             : new Rows.Read(
                 Rows.field(source, Kind.DATE_TIME_ZONED),
                 source.sql(),
-                List.of(asText.apply(source.sql()), "UNIX_TIMESTAMP(" + source.sql() + ")"),
+                List.of(asText.apply(source.sql()), unixTimestamp(source.sql())),
                 MySqlFamilyRows::timestamp);
       case "json" -> Rows.text(source, Kind.JSON, start, length);
       case "char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set" ->
@@ -344,8 +344,8 @@ abstract class MySqlFamilyRows extends RowsDialect {
   // Text in UTF-8 compared by its bytes, as unchanged() does, so that no collation makes accents
   // or, where it should count, case alike.
   private String bytes(String column, String value, boolean lower) {
-    var left = "CONVERT(" + column + " USING utf8mb4)";
-    var right = "CONVERT(" + literal(value) + " USING utf8mb4)";
+    var left = utf8(column);
+    var right = utf8(literal(value));
     return lower
         ? bytes("LOWER(" + left + ")") + " = " + bytes("LOWER(" + right + ")")
         : bytes(left) + " = " + bytes(right);
@@ -353,8 +353,8 @@ abstract class MySqlFamilyRows extends RowsDialect {
 
   @Override
   String like(String column, Field field, String pattern) {
-    return "LOWER(CONVERT(" + column + " USING utf8mb4)) LIKE LOWER(CONVERT(" + literal(pattern)
-        + " USING utf8mb4)) COLLATE utf8mb4_bin ESCAPE '!'";
+    return "LOWER(" + utf8(column) + ") LIKE LOWER(" + utf8(literal(pattern))
+        + ") COLLATE utf8mb4_bin ESCAPE '!'";
   }
 
   @Override
@@ -369,7 +369,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
 
   @Override
   String matches(String column, Field field, String expression) {
-    return "CONVERT(" + column + " USING utf8mb4) REGEXP " + literal("(?i)" + expression);
+    return utf8(column) + " REGEXP " + literal("(?i)" + expression);
   }
 
   // A moment as the seconds it stores, as unchanged() compares it: MariaDB reads no offset in a
@@ -377,7 +377,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
   @Override
   String compare(String column, Field field, String operator, Object value) {
     if (value instanceof OffsetDateTime moment) {
-      return "UNIX_TIMESTAMP(" + column + ") " + operator + " " + literal(seconds(moment));
+      return unixTimestamp(column) + " " + operator + " " + literal(seconds(moment));
     }
     if (field.type() != null && field.type().toLowerCase(Locale.ROOT).startsWith("float")) {
       return "CAST(CAST(" + column + " AS CHAR) AS FLOAT) " + operator + " CAST(" + literal(value)
@@ -405,7 +405,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
       return column + " IS NULL";
     }
     if (value instanceof String) {
-      return bytes("CONVERT(" + column + " USING utf8mb4)") + " = " + bytes(parameter.apply(value));
+      return bytes(utf8(column)) + " = " + bytes(parameter.apply(value));
     }
     if (value instanceof Binary) {
       return bytes(column) + " = " + bytes(parameter.apply(value));
@@ -416,9 +416,17 @@ abstract class MySqlFamilyRows extends RowsDialect {
     }
     // As the moment it stores, which the session's zone may show alike for two.
     if (value instanceof OffsetDateTime moment) {
-      return "UNIX_TIMESTAMP(" + column + ") = " + parameter.apply(seconds(moment));
+      return unixTimestamp(column) + " = " + parameter.apply(seconds(moment));
     }
     return column + " = " + parameter.apply(value);
+  }
+
+  private static String utf8(String expression) {
+    return "CONVERT(" + expression + " USING utf8mb4)";
+  }
+
+  private static String unixTimestamp(String expression) {
+    return "UNIX_TIMESTAMP(" + expression + ")";
   }
 
   private static String bytes(String expression) {

@@ -994,7 +994,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     List<HeaderFilter> nextFilters = List.copyOf(incoming);
     String clause;
     try {
-      clause = whereText(profile.provider(), base, nextFilters, s.zone);
+      clause = whereText(profile.provider(), base, nextList, s.zone);
     } catch (QueryException e) {
       refused = e.detail();
       unapplied = null;
@@ -1083,7 +1083,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     open(s, false);
   }
 
-  private String whereText(Provider provider, String base, List<HeaderFilter> filters, ZoneId zone)
+  private String whereText(
+      Provider provider, String base, List<DataGrid.Filter> filters, ZoneId zone)
       throws QueryException {
     var core = new ArrayList<ColumnFilter>(filters.size());
     for (var f : filters) {
@@ -1094,13 +1095,13 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         : Rows.where(provider, base, core, zone);
   }
 
-  private Field fieldOf(String name, Provider provider) {
-    int at = columnIndex(name);
-    if (fields != null && at >= 0 && at < fields.size()) {
-      return fields.get(at);
+  /** The field of column c, as the last read gave it, or else as the columns say. */
+  private Field fieldOf(int c, Provider provider) {
+    if (fields != null && c < fields.size()) {
+      return fields.get(c);
     }
-    var col = columns.get(at);
-    var kind = Language.of(provider).documents() ? Values.kind(col.type()) : kinds.get(name);
+    var col = columns.get(c);
+    var kind = Language.of(provider).documents() ? Values.kind(col.type()) : kinds.get(col.name());
     return new Field(col.name(), col.type(), kind);
   }
 
@@ -1321,10 +1322,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     El line = ConnectionColors.line(s.color(id));
     El content = col().grow(1).minSize(0, 0).child(top);
     content.child(Card.filters(filters(s, app, ofDocuments)).shrink(0));
-    El chips = filterBar(s, ofDocuments);
-    if (chips != null) {
-      content.child(Card.filters(chips).shrink(0));
-    }
+    addFilterBar(content, s, ofDocuments);
     content.child(line == null ? Divider.divider() : line);
     El note = note(s, connected, ofDocuments);
     if (note != null) {
@@ -1370,19 +1368,17 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return content.child(Card.footer(rowsStatus, footer.toArray(El[]::new)));
   }
 
-  /** The header filter chips above the view; null while no header filters are active. */
-  private El filterBar(State s, boolean ofDocuments) {
-    if (columns == null) {
-      return null;
-    }
-    var active = activeFilters(ofDocuments);
+  /** Adds the header filter chips above the view while header filters are active. */
+  private void addFilterBar(El content, State s, boolean ofDocuments) {
+    var active = columns == null ? List.<DataGrid.Filter>of() : activeFilters(ofDocuments);
     if (active.isEmpty()) {
-      return null;
+      return;
     }
     var cols = columns.stream()
         .map(c -> new DataGrid.Column(c.name(), 0, DataGrid.DataType.TEXT, row -> ""))
         .toList();
-    return DataGrid.filterBar(cols, active, next -> filter(s, next));
+    content.child(
+        Card.filters(DataGrid.filterBar(cols, active, next -> filter(s, next))).shrink(0));
   }
 
   /** The WHERE/ORDER BY or Filter/Sort fields above the view. */

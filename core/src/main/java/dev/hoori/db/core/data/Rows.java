@@ -111,6 +111,7 @@ public final class Rows {
       .appendOffset("+HH:MM:ss", "Z")
       .toFormatter(Locale.ROOT)
       .withResolverStyle(ResolverStyle.STRICT);
+  private static final String AND = " AND ";
   private static final Pattern FILTER_INTEGER = Pattern.compile("[+-]?\\d+");
   private static final Pattern FILTER_DECIMAL =
       Pattern.compile("[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?");
@@ -831,7 +832,7 @@ public final class Rows {
       throw new IllegalArgumentException("Expected at least one column and one value per column");
     }
     var dialect = provider.dialect().rows();
-    var condition = new StringJoiner(" AND ");
+    var condition = new StringJoiner(AND);
     for (var i = 0; i < columns.size(); i++) {
       var column = columns.get(i);
       var value = values.get(i);
@@ -890,7 +891,7 @@ public final class Rows {
     if (!trimmed.isEmpty()) {
       checkClause("WHERE", trimmed, provider, true);
     }
-    var condition = new StringJoiner(" AND ");
+    var condition = new StringJoiner(AND);
     for (var filter : filters) {
       condition.add(condition(provider, dialect, filter, zone));
     }
@@ -913,7 +914,7 @@ public final class Rows {
     }
     // Binary data shows as hex, which no text of the server's matches.
     if (kind == null || kind == Kind.JSON || kind == Kind.OTHER || kind == Kind.BINARY) {
-      throw refused("Column " + name + " cannot be filtered");
+      throw refused(name, "cannot be filtered");
     }
     return switch (filter.spec()) {
       case ColumnFilter.Null _ -> throw new AssertionError();
@@ -959,14 +960,14 @@ public final class Rows {
       throws QueryException {
     var kind = field.kind();
     if (kind == Kind.BOOLEAN) {
-      throw refused("Column " + field.name() + " does not support range filters");
+      throw refused(field.name(), "does not support range filters");
     }
     var lo = from.strip();
     var hi = to.strip();
     if (lo.isEmpty() && hi.isEmpty()) {
       throw refused("Range filter on " + field.name() + " needs at least one bound");
     }
-    var parts = new StringJoiner(" AND ");
+    var parts = new StringJoiner(AND);
     if (!lo.isEmpty()) {
       parts.add(dialect.compare(quoted, field, ">=", parseFilterValue(field, lo, zone)));
     }
@@ -997,23 +998,23 @@ public final class Rows {
       case INTEGER -> {
         var s = raw.strip();
         if (!FILTER_INTEGER.matcher(s).matches()) {
-          throw refused("Column " + name + " expects a whole number: " + raw);
+          throw refused(name, "expects a whole number: " + raw);
         }
         yield new BigInteger(s);
       }
       case DECIMAL -> {
         var s = raw.strip();
         if (s.length() > 100 || !FILTER_DECIMAL.matcher(s).matches()) {
-          throw refused("Column " + name + " expects a decimal number: " + raw);
+          throw refused(name, "expects a decimal number: " + raw);
         }
         try {
           var decimal = new BigDecimal(s);
           if (Math.abs(decimal.scale()) > 1000) {
-            throw refused("Column " + name + " number exponent is too large: " + raw);
+            throw refused(name, "number exponent is too large: " + raw);
           }
           yield decimal;
         } catch (NumberFormatException _) {
-          throw refused("Column " + name + " expects a decimal number: " + raw);
+          throw refused(name, "expects a decimal number: " + raw);
         }
       }
       case BOOLEAN -> parseBoolean(name, raw);
@@ -1021,13 +1022,13 @@ public final class Rows {
         try {
           yield LocalDate.parse(raw.strip());
         } catch (DateTimeParseException _) {
-          throw refused("Column " + name + " expects a date (YYYY-MM-DD): " + raw);
+          throw refused(name, "expects a date (YYYY-MM-DD): " + raw);
         }
       }
       case TIME -> parseFilterTime(name, raw);
       case DATE_TIME -> parseFilterDateTime(name, raw);
       case DATE_TIME_ZONED -> parseMoment(name, raw, zone);
-      case BINARY, JSON, OTHER -> throw refused("Column " + name + " cannot be filtered");
+      case BINARY, JSON, OTHER -> throw refused(name, "cannot be filtered");
     };
   }
 
@@ -1039,7 +1040,7 @@ public final class Rows {
       try {
         return OffsetTime.parse(s, ANY_OFFSET_TIME);
       } catch (DateTimeParseException _) {
-        throw refused("Column " + name + " expects a time (HH:MM:SS): " + raw);
+        throw refused(name, "expects a time (HH:MM:SS): " + raw);
       }
     }
   }
@@ -1052,7 +1053,7 @@ public final class Rows {
       try {
         return LocalDate.parse(s).atStartOfDay();
       } catch (DateTimeParseException _) {
-        throw refused("Column " + name + " expects a date and time without an offset: " + raw);
+        throw refused(name, "expects a date and time without an offset: " + raw);
       }
     }
   }
@@ -1065,7 +1066,7 @@ public final class Rows {
     return switch (raw.strip().toLowerCase(Locale.ROOT)) {
       case "true", "t", "1", "yes", "y", "on" -> Boolean.TRUE;
       case "false", "f", "0", "no", "n", "off" -> Boolean.FALSE;
-      default -> throw refused("Column " + name + " expects true or false: " + raw);
+      default -> throw refused(name, "expects true or false: " + raw);
     };
   }
 
@@ -1099,7 +1100,7 @@ public final class Rows {
           .toOffsetDateTime()
           .withOffsetSameInstant(ZoneOffset.UTC);
     } catch (DateTimeParseException _) {
-      throw refused("Column " + name + " expects a date and time: " + raw);
+      throw refused(name, "expects a date and time: " + raw);
     }
   }
 
@@ -1117,6 +1118,10 @@ public final class Rows {
 
   private static QueryException refused(String detail) {
     return QueryException.of(QueryException.Failure.CLAUSE_REFUSED, detail);
+  }
+
+  private static QueryException refused(String column, String detail) {
+    return refused("Column " + column + " " + detail);
   }
 
   static void requireColumnsOf(Table table, List<Column> columns) {
