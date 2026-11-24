@@ -279,7 +279,12 @@ final class ForeignKeys {
       s.tabs.add(group, group.tabs().size(), tab);
     } else {
       tab = open.get();
-      group = s.openTable(source.id, target, group); // raises its window
+      group = s.tabs.groupOf(tab);
+      s.tabs.select(group, group.tabs().indexOf(tab));
+      var window = group.window() != null ? group.window() : s.app.windows().of(s.app);
+      if (window != null) {
+        window.raise();
+      }
     }
     Frame.focusContentSoon(s, group);
     tab.applyWhere(s, where);
