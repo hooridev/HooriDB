@@ -1116,7 +1116,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     var profile = s.profile(id);
     if (!canApply(s) || profile == null || columns == null) {
-      conditions.close();
+      closeConditions();
       return null;
     }
     var provider = profile.provider();
