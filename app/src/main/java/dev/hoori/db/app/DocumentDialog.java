@@ -66,6 +66,8 @@ final class DocumentDialog {
   private boolean errorMarked;
   private boolean conflict;
   private Bson.ObjectId insertId; // the _id this dialog gives a new document without one
+  private DocumentEdit sent; // the last command sent, and the text it was read from
+  private String sentText;
 
   private DocumentDialog(
       Mode mode, TableTab tab, Document original, String text, DocumentEdit pending) {
@@ -313,6 +315,13 @@ final class DocumentDialog {
           "Collection cannot be edited", "This collection is read-only or a view.");
       return;
     }
+    // The same text sends the same command again, as read the first time: ObjectId() in it would
+    // otherwise make another _id, and a retry after an unknown outcome insert twice.
+    if (sent != null && text.equals(sentText)) {
+      pending = sent;
+      previewEditor.select(0, 0);
+      return;
+    }
     Document parsed;
     try {
       parsed = Shell.document(text);
@@ -377,6 +386,8 @@ final class DocumentDialog {
     }
     var live = s.catalog.live(tab.id);
     var edit = pending;
+    sent = edit;
+    sentText = text;
     problem = null;
     conflict = false;
     writing = lane.ask(

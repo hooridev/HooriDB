@@ -2339,6 +2339,15 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
           "Document cannot be deleted", "This document has no _id field and cannot be deleted.");
       return;
     }
+    // The server's equality does not tell every value the shell cannot write apart, such as a
+    // DBPointer's namespace: such a document is not deleted by its likeness either.
+    if (DocumentEdit.roundTripped(original).isEmpty()) {
+      documentProblem = new ConsoleTab.Problem(
+          "Document cannot be deleted",
+          "This document cannot be represented in shell notation without changing its values or"
+              + " types, so it was not opened for deleting.");
+      return;
+    }
     documentDialog = DocumentDialog.delete(this, original);
   }
 
@@ -2350,7 +2359,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   void settledFromDocumentEdit(State s, boolean reload) {
-    settle(s);
+    if (!reload && asked(s) != null) {
+      // What waited for the write waits no longer: the dialog shows what the write came to.
+      s.guard.pending = null;
+    } else {
+      settle(s);
+    }
     if (reload && !closed) {
       open(s, true);
     }

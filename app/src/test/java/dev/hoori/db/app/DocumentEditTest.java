@@ -454,6 +454,26 @@ class DocumentEditTest {
         id, ((DocumentEdit.Insert) tab.documentDialog.pending).document().get("_id"));
     c.run(app, "press #document-preview-confirm\nframe\n" + SETTLE + OPENED);
     assertEquals(id, c.servers.documentsOf(ITEMS).getLast().get("_id"));
+
+    // ObjectId() in the text is read once: the same text sends the same _id again.
+    c.run(
+        app,
+        "press #insert-document\nframe\n"
+            + OPENED
+            + replaceEditor("{ _id: ObjectId(), name: 'Barbara' }")
+            + "press #document-save\nframe\n"
+            + OPENED);
+    var made = ((DocumentEdit.Insert) tab.documentDialog.pending).document().get("_id");
+    c.servers.nextEdit(EDIT_ITEMS, new DocumentEdit.Outcome.Unconfirmed("timed out"));
+    c.run(
+        app,
+        "press #document-preview-confirm\nframe\n"
+            + SETTLE
+            + OPENED
+            + "press #document-save\nframe\n"
+            + OPENED);
+    assertEquals(
+        made, ((DocumentEdit.Insert) tab.documentDialog.pending).document().get("_id"));
   }
 
   @Test
@@ -476,6 +496,38 @@ class DocumentEditTest {
     assertNull(tab.documentDialog);
     assertTrue(
         c.tree("refused-copy").contains("Document cannot be copied"), c.tree("refused-copy"));
+
+    c.run(app, "press #delete-document\nframe\nsnap refused-delete\n");
+    assertNull(tab.documentDialog);
+    assertTrue(
+        c.tree("refused-delete").contains("Document cannot be deleted"), c.tree("refused-delete"));
+  }
+
+  @Test
+  void exitWaitingOnADeleteShowsItsUnknownOutcomeInsteadOfClosing() throws Exception {
+    var app = openItems(DOCS);
+    var tab = app.state().tables(DOCS.id()).getFirst();
+    var gate = c.servers.hold(EDIT_ITEMS);
+    c.run(
+        app,
+        "press #cell-0-1\nframe\npress #delete-document\nframe\n"
+            + OPENED
+            + "press #document-preview-confirm\nframe\n");
+    eventually(() -> c.servers.calls.contains(EDIT_ITEMS));
+    // Not posted: await would wait for the held write.
+    app.state().requestClose();
+    c.run(app, "frame\n" + OPENED + OPENED + "snap waiting\n");
+    assertTrue(c.tree("waiting").contains("#answer-cancel-commit"), c.tree("waiting"));
+
+    c.servers.nextEdit(EDIT_ITEMS, new DocumentEdit.Outcome.Unconfirmed("timed out"));
+    gate.countDown();
+    c.run(app, SETTLE + OPENED + OPENED + "snap shown\n");
+    assertFalse(app.windows().all().isEmpty());
+    assertNull(app.state().guard.pending);
+    var shown = c.tree("shown");
+    assertTrue(shown.contains("could not confirm the write"), shown);
+    assertTrue(shown.contains("role=dialog label=\"Delete document\""), shown);
+    assertNotNull(tab.documentDialog);
   }
 
   @Test
