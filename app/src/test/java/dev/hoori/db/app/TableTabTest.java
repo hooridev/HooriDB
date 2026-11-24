@@ -1885,6 +1885,84 @@ class TableTabTest {
   }
 
   @Test
+  void wheelScrollWhileLastPageCountsCancelsTheJump() throws Exception {
+    var app = filteredMongoGrid();
+    c.run(app, "press #cell-0-0\nadvance 1\nframe\n");
+    assertEquals(0, tab(app).selection.row());
+    var countKey =
+        "count " + DocumentConsoleTest.MONGO + "/hoori.orders FILTER { total: { $gt: 0 } }";
+    var held = servers.hold(countKey);
+    c.run(app, page("Last page"));
+    eventually(() -> servers.calls.contains(countKey));
+    c.run(app, "wheel #rows 0 72\nframe\nframe\n");
+    int scrolledTo = tab(app).selection.firstRowInView();
+    assertTrue(scrolledTo > 0, "wheel scrolled the grid");
+    assertEquals(0, tab(app).selection.row(), "wheel leaves selection unchanged");
+    assertEquals(0, tab(app).selection.column(), "wheel leaves selection unchanged");
+    held.countDown();
+    c.run(app, SETTLE + "frame\nframe\n" + SETTLE + "snap stayed\n");
+    String stayed = c.tree("stayed");
+    assertTrue(status(stayed).contains("\"1,200 documents\""), stayed);
+    assertFalse(inView(stayed).contains("1,200\""), stayed);
+    assertEquals(scrolledTo, tab(app).selection.firstRowInView(), stayed);
+  }
+
+  @Test
+  void scrollbarTrackPressWhileLastPageCountsCancelsTheJump() throws Exception {
+    var app = filteredMongoGrid();
+    c.run(app, "press #cell-0-0\nadvance 1\nframe\n");
+    assertEquals(0, tab(app).selection.row());
+    var countKey =
+        "count " + DocumentConsoleTest.MONGO + "/hoori.orders FILTER { total: { $gt: 0 } }";
+    var held = servers.hold(countKey);
+    c.run(app, page("Last page"));
+    eventually(() -> servers.calls.contains(countKey));
+    c.run(app, "press #rows at right-4,bottom-24\nframe\nframe\n");
+    int scrolledTo = tab(app).selection.firstRowInView();
+    assertTrue(scrolledTo > 0, "scrollbar track press scrolled the grid");
+    assertEquals(0, tab(app).selection.row(), "scrollbar press leaves selection unchanged");
+    assertEquals(0, tab(app).selection.column(), "scrollbar press leaves selection unchanged");
+    held.countDown();
+    c.run(app, SETTLE + "frame\nframe\n" + SETTLE + "snap stayed\n");
+    String stayed = c.tree("stayed");
+    assertTrue(status(stayed).contains("\"1,200 documents\""), stayed);
+    assertFalse(inView(stayed).contains("1,200\""), stayed);
+    assertEquals(scrolledTo, tab(app).selection.firstRowInView(), stayed);
+  }
+
+  @Test
+  void controlHomeScrollingSidewaysWhileLastPageCountsCancelsTheJump() throws Exception {
+    var app = filteredMongoGrid();
+    c.run(app, "size 640 760\nframe\npress #cell-0-0\nadvance 1\nframe\n");
+    assertEquals(0, tab(app).selection.row());
+    assertEquals(0, tab(app).selection.column());
+    c.run(app, "wheel #rows 200 0\nframe\nframe\n");
+    assertTrue(sideways(app) > 0, "grid scrolled sideways before Last page");
+    var countKey =
+        "count " + DocumentConsoleTest.MONGO + "/hoori.orders FILTER { total: { $gt: 0 } }";
+    var held = servers.hold(countKey);
+    c.run(app, page("Last page"));
+    eventually(() -> servers.calls.contains(countKey));
+    c.run(app, "focus #grid\nframe\n");
+    assertTrue(sideways(app) > 0, "focusing the grid kept the sideways scroll");
+    c.run(app, "key Home control\nframe\nframe\n");
+    assertEquals(0.0, sideways(app), "Control+Home scrolled back to the left");
+    assertEquals(0, tab(app).selection.row(), "selection stayed on row 0");
+    assertEquals(0, tab(app).selection.column(), "selection stayed on column 0");
+    held.countDown();
+    c.run(app, SETTLE + "frame\nframe\n" + SETTLE + "snap stayed\n");
+    String stayed = c.tree("stayed");
+    assertTrue(status(stayed).contains("\"1,200 documents\""), stayed);
+    assertFalse(inView(stayed).contains("1,200\""), stayed);
+    assertTrue(inView(stayed).contains("\"Documents 1–"), stayed);
+  }
+
+  /** How far the grid is scrolled sideways. */
+  private static double sideways(App<State> app) {
+    return ConsoleEditorTest.find(app.tree(), "grid", new float[2]).scrollX();
+  }
+
+  @Test
   void documentCollectionFilterAndSortApplyAcrossViewsAndClearWithEmptyDocument() throws Exception {
     var path = DocumentConsoleTest.MONGO + "/hoori.orders";
     var all = IntStream.rangeClosed(1, 210)
