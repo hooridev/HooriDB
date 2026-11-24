@@ -166,7 +166,7 @@ record SqlCompletion() implements Suggestions.Strategy {
     }
     var provider = known.provider;
     var tableRef = tableName(link.other(), known);
-    boolean needsAlias = aliased || alreadyUnaliased(prior, known, link.other());
+    boolean needsAlias = aliased || alreadyUnaliased(used, known, link.other());
     String tableClause;
     String newQual;
     if (needsAlias) {

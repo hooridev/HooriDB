@@ -162,6 +162,9 @@ public record Context(
 
   // Whether the table named at the index already has its ON or USING, as while one is replaced.
   private static boolean conditioned(List<Token> tokens, int i) {
+    if (word(tokens, i, "ON") || word(tokens, i, "USING")) {
+      return true;
+    }
     if (i >= tokens.size()
         || !tokens.get(i).name()
         || tokens.get(i).kind() == Kind.WORD && CLAUSES.contains(tokens.get(i).upper())) {
@@ -171,11 +174,13 @@ public record Context(
     return j >= 0 && (word(tokens, j, "ON") || word(tokens, j, "USING"));
   }
 
-  // Whether no condition follows the offset: nothing, or a clause, comes next.
+  // Whether no condition follows the offset: nothing, a clause, a comma or the statement's end.
   private static boolean free(List<Token> tokens, int offset) {
     for (var token : tokens) {
       if (token.start() >= offset) {
-        return token.kind() == Kind.WORD && CLAUSES.contains(token.upper());
+        return token.kind() == Kind.WORD && CLAUSES.contains(token.upper())
+            || token.kind() == Kind.COMMA
+            || token.text().equals(";");
       }
     }
     return true;
@@ -301,14 +306,35 @@ public record Context(
     return true;
   }
 
+  // The index of the last FROM, or comma between the items of its list, before the cursor: what
+  // a JOIN at the cursor joins comes after it. FROM a JOIN b ON a.id = b.a_id, c JOIN d: d joins c.
+  private static int item(List<Token> tokens, int cursor) {
+    int item = -1;
+    int depth = 0;
+    for (int i = 0; i < cursor; i++) {
+      var token = tokens.get(i);
+      if (token.kind() == Kind.OPEN) {
+        depth++;
+      } else if (token.text().equals(")")) {
+        depth--;
+      } else if (token.upper().equals("FROM") && introduces(tokens, i)) {
+        item = i;
+        depth = 0;
+      } else if (token.kind() == Kind.COMMA && depth == 0 && item >= 0) {
+        item = i;
+      }
+    }
+    return item;
+  }
+
   private record Scan(List<Reference> tables, List<Reference> left, boolean joinOn) {
     static final Scan EMPTY = new Scan(List.of(), List.of(), false);
   }
 
   private static Scan scan(List<Token> tokens, Set<Integer> tableTokens, int cursor) {
     var found = new ArrayList<Reference>();
-    int start = 0; // where the FROM item of the cursor begins in found
-    int before = 0;
+    var left = new ArrayList<Reference>();
+    int item = item(tokens, cursor);
     boolean joinOn = false;
     for (int i = 0; i < tokens.size(); i++) {
       var introducer = tokens.get(i).upper();
@@ -316,18 +342,16 @@ public record Context(
         continue;
       }
       boolean list = introducer.equals("FROM");
-      if (list && i < cursor) {
-        start = found.size();
-      }
       boolean join = conditionalJoin(tokens, i);
       int j = i + 1;
       while (j < tokens.size() && tokens.get(j).name()) {
+        int at = j;
         j = reference(tokens, j, found, tableTokens);
         if (j < 0) {
           break;
         }
-        if (cursor >= 0 && j <= cursor) {
-          before = found.size();
+        if (cursor >= 0 && at > item && j <= cursor) {
+          left.add(found.getLast());
         }
         if (join && cursor > 0 && j == cursor - 1 && word(tokens, j, "ON")) {
           joinOn = true;
@@ -337,12 +361,8 @@ public record Context(
           break;
         }
         j++;
-        if (j <= cursor) {
-          start = found.size(); // FROM a, b JOIN c: c joins b alone
-        }
       }
     }
-    var left = start < before ? found.subList(start, before) : List.<Reference>of();
     return new Scan(List.copyOf(found), List.copyOf(left), joinOn);
   }
 

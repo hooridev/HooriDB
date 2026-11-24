@@ -461,6 +461,12 @@ class ContextTest {
         Asked.ON,
         at("SELECT * FROM orders o JOIN order_items oi ON | WHERE o.id = 1", POSTGRESQL)
             .asked());
+    assertEquals(
+        Asked.ON,
+        at("SELECT * FROM orders o JOIN order_items oi ON |;", POSTGRESQL).asked());
+    assertEquals(
+        Asked.TABLE,
+        at("SELECT * FROM orders o JOIN | ON o.customer_id = 1", POSTGRESQL).asked());
   }
 
   @Test
@@ -476,5 +482,12 @@ class ContextTest {
     assertEquals(
         List.of(ref(null, "orders", "o")),
         at("INSERT INTO archive SELECT * FROM orders o JOIN |", POSTGRESQL).left());
+    // Not a or b, outside the item; c after a comma that ends a join is not read as a table.
+    assertEquals(
+        List.of(ref(null, "d", null)),
+        at("SELECT * FROM a JOIN b ON a.id = b.a_id, c JOIN d ON |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null)),
+        at("SELECT * FROM a JOIN b ON a.id IN (1, 2) JOIN |", POSTGRESQL).left());
   }
 }

@@ -356,6 +356,17 @@ class JoinCompletionTest {
             + COMPLETE
             + "snap inner-match\n");
     assertEquals("oi.order_id = o.id", options(console.c.tree("inner-match")).getFirst());
+
+    // A table the FROM list names apart from the join's operands still takes the name.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM customers, orders JOIN cu")
+            + COMPLETE
+            + "snap listed\n");
+    assertEquals(
+        "customers c ON c.id = orders.customer_id",
+        options(console.c.tree("listed")).getFirst());
   }
 
   @Test
