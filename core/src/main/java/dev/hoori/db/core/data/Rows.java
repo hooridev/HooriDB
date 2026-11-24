@@ -24,8 +24,12 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -93,6 +97,24 @@ public final class Rows {
       Pattern.compile("(\\d\\d):(\\d\\d):(\\d\\d)(?:\\.(\\d{1,9}))?([+-]\\d\\d(?::\\d\\d){0,2})?");
   // The rows of a plan's node, "rows=900" in PostgreSQL's and "rows=238e+6" in MySQL's tree.
   private static final DateTimeFormatter OFFSET = DateTimeFormatter.ofPattern("xxxxx");
+  private static final DateTimeFormatter ANY_OFFSET_TIME = new DateTimeFormatterBuilder()
+      .append(DateTimeFormatter.ISO_LOCAL_TIME)
+      .parseLenient()
+      .appendOffset("+HH:MM:ss", "Z")
+      .toFormatter(Locale.ROOT)
+      .withResolverStyle(ResolverStyle.STRICT);
+  private static final DateTimeFormatter ANY_OFFSET_DATE_TIME = new DateTimeFormatterBuilder()
+      .append(DateTimeFormatter.ISO_LOCAL_DATE)
+      .appendLiteral('T')
+      .append(DateTimeFormatter.ISO_LOCAL_TIME)
+      .parseLenient()
+      .appendOffset("+HH:MM:ss", "Z")
+      .toFormatter(Locale.ROOT)
+      .withResolverStyle(ResolverStyle.STRICT);
+  private static final String AND = " AND ";
+  private static final Pattern FILTER_INTEGER = Pattern.compile("[+-]?\\d+");
+  private static final Pattern FILTER_DECIMAL =
+      Pattern.compile("[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?");
   private static final Pattern PLAN_ROWS =
       Pattern.compile("[( ]rows=(\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?)[ )]");
 
@@ -810,7 +832,7 @@ public final class Rows {
       throw new IllegalArgumentException("Expected at least one column and one value per column");
     }
     var dialect = provider.dialect().rows();
-    var condition = new StringJoiner(" AND ");
+    var condition = new StringJoiner(AND);
     for (var i = 0; i < columns.size(); i++) {
       var column = columns.get(i);
       var value = values.get(i);
@@ -832,6 +854,288 @@ public final class Rows {
     return !(value instanceof Float)
         && !(value instanceof OffsetDateTime)
         && !(value instanceof String text && text.contains("\\"));
+  }
+
+  /**
+   * A {@code WHERE} condition (without {@code WHERE}) for the given column filters, formatted in
+   * the provider's SQL dialect and joined with {@code AND}; empty when {@code filters} is empty.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when a column cannot be
+   *     filtered or a value is invalid for the column's kind
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(Provider provider, List<ColumnFilter> filters, ZoneId zone)
+      throws QueryException {
+    return where(provider, "", filters, zone);
+  }
+
+  /**
+   * As {@link #where(Provider, List, ZoneId)}, joining {@code filters} onto an optional
+   * hand-written {@code base} clause with {@code (<base>) AND <conditions>}.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when {@code base} is
+   *     refused by {@link Clauses} or any column filter is invalid
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(
+      Provider provider, String base, List<ColumnFilter> filters, ZoneId zone)
+      throws QueryException {
+    Objects.requireNonNull(provider, "provider");
+    Objects.requireNonNull(filters, "filters");
+    Objects.requireNonNull(zone, "zone");
+    var dialect = provider.dialect().rows();
+    var trimmed = base == null ? "" : base.strip();
+    if (filters.isEmpty()) {
+      return trimmed;
+    }
+    if (!trimmed.isEmpty()) {
+      checkClause("WHERE", trimmed, provider, true);
+    }
+    var condition = new StringJoiner(AND);
+    for (var filter : filters) {
+      condition.add(condition(provider, dialect, filter, zone));
+    }
+    var added = condition.toString();
+    if (trimmed.isEmpty()) {
+      return added;
+    }
+    // A line comment at the end takes in what follows, which the check refuses; a line break ends
+    // it. MySQL's bare -- at the end, which needs the break it lost to strip(), passes the check.
+    var joined = "(" + trimmed + ")" + AND + added;
+    try {
+      if (!trimmed.endsWith("--")) {
+        checkClause("WHERE", joined, provider, true);
+        return joined;
+      }
+    } catch (QueryException _) {
+      // Ended below.
+    }
+    return "(" + trimmed + "\n)" + AND + added;
+  }
+
+  private static String condition(
+      Provider provider, RowsDialect dialect, ColumnFilter filter, ZoneId zone)
+      throws QueryException {
+    var field = filter.field();
+    var name = field.name();
+    if (name == null || name.isEmpty()) {
+      throw refused("Column name cannot be empty");
+    }
+    var quoted = provider.quote(name);
+    var kind = field.kind();
+    if (filter.spec() instanceof ColumnFilter.Null(boolean isNull)) {
+      return quoted + (isNull ? " IS NULL" : " IS NOT NULL");
+    }
+    // Binary data shows as hex, which no text of the server's matches.
+    if (kind == null || kind == Kind.JSON || kind == Kind.OTHER || kind == Kind.BINARY) {
+      throw refused(name, "cannot be filtered");
+    }
+    return switch (filter.spec()) {
+      case ColumnFilter.Null _ -> throw new AssertionError();
+      case ColumnFilter.Text(var match, var value) ->
+        textCondition(dialect, quoted, field, match, value, zone);
+      case ColumnFilter.Regex(var expression) -> {
+        if (expression.isEmpty()) {
+          throw refused("Regular expression for " + name + " cannot be empty");
+        }
+        yield dialect.matches(quoted, field, expression);
+      }
+      case ColumnFilter.Between(var from, var to) ->
+        betweenCondition(dialect, quoted, field, from, to, zone);
+      case ColumnFilter.OneOf(var values) -> oneOfCondition(dialect, quoted, field, values, zone);
+    };
+  }
+
+  private static String textCondition(
+      RowsDialect dialect,
+      String quoted,
+      Field field,
+      ColumnFilter.Match match,
+      String value,
+      ZoneId zone)
+      throws QueryException {
+    var kind = field.kind();
+    return switch (match) {
+      case CONTAINS -> dialect.like(quoted, field, "%" + escapeLike(value) + "%");
+      case STARTS_WITH -> dialect.like(quoted, field, escapeLike(value) + "%");
+      case EQUALS, EXACTLY -> {
+        if (kind == Kind.TEXT) {
+          yield match == ColumnFilter.Match.EXACTLY
+              ? dialect.equalsExactly(quoted, field, value)
+              : dialect.equalsIgnoringCase(quoted, field, value);
+        }
+        yield dialect.compare(quoted, field, "=", parseFilterValue(field, value, zone));
+      }
+    };
+  }
+
+  private static String betweenCondition(
+      RowsDialect dialect, String quoted, Field field, String from, String to, ZoneId zone)
+      throws QueryException {
+    var kind = field.kind();
+    if (kind == Kind.BOOLEAN) {
+      throw refused(field.name(), "does not support range filters");
+    }
+    var lo = from.strip();
+    var hi = to.strip();
+    if (lo.isEmpty() && hi.isEmpty()) {
+      throw refused("Range filter on " + field.name() + " needs at least one bound");
+    }
+    var parts = new StringJoiner(AND);
+    if (!lo.isEmpty()) {
+      parts.add(dialect.compare(quoted, field, ">=", parseFilterValue(field, lo, zone)));
+    }
+    if (!hi.isEmpty()) {
+      parts.add(dialect.compare(quoted, field, "<=", parseFilterValue(field, hi, zone)));
+    }
+    return parts.toString();
+  }
+
+  private static String oneOfCondition(
+      RowsDialect dialect, String quoted, Field field, List<String> values, ZoneId zone)
+      throws QueryException {
+    if (values.isEmpty()) {
+      return "FALSE";
+    }
+    var items = new StringJoiner(", ");
+    for (var value : values) {
+      items.add(dialect.literal(parseFilterValue(field, value, zone)));
+    }
+    return quoted + " IN (" + items + ")";
+  }
+
+  private static Object parseFilterValue(Field field, String raw, ZoneId zone)
+      throws QueryException {
+    var name = field.name();
+    return switch (field.kind()) {
+      case TEXT -> raw;
+      case INTEGER -> {
+        var s = raw.strip();
+        if (!FILTER_INTEGER.matcher(s).matches()) {
+          throw refused(name, "expects a whole number: " + raw);
+        }
+        yield new BigInteger(s);
+      }
+      case DECIMAL -> {
+        var s = raw.strip();
+        if (s.length() > 100 || !FILTER_DECIMAL.matcher(s).matches()) {
+          throw refused(name, "expects a decimal number: " + raw);
+        }
+        try {
+          var decimal = new BigDecimal(s);
+          if (Math.abs(decimal.scale()) > 1000) {
+            throw refused(name, "number exponent is too large: " + raw);
+          }
+          yield decimal;
+        } catch (NumberFormatException _) {
+          throw refused(name, "expects a decimal number: " + raw);
+        }
+      }
+      case BOOLEAN -> parseBoolean(name, raw);
+      case DATE -> {
+        try {
+          yield LocalDate.parse(raw.strip());
+        } catch (DateTimeParseException _) {
+          throw refused(name, "expects a date (YYYY-MM-DD): " + raw);
+        }
+      }
+      case TIME -> parseFilterTime(name, raw);
+      case DATE_TIME -> parseFilterDateTime(name, raw);
+      case DATE_TIME_ZONED -> parseMoment(name, raw, zone);
+      case BINARY, JSON, OTHER -> throw refused(name, "cannot be filtered");
+    };
+  }
+
+  private static Object parseFilterTime(String name, String raw) throws QueryException {
+    var s = raw.strip();
+    try {
+      return LocalTime.parse(s);
+    } catch (DateTimeParseException _) {
+      try {
+        return OffsetTime.parse(s, ANY_OFFSET_TIME);
+      } catch (DateTimeParseException _) {
+        throw refused(name, "expects a time (HH:MM:SS): " + raw);
+      }
+    }
+  }
+
+  private static LocalDateTime parseFilterDateTime(String name, String raw) throws QueryException {
+    var s = raw.strip();
+    try {
+      return LocalDateTime.parse(s.replace(' ', 'T'));
+    } catch (DateTimeParseException _) {
+      try {
+        return LocalDate.parse(s).atStartOfDay();
+      } catch (DateTimeParseException _) {
+        throw refused(name, "expects a date and time without an offset: " + raw);
+      }
+    }
+  }
+
+  /**
+   * Parses a boolean filter value ({@code true}/{@code false} and common shorthands), throwing
+   * {@link QueryException.Failure#CLAUSE_REFUSED} otherwise.
+   */
+  public static Boolean parseBoolean(String name, String raw) throws QueryException {
+    return switch (raw.strip().toLowerCase(Locale.ROOT)) {
+      case "true", "t", "1", "yes", "y", "on" -> Boolean.TRUE;
+      case "false", "f", "0", "no", "n", "off" -> Boolean.FALSE;
+      default -> throw refused(name, "expects true or false: " + raw);
+    };
+  }
+
+  /**
+   * Parses a timestamp-with-time-zone filter value (with offset, or local in {@code zone}) into an
+   * {@link OffsetDateTime} in UTC, throwing {@link QueryException.Failure#CLAUSE_REFUSED}
+   * otherwise.
+   */
+  public static OffsetDateTime parseMoment(String name, String raw, ZoneId zone)
+      throws QueryException {
+    var s = raw.strip();
+    var iso = s.replace(' ', 'T');
+    try {
+      return OffsetDateTime.parse(iso, ANY_OFFSET_DATE_TIME).withOffsetSameInstant(ZoneOffset.UTC);
+    } catch (DateTimeParseException _) {
+      // Try without offset, in the user's zone.
+    }
+    try {
+      var local = LocalDateTime.parse(iso);
+      if (zone.getRules().getValidOffsets(local).size() != 1) {
+        throw refused("Time on " + name + " is skipped or repeated in " + zone.getId()
+            + "; add an offset such as +01:00");
+      }
+      return local.atZone(zone).toOffsetDateTime().withOffsetSameInstant(ZoneOffset.UTC);
+    } catch (DateTimeParseException _) {
+      // Try date-only at start of day in the user's zone.
+    }
+    try {
+      return LocalDate.parse(s)
+          .atStartOfDay(zone)
+          .toOffsetDateTime()
+          .withOffsetSameInstant(ZoneOffset.UTC);
+    } catch (DateTimeParseException _) {
+      throw refused(name, "expects a date and time: " + raw);
+    }
+  }
+
+  private static String escapeLike(String value) {
+    var out = new StringBuilder(value.length());
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      if (c == '!' || c == '%' || c == '_') {
+        out.append('!');
+      }
+      out.append(c);
+    }
+    return out.toString();
+  }
+
+  private static QueryException refused(String detail) {
+    return QueryException.of(QueryException.Failure.CLAUSE_REFUSED, detail);
+  }
+
+  private static QueryException refused(String column, String detail) {
+    return refused("Column " + column + " " + detail);
   }
 
   static void requireColumnsOf(Table table, List<Column> columns) {

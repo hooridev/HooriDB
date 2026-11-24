@@ -39,8 +39,10 @@ as they are opened; several connections are open at once. A double press or Ente
 opens its rows in a tab, read late in pages on its connection's lane, with the rows in view in its
 status line, buttons that scroll a page back or on, or to the first or last row, and, on SQL
 servers, WHERE and ORDER BY fields with completion that narrow and order the rows and count,
-sortable column headers (other than JSON and OTHER; Shift+press adds a column) that write their
-order into ORDER BY and apply it after asking about pending edits while keeping the applied WHERE,
+sortable and filterable column headers (other than JSON and OTHER, and binary data for filters;
+Shift+press adds a sort column, and header filters with chips above the grid join their conditions
+into WHERE with AND while keeping hand-written text) that write their clauses into WHERE or ORDER
+BY and apply them after asking about pending edits,
 grid context menu items to follow outgoing and incoming foreign keys from a row (opening or reusing
 the related table's tab filtered to its key values, keeping ORDER BY and asking about pending edits),
 and Open in console to add its SELECT and applied clauses to the end of a console open on its
@@ -119,12 +121,13 @@ document does not have as an empty cell, where a `null` shows NULL, or a page of
 time as Relaxed Extended JSON or as a tree of their fields, with Filter and Sort fields (each one
 shell document with colors and completion; blank or `{}` clears it) above all three views that
 narrow and order the documents and counts (with `_id: 1` appended as tie-breaker unless Sort names
-`_id`, and no estimate while filtered), sortable grid headers (for fields without `.` and not
-starting with `$`) that write their sort document into Sort, and Open in console to add its
-`db.getCollection(…).find(…)` with the applied Filter and Sort to a console as SQL's does. Its
-console runs statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls,
-`aggregate`, counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their
-documents in
+`_id`, and no estimate while filtered), sortable and filterable grid headers (for fields without
+`.` and not starting with `$`) that write their sort document into Sort and their typed header
+filters (with chips above the view, joined to hand-written text with `$and`) into Filter, and Open
+in console to add its `db.getCollection(…).find(…)` with the applied Filter and Sort to a console
+as SQL's does. Its console runs statements of the shell without JavaScript (`db.c.find(…)` with
+its cursor's calls, `aggregate`, counts, `distinct`, the writes, indexes, `runCommand`, `use` and
+`show`), shows their documents in
 the same three ways, marks where a statement goes wrong in its own markup layer with its message
 after its line, puts run and last-outcome markers in the gutter on each statement's first line, lays
 its statements out with

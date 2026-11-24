@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -329,8 +330,55 @@ public final class PostgreSqlRows extends RowsDialect {
       case BigDecimal number -> text(number);
       case Float number when Float.isFinite(number) -> text(number);
       case Double number when Double.isFinite(number) -> text(number);
-      default -> "'" + text(value).replace("'", "''") + "'";
+      // E'…' reads alike whatever standard_conforming_strings says.
+      default -> {
+        var text = text(value);
+        yield !(value instanceof String) || text.indexOf('\\') < 0
+            ? "'" + text.replace("'", "''") + "'"
+            : "E'" + text.replace("\\", "\\\\").replace("'", "''") + "'";
+      }
     };
+  }
+
+  // A column of a built-in text type as it is; another, as an enum or a domain, as text, which
+  // LOWER, ILIKE and ~* take.
+  private static String asText(String column, Field field) {
+    var type = field.type() == null ? "" : field.type().toLowerCase(Locale.ROOT);
+    int length = type.indexOf('(');
+    return switch (length < 0 ? type : type.substring(0, length).strip()) {
+      // As the catalog's format_type() and the driver write them.
+      case "text", "character varying", "varchar", "character", "bpchar", "name" -> column;
+      default -> "CAST(" + column + " AS pg_catalog.text)";
+    };
+  }
+
+  @Override
+  String like(String column, Field field, String pattern) {
+    return asText(column, field) + " ILIKE " + literal(pattern) + " ESCAPE '!'";
+  }
+
+  @Override
+  String equalsIgnoringCase(String column, Field field, String value) {
+    return "LOWER(" + asText(column, field) + ") = LOWER(" + literal(value) + ")";
+  }
+
+  // By bytes, as a case-insensitive collation of the column would make cases alike.
+  @Override
+  String equalsExactly(String column, Field field, String value) {
+    return asText(column, field) + " COLLATE pg_catalog.\"C\" = " + literal(value);
+  }
+
+  @Override
+  String matches(String column, Field field, String expression) {
+    return asText(column, field) + " ~* " + literal(expression);
+  }
+
+  // A number as an untyped literal, which the server reads as the column's type: a real, also
+  // behind a domain, keeps fewer digits than a numeric literal compared as double precision.
+  @Override
+  String compare(String column, Field field, String operator, Object value) {
+    var operand = value instanceof BigDecimal number ? "'" + text(number) + "'" : literal(value);
+    return column + " " + operator + " " + operand;
   }
 
   private static String text(Object value) {

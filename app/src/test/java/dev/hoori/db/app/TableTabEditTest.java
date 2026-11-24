@@ -292,6 +292,47 @@ class TableTabEditTest {
     assertEquals(0, writeCount());
   }
 
+  @Test
+  void headerFilterAsksBeforeDiscardingPendingEdits() throws Exception {
+    var where = "\"name\" ILIKE '%bob%' ESCAPE '!'";
+    servers.values(CUSTOMERS + " WHERE " + where, List.of(List.of(2L, "Bob")));
+    var app = openCustomers();
+    c.run(app, "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n");
+
+    int before = servers.calls.size();
+    c.run(
+        app,
+        "press #cell-0-1\nframe\nkey ArrowDown alt\nframe\nadvance 1\nframe\n"
+            + "type \"bob\"\nframe\nkey Enter\nframe\n"
+            + OPENED
+            + "snap filter-asked\n");
+    assertTrue(c.tree("filter-asked").contains("Discard 1 change?"), c.tree("filter-asked"));
+
+    // Cancel keeps the pending edit, leaves WHERE empty, and shows no chips.
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE + "snap filter-cancelled\n");
+    assertEquals(1, t.tab(app).pendingChanges());
+    assertEquals("", t.tab(app).filter.where());
+    assertFalse(c.tree("filter-cancelled").contains("#filters "), c.tree("filter-cancelled"));
+    assertEquals(before, servers.calls.size(), "Cancel must not re-read");
+
+    // Re-applying and choosing Discard drops the edit, applies WHERE, and shows the chip.
+    c.run(
+        app,
+        "press #cell-0-1\nframe\nkey ArrowDown alt\nframe\nadvance 1\nframe\n"
+            + "type \"bob\"\nframe\nkey Enter\nframe\n"
+            + OPENED
+            + "press #answer-discard\nframe\n"
+            + OPENED
+            + SETTLE
+            + "snap filter-discarded\n");
+    String discarded = c.tree("filter-discarded");
+    assertEquals(0, t.tab(app).pendingChanges());
+    assertEquals(where, t.tab(app).filter.where());
+    assertTrue(discarded.contains("#filters role=list label=\"Filters\""), discarded);
+    assertTrue(cell(discarded, 0, 1).contains("\"Bob\""), discarded);
+    assertEquals(0, writeCount());
+  }
+
   /** A narrow footer keeps its paging inside while a commit runs and a page is read. */
   @Test
   void aNarrowFooterKeepsThePagingWhileCommittingAndReading() throws Exception {

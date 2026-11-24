@@ -35,6 +35,17 @@ Use the four paging buttons to move the view without changing your selection:
 - **Next page** (down chevron): scroll down by one screen of rows.
 - **Last page** (down arrow): jump to the known end of the table.
 
+## Filter and sort rows
+
+Above the grid, a table tab shows **WHERE** and **ORDER BY** fields on SQL connections (**Filter** and **Sort** on MongoDB collections), each with syntax highlighting and completion. Press `Enter` in either field to apply it.
+
+You can also filter and sort directly from the column headers:
+
+- **Sort:** Click a column header to sort ascending, descending, or off; `Shift+click` adds a secondary sort column. The generated clause is written into **ORDER BY** (or **Sort**) and applied.
+- **Filter:** Click the funnel icon in a column header (or press `Alt+ArrowDown` on a cell in that column) to open the filter popover. The offered operators match the column's type: text matching (`Contains`, `Starts with` and `Equals` whatever the case, `Equals exactly` with it, `Matches regular expression`), ranges (`Between`, with either bound optional) and `Equals` for numbers, dates, and times, `One of` checkboxes for booleans, and `Is NULL` / `Is not NULL`. Applying writes the condition into **WHERE** (in the server's SQL dialect) or **Filter** (as a MongoDB shell document with values typed by the field's sampled type: numbers, dates, `ObjectId`, booleans) and runs it, asking first if there are uncommitted edits.
+- **Chips and hand-written clauses:** Active header filters appear as chips above the grid so you can remove individual conditions or **Clear all**. If the clause field already holds hand-written text, header filters are joined to it with `AND` (`(…) AND …` in SQL, `{ $and: [ … ] }` in MongoDB), and clearing all header filters leaves your hand-written text applied alone. Editing **WHERE** or **Filter** by hand removes the header filter marks and chips and keeps your text; a header filter set then is joined to what you wrote.
+- **Unsupported columns:** SQL `JSON` and `OTHER` columns, and MongoDB fields whose names contain `.` or start with `$`, do not offer header sorting or header filtering. SQL binary columns, which show as hex, offer no header filter.
+
 ## Open in console
 
 Press **Open in console** in the tab toolbar to send a table's `SELECT` statement (including any applied `WHERE` and `ORDER BY` clauses) or a MongoDB collection's `db.getCollection(…).find(…)` statement (including any applied Filter and Sort) to a console on its database.
