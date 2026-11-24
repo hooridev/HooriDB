@@ -10,9 +10,11 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Parses a MongoDB connection string ({@code mongodb://} or {@code mongodb+srv://}) without the
@@ -33,18 +35,11 @@ final class MongoConnectionString {
    */
   static Optional<ConnectionString> parse(String text, int defaultPort) {
     Objects.requireNonNull(text, "text");
-    boolean srv;
-    String rest;
-    if (text.startsWith(SRV)) {
-      srv = true;
-      rest = text.substring(SRV.length());
-    } else if (text.startsWith(STANDARD)) {
-      srv = false;
-      rest = text.substring(STANDARD.length());
-    } else {
+    boolean srv = text.startsWith(SRV);
+    if (!srv && !text.startsWith(STANDARD)) {
       return Optional.empty();
     }
-
+    String rest = text.substring(srv ? SRV.length() : STANDARD.length());
     // A space or line break is never part of one; the field would show it changed.
     if (rest.chars()
         .anyMatch(c ->
@@ -55,47 +50,16 @@ final class MongoConnectionString {
     String beforeQuery = queryStart < 0 ? rest : rest.substring(0, queryStart);
     String query = queryStart < 0 ? null : rest.substring(queryStart + 1);
 
-    String user = "";
-    String password = "";
-    String authorityAndPath = beforeQuery;
     int at = beforeQuery.lastIndexOf('@');
-    if (at >= 0) {
-      String userInfo = beforeQuery.substring(0, at);
-      authorityAndPath = beforeQuery.substring(at + 1);
-      if (userInfo.isEmpty()) {
-        throw new IllegalArgumentException("Missing user name before '@'.");
-      }
-      if (userInfo.indexOf('@') >= 0) {
-        throw new IllegalArgumentException("Credentials contain an unencoded '@'.");
-      }
-      if (userInfo.indexOf('/') >= 0) {
-        throw new IllegalArgumentException("Credentials contain an unencoded '/'.");
-      }
-      if (userInfo.indexOf('#') >= 0) {
-        throw new IllegalArgumentException("Credentials contain an unencoded '#'.");
-      }
-      int colon = userInfo.indexOf(':');
-      if (colon == 0) {
-        throw new IllegalArgumentException("Password given without a user name.");
-      }
-      if (colon > 0) {
-        if (userInfo.indexOf(':', colon + 1) >= 0) {
-          throw new IllegalArgumentException("Credentials contain an unencoded ':'.");
-        }
-        user = decodePercent(userInfo.substring(0, colon));
-        password = decodePercent(userInfo.substring(colon + 1));
-      } else {
-        user = decodePercent(userInfo);
-      }
-    }
+    var credentials = at < 0 ? NONE : credentials(beforeQuery.substring(0, at));
+    String authorityAndPath = beforeQuery.substring(at + 1);
 
     int slash = authorityAndPath.indexOf('/');
     if (query != null && slash < 0) {
       throw new IllegalArgumentException("A '/' is required before the query options.");
     }
     String hostsPart = slash < 0 ? authorityAndPath : authorityAndPath.substring(0, slash);
-    String rawDatabase = slash < 0 ? "" : authorityAndPath.substring(slash + 1);
-    String namespace = decodePercent(rawDatabase);
+    String namespace = slash < 0 ? "" : decodePercent(authorityAndPath.substring(slash + 1));
     // A path of database.collection names the database before the dot, as the driver reads it.
     int dot = namespace.indexOf('.');
     String database = dot < 0 ? namespace : namespace.substring(0, dot);
@@ -103,96 +67,116 @@ final class MongoConnectionString {
     if (hostsPart.isEmpty()) {
       throw new IllegalArgumentException("Missing host in the connection string.");
     }
-    String[] entries = hostsPart.split(",", -1);
-    if (srv && entries.length > 1) {
+    var entries = List.of(hostsPart.split(",", -1));
+    if (srv && entries.size() > 1) {
       throw new IllegalArgumentException(
           "An SRV connection string cannot list more than one host.");
     }
-    HostPort first = null;
-    var otherHosts = new ArrayList<String>();
-    for (int i = 0; i < entries.length; i++) {
-      HostPort parsed = parseHostPort(entries[i], srv, defaultPort);
-      if (i == 0) {
-        first = parsed;
-      } else {
-        otherHosts.add(entries[i]);
-      }
-    }
+    var hosts = entries.stream().map(e -> parseHostPort(e, srv, defaultPort)).toList();
 
-    String authSourceOption = null;
-    Boolean tlsOption = null;
-    boolean tlsInsecure = false;
-    boolean tlsAllowInvalidCertificates = false;
-    var unused = new ArrayList<String>();
-    var seenUnused = new HashSet<String>();
-
-    if (query != null && !query.isEmpty()) {
-      for (String pair : query.split("[&;]", -1)) {
-        if (pair.isEmpty()) {
-          continue;
-        }
-        int eq = pair.indexOf('=');
-        if (eq < 0) {
-          throw new IllegalArgumentException("Options must be written as name=value.");
-        }
-        String rawName = pair.substring(0, eq);
-        String rawValue = pair.substring(eq + 1);
-        if (rawName.isEmpty()) {
-          throw new IllegalArgumentException("Option name is missing.");
-        }
-        String name = decodePercent(rawName);
-        String value = decodePercent(rawValue);
-        String key = name.toLowerCase(Locale.ROOT);
-        switch (key) {
-          case "authsource" -> authSourceOption = value;
-          case "tls", "ssl" -> {
-            boolean flag = parseBoolean(value);
-            if (tlsOption != null && tlsOption != flag) {
-              throw new IllegalArgumentException("Conflicting tls and ssl options.");
-            }
-            tlsOption = flag;
-          }
-          case "tlsinsecure" -> tlsInsecure = parseBoolean(value);
-          case "tlsallowinvalidcertificates" -> tlsAllowInvalidCertificates = parseBoolean(value);
-          default -> {
-            if (seenUnused.add(key)) {
-              unused.add(name);
-            }
-          }
-        }
-      }
+    var options = new Options();
+    if (query != null) {
+      options.read(query);
     }
-
-    String authDatabase;
-    if (authSourceOption != null) {
-      authDatabase = authSourceOption;
-    } else if (!user.isEmpty() && !database.isEmpty()) {
-      authDatabase = database;
-    } else {
-      authDatabase = "";
-    }
-
-    boolean tlsEnabled = tlsOption != null ? tlsOption : srv;
-    Tls tls;
-    if (!tlsEnabled) {
-      tls = Tls.OFF;
-    } else if (tlsInsecure || tlsAllowInvalidCertificates) {
-      tls = Tls.ENCRYPTED;
-    } else {
-      tls = Tls.VERIFIED;
-    }
+    String authDatabase = options.authSource != null
+        ? options.authSource
+        : credentials.user().isEmpty() ? "" : database;
 
     return Optional.of(new ConnectionString(
-        first.host(),
-        first.port(),
+        hosts.getFirst().host(),
+        hosts.getFirst().port(),
         srv,
-        user,
-        password,
+        credentials.user(),
+        credentials.password(),
         database,
         authDatabase,
-        tls,
-        unused,
-        otherHosts));
+        options.tls(srv),
+        options.unused,
+        entries.subList(1, entries.size())));
+  }
+
+  private record Credentials(String user, String password) {}
+
+  private static final Credentials NONE = new Credentials("", "");
+
+  private static Credentials credentials(String userInfo) {
+    if (userInfo.isEmpty()) {
+      throw new IllegalArgumentException("Missing user name before '@'.");
+    }
+    for (char c : new char[] {'@', '/', '#'}) {
+      if (userInfo.indexOf(c) >= 0) {
+        throw new IllegalArgumentException("Credentials contain an unencoded '" + c + "'.");
+      }
+    }
+    int colon = userInfo.indexOf(':');
+    if (colon < 0) {
+      return new Credentials(decodePercent(userInfo), "");
+    }
+    if (colon == 0) {
+      throw new IllegalArgumentException("Password given without a user name.");
+    }
+    if (userInfo.indexOf(':', colon + 1) >= 0) {
+      throw new IllegalArgumentException("Credentials contain an unencoded ':'.");
+    }
+    return new Credentials(
+        decodePercent(userInfo.substring(0, colon)), decodePercent(userInfo.substring(colon + 1)));
+  }
+
+  /** The options of the query: those the form has fields for, and the names of the others. */
+  private static final class Options {
+    String authSource;
+    Boolean tls;
+    boolean insecure;
+    boolean allowInvalid;
+    final List<String> unused = new ArrayList<>();
+    private final Set<String> seen = new HashSet<>();
+
+    void read(String query) {
+      for (String pair : query.split("[&;]", -1)) {
+        if (!pair.isEmpty()) {
+          option(pair);
+        }
+      }
+    }
+
+    private void option(String pair) {
+      int eq = pair.indexOf('=');
+      if (eq < 0) {
+        throw new IllegalArgumentException("Options must be written as name=value.");
+      }
+      if (eq == 0) {
+        throw new IllegalArgumentException("Option name is missing.");
+      }
+      String name = decodePercent(pair.substring(0, eq));
+      String value = decodePercent(pair.substring(eq + 1));
+      String key = name.toLowerCase(Locale.ROOT);
+      switch (key) {
+        case "authsource" -> authSource = value;
+        case "tls", "ssl" -> {
+          boolean flag = parseBoolean(value);
+          if (tls != null && tls != flag) {
+            throw new IllegalArgumentException("Conflicting tls and ssl options.");
+          }
+          tls = flag;
+        }
+        case "tlsinsecure" -> insecure = parseBoolean(value);
+        case "tlsallowinvalidcertificates" -> allowInvalid = parseBoolean(value);
+        default -> {
+          if (seen.add(key)) {
+            unused.add(name);
+          }
+        }
+      }
+    }
+
+    Tls tls(boolean srv) {
+      // Asking to relax TLS asks for TLS, unless tls=false says otherwise.
+      boolean relaxed = insecure || allowInvalid;
+      if (!(tls != null ? tls : srv || relaxed)) {
+        return Tls.OFF;
+      }
+      return relaxed ? Tls.ENCRYPTED : Tls.VERIFIED;
+    }
   }
 
   private record HostPort(String host, int port) {}
@@ -205,44 +189,14 @@ final class MongoConnectionString {
       throw new IllegalArgumentException("Unix domain socket paths are not supported.");
     }
     if (entry.startsWith("[")) {
-      int close = entry.indexOf(']');
-      if (close < 0) {
-        throw new IllegalArgumentException("Unclosed '[' in IPv6 host.");
-      }
-      String inner = entry.substring(1, close);
-      // RFC 6874 encodes the zone separator '%' as '%25' inside bracketed IPv6 literals.
-      String host = inner.replace("%25", "%");
-      if (host.indexOf(':') < 0 || !ConnectionProfile.isHost(host)) {
-        throw new IllegalArgumentException("Invalid IPv6 host.");
-      }
-      String after = entry.substring(close + 1);
-      if (after.isEmpty()) {
-        return new HostPort(host, defaultPort);
-      }
-      if (!after.startsWith(":")) {
-        throw new IllegalArgumentException("Invalid host in the connection string.");
-      }
-      if (srv) {
-        throw new IllegalArgumentException("An SRV connection string cannot specify a port.");
-      }
-      return new HostPort(host, parsePort(after.substring(1)));
+      return bracketed(entry, srv, defaultPort);
     }
     int colon = entry.indexOf(':');
-    String host;
-    int port;
-    if (colon >= 0) {
-      if (entry.indexOf(':', colon + 1) >= 0) {
-        throw new IllegalArgumentException("IPv6 hosts must be enclosed in brackets.");
-      }
-      if (srv) {
-        throw new IllegalArgumentException("An SRV connection string cannot specify a port.");
-      }
-      host = entry.substring(0, colon);
-      port = parsePort(entry.substring(colon + 1));
-    } else {
-      host = entry;
-      port = defaultPort;
+    if (colon >= 0 && entry.indexOf(':', colon + 1) >= 0) {
+      throw new IllegalArgumentException("IPv6 hosts must be enclosed in brackets.");
     }
+    String host = colon < 0 ? entry : entry.substring(0, colon);
+    int port = colon < 0 ? defaultPort : port(entry.substring(colon + 1), srv);
     if (host.isEmpty()) {
       throw new IllegalArgumentException("Missing host in the connection string.");
     }
@@ -250,6 +204,33 @@ final class MongoConnectionString {
       throw new IllegalArgumentException("Invalid host in the connection string.");
     }
     return new HostPort(host, port);
+  }
+
+  private static HostPort bracketed(String entry, boolean srv, int defaultPort) {
+    int close = entry.indexOf(']');
+    if (close < 0) {
+      throw new IllegalArgumentException("Unclosed '[' in IPv6 host.");
+    }
+    // RFC 6874 encodes the zone separator '%' as '%25' inside bracketed IPv6 literals.
+    String host = entry.substring(1, close).replace("%25", "%");
+    if (host.indexOf(':') < 0 || !ConnectionProfile.isHost(host)) {
+      throw new IllegalArgumentException("Invalid IPv6 host.");
+    }
+    String after = entry.substring(close + 1);
+    if (after.isEmpty()) {
+      return new HostPort(host, defaultPort);
+    }
+    if (!after.startsWith(":")) {
+      throw new IllegalArgumentException("Invalid host in the connection string.");
+    }
+    return new HostPort(host, port(after.substring(1), srv));
+  }
+
+  private static int port(String text, boolean srv) {
+    if (srv) {
+      throw new IllegalArgumentException("An SRV connection string cannot specify a port.");
+    }
+    return parsePort(text);
   }
 
   private static int parsePort(String text) {
@@ -279,37 +260,37 @@ final class MongoConnectionString {
   }
 
   private static String decodePercent(String text) {
-    if (text.indexOf('%') < 0) {
-      return text;
-    }
     var out = new StringBuilder(text.length());
     var bytes = new ByteArrayOutputStream();
     int i = 0;
     while (i < text.length()) {
       char c = text.charAt(i);
-      if (c != '%') {
-        if (bytes.size() > 0) {
-          out.append(decodeUtf8(bytes));
-        }
+      if (c == '%') {
+        bytes.write(percentByte(text, i));
+        i += 3;
+      } else {
+        flush(out, bytes);
         out.append(c);
         i++;
-      } else {
-        if (i + 2 >= text.length()) {
-          throw new IllegalArgumentException("Invalid percent-encoding in the connection string.");
-        }
-        int hi = hex(text.charAt(i + 1));
-        int lo = hex(text.charAt(i + 2));
-        if (hi < 0 || lo < 0) {
-          throw new IllegalArgumentException("Invalid percent-encoding in the connection string.");
-        }
-        bytes.write((hi << 4) | lo);
-        i += 3;
       }
     }
+    flush(out, bytes);
+    return out.toString();
+  }
+
+  private static int percentByte(String text, int at) {
+    int hi = at + 2 < text.length() ? hex(text.charAt(at + 1)) : -1;
+    int lo = hi < 0 ? -1 : hex(text.charAt(at + 2));
+    if (lo < 0) {
+      throw new IllegalArgumentException("Invalid percent-encoding in the connection string.");
+    }
+    return hi << 4 | lo;
+  }
+
+  private static void flush(StringBuilder out, ByteArrayOutputStream bytes) {
     if (bytes.size() > 0) {
       out.append(decodeUtf8(bytes));
     }
-    return out.toString();
   }
 
   private static String decodeUtf8(ByteArrayOutputStream bytes) {

@@ -176,9 +176,13 @@ class MongoDbConnectionStringTest {
     assertEquals(Tls.OFF, parse("mongodb://host").tls());
     assertEquals(Tls.OFF, parse("mongodb://host/?tls=false").tls());
     assertEquals(Tls.OFF, parse("mongodb://host/?ssl=false").tls());
-    assertEquals(Tls.OFF, parse("mongodb://host/?tlsInsecure=true").tls());
+    assertEquals(Tls.ENCRYPTED, parse("mongodb://host/?tlsInsecure=true").tls());
+    assertEquals(Tls.OFF, parse("mongodb://host/?tls=false&tlsInsecure=true").tls());
     assertEquals(
-        Tls.OFF, parse("mongodb://host/?tlsAllowInvalidCertificates=true").tls());
+        Tls.VERIFIED,
+        parse("mongodb://host/?tls=true&tlsInsecure=true&tlsInsecure=false").tls());
+    assertEquals(
+        Tls.ENCRYPTED, parse("mongodb://host/?tlsAllowInvalidCertificates=true").tls());
 
     assertEquals(Tls.VERIFIED, parse("mongodb://host/?tls=true").tls());
     assertEquals(Tls.VERIFIED, parse("mongodb://host/?ssl=true").tls());
