@@ -21,8 +21,12 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   static final String PLAN = "EXPLAIN ";
   static final String PLAN_JSON = "EXPLAIN FORMAT=JSON ";
 
-  private final CatalogDialect catalog = new Catalog();
+  private final CatalogDialect catalog;
   private final ErrorDialect errors = new Errors();
+
+  MySqlFamily(boolean flagsHiddenIndexColumns) {
+    catalog = new Catalog(flagsHiddenIndexColumns);
+  }
 
   @Override
   public int defaultPort() {
@@ -187,6 +191,32 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     private static final Set<String> MYSQL_SYSTEM =
         Set.of("information_schema", "mysql", "performance_schema", "sys");
 
+    // Whether any index of the referencing table that holds this key column also holds a column
+    // the user cannot see (a functional index part has COLUMN_NAME NULL and does not count as
+    // hidden). InnoDB backs every foreign key with an index holding all its columns, so every
+    // visible row of a partial key has this flag set.
+    private static final String HIDDEN_INDEX_COLUMN = "EXISTS ("
+        + "SELECT 1 FROM information_schema.STATISTICS s"
+        + " JOIN information_schema.STATISTICS h"
+        + " ON h.TABLE_SCHEMA = CAST(s.TABLE_SCHEMA AS BINARY)"
+        + " AND h.TABLE_NAME = CAST(s.TABLE_NAME AS BINARY)"
+        + " AND h.INDEX_NAME = CAST(s.INDEX_NAME AS BINARY)"
+        + " WHERE s.TABLE_SCHEMA = CAST(f.TABLE_SCHEMA AS BINARY)"
+        + " AND s.TABLE_NAME = CAST(f.TABLE_NAME AS BINARY)"
+        + " AND s.COLUMN_NAME = CAST(f.COLUMN_NAME AS BINARY)"
+        + " AND h.COLUMN_NAME IS NOT NULL"
+        + " AND NOT EXISTS ("
+        + "SELECT 1 FROM information_schema.COLUMNS c"
+        + " WHERE c.TABLE_SCHEMA = CAST(h.TABLE_SCHEMA AS BINARY)"
+        + " AND c.TABLE_NAME = CAST(h.TABLE_NAME AS BINARY)"
+        + " AND c.COLUMN_NAME = CAST(h.COLUMN_NAME AS BINARY)))";
+
+    private final boolean flagHiddenIndexColumns;
+
+    Catalog(boolean flagHiddenIndexColumns) {
+      this.flagHiddenIndexColumns = flagHiddenIndexColumns;
+    }
+
     @Override
     public String databases() {
       return "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME";
@@ -273,7 +303,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           + " AND r.TABLE_NAME = CAST(k.TABLE_NAME AS BINARY)";
       return "SELECT CONSTRAINT_NAME, TABLE_SCHEMA, TABLE_NAME,"
           + " REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME,"
-          + " COLUMN_NAME, REFERENCED_COLUMN_NAME, UPDATE_RULE, DELETE_RULE"
+          + " COLUMN_NAME, REFERENCED_COLUMN_NAME, UPDATE_RULE, DELETE_RULE, "
+          + (flagHiddenIndexColumns ? HIDDEN_INDEX_COLUMN : "FALSE")
           + " FROM ("
           + select
           + " WHERE k.TABLE_SCHEMA = CAST(? AS BINARY)"
