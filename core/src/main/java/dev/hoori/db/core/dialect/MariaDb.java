@@ -70,7 +70,6 @@ public final class MariaDb extends MySqlFamily {
   private final Driver driver =
       new Driver("org.mariadb.jdbc", "mariadb-java-client", "org.mariadb.jdbc.Driver");
   private final ConnectDialect connecting = new Connect();
-  private final CatalogDialect catalog = new MySqlFamily.Catalog(false);
   private final SyntaxDialect syntax = new MySqlFamily.Syntax(
       RESERVED,
       Words.union(RESERVED, Words.TYPED, Syntax.TYPED, Set.of("SEQUENCE")),
@@ -90,7 +89,9 @@ public final class MariaDb extends MySqlFamily {
           + " LEFT JOIN information_schema.INNODB_LOCKS l ON l.lock_id = w.requested_lock_id"
           + " ORDER BY 1, 2");
 
-  private MariaDb() {}
+  private MariaDb() {
+    super(false);
+  }
 
   @Override
   public String displayName() {
@@ -120,11 +121,6 @@ public final class MariaDb extends MySqlFamily {
   @Override
   public ConnectDialect connecting() {
     return connecting;
-  }
-
-  @Override
-  public CatalogDialect catalog() {
-    return catalog;
   }
 
   @Override

@@ -21,11 +21,21 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   static final String PLAN = "EXPLAIN ";
   static final String PLAN_JSON = "EXPLAIN FORMAT=JSON ";
 
+  private final CatalogDialect catalog;
   private final ErrorDialect errors = new Errors();
+
+  MySqlFamily(boolean flagsHiddenIndexColumns) {
+    catalog = new Catalog(flagsHiddenIndexColumns);
+  }
 
   @Override
   public int defaultPort() {
     return 3306;
+  }
+
+  @Override
+  public CatalogDialect catalog() {
+    return catalog;
   }
 
   @Override
