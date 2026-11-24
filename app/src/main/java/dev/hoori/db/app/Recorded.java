@@ -16,6 +16,7 @@ import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
@@ -237,6 +238,11 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     @Override
     public Changes.Outcome write(Changes changes) throws QueryException {
       return recorded(of(changes.table()), () -> link.write(changes));
+    }
+
+    @Override
+    public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+      return recorded(of(edit.collection()), () -> link.write(edit));
     }
 
     @Override

@@ -63,6 +63,8 @@ public final class ExtendedJson {
       case Bson.Regex(var pattern, var options) -> regex(out, pattern, options);
       case Bson.Code(var code, var scope) -> code(out, code, scope);
       case Bson.Symbol(var symbol) -> wrapped(out, "$symbol", symbol);
+      case Bson.DbPointer(var namespace, var id) ->
+        document(out, Document.of("$dbPointer", Document.of("$ref", namespace, "$id", id)));
       case Bson.Special s ->
         out.append(
             switch (s) {

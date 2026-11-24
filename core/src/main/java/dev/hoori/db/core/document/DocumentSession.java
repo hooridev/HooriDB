@@ -110,13 +110,14 @@ public final class DocumentSession implements AutoCloseable {
     if (ok instanceof Number n && n.doubleValue() == 0) {
       var code = reply.get("code") instanceof Number c ? c.intValue() : 0;
       var name = reply.get("codeName") instanceof String s ? s : "";
-      var message = reply.get("errmsg") instanceof String s ? s : "";
+      var message = reply.get(ERRMSG) instanceof String s ? s : "";
       throw DocumentException.server(code, name, message);
     }
     return reply;
   }
 
   private static final Set<String> WRITES = Set.of("insert", "update", "delete");
+  private static final String ERRMSG = "errmsg";
 
   // What a reply says the command came to: the documents of its cursor's batch, those a write
   // changed, or nothing more.
@@ -134,7 +135,7 @@ public final class DocumentSession implements AutoCloseable {
           ? errors.getFirst()
           : reply.get("writeConcernError");
       if (failed instanceof Document error) {
-        var message = error.get("errmsg") instanceof String s && !s.isBlank() ? s : "Write error";
+        var message = error.get(ERRMSG) instanceof String s && !s.isBlank() ? s : "Write error";
         return new Outcome.Failed(message);
       }
       var changed = reply.get("nModified") instanceof Number m ? m : reply.get("n");
@@ -606,6 +607,57 @@ public final class DocumentSession implements AutoCloseable {
     }
   }
 
+  /**
+   * Runs one single-document edit ({@code replaceOne}, {@code insertOne}, or {@code deleteOne})
+   * through {@link #command(Purpose, String, Document)} under {@link Purpose#CHANGES}, refusing
+   * views and read-only sessions.
+   *
+   * @return {@link DocumentEdit.Outcome.Written} when the write applied, {@link
+   *     DocumentEdit.Outcome.Changed} when a replace or delete matched nothing ({@code n == 0}), or
+   *     {@link DocumentEdit.Outcome.Unconfirmed} when the server could not confirm it
+   */
+  public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+    if (edit.collection().kind() != Table.Kind.TABLE) {
+      throw QueryException.of(QueryException.Failure.OTHER, "Views cannot be edited");
+    }
+    try {
+      var reply = command(Purpose.CHANGES, database(edit.collection()), edit.command());
+      checkWriteErrors(reply);
+      if (reply.get("writeConcernError") instanceof Document concern) {
+        var message = concern.get(ERRMSG) instanceof String m && !m.isBlank()
+            ? m
+            : "The write concern failed";
+        return new DocumentEdit.Outcome.Unconfirmed(message);
+      }
+      long n = reply.get("n") instanceof Number num ? num.longValue() : 0;
+      if (n == 0) {
+        if (edit instanceof DocumentEdit.Insert) {
+          throw QueryException.of(
+              QueryException.Failure.OTHER, "Insert did not write any document");
+        }
+        return new DocumentEdit.Outcome.Changed();
+      }
+      return new DocumentEdit.Outcome.Written();
+    } catch (DocumentException e) {
+      throw query(e);
+    }
+  }
+
+  private static void checkWriteErrors(Document reply) throws DocumentException {
+    if (reply.get("writeErrors") instanceof List<?> errors
+        && !errors.isEmpty()
+        && errors.getFirst() instanceof Document error) {
+      throw writeError(error, "Write failed");
+    }
+  }
+
+  private static DocumentException writeError(Document error, String fallback) {
+    int code = error.get("code") instanceof Number n ? n.intValue() : 0;
+    var name = error.get("codeName") instanceof String s ? s : "";
+    var message = error.get(ERRMSG) instanceof String s && !s.isBlank() ? s : fallback;
+    return DocumentException.server(code, name, message);
+  }
+
   // Cursors
 
   /**
@@ -828,6 +880,7 @@ public final class DocumentSession implements AutoCloseable {
     var failure = switch (e.kind()) {
       case CANCELLED -> QueryException.Failure.CANCELLED;
       case CONNECTION_LOST, UNREACHABLE, TIMED_OUT -> QueryException.Failure.CONNECTION_LOST;
+      case READ_ONLY -> QueryException.Failure.ACCESS_DENIED;
       case SERVER ->
         switch (e.code()) {
           case DocumentException.UNAUTHORIZED -> QueryException.Failure.ACCESS_DENIED;

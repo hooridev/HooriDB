@@ -41,6 +41,7 @@ Some of these limits are tracked in [issue #57](https://github.com/hooridev/Hoor
 - A collection's fields in the tree and grid come from a sample of 100 documents, so fields absent from that sample do not appear there; **JSON** and **Tree** still show them.
 - The console parses [shell statements](/docs/features/mongodb#run-shell-statements-in-a-console) without JavaScript: variables, functions, and loops are not supported.
 - There are no transactions in a MongoDB console.
+- A collection's tab edits, inserts, copies, and deletes [one document at a time](/docs/features/mongodb#edit-insert-copy-and-delete-documents) in a dialog: not cells in the grid, not several documents at once, and not a console's result; an `_id` cannot be changed. The check for a document changed meanwhile does not see a value whose type alone changed while it compares equal: a number of another type at the same value, such as `1` to `Long('1')`, or a string turned into a symbol of the same text.
 
 ## Connections and appearance
 

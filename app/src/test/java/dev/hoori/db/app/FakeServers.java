@@ -22,7 +22,9 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Origin;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.Bson;
 import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.driver.LoadedDriver;
@@ -162,6 +164,7 @@ final class FakeServers implements Servers {
   private final Map<String, Answer> statements = new ConcurrentHashMap<>();
   private final Map<String, Supplier<Answer>> dynamicStatements = new ConcurrentHashMap<>();
   private final java.util.Set<String> refused = ConcurrentHashMap.newKeySet();
+  private final Map<String, DocumentEdit.Outcome> forced = new ConcurrentHashMap<>();
   private final java.util.Set<String> writing = ConcurrentHashMap.newKeySet();
 
   /**
@@ -224,6 +227,22 @@ final class FakeServers implements Servers {
   /** The current rows stored for the table at {@code path}, or null if none were set. */
   List<List<Object>> rowsOf(String path) {
     return values.get(path);
+  }
+
+  /** The current documents stored for the collection at {@code path}, or null if none were set. */
+  List<Document> documentsOf(String path) {
+    return documents.get(path);
+  }
+
+  /** Makes the next {@link Link#write(DocumentEdit)} for {@code key} match nothing (Changed). */
+  FakeServers missNext(String key) {
+    return nextEdit(key, new DocumentEdit.Outcome.Changed());
+  }
+
+  /** Makes the next {@link Link#write(DocumentEdit)} for {@code key} end so, writing nothing. */
+  FakeServers nextEdit(String key, DocumentEdit.Outcome outcome) {
+    forced.put(key, outcome);
+    return this;
   }
 
   /** Makes {@link Link#write} for {@code key} return {@link Changes.Outcome.Refused}. */
@@ -1540,6 +1559,97 @@ final class FakeServers implements Servers {
       } finally {
         busy.decrementAndGet();
       }
+    }
+
+    @Override
+    public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+      if (busy.incrementAndGet() > 1) {
+        overlapped = true;
+      }
+      try {
+        var collection = edit.collection();
+        var path = path(collection);
+        var key = "edit " + path;
+        try {
+          note(key);
+          call(key, queryFailure(QueryException.Failure.CANCELLED));
+        } catch (QueryException e) {
+          throw e;
+        } catch (Exception _) {
+          throw queryFailure(QueryException.Failure.OTHER);
+        }
+        if (readOnly) {
+          throw QueryException.of(
+              QueryException.Failure.ACCESS_DENIED,
+              "The connection is read-only: "
+                  + edit.command().first()
+                  + " was not sent, as it may change data");
+        }
+        var tableOutline = container(collection.container()) == null
+            ? null
+            : find(container(collection.container()), collection.name());
+        if (tableOutline == null) {
+          throw queryFailure(QueryException.Failure.NOT_FOUND);
+        }
+        if (tableOutline.text().startsWith("@") || collection.kind() != Table.Kind.TABLE) {
+          throw QueryException.of(QueryException.Failure.OTHER, "Views cannot be edited");
+        }
+        var forcedOutcome = forced.remove(key);
+        var outcome = Journal.command(
+            made.provider().documents(),
+            Purpose.CHANGES,
+            collection.container().database().name(),
+            edit.command(),
+            result -> new Outcome.Changed(result instanceof DocumentEdit.Outcome.Written ? 1 : 0),
+            () -> forcedOutcome != null ? forcedOutcome : applyDocumentEdit(path, edit));
+        done.add(key);
+        return outcome;
+      } finally {
+        busy.decrementAndGet();
+      }
+    }
+
+    private DocumentEdit.Outcome applyDocumentEdit(String path, DocumentEdit edit)
+        throws QueryException {
+      var stored = new ArrayList<>(documents.getOrDefault(path, List.of()));
+      switch (edit) {
+        case DocumentEdit.Replace(var _, var original, var replacement) -> {
+          int index = stored.indexOf(original);
+          if (index < 0) {
+            return new DocumentEdit.Outcome.Changed();
+          }
+          var next = replacement.has("_id") ? replacement : prependId(original, replacement);
+          stored.set(index, next);
+        }
+        case DocumentEdit.Insert(var _, var doc) -> {
+          var next =
+              doc.has("_id") ? doc : prependId(Document.of("_id", Bson.ObjectId.next()), doc);
+          var id = next.get("_id");
+          if (stored.stream().anyMatch(d -> d.has("_id") && Objects.equals(d.get("_id"), id))) {
+            throw QueryException.of(
+                QueryException.Failure.OTHER, "E11000 duplicate key error on _id");
+          }
+          stored.add(next);
+        }
+        case DocumentEdit.Delete(var _, var original) -> {
+          int index = stored.indexOf(original);
+          if (index < 0) {
+            return new DocumentEdit.Outcome.Changed();
+          }
+          stored.remove(index);
+        }
+      }
+      documents.put(path, List.copyOf(stored));
+      counts.put(path, (long) stored.size());
+      estimates.put(path, OptionalLong.of(stored.size()));
+      return new DocumentEdit.Outcome.Written();
+    }
+
+    private static Document prependId(Document source, Document target) {
+      var entries = new ArrayList<Document.Entry>(target.size() + 1);
+      entries.add(new Document.Entry("_id", source.get("_id")));
+      entries.addAll(target.entries());
+      return new Document(entries);
     }
 
     private List<List<Object>> materializeRows(String path, List<Column> columns) {

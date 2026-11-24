@@ -21,6 +21,7 @@ import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.DocumentRun;
 import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.document.Script;
@@ -167,6 +168,9 @@ interface Servers {
 
     /** Writes pending changes in one transaction on this connection, as {@link Changes#write}. */
     Changes.Outcome write(Changes changes) throws QueryException;
+
+    /** Runs one single-document edit on this connection, as {@link DocumentSession#write}. */
+    DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException;
 
     /**
      * A statement to run, as {@link Execution} runs it; nothing runs before its first next.
@@ -429,6 +433,16 @@ interface Servers {
           QueryException.Failure.OTHER, "A server of documents does not take SQL row changes");
     }
 
+    @Override
+    public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+      usable();
+      try {
+        return session.write(edit);
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
     /** A statement of the MongoDB shell, on the database the link is on now. */
     @Override
     public Run run(String sql) throws QueryException {
@@ -657,6 +671,12 @@ interface Servers {
     public Changes.Outcome write(Changes changes) throws QueryException {
       usable();
       return changes.write(connection, provider);
+    }
+
+    @Override
+    public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of SQL does not take document edits");
     }
 
     @Override

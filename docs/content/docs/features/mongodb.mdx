@@ -50,6 +50,17 @@ Open a collection or view as you open a table (double-click it, or select it and
 
 Documents are read in pages ordered by `_id`. Above all three views, **Filter** and **Sort** accept MongoDB shell documents with highlighting and completion, and **Conditions…** opens the [condition builder](/docs/features/table-data#filter-and-sort-rows) with `Exists` / `Does not exist`, `Not equal`, `OR`, nested groups, and nested subdocument fields such as `address.city` sampled up to three levels deep. The status bar shows the document count just as a table tab shows the [row count](/docs/features/table-data#row-count-and-paging-controls); press **Count documents** for an exact count.
 
+## Edit, insert, copy, and delete documents
+
+On a writable connection, a collection's tab lets you edit, insert, copy, and delete one document at a time from all three views (**Grid**, **JSON**, and **Tree**):
+
+- **Insert document** in the toolbar (or right-click the grid or tree) opens a dialog with a shell editor to insert a new document (`insertOne`). A document without `_id` gets a new `ObjectId`, shown in the preview, which a second try from the same dialog keeps, so a retry after an unconfirmed write cannot insert the document twice where `_id` is unique (not in a time-series collection).
+- **Edit document**, **Copy document**, and **Delete document** in the toolbar (and in the grid and tree context menus) act on the current document: the selected row in **Grid**, the document at the caret in **JSON**, or the top-level document of the selected node in **Tree**.
+- The editor uses MongoDB shell notation with the console's syntax colors, completions, and inline error marks so every BSON type (`ObjectId`, `Long`, `ISODate`, `Decimal128`, `UUID`, `Binary`, regular expressions, and others) stays intact. Before opening an edit or copy dialog, HooriDB checks that the document round-trips identically through shell notation and refuses to open it if not.
+- **Edit** keeps `_id` immutable (leave `_id` unchanged or omit it). **Copy** opens the document without `_id` to insert as a new document.
+- Every write opens a **Command Preview** showing the exact `replaceOne`, `insertOne`, or `deleteOne` command before anything is sent. **Replace** and **Delete** match both `_id` and the full document as it was read (`$expr: { $eq: [ '$$ROOT', { $literal: … } ] }`), so if another client changed or deleted the document meanwhile, nothing is overwritten and the dialog reports it while keeping your text. A change of a value's type alone that still compares equal, such as `1` to `Long('1')`, is not seen (see [Limitations](/docs/reference/limitations#mongodb)).
+- After a write succeeds, the collection tab reloads so all views reflect the server's state. Views and read-only connections do not offer document edits.
+
 ## Run shell statements in a console
 
 **New console** on a MongoDB connection opens a console for MongoDB shell statements. HooriDB parses them itself without JavaScript and sends each as a server command; `use` and `db.getName()` are handled locally by HooriDB. Statements end at a semicolon or at the end of a complete line. You run them the same way as in an [SQL console](/docs/features/console) (the statement at the caret, the selection, or all statements), with **Cancel**, Messages, pinned results, History, [workspace queries](/docs/features/saved-queries), and consoles kept across restarts.

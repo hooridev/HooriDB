@@ -16,9 +16,12 @@ import com.rethinkj.ui.App;
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -336,5 +339,111 @@ class DocumentsServerTest {
     var desc = c.tree("desc");
     assertTrue(line(desc, "#order").contains("\"{ total: -1 }\""), desc);
     assertTrue(cell(desc, 0, 0).contains("\"5\""), desc);
+  }
+
+  @Test
+  void insertEditConflictCopyAndDeleteWorkAgainstRealServer() throws Exception {
+    var server = TestServer.of(Provider.MONGODB);
+    var name = "app_edit_" + UUID.randomUUID().toString().replace("-", "");
+    var opened = dev.hoori.db.core.connect.DocumentConnector.open(
+        server.profile(), TestServer.password(), server.driver(), java.time.Duration.ofSeconds(10));
+    try (var session = new DocumentSession(opened.client(), Provider.MONGODB.documents(), false)) {
+      session.command(
+          TestServer.DATABASE,
+          Document.of(
+              "insert",
+              name,
+              "documents",
+              Document.array(Document.of("_id", 1, "name", "Ada", "score", 42L))));
+      try {
+        hoori();
+        c.run(app, table(name) + SETTLE);
+
+        // Insert a new document.
+        c.run(
+            app,
+            "press #insert-document\nframe\n"
+                + ConsoleTransactions.OPENED
+                + "press #document-editor\nkey A control\n"
+                + "clipboard \"{ _id: 2, name: 'Grace', score: Long('7') }\"\n"
+                + "key V control\nframe\n"
+                + "press #document-save\nframe\n"
+                + ConsoleTransactions.OPENED
+                + "press #document-preview-confirm\nframe\n"
+                + SETTLE
+                + ConsoleTransactions.OPENED
+                + "snap inserted\n");
+        assertTrue(TableTabTest.status(c.tree("inserted")).contains("\"2 documents\""));
+
+        // Edit row 0, but change it behind the tab first: conflict keeps text and writes nothing.
+        c.run(
+            app,
+            "press #cell-0-1\nframe\npress #edit-document\nframe\n" + ConsoleTransactions.OPENED);
+        var tab = app.state().tables(profile.id()).getFirst();
+        var edited = tab.documentDialog.text.replace("Ada", "Alicia");
+        session.command(
+            TestServer.DATABASE,
+            Document.of(
+                "update",
+                name,
+                "updates",
+                Document.array(Document.of(
+                    "q",
+                    Document.of("_id", 1),
+                    "u",
+                    Document.of("$set", Document.of("score", 99L))))));
+        var escaped = edited.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+        c.run(
+            app,
+            "press #document-editor\nkey A control\nclipboard \"" + escaped
+                + "\"\nkey V control\nframe\n"
+                + "press #document-save\nframe\n"
+                + ConsoleTransactions.OPENED
+                + "press #document-preview-confirm\nframe\n"
+                + SETTLE
+                + ConsoleTransactions.OPENED
+                + "snap conflict\n");
+        assertTrue(c.tree("conflict").contains("Document changed"), c.tree("conflict"));
+        assertTrue(tab.documentDialog.text.contains("Alicia"), tab.documentDialog.text);
+        c.run(app, "press #document-cancel\nframe\n" + ConsoleTransactions.OPENED);
+
+        // Refresh, then edit row 0 cleanly and delete row 1.
+        c.run(
+            app,
+            "press #refresh\nframe\n"
+                + SETTLE
+                + "press #cell-0-1\nframe\npress #edit-document\nframe\n"
+                + ConsoleTransactions.OPENED);
+        var fresh = tab.documentDialog.text.replace("Ada", "Ada Updated");
+        var freshEscaped = fresh.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+        c.run(
+            app,
+            "press #document-editor\nkey A control\nclipboard \"" + freshEscaped
+                + "\"\nkey V control\nframe\n"
+                + "press #document-save\nframe\n"
+                + ConsoleTransactions.OPENED
+                + "press #document-preview-confirm\nframe\n"
+                + SETTLE
+                + ConsoleTransactions.OPENED
+                + "snap updated\n");
+        assertTrue(cell(c.tree("updated"), 0, 1).contains("\"Ada Updated\""), c.tree("updated"));
+
+        c.run(
+            app,
+            "press #cell-1-1\nframe\npress #delete-document\nframe\n"
+                + ConsoleTransactions.OPENED
+                + "press #document-preview-confirm\nframe\n"
+                + SETTLE
+                + ConsoleTransactions.OPENED
+                + "snap deleted\n");
+        assertTrue(TableTabTest.status(c.tree("deleted")).contains("\"1 document\""));
+      } finally {
+        try {
+          session.command(TestServer.DATABASE, Document.of("drop", name));
+        } catch (Exception _) {
+          // Best-effort cleanup.
+        }
+      }
+    }
   }
 }

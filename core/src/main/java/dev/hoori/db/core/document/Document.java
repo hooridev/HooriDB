@@ -11,7 +11,8 @@ import java.util.Set;
  * A value is one of {@link Bson}'s: {@code null}, {@code Boolean}, {@code Integer} for a 32-bit
  * whole number, {@code Long} for a 64-bit one, {@code Double}, {@link Bson.Decimal128}, {@code
  * String}, {@code Instant} for a date, {@link Bson.ObjectId}, {@link Bson.Binary}, {@link
- * Bson.Timestamp}, {@link Bson.Regex}, {@link Bson.Code}, {@link Bson.Symbol}, {@link Bson.Special},
+ * Bson.Timestamp}, {@link Bson.Regex}, {@link Bson.Code}, {@link Bson.Symbol}, {@link Bson.DbPointer},
+ * {@link Bson.Special},
  * a {@code Document}, or a {@code List} of them for an array. Lists cannot be changed and may hold
  * {@code null}. A document compares by its fields in their order.
  */
@@ -127,6 +128,8 @@ public record Document(List<Entry> entries) {
     return switch (value) {
       case Document d -> d.masked(names, mask);
       case List<?> list -> list.stream().map(v -> masked(v, names, mask)).toList();
+      case Bson.Code(var code, var scope)
+      when scope != null -> new Bson.Code(code, scope.masked(names, mask));
       case null, default -> value;
     };
   }
