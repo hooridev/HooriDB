@@ -113,7 +113,7 @@ driver; its host may name a DNS SRV record that lists the servers, as `mongodb+s
 port; its user may be defined in a database other than `admin`, which it names (`authSource`); it
 may be read-only, which sends only commands that read, as find, aggregate without `$out` or `$merge`
 and counts, and refuses the others unsent. Its databases and collections show in the tree, with the
-fields that a sample of their documents has; a collection opens in a tab as a grid of its fields,
+fields that a sample of their documents has and their indexes under an Indexes node; a collection opens in a tab as a grid of its fields,
 read in pages, with a document or an array in a cell as Relaxed Extended JSON and a field a
 document does not have as an empty cell, where a `null` shows NULL, or a page of documents at a
 time as Relaxed Extended JSON or as a tree of their fields, with Filter and Sort fields (each one

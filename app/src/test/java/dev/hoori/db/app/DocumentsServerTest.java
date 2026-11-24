@@ -3,6 +3,7 @@ package dev.hoori.db.app;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.START;
 import static dev.hoori.db.app.CatalogTreeTest.open;
+import static dev.hoori.db.app.CatalogTreeTest.row;
 import static dev.hoori.db.app.CatalogTreeTest.rows;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static dev.hoori.db.app.TableTabTest.cell;
@@ -81,11 +82,54 @@ class DocumentsServerTest {
             "      tags",
             "      address",
             "      score",
+            "      Indexes",
             "    empty",
             "    orders",
             "    paid_orders"),
-        rows.subList(at + 1, at + 11));
+        rows.subList(at + 1, at + 12));
     assertTrue(rows.contains("  admin"), rows.toString());
+
+    c.run(app, open("Indexes") + "snap customer-indexes\n");
+    var customerIndexes = c.tree("customer-indexes");
+    assertTrue(
+        row(customerIndexes, "_id_").contains("\"(_id: 1) · primary key\""),
+        row(customerIndexes, "_id_"));
+    assertTrue(
+        row(customerIndexes, "email_1").contains("\"(email: 1) · unique · sparse\""),
+        row(customerIndexes, "email_1"));
+    assertTrue(
+        row(customerIndexes, "name_text_tags_text").contains("\"(name: text, tags: text)\""),
+        row(customerIndexes, "name_text_tags_text"));
+
+    c.run(
+        app,
+        "press role=treeitem label=\"customers\"\nkey ArrowLeft\nframe\n"
+            + open("orders")
+            + SETTLE
+            + open("Indexes")
+            + open("paid_orders")
+            + SETTLE
+            + "snap order-indexes\n");
+    var orderIndexes = c.tree("order-indexes");
+    assertTrue(
+        row(orderIndexes, "_id_").contains("\"(_id: 1) · primary key\""),
+        row(orderIndexes, "_id_"));
+    assertTrue(
+        row(orderIndexes, "customer_1").contains("\"(customer: 1)\""),
+        row(orderIndexes, "customer_1"));
+    assertTrue(
+        row(orderIndexes, "customer_1_total_-1").contains("\"(customer: 1, total: -1) · partial\""),
+        row(orderIndexes, "customer_1_total_-1"));
+    assertTrue(
+        row(orderIndexes, "expiresAt_1").contains("\"(expiresAt: 1) · TTL 3600 s\""),
+        row(orderIndexes, "expiresAt_1"));
+    var indexRows = rows(orderIndexes);
+    int paidAt = indexRows.indexOf("    paid_orders");
+    assertFalse(
+        indexRows.subList(paidAt + 1, indexRows.size()).stream()
+            .takeWhile(r -> r.startsWith("      "))
+            .anyMatch("      Indexes"::equals),
+        indexRows.toString());
   }
 
   @Test

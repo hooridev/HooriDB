@@ -5,10 +5,13 @@ import static dev.hoori.db.app.ConnectionsTest.line;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
@@ -37,6 +40,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** The catalog: connections that open onto what their servers hold. */
 class CatalogTreeTest {
@@ -1525,5 +1530,132 @@ class CatalogTreeTest {
     run(app, menu("customers", "Refresh") + SETTLE + "snap healed\n");
     assertEquals(2, app.state().catalog.indexes(SHOP.id(), customers).size());
     assertTrue(rows(tree("healed")).contains("        Indexes"), tree("healed"));
+  }
+
+  static final String MONGO_INDEX_OUTLINE = """
+      hoori
+        orders
+          *_id: objectId
+          customer: int
+          total: decimal
+          expiresAt: date
+          #customer_1_total_-1 (customer: 1, total: -1) | partial
+          #expiresAt_1 (expiresAt: 1) | TTL 3600 s
+          #_id_ (_id: 1) primary
+        customers
+          *_id: objectId
+          name: string
+          email: string
+          tags: array
+          #email_1 (email: 1) unique | sparse
+          #name_text_tags_text (name: text, tags: text)
+          #_id_ (_id: 1) primary
+        @paid_orders
+          _id: objectId
+          total: decimal
+      """;
+
+  @Test
+  void mongoDbIndexesShowUnderIndexesNodeWithDetailsAndRefusedReadKeepsFields() throws Exception {
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", MONGO_INDEX_OUTLINE);
+    var customersIdx = "indexes " + DocumentConsoleTest.MONGO + "/hoori.customers";
+    servers.fail(customersIdx, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    var docs = DocumentConsoleTest.DOCS;
+    var app = app(docs);
+    ready(app, docs);
+    run(
+        app,
+        START
+            + open(docs.name())
+            + SETTLE
+            + open("hoori")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("Indexes")
+            + open("customers")
+            + SETTLE
+            + open("paid_orders")
+            + SETTLE
+            + "snap mongo-indexes\n");
+    var idxTree = tree("mongo-indexes");
+    assertEquals(
+        List.of(
+            "docs",
+            "  hoori",
+            "    orders",
+            "      _id",
+            "      customer",
+            "      total",
+            "      expiresAt",
+            "      Indexes",
+            "        _id_",
+            "        customer_1_total_-1",
+            "        expiresAt_1",
+            "    customers",
+            "      _id",
+            "      name",
+            "      email",
+            "      tags",
+            "    paid_orders",
+            "      _id",
+            "      total"),
+        rows(idxTree));
+
+    assertTrue(
+        row(idxTree, "_id_").contains("label=\"" + Symbol.KEY.label() + "\""),
+        row(idxTree, "_id_"));
+    assertTrue(row(idxTree, "_id_").contains("\"(_id: 1) · primary key\""), row(idxTree, "_id_"));
+    assertTrue(
+        row(idxTree, "customer_1_total_-1").contains("\"(customer: 1, total: -1) · partial\""),
+        row(idxTree, "customer_1_total_-1"));
+    assertTrue(
+        row(idxTree, "expiresAt_1").contains("\"(expiresAt: 1) · TTL 3600 s\""),
+        row(idxTree, "expiresAt_1"));
+    assertFalse(
+        servers.calls.contains("indexes " + DocumentConsoleTest.MONGO + "/hoori.paid_orders"),
+        servers.calls.toString());
+
+    // Healing customers' index read and refreshing shows unique, sparse and text indexes.
+    servers.heal(customersIdx);
+    run(
+        app,
+        "press role=treeitem label=\"orders\"\nkey ArrowLeft\nframe\n"
+            + menu("customers", "Refresh")
+            + SETTLE
+            + open("Indexes")
+            + "snap healed\n");
+    var healed = tree("healed");
+    assertTrue(
+        row(healed, "email_1").contains("\"(email: 1) · unique · sparse\""),
+        row(healed, "email_1"));
+    assertTrue(
+        row(healed, "name_text_tags_text").contains("\"(name: text, tags: text)\""),
+        row(healed, "name_text_tags_text"));
+  }
+
+  /**
+   * The pictures of a collection's indexes for a review, light and dark, into the folder that {@code
+   * -Dreview=<folder>} names; skipped without it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void mongoDbIndexPictures(String look) throws Exception {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", MONGO_INDEX_OUTLINE);
+    var docs = DocumentConsoleTest.DOCS;
+    var app = app(docs);
+    app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    app.state().sidebar = Split.Position.first(440); // room for the indexes' keys and details
+    ready(app, docs);
+    Script.run(
+        START + open(docs.name()) + SETTLE + open("hoori") + SETTLE + open("orders") + SETTLE
+            + open("Indexes") + open("customers") + SETTLE
+            // Down past its fields to its own Indexes, which shares its label with orders'.
+            + "key ArrowDown\n".repeat(5) + "key ArrowRight\nframe\n"
+            + "snap mongodb-indexes-" + look + "\n",
+        app,
+        Files.createDirectories(Path.of(review)));
   }
 }
