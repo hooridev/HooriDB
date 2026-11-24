@@ -275,7 +275,15 @@ public final class DocumentSession implements AutoCloseable {
    * for a view, which the server would have to run to count.
    */
   public OptionalLong estimate(Table collection) throws QueryException {
-    if (collection.kind() == Table.Kind.VIEW) {
+    return estimate(collection, Document.EMPTY);
+  }
+
+  /**
+   * As {@link #estimate(Table)}, narrowed by the filter: empty where a filter is set, as the
+   * collection's metadata count ignores it.
+   */
+  public OptionalLong estimate(Table collection, Document filter) throws QueryException {
+    if (collection.kind() == Table.Kind.VIEW || filter != null && !filter.isEmpty()) {
       return OptionalLong.empty();
     }
     try {
@@ -291,17 +299,20 @@ public final class DocumentSession implements AutoCloseable {
 
   /** The exact number of a collection's documents. */
   public long count(Table collection) throws QueryException {
+    return count(collection, Document.EMPTY);
+  }
+
+  /** The exact number of a collection's documents matching the filter. */
+  public long count(Table collection, Document filter) throws QueryException {
+    var pipeline = filter != null && !filter.isEmpty()
+        ? Document.array(Document.of("$match", filter), Document.of("$count", "n"))
+        : Document.array(Document.of("$count", "n"));
     try {
       var documents = all(
           Purpose.ROWS,
           database(collection),
           Document.of(
-              "aggregate",
-              collection.name(),
-              "pipeline",
-              Document.array(Document.of("$count", "n")),
-              CURSOR,
-              Document.EMPTY));
+              "aggregate", collection.name(), "pipeline", pipeline, CURSOR, Document.EMPTY));
       return documents.isEmpty() || !(documents.getFirst().get("n") instanceof Number n)
           ? 0
           : n.longValue();
@@ -316,10 +327,25 @@ public final class DocumentSession implements AutoCloseable {
    */
   public Page read(Table collection, List<Column> fields, long from, long to)
       throws QueryException {
+    return read(collection, fields, from, to, Document.EMPTY, Document.EMPTY);
+  }
+
+  /**
+   * As {@link #read(Table, List, long, long)}, narrowed by {@code filter} and ordered by {@code
+   * sort} followed by {@code _id: 1} unless {@code sort} names {@code _id}, so paging stays
+   * deterministic.
+   */
+  public Page read(
+      Table collection, List<Column> fields, long from, long to, Document filter, Document sort)
+      throws QueryException {
     if (to <= from) {
       return Values.page(fields, List.of()); // a limit of 0 would be no limit
     }
-    var command = Document.of("find", collection.name(), "sort", Document.of("_id", 1));
+    var command = Document.of("find", collection.name());
+    if (filter != null && !filter.isEmpty()) {
+      command = command.with("filter", filter);
+    }
+    command = command.with("sort", effectiveSort(sort));
     if (from > 0) {
       command = command.with("skip", from);
     }
@@ -331,6 +357,14 @@ public final class DocumentSession implements AutoCloseable {
     } catch (DocumentException e) {
       throw query(e);
     }
+  }
+
+  private static Document effectiveSort(Document sort) {
+    if (sort == null || sort.isEmpty()) {
+      return Document.of("_id", 1);
+    }
+    // The server takes a $natural order alone, and it is a stable order of its own.
+    return sort.has("_id") || sort.has("$natural") ? sort : sort.with("_id", 1);
   }
 
   /**

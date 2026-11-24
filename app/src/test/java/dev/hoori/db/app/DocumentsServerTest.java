@@ -57,8 +57,7 @@ class DocumentsServerTest {
 
   /** The rows of the tree of documents, after those of the connections' tree. */
   static List<String> documents(String tree) {
-    var rows = rows(tree);
-    return rows.subList(rows.indexOf("1"), rows.size());
+    return rows(tree.substring(tree.indexOf("#documents")));
   }
 
   /** The app with the database hoori open in the tree. */
@@ -191,5 +190,107 @@ class DocumentsServerTest {
     assertTrue(line(second, "#rows-in-view").contains("\"Documents 201–250\""), second);
     assertTrue(line(second, "#json").contains("\\\"_id\\\": 201"), second);
     assertTrue(line(second, "role=button label=\"Next page\"").contains("disabled"), second);
+  }
+
+  @Test
+  void filterSortAndHeaderSortWorkAcrossGridJsonAndTree() throws Exception {
+    hoori();
+    c.run(app, table("orders") + SETTLE + """
+            press role=textbox label="Filter"
+            clipboard "{ paid: true }"
+            key V control
+            frame
+            press role=textbox label="Sort"
+            clipboard "{ total: -1 }"
+            key V control
+            frame
+            key Enter
+            frame
+            """ + SETTLE + """
+            snap filtered-grid
+            press role=radio label="JSON"
+            frame
+            advance 1
+            frame
+            snap filtered-json
+            press role=radio label="Tree"
+            frame
+            advance 1
+            frame
+            snap filtered-tree
+            """);
+    var grid = c.tree("filtered-grid");
+    assertTrue(TableTabTest.status(grid).contains("\"125 documents\""), grid);
+    assertTrue(cell(grid, 0, 0).contains("\"250\""), grid);
+    assertTrue(cell(grid, 1, 0).contains("\"248\""), grid);
+    var json = c.tree("filtered-json");
+    assertTrue(line(json, "#rows-in-view").contains("\"Documents 1–125\""), json);
+    assertTrue(line(json, "#json").contains("\\\"_id\\\": 250"), json);
+    var tree = c.tree("filtered-tree");
+    assertEquals("250", documents(tree).getFirst());
+
+    // Clear with {}, turn to page 2 in JSON, then apply a new filter: resets to page 1.
+    c.run(app, """
+        press role=radio label="JSON"
+        frame
+        advance 1
+        frame
+        press role=textbox label="Filter"
+        key A control
+        clipboard "{}"
+        key V control
+        frame
+        press role=textbox label="Sort"
+        key A control
+        clipboard "{}"
+        key V control
+        frame
+        key Enter
+        frame
+        """ + SETTLE + """
+            press role=button label="Next page"
+            frame
+            """ + SETTLE + """
+            advance 1
+            frame
+            snap page-two
+            press role=textbox label="Filter"
+            key A control
+            clipboard "{ _id: { $lte: 5 } }"
+            key V control
+            frame
+            key Enter
+            frame
+            """ + SETTLE + """
+            advance 1
+            frame
+            snap reset-page
+            """);
+    assertTrue(
+        line(c.tree("page-two"), "#rows-in-view").contains("\"Documents 201–250\""),
+        c.tree("page-two"));
+    var reset = c.tree("reset-page");
+    assertTrue(line(reset, "#rows-in-view").contains("\"Documents 1–5\""), reset);
+    assertTrue(TableTabTest.status(reset).contains("\"5 documents\""), reset);
+
+    // Header sort in Grid writes { total: 1 } and { total: -1 } and orders on the server.
+    c.run(app, """
+        press role=radio label="Grid"
+        frame
+        advance 1
+        frame
+        press role=columnheader label="total"
+        frame
+        """ + SETTLE + """
+            snap asc
+            press role=columnheader label="total"
+            frame
+            """ + SETTLE + "snap desc\n");
+    var asc = c.tree("asc");
+    assertTrue(line(asc, "#order").contains("\"{ total: 1 }\""), asc);
+    assertTrue(cell(asc, 0, 0).contains("\"1\""), asc);
+    var desc = c.tree("desc");
+    assertTrue(line(desc, "#order").contains("\"{ total: -1 }\""), desc);
+    assertTrue(cell(desc, 0, 0).contains("\"5\""), desc);
   }
 }

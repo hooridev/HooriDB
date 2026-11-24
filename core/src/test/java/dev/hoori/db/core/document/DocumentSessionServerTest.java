@@ -129,6 +129,63 @@ class DocumentSessionServerTest {
   }
 
   @Test
+  void readEstimateAndCountHonorFilterSortAndIdTieBreaker() throws Exception {
+    try (var session = session(false)) {
+      var fields = session.fields(ORDERS);
+      var paid = Document.of("paid", true);
+      // Filtered collection has no estimate; empty filter keeps the metadata estimate.
+      assertTrue(session.estimate(ORDERS, paid).isEmpty());
+      assertEquals(250, session.estimate(ORDERS, Document.EMPTY).getAsLong());
+      assertEquals(125, session.count(ORDERS, paid));
+      assertEquals(0, session.count(ORDERS, Document.of("customer", 99)));
+
+      // Filter and descending sort on total.
+      var topPaid = session.read(ORDERS, fields, 0, 3, paid, Document.of("total", -1));
+      assertEquals(
+          List.of(250, 248, 246),
+          topPaid.documents().stream().map(d -> d.get("_id")).toList());
+
+      // Ties in sort are broken by _id: 1 when _id is not named, keeping paging deterministic.
+      var byCustomerFirst = session.read(ORDERS, fields, 0, 3, paid, Document.of("customer", 1));
+      var byCustomerNext = session.read(ORDERS, fields, 3, 6, paid, Document.of("customer", 1));
+      assertEquals(
+          List.of(6, 12, 18),
+          byCustomerFirst.documents().stream().map(d -> d.get("_id")).toList());
+      assertEquals(
+          List.of(24, 30, 36),
+          byCustomerNext.documents().stream().map(d -> d.get("_id")).toList());
+
+      // Explicit _id in sort is honored without appending _id: 1.
+      var byCustomerDescId =
+          session.read(ORDERS, fields, 0, 3, paid, Document.of("customer", 1, "_id", -1));
+      assertEquals(
+          List.of(246, 240, 234),
+          byCustomerDescId.documents().stream().map(d -> d.get("_id")).toList());
+      var reverseIds = session.read(ORDERS, fields, 0, 3, Document.EMPTY, Document.of("_id", -1));
+      assertEquals(
+          List.of(250, 249, 248),
+          reverseIds.documents().stream().map(d -> d.get("_id")).toList());
+      // A $natural order goes alone, as the server takes it.
+      var natural = session.read(ORDERS, fields, 0, 3, Document.EMPTY, Document.of("$natural", 1));
+      assertEquals(3, natural.documents().size());
+    }
+  }
+
+  @Test
+  void aReadOnlySessionFiltersAndCountsDocuments() throws Exception {
+    try (var session = session(true)) {
+      var fields = session.fields(ORDERS);
+      var filter = Document.of("paid", true, "customer", 2);
+      assertTrue(session.estimate(ORDERS, filter).isEmpty());
+      assertEquals(42, session.count(ORDERS, filter));
+      var page = session.read(ORDERS, fields, 0, 3, filter, Document.of("total", -1));
+      assertEquals(
+          List.of(250, 244, 238),
+          page.documents().stream().map(d -> d.get("_id")).toList());
+    }
+  }
+
+  @Test
   void aCursorIsReadInPortionsAndClosed() throws Exception {
     try (var session = session(false)) {
       var reply = session.command(

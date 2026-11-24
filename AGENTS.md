@@ -109,7 +109,11 @@ and counts, and refuses the others unsent. Its databases and collections show in
 fields that a sample of their documents has; a collection opens in a tab as a grid of its fields,
 read in pages, with a document or an array in a cell as Relaxed Extended JSON and a field a
 document does not have as an empty cell, where a `null` shows NULL, or a page of documents at a
-time as Relaxed Extended JSON or as a tree of their fields. Its console runs
+time as Relaxed Extended JSON or as a tree of their fields, with Filter and Sort fields (each one
+shell document with colors and completion; blank or `{}` clears it) above all three views that
+narrow and order the documents and counts (with `_id: 1` appended as tie-breaker unless Sort names
+`_id`, and no estimate while filtered) and sortable grid headers (for fields without `.` and not
+starting with `$`) that write their sort document into Sort. Its console runs
 statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls, `aggregate`,
 counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their documents in
 the same three ways, marks where a statement goes wrong in its own markup layer with its message
@@ -306,9 +310,10 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `frame` twice after `scroll`, and only then do the reads of those rows start. `FakeServers` makes
   up a table's rows from their position (`rows`, `values`), whose moments show in Europe/Berlin, as
   the catalog's tests set `State.zone`, whatever the machine's zone; its reads are keyed
-  `read <host>/<path> <from>-<to>`, with ` WHERE …` and ` ORDER BY …` after them where a filter
-  applies, which `values`, `counts` and `estimates` also take after the path, refusing a clause as
-  core does, and those of a whole value, which `whole` gives,
+  `read <host>/<path> <from>-<to>`, with ` WHERE …` and ` ORDER BY …`, on MongoDB ` FILTER …` and
+  ` SORT …`, after them where a filter applies, which `values`, `documents`, `counts` and
+  `estimates` also take after the path, refusing a clause or an invalid document as core does, and
+  those of a whole value, which `whole` gives,
   `whole <host>/<path> <column> <key>`, and, as core's do, fail as columns changed when the columns
   they are given are not the table's now; `FakeServers.queryFailure` makes core's typed failure.
   Its calls go through core's `Journal` as core's do, a catalog read or a page by its key and a

@@ -814,22 +814,23 @@ final class FakeServers implements Servers {
         return;
       }
       if (made.provider().keepsDocuments()) {
-        throw QueryException.of(
-            QueryException.Failure.OTHER, "A server of documents does not take a SQL filter");
+        Servers.Documents.parse(filter);
+        return;
       }
       Rows.check(made.provider(), filter, readOnly);
     }
 
-    private static String suffix(Rows.Filter filter) {
+    private String suffix(Rows.Filter filter) {
       if (filter == null || filter.empty()) {
         return "";
       }
       var text = new StringBuilder();
+      boolean docs = made.provider().keepsDocuments();
       if (filter.hasWhere()) {
-        text.append(" WHERE ").append(filter.where());
+        text.append(docs ? " FILTER " : " WHERE ").append(filter.where());
       }
       if (filter.hasOrder()) {
-        text.append(" ORDER BY ").append(filter.order());
+        text.append(docs ? " SORT " : " ORDER BY ").append(filter.order());
       }
       return text.toString();
     }
@@ -839,12 +840,16 @@ final class FakeServers implements Servers {
       check(filter);
       var path = path(t);
       var key = path + suffix(filter);
+      boolean filteredDocs =
+          made.provider().keepsDocuments() && filter != null && filter.hasWhere();
       return rows(
           "estimate " + key,
           t,
-          table -> estimates.containsKey(key)
-              ? estimates.get(key)
-              : estimates.getOrDefault(path, OptionalLong.of(3)));
+          table -> filteredDocs
+              ? OptionalLong.empty()
+              : estimates.containsKey(key)
+                  ? estimates.get(key)
+                  : estimates.getOrDefault(path, OptionalLong.of(3)));
     }
 
     @Override
@@ -920,7 +925,10 @@ final class FakeServers implements Servers {
         if (!now.equals(asked)) {
           return null;
         }
-        var docs = documents.get(path);
+        var docs = documents.get(key);
+        if (docs == null && values.get(key) == null && counts.get(key) == null) {
+          docs = documents.get(path);
+        }
         var fields = docs != null
             ? Values.fields(columns)
             : columns.stream()
