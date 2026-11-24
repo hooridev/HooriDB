@@ -427,9 +427,10 @@ final class CatalogTree {
       }
       var id = live.id();
       var table = t.table();
+      var asked = live.forgetting;
       read(s, live, t, link -> readTable(link, table), found -> {
         live.levels.put(node, new Read(columnNodes(id, found.columns())));
-        if (found.keys() != null) {
+        if (found.keys() != null && !forgottenSince(live, table, asked)) {
           live.keys.put(table, found.keys());
         }
       });
@@ -564,6 +565,7 @@ final class CatalogTree {
     }
     var id = live.id();
     var table = node.table();
+    var asked = live.forgetting;
     return scan(
         s,
         live,
@@ -574,7 +576,7 @@ final class CatalogTree {
           if (unread(live.levels.get(node))) {
             live.levels.put(node, new Read(columnNodes(id, found.columns())));
           }
-          if (found.keys() != null) {
+          if (found.keys() != null && !forgottenSince(live, table, asked)) {
             live.keys.put(table, found.keys());
           }
         });
@@ -887,12 +889,26 @@ final class CatalogTree {
     return live == null ? null : live.keys.get(table);
   }
 
-  /** The table's foreign keys as read elsewhere, cached for the tree, consoles and table tabs. */
-  void foreignKeysRead(UUID id, Table table, List<ForeignKey> keys) {
+  /**
+   * The table's foreign keys as read elsewhere, cached for the tree, consoles and table tabs
+   * unless they were forgotten after the read was asked, at {@code asked}, a {@link
+   * Live#forgetting}.
+   */
+  void foreignKeysRead(UUID id, Table table, List<ForeignKey> keys, long asked) {
     var live = lives.get(id);
-    if (live != null) {
+    if (live != null && !forgottenSince(live, table, asked)) {
       live.keys.put(table, keys);
     }
+  }
+
+  private static void forget(Live live, Node node) {
+    live.forgotten.put(node, ++live.forgetting);
+  }
+
+  private static boolean forgottenSince(Live live, Table table, long asked) {
+    var node = new Node.OfTable(live.id(), table);
+    return live.forgotten.entrySet().stream()
+        .anyMatch(e -> e.getValue() > asked && node.within(e.getKey()));
   }
 
   /** Drops the table's cached foreign keys so the next reader fetches them anew. */
@@ -900,6 +916,7 @@ final class CatalogTree {
     var live = lives.get(id);
     if (live != null) {
       live.keys.remove(table);
+      forget(live, new Node.OfTable(id, table));
     }
   }
 
@@ -1076,6 +1093,7 @@ final class CatalogTree {
       }
     }
     live.keys.keySet().removeIf(t -> new Node.OfTable(node.id(), t).within(node));
+    forget(live, node);
     Lane.cancel(gone);
     if (node instanceof Node.Connection) {
       // The databases are read anew: their connections go, those still opening too.
