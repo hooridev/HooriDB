@@ -10,6 +10,15 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.query.QueryException;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.ZoneOffset;
+import java.util.Arrays;
 import java.util.List;
 import java.util.OptionalLong;
 import org.junit.jupiter.api.Test;
@@ -97,5 +106,80 @@ class RowsTest {
     assertEquals("\"public\".\"orders\"", Rows.qualified(Provider.POSTGRESQL, pgTable));
     assertEquals("`hoori`.`items`", Rows.qualified(Provider.MARIADB, mariaTable));
     assertEquals("`hoori`.`items`", Rows.qualified(Provider.MYSQL, mariaTable));
+  }
+
+  @Test
+  void whereFormatsLiteralsAndQuotesColumnsPerProvider() throws QueryException {
+    var date = LocalDate.of(2026, 5, 14);
+    var time = LocalTime.of(13, 45, 5);
+    var offsetTime = OffsetTime.of(13, 45, 5, 0, ZoneOffset.ofHours(2));
+    var localDateTime = LocalDateTime.of(2026, 5, 14, 13, 45, 5);
+    var binary = new Binary(new byte[] {0x0a, (byte) 0xff}, 2);
+
+    // PostgreSQL: double-quoted identifiers, doubled single quotes, hex bytea, BC eras, AND.
+    assertEquals(
+        "\"name\" = 'O''Reilly; -- /*'",
+        Rows.where(Provider.POSTGRESQL, List.of("name"), List.of("O'Reilly; -- /*")));
+    assertEquals(
+        "\"a\"\"b\" = 42 AND \"big\" = 99999999999999999999 AND \"price\" = 12.50 AND \"flag\" = TRUE",
+        Rows.where(
+            Provider.POSTGRESQL,
+            List.of("a\"b", "big", "price", "flag"),
+            List.of(42L, new BigInteger("99999999999999999999"), new BigDecimal("12.50"), true)));
+    assertEquals(
+        "\"d\" = '2026-05-14' AND \"bc\" = '0044-03-15 BC' AND \"t\" = '13:45:05'"
+            + " AND \"ot\" = '13:45:05+02:00' AND \"dt\" = '2026-05-14 13:45:05'"
+            + " AND \"raw\" = '\\x0aff'",
+        Rows.where(
+            Provider.POSTGRESQL,
+            List.of("d", "bc", "t", "ot", "dt", "raw"),
+            List.of(date, LocalDate.of(-43, 3, 15), time, offsetTime, localDateTime, binary)));
+
+    // MySQL and MariaDB: backtick-quoted identifiers, doubled quotes, X'...' binary.
+    for (var provider : List.of(Provider.MYSQL, Provider.MARIADB)) {
+      var stringWhere = Rows.where(provider, List.of("na`me"), List.of("O'Reilly; --"));
+      assertEquals("`na``me` = 'O''Reilly; --'", stringWhere);
+      Rows.check(provider, new Rows.Filter(stringWhere, ""), true);
+
+      assertEquals(
+          "`id` = 7 AND `ratio` = 1.5 AND `ok` = FALSE",
+          Rows.where(provider, List.of("id", "ratio", "ok"), List.of(7L, 1.5d, false)));
+      assertEquals(
+          "`d` = '2026-05-14' AND `dt` = '2026-05-14 13:45:05'" + " AND `raw` = X'0aff'",
+          Rows.where(provider, List.of("d", "dt", "raw"), List.of(date, localDateTime, binary)));
+    }
+    Rows.check(
+        Provider.POSTGRESQL,
+        new Rows.Filter(
+            Rows.where(Provider.POSTGRESQL, List.of("name"), List.of("O'Reilly; DROP TABLE x")),
+            ""),
+        true);
+  }
+
+  @Test
+  void whereRejectsInvalidArgumentsAndIncompleteValues() {
+    var pg = Provider.POSTGRESQL;
+    refused(pg, List.of(), List.of());
+    refused(pg, List.of("a", "b"), List.of(1L));
+    refused(pg, List.of(""), List.of(1L));
+    refused(pg, List.of("a"), Arrays.asList((Object) null));
+    refused(pg, List.of("a"), List.of(Missing.FIELD));
+    refused(pg, List.of("a"), List.of(new Cut("abc", OptionalLong.of(2000))));
+    refused(pg, List.of("a"), List.of(new Binary(new byte[] {1}, 5)));
+    refused(pg, List.of("a"), List.of(1));
+    // Values whose literal may not equal what is stored: a FLOAT, a moment, a backslash.
+    var moment = OffsetDateTime.of(2024, 3, 31, 4, 30, 0, 0, ZoneOffset.ofHours(2));
+    for (var provider : List.of(Provider.POSTGRESQL, Provider.MYSQL, Provider.MARIADB)) {
+      for (Object value : List.of(0.1f, moment, "a\\b")) {
+        refused(provider, List.of("a"), List.of(value));
+      }
+    }
+    var columns = List.of("a");
+    List<Object> values = List.of(1L);
+    assertThrows(IllegalStateException.class, () -> Rows.where(Provider.MONGODB, columns, values));
+  }
+
+  private static void refused(Provider provider, List<String> columns, List<Object> values) {
+    assertThrows(IllegalArgumentException.class, () -> Rows.where(provider, columns, values));
   }
 }

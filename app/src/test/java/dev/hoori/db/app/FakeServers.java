@@ -1151,7 +1151,7 @@ final class FakeServers implements Servers {
       return new ResolvedOutline(new Table(db, tableName, Table.Kind.TABLE), tableOutline);
     }
 
-    private record ColumnLine(String name, String type, boolean inKey, String reference) {}
+    private record ColumnLine(String name, String type, boolean inKey, List<String> references) {}
 
     private static ColumnLine columnLine(String text) {
       boolean inKey = text.startsWith("*");
@@ -1159,13 +1159,13 @@ final class FakeServers implements Servers {
       var rest = parts[1];
       int arrow = rest.indexOf(" > ");
       if (arrow < 0) {
-        return new ColumnLine(parts[0], rest, inKey, null);
+        return new ColumnLine(parts[0], rest, inKey, List.of());
       }
-      return new ColumnLine(
-          parts[0],
-          rest.substring(0, arrow).stripTrailing(),
-          inKey,
-          rest.substring(arrow + 3).strip());
+      var refs = Arrays.stream(rest.substring(arrow + 3).split(" > "))
+          .map(String::strip)
+          .filter(s -> !s.isEmpty())
+          .toList();
+      return new ColumnLine(parts[0], rest.substring(0, arrow).stripTrailing(), inKey, refs);
     }
 
     private static List<Column> tableColumns(Table t, Outline table) {
@@ -1236,42 +1236,43 @@ final class FakeServers implements Servers {
         var byName = new LinkedHashMap<String, PendingKey>();
         for (var line : tableOutline.children()) {
           var parsed = columnLine(line.text());
-          if (parsed.reference() == null) {
-            continue;
-          }
-          var ref = parsed.reference();
-          int colon = ref.indexOf(':');
-          String keyName;
-          String spec;
-          if (colon >= 0) {
-            keyName = ref.substring(0, colon).strip();
-            spec = ref.substring(colon + 1).strip();
-          } else {
-            keyName = table.name() + "_" + parsed.name() + "_fkey";
-            spec = ref;
-          }
-          int space = spec.indexOf(' ');
-          var targetSpec = space < 0 ? spec : spec.substring(0, space);
-          var rulesSpec = space < 0 ? "" : spec.substring(space + 1).strip();
-          var parts = targetSpec.split("\\.", -1);
-          if (parts.length != 2 && parts.length != 3) {
-            throw new IllegalArgumentException("Bad foreign key reference: " + ref);
-          }
-          var refContainerName = parts.length == 3 ? parts[0] : container.name();
-          var refTableName = parts[parts.length - 2];
-          var refColumnName = parts[parts.length - 1];
-          var refContainerOutline = find(containersRoot, refContainerName);
-          boolean refSystem =
-              refContainerOutline != null && refContainerOutline.text().startsWith("~");
-          Container refContainer = schemas
-              ? new Schema(container.database(), refContainerName, refSystem)
-              : new Database(refContainerName, refSystem);
-          var referenced = new Table(refContainer, refTableName, Table.Kind.TABLE);
-          var pending = byName.computeIfAbsent(keyName, _ -> new PendingKey(table, referenced));
-          pending.columns.add(parsed.name());
-          pending.referencedColumns.add(refColumnName);
-          if (!rulesSpec.isEmpty()) {
-            applyRules(pending, rulesSpec);
+          var references = parsed.references();
+          for (int r = 0; r < references.size(); r++) {
+            var ref = references.get(r);
+            int colon = ref.indexOf(':');
+            String keyName;
+            String spec;
+            if (colon >= 0) {
+              keyName = ref.substring(0, colon).strip();
+              spec = ref.substring(colon + 1).strip();
+            } else {
+              // A key of its own for each unnamed reference of the column.
+              keyName = table.name() + "_" + parsed.name() + "_fkey" + (r == 0 ? "" : r + 1);
+              spec = ref;
+            }
+            int space = spec.indexOf(' ');
+            var targetSpec = space < 0 ? spec : spec.substring(0, space);
+            var rulesSpec = space < 0 ? "" : spec.substring(space + 1).strip();
+            var parts = targetSpec.split("\\.", -1);
+            if (parts.length != 2 && parts.length != 3) {
+              throw new IllegalArgumentException("Bad foreign key reference: " + ref);
+            }
+            var refContainerName = parts.length == 3 ? parts[0] : container.name();
+            var refTableName = parts[parts.length - 2];
+            var refColumnName = parts[parts.length - 1];
+            var refContainerOutline = find(containersRoot, refContainerName);
+            boolean refSystem =
+                refContainerOutline != null && refContainerOutline.text().startsWith("~");
+            Container refContainer = schemas
+                ? new Schema(container.database(), refContainerName, refSystem)
+                : new Database(refContainerName, refSystem);
+            var referenced = new Table(refContainer, refTableName, Table.Kind.TABLE);
+            var pending = byName.computeIfAbsent(keyName, _ -> new PendingKey(table, referenced));
+            pending.columns.add(parsed.name());
+            pending.referencedColumns.add(refColumnName);
+            if (!rulesSpec.isEmpty()) {
+              applyRules(pending, rulesSpec);
+            }
           }
         }
         for (var entry : byName.entrySet()) {

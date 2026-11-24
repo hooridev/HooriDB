@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.StringJoiner;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
@@ -790,6 +791,47 @@ public final class Rows {
   /** The table's qualified SQL name: its container and name, each quoted for the provider. */
   public static String qualified(Provider provider, Table table) {
     return provider.quote(table.container().name()) + "." + provider.quote(table.name());
+  }
+
+  /**
+   * A {@code WHERE} condition (without {@code WHERE}) matching each column to its value, quoted
+   * and formatted as a literal of the provider's SQL, joined with {@code AND}.
+   *
+   * @throws IllegalArgumentException if {@code columns} is empty, has another size than {@code
+   *     values}, names an empty column, or a value is {@code null}, {@link Missing#FIELD}, read
+   *     only in part ({@link Cut} or a {@link Binary#cut} value), or of no kind's Java type
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(Provider provider, List<String> columns, List<Object> values) {
+    Objects.requireNonNull(provider, "provider");
+    Objects.requireNonNull(columns, "columns");
+    Objects.requireNonNull(values, "values");
+    if (columns.isEmpty() || columns.size() != values.size()) {
+      throw new IllegalArgumentException("Expected at least one column and one value per column");
+    }
+    var dialect = provider.dialect().rows();
+    var condition = new StringJoiner(" AND ");
+    for (var i = 0; i < columns.size(); i++) {
+      var column = columns.get(i);
+      var value = values.get(i);
+      if (column == null || column.isEmpty()) {
+        throw new IllegalArgumentException("Column name cannot be empty");
+      }
+      if (value == null || value == Missing.FIELD || !Changes.whole(value) || !exact(value)) {
+        throw new IllegalArgumentException("A value of column " + column + " cannot filter rows");
+      }
+      condition.add(provider.quote(column) + " = " + dialect.literal(value));
+    }
+    return condition.toString();
+  }
+
+  // shortcut: refuses values whose literal may not equal what is stored (a FLOAT's decimal, a
+  // moment's offset, a backslash under either escape mode); compare them as unchanged() does
+  // where such keys turn up.
+  private static boolean exact(Object value) {
+    return !(value instanceof Float)
+        && !(value instanceof OffsetDateTime)
+        && !(value instanceof String text && text.contains("\\"));
   }
 
   static void requireColumnsOf(Table table, List<Column> columns) {
