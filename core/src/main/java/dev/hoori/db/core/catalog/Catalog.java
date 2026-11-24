@@ -152,6 +152,9 @@ public final class Catalog {
    * The foreign keys whose referencing or referenced table is {@code table}, each once (a
    * self-reference appears once), ordered by constraint name and then referencing table. Views and
    * foreign tables have none and return an empty list without querying the server.
+   *
+   * <p>A key holds the columns the server shows the user: where MySQL's column privileges hide
+   * some columns of a key of several, the key comes without them.
    */
   public static List<ForeignKey> foreignKeys(Connection connection, Provider provider, Table table)
       throws CatalogException {
