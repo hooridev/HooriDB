@@ -65,7 +65,7 @@ final class DocumentDialog {
   ConsoleTab.Problem problem;
   private boolean errorMarked;
   private boolean conflict;
-  private Object insertId; // the _id of a new document without one: made, or the last sent
+  private Bson.ObjectId insertId; // the _id this dialog makes for a new document without one
   private DocumentEdit sent; // the last command sent, and the text it was read from
   private String sentText;
 
@@ -362,11 +362,17 @@ final class DocumentDialog {
     if (parsed.has("_id")) {
       return parsed;
     }
-    if (insertId == null) {
-      insertId = Bson.ObjectId.next();
+    Object id;
+    if (sent instanceof DocumentEdit.Insert last) {
+      id = last.document().get("_id"); // what the server may have taken already, null too
+    } else {
+      if (insertId == null) {
+        insertId = Bson.ObjectId.next();
+      }
+      id = insertId;
     }
     var entries = new ArrayList<Document.Entry>(parsed.entries().size() + 1);
-    entries.add(new Document.Entry("_id", insertId));
+    entries.add(new Document.Entry("_id", id));
     entries.addAll(parsed.entries());
     return new Document(entries);
   }
@@ -391,7 +397,6 @@ final class DocumentDialog {
     var live = s.catalog.live(tab.id);
     var edit = pending;
     if (edit instanceof DocumentEdit.Insert insert) {
-      insertId = insert.document().get("_id");
       // The text takes the _id sent, as ObjectId() in it made it: whatever the outcome, a later
       // save of this text, edited or not, cannot insert the document again under another _id.
       text = Shell.pretty(insert.document());
@@ -488,7 +493,7 @@ final class DocumentDialog {
   }
 
   private static ConsoleTab.Problem lostProblem(String detail) {
-    String body = "The connection was lost while saving: whether the write took effect is not"
+    String body = "The write ended before the server confirmed it: whether it took effect is not"
         + " known. Refresh the collection before trying again.";
     return new ConsoleTab.Problem(
         ConsoleTab.UNSURE, detail.isEmpty() ? body : body + "\n" + detail);
