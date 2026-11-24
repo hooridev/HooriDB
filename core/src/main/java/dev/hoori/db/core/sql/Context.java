@@ -466,9 +466,7 @@ public record Context(
       }
       if (introduces(tokens, i)) {
         boolean from = token.upper().equals("FROM");
-        if (from && depth == 0) {
-          inFrom = true;
-        }
+        inFrom |= from && depth == 0;
         readTable(tokens, i + 1, i, skip, found, spans, tableTokens);
         // Not the FROM of EXTRACT(YEAR FROM (…)).
         if (!from || depth == 0) {
