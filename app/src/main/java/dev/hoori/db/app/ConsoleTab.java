@@ -1830,6 +1830,13 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     if (lost) {
       closeSession();
     } else {
+      unsure(s);
+    }
+  }
+
+  /** What a failed call did to the transaction is not known, where the console has one. */
+  private void unsure(State s) {
+    if (language(s).transactions()) {
       transaction = Transaction.UNKNOWN;
       learned++;
     }
@@ -1860,8 +1867,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         brief(g.sql) + " could not be ended, so " + brief(sql) + " was not sent and nothing"
             + " more runs: " + Session.giveUpText(g.failure, g.plain));
     log.add(new Logged(Level.ERROR, brief(sql), null, NOT_RUN));
-    transaction = Transaction.UNKNOWN;
-    learned++;
+    unsure(s);
   }
 
   /** What the results area says of a call that failed rather than gave a result. */
