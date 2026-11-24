@@ -1061,6 +1061,43 @@ class TableTabTest {
     assertTrue(status(c.tree("end")).contains("\"200 rows\""), c.tree("end"));
   }
 
+  /** A failed exact count shows beside the rows and lets scrolling keep reading pages. */
+  @Test
+  void aFailedCountShowsInStatusAndKeepsPaging() throws Exception {
+    servers.rows(BIG, 1000, OptionalLong.empty());
+    servers.fail("count " + BIG, FakeServers.queryFailure(QueryException.Failure.OTHER));
+    var app = shop();
+    c.run(app, table("big") + SETTLE);
+    assertFalse(servers.calls.contains("read " + BIG + " 400-600"), servers.calls.toString());
+
+    c.run(app, page("Last page") + SETTLE + "advance 1\nframe\nsnap failed\n");
+    String failed = c.tree("failed");
+    assertTrue(status(failed).contains("\"Count failed · at least 400 rows\""), failed);
+    assertFalse(failed.contains("role=note"), failed);
+    assertTrue(cell(failed, 0, 0).contains("\"1\""), failed);
+    assertNull(tab(app).failure);
+
+    // Scrolling past the pages already read still reads further pages.
+    c.run(app, scroll(399) + SETTLE + "snap scrolled\n");
+    String scrolled = c.tree("scrolled");
+    assertTrue(servers.calls.contains("read " + BIG + " 400-600"), servers.calls.toString());
+    assertTrue(cell(scrolled, 400, 0).contains("\"401\""), scrolled);
+    assertTrue(status(scrolled).contains("\"Count failed · at least 800 rows\""), scrolled);
+    // Why, in the status line's tooltip.
+    c.run(app, "move #rows-status\nframe\nadvance 1\nframe\nframe\nsnap tip\n");
+    String tip = c.tree("tip");
+    assertFalse(scrolled.contains("the server's words for OTHER"), scrolled);
+    assertTrue(
+        ConnectionsTest.line(tip, "role=tooltip").contains("the server's words for OTHER"), tip);
+
+    // A later count that succeeds clears the failure note.
+    servers.heal("count " + BIG);
+    c.run(app, page("Last page") + SETTLE + "frame\nframe\n" + SETTLE + "snap healed\n");
+    String healed = c.tree("healed");
+    assertTrue(status(healed).contains("\"1,000 rows\""), healed);
+    assertFalse(status(healed).contains("Count failed"), healed);
+  }
+
   // The lane
 
   @Test

@@ -23,6 +23,7 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Schema;
@@ -145,6 +146,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   private int first; // the rows the grid built last
   private int last = -1;
   Failure failure; // why the last read failed, or null
+  private String countFailure; // why the last count failed, or null: the pages go on
   long took = -1; // nanoseconds the last read with rows took on the server, -1 before the first
   int got; // rows of that read
   String said; // what the tab says for a while in its status line, in its own window; or null
@@ -235,6 +237,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     stop();
     clearEdits();
     failure = null;
+    countFailure = null;
     ending = false;
     countedFirst = false;
     pages.clear();
@@ -471,6 +474,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       rows = from + n;
       counted = Counted.EXACT;
       more = false;
+      countFailure = null;
     } else {
       // Empty, and what is before it not read: the end is somewhere before.
       rows = Math.min(rows, from);
@@ -595,6 +599,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (lane == null) {
       return;
     }
+    countFailure = null;
     var live = s.catalog.live(id);
     var of = table;
     var applied = filter;
@@ -605,6 +610,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         link -> link.count(of, applied),
         n -> {
           counting = null;
+          countFailure = null;
           countedFirst = opening != null;
           ending = false;
           rows = n;
@@ -621,10 +627,20 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         },
         error -> {
           counting = null;
+          if (closed) {
+            return;
+          }
           if (retry && lane.broken()) {
             counted(s, true, false);
-          } else {
+          } else if (ending
+              || error instanceof InterruptedException
+              || Set.of(Problem.LOST, Problem.DISCARDED, Problem.UNOPENED)
+                  .contains(problem(error))) {
             failed(s, error, false, live, !separate);
+          } else {
+            // The count itself failed, not the connection: keep the pages and let paging go on.
+            toLast = false;
+            countFailure = Objects.requireNonNullElse(CatalogTree.words(live, detail(error)), "");
           }
         });
   }
@@ -677,6 +693,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   void reconnected(State s) {
     edits.live = s.catalog.live(id); // the same profile, as changing it asks first
     failure = null;
+    countFailure = null;
     askAgain(s);
   }
 
@@ -907,6 +924,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     rows = 0;
     more = false;
     counted = Counted.ESTIMATED;
+    countFailure = null;
     first = 0;
     last = -1;
     presentation.page(0);
@@ -1113,6 +1131,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     El rowsStatus = Label.label(Label.Variant.MUTED, rowsText(ofDocuments))
         .key("rows-status")
         .ellipsis();
+    if (counting == null && countFailure != null) {
+      rowsStatus =
+          Tooltip.tooltip(rowsStatus, CatalogTree.join(rowsText(ofDocuments), countFailure));
+    }
     // The edit actions on a line of their own while there is something to commit: the status line
     // has no room for them beside the paging.
     boolean bar = edits.changes != null && (edits.changes.count() > 0 || edits.writing != null);
@@ -1574,7 +1596,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
           + String.format(Locale.ROOT, "%,d", DocumentPresentation.GRID_ROWS)
           + " are shown";
     }
-    return counting == null ? text : text + " · counting…";
+    if (counting != null) {
+      return text + " · counting…";
+    }
+    if (countFailure != null) {
+      // First, so that a narrow line cuts the number short and not this; why is in its tooltip.
+      return "Count failed · " + Character.toLowerCase(text.charAt(0)) + text.substring(1);
+    }
+    return text;
   }
 
   /** What the last read took. */
