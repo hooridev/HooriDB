@@ -119,10 +119,12 @@ document does not have as an empty cell, where a `null` shows NULL, or a page of
 time as Relaxed Extended JSON or as a tree of their fields, with Filter and Sort fields (each one
 shell document with colors and completion; blank or `{}` clears it) above all three views that
 narrow and order the documents and counts (with `_id: 1` appended as tie-breaker unless Sort names
-`_id`, and no estimate while filtered) and sortable grid headers (for fields without `.` and not
-starting with `$`) that write their sort document into Sort. Its console runs
-statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls, `aggregate`,
-counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their documents in
+`_id`, and no estimate while filtered), sortable grid headers (for fields without `.` and not
+starting with `$`) that write their sort document into Sort, and Open in console to add its
+`db.getCollection(…).find(…)` with the applied Filter and Sort to a console as SQL's does. Its
+console runs statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls,
+`aggregate`, counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their
+documents in
 the same three ways, marks where a statement goes wrong in its own markup layer with its message
 after its line, puts run and last-outcome markers in the gutter on each statement's first line, lays
 its statements out with
