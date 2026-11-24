@@ -7,6 +7,7 @@ import static com.rethinkj.ui.kit.Button.button;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
+import com.rethinkj.ui.Len;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
@@ -209,31 +210,27 @@ final class ResultsArea {
       footer.add(o.presentation.switcher("result-shown", o.presentation::mode));
     }
     ResultEdits.editControls(s, tab, o, footer, footer);
-    // The read-only explanation gives way before the status, which the footer shrinks first, and
-    // is in the status's tooltip. shortcut: outweighs the kit's shrink of the start (1e9); a
-    // minimum width on the status replaces it once that yields to the controls (rethinkj/ui#589).
+    // The edit feedback may shorten to nothing, so the status's tooltip has it too.
     String why = null;
-    if (o.edits.editable == null) {
-      for (El e : footer) {
-        if ("edit-status".equals(e.key())) {
-          e.shrink(1e15f);
-          why = e.text().string();
-        }
+    for (El e : footer) {
+      if ("edit-status".equals(e.key())) {
+        why = e.text().string();
       }
     }
     footer.addAll(presented.footer());
     footer.add(pin);
-    El status = Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis();
+    El label = Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis();
+    El status = why == null
+        ? Tooltip.whenShortened(label, about)
+        : Tooltip.tooltip(label, about + "\n" + why);
+    // As in a table's tab: the status keeps half the footer, so the texts at the end shorten first.
+    status.style().minWidth = Len.percent(0.5f);
     return col()
         .grow(1)
         .minSize(0, 0)
         .child(ResultEdits.writeProblemCallout(o.edits))
         .child(presented.body().grow(1))
-        .child(Card.footer(
-            why == null
-                ? Tooltip.whenShortened(status, about)
-                : Tooltip.tooltip(status, about + "\n" + why),
-            footer.toArray(El[]::new)));
+        .child(Card.footer(status, footer.toArray(El[]::new)));
   }
 
   /** A count: the number of rows, or documents, the statement changed. */

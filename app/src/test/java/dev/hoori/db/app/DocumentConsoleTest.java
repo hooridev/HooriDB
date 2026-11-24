@@ -10,12 +10,14 @@ import static dev.hoori.db.app.ConsoleEditorTest.COMPLETE;
 import static dev.hoori.db.app.ConsoleEditorTest.options;
 import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.LayoutTest.widthOf;
 import static dev.hoori.db.app.TableTabTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import com.rethinkj.ui.kit.Split;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
@@ -30,6 +32,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** A console on a made-up MongoDB server, without Docker: what its editor suggests. */
 class DocumentConsoleTest {
@@ -377,5 +381,52 @@ class DocumentConsoleTest {
         ConsoleTest.near(c.tree("idle"), "#result-status")
             .contains("the first 200 documents; reading stopped after being idle"),
         c.tree("idle"));
+  }
+
+  /**
+   * In a narrow MongoDB result footer, the status line keeps room while the switcher, paging and
+   * Pin stay inside the card. Reading is stopped first: with Stop reading beside them, the controls
+   * alone are wider than the card at 800 px.
+   */
+  @ParameterizedTest
+  @ValueSource(ints = {0, 400})
+  void aNarrowResultFooterKeepsTheStatusVisibleAndPagingInside(int sidebar) throws Exception {
+    var docs = java.util.stream.IntStream.rangeClosed(1, 500)
+        .mapToObj(i -> Document.of("_id", i, "customer", "c" + i, "total", (double) i))
+        .toList();
+    var fields = Values.found(docs);
+    var rows = docs.stream().map(d -> Values.row(fields, d)).toList();
+    var query = "db.orders.find()";
+    c.servers.statement(query, List.of(new Result.Rows(fields, 0, rows, docs)));
+    var app = console();
+    if (sidebar > 0) {
+      app.state().sidebar = Split.Position.first(sidebar);
+    }
+    c.run(
+        app,
+        "size 800 760\nframe\n"
+            + type(query)
+            + RUN
+            + "press role=button label=\"Stop reading\"\nframe\n"
+            + SETTLE
+            + "snap narrow-grid\n"
+            + "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap narrow-mongo\n");
+    String grid = c.tree("narrow-grid");
+    assertTrue(
+        widthOf(grid, "#result-status ") >= (sidebar > 0 ? 60 : 140),
+        "grid status=" + widthOf(grid, "#result-status ") + "\n" + grid);
+    assertTrue(TableTabTest.end(grid, "#pin ") <= TableTabTest.end(grid, "#grid "), grid);
+
+    String tree = c.tree("narrow-mongo");
+    assertTrue(tree.contains("#result-shown "), tree);
+    assertTrue(tree.contains("#paging "), tree);
+    assertEquals(0, widthOf(tree, "#rows-in-view "), tree);
+    float statusWidth = widthOf(tree, "#result-status ");
+    if (sidebar == 0) {
+      assertTrue(statusWidth >= 70, "status=" + statusWidth + "\n" + tree);
+    }
+    float edge = TableTabTest.end(tree, "#json ");
+    assertTrue(TableTabTest.end(tree, "#paging ") <= edge, tree);
+    assertTrue(TableTabTest.end(tree, "#pin ") <= edge, tree);
   }
 }

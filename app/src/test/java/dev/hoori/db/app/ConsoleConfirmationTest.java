@@ -480,8 +480,8 @@ class ConsoleConfirmationTest {
   }
 
   /**
-   * In a narrow tab the read-only explanation gives way before the count and the estimate, and is
-   * in the status's tooltip, also where the status itself is not cut short.
+   * The status keeps half the footer, as a table tab's does, so the read-only explanation shortens
+   * first and is in the status's tooltip; a narrow tab keeps Pin inside the card.
    */
   @ParameterizedTest
   @CsvSource({"800, 0", "800, 400", "1173, 0"})
@@ -500,8 +500,15 @@ class ConsoleConfirmationTest {
             .contains("200 of about 2,400,000 rows so far · cursor open, more as it scrolls"),
         narrow);
     assertTrue(narrow.contains("#stop-reading "), narrow);
-    assertEquals(0, widthOf(narrow, "#edit-status "), narrow);
-    assertTrue(widthOf(narrow, "#result-status ") >= (sidebar > 0 ? 80 : 160), narrow);
+    float status = widthOf(narrow, "#result-status ");
+    if (width == 1173) {
+      // Half the footer: the grid's width less the footer's padding.
+      assertTrue(status >= (widthOf(narrow, "#grid ") - 32) / 2 - 1, narrow);
+      assertTrue(widthOf(narrow, "#edit-status ") > 0, narrow);
+    } else {
+      assertEquals(0, widthOf(narrow, "#edit-status "), narrow);
+      assertTrue(status >= (sidebar > 0 ? 100 : 180), narrow);
+    }
     assertTrue(TableTabTest.end(narrow, "#pin ") <= TableTabTest.end(narrow, "#grid "), narrow);
     c.run(app, "move #result-status\nframe\nadvance 1\nframe\nframe\nsnap tip\n");
     String tip = c.tree("tip");

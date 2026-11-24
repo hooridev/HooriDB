@@ -12,12 +12,14 @@ import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.type;
 import static dev.hoori.db.app.ConsoleTransactions.MANUAL;
 import static dev.hoori.db.app.ConsoleTransactions.OPENED;
+import static dev.hoori.db.app.LayoutTest.widthOf;
 import static dev.hoori.db.app.TableTabTest.cell;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import com.rethinkj.ui.kit.Split;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
@@ -34,6 +36,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Editing single-table SELECT results in an SQL console, DML Preview, Commit, Revert and guards. */
 class ConsoleEditTest {
@@ -601,5 +605,46 @@ class ConsoleEditTest {
     String refused = c.tree("refused-clear");
     assertTrue(line(refused, "#edit-status").contains(ResultEdits.UNLOADED_PASTE), refused);
     assertEquals(0, k.tab(app).pendingChanges(false));
+  }
+
+  /**
+   * In a narrow editable result footer, feedback texts give way before the status line, which shows
+   * them on hover, while the edit controls and Pin stay inside the card.
+   */
+  @ParameterizedTest
+  @ValueSource(ints = {0, 400})
+  void aNarrowEditableResultFooterKeepsRoomForTheStatusLine(int sidebar) throws Exception {
+    String mixed = "SELECT id, upper(name) AS up, name, email FROM customers";
+    servers.statement(
+        mixed,
+        List.of(new Result.Rows(
+            List.of(
+                FakeServers.originField("id", "integer", "shop.public", "customers", "id"),
+                new Field("up", "text", Kind.TEXT),
+                FakeServers.originField("name", "text", "shop.public", "customers", "name"),
+                FakeServers.originField(
+                    "email", "character varying(255)", "shop.public", "customers", "email")),
+            0,
+            List.of(List.of(1L, "ALICE", "Alice", "alice@example.com")))));
+    var app = k.console(SHOP);
+    if (sidebar > 0) {
+      app.state().sidebar = Split.Position.first(sidebar);
+    }
+    c.run(
+        app,
+        "size 800 760\nframe\n"
+            + type(mixed)
+            + RUN
+            + SETTLE
+            + "press #cell-0-1\nframe\nsnap narrow-edit\n");
+    String tree = c.tree("narrow-edit");
+    assertTrue(line(tree, "#edit-status").contains("expression"), tree);
+    float statusWidth = widthOf(tree, "#result-status ");
+    assertEquals(0, widthOf(tree, "#edit-status "), tree);
+    assertTrue(statusWidth >= (sidebar > 0 ? 10 : 80), "status=" + statusWidth + "\n" + tree);
+    assertTrue(TableTabTest.end(tree, "#pin ") <= TableTabTest.end(tree, "#grid "), tree);
+    c.run(app, "move #result-status\nframe\nadvance 1\nframe\nframe\nsnap tip\n");
+    String tip = c.tree("tip");
+    assertTrue(ConnectionsTest.line(tip, "role=tooltip").contains("expression"), tip);
   }
 }
