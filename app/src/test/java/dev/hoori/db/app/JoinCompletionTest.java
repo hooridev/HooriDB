@@ -508,6 +508,62 @@ class JoinCompletionTest {
   }
 
   @Test
+  void joinAliasesAvoidParenthesizedGroupAliasesAndFirstTables() throws Exception {
+    var app = console.console(SHOP);
+    // Group alias "c" is taken: customers gets "c2".
+    console.c.run(
+        app,
+        TREE
+            + open("customers")
+            + SETTLE
+            + type("SELECT * FROM (orders io JOIN customers ic ON ic.id = io.customer_id) AS c"
+                + " JOIN orders o ON o.customer_id = c.id JOIN cu")
+            + COMPLETE
+            + "snap paren-group-alias\n");
+    assertEquals(
+        List.of("customers c2 ON c2.id = o.customer_id", "customers"),
+        options(console.c.tree("paren-group-alias")));
+
+    // First table inside the parenthesis already takes "o": orders gets "o2".
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) JOIN ")
+            + COMPLETE
+            + "snap paren-first-alias\n");
+    var firstAlias = options(console.c.tree("paren-first-alias"));
+    assertEquals(
+        "orders o2 ON o2.customer_id = c.id", firstAlias.getFirst(), firstAlias.toString());
+
+    // Unaliased first table inside the parenthesis counts as already unaliased: new orders gets
+    // an alias.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM (orders JOIN customers ON customers.id = orders.customer_id)"
+                + " JOIN ")
+            + COMPLETE
+            + "snap paren-first-unaliased\n");
+    var firstUnaliased = options(console.c.tree("paren-first-unaliased"));
+    assertEquals(
+        "orders o ON o.customer_id = customers.id",
+        firstUnaliased.getFirst(),
+        firstUnaliased.toString());
+
+    // A group alias alone marks the statement as aliased, so a new join takes an alias.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM (categories JOIN orders ON orders.category_id = categories.id)"
+                + " AS j JOIN orders ON orders.id = j.id JOIN cu")
+            + COMPLETE
+            + "snap paren-only-alias\n");
+    assertEquals(
+        List.of("customers c ON c.id = orders.customer_id", "customers"),
+        options(console.c.tree("paren-only-alias")));
+  }
+
+  @Test
   void anUnreadEarlierSchemaOnTheSearchPathPreventsFallingThroughToALaterSchema() throws Exception {
     servers.serve(QUOTED, Provider.POSTGRESQL, "16.4", """
         shop
