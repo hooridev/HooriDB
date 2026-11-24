@@ -9,6 +9,7 @@ import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.RUN_ALL;
 import static dev.hoori.db.app.ConsoleTest.near;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.DocumentConsoleTest.show;
 import static dev.hoori.db.app.TableTabTest.cell;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -79,11 +80,11 @@ class DocumentConsoleServerTest {
     assertTrue(cell(grid, 0, 0).contains("\"250\""), grid);
     assertTrue(cell(grid, 0, 1).contains("\"375\""), grid);
     assertTrue(near(grid, "#result-status").contains("3 documents"), grid);
-    c.run(app, "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap json\n");
+    c.run(app, show("JSON") + "snap json\n");
     var json = line(c.tree("json"), "#json");
     assertTrue(json.contains("\\\"_id\\\": 250,"), json);
     assertTrue(json.contains("\\\"$numberDecimal\\\": \\\"375\\\""), json);
-    c.run(app, "press role=radio label=\"Tree\"\nframe\nadvance 1\nframe\nsnap tree\n");
+    c.run(app, show("Tree") + "snap tree\n");
     var tree = c.tree("tree");
     assertTrue(tree.contains("role=treeitem label=\"250\""), tree);
   }
@@ -101,10 +102,7 @@ class DocumentConsoleServerTest {
   @Test
   void theDocumentsShownWholeTurnAPageAtATimeAndTheNextIsRead() throws Exception {
     var app = console(docs());
-    c.run(
-        app,
-        type("db.orders.find()") + RUN
-            + "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap first\n");
+    c.run(app, type("db.orders.find()") + RUN + show("JSON") + "snap first\n");
     var first = c.tree("first");
     assertTrue(line(first, "#rows-in-view").contains("\"Documents 1–200\""), first);
     assertTrue(line(first, "role=button label=\"Previous page\"").contains("disabled"), first);
@@ -131,7 +129,7 @@ class DocumentConsoleServerTest {
     c.run(
         app,
         type("db.orders.find()") + RUN
-            + "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\n"
+            + show("JSON")
             + "press role=button label=\"Next page\"\nframe\nsnap reading\n"
             + "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
             + SETTLE
@@ -260,7 +258,7 @@ class DocumentConsoleServerTest {
         stopped);
     assertFalse(stopped.contains("role=button label=\"Stop reading\""), stopped);
     // In JSON view, Next page is disabled because no more documents will be read.
-    c.run(app, "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap json\n");
+    c.run(app, show("JSON") + "snap json\n");
     assertTrue(
         line(c.tree("json"), "role=button label=\"Next page\"").contains("disabled"),
         c.tree("json"));

@@ -61,7 +61,7 @@ The console understands:
 
 For a collection whose name is not a valid shell identifier, use `db.getCollection('name')`.
 
-Results that return documents have the same **Grid**, **JSON**, and **Tree** switch as a collection tab. **JSON** and **Tree** show 200 documents at a time with the same paging buttons; the next page reads more documents while the result's cursor is open (running the next statement closes it), and the last page is known once the cursor is read to its end. An insert, update, replace, or delete shows how many documents it changed; the `findOneAnd…` methods show the server's reply.
+Results that return documents have the same **Grid**, **JSON**, and **Tree** views as a collection tab, chosen from the **Show documents as** dropdown in the result footer. **JSON** and **Tree** show 200 documents at a time with the same paging buttons; the next page reads more documents while the result's cursor is open (running the next statement closes it), and the last page is known once the cursor is read to its end. An insert, update, replace, or delete shows how many documents it changed; the `findOneAnd…` methods show the server's reply.
 
 `use <database>` switches the console's **Database** for the statements after it. You can also choose the database from the **Database** dropdown in the toolbar.
 
