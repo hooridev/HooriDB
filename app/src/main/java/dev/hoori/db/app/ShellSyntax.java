@@ -38,6 +38,44 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
     return new ShellSyntax(Theme.CURRENT.get().code());
   }
 
+  /** Colors as {@link #of()}, with Ctrl+Alt+L formatting a single shell document. */
+  static Highlighter document() {
+    var delegate = of();
+    return new Highlighter() {
+      @Override
+      public Object line(String line, Object state, Spans out) {
+        return delegate.line(line, state, out);
+      }
+
+      @Override
+      public boolean marksBrackets() {
+        return delegate.marksBrackets();
+      }
+
+      @Override
+      public String lineComment() {
+        return delegate.lineComment();
+      }
+
+      @Override
+      public Function<String, Formatted> formatter() {
+        return ShellSyntax::formatDocument;
+      }
+    };
+  }
+
+  /** A single shell document laid out with {@link Shell#pretty}, or where it fails to parse. */
+  static Formatted formatDocument(String text) {
+    try {
+      return new Formatted(Shell.pretty(Shell.document(text)), null);
+    } catch (SyntaxException e) {
+      if (e.tooLarge()) {
+        return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
+      }
+      return new Formatted(null, problem(text, Math.clamp(e.offset(), 0, text.length())));
+    }
+  }
+
   @Override
   public Object line(String line, Object state, Spans out) {
     var tokens = new ArrayList<Lexer.Token>();
@@ -96,11 +134,9 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
     }
   }
 
-  /**
-   * The problem at the offset: a string or block comment not closed that it is in or ends at, else
-   * the token there or after it in the statement, else the statement's end.
-   */
-  private static Formatted.Problem problem(String text, int at) {
+  /** The problem at the offset: a string or block comment not closed that it is in or ends at, else
+   * the token there or after it in the statement, else the statement's end. */
+  static Formatted.Problem problem(String text, int at) {
     int end = Script.split(text).stream()
         .mapToInt(Script.Piece::end)
         .filter(e -> e >= at)

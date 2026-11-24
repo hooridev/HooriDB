@@ -161,8 +161,13 @@ table's tab also stages new rows (with empty cells taking their server `DEFAULT`
 Commit… shows the UPDATEs, DELETEs and INSERTs in a DML Preview and writes them all or nothing on a
 connection of its own, after the console's question where its transaction may be open; a table's
 tab keeps edited and deleted rows across dropped pages, reads the table anew after an insert, a
-delete or a key change, and asks before Refresh or a changed WHERE or ORDER BY. Nothing else can be
-edited yet.
+delete or a key change, and asks before Refresh or a changed WHERE or ORDER BY. A collection's tab
+on a writable connection edits, inserts, copies (without its `_id`) and deletes one document at a
+time, from any of its three views, in a dialog of the shell's notation with the console's colors,
+completion and error marks; it opens only a document whose text reads back as the same document,
+shows the command before it is sent on the writer's connection, writes nothing over a document that
+changed since it was read (`$expr` equal to the document read) and says so, and reads the collection
+anew. Nothing else can be edited yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it

@@ -198,6 +198,8 @@ public final class Shell {
             ? "Code(" + quote(code) + ")"
             : "Code(" + quote(code) + ", " + compact(scope) + ")";
       case Bson.Symbol(var symbol) -> "Symbol(" + quote(symbol) + ")";
+      case Bson.DbPointer(var namespace, var id) ->
+        "DBPointer(" + quote(namespace) + ", " + scalar(id) + ")";
       case Bson.Special s ->
         switch (s) {
           case MIN_KEY -> "MinKey()";

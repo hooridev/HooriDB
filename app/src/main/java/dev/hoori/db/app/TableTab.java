@@ -39,6 +39,7 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.DocumentFilters;
 import dev.hoori.db.core.document.Shell;
 import dev.hoori.db.core.document.Values;
@@ -158,6 +159,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   private int says;
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   final Menu.State menu = new Menu.State();
+  final Menu.State treeMenu = new Menu.State();
   final ValuePanel value = new ValuePanel();
   Rows.Filter filter = Rows.Filter.NONE; // the clauses applied to reads and counts
   private int query; // counts the applied queries, so that JSON and Tree start anew with each
@@ -172,6 +174,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   private boolean reread; // a commit changed a key, inserted, or deleted: read the rows anew
   final ResultEdits edits = new ResultEdits();
   ResultEdits.Preview preview; // the DML Preview dialog before committing edits, or null
+  DocumentDialog documentDialog; // the edit/insert/copy/delete dialog for a collection, or null
+  ConsoleTab.Problem documentProblem; // why an edit/copy/delete dialog could not open, or null
   // Original rows (as read) of edited positions, kept also where a shrunk end trims their page.
   private final TreeMap<Integer, List<Object>> originals = new TreeMap<>();
   // Original rows moved out of originals on undo or Revert while GridChanges can still undo/redo
@@ -247,6 +251,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     stop();
     clearEdits();
+    documentProblem = null;
     failure = null;
     countFailure = null;
     ending = false;
@@ -819,6 +824,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   public void close() {
     closed = true;
     stop();
+    closeDocumentDialog();
     clearEdits();
     where.close();
     order.close();
@@ -828,7 +834,11 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   /** Refreshes the table, asking first while changes are pending or committing. */
   void refresh(State s) {
-    if (closed || !s.catalog.connected(id) || preview != null || s.guard.locked(this) != null) {
+    if (closed
+        || !s.catalog.connected(id)
+        || preview != null
+        || documentDialog != null
+        || s.guard.locked(this) != null) {
       return;
     }
     if (s.guard.asks(
@@ -847,7 +857,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   /** Replaces the table metadata (e.g. table became a view) and re-opens, asking first if edited. */
   void replace(State s, Table next) {
-    if (closed || preview != null || s.guard.locked(this) != null) {
+    if (closed || preview != null || documentDialog != null || s.guard.locked(this) != null) {
       return;
     }
     if (s.guard.asks(
@@ -864,7 +874,11 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   private boolean canApply(State s) {
-    return !closed && s.catalog.connected(id) && preview == null && s.guard.locked(this) == null;
+    return !closed
+        && s.catalog.connected(id)
+        && preview == null
+        && documentDialog == null
+        && s.guard.locked(this) == null;
   }
 
   /**
@@ -892,7 +906,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var trimmed = clause.strip();
     if (!closed && s.catalog.connected(id) && s.profile(id) != null) {
       var locked = s.guard.locked(this);
-      if (preview != null || locked != null) {
+      if (preview != null || documentDialog != null || locked != null) {
         where.text = trimmed;
         where.caret = where.text.length();
         where.completion.close();
@@ -900,9 +914,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         unapplied = preview != null
             ? "The filter was not applied while DML Preview is open. Press Enter in WHERE once it"
                 + " closes to apply it."
-            : locked
-                + ": the filter was not applied. Press Enter in WHERE once that finishes to apply"
-                + " it.";
+            : documentDialog != null
+                ? "The filter was not applied while a document dialog is open. Press Enter once it"
+                    + " closes to apply it."
+                : locked
+                    + ": the filter was not applied. Press Enter in WHERE once that finishes to"
+                    + " apply it.";
         return;
       }
     }
@@ -1317,6 +1334,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var profile = s.profile(id);
     String connection = profile == null ? null : State.name(profile);
     boolean ofDocuments = profile != null && Language.of(profile.provider()).documents();
+    // Loading cells only while something is read, or was: not for a table that failed at once.
+    // Built before the toolbar so JSON and Tree views update their active document on the first
+    // frame after switching modes or turning pages.
+    boolean readable = columns != null && (fields != null || failure == null);
+    DocumentPresentation.View presented = readable
+        ? presentation.view(
+            app, s.zone, ofDocuments, () -> gridView(s, app, ofDocuments), () -> documentPage(s))
+        : null;
     El top =
         Card.toolbar(path(), connection, actions(s, connected, ofDocuments).toArray(El[]::new));
     El line = ConnectionColors.line(s.color(id));
@@ -1332,12 +1357,18 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (writeProblem != null) {
       content.child(writeProblem);
     }
-    // Loading cells only while something is read, or was: not for a table that failed at once.
-    boolean readable = columns != null && (fields != null || failure == null);
-    DocumentPresentation.View presented = readable
-        ? presentation.view(
-            app, s.zone, ofDocuments, () -> gridView(s, app, ofDocuments), () -> documentPage(s))
-        : null;
+    if (documentProblem != null) {
+      content.child(col()
+          .padding(t.space().s())
+          .shrink(0)
+          .child(Callout.callout(
+                  Callout.Kind.DANGER,
+                  documentProblem.title(),
+                  documentProblem.text(),
+                  button(SECONDARY, "Dismiss", () -> documentProblem = null)
+                      .key("dismiss-document-problem"))
+              .key("document-tab-problem")));
+    }
     content.child(presented != null ? presented.body() : openingBody());
     El rowsStatus = Label.label(Label.Variant.MUTED, rowsText(ofDocuments))
         .key("rows-status")
@@ -1483,11 +1514,36 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         + clause.sqlKeyword + " ";
   }
 
-  /** The toolbar's actions: how documents show, Open in console, and Refresh. */
+  /** The toolbar's actions: how documents show, document edits, Open in console, and Refresh. */
   private List<El> actions(State s, boolean connected, boolean ofDocuments) {
     var actions = new ArrayList<El>();
     if (ofDocuments) {
       actions.add(presentation.switcher("shown", v -> show(s, v)));
+      if (canEditDocuments(s)) {
+        boolean free = connected && documentDialog == null && s.guard.locked(this) == null;
+        Document current = currentDocument();
+        actions.add(Button.icon(
+                GHOST, Symbol.ADD, "Insert document", free ? () -> openInsertDocument(s) : null)
+            .key("insert-document"));
+        actions.add(Button.icon(
+                GHOST,
+                Symbol.EDIT,
+                "Edit document",
+                free && current != null ? () -> openEditDocument(s, current) : null)
+            .key("edit-document"));
+        actions.add(Button.icon(
+                GHOST,
+                Symbol.COPY,
+                "Copy document",
+                free && current != null ? () -> openCopyDocument(s, current) : null)
+            .key("copy-document"));
+        actions.add(Button.icon(
+                GHOST,
+                Symbol.DELETE,
+                "Delete document",
+                free && current != null ? () -> openDeleteDocument(s, current) : null)
+            .key("delete-document"));
+      }
     }
     actions.add(Button.icon(GHOST, Symbol.CODE, "Open in console", () -> openInConsole(s))
         .key("open-in-console"));
@@ -1583,6 +1639,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     end.add(Label.label(Label.Variant.MUTED, read).key("read-status"));
     if (!ofDocuments && fields != null) {
       ResultEdits.editControls(s, this, this, end, edited);
+    } else if (ofDocuments && fields != null) {
+      String why = documentReadOnlyReason(s);
+      if (why != null) {
+        end.add(Tooltip.tooltip(
+            Label.label(Label.Variant.MUTED, why).key("edit-status").ellipsis(), why));
+      }
     }
     if (presented != null) {
       end.addAll(presented.footer());
@@ -1835,7 +1897,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         to,
         loading,
         "Documents of " + table.name(),
-        paging);
+        paging,
+        treeMenu,
+        () -> documentMenu(s, presentation.currentDocument()));
   }
 
   /** How many rows, and what the number rests on; empty before the first read. */
@@ -2141,11 +2205,169 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   }
 
   boolean writingChanges() {
-    return edits.writing != null;
+    return edits.writing != null || (documentDialog != null && documentDialog.writing != null);
+  }
+
+  /** Whether this tab is a writable MongoDB collection (not a view and not read-only). */
+  boolean canEditDocuments(State s) {
+    var profile = s.profile(id);
+    return profile != null
+        && Language.of(profile.provider()).documents()
+        && !profile.readOnly()
+        && table.kind() == Table.Kind.TABLE;
+  }
+
+  private String documentReadOnlyReason(State s) {
+    var profile = s.profile(id);
+    if (profile == null) {
+      return null;
+    }
+    if (profile.readOnly()) {
+      return ResultEdits.READ_ONLY_CONNECTION;
+    }
+    if (table.kind() == Table.Kind.VIEW) {
+      return ResultEdits.VIEW_READ_ONLY;
+    }
+    return null;
+  }
+
+  /** The document at the 0-based collection position in the loaded pages, or null. */
+  Document documentAt(int pos) {
+    if (pos < 0) {
+      return null;
+    }
+    var page = documents.get((long) pos / PAGE);
+    int offset = pos % PAGE;
+    return page != null && offset < page.size() ? page.get(offset) : null;
+  }
+
+  /** The active document in the current view (Grid row, JSON caret, or Tree selection), or null. */
+  Document currentDocument() {
+    return presentation.isGrid() ? documentAt(selection.row()) : presentation.currentDocument();
+  }
+
+  /** Context menu items for a collection's Grid or Tree view. */
+  List<Menu.Item> documentMenu(State s, Document doc) {
+    var refresh = Menu.item("Refresh", () -> refresh(s)).icon(Symbol.ARROW_CLOCKWISE);
+    if (!canEditDocuments(s)) {
+      return List.of(refresh);
+    }
+    boolean free =
+        s.catalog.connected(id) && documentDialog == null && s.guard.locked(this) == null;
+    return List.of(
+        Menu.item("Edit document…", free && doc != null ? () -> openEditDocument(s, doc) : null)
+            .icon(Symbol.EDIT),
+        Menu.item("Copy document…", free && doc != null ? () -> openCopyDocument(s, doc) : null)
+            .icon(Symbol.COPY),
+        Menu.item("Delete document…", free && doc != null ? () -> openDeleteDocument(s, doc) : null)
+            .icon(Symbol.DELETE),
+        Menu.separator(),
+        Menu.item("Insert document…", free ? () -> openInsertDocument(s) : null).icon(Symbol.ADD),
+        Menu.separator(),
+        refresh);
+  }
+
+  void openInsertDocument(State s) {
+    if (!canEditDocuments(s)
+        || !s.catalog.connected(id)
+        || documentDialog != null
+        || s.guard.locked(this) != null) {
+      return;
+    }
+    documentProblem = null;
+    documentDialog = DocumentDialog.insert(this);
+  }
+
+  void openEditDocument(State s, Document original) {
+    if (!canEditDocuments(s)
+        || !s.catalog.connected(id)
+        || documentDialog != null
+        || s.guard.locked(this) != null
+        || original == null) {
+      return;
+    }
+    documentProblem = null;
+    if (!original.has("_id")) {
+      documentProblem = new ConsoleTab.Problem(
+          "Document cannot be edited", "This document has no _id field and cannot be replaced.");
+      return;
+    }
+    var formatted = DocumentEdit.roundTripped(original);
+    if (formatted.isEmpty()) {
+      documentProblem = new ConsoleTab.Problem(
+          "Document cannot be edited",
+          "This document cannot be represented in shell notation without changing its values or"
+              + " types, so it was not opened for editing.");
+      return;
+    }
+    documentDialog = DocumentDialog.edit(this, original, formatted.get());
+  }
+
+  void openCopyDocument(State s, Document original) {
+    if (!canEditDocuments(s)
+        || !s.catalog.connected(id)
+        || documentDialog != null
+        || s.guard.locked(this) != null
+        || original == null) {
+      return;
+    }
+    documentProblem = null;
+    var formatted = DocumentEdit.roundTripped(original).isPresent()
+        ? DocumentEdit.roundTripped(original.without("_id"))
+        : Optional.<String>empty();
+    if (formatted.isEmpty()) {
+      documentProblem = new ConsoleTab.Problem(
+          "Document cannot be copied",
+          "This document cannot be represented in shell notation without changing its values or"
+              + " types, so it was not opened for copying.");
+      return;
+    }
+    documentDialog = DocumentDialog.copy(this, formatted.get());
+  }
+
+  void openDeleteDocument(State s, Document original) {
+    if (!canEditDocuments(s)
+        || !s.catalog.connected(id)
+        || documentDialog != null
+        || s.guard.locked(this) != null
+        || original == null) {
+      return;
+    }
+    documentProblem = null;
+    if (!original.has("_id")) {
+      documentProblem = new ConsoleTab.Problem(
+          "Document cannot be deleted", "This document has no _id field and cannot be deleted.");
+      return;
+    }
+    documentDialog = DocumentDialog.delete(this, original);
+  }
+
+  void closeDocumentDialog() {
+    if (documentDialog != null) {
+      documentDialog.close();
+      documentDialog = null;
+    }
+  }
+
+  void settledFromDocumentEdit(State s, boolean reload) {
+    settle(s);
+    if (reload && !closed) {
+      open(s, true);
+    }
+  }
+
+  /** The edit, insert, copy, preview, or delete dialog for a collection, while open; or null. */
+  El documentDialog(State s, App<State> app) {
+    return documentDialog == null ? null : documentDialog.view(s, app);
   }
 
   boolean atStake() {
-    return hasPendingChanges() || writingChanges();
+    return hasPendingChanges() || writingChanges() || documentDraft();
+  }
+
+  // An open document dialog whose text the user changed, or that a write left with its text.
+  private boolean documentDraft() {
+    return documentDialog != null && documentDialog.draft();
   }
 
   @Override
@@ -2177,7 +2399,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         s.title(this),
         asked.what(),
         writingChanges(),
-        pendingChanges(),
+        pendingChanges() + (documentDraft() ? 1 : 0),
         edits.unknown,
         () -> answer(s, null),
         () -> answer(s, ConsoleTab.STOP_WRITES),
@@ -2197,8 +2419,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       case ConsoleTab.DISCARD -> {
         edits.discard(this);
         preview = null;
+        closeDocumentDialog();
       }
-      case ConsoleTab.STOP_WRITES -> ResultEdits.cancelWrite(s, this, this);
+      case ConsoleTab.STOP_WRITES -> {
+        ResultEdits.cancelWrite(s, this, this);
+        if (documentDialog != null) {
+          documentDialog.cancelWrite(s);
+        }
+      }
       default -> throw new IllegalArgumentException(choice);
     }
     settle(s);

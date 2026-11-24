@@ -104,7 +104,24 @@ final class DocumentPresentation {
       long rangeTo,
       boolean loading,
       String label,
-      Paging paging) {
+      Paging paging,
+      Menu.State treeMenu,
+      Supplier<List<Menu.Item>> treeMenuItems) {
+
+    DocumentPage(
+        String scope,
+        List<Document> source,
+        int sliceFrom,
+        int sliceTo,
+        long rangeFrom,
+        long rangeTo,
+        boolean loading,
+        String label,
+        Paging paging) {
+      this(
+          scope, source, sliceFrom, sliceTo, rangeFrom, rangeTo, loading, label, paging, null,
+          null);
+    }
 
     boolean empty() {
       return source == null || sliceTo <= sliceFrom;
@@ -157,9 +174,12 @@ final class DocumentPresentation {
     private final CodeEditor.State editor = new CodeEditor.State().readOnly(true);
     private String scope = "";
     private List<Document> source = List.of();
+    private List<Document> slice = List.of();
     private int from;
     private int count;
     private String text;
+    private int[] starts = new int[0];
+    private int[] ends = new int[0];
 
     @Override
     public Mode mode() {
@@ -175,6 +195,10 @@ final class DocumentPresentation {
       var page = documentsSource.get();
       var footer = documentFooter(page);
       if (page.empty()) {
+        slice = List.of();
+        text = null;
+        starts = new int[0];
+        ends = new int[0];
         return new View(emptyOrLoading(page), footer);
       }
       String formatted = text(page);
@@ -189,6 +213,33 @@ final class DocumentPresentation {
       return new View(body, footer);
     }
 
+    /** The document in the current JSON page at the editor caret, or null when empty/outside. */
+    Document currentDocument() {
+      if (text == null || slice.isEmpty() || starts.length != slice.size()) {
+        return null;
+      }
+      int caret = Math.clamp(editor.caret(), 0, text.length());
+      for (int i = 0; i < starts.length; i++) {
+        if (caret >= starts[i] && caret <= ends[i]) {
+          return slice.get(i);
+        }
+      }
+      if (caret < starts[0]) {
+        return slice.getFirst();
+      }
+      for (int i = 0; i < starts.length; i++) {
+        int before = i == 0 ? 0 : ends[i - 1];
+        int lineStart = Math.max(before, text.lastIndexOf('\n', starts[i]) + 1);
+        int after = i + 1 < starts.length ? starts[i + 1] : text.length();
+        int nl = text.indexOf('\n', ends[i]);
+        int lineEnd = Math.min(after, nl < 0 ? text.length() : nl);
+        if (caret >= lineStart && caret <= lineEnd) {
+          return slice.get(i);
+        }
+      }
+      return null;
+    }
+
     private String text(DocumentPage page) {
       boolean other = !page.scope().equals(scope);
       if (other) {
@@ -200,16 +251,58 @@ final class DocumentPresentation {
           || page.source() != source
           || page.sliceFrom() != from
           || nextCount != count) {
-        var slice = page.source().subList(page.sliceFrom(), page.sliceTo());
+        slice = List.copyOf(page.source().subList(page.sliceFrom(), page.sliceTo()));
         var json = ExtendedJson.array(slice);
         var formatted = com.rethinkj.ui.json.Json.format(json);
         text = formatted.valid() ? formatted.text() : json;
+        scanSpans(text, slice.size());
         scope = page.scope();
         source = page.source();
         from = page.sliceFrom();
         count = nextCount;
       }
       return text;
+    }
+
+    private void scanSpans(String json, int expected) {
+      int[] s = new int[expected];
+      int[] e = new int[expected];
+      int found = 0;
+      int depth = 0;
+      boolean inString = false;
+      for (int i = 0; i < json.length() && found < expected; i++) {
+        char c = json.charAt(i);
+        if (inString) {
+          if (c == '\\') {
+            i++;
+          } else if (c == '"') {
+            inString = false;
+          }
+          continue;
+        }
+        switch (c) {
+          case '"' -> inString = true;
+          case '[' -> depth++;
+          case '{' -> {
+            if (depth == 1) {
+              s[found] = i;
+            }
+            depth++;
+          }
+          case '}' -> {
+            depth--;
+            if (depth == 1) {
+              e[found++] = i + 1;
+            }
+          }
+          case ']' -> depth--;
+          default -> {
+            // Other characters do not affect nesting.
+          }
+        }
+      }
+      starts = found == expected ? s : new int[0];
+      ends = found == expected ? e : new int[0];
     }
   }
 
@@ -232,6 +325,7 @@ final class DocumentPresentation {
       var page = documentsSource.get();
       var footer = documentFooter(page);
       if (page.empty()) {
+        documentTree.clear();
         return new View(emptyOrLoading(page), footer);
       }
       documentTree.show(
@@ -239,17 +333,33 @@ final class DocumentPresentation {
       El body = col()
           .grow(1)
           .minSize(0, 0)
-          .child(documentTree.view(zone, page.label()).grow(1));
+          .child(documentTree
+              .view(zone, page.label(), page.treeMenu(), page.treeMenuItems())
+              .grow(1));
       return new View(body, footer);
+    }
+
+    /** The top-level document containing the selected tree node, or null. */
+    Document currentDocument() {
+      return documentTree.selectedDocument();
     }
   }
 
   private final Strategy grid = new Grid();
-  private final Strategy json = new Json();
-  private final Strategy tree = new Tree();
+  private final Json json = new Json();
+  private final Tree tree = new Tree();
   private final Menu.State modeMenu = new Menu.State();
   private Mode mode;
   private long page;
+
+  /** The active document in JSON or Tree mode, or null in Grid mode or when none is selected. */
+  Document currentDocument() {
+    return switch (mode) {
+      case GRID -> null;
+      case JSON -> json.currentDocument();
+      case TREE -> tree.currentDocument();
+    };
+  }
 
   DocumentPresentation() {
     this(Mode.GRID);

@@ -180,6 +180,17 @@ public final class Bson {
     }
   }
 
+  /**
+   * A pointer to a document of older servers: its collection's namespace and its {@code _id}. The
+   * shell has no constructor of it, so its text does not read back.
+   */
+  public record DbPointer(String namespace, ObjectId id) {
+    public DbPointer {
+      Objects.requireNonNull(namespace, "namespace");
+      Objects.requireNonNull(id, "id");
+    }
+  }
+
   /** The values that are a type of their own and nothing more. */
   public enum Special {
     /** Below every other value. */
@@ -210,6 +221,7 @@ public final class Bson {
           Regex _,
           Code _,
           Symbol _,
+          DbPointer _,
           Special _,
           Document _,
           Array _ -> value; // an Array made by this method, of values it took
@@ -264,6 +276,7 @@ public final class Bson {
       case Regex _ -> "regex";
       case Code c -> c.scope() == null ? "javascript" : "javascriptWithScope";
       case Symbol _ -> "symbol";
+      case DbPointer _ -> "dbPointer";
       case Special s ->
         switch (s) {
           case MIN_KEY -> "minKey";

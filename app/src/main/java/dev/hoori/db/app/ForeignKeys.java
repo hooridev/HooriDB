@@ -146,10 +146,14 @@ final class ForeignKeys {
    */
   static List<Menu.Item> gridMenu(
       State s, TableTab tab, boolean ofDocuments, int gridRow, int col) {
+    if (ofDocuments) {
+      return tab.menu.isOpen()
+          ? tab.documentMenu(s, tab.documentAt(gridRow))
+          : List.of(Menu.item("Refresh", () -> tab.refresh(s)).icon(Symbol.ARROW_CLOCKWISE));
+    }
     var refresh = Menu.item("Refresh", () -> tab.refresh(s)).icon(Symbol.ARROW_CLOCKWISE);
     var profile = s.profile(tab.id);
     if (!tab.menu.isOpen()
-        || ofDocuments
         || profile == null
         || tab.table.kind() != Table.Kind.TABLE
         || !inGrid(tab, gridRow, col)) {

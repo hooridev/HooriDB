@@ -46,6 +46,7 @@ import org.bson.BsonArray;
 import org.bson.BsonBinary;
 import org.bson.BsonBoolean;
 import org.bson.BsonDateTime;
+import org.bson.BsonDbPointer;
 import org.bson.BsonDecimal128;
 import org.bson.BsonDocument;
 import org.bson.BsonDouble;
@@ -327,6 +328,8 @@ final class Mongo {
             ? new BsonJavaScript(code)
             : new BsonJavaScriptWithScope(code, document(scope));
       case Bson.Symbol(var symbol) -> new BsonSymbol(symbol);
+      case Bson.DbPointer(var namespace, var id) ->
+        new BsonDbPointer(namespace, new ObjectId(id.hex()));
       case Bson.Special s ->
         switch (s) {
           case MIN_KEY -> new BsonMinKey();
@@ -381,11 +384,8 @@ final class Mongo {
       }
       case DB_POINTER -> {
         var pointer = value.asDBPointer();
-        yield Document.of(
-            "$ref",
-            pointer.getNamespace(),
-            "$id",
-            Bson.ObjectId.of(pointer.getId().toByteArray()));
+        yield new Bson.DbPointer(
+            pointer.getNamespace(), Bson.ObjectId.of(pointer.getId().toByteArray()));
       }
       case JAVASCRIPT -> new Bson.Code(value.asJavaScript().getCode(), null);
       case SYMBOL -> new Bson.Symbol(value.asSymbol().getSymbol());
