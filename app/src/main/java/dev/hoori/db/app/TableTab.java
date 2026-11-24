@@ -760,6 +760,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (counting != null) {
       gone.add(counting);
       counting = null;
+      toLast = false; // its jump to the end goes with the count
     }
     Lane.cancel(gone);
   }
