@@ -13,6 +13,7 @@ import static dev.hoori.db.app.ConsoleEditorTest.TREE;
 import static dev.hoori.db.app.ConsoleEditorTest.options;
 import static dev.hoori.db.app.ConsoleTest.type;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.connection.Provider;
@@ -440,5 +441,142 @@ class JoinCompletionTest {
             + "snap twice\n");
     var twice = options(console.c.tree("twice"));
     assertTrue(twice.contains("archive.orders o ON o.id = orders.archive_id"), twice.toString());
+  }
+
+  @Test
+  void columnAliasesAliasedParenJoinsAndContinuedFromListsBehaveSafely() throws Exception {
+    var app = console.console(SHOP);
+    // Column alias list hides base column names: no FK join candidate is offered.
+    console.c.run(
+        app,
+        TREE
+            + open("customers")
+            + SETTLE
+            + type("SELECT * FROM customers AS c(customer_pk) JOIN ")
+            + COMPLETE
+            + "snap col-alias\n");
+    var colAlias = options(console.c.tree("col-alias"));
+    assertFalse(colAlias.stream().anyMatch(o -> o.contains(" ON ")), colAlias.toString());
+    assertTrue(colAlias.contains("orders"), colAlias.toString());
+
+    // A column-aliased table's alias is still reserved when joining another table in the item.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM orders o JOIN customers AS c(customer_pk)"
+                + " ON c.customer_pk = o.customer_id JOIN ca")
+            + COMPLETE
+            + "snap col-alias-reserved\n");
+    assertEquals(
+        List.of("categories c2 ON c2.id = o.category_id", "categories"),
+        options(console.c.tree("col-alias-reserved")));
+
+    // Alias on a parenthesized join hides its inner tables: no FK join candidate is offered.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) AS j JOIN ")
+            + COMPLETE
+            + "snap paren-aliased\n");
+    var parenAliased = options(console.c.tree("paren-aliased"));
+    assertFalse(parenAliased.stream().anyMatch(o -> o.contains(" ON ")), parenAliased.toString());
+
+    // Without an alias, a parenthesized join keeps its tables.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) JOIN ")
+            + COMPLETE
+            + "snap paren-unaliased\n");
+    var parenUnaliased = options(console.c.tree("paren-unaliased"));
+    assertTrue(
+        parenUnaliased.contains("categories c2 ON c2.id = o.category_id"),
+        parenUnaliased.toString());
+
+    // FROM list continued after ON offers the condition for the new item only, never earlier ones.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM orders o JOIN categories ca ON ca.id = o.category_id,"
+                + " customers c JOIN orders o2 ON ")
+            + COMPLETE
+            + "snap from-continued\n");
+    var continued = options(console.c.tree("from-continued"));
+    assertEquals("o2.customer_id = c.id", continued.getFirst(), continued.toString());
+    assertFalse(
+        continued.stream().anyMatch(o -> o.contains(" = o.") || o.contains(" = ca.")),
+        continued.toString());
+  }
+
+  @Test
+  void anUnreadEarlierSchemaOnTheSearchPathPreventsFallingThroughToALaterSchema() throws Exception {
+    servers.serve(QUOTED, Provider.POSTGRESQL, "16.4", """
+        shop
+          shop_app
+            customers
+              *id: integer
+          public
+            customers
+              *id: integer
+            orders
+              *id: bigint
+              customer_id: integer > customers.id
+        """);
+    var app = console.console(ODD);
+    // Open public and public.orders, leaving shop_app unread.
+    console.c.run(
+        app,
+        open("odd")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE);
+    var allTables = "all tables " + QUOTED + "/shop";
+    var held = servers.hold(allTables);
+    try {
+      // Bare "orders" must not resolve to public.orders while shop_app is still unread.
+      console.c.run(app, type("SELECT * FROM orders o JOIN ") + COMPLETE + "snap unread-bare\n");
+      var bare = options(console.c.tree("unread-bare"));
+      assertFalse(bare.stream().anyMatch(o -> o.contains(" ON ")), bare.toString());
+
+      // Qualified "public.orders" knows its own FK, and writes "public.customers" rather than bare
+      // "customers" while shop_app is unread.
+      console.c.run(
+          app,
+          "key Escape\nkey A control\nkey Delete\n"
+              + type("SELECT * FROM public.orders o JOIN ")
+              + COMPLETE
+              + "snap unread-qualified\n");
+      assertEquals(
+          "public.customers c ON c.id = o.customer_id",
+          options(console.c.tree("unread-qualified")).getFirst());
+
+      // After ON with bare "customers", must not match public.customers while shop_app is unread.
+      console.c.run(
+          app,
+          "key Escape\nkey A control\nkey Delete\n"
+              + type("SELECT * FROM public.orders o JOIN customers c ON ")
+              + COMPLETE
+              + "snap unread-on\n");
+      var on = options(console.c.tree("unread-on"));
+      assertFalse(on.contains("c.id = o.customer_id"), on.toString());
+    } finally {
+      held.countDown();
+    }
+    // Once shop_app is read, bare "orders" resolves to public.orders (shop_app has no orders),
+    // while public.customers stays schema-qualified because shop_app.customers shadows it.
+    console.c.run(
+        app,
+        SETTLE
+            + "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM orders o JOIN ")
+            + COMPLETE
+            + "snap read-after\n");
+    assertEquals(
+        "public.customers c ON c.id = o.customer_id",
+        options(console.c.tree("read-after")).getFirst());
   }
 }

@@ -101,7 +101,7 @@ record SqlCompletion() implements Suggestions.Strategy {
       if (ref.schema() != null) {
         return known.same(candidate.container().name(), ref.schema());
       }
-      return !(candidate.container() instanceof Schema x) || known.path.contains(x.name());
+      return !(candidate.container() instanceof Schema x) || known.unshadowed(x.name());
     }
   }
 
@@ -117,16 +117,7 @@ record SqlCompletion() implements Suggestions.Strategy {
     if (prior.isEmpty()) {
       return;
     }
-    // The names the new alias must not take: the statement's, but for the word being typed, the
-    // reference that follows the last of the left ones.
-    var used = new ArrayList<>(context.tables());
-    int last = 0;
-    while (used.get(last) != prior.getLast()) {
-      last++;
-    }
-    if (!context.typed().isEmpty() && last + 1 < used.size()) {
-      used.remove(last + 1);
-    }
+    var used = context.tables();
     boolean aliased = used.stream().anyMatch(r -> r.alias() != null);
     for (var ref : prior) {
       var table = known.table(ref.schema(), ref.name());
