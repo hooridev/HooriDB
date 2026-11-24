@@ -341,6 +341,51 @@ abstract class MySqlFamilyRows extends RowsDialect {
     };
   }
 
+  // Text in UTF-8 compared by its bytes, as unchanged() does, so that no collation makes accents
+  // or, where it should count, case alike.
+  private String bytes(String column, String value, boolean lower) {
+    var left = "CONVERT(" + column + " USING utf8mb4)";
+    var right = "CONVERT(" + literal(value) + " USING utf8mb4)";
+    return lower
+        ? bytes("LOWER(" + left + ")") + " = " + bytes("LOWER(" + right + ")")
+        : bytes(left) + " = " + bytes(right);
+  }
+
+  @Override
+  String like(String column, Field field, String pattern) {
+    return "LOWER(CONVERT(" + column + " USING utf8mb4)) LIKE LOWER(CONVERT(" + literal(pattern)
+        + " USING utf8mb4)) COLLATE utf8mb4_bin ESCAPE '!'";
+  }
+
+  @Override
+  String equalsIgnoringCase(String column, Field field, String value) {
+    return bytes(column, value, true);
+  }
+
+  @Override
+  String equalsExactly(String column, Field field, String value) {
+    return bytes(column, value, false);
+  }
+
+  @Override
+  String matches(String column, Field field, String expression) {
+    return "CONVERT(" + column + " USING utf8mb4) REGEXP " + literal("(?i)" + expression);
+  }
+
+  // A moment as the seconds it stores, as unchanged() compares it: MariaDB reads no offset in a
+  // literal. A FLOAT as the text it was read as, of six digits.
+  @Override
+  String compare(String column, Field field, String operator, Object value) {
+    if (value instanceof OffsetDateTime moment) {
+      return "UNIX_TIMESTAMP(" + column + ") " + operator + " " + literal(seconds(moment));
+    }
+    if (field.type() != null && field.type().toLowerCase(Locale.ROOT).startsWith("float")) {
+      return "CAST(CAST(" + column + " AS CHAR) AS FLOAT) " + operator + " CAST(" + literal(value)
+          + " AS FLOAT)";
+    }
+    return super.compare(column, field, operator, value);
+  }
+
   // A moment as the seconds since 1970, as UNIX_TIMESTAMP() reads it: the server takes a text of a
   // timestamp in the session's zone, and the session must keep it, which a DATETIME's DEFAULT
   // CURRENT_TIMESTAMP is written in. FROM_UNIXTIME() gives the time in that zone, which in an

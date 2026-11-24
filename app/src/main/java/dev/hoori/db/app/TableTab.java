@@ -31,6 +31,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Changes;
+import dev.hoori.db.core.data.ColumnFilter;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
@@ -38,7 +39,9 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.DocumentFilters;
 import dev.hoori.db.core.document.Shell;
+import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.query.QueryException;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -159,6 +162,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   Rows.Filter filter = Rows.Filter.NONE; // the clauses applied to reads and counts
   private int query; // counts the applied queries, so that JSON and Tree start anew with each
   private List<Sort> sorted = List.of(); // the header sort that made the applied order
+  private List<HeaderFilter> headerFilters = List.of(); // header filters in the applied WHERE
+  private String manualWhere = ""; // hand-written WHERE/Filter text joined with headerFilters
   private String refused; // why the clauses last submitted were refused, or null
   private String unapplied; // why a WHERE from foreign key navigation was not applied, or null
   private final Clause where;
@@ -202,6 +207,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
 
   /** One column of a header sort, by name, so that its arrow follows the applied order. */
   private record Sort(String column, boolean descending) {}
+
+  /** One column of a header filter, by name, so its funnel and chip follow the applied filter. */
+  private record HeaderFilter(String column, DataGrid.Filter.Spec spec) {}
 
   /**
    * The whole value of a cell that a page holds in part, asked for by its row as read: the text,
@@ -870,10 +878,13 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       return;
     }
     var next = new Rows.Filter(where.text.strip(), order.text.strip());
-    var kept = !sorted.isEmpty() && next.order().equals(orderText(profile.provider(), sorted))
+    var keptSort = !sorted.isEmpty() && next.order().equals(orderText(profile.provider(), sorted))
         ? sorted
         : List.<Sort>of();
-    apply(s, next, kept, false, false);
+    boolean keepFilters = !headerFilters.isEmpty() && next.where().equals(filter.where());
+    var keptFilters = keepFilters ? headerFilters : List.<HeaderFilter>of();
+    var keptManual = keepFilters ? manualWhere : "";
+    apply(s, next, keptSort, keptFilters, keptManual, false, false);
   }
 
   /** Applies a WHERE clause from foreign key navigation, keeping the applied ORDER BY. */
@@ -895,7 +906,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         return;
       }
     }
-    apply(s, new Rows.Filter(trimmed, filter.order()), sorted, true, false);
+    apply(s, new Rows.Filter(trimmed, filter.order()), sorted, List.of(), "", true, false);
   }
 
   /** Drops the note of an unapplied WHERE once the WHERE field holds the applied one. */
@@ -957,11 +968,50 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       nextSorted.add(new Sort(columns.get(key.column()).name(), key.descending()));
     }
     var next = new Rows.Filter(filter.where(), orderText(profile.provider(), nextSorted));
-    apply(s, next, List.copyOf(nextSorted), false, true);
+    apply(s, next, List.copyOf(nextSorted), headerFilters, manualWhere, false, true);
+  }
+
+  /**
+   * Applies header filters by writing them into WHERE or Filter, joined with AND to any
+   * hand-written text, while keeping the applied order.
+   */
+  private void filter(State s, List<DataGrid.Filter> nextList) {
+    var profile = s.profile(id);
+    if (!canApply(s) || profile == null || columns == null) {
+      return;
+    }
+    var incoming = new ArrayList<HeaderFilter>(nextList.size());
+    for (var f : nextList) {
+      if (f.column() < 0 || f.column() >= columns.size()) {
+        return;
+      }
+      incoming.add(new HeaderFilter(columns.get(f.column()).name(), f.spec()));
+    }
+    // The marks show only while the field holds the applied text (activeFilters), so a field
+    // edited by hand is new hand-written text, to which every filter the grid gives is joined.
+    var marked = !headerFilters.isEmpty() && where.text.strip().equals(filter.where());
+    String base = marked ? manualWhere : where.text.strip();
+    List<HeaderFilter> nextFilters = List.copyOf(incoming);
+    String clause;
+    try {
+      clause = whereText(profile.provider(), base, nextFilters, s.zone);
+    } catch (QueryException e) {
+      refused = e.detail();
+      unapplied = null;
+      return;
+    }
+    var next = new Rows.Filter(clause, filter.order());
+    apply(s, next, sorted, nextFilters, nextFilters.isEmpty() ? "" : base, true, false);
   }
 
   private void apply(
-      State s, Rows.Filter next, List<Sort> nextSorted, boolean syncWhere, boolean syncOrder) {
+      State s,
+      Rows.Filter next,
+      List<Sort> nextSorted,
+      List<HeaderFilter> nextFilters,
+      String nextManual,
+      boolean syncWhere,
+      boolean syncOrder) {
     var profile = s.profile(id);
     if (!canApply(s) || profile == null) {
       return;
@@ -980,6 +1030,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         where.text = checked.where();
         where.caret = where.text.length();
         where.completion.close();
+        headerFilters = nextFilters;
+        manualWhere = nextManual;
       }
       if (syncOrder) {
         order.text = checked.order();
@@ -995,7 +1047,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         new Guard.Act("filter", this),
         "the filter is applied",
         List.of(this),
-        () -> apply(s, checked, nextSorted, syncWhere, syncOrder),
+        () -> apply(s, checked, nextSorted, nextFilters, nextManual, syncWhere, syncOrder),
         Guard.Scope.CHANGES)) {
       return;
     }
@@ -1010,6 +1062,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       order.completion.close();
     }
     sorted = nextSorted;
+    headerFilters = nextFilters;
+    manualWhere = nextManual;
     filter = checked;
     settleUnapplied();
     query++;
@@ -1027,6 +1081,45 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     selection.clear();
     selection.scrollToRow(0);
     open(s, false);
+  }
+
+  private String whereText(Provider provider, String base, List<HeaderFilter> filters, ZoneId zone)
+      throws QueryException {
+    var core = new ArrayList<ColumnFilter>(filters.size());
+    for (var f : filters) {
+      core.add(new ColumnFilter(fieldOf(f.column(), provider), specOf(f.spec())));
+    }
+    return Language.of(provider).documents()
+        ? DocumentFilters.filterText(base, core, zone)
+        : Rows.where(provider, base, core, zone);
+  }
+
+  private Field fieldOf(String name, Provider provider) {
+    int at = columnIndex(name);
+    if (fields != null && at >= 0 && at < fields.size()) {
+      return fields.get(at);
+    }
+    var col = columns.get(at);
+    var kind = Language.of(provider).documents() ? Values.kind(col.type()) : kinds.get(name);
+    return new Field(col.name(), col.type(), kind);
+  }
+
+  private static ColumnFilter.Spec specOf(DataGrid.Filter.Spec spec) {
+    return switch (spec) {
+      case DataGrid.Filter.TextMatch(var kind, var value) ->
+        new ColumnFilter.Text(
+            switch (kind) {
+              case CONTAINS -> ColumnFilter.Match.CONTAINS;
+              case STARTS_WITH -> ColumnFilter.Match.STARTS_WITH;
+              case EXACTLY -> ColumnFilter.Match.EXACTLY;
+              default -> ColumnFilter.Match.EQUALS;
+            },
+            value);
+      case DataGrid.Filter.RegexMatch regex -> new ColumnFilter.Regex(regex.expression());
+      case DataGrid.Filter.Between(var from, var to) -> new ColumnFilter.Between(from, to);
+      case DataGrid.Filter.OneOf(var values) -> new ColumnFilter.OneOf(values);
+      case DataGrid.Filter.NullCheck(var isNull) -> new ColumnFilter.Null(isNull);
+    };
   }
 
   private static Rows.Filter check(Provider provider, Rows.Filter filter) throws QueryException {
@@ -1081,6 +1174,11 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     return ofDocuments ? name.indexOf('.') < 0 && !name.startsWith("$") : sortable(kinds.get(name));
   }
 
+  /** Whether a header can filter: as it can sort, but not binary data, which shows as hex. */
+  private boolean filterable(String name, boolean ofDocuments) {
+    return sortable(name, ofDocuments) && (ofDocuments || kinds.get(name) != Kind.BINARY);
+  }
+
   private List<DataGrid.SortKey> sortKeys(Provider provider) {
     boolean ofDocuments = Language.of(provider).documents();
     if (sorted.isEmpty() || !filter.order().equals(orderText(provider, sorted))) {
@@ -1095,6 +1193,21 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       keys.add(new DataGrid.SortKey(at, key.descending()));
     }
     return keys;
+  }
+
+  private List<DataGrid.Filter> activeFilters(boolean ofDocuments) {
+    if (headerFilters.isEmpty() || !where.text.strip().equals(filter.where())) {
+      return List.of();
+    }
+    var active = new ArrayList<DataGrid.Filter>(headerFilters.size());
+    for (var f : headerFilters) {
+      int at = columnIndex(f.column());
+      if (at < 0 || !filterable(f.column(), ofDocuments)) {
+        return List.of();
+      }
+      active.add(new DataGrid.Filter(at, f.spec()));
+    }
+    return active;
   }
 
   int columnIndex(String name) {
@@ -1208,6 +1321,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     El line = ConnectionColors.line(s.color(id));
     El content = col().grow(1).minSize(0, 0).child(top);
     content.child(Card.filters(filters(s, app, ofDocuments)).shrink(0));
+    El chips = filterBar(s, ofDocuments);
+    if (chips != null) {
+      content.child(Card.filters(chips).shrink(0));
+    }
     content.child(line == null ? Divider.divider() : line);
     El note = note(s, connected, ofDocuments);
     if (note != null) {
@@ -1251,6 +1368,21 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
               .children(edited.toArray(El[]::new)));
     }
     return content.child(Card.footer(rowsStatus, footer.toArray(El[]::new)));
+  }
+
+  /** The header filter chips above the view; null while no header filters are active. */
+  private El filterBar(State s, boolean ofDocuments) {
+    if (columns == null) {
+      return null;
+    }
+    var active = activeFilters(ofDocuments);
+    if (active.isEmpty()) {
+      return null;
+    }
+    var cols = columns.stream()
+        .map(c -> new DataGrid.Column(c.name(), 0, DataGrid.DataType.TEXT, row -> ""))
+        .toList();
+    return DataGrid.filterBar(cols, active, next -> filter(s, next));
   }
 
   /** The WHERE/ORDER BY or Filter/Sort fields above the view. */
@@ -1814,6 +1946,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         // Nothing to do: the build it causes brings the footer's rows in view along.
         .onRowsInView((from, to) -> {});
     sorting(s, options);
+    filtering(s, options, ofDocuments);
     if (edited) {
       ResultEdits.configureGrid(s, this, options, free, true);
     }
@@ -1842,6 +1975,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var profile = s.profile(id);
     var keys = profile == null ? List.<DataGrid.SortKey>of() : sortKeys(profile.provider());
     options.sort(keys, canApply(s) ? next -> sort(s, next) : null);
+  }
+
+  /** The header filters of the grid: funnels on filterable columns, and changes while applicable. */
+  private void filtering(State s, DataGrid.Options options, boolean ofDocuments) {
+    options
+        .filterable(
+            c -> c >= 0 && c < columns.size() && filterable(columns.get(c).name(), ofDocuments))
+        .filters(activeFilters(ofDocuments), canApply(s) ? next -> filter(s, next) : null);
   }
 
   /** Base table rows in the grid (excluding staged new rows), which counts them in an int. */
