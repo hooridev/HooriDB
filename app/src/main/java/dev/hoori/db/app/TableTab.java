@@ -626,27 +626,29 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
             turn(s, Math.min(presentation.page(), Math.max(0, (n - 1) / PAGE)));
           }
         },
-        error -> {
-          counting = null;
-          if (closed) {
-            return;
-          }
-          if (retry && lane.broken()) {
-            counted(s, true, false);
-          } else if (ending
-              || error instanceof InterruptedException
-              || Set.of(Problem.LOST, Problem.DISCARDED, Problem.UNOPENED)
-                  .contains(problem(error))) {
-            failed(s, error, false, live, !separate);
-          } else {
-            // The count itself failed, not the connection: keep the pages and let paging go on.
-            toLast = false;
-            // A page that found the end meanwhile left nothing to count.
-            countFailure = counted == Counted.EXACT
-                ? null
-                : Objects.requireNonNullElse(CatalogTree.words(live, detail(error)), "");
-          }
-        });
+        error -> countFailed(s, error, separate, retry, lane, live));
+  }
+
+  private void countFailed(
+      State s, Exception error, boolean separate, boolean retry, Lane lane, Live live) {
+    counting = null;
+    if (closed) {
+      return;
+    }
+    if (retry && lane.broken()) {
+      counted(s, true, false);
+    } else if (ending
+        || error instanceof InterruptedException
+        || Set.of(Problem.LOST, Problem.DISCARDED, Problem.UNOPENED).contains(problem(error))) {
+      failed(s, error, false, live, !separate);
+    } else {
+      // The count itself failed, not the connection: keep the pages and let paging go on.
+      toLast = false;
+      // A page that found the end meanwhile left nothing to count.
+      countFailure = counted == Counted.EXACT
+          ? null
+          : Objects.requireNonNullElse(CatalogTree.words(live, detail(error)), "");
+    }
   }
 
   /**
