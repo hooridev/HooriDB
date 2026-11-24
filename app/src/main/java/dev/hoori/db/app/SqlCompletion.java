@@ -138,7 +138,6 @@ record SqlCompletion() implements Suggestions.Strategy {
       for (var key : ForeignKeys.outgoing(table, keys)) {
         addJoin(
             known,
-            prior,
             used,
             aliased,
             source,
@@ -148,7 +147,6 @@ record SqlCompletion() implements Suggestions.Strategy {
       for (var key : ForeignKeys.incoming(table, keys)) {
         addJoin(
             known,
-            prior,
             used,
             aliased,
             source,
@@ -160,7 +158,6 @@ record SqlCompletion() implements Suggestions.Strategy {
 
   private static void addJoin(
       Suggestions.Known known,
-      List<Context.Reference> prior,
       List<Context.Reference> used,
       boolean aliased,
       Side source,
@@ -327,17 +324,9 @@ record SqlCompletion() implements Suggestions.Strategy {
   private static String alias(
       String tableName, List<Context.Reference> prior, Suggestions.Known known) {
     var sb = new StringBuilder();
-    boolean start = true;
-    for (int i = 0; i < tableName.length(); ) {
-      int cp = tableName.codePointAt(i);
-      i += Character.charCount(cp);
-      if (Character.isLetterOrDigit(cp)) {
-        if (start) {
-          sb.appendCodePoint(Character.toLowerCase(cp));
-          start = false;
-        }
-      } else {
-        start = true;
+    for (var part : tableName.split("[^\\p{L}\\p{N}]+")) {
+      if (!part.isEmpty()) {
+        sb.appendCodePoint(Character.toLowerCase(part.codePointAt(0)));
       }
     }
     var base = sb.isEmpty() || !Character.isLetter(sb.codePointAt(0)) ? "t" : sb.toString();

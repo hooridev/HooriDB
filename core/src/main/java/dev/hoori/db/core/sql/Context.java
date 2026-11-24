@@ -149,21 +149,22 @@ public record Context(
           ? new Context(Asked.MEMBER, List.copyOf(path), typed, scan.tables, scan.left)
           : NOTHING;
     }
-    Asked asked;
-    if (n > 0 && introduces(tokens, n - 1)) {
-      asked = conditionalJoin(tokens, n - 1) && !conditioned(tokens, n) ? Asked.JOIN : Asked.TABLE;
-    } else if (scan.joinOn && free(tokens, wordEnd(statement, at))) {
-      asked = Asked.ON;
-    } else {
-      asked = Asked.ANY;
-    }
+    var asked = asked(tokens, n, scan.joinOn && free(tokens, wordEnd(statement, at)));
     return new Context(asked, List.of(), typed, scan.tables, scan.left);
+  }
+
+  // What the word after the n tokens asks for, where no dot comes before it.
+  private static Asked asked(List<Token> tokens, int n, boolean on) {
+    if (n > 0 && introduces(tokens, n - 1)) {
+      return conditionalJoin(tokens, n - 1) && !conditioned(tokens, n) ? Asked.JOIN : Asked.TABLE;
+    }
+    return on ? Asked.ON : Asked.ANY;
   }
 
   // Whether the table named at the index already has its alias, ON or USING, as while one is
   // replaced.
   private static boolean conditioned(List<Token> tokens, int i) {
-    if (word(tokens, i, "ON") || word(tokens, i, "USING")) {
+    if (condition(tokens, i)) {
       return true;
     }
     if (i >= tokens.size()
@@ -173,8 +174,12 @@ public record Context(
     }
     var named = new ArrayList<Reference>();
     int j = reference(tokens, i, named, null);
-    return j >= 0
-        && (named.getFirst().alias() != null || word(tokens, j, "ON") || word(tokens, j, "USING"));
+    return j >= 0 && (named.getFirst().alias() != null || condition(tokens, j));
+  }
+
+  // Whether the token begins a join's condition.
+  private static boolean condition(List<Token> tokens, int i) {
+    return word(tokens, i, "ON") || word(tokens, i, "USING");
   }
 
   // Whether no condition follows the offset: nothing, a clause, a comma or the statement's end.
@@ -334,39 +339,54 @@ public record Context(
     static final Scan EMPTY = new Scan(List.of(), List.of(), false);
   }
 
+  // Where a table is named: the index of its introducer, of its first token and of the next.
+  private record Span(int introducer, int start, int end) {}
+
   private static Scan scan(List<Token> tokens, Set<Integer> tableTokens, int cursor) {
     var found = new ArrayList<Reference>();
-    var left = new ArrayList<Reference>();
-    int item = item(tokens, cursor);
-    boolean joinOn = false;
+    var spans = new ArrayList<Span>();
     for (int i = 0; i < tokens.size(); i++) {
-      var introducer = tokens.get(i).upper();
-      if (!introduces(tokens, i)) {
-        continue;
-      }
-      boolean list = introducer.equals("FROM");
-      boolean join = conditionalJoin(tokens, i);
-      int j = i + 1;
-      while (j < tokens.size() && tokens.get(j).name()) {
-        int at = j;
-        j = reference(tokens, j, found, tableTokens);
-        if (j < 0) {
-          break;
-        }
-        if (cursor >= 0 && at > item && j <= cursor) {
-          left.add(found.getLast());
-        }
-        if (join && cursor > 0 && j == cursor - 1 && word(tokens, j, "ON")) {
-          joinOn = true;
-        }
-        // FROM a x, b y: the list goes on after a comma.
-        if (!list || j + 1 >= tokens.size() || tokens.get(j).kind() != Kind.COMMA) {
-          break;
-        }
-        j++;
+      if (introduces(tokens, i)) {
+        introduced(tokens, i, found, spans, tableTokens);
       }
     }
+    int item = item(tokens, cursor);
+    var left = new ArrayList<Reference>();
+    boolean joinOn = false;
+    for (int k = 0; k < found.size(); k++) {
+      var span = spans.get(k);
+      if (cursor >= 0 && span.start > item && span.end <= cursor) {
+        left.add(found.get(k));
+      }
+      joinOn |= span.end == cursor - 1
+          && word(tokens, span.end, "ON")
+          && conditionalJoin(tokens, span.introducer);
+    }
     return new Scan(List.copyOf(found), List.copyOf(left), joinOn);
+  }
+
+  // Adds the tables named after the introducer at the index; a FROM list goes on after a comma.
+  private static void introduced(
+      List<Token> tokens,
+      int i,
+      List<Reference> found,
+      List<Span> spans,
+      Set<Integer> tableTokens) {
+    boolean list = tokens.get(i).upper().equals("FROM");
+    int j = i + 1;
+    while (j < tokens.size() && tokens.get(j).name()) {
+      int start = j;
+      j = reference(tokens, j, found, tableTokens);
+      if (j < 0) {
+        return;
+      }
+      spans.add(new Span(i, start, j));
+      // FROM a x, b y: the list goes on after a comma.
+      if (!list || j + 1 >= tokens.size() || tokens.get(j).kind() != Kind.COMMA) {
+        return;
+      }
+      j++;
+    }
   }
 
   // Adds the table named at the index, with its alias; the index after it, or -1 for a name still
