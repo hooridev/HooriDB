@@ -31,7 +31,9 @@ the last target, and switching targets asks via the console's existing question 
 old session, clearing every result (pinned too) and resetting the database to the new target's
 default. File, Drivers… lists the versions downloaded of each kind with
 their sizes, downloads one and deletes one that no open connection uses. Opening a connection in the
-tree connects and reads its databases, schemas, tables and views, and columns, one level at a time
+tree connects and reads its databases, schemas, tables and views, and columns with their foreign
+keys (marking key columns and listing outgoing and incoming keys under a table's Foreign keys node,
+where Enter or a double press opens the related table), one level at a time
 as they are opened; several connections are open at once. A double press or Enter on a table or view
 opens its rows in a tab, read late in pages on its connection's lane, with the rows in view in its
 status line, buttons that scroll a page back or on, or to the first or last row, and, on SQL
@@ -58,7 +60,8 @@ count for a change, and a log of what ran in Messages, a gutter marker on each s
 line (before it ran, to run it; after, its last outcome with time and rows or count to run it again,
 moving with edits), an error at the place the server names in its own markup layer so it moves with
 edits and shows its message after its line with the caret there, quick documentation on hover or
-Control+Q for a table's kind, schema and columns or a column's type and table (reading what the
+Control+Q for a table's kind, schema, columns and foreign keys or a column's type, table and
+foreign key references (reading what the
 tree lacks for the next hover), Control+B and Control+click on a table or column name to open its
 table in a tab, Control+Alt+L to lay its SQL out, changing only white space, and completions of
 keywords and of the schemas, tables and columns the tree read or reads for it; it switches

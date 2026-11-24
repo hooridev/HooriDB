@@ -376,6 +376,11 @@ public final class PostgreSql implements Dialect {
           + " WHEN " + column + EQ + "'d' THEN 'SET DEFAULT'"
           + " END";
     }
+
+    @Override
+    public boolean restrictIsNoAction() {
+      return false;
+    }
   }
 
   static final class Errors implements ErrorDialect {

@@ -289,6 +289,11 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           + " ORDER BY CAST(CONSTRAINT_NAME AS BINARY), CAST(TABLE_SCHEMA AS BINARY),"
           + " CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION";
     }
+
+    @Override
+    public boolean restrictIsNoAction() {
+      return true;
+    }
   }
 
   // Their lexical rules alike, with each one's key words and kinds of executable comments.

@@ -10,6 +10,7 @@ import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.Table;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -38,6 +39,28 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
     if (live == null) {
       return Tree.ready(List.of());
     }
+    if (node instanceof Node.ForeignKeys(var id, var table)) {
+      var keys = live.keys.get(table);
+      var groups = new ArrayList<Node>(2);
+      if (!ForeignKeys.outgoing(table, keys).isEmpty()) {
+        groups.add(new Node.KeyGroup(id, table, false));
+      }
+      if (!ForeignKeys.incoming(table, keys).isEmpty()) {
+        groups.add(new Node.KeyGroup(id, table, true));
+      }
+      return Tree.ready(groups);
+    }
+    if (node instanceof Node.KeyGroup(var id, var table, var incoming)) {
+      var keys = live.keys.get(table);
+      var matching =
+          incoming ? ForeignKeys.incoming(table, keys) : ForeignKeys.outgoing(table, keys);
+      return Tree.ready(matching.stream()
+          .map(k -> (Node) new Node.OfKey(id, table, k, incoming))
+          .toList());
+    }
+    if (node instanceof Node.OfKey) {
+      return Tree.ready(List.of());
+    }
     if (CatalogTree.failedWhole(live, node)) {
       return CatalogTree.ended(live.phase)
           ? Tree.ready(List.of(new Node.Problem(node)))
@@ -45,6 +68,15 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
     }
     var level = live.levels.get(node);
     if (level instanceof CatalogTree.Read(var children)) {
+      if (node instanceof Node.OfTable(var id, var table)) {
+        var keys = live.keys.get(table);
+        if (keys != null && !keys.isEmpty()) {
+          var all = new ArrayList<Node>(children.size() + 1);
+          all.addAll(children);
+          all.add(new Node.ForeignKeys(id, table));
+          return Tree.ready(all);
+        }
+      }
       return Tree.ready(children);
     }
     if (level instanceof CatalogTree.NotRead || level instanceof CatalogTree.NotOpened) {
@@ -67,6 +99,7 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
   public boolean isLeaf(Node node) {
     return node instanceof Node.Query
         || node instanceof Node.OfColumn
+        || node instanceof Node.OfKey
         || node instanceof Node.Problem;
   }
 
@@ -107,12 +140,23 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       case Node.OfSchema n -> icon(Glyphs.SCHEMA, n.schema().system());
       case Node.OfTable n ->
         icon(n.table().kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE, system(n.table()));
-      case Node.OfColumn n ->
-        n.column().keyPosition() > 0
-            ? Icon.icon(Symbol.KEY, Icon.Variant.WARNING)
-            : icon(Symbol.COLUMN_SINGLE, false);
+      case Node.OfColumn n -> columnIcon(n);
+      case Node.ForeignKeys _ -> icon(Symbol.LINK, false);
+      case Node.KeyGroup n -> icon(n.incoming() ? Symbol.ARROW_LEFT : Symbol.ARROW_RIGHT, false);
+      case Node.OfKey _ -> icon(Symbol.LINK, false);
       case Node.Problem n -> Icon.icon(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
     };
+  }
+
+  private El columnIcon(Node.OfColumn n) {
+    if (n.column().keyPosition() > 0) {
+      return Icon.icon(Symbol.KEY, Icon.Variant.WARNING);
+    }
+    if (ForeignKeys.isOutgoingColumn(
+        n.column(), s.catalog.foreignKeys(n.id(), n.column().table()))) {
+      return Icon.icon(Symbol.LINK, Icon.Variant.MUTED);
+    }
+    return icon(Symbol.COLUMN_SINGLE, false);
   }
 
   // A system object's icon is quieter too, as its name is muted.

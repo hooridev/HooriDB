@@ -65,4 +65,10 @@ public interface CatalogDialect {
    * key's pairs are consecutive and in key order.
    */
   String foreignKeys();
+
+  /**
+   * Whether the server treats {@code RESTRICT} as {@code NO ACTION} and reports it for an
+   * unspecified referential action, as MariaDB and MySQL do.
+   */
+  boolean restrictIsNoAction();
 }

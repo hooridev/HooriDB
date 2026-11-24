@@ -10,6 +10,7 @@ import com.rethinkj.ui.kit.Markdown;
 import com.rethinkj.ui.kit.MarkdownDocument;
 import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
@@ -242,8 +243,10 @@ final class ConsoleEditor {
       return null;
     }
     return switch (target) {
-      case Target.OfTable(var table) -> tableDoc(table, known.columns(table));
-      case Target.OfColumn(var column) -> columnDoc(column);
+      case Target.OfTable(var table) ->
+        tableDoc(table, known.columns(table), known.foreignKeys(table), provider);
+      case Target.OfColumn(var column) ->
+        columnDoc(column, known.foreignKeys(column.table()), provider);
     };
   }
 
@@ -392,23 +395,30 @@ final class ConsoleEditor {
     return fallback == null ? null : new Target.OfColumn(fallback);
   }
 
-  private static MarkdownDocument tableDoc(Table table, List<Column> columns) {
+  private static MarkdownDocument tableDoc(
+      Table table, List<Column> columns, List<ForeignKey> keys, Provider provider) {
     var md = new StringBuilder();
     md.append("**").append(kind(table.kind())).append("** ").append(code(qualified(table)));
     if (!columns.isEmpty()) {
       md.append("\n\n");
-      for (var c : columns) {
+      for (int i = 0; i < columns.size(); i++) {
+        if (i > 0) {
+          md.append('\n');
+        }
+        var c = columns.get(i);
         md.append("- ").append(code(c.name())).append(' ').append(code(c.type()));
         if (c.keyPosition() > 0) {
           md.append(" · primary key");
         }
-        md.append('\n');
       }
     }
+    appendKeys(md, "References", table, ForeignKeys.outgoing(table, keys), false, provider);
+    appendKeys(md, "Referenced by", table, ForeignKeys.incoming(table, keys), true, provider);
     return Markdown.parse(md.toString());
   }
 
-  private static MarkdownDocument columnDoc(Column column) {
+  private static MarkdownDocument columnDoc(
+      Column column, List<ForeignKey> keys, Provider provider) {
     var md = new StringBuilder();
     md.append("**Column** ").append(code(column.name())).append(' ').append(code(column.type()));
     if (column.keyPosition() > 0) {
@@ -420,7 +430,49 @@ final class ConsoleEditor {
         .append(kind(column.table().kind()).toLowerCase(Locale.ROOT))
         .append(' ')
         .append(code(qualified(column.table())));
+    var targets = ForeignKeys.columnTargets(column, keys, provider);
+    if (!targets.isEmpty()) {
+      md.append("\n\n**References**\n\n");
+      for (int i = 0; i < targets.size(); i++) {
+        if (i > 0) {
+          md.append('\n');
+        }
+        var t = targets.get(i);
+        md.append("- → ").append(code(t.target())).append(t.rules());
+      }
+    }
+    appendKeys(
+        md,
+        "Referenced by",
+        column.table(),
+        ForeignKeys.referencingColumn(column, keys),
+        true,
+        provider);
     return Markdown.parse(md.toString());
+  }
+
+  private static void appendKeys(
+      StringBuilder md,
+      String heading,
+      Table table,
+      List<ForeignKey> keys,
+      boolean incoming,
+      Provider provider) {
+    if (keys.isEmpty()) {
+      return;
+    }
+    md.append("\n\n**").append(heading).append("**\n\n");
+    for (int i = 0; i < keys.size(); i++) {
+      if (i > 0) {
+        md.append('\n');
+      }
+      var key = keys.get(i);
+      md.append("- ")
+          .append(code(key.name()))
+          .append(" · ")
+          .append(code(ForeignKeys.mapping(table, key, incoming)))
+          .append(ForeignKeys.rules(key, provider));
+    }
   }
 
   private static String kind(Table.Kind kind) {

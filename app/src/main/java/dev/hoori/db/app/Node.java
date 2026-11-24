@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -90,6 +91,30 @@ sealed interface Node {
     @Override
     public Node parent() {
       return new OfTable(id, column.table());
+    }
+  }
+
+  /** The node holding a table's foreign keys, under its {@link OfTable} row. */
+  record ForeignKeys(UUID id, Table table) implements Node {
+    @Override
+    public Node parent() {
+      return new OfTable(id, table);
+    }
+  }
+
+  /** Outgoing or incoming foreign keys of a table, under {@link ForeignKeys}. */
+  record KeyGroup(UUID id, Table table, boolean incoming) implements Node {
+    @Override
+    public Node parent() {
+      return new ForeignKeys(id, table);
+    }
+  }
+
+  /** One foreign key constraint, under its {@link KeyGroup}. */
+  record OfKey(UUID id, Table table, ForeignKey key, boolean incoming) implements Node {
+    @Override
+    public Node parent() {
+      return new KeyGroup(id, table, incoming);
     }
   }
 

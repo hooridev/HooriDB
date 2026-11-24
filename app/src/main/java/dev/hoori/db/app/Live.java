@@ -2,6 +2,8 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.TabGroups;
+import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ServerVersion;
@@ -9,6 +11,7 @@ import dev.hoori.db.core.driver.LoadedDriver;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -39,6 +42,8 @@ final class Live {
   // else one under "".
   final Map<String, Lane> writers = new HashMap<>();
   final Map<Node, CatalogTree.Level> levels = new HashMap<>();
+  // All foreign keys touching each table (both directions), read lazily with its columns.
+  final Map<Table, List<ForeignKey>> keys = new HashMap<>();
   // The background reads of go to table and of completions: a database's tables, a table's
   // columns.
   final Map<Node, CatalogTree.Scan> scans = new HashMap<>();

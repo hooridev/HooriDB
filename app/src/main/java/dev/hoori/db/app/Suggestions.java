@@ -3,6 +3,7 @@ package dev.hoori.db.app;
 import com.rethinkj.ui.kit.Completion;
 import com.rethinkj.ui.kit.Icon;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Settings;
@@ -358,6 +359,18 @@ final class Suggestions {
         return List.of();
       }
       return columns;
+    }
+
+    /** The table's foreign keys in both directions; none yet where it reads them now. */
+    List<ForeignKey> foreignKeys(Table table) {
+      var keys = s.catalog.foreignKeys(connection, table);
+      if (keys == null) {
+        if (live != null) {
+          want(new Node.OfTable(connection, table));
+        }
+        return List.of();
+      }
+      return keys;
     }
   }
 }
