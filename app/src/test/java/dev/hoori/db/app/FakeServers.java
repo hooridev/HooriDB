@@ -4,6 +4,7 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -52,6 +53,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -73,7 +75,12 @@ import java.util.stream.IntStream;
  *
  * <p>An outline has a database per line, its schemas indented under it where the provider has
  * schemas, then the tables, then the columns as {@code name: type}. A {@code ~} before a name marks
- * a system database or schema, {@code @} a view and {@code *} a column of the primary key.
+ * a system database or schema, {@code @} a view and {@code *} a column of the primary key. A
+ * column line may end with {@code > [<name>:] [<container>.]<table>.<column>} to declare a foreign
+ * key ({@code <container>} defaults to the column's own, {@code <name>} to {@code
+ * <table>_<column>_fkey}; columns on one table sharing a name form a composite key in column
+ * order; rules are {@link ForeignKey.Rule#NO_ACTION}). Reading a table's foreign keys is keyed
+ * {@code foreign keys <host>/<path>}, with the path as of {@code columns}.
  *
  * <p>A table has rows made up from their position, of the kinds its columns' types say, 3 unless
  * {@link #rows} says how many, or the rows {@link #values} gives. Its rows' calls are keyed {@code
@@ -730,23 +737,43 @@ final class FakeServers implements Servers {
 
     @Override
     public List<Column> columns(Table t) throws CatalogException {
-      var c = t.container();
-      var path = (c instanceof Schema s ? s.database().name() + "." + s.name() : c.name()) + "."
-          + t.name();
-      return read("columns " + host + "/" + path, c.database(), () -> {
-        var list = new ArrayList<Column>();
-        int key = 0;
-        var table = find(container(c), t.name());
+      return read("columns " + path(t), t.container().database(), () -> {
+        var table = find(container(t.container()), t.name());
         if (table == null) {
           throw CatalogException.of(CatalogException.Failure.NOT_FOUND, t.name());
         }
-        for (var line : table.children()) {
-          var text = line.text();
-          boolean inKey = text.startsWith("*");
-          var parts = (inKey ? text.substring(1) : text).split(": ", 2);
-          list.add(new Column(t, parts[0], parts[1], !inKey, inKey ? ++key : 0));
+        return tableColumns(t, table);
+      });
+    }
+
+    @Override
+    public List<ForeignKey> foreignKeys(Table t) throws CatalogException {
+      if (made.provider().keepsDocuments() || t.kind() != Table.Kind.TABLE) {
+        return List.of();
+      }
+      return read("foreign keys " + path(t), t.container().database(), () -> {
+        boolean schemas = made.provider() == Provider.POSTGRESQL;
+        var found = new ArrayList<ForeignKey>();
+        if (schemas) {
+          var dbOutline = find(root(), t.container().database().name());
+          if (dbOutline != null) {
+            var db = new Database(name(dbOutline), dbOutline.text().startsWith("~"));
+            for (var schemaOutline : dbOutline.children()) {
+              var schema =
+                  new Schema(db, name(schemaOutline), schemaOutline.text().startsWith("~"));
+              collectForeignKeys(t, dbOutline, schema, schemaOutline, true, found);
+            }
+          }
+        } else {
+          for (var dbOutline : root().children()) {
+            var db = new Database(name(dbOutline), dbOutline.text().startsWith("~"));
+            collectForeignKeys(t, root(), db, dbOutline, false, found);
+          }
         }
-        return list;
+        found.sort(Comparator.comparing(ForeignKey::name)
+            .thenComparing(fk -> fk.table().container().name())
+            .thenComparing(fk -> fk.table().name()));
+        return List.copyOf(found);
       });
     }
 
@@ -919,7 +946,10 @@ final class FakeServers implements Servers {
       return rows("read " + path + " " + from + "-" + to + suffix, t, isWrite(filter), table -> {
         // As core reads: the columns given must be the table's now, by name, order and type.
         var now = table.children().stream()
-            .map(line -> List.of(line.text().replaceFirst("^\\*", "").split(": ", 2)))
+            .map(line -> {
+              var parsed = columnLine(line.text());
+              return List.of(parsed.name(), parsed.type());
+            })
             .toList();
         var asked = columns.stream().map(c -> List.of(c.name(), c.type())).toList();
         if (!now.equals(asked)) {
@@ -1119,16 +1149,100 @@ final class FakeServers implements Servers {
       return new ResolvedOutline(new Table(db, tableName, Table.Kind.TABLE), tableOutline);
     }
 
+    private record ColumnLine(String name, String type, boolean inKey, String reference) {}
+
+    private static ColumnLine columnLine(String text) {
+      boolean inKey = text.startsWith("*");
+      var parts = (inKey ? text.substring(1) : text).split(": ", 2);
+      var rest = parts[1];
+      int arrow = rest.indexOf(" > ");
+      if (arrow < 0) {
+        return new ColumnLine(parts[0], rest, inKey, null);
+      }
+      return new ColumnLine(
+          parts[0],
+          rest.substring(0, arrow).stripTrailing(),
+          inKey,
+          rest.substring(arrow + 3).strip());
+    }
+
     private static List<Column> tableColumns(Table t, Outline table) {
       var list = new ArrayList<Column>();
       int key = 0;
       for (var line : table.children()) {
-        var text = line.text();
-        boolean inKey = text.startsWith("*");
-        var parts = (inKey ? text.substring(1) : text).split(": ", 2);
-        list.add(new Column(t, parts[0], parts[1], !inKey, inKey ? ++key : 0));
+        var parsed = columnLine(line.text());
+        list.add(new Column(
+            t, parsed.name(), parsed.type(), !parsed.inKey(), parsed.inKey() ? ++key : 0));
       }
       return list;
+    }
+
+    private record PendingKey(
+        Table table, Table referenced, List<String> columns, List<String> referencedColumns) {}
+
+    private static void collectForeignKeys(
+        Table target,
+        Outline containersRoot,
+        Container container,
+        Outline containerOutline,
+        boolean schemas,
+        List<ForeignKey> found) {
+      for (var tableOutline : containerOutline.children()) {
+        if (tableOutline.text().startsWith("@")) {
+          continue;
+        }
+        var table = new Table(container, name(tableOutline), Table.Kind.TABLE);
+        var byName = new LinkedHashMap<String, PendingKey>();
+        for (var line : tableOutline.children()) {
+          var parsed = columnLine(line.text());
+          if (parsed.reference() == null) {
+            continue;
+          }
+          var ref = parsed.reference();
+          int colon = ref.indexOf(':');
+          String keyName;
+          String spec;
+          if (colon >= 0) {
+            keyName = ref.substring(0, colon).strip();
+            spec = ref.substring(colon + 1).strip();
+          } else {
+            keyName = table.name() + "_" + parsed.name() + "_fkey";
+            spec = ref;
+          }
+          var parts = spec.split("\\.", -1);
+          if (parts.length != 2 && parts.length != 3) {
+            throw new IllegalArgumentException("Bad foreign key reference: " + ref);
+          }
+          var refContainerName = parts.length == 3 ? parts[0] : container.name();
+          var refTableName = parts.length == 3 ? parts[1] : parts[0];
+          var refColumnName = parts.length == 3 ? parts[2] : parts[1];
+          var refContainerOutline = find(containersRoot, refContainerName);
+          boolean refSystem =
+              refContainerOutline != null && refContainerOutline.text().startsWith("~");
+          Container refContainer = schemas
+              ? new Schema(container.database(), refContainerName, refSystem)
+              : new Database(refContainerName, refSystem);
+          var referenced = new Table(refContainer, refTableName, Table.Kind.TABLE);
+          var pending = byName.computeIfAbsent(
+              keyName,
+              _ -> new PendingKey(table, referenced, new ArrayList<>(), new ArrayList<>()));
+          pending.columns().add(parsed.name());
+          pending.referencedColumns().add(refColumnName);
+        }
+        for (var entry : byName.entrySet()) {
+          var p = entry.getValue();
+          if (p.table().equals(target) || p.referenced().equals(target)) {
+            found.add(new ForeignKey(
+                entry.getKey(),
+                p.table(),
+                p.columns(),
+                p.referenced(),
+                p.referencedColumns(),
+                ForeignKey.Rule.NO_ACTION,
+                ForeignKey.Rule.NO_ACTION));
+          }
+        }
+      }
     }
 
     @Override

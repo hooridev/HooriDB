@@ -19,6 +19,13 @@ public interface CatalogDialect {
   Database database(ResultSet rows) throws SQLException;
 
   /**
+   * Whether the database of this name is the server's own, where the provider has no schemas.
+   *
+   * @throws UnsupportedOperationException where the provider reads that from its catalog rows
+   */
+  boolean systemDatabase(String name);
+
+  /**
    * The schemas of the connection's database, by name, where the provider has schemas.
    *
    * @throws UnsupportedOperationException where it has none
@@ -47,4 +54,15 @@ public interface CatalogDialect {
 
   /** One row where the table in the schema or database named exists. */
   String tableExists();
+
+  /**
+   * The foreign keys referencing or referenced by the table in the schema or database named, taking
+   * the container name and table name twice (once for each direction). Each row is one column pair:
+   * constraint name, referencing container, referencing table, referenced container, referenced
+   * table, referencing column, referenced column, update rule and delete rule, the rules written as
+   * {@code NO ACTION}, {@code RESTRICT}, {@code CASCADE}, {@code SET NULL} or {@code SET DEFAULT},
+   * ordered by constraint name, referencing container, referencing table and key order so that each
+   * key's pairs are consecutive and in key order.
+   */
+  String foreignKeys();
 }

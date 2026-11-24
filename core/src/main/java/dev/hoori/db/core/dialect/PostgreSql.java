@@ -279,6 +279,11 @@ public final class PostgreSql implements Dialect {
     }
 
     @Override
+    public boolean systemDatabase(String name) {
+      throw new UnsupportedOperationException("System databases come from pg_database");
+    }
+
+    @Override
     public String schemas() {
       return "SELECT nspname FROM pg_catalog.pg_namespace ORDER BY nspname";
     }
@@ -334,6 +339,42 @@ public final class PostgreSql implements Dialect {
     @Override
     public String tableExists() {
       return "SELECT 1 FROM pg_catalog.pg_class c" + JOIN_SCHEMA + NAMED;
+    }
+
+    // conparentid = 0 skips inherited and internal copies on partitions so a key on or to a
+    // partitioned table is listed once.
+    @Override
+    public String foreignKeys() {
+      return "SELECT con.conname, n.nspname, c.relname, fn.nspname, fc.relname,"
+          + " ra.attname, fa.attname, "
+          + action("con.confupdtype") + ", " + action("con.confdeltype")
+          + " FROM pg_catalog.pg_constraint con"
+          + " JOIN pg_catalog.pg_class c ON c.oid" + EQ + "con.conrelid"
+          + JOIN_SCHEMA
+          + " JOIN pg_catalog.pg_class fc ON fc.oid" + EQ + "con.confrelid"
+          + " JOIN pg_catalog.pg_namespace fn ON fn.oid" + EQ + "fc.relnamespace"
+          + " CROSS JOIN LATERAL ROWS FROM ("
+          + "pg_catalog.unnest(con.conkey), pg_catalog.unnest(con.confkey))"
+          + " WITH ORDINALITY AS k (rattnum, fattnum, ord)"
+          + " JOIN pg_catalog.pg_attribute ra ON ra.attrelid" + EQ + "con.conrelid"
+          + " AND ra.attnum" + EQ + "k.rattnum"
+          + " JOIN pg_catalog.pg_attribute fa ON fa.attrelid" + EQ + "con.confrelid"
+          + " AND fa.attnum" + EQ + "k.fattnum"
+          + " WHERE con.contype" + EQ + "'f'"
+          + " AND con.conparentid" + EQ + "0::pg_catalog.oid"
+          + " AND ((n.nspname" + EQ + "? AND c.relname" + EQ + "?)"
+          + " OR (fn.nspname" + EQ + "? AND fc.relname" + EQ + "?))"
+          + " ORDER BY con.conname, n.nspname, c.relname, k.ord";
+    }
+
+    private static String action(String column) {
+      return "CASE"
+          + " WHEN " + column + EQ + "'a' THEN 'NO ACTION'"
+          + " WHEN " + column + EQ + "'r' THEN 'RESTRICT'"
+          + " WHEN " + column + EQ + "'c' THEN 'CASCADE'"
+          + " WHEN " + column + EQ + "'n' THEN 'SET NULL'"
+          + " WHEN " + column + EQ + "'d' THEN 'SET DEFAULT'"
+          + " END";
     }
   }
 

@@ -195,7 +195,12 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     @Override
     public Database database(ResultSet rows) throws SQLException {
       var name = rows.getString(1);
-      return new Database(name, MYSQL_SYSTEM.contains(name));
+      return new Database(name, systemDatabase(name));
+    }
+
+    @Override
+    public boolean systemDatabase(String name) {
+      return MYSQL_SYSTEM.contains(name);
     }
 
     @Override
@@ -248,6 +253,40 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     @Override
     public String tableExists() {
       return "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
+    }
+
+    // Two branches so the outgoing branch keeps a filter MariaDB can optimize on TABLE_SCHEMA and
+    // TABLE_NAME, while the incoming branch reads across every database and skips self-references
+    // already returned by the first branch. Exact binary comparisons and sort prevent names that
+    // differ only in case or accents from matching or interleaving.
+    @Override
+    public String foreignKeys() {
+      var select = "SELECT k.CONSTRAINT_NAME, k.TABLE_SCHEMA, k.TABLE_NAME,"
+          + " k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME,"
+          + " k.COLUMN_NAME, k.REFERENCED_COLUMN_NAME,"
+          + " r.UPDATE_RULE, r.DELETE_RULE, k.ORDINAL_POSITION"
+          + " FROM information_schema.KEY_COLUMN_USAGE k"
+          + " JOIN information_schema.REFERENTIAL_CONSTRAINTS r"
+          + " ON r.CONSTRAINT_SCHEMA = CAST(k.CONSTRAINT_SCHEMA AS BINARY)"
+          + " AND r.CONSTRAINT_NAME = CAST(k.CONSTRAINT_NAME AS BINARY)"
+          + " AND r.TABLE_NAME = CAST(k.TABLE_NAME AS BINARY)";
+      return "SELECT CONSTRAINT_NAME, TABLE_SCHEMA, TABLE_NAME,"
+          + " REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME,"
+          + " COLUMN_NAME, REFERENCED_COLUMN_NAME, UPDATE_RULE, DELETE_RULE"
+          + " FROM ("
+          + select
+          + " WHERE k.TABLE_SCHEMA = CAST(? AS BINARY)"
+          + " AND k.TABLE_NAME = CAST(? AS BINARY)"
+          + " AND k.REFERENCED_TABLE_NAME IS NOT NULL"
+          + " UNION ALL "
+          + select
+          + " WHERE k.REFERENCED_TABLE_SCHEMA = CAST(? AS BINARY)"
+          + " AND k.REFERENCED_TABLE_NAME = CAST(? AS BINARY)"
+          + " AND NOT (k.TABLE_SCHEMA = CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY)"
+          + " AND k.TABLE_NAME = CAST(k.REFERENCED_TABLE_NAME AS BINARY))"
+          + ") f"
+          + " ORDER BY CAST(CONSTRAINT_NAME AS BINARY), CAST(TABLE_SCHEMA AS BINARY),"
+          + " CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION";
     }
   }
 
