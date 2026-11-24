@@ -424,6 +424,36 @@ class DocumentEditTest {
     assertTrue(tree.contains("waiting for replication timed out"), tree);
     assertTrue(tree.contains("role=dialog label=\"Edit document\""), tree);
     assertTrue(tab.documentDialog.text.contains("Ada Unsure"), tab.documentDialog.text);
+
+    // The write may have taken effect: going to the preview and back leaves it at stake.
+    c.run(
+        app,
+        "press #document-save\nframe\n" + OPENED + "press #document-preview-back\nframe\n"
+            + OPENED);
+    assertNull(tab.documentDialog.problem);
+    assertTrue(tab.atStake());
+  }
+
+  @Test
+  void aRetryWithoutTheIdSentKeepsThatId() throws Exception {
+    var app = openItems(DOCS);
+    var tab = app.state().tables(DOCS.id()).getFirst();
+    c.servers.nextEdit(EDIT_ITEMS, new DocumentEdit.Outcome.Unconfirmed("timed out"));
+    c.run(
+        app,
+        "press #insert-document\nframe\n"
+            + OPENED
+            + replaceEditor("{ _id: 42, name: 'Edsger' }")
+            + "press #document-save\nframe\n"
+            + OPENED
+            + "press #document-preview-confirm\nframe\n"
+            + SETTLE
+            + OPENED
+            + replaceEditor("{ name: 'Edsger' }")
+            + "press #document-save\nframe\n"
+            + OPENED);
+    assertEquals(
+        42, ((DocumentEdit.Insert) tab.documentDialog.pending).document().get("_id"));
   }
 
   @Test
@@ -554,8 +584,11 @@ class DocumentEditTest {
     assertFalse(roTree.contains("#delete-document"), roTree);
     assertTrue(line(roTree, "#edit-status").contains(ResultEdits.READ_ONLY_CONNECTION), roTree);
     c.run(roApp, rightClickCell(0, 1) + "snap ro-menu\n");
-    assertFalse(c.tree("ro-menu").contains("Edit document"), c.tree("ro-menu"));
-    assertTrue(c.tree("ro-menu").contains("Refresh"), c.tree("ro-menu"));
+    var roMenu = c.tree("ro-menu");
+    assertTrue(roMenu.contains("role=menuitem label=\"Refresh\""), roMenu);
+    for (var write : List.of("Edit", "Copy", "Delete", "Insert")) {
+      assertFalse(roMenu.contains("role=menuitem label=\"" + write + " document…\""), roMenu);
+    }
 
     // 2. View on writable connection: edit buttons absent, status shows views cannot be edited.
     var app = c.app(DOCS);

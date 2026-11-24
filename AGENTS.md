@@ -171,8 +171,9 @@ on a writable connection edits, inserts, copies (without its `_id`) and deletes 
 time, from any of its three views, in a dialog of the shell's notation with the console's colors,
 completion and error marks; it opens only a document whose text reads back as the same document,
 shows the command before it is sent on the writer's connection, writes nothing over a document that
-changed since it was read (`$expr` equal to the document read) and says so, and reads the collection
-anew. Nothing else can be edited yet.
+changed since it was read (`$expr` equal to the document read, which a type alone changed at an
+equal value still matches) and says so, and reads the collection anew. Nothing else can be edited
+yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it

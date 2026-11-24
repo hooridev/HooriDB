@@ -65,7 +65,7 @@ final class DocumentDialog {
   ConsoleTab.Problem problem;
   private boolean errorMarked;
   private boolean conflict;
-  private Bson.ObjectId insertId; // the _id this dialog gives a new document without one
+  private Object insertId; // the _id of a new document without one: made, or the last sent
   private DocumentEdit sent; // the last command sent, and the text it was read from
   private String sentText;
 
@@ -102,7 +102,8 @@ final class DocumentDialog {
 
   /** Whether closing the dialog would lose what the user typed or a write left unsure or unsaid. */
   boolean draft() {
-    return problem != null || mode != Mode.DELETE && !text.equals(initial);
+    // A command sent and not settled by closing may have taken effect, whatever the text says.
+    return sent != null || problem != null || mode != Mode.DELETE && !text.equals(initial);
   }
 
   /** Cancels any in-flight write and stops completion reads when the dialog or tab closes. */
@@ -390,6 +391,7 @@ final class DocumentDialog {
     var live = s.catalog.live(tab.id);
     var edit = pending;
     if (edit instanceof DocumentEdit.Insert insert) {
+      insertId = insert.document().get("_id");
       // The text takes the _id sent, as ObjectId() in it made it: whatever the outcome, a later
       // save of this text, edited or not, cannot insert the document again under another _id.
       text = Shell.pretty(insert.document());
@@ -479,8 +481,10 @@ final class DocumentDialog {
   }
 
   private static boolean lost(QueryException e) {
+    // A cancel the user did not ask for, as when its connection closed, may follow a sent command.
     return e.failure() == QueryException.Failure.CONNECTION_LOST
-        || e.failure() == QueryException.Failure.ABORTED;
+        || e.failure() == QueryException.Failure.ABORTED
+        || e.failure() == QueryException.Failure.CANCELLED;
   }
 
   private static ConsoleTab.Problem lostProblem(String detail) {
@@ -494,7 +498,6 @@ final class DocumentDialog {
     return switch (e.failure()) {
       case ACCESS_DENIED -> "Access denied";
       case NOT_FOUND -> "Collection not found";
-      case CANCELLED -> ConsoleTab.CANCELLED_TEXT;
       default -> failed();
     };
   }
