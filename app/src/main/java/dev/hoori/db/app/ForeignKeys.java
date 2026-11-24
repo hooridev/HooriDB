@@ -1,6 +1,5 @@
 package dev.hoori.db.app;
 
-import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Symbol;
 import dev.hoori.db.core.catalog.Column;
@@ -140,16 +139,20 @@ final class ForeignKeys {
 
   /**
    * Context menu items for a table tab's grid: outgoing and incoming foreign key navigation for
-   * the current cell and row, followed by Refresh. Reads missing keys on the lane only while the
-   * menu is open.
+   * the cell or row the menu opened on, followed by Refresh. On a row number ({@code col == -1})
+   * offers all outgoing keys of the table and all incoming keys for the row; without a row
+   * ({@code gridRow < 0}) offers Refresh alone. Reads missing keys on the lane only while the menu
+   * is open.
    */
-  static List<Menu.Item> gridMenu(State s, TableTab tab, boolean ofDocuments) {
+  static List<Menu.Item> gridMenu(
+      State s, TableTab tab, boolean ofDocuments, int gridRow, int col) {
     var refresh = Menu.item("Refresh", () -> tab.refresh(s)).icon(Symbol.ARROW_CLOCKWISE);
     var profile = s.profile(tab.id);
     if (!tab.menu.isOpen()
         || ofDocuments
         || profile == null
-        || tab.table.kind() != Table.Kind.TABLE) {
+        || tab.table.kind() != Table.Kind.TABLE
+        || !inGrid(tab, gridRow, col)) {
       return List.of(refresh);
     }
     var keys = s.catalog.foreignKeys(tab.id, tab.table);
@@ -159,12 +162,9 @@ final class ForeignKeys {
       }
       return List.of(refresh);
     }
-    int gridRow = tab.selection.row();
-    int col = tab.selection.column();
-    if (!onlyCell(tab, gridRow, col)) {
-      return List.of(refresh);
-    }
-    var outgoing = outgoing(tab.table, tab.columns.get(col).name(), keys);
+    var outgoing = col < 0
+        ? outgoing(tab.table, keys)
+        : outgoing(tab.table, tab.columns.get(col).name(), keys);
     var incoming = incoming(tab.table, keys);
     if (outgoing.isEmpty() && incoming.isEmpty()) {
       return List.of(refresh);
@@ -194,18 +194,13 @@ final class ForeignKeys {
     return items;
   }
 
-  /**
-   * Whether the cell is in the grid and selected alone. Which cell a press inside a selection of
-   * several was on, the grid does not say (rethinkj/ui#577): only the active cell selected alone
-   * is surely the pressed one.
-   */
-  private static boolean onlyCell(TableTab tab, int gridRow, int col) {
+  /** Whether {@code gridRow} is in the grid and {@code col} is a column or {@code -1} (row number). */
+  private static boolean inGrid(TableTab tab, int gridRow, int col) {
     return tab.columns != null
         && gridRow >= 0
         && gridRow < tab.gridRowCount()
-        && col >= 0
-        && col < tab.columns.size()
-        && tab.selection.ranges().equals(List.of(new DataGrid.Range(gridRow, col, gridRow, col)));
+        && col >= -1
+        && col < tab.columns.size();
   }
 
   /** A submenu item's label, by both column lists, which tell apart keys between two tables. */
