@@ -8,6 +8,7 @@ import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
@@ -752,7 +753,7 @@ final class FakeServers implements Servers {
         return List.of();
       }
       return read("foreign keys " + path(t), t.container().database(), () -> {
-        boolean schemas = made.provider() == Provider.POSTGRESQL;
+        boolean schemas = made.provider().supports(Capability.SCHEMAS, ServerVersion.UNKNOWN);
         var found = new ArrayList<ForeignKey>();
         if (schemas) {
           var dbOutline = find(root(), t.container().database().name());
@@ -1214,8 +1215,8 @@ final class FakeServers implements Servers {
             throw new IllegalArgumentException("Bad foreign key reference: " + ref);
           }
           var refContainerName = parts.length == 3 ? parts[0] : container.name();
-          var refTableName = parts.length == 3 ? parts[1] : parts[0];
-          var refColumnName = parts.length == 3 ? parts[2] : parts[1];
+          var refTableName = parts[parts.length - 2];
+          var refColumnName = parts[parts.length - 1];
           var refContainerOutline = find(containersRoot, refContainerName);
           boolean refSystem =
               refContainerOutline != null && refContainerOutline.text().startsWith("~");
