@@ -7,6 +7,7 @@ import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Page;
@@ -38,6 +39,12 @@ public final class DocumentSession implements AutoCloseable {
 
   /** Documents a collection's fields are read from, at random where the server can. */
   public static final int SAMPLE = 100;
+
+  /** Maximum nesting depth of subdocument paths sampled for filtering (1 = top-level only). */
+  public static final int MAX_PATH_DEPTH = 3;
+
+  /** Maximum number of field paths returned by {@link #paths(Table)}. */
+  public static final int MAX_PATHS = 200;
 
   private static final String CURSOR = "cursor";
   private static final String BATCH_SIZE = "batchSize";
@@ -267,6 +274,76 @@ public final class DocumentSession implements AutoCloseable {
     }
     var type = String.join(" | ", held);
     return nullable ? type + " | null" : type;
+  }
+
+  /**
+   * The filterable field paths of a collection's documents, sampled as {@link #fields(Table)} does
+   * and descending into subdocuments up to {@link #MAX_PATH_DEPTH} levels and {@link #MAX_PATHS}
+   * paths.
+   */
+  public List<Field> paths(Table collection) throws CatalogException {
+    try {
+      return paths(sample(collection));
+    } catch (DocumentException e) {
+      throw catalog(e);
+    }
+  }
+
+  /**
+   * The filterable field paths that {@code documents} have, descending into subdocuments up to
+   * {@link #MAX_PATH_DEPTH} levels and {@link #MAX_PATHS} paths, typed as {@link #fields} types
+   * them and skipping keys that are empty, contain {@code .}, or start with {@code $}.
+   */
+  public static List<Field> paths(List<Document> documents) {
+    return paths(documents, MAX_PATH_DEPTH, MAX_PATHS);
+  }
+
+  static List<Field> paths(List<Document> documents, int maxDepth, int maxPaths) {
+    if (maxDepth <= 0 || maxPaths <= 0) {
+      return List.of();
+    }
+    Map<String, Set<String>> types = new LinkedHashMap<>();
+    if (documents.isEmpty() || documents.stream().anyMatch(d -> d.has("_id"))) {
+      types.put("_id", new LinkedHashSet<>());
+    }
+    Map<String, Integer> present = new LinkedHashMap<>();
+    for (var document : documents) {
+      collectPaths(document, "", 1, maxDepth, maxPaths, types, present);
+    }
+    var fields = new ArrayList<Field>(types.size());
+    for (var entry : types.entrySet()) {
+      var path = entry.getKey();
+      var held = new ArrayList<>(entry.getValue());
+      boolean nullable = held.remove("null") || present.getOrDefault(path, 0) < documents.size();
+      var type = type(path, held, nullable);
+      fields.add(new Field(path, type, Values.kind(type)));
+    }
+    return List.copyOf(fields);
+  }
+
+  private static void collectPaths(
+      Document document,
+      String prefix,
+      int depth,
+      int maxDepth,
+      int maxPaths,
+      Map<String, Set<String>> types,
+      Map<String, Integer> present) {
+    for (var entry : document.entries()) {
+      var key = entry.name();
+      var path = prefix.isEmpty() ? key : prefix + "." + key;
+      if (key.isEmpty()
+          || key.indexOf('.') >= 0
+          || key.startsWith("$")
+          || !types.containsKey(path) && types.size() >= maxPaths) {
+        continue;
+      }
+      types.computeIfAbsent(path, x -> new LinkedHashSet<>()).add(Bson.type(entry.value()));
+      present.merge(path, 1, Integer::sum);
+      if (entry.value() instanceof Document sub && depth < maxDepth) {
+        collectPaths(sub, path, depth + 1, maxDepth, maxPaths, types, present);
+      }
+    }
   }
 
   /**

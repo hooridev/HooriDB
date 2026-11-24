@@ -39,6 +39,8 @@ Use the four paging buttons to move the view without changing your selection:
 
 Above the grid, a table tab shows **WHERE** and **ORDER BY** fields on SQL connections (**Filter** and **Sort** on MongoDB collections), each with syntax highlighting and completion. Press `Enter` in either field to apply it.
 
+Press **Conditions…** beside **WHERE** (or **Filter**) to build conditions visually with `AND` / `OR`, nested groups, `Not equal`, ranges (`At least`, `At most`, `Between`), text matching (`Contains`, `Starts with`), `Is NULL` / `Is not NULL`, and on MongoDB `Exists` / `Does not exist` and nested subdocument paths such as `address.city` (sampled from the collection's documents in the background). Pressing **Apply** translates the active conditions in the server's dialect, writes them into **WHERE** or **Filter** (joined with `AND` to any hand-written text), and applies them after asking if there are uncommitted edits. Where both can express the same flat `AND` filter with one condition per filterable column, the builder and the header filter chips stay in sync.
+
 You can also filter and sort directly from the column headers:
 
 - **Sort:** Click a column header to sort ascending, descending, or off; `Shift+click` adds a secondary sort column. The generated clause is written into **ORDER BY** (or **Sort**) and applied.

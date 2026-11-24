@@ -15,6 +15,7 @@ import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.Completion;
+import com.rethinkj.ui.kit.ConditionBuilder;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Divider;
 import com.rethinkj.ui.kit.Label;
@@ -32,6 +33,7 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.ColumnFilter;
+import dev.hoori.db.core.data.Condition;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
@@ -141,6 +143,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   Lane.Asked counting; // the exact count, or null
   private Lane.Asked readingKeys; // the table's foreign keys, read on demand for the context menu
   private boolean keysFailed; // a failed read of the keys is tried again at the menu's next opening
+  private List<Field> documentPaths; // sampled MongoDB paths (incl. subdocuments); null until read
+  private Lane.Asked readingPaths; // background read of documentPaths when the builder opens
+  final ConditionsDialog conditions = new ConditionsDialog();
   // The count asked for while the table opened came first: it is newer than the opening's estimate.
   private boolean countedFirst;
   // An empty page past what is known: the count says where the end is, and no page is read until
@@ -209,7 +214,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   private record Sort(String column, boolean descending) {}
 
   /** One column of a header filter, by name, so its funnel and chip follow the applied filter. */
-  private record HeaderFilter(String column, DataGrid.Filter.Spec spec) {}
+  record HeaderFilter(String column, DataGrid.Filter.Spec spec) {}
+
+  /** What the WHERE/Filter text is made of: header filters, the builder's clause, hand-written. */
+  private record Made(List<HeaderFilter> headers, ConditionBuilder.Clause builder, String manual) {
+    static final Made NONE = new Made(List.of(), ConditionsDialog.EMPTY, "");
+  }
 
   /**
    * The whole value of a cell that a page holds in part, asked for by its row as read: the text,
@@ -800,6 +810,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       gone.add(readingKeys);
       readingKeys = null;
     }
+    if (readingPaths != null) {
+      gone.add(readingPaths);
+      readingPaths = null;
+    }
     Lane.cancel(gone);
   }
 
@@ -818,6 +832,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   @Override
   public void close() {
     closed = true;
+    conditions.close();
     stop();
     clearEdits();
     where.close();
@@ -842,6 +857,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     s.catalog.forgetForeignKeys(id, table);
     keysFailed = false;
+    documentPaths = null;
     open(s, true); // which gives up a read of the keys under way
   }
 
@@ -881,10 +897,13 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var keptSort = !sorted.isEmpty() && next.order().equals(orderText(profile.provider(), sorted))
         ? sorted
         : List.<Sort>of();
-    boolean keepFilters = !headerFilters.isEmpty() && next.where().equals(filter.where());
+    boolean keepFilters =
+        (!headerFilters.isEmpty() || !conditions.applied.conditions().isEmpty())
+            && next.where().equals(filter.where());
     var keptFilters = keepFilters ? headerFilters : List.<HeaderFilter>of();
+    var keptConditions = keepFilters ? conditions.applied : ConditionsDialog.EMPTY;
     var keptManual = keepFilters ? manualWhere : "";
-    apply(s, next, keptSort, keptFilters, keptManual, false, false);
+    apply(s, next, keptSort, new Made(keptFilters, keptConditions, keptManual), false, false);
   }
 
   /** Applies a WHERE clause from foreign key navigation, keeping the applied ORDER BY. */
@@ -906,7 +925,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         return;
       }
     }
-    apply(s, new Rows.Filter(trimmed, filter.order()), sorted, List.of(), "", true, false);
+    apply(s, new Rows.Filter(trimmed, filter.order()), sorted, Made.NONE, true, false);
   }
 
   /** Drops the note of an unapplied WHERE once the WHERE field holds the applied one. */
@@ -968,7 +987,13 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       nextSorted.add(new Sort(columns.get(key.column()).name(), key.descending()));
     }
     var next = new Rows.Filter(filter.where(), orderText(profile.provider(), nextSorted));
-    apply(s, next, List.copyOf(nextSorted), headerFilters, manualWhere, false, true);
+    apply(
+        s,
+        next,
+        List.copyOf(nextSorted),
+        new Made(headerFilters, conditions.applied, manualWhere),
+        false,
+        true);
   }
 
   /**
@@ -1000,16 +1025,166 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       unapplied = null;
       return;
     }
+    var nextConditions = ConditionsDialog.fromHeaderFilters(
+        nextFilters, profile.provider(), name -> fieldByName(name, profile.provider()));
     var next = new Rows.Filter(clause, filter.order());
-    apply(s, next, sorted, nextFilters, nextFilters.isEmpty() ? "" : base, true, false);
+    apply(
+        s,
+        next,
+        sorted,
+        new Made(nextFilters, nextConditions, nextFilters.isEmpty() ? "" : base),
+        true,
+        false);
+  }
+
+  /** Opens the condition builder dialog, starting a background sample of nested paths on MongoDB. */
+  private void openConditions(State s) {
+    var profile = s.profile(id);
+    if (!canApply(s) || profile == null || columns == null) {
+      return;
+    }
+    where.completion.close();
+    order.completion.close();
+    boolean hasApplied =
+        !conditions.applied.conditions().isEmpty() && where.text.strip().equals(filter.where());
+    conditions.start(hasApplied);
+    if (Language.of(profile.provider()).documents()) {
+      readPaths(s);
+    }
+  }
+
+  /** Samples filterable field paths (including subdocuments) on the tab's lane for MongoDB. */
+  private void readPaths(State s) {
+    if (closed || documentPaths != null || readingPaths != null) {
+      return;
+    }
+    var lane = s.catalog.lane(s, id, table);
+    if (lane == null) {
+      return;
+    }
+    var live = s.catalog.live(id);
+    var of = table;
+    readingPaths = lane.ask(
+        s.app,
+        "read field paths of " + table.name(),
+        Lane.Priority.VIEW,
+        link -> link.paths(of),
+        paths -> {
+          readingPaths = null;
+          if (!closed && s.catalog.live(id) == live) {
+            documentPaths = paths;
+          }
+        },
+        error -> {
+          readingPaths = null;
+          if (closed || error instanceof InterruptedException) {
+            return;
+          }
+          var problem = problem(error);
+          if (problem == Problem.LOST || problem == Problem.DISCARDED) {
+            s.catalog.lost(
+                s, live, CatalogTree.words(live, detail(error)), problem == Problem.DISCARDED);
+          }
+        });
+  }
+
+  /**
+   * The fields offered in the condition builder: the grid's columns (top-level ones on MongoDB), so
+   * that an applied header filter keeps its field, then the sampled paths they lack.
+   */
+  private List<Field> builderFields(Provider provider) {
+    boolean ofDocuments = Language.of(provider).documents();
+    var list = new ArrayList<Field>(columns.size());
+    var names = new HashSet<String>();
+    for (int c = 0; c < columns.size(); c++) {
+      var name = columns.get(c).name();
+      if (!ofDocuments || (!name.isEmpty() && name.indexOf('.') < 0 && !name.startsWith("$"))) {
+        list.add(fieldOf(c, provider));
+        names.add(name);
+      }
+    }
+    if (ofDocuments && documentPaths != null) {
+      documentPaths.stream().filter(p -> names.add(p.name())).forEach(list::add);
+    }
+    return list;
+  }
+
+  /** The condition builder dialog while it is open, or null. */
+  El conditionsDialog(State s) {
+    if (!conditions.open) {
+      return null;
+    }
+    var profile = s.profile(id);
+    if (!canApply(s) || profile == null || columns == null) {
+      closeConditions();
+      return null;
+    }
+    var provider = profile.provider();
+    var available = builderFields(provider);
+    return conditions.view(
+        provider,
+        available,
+        readingPaths != null,
+        () -> applyConditions(s, provider, available),
+        this::closeConditions);
+  }
+
+  /** Closes the builder and gives up a sample of paths it no longer waits for. */
+  private void closeConditions() {
+    conditions.close();
+    if (readingPaths != null) {
+      readingPaths.cancel();
+      readingPaths = null;
+    }
+  }
+
+  /** Translates the builder's applicable conditions into WHERE/Filter and applies them. */
+  private void applyConditions(State s, Provider provider, List<Field> available) {
+    closeConditions();
+    if (!canApply(s) || columns == null) {
+      return;
+    }
+    var kitFields = ConditionsDialog.kitFields(provider, available);
+    var applicable = ConditionBuilder.applicable(conditions.draft, kitFields);
+    boolean replace =
+        !conditions.applied.conditions().isEmpty() && where.text.strip().equals(filter.where());
+    String base = replace ? manualWhere : where.text.strip();
+    boolean empty = applicable.conditions().isEmpty();
+    if (empty && !replace) {
+      return; // the builder adds nothing and owns nothing in the field
+    }
+    String clause;
+    try {
+      if (empty) {
+        clause = base;
+      } else {
+        var byName = HashMap.<String, Field>newHashMap(available.size());
+        for (var f : available) {
+          byName.putIfAbsent(f.name(), f);
+        }
+        clause = whereText(provider, base, ConditionsDialog.toCore(applicable, byName), s.zone);
+      }
+    } catch (QueryException e) {
+      refused = e.detail();
+      unapplied = null;
+      return;
+    }
+    boolean ofDocuments = Language.of(provider).documents();
+    var nextFilters = empty
+        ? List.<HeaderFilter>of()
+        : ConditionsDialog.toHeaderFilters(
+            applicable, name -> filterable(name, ofDocuments), name -> fieldByName(name, provider));
+    var nextApplied = empty ? ConditionsDialog.EMPTY : conditions.draft;
+    var nextManual = empty ? "" : base;
+    var next = new Rows.Filter(clause, filter.order());
+    apply(s, next, sorted, new Made(nextFilters, nextApplied, nextManual), true, false);
   }
 
   private void apply(
       State s,
       Rows.Filter next,
       List<Sort> nextSorted,
-      List<HeaderFilter> nextFilters,
-      String nextManual,
+      Made made,
       boolean syncWhere,
       boolean syncOrder) {
     var profile = s.profile(id);
@@ -1030,8 +1205,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         where.text = checked.where();
         where.caret = where.text.length();
         where.completion.close();
-        headerFilters = nextFilters;
-        manualWhere = nextManual;
+        made(made);
       }
       if (syncOrder) {
         order.text = checked.order();
@@ -1047,7 +1221,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         new Guard.Act("filter", this),
         "the filter is applied",
         List.of(this),
-        () -> apply(s, checked, nextSorted, nextFilters, nextManual, syncWhere, syncOrder),
+        () -> apply(s, checked, nextSorted, made, syncWhere, syncOrder),
         Guard.Scope.CHANGES)) {
       return;
     }
@@ -1062,8 +1236,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       order.completion.close();
     }
     sorted = nextSorted;
-    headerFilters = nextFilters;
-    manualWhere = nextManual;
+    made(made);
     filter = checked;
     settleUnapplied();
     query++;
@@ -1083,6 +1256,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     open(s, false);
   }
 
+  private void made(Made made) {
+    headerFilters = made.headers();
+    conditions.applied = made.builder();
+    manualWhere = made.manual();
+  }
+
   private String whereText(
       Provider provider, String base, List<DataGrid.Filter> filters, ZoneId zone)
       throws QueryException {
@@ -1090,9 +1269,20 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     for (var f : filters) {
       core.add(new ColumnFilter(fieldOf(f.column(), provider), specOf(f.spec())));
     }
+    return whereText(provider, base, Condition.Group.and(core), zone);
+  }
+
+  private String whereText(Provider provider, String base, Condition condition, ZoneId zone)
+      throws QueryException {
     return Language.of(provider).documents()
-        ? DocumentFilters.filterText(base, core, zone)
-        : Rows.where(provider, base, core, zone);
+        ? DocumentFilters.filterText(base, condition, zone)
+        : Rows.where(provider, base, condition, zone);
+  }
+
+  /** The field of column {@code name}, or null when the table has no such column. */
+  private Field fieldByName(String name, Provider provider) {
+    int c = columnIndex(name);
+    return c >= 0 ? fieldOf(c, provider) : null;
   }
 
   /** The field of column c, as the last read gave it, or else as the columns say. */
@@ -1400,7 +1590,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .font(t.type().mono().font().get())
         .fontSize(t.type().mono().size())
         .shrink(0);
-    return row()
+    El group = row()
         .grow(grow)
         .basis(0)
         .minSize(0, 0)
@@ -1408,6 +1598,15 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .align(Style.Align.CENTER)
         .child(heading)
         .child(clauseField(s, app, clause, ofDocuments));
+    if (clause == where) {
+      var profile = s.profile(id);
+      boolean enabled = canApply(s) && profile != null && columns != null;
+      group.child(
+          button(SECONDARY, Symbol.FILTER, "Conditions…", enabled ? () -> openConditions(s) : null)
+              .key("conditions")
+              .shrink(0));
+    }
+    return group;
   }
 
   private El clauseField(State s, App<State> app, Clause clause, boolean ofDocuments) {

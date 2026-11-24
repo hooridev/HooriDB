@@ -1773,6 +1773,47 @@ class TableTabTest {
   }
 
   @Test
+  void conditionsKeepAHeaderFilterOnAFieldTheSampleLacks() throws Exception {
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    var doc = Document.of("_id", 1, "customer", "Ada");
+    var atLeast = "{ total: { $gte: 7.0 } }";
+    servers.documents(path, List.of(doc));
+    servers.documents(path + " FILTER " + atLeast, List.of(doc));
+    var app = mongoOrders();
+    c.run(app, openFilter(2) + "type \"7\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n" + SETTLE);
+    assertEquals(atLeast, tab(app).filter.where());
+
+    c.run(
+        app,
+        "press #conditions\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "press #conditions-apply\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap kept\n");
+    assertTrue(servers.calls.contains("paths " + path), servers.calls.toString());
+    assertEquals(atLeast, tab(app).filter.where());
+    assertTrue(c.tree("kept").contains("#filters "), c.tree("kept"));
+
+    // Header filters the builder cannot all show (Equals exactly) keep their chips on an empty
+    // Apply.
+    var exact = "{ total: { $gte: 7.0 }, customer: 'Ada' }";
+    servers.documents(path + " FILTER " + exact, List.of(doc));
+    c.run(
+        app,
+        openFilter(1)
+            + "press #kind\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Equals exactly\"\nframe\nadvance 1\nframe\n"
+            + "press #value\nframe\ntype \"Ada\"\nframe\nkey Enter\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "press #conditions\nframe\nadvance 1\nframe\n"
+            + "press #conditions-apply\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap exact\n");
+    assertEquals(exact, tab(app).filter.where());
+    assertTrue(c.tree("exact").contains("#filters "), c.tree("exact"));
+  }
+
+  @Test
   void lastPageOfAFilteredCollectionCountsFirst() throws Exception {
     var path = DocumentConsoleTest.MONGO + "/hoori.orders";
     var many = IntStream.rangeClosed(1, 650)
@@ -3007,6 +3048,486 @@ class TableTabTest {
     c.run(mongoApp, START + open("docs") + SETTLE);
     int mongoLink = linkOf("databases " + DocumentConsoleTest.MONGO);
     assertFalse(servers.readOnly(mongoLink), "MongoDB lane stays as profile says");
+  }
+
+  @Test
+  void sqlConditionBuilderBuildsOrNestedGroupSyncsHeaderFiltersAndGuardsPendingEdits()
+      throws Exception {
+    servers.serve(
+        PG,
+        Provider.POSTGRESQL,
+        "16.4",
+        OUTLINE.replace("      doc: jsonb\n", "      doc: jsonb\n      shape: box\n"));
+    var ada = Arrays.<Object>asList(
+        1L,
+        new BigDecimal("10.00"),
+        1.5,
+        "Ada",
+        "vip",
+        true,
+        LocalDate.of(2026, 5, 14),
+        LocalTime.of(13, 45),
+        LocalDateTime.of(2026, 5, 14, 14, 30),
+        OffsetDateTime.of(2026, 5, 14, 12, 30, 0, 0, ZoneOffset.UTC),
+        new Binary(new byte[] {1, 2}, 2),
+        "{}",
+        "(1,2)");
+    var grace = Arrays.<Object>asList(
+        2L,
+        new BigDecimal("50.00"),
+        2.5,
+        "Grace",
+        "std",
+        false,
+        LocalDate.of(2026, 6, 1),
+        LocalTime.of(9, 0),
+        LocalDateTime.of(2026, 6, 1, 9, 0),
+        OffsetDateTime.of(2026, 6, 1, 7, 0, 0, 0, ZoneOffset.UTC),
+        new Binary(new byte[] {3, 4}, 2),
+        "{}",
+        "(3,4)");
+    var orWhere = "NOT (LOWER(\"name\") = LOWER('Grace')) OR (\"id\" >= 1 AND \"paid\" = TRUE)";
+    var flatWhere = "\"name\" ILIKE '%Ada%' ESCAPE '!' AND \"id\" >= 1 AND \"id\" <= 10";
+    var idWhere = "\"id\" >= 1 AND \"id\" <= 10";
+    var handWhere = "id > 0";
+    var joinedWhere = "(id > 0) AND LOWER(\"name\") = LOWER('Ada')";
+    servers.values(KINDS, List.of(ada, grace));
+    servers.values(KINDS + " WHERE " + orWhere, List.of(ada));
+    servers.values(KINDS + " WHERE " + flatWhere, List.of(ada));
+    servers.values(KINDS + " WHERE " + idWhere, List.of(ada, grace));
+    servers.values(KINDS + " WHERE " + handWhere, List.of(ada, grace));
+    servers.values(KINDS + " WHERE " + joinedWhere, List.of(ada));
+
+    var app = shop();
+    c.run(app, "size 1400 760\nframe\n" + table("kinds") + SETTLE);
+
+    // 1. Build OR with nested AND group and Not equal via the Conditions dialog.
+    c.run(app, """
+            press #conditions
+            frame
+            advance 1
+            frame
+            press #add-condition
+            frame
+            press role=radio label="OR"
+            frame
+            press #field-0
+            frame
+            advance 1
+            frame
+            press role=menuitem label="name"
+            frame
+            advance 1
+            frame
+            press #operator-0
+            frame
+            advance 1
+            frame
+            press role=menuitem label="Not equal"
+            frame
+            advance 1
+            frame
+            press #value-0
+            frame
+            type "Grace"
+            frame
+            press #add-group
+            frame
+            press #operator-1-0
+            frame
+            advance 1
+            frame
+            press role=menuitem label="At least"
+            frame
+            advance 1
+            frame
+            press #value-1-0
+            frame
+            type "1"
+            frame
+            press #add-condition-1
+            frame
+            press #field-1-1
+            frame
+            advance 1
+            frame
+            press role=menuitem label="paid"
+            frame
+            advance 1
+            frame
+            press #value-1-1
+            frame
+            advance 1
+            frame
+            press role=menuitem label="true"
+            frame
+            advance 1
+            frame
+            snap sql-conditions-dialog
+            press #conditions-apply
+            frame
+            advance 1
+            frame
+            """ + SETTLE + "snap sql-conditions-applied\n");
+    assertTrue(
+        c.tree("sql-conditions-dialog").contains("#conditions-dialog role=dialog"),
+        c.tree("sql-conditions-dialog"));
+    assertEquals(orWhere, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + KINDS + " 0-200 WHERE " + orWhere),
+        servers.calls.toString());
+    assertFalse(
+        c.tree("sql-conditions-applied").contains("#filters "), c.tree("sql-conditions-applied"));
+
+    // 2. Reopening shows the saved nested tree; replacing with a flat AND syncs header chips.
+    c.run(app, """
+            press #conditions
+            frame
+            advance 1
+            frame
+            snap sql-reopened
+            press #remove-1
+            frame
+            press role=radio label="AND"
+            frame
+            press #operator-0
+            frame
+            advance 1
+            frame
+            press role=menuitem label="Contains"
+            frame
+            advance 1
+            frame
+            press #value-0
+            frame
+            key A control
+            type "Ada"
+            frame
+            press #add-condition
+            frame
+            press #operator-1
+            frame
+            advance 1
+            frame
+            press role=menuitem label="Between"
+            frame
+            advance 1
+            frame
+            press #from-1
+            frame
+            type "1"
+            frame
+            press #to-1
+            frame
+            type "10"
+            frame
+            press #conditions-apply
+            frame
+            advance 1
+            frame
+            """ + SETTLE + "snap sql-flat-and\n");
+    assertTrue(c.tree("sql-reopened").contains("#clause-1 "), c.tree("sql-reopened"));
+    assertEquals(flatWhere, tab(app).filter.where());
+    String flatTree = c.tree("sql-flat-and");
+    assertTrue(flatTree.contains("name contains Ada"), flatTree);
+    assertTrue(flatTree.contains("id 1 – 10"), flatTree);
+
+    // 3. Removing a header chip syncs back to the builder, and removing the last clears WHERE.
+    c.run(app, """
+            press role=button label="Remove name contains Ada"
+            frame
+            advance 1
+            frame
+            """ + SETTLE + """
+            press #conditions
+            frame
+            advance 1
+            frame
+            snap sql-synced-back
+            press #remove-0
+            frame
+            press #conditions-apply
+            frame
+            advance 1
+            frame
+            """ + SETTLE);
+    String syncedBack = c.tree("sql-synced-back");
+    assertTrue(syncedBack.contains("#from-0 "), syncedBack);
+    assertFalse(syncedBack.contains("#field-1 "), syncedBack);
+    assertEquals("", tab(app).filter.where());
+
+    // 4. Hand-written WHERE survives applying and clearing via the builder.
+    c.run(app, clause("WHERE", handWhere) + "key Enter\nframe\n" + SETTLE + """
+                press #conditions
+                frame
+                advance 1
+                frame
+                press #add-condition
+                frame
+                press #field-0
+                frame
+                advance 1
+                frame
+                press role=menuitem label="name"
+                frame
+                advance 1
+                frame
+                press #value-0
+                frame
+                type "Ada"
+                frame
+                press #conditions-apply
+                frame
+                advance 1
+                frame
+                """ + SETTLE);
+    assertEquals(joinedWhere, tab(app).filter.where());
+    c.run(app, """
+            press #conditions
+            frame
+            advance 1
+            frame
+            press #remove-0
+            frame
+            press #conditions-apply
+            frame
+            advance 1
+            frame
+            """ + SETTLE);
+    assertEquals(handWhere, tab(app).filter.where());
+
+    // 5. Pending edits ask before applying conditions from the builder.
+    var custWhere = "LOWER(\"name\") = LOWER('Ada')";
+    servers.values(PG + "/shop.public.customers WHERE " + custWhere, List.of(List.of(1L, "Ada")));
+    c.run(
+        app,
+        table("customers")
+            + SETTLE
+            + "press #cell-0-1\ntype \"Alicia\"\nkey Enter\nframe\n"
+            + """
+                press #conditions
+                frame
+                advance 1
+                frame
+                press #add-condition
+                frame
+                press #field-0
+                frame
+                advance 1
+                frame
+                press role=menuitem label="name"
+                frame
+                advance 1
+                frame
+                press #value-0
+                frame
+                type "Ada"
+                frame
+                press #conditions-apply
+                frame
+                advance 1
+                frame
+                snap sql-pending-guard
+                press role=button label="Discard"
+                frame
+                advance 1
+                frame
+                """
+            + SETTLE);
+    assertTrue(
+        c.tree("sql-pending-guard").contains("the filter is applied"), c.tree("sql-pending-guard"));
+    assertEquals(
+        custWhere, ((TableTab) app.state().tabs.main().active().activeTab()).filter.where());
+
+    // 6. Disconnecting disables the Conditions… button.
+    c.run(app, menu("shop-prod", "Disconnect") + "frame\n" + SETTLE + "snap sql-disconnected\n");
+    assertTrue(
+        line(c.tree("sql-disconnected"), "#conditions").contains("disabled"),
+        c.tree("sql-disconnected"));
+  }
+
+  @Test
+  void mongoConditionBuilderSamplesNestedPathsBuildsOrGroupWithExistsAndCancelsOnClose()
+      throws Exception {
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        hoori
+          orders
+            _id: objectId
+            customer: string
+            total: double
+            address: object
+            meta.tag: string
+            $score: double
+        """);
+    var path = DocumentConsoleTest.MONGO + "/hoori.orders";
+    var oid1 = new dev.hoori.db.core.document.Bson.ObjectId("507f1f77bcf86cd799439011");
+    var oid2 = new dev.hoori.db.core.document.Bson.ObjectId("507f1f77bcf86cd799439012");
+    var d1 = Document.of(
+        "_id",
+        oid1,
+        "customer",
+        "Ada",
+        "total",
+        25.5,
+        "address",
+        Document.of("city", "Berlin", "zip", 10115),
+        "meta.tag",
+        "skip",
+        "$score",
+        1.0);
+    var d2 = Document.of(
+        "_id", oid2, "customer", "Grace", "total", 80.0, "address", Document.of("city", "Vienna"));
+    var expectedFilter = "{ $or: [ { 'address.city': { $regex: '^Berlin\\\\z', $options: 'i' } },"
+        + " { customer: { $not: /^Grace\\z/i }, address: { $exists: true } } ] }";
+    servers.documents(path, List.of(d1, d2));
+    servers.documents(path + " FILTER " + expectedFilter, List.of(d1));
+
+    var app = c.app(DocumentConsoleTest.DOCS);
+    c.ready(app, DocumentConsoleTest.DOCS);
+    c.run(
+        app,
+        START
+            + "size 1400 760\nframe\n"
+            + open("docs")
+            + SETTLE
+            + open("hoori")
+            + SETTLE
+            + table("orders")
+            + SETTLE);
+
+    // 1. Hold paths sampling: builder opens with top-level columns (no ./$) and waiting status.
+    var pathsGate = servers.hold("paths " + path);
+    c.run(app, """
+            press #conditions
+            frame
+            advance 1
+            frame
+            press #add-condition
+            frame
+            press #field-0
+            frame
+            advance 1
+            frame
+            snap mongo-paths-loading
+            """);
+    String loading = c.tree("mongo-paths-loading");
+    assertTrue(loading.contains("Reading nested fields"), loading);
+    assertTrue(loading.contains("role=menuitem label=\"customer\""), loading);
+    assertFalse(loading.contains("role=menuitem label=\"meta.tag\""), loading);
+    assertFalse(loading.contains("role=menuitem label=\"$score\""), loading);
+
+    // Release gate: nested path `address.city` arrives and can be selected.
+    pathsGate.countDown();
+    c.run(app, SETTLE + """
+                press role=menuitem label="address.city"
+                frame
+                advance 1
+                frame
+                press #value-0
+                frame
+                type "Berlin"
+                frame
+                press role=radio label="OR"
+                frame
+                press #add-group
+                frame
+                press #field-1-0
+                frame
+                advance 1
+                frame
+                press role=menuitem label="customer"
+                frame
+                advance 1
+                frame
+                press #operator-1-0
+                frame
+                advance 1
+                frame
+                press role=menuitem label="Not equal"
+                frame
+                advance 1
+                frame
+                press #value-1-0
+                frame
+                type "Grace"
+                frame
+                press #add-condition-1
+                frame
+                press #field-1-1
+                frame
+                advance 1
+                frame
+                press role=menuitem label="address"
+                frame
+                advance 1
+                frame
+                press #operator-1-1
+                frame
+                advance 1
+                frame
+                press role=menuitem label="Exists"
+                frame
+                advance 1
+                frame
+                snap mongo-conditions-dialog
+                press #conditions-apply
+                frame
+                advance 1
+                frame
+                """ + SETTLE + "snap mongo-conditions-applied\n");
+    assertTrue(servers.calls.contains("paths " + path), servers.calls.toString());
+    assertEquals(expectedFilter, tab(app).filter.where());
+    assertTrue(
+        servers.calls.contains("read " + path + " 0-200 FILTER " + expectedFilter),
+        servers.calls.toString());
+    assertFalse(
+        c.tree("mongo-conditions-applied").contains("#filters "),
+        c.tree("mongo-conditions-applied"));
+
+    // 2. Invalid ObjectId value in builder shows the same Filter refused callout unsent.
+    int beforeInvalid = servers.calls.size();
+    c.run(app, """
+            press #conditions
+            frame
+            advance 1
+            frame
+            press #remove-1
+            frame
+            press #field-0
+            frame
+            advance 1
+            frame
+            press role=menuitem label="_id"
+            frame
+            advance 1
+            frame
+            press #value-0
+            frame
+            key A control
+            type "not-an-oid"
+            frame
+            press #conditions-apply
+            frame
+            advance 1
+            frame
+            """ + SETTLE + "snap mongo-conditions-refused\n");
+    assertTrue(
+        line(c.tree("mongo-conditions-refused"), "role=note").contains("label=\"Filter refused\""),
+        c.tree("mongo-conditions-refused"));
+    assertEquals(beforeInvalid, servers.calls.size(), servers.calls.toString());
+    assertEquals(expectedFilter, tab(app).filter.where());
+
+    // 3. Refresh clears cached paths; Cancel gives up a sample of paths under way.
+    c.run(app, "press #refresh\nframe\n" + SETTLE);
+    var paths = "paths " + path;
+    var cancelGate = servers.hold(paths);
+    long sampled = servers.calls.stream().filter(paths::equals).count();
+    c.run(app, "press #conditions\nframe\nadvance 1\nframe\n");
+    eventually(() -> servers.calls.stream().filter(paths::equals).count() > sampled);
+    c.run(app, "press #conditions-cancel\nframe\nadvance 1\nframe\n");
+    eventually(() -> servers.interrupted.contains(paths));
+    cancelGate.countDown();
+    c.run(app, SETTLE);
   }
 
   private int linkOf(String call) {

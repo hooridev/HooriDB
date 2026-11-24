@@ -39,6 +39,9 @@ as they are opened; several connections are open at once. A double press or Ente
 opens its rows in a tab, read late in pages on its connection's lane, with the rows in view in its
 status line, buttons that scroll a page back or on, or to the first or last row, and, on SQL
 servers, WHERE and ORDER BY fields with completion that narrow and order the rows and count,
+a Conditions… button beside WHERE that opens the kit's condition builder over the table's columns
+(with OR, nested groups and Not equal, translated by the dialect, joined to hand-written text and
+synced with header filters where both express a flat AND),
 sortable and filterable column headers (other than JSON and OTHER, and binary data for filters;
 Shift+press adds a sort column, and header filters with chips above the grid join their conditions
 into WHERE with AND while keeping hand-written text) that write their clauses into WHERE or ORDER
@@ -121,7 +124,9 @@ document does not have as an empty cell, where a `null` shows NULL, or a page of
 time as Relaxed Extended JSON or as a tree of their fields, with Filter and Sort fields (each one
 shell document with colors and completion; blank or `{}` clears it) above all three views that
 narrow and order the documents and counts (with `_id: 1` appended as tie-breaker unless Sort names
-`_id`, and no estimate while filtered), sortable and filterable grid headers (for fields without
+`_id`, and no estimate while filtered), a Conditions… button beside Filter that opens the condition
+builder with Exists / Does not exist, Not equal, OR, nested groups and subdocument field paths
+sampled in the background (up to depth 3 and 200 paths), sortable and filterable grid headers (for fields without
 `.` and not starting with `$`) that write their sort document into Sort and their typed header
 filters (with chips above the view, joined to hand-written text with `$and`) into Filter, and Open
 in console to add its `db.getCollection(…).find(…)` with the applied Filter and Sort to a console
