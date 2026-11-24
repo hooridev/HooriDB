@@ -427,6 +427,36 @@ class DocumentEditTest {
   }
 
   @Test
+  void aNewDocumentKeepsItsIdAcrossRetries() throws Exception {
+    var app = openItems(DOCS);
+    var tab = app.state().tables(DOCS.id()).getFirst();
+    c.run(
+        app,
+        "press #insert-document\nframe\n"
+            + OPENED
+            + replaceEditor("{ name: 'Edsger' }")
+            + "press #document-save\nframe\n"
+            + OPENED);
+    var id = ((DocumentEdit.Insert) tab.documentDialog.pending).document().get("_id");
+    assertTrue(id instanceof Bson.ObjectId, String.valueOf(id));
+
+    // The server could not confirm it: saving again sends the same _id, which a server that had
+    // taken the first refuses as a duplicate instead of keeping two.
+    c.servers.nextEdit(EDIT_ITEMS, new DocumentEdit.Outcome.Unconfirmed("timed out"));
+    c.run(
+        app,
+        "press #document-preview-confirm\nframe\n"
+            + SETTLE
+            + OPENED
+            + "press #document-save\nframe\n"
+            + OPENED);
+    assertEquals(
+        id, ((DocumentEdit.Insert) tab.documentDialog.pending).document().get("_id"));
+    c.run(app, "press #document-preview-confirm\nframe\n" + SETTLE + OPENED);
+    assertEquals(id, c.servers.documentsOf(ITEMS).getLast().get("_id"));
+  }
+
+  @Test
   void nonRoundTrippingDocumentIsRefusedBeforeOpeningDialog() throws Exception {
     // Duplicate field names collapse on Shell.document(), so roundTripped returns empty.
     var badDoc = new Document(List.of(

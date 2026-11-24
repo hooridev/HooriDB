@@ -21,6 +21,7 @@ import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.document.Bson;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.Lexer;
@@ -64,6 +65,7 @@ final class DocumentDialog {
   ConsoleTab.Problem problem;
   private boolean errorMarked;
   private boolean conflict;
+  private Bson.ObjectId insertId; // the _id this dialog gives a new document without one
 
   private DocumentDialog(
       Mode mode, TableTab tab, Document original, String text, DocumentEdit pending) {
@@ -98,7 +100,7 @@ final class DocumentDialog {
 
   /** Whether closing the dialog would lose what the user typed or a write left unsure or unsaid. */
   boolean draft() {
-    return mode != Mode.DELETE && (!text.equals(initial) || problem != null);
+    return problem != null || mode != Mode.DELETE && !text.equals(initial);
   }
 
   /** Cancels any in-flight write and stops completion reads when the dialog or tab closes. */
@@ -333,12 +335,27 @@ final class DocumentDialog {
     try {
       pending = mode == Mode.EDIT
           ? new DocumentEdit.Replace(collection, original, parsed)
-          : new DocumentEdit.Insert(collection, parsed);
+          : new DocumentEdit.Insert(collection, identified(parsed));
     } catch (IllegalArgumentException e) {
       problem = new ConsoleTab.Problem("Invalid document", e.getMessage());
       return;
     }
     previewEditor.select(0, 0);
+  }
+
+  // A new document without _id gets one here, the same for each save of this dialog: a retry
+  // after a write whose outcome is unknown then fails as a duplicate instead of inserting twice.
+  private Document identified(Document parsed) {
+    if (parsed.has("_id")) {
+      return parsed;
+    }
+    if (insertId == null) {
+      insertId = Bson.ObjectId.next();
+    }
+    var entries = new ArrayList<Document.Entry>(parsed.entries().size() + 1);
+    entries.add(new Document.Entry("_id", insertId));
+    entries.addAll(parsed.entries());
+    return new Document(entries);
   }
 
   private void send(State s) {
