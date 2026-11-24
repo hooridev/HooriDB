@@ -13,6 +13,8 @@ import static dev.hoori.db.app.TableTabTest.cell;
 import static dev.hoori.db.app.TableTabTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -492,7 +494,7 @@ class TableTabForeignKeyTest {
     // Drop the customer_id foreign key on the server and Refresh from the grid's context menu.
     String withoutCustomerFk = FK_OUTLINE.replace(
         "customer_id: integer > customers.id on delete cascade", "customer_id: integer");
-    assertFalse(withoutCustomerFk.equals(FK_OUTLINE));
+    assertNotEquals(FK_OUTLINE, withoutCustomerFk);
     servers.serve(PG, Provider.POSTGRESQL, "16.4", withoutCustomerFk);
     long keysBefore = servers.calls.stream()
         .filter(call -> call.equals("foreign keys " + ORDERS))
@@ -559,7 +561,7 @@ class TableTabForeignKeyTest {
             + "press #commit-changes\nframe\n"
             + OPENED);
     var customers = tabNamed(app, "customers");
-    assertTrue(customers.preview != null, "DML Preview must be open");
+    assertNotNull(customers.preview, "DML Preview must be open");
 
     // From orders in the main window, follow customer_id = 10 -> customers.
     int callsBefore = servers.calls.size();
@@ -578,7 +580,7 @@ class TableTabForeignKeyTest {
             + servers.calls.subList(callsBefore, servers.calls.size()));
     assertEquals("", customers.filter.where(), "applied filter must stay untouched");
     assertEquals(1, customers.pendingChanges());
-    assertTrue(customers.preview != null, "DML Preview must stay open");
+    assertNotNull(customers.preview, "DML Preview must stay open");
 
     // Dismiss DML Preview in the detached window: WHERE holds the clause and the callout shows.
     c.run(
