@@ -21,6 +21,7 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -247,7 +248,11 @@ public final class DocumentSession implements AutoCloseable {
     types.put("_id", new LinkedHashSet<>());
     Map<String, Integer> present = new LinkedHashMap<>();
     for (var document : documents) {
+      var seen = new HashSet<String>(); // a name a document repeats counts once, as its first
       for (var entry : document.entries()) {
+        if (!seen.add(entry.name())) {
+          continue;
+        }
         types
             .computeIfAbsent(entry.name(), x -> new LinkedHashSet<>())
             .add(Bson.type(entry.value()));
@@ -330,10 +335,12 @@ public final class DocumentSession implements AutoCloseable {
       int maxPaths,
       Map<String, Set<String>> types,
       Map<String, Integer> present) {
+    var seen = new HashSet<String>(); // a name a document repeats counts once, as its first
     for (var entry : document.entries()) {
       var key = entry.name();
       var path = prefix.isEmpty() ? key : prefix + "." + key;
-      if (key.isEmpty()
+      if (!seen.add(key)
+          || key.isEmpty()
           || key.indexOf('.') >= 0
           || key.startsWith("$")
           || !types.containsKey(path) && types.size() >= maxPaths) {
