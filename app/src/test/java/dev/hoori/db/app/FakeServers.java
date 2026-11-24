@@ -1236,7 +1236,9 @@ final class FakeServers implements Servers {
         var byName = new LinkedHashMap<String, PendingKey>();
         for (var line : tableOutline.children()) {
           var parsed = columnLine(line.text());
-          for (var ref : parsed.references()) {
+          var references = parsed.references();
+          for (int r = 0; r < references.size(); r++) {
+            var ref = references.get(r);
             int colon = ref.indexOf(':');
             String keyName;
             String spec;
@@ -1244,7 +1246,8 @@ final class FakeServers implements Servers {
               keyName = ref.substring(0, colon).strip();
               spec = ref.substring(colon + 1).strip();
             } else {
-              keyName = table.name() + "_" + parsed.name() + "_fkey";
+              // A key of its own for each unnamed reference of the column.
+              keyName = table.name() + "_" + parsed.name() + "_fkey" + (r == 0 ? "" : r + 1);
               spec = ref;
             }
             int space = spec.indexOf(' ');

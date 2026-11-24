@@ -161,16 +161,7 @@ final class ForeignKeys {
     }
     int gridRow = tab.selection.row();
     int col = tab.selection.column();
-    // Which cell a press inside a selection of several was on, the grid does not say
-    // (rethinkj/ui#577): only the active cell selected alone is surely the pressed one.
-    if (tab.columns == null
-        || gridRow < 0
-        || gridRow >= tab.gridRowCount()
-        || col < 0
-        || col >= tab.columns.size()
-        || !tab.selection
-            .ranges()
-            .equals(List.of(new DataGrid.Range(gridRow, col, gridRow, col)))) {
+    if (!onlyCell(tab, gridRow, col)) {
       return List.of(refresh);
     }
     var outgoing = outgoing(tab.table, tab.columns.get(col).name(), keys);
@@ -179,59 +170,42 @@ final class ForeignKeys {
       return List.of(refresh);
     }
     var items = new ArrayList<Menu.Item>();
-    var provider = profile.provider();
-    boolean connected = s.catalog.connected(tab.id);
     if (outgoing.size() == 1) {
       var fk = outgoing.getFirst();
       items.add(Menu.item(
-              "Go to " + otherTable(tab.table, fk.referenced()),
-              action(
-                  s,
-                  tab,
-                  provider,
-                  connected,
-                  gridRow,
-                  fk.columns(),
-                  fk.referenced(),
-                  fk.referencedColumns()))
+              "Go to " + otherTable(tab.table, fk.referenced()), action(s, tab, gridRow, fk, true))
           .icon(Symbol.ARROW_RIGHT));
     } else if (outgoing.size() > 1) {
-      var children = new ArrayList<Menu.Item>(outgoing.size());
-      for (var fk : outgoing) {
-        children.add(Menu.item(
-            label(otherTable(tab.table, fk.referenced()), fk),
-            action(
-                s,
-                tab,
-                provider,
-                connected,
-                gridRow,
-                fk.columns(),
-                fk.referenced(),
-                fk.referencedColumns())));
-      }
+      var children = outgoing.stream()
+          .map(fk -> Menu.item(
+              label(otherTable(tab.table, fk.referenced()), fk), action(s, tab, gridRow, fk, true)))
+          .toList();
       items.add(Menu.submenu("Go to", children).icon(Symbol.ARROW_RIGHT));
     }
     if (!incoming.isEmpty()) {
-      var children = new ArrayList<Menu.Item>(incoming.size());
-      for (var fk : incoming) {
-        children.add(Menu.item(
-            label(otherTable(tab.table, fk.table()), fk),
-            action(
-                s,
-                tab,
-                provider,
-                connected,
-                gridRow,
-                fk.referencedColumns(),
-                fk.table(),
-                fk.columns())));
-      }
+      var children = incoming.stream()
+          .map(fk -> Menu.item(
+              label(otherTable(tab.table, fk.table()), fk), action(s, tab, gridRow, fk, false)))
+          .toList();
       items.add(Menu.submenu("Referenced by", children).icon(Symbol.ARROW_LEFT));
     }
     items.add(Menu.separator());
     items.add(refresh);
     return items;
+  }
+
+  /**
+   * Whether the cell is in the grid and selected alone. Which cell a press inside a selection of
+   * several was on, the grid does not say (rethinkj/ui#577): only the active cell selected alone
+   * is surely the pressed one.
+   */
+  private static boolean onlyCell(TableTab tab, int gridRow, int col) {
+    return tab.columns != null
+        && gridRow >= 0
+        && gridRow < tab.gridRowCount()
+        && col >= 0
+        && col < tab.columns.size()
+        && tab.selection.ranges().equals(List.of(new DataGrid.Range(gridRow, col, gridRow, col)));
   }
 
   /** A submenu item's label, by both column lists, which tell apart keys between two tables. */
@@ -240,49 +214,45 @@ final class ForeignKeys {
         + String.join(", ", fk.referencedColumns()) + ")";
   }
 
-  private static Runnable action(
-      State s,
-      TableTab tab,
-      Provider provider,
-      boolean connected,
-      int gridRow,
-      List<String> sourceColumns,
-      Table target,
-      List<String> targetColumns) {
-    if (!connected || sourceColumns.isEmpty() || sourceColumns.size() != targetColumns.size()) {
+  /** What following the key from the row does, out to the referenced table or in from the other. */
+  private static Runnable action(State s, TableTab tab, int gridRow, ForeignKey fk, boolean out) {
+    var from = out ? fk.columns() : fk.referencedColumns();
+    var to = out ? fk.referencedColumns() : fk.columns();
+    var profile = s.profile(tab.id);
+    if (profile == null
+        || !s.catalog.connected(tab.id)
+        || from.isEmpty()
+        || from.size() != to.size()) {
       return null;
     }
-    var values = valuesFor(tab, gridRow, sourceColumns);
-    if (values == null) {
+    var values = valuesFor(tab, gridRow, from);
+    if (values.isEmpty()) {
       return null;
     }
-    String where;
     try {
-      where = Rows.where(provider, targetColumns, values);
+      var where = Rows.where(profile.provider(), to, values);
+      return () -> follow(s, tab, out ? fk.referenced() : fk.table(), where);
     } catch (IllegalArgumentException _) {
       return null;
     }
-    return () -> follow(s, tab, target, where);
   }
 
+  /** The row's values of the columns, or none where one is not there whole and committed. */
   private static List<Object> valuesFor(TableTab tab, int gridRow, List<String> sourceColumns) {
     int pos = tab.positionOf(gridRow);
-    if (pos < 0 || !tab.loaded(pos)) {
-      return null;
-    }
-    var row = tab.rowValues(pos);
+    var row = pos < 0 || !tab.loaded(pos) ? null : tab.rowValues(pos);
     if (row == null) {
-      return null;
+      return List.of();
     }
     var values = new ArrayList<Object>(sourceColumns.size());
     for (var name : sourceColumns) {
       int index = tab.columnIndex(name);
       if (index < 0 || index >= row.size() || tab.isCellEdited(gridRow, index)) {
-        return null;
+        return List.of();
       }
       var value = row.get(index);
       if (value == null || value == Missing.FIELD || !Cells.whole(value)) {
-        return null;
+        return List.of();
       }
       values.add(value);
     }
@@ -299,23 +269,17 @@ final class ForeignKeys {
         .filter(x ->
             x.table.container().equals(target.container()) && x.table.name().equals(target.name()))
         .findFirst();
-    if (open.isEmpty()) {
-      var into = s.tabs.groupOf(source);
-      if (into == null) {
-        into = s.tabs.main();
-      }
-      var tab = TableTab.of(s, source.id, target);
-      s.tabs.add(into, into.tabs().size(), tab);
-      Frame.focusContentSoon(s, into);
-      tab.applyWhere(s, where);
-      return;
+    var group = s.tabs.groupOf(source);
+    if (group == null) {
+      group = s.tabs.main().active();
     }
-    var tab = open.get();
-    var group = s.tabs.groupOf(tab);
-    s.tabs.select(group, group.tabs().indexOf(tab));
-    var window = group.window() != null ? group.window() : s.app.windows().of(s.app);
-    if (window != null) {
-      window.raise();
+    TableTab tab;
+    if (open.isEmpty()) { // opened here filtered, never read without the filter first
+      tab = TableTab.of(s, source.id, target);
+      s.tabs.add(group, group.tabs().size(), tab);
+    } else {
+      tab = open.get();
+      group = s.openTable(source.id, target, group); // raises its window
     }
     Frame.focusContentSoon(s, group);
     tab.applyWhere(s, where);

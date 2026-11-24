@@ -158,42 +158,28 @@ class RowsTest {
 
   @Test
   void whereRejectsInvalidArgumentsAndIncompleteValues() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Rows.where(Provider.POSTGRESQL, List.of(), List.of()));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Rows.where(Provider.POSTGRESQL, List.of("a", "b"), List.of(1L)));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Rows.where(Provider.POSTGRESQL, List.of(""), List.of(1L)));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Rows.where(Provider.POSTGRESQL, List.of("a"), Arrays.asList((Object) null)));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Rows.where(Provider.POSTGRESQL, List.of("a"), List.of(Missing.FIELD)));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Rows.where(
-            Provider.POSTGRESQL, List.of("a"), List.of(new Cut("abc", OptionalLong.of(2000)))));
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            Rows.where(Provider.POSTGRESQL, List.of("a"), List.of(new Binary(new byte[] {1}, 5))));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Rows.where(Provider.POSTGRESQL, List.of("a"), List.of(1)));
+    var pg = Provider.POSTGRESQL;
+    refused(pg, List.of(), List.of());
+    refused(pg, List.of("a", "b"), List.of(1L));
+    refused(pg, List.of(""), List.of(1L));
+    refused(pg, List.of("a"), Arrays.asList((Object) null));
+    refused(pg, List.of("a"), List.of(Missing.FIELD));
+    refused(pg, List.of("a"), List.of(new Cut("abc", OptionalLong.of(2000))));
+    refused(pg, List.of("a"), List.of(new Binary(new byte[] {1}, 5)));
+    refused(pg, List.of("a"), List.of(1));
     // Values whose literal may not equal what is stored: a FLOAT, a moment, a backslash.
     var moment = OffsetDateTime.of(2024, 3, 31, 4, 30, 0, 0, ZoneOffset.ofHours(2));
     for (var provider : List.of(Provider.POSTGRESQL, Provider.MYSQL, Provider.MARIADB)) {
       for (Object value : List.of(0.1f, moment, "a\\b")) {
-        assertThrows(
-            IllegalArgumentException.class,
-            () -> Rows.where(provider, List.of("a"), List.of(value)));
+        refused(provider, List.of("a"), List.of(value));
       }
     }
-    assertThrows(
-        IllegalStateException.class, () -> Rows.where(Provider.MONGODB, List.of("a"), List.of(1L)));
+    var columns = List.of("a");
+    List<Object> values = List.of(1L);
+    assertThrows(IllegalStateException.class, () -> Rows.where(Provider.MONGODB, columns, values));
+  }
+
+  private static void refused(Provider provider, List<String> columns, List<Object> values) {
+    assertThrows(IllegalArgumentException.class, () -> Rows.where(provider, columns, values));
   }
 }
