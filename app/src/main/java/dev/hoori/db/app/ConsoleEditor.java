@@ -512,6 +512,9 @@ final class ConsoleEditor {
       } else if (index.unique()) {
         md.append(" · unique");
       }
+      if (!index.detail().isEmpty()) {
+        md.append(" · ").append(index.detail());
+      }
     }
   }
 

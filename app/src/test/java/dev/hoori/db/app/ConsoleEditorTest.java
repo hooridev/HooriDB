@@ -1164,6 +1164,32 @@ class ConsoleEditorTest {
     assertTrue(loaded.contains("orders_pkey (id) · primary key"), loaded);
   }
 
+  @Test
+  void quickDocumentationShowsIndexDetailAfterUniqueOrAlone() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", """
+        shop
+          public
+            orders
+              *id: bigint
+              email: text
+              expires_at: timestamp
+              #orders_pkey (id) primary
+              #orders_email_uidx (email) unique | sparse
+              #orders_ttl_idx (expires_at) | TTL 3600 s · partial
+        """);
+    var app = console.console(SHOP);
+    var sql = "SELECT id FROM orders";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+    console.tab(app).editor.select(sql.indexOf("orders") + 2, sql.indexOf("orders") + 2);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\nsnap detail-doc\n");
+    String docTree = console.c.tree("detail-doc");
+    String doc = docTree.substring(docTree.indexOf("#documentation"));
+    assertTrue(doc.contains("orders_pkey (id) · primary key"), doc);
+    assertTrue(doc.contains("orders_email_uidx (email) · unique · sparse"), doc);
+    assertTrue(doc.contains("orders_ttl_idx (expires_at) · TTL 3600 s · partial"), doc);
+  }
+
   /** The tree of the snap of the window other than the main one. */
   String window(String snap) throws IOException {
     try (var files = Files.list(dir.resolve("out"))) {

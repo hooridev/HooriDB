@@ -83,9 +83,9 @@ import java.util.stream.IntStream;
  * <name>} to {@code <table>_<column>_fkey}; columns on one table sharing a name form a composite
  * key in column order; unspecified rules default to {@link ForeignKey.Rule#NO_ACTION}). Reading a
  * table's foreign keys is keyed {@code foreign keys <host>/<path>}, with the path as of {@code
- * columns}. An index line under a table is written as {@code #<name> (<col1>, <col2>)
- * [unique|primary]} (ordered primary key first, then by name). Reading a table's indexes is keyed
- * {@code indexes <host>/<path>}, with the path as of {@code columns}.
+ * columns}. An index line under a table or collection is written as {@code #<name> (<col1>, <col2>)
+ * [unique|primary] [| <detail>]} (ordered primary key first, then by name). Reading a table's
+ * indexes is keyed {@code indexes <host>/<path>}, with the path as of {@code columns}.
  *
  * <p>A table has rows made up from their position, of the kinds its columns' types say, 3 unless
  * {@link #rows} says how many, or the rows {@link #values} gives. Its rows' calls are keyed {@code
@@ -784,7 +784,7 @@ final class FakeServers implements Servers {
 
     @Override
     public List<Index> indexes(Table t) throws CatalogException {
-      if (made.provider().keepsDocuments() || t.kind() != Table.Kind.TABLE) {
+      if (t.kind() != Table.Kind.TABLE) {
         return List.of();
       }
       return read("indexes " + path(t), t.container().database(), () -> {
@@ -1218,7 +1218,10 @@ final class FakeServers implements Servers {
         if (indexName.isEmpty() || columns.isEmpty()) {
           throw new IllegalArgumentException("Bad index: " + text);
         }
-        var kind = text.substring(close + 1).strip().toLowerCase(Locale.ROOT);
+        var tail = text.substring(close + 1);
+        int pipe = tail.indexOf('|');
+        var kind = (pipe < 0 ? tail : tail.substring(0, pipe)).strip().toLowerCase(Locale.ROOT);
+        var detail = pipe < 0 ? "" : tail.substring(pipe + 1).strip();
         boolean primary;
         boolean unique;
         switch (kind) {
@@ -1236,7 +1239,7 @@ final class FakeServers implements Servers {
           }
           default -> throw new IllegalArgumentException("Bad index: " + text);
         }
-        found.add(new Index(indexName, t, columns, unique, primary));
+        found.add(new Index(indexName, t, columns, unique, primary, detail));
       }
       found.sort(Comparator.comparing(Index::primary).reversed().thenComparing(Index::name));
       return List.copyOf(found);

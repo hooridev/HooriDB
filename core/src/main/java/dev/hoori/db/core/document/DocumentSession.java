@@ -3,6 +3,7 @@ package dev.hoori.db.core.document;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
@@ -266,6 +267,94 @@ public final class DocumentSession implements AutoCloseable {
     }
     var type = String.join(" | ", held);
     return nullable ? type + " | null" : type;
+  }
+
+  /**
+   * The indexes of a collection, {@code _id_} first and then by name: each with its key entries in
+   * key order, whether it is unique or {@code _id_}, and TTL, partial and sparse in its detail. A
+   * view or a collection that does not exist has none.
+   */
+  public List<Index> indexes(Table collection) throws CatalogException {
+    if (collection.kind() == Table.Kind.VIEW) {
+      return List.of();
+    }
+    try {
+      var documents = all(
+          Purpose.CATALOG,
+          database(collection),
+          Document.of("listIndexes", collection.name(), CURSOR, Document.EMPTY));
+      return indexes(collection, documents);
+    } catch (DocumentException e) {
+      if (e.kind() == DocumentException.Kind.SERVER
+          && e.code() == DocumentException.NAMESPACE_NOT_FOUND) {
+        return List.of();
+      }
+      throw catalog(e);
+    }
+  }
+
+  /** The indexes described by the {@code listIndexes} documents, as {@link #indexes(Table)} says. */
+  public static List<Index> indexes(Table collection, List<Document> documents) {
+    var indexes = new ArrayList<Index>(documents.size());
+    for (var document : documents) {
+      if (!(document.get("name") instanceof String name) || name.isEmpty()) {
+        continue;
+      }
+      boolean primary = "_id_".equals(name);
+      boolean unique = primary || Boolean.TRUE.equals(document.get("unique"));
+      indexes.add(
+          new Index(name, collection, indexKeys(document), unique, primary, indexDetail(document)));
+    }
+    indexes.sort(Comparator.comparing(Index::primary).reversed().thenComparing(Index::name));
+    return List.copyOf(indexes);
+  }
+
+  // The key entries in order, replacing a text index's {_fts: "text", _ftsx: 1} with its weights'
+  // fields in place.
+  private static List<String> indexKeys(Document document) {
+    if (!(document.get("key") instanceof Document key)) {
+      return List.of();
+    }
+    var weights = document.get("weights") instanceof Document w && !w.isEmpty() ? w : null;
+    var columns = new ArrayList<String>(key.size());
+    boolean expandedText = false;
+    for (var entry : key.entries()) {
+      if (weights != null && "_fts".equals(entry.name()) && "text".equals(entry.value())) {
+        for (var field : weights.entries()) {
+          columns.add(field.name() + ": text");
+        }
+        expandedText = true;
+      } else if (expandedText && "_ftsx".equals(entry.name())) {
+        // Companion key of _fts, already replaced by the text fields above.
+      } else {
+        columns.add(entry.name() + ": " + indexKeyValue(entry.value()));
+      }
+    }
+    return columns;
+  }
+
+  // A number's sign is its direction, as the server orders it: {a: 2} is ascending.
+  private static String indexKeyValue(Object value) {
+    return switch (value) {
+      case String s -> s;
+      case Number n -> n.doubleValue() < 0 ? "-1" : "1";
+      case Bson.Decimal128 d -> d.text().startsWith("-") ? "-1" : "1";
+      case null, default -> Shell.compact(value);
+    };
+  }
+
+  private static String indexDetail(Document document) {
+    var parts = new ArrayList<String>(3);
+    if (document.get("expireAfterSeconds") instanceof Number ttl) {
+      parts.add("TTL " + ttl.longValue() + " s");
+    }
+    if (document.get("partialFilterExpression") instanceof Document) {
+      parts.add("partial");
+    }
+    if (Boolean.TRUE.equals(document.get("sparse"))) {
+      parts.add("sparse");
+    }
+    return String.join(" · ", parts);
   }
 
   // Reading documents
