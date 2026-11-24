@@ -665,4 +665,79 @@ class ContextTest {
     assertEquals(Asked.ON, insideOn.asked());
     assertEquals(List.of(ref(null, "order_items", "oi")), insideOn.left());
   }
+
+  @Test
+  void parenthesizedFromItemsKeepGroupAliasesAndFirstTablesOutOfTables() {
+    var groupAlias = at(
+        "SELECT * FROM (orders io JOIN customers ic ON ic.id = io.customer_id) AS c"
+            + " JOIN orders o ON o.customer_id = c.id JOIN cu|",
+        POSTGRESQL);
+    assertEquals(
+        List.of(ref(null, "customers", "ic"), ref(null, "orders", "o")), groupAlias.tables());
+    assertEquals(
+        List.of(ref(null, null, "c"), ref(null, "orders", "io")), groupAlias.parenthesized());
+
+    // Without AS, the group's alias is still collected.
+    assertEquals(
+        List.of(ref(null, null, "c"), ref(null, "orders", "io")),
+        at(
+                "SELECT * FROM (orders io JOIN customers ic ON ic.id = io.customer_id) c JOIN |",
+                POSTGRESQL)
+            .parenthesized());
+
+    // First table right after "(" with or without an alias.
+    var unaliasedGroup =
+        at("SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) JOIN |", POSTGRESQL);
+    assertEquals(List.of(ref(null, "customers", "c")), unaliasedGroup.tables());
+    assertEquals(List.of(ref(null, "orders", "o")), unaliasedGroup.parenthesized());
+    assertEquals(
+        List.of(ref(null, "orders", null)),
+        at(
+                "SELECT * FROM (orders JOIN customers ON customers.id = orders.customer_id) JOIN |",
+                POSTGRESQL)
+            .parenthesized());
+
+    // MySQL's UPDATE ( and a group's own comma list.
+    assertEquals(
+        List.of(ref(null, "orders", "o")),
+        at("UPDATE (orders o JOIN customers c ON c.id = o.customer_id) JOIN | SET x = 1", MYSQL)
+            .parenthesized());
+    assertEquals(
+        List.of(ref(null, "orders", "o"), ref(null, "categories", "ca")),
+        at("SELECT * FROM customers c LEFT JOIN (categories ca, orders o) ON true JOIN |", MYSQL)
+            .parenthesized());
+
+    // Nested parentheses, JOIN (, and a parenthesized FROM-list item after a comma.
+    assertEquals(
+        List.of(ref(null, null, "j2"), ref(null, null, "j1"), ref(null, "orders", "o")),
+        at(
+                "SELECT * FROM ((orders o JOIN customers c ON c.id = o.customer_id) AS j1"
+                    + " JOIN categories ca ON ca.id = j1.id) j2 JOIN |",
+                POSTGRESQL)
+            .parenthesized());
+    assertEquals(
+        List.of(
+            ref(null, null, "outer_j"),
+            ref(null, "orders", "o"),
+            ref(null, null, "inner_j"),
+            ref(null, "customers", "c")),
+        at(
+                "SELECT * FROM categories ca,"
+                    + " (orders o JOIN (customers c JOIN order_items oi ON oi.order_id = c.id)"
+                    + " AS inner_j ON true) AS outer_j JOIN |",
+                POSTGRESQL)
+            .parenthesized());
+
+    // Parentheses outside FROM items (expressions, IN, ON, EXTRACT, column alias lists) are not.
+    assertEquals(
+        List.of(),
+        at(
+                "SELECT (a + b) AS c FROM orders o JOIN customers c ON (c.id = o.customer_id)"
+                    + " WHERE o.id IN (1, 2) AND EXTRACT(YEAR FROM (o.created_at)) = 2020 JOIN |",
+                POSTGRESQL)
+            .parenthesized());
+    assertEquals(
+        List.of(),
+        at("SELECT * FROM customers AS c(customer_pk) JOIN |", POSTGRESQL).parenthesized());
+  }
 }

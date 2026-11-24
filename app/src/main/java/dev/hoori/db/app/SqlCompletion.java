@@ -117,7 +117,8 @@ record SqlCompletion() implements Suggestions.Strategy {
     if (prior.isEmpty()) {
       return;
     }
-    var used = context.tables();
+    var used = new ArrayList<>(context.tables());
+    used.addAll(context.parenthesized());
     boolean aliased = used.stream().anyMatch(r -> r.alias() != null);
     for (var ref : prior) {
       var table = known.table(ref.schema(), ref.name());

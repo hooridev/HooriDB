@@ -1807,7 +1807,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .nullText(Cells.nullText(s.settings.copyNull()))
         .copyLimit(
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
-        .contextMenu(menu, ForeignKeys.gridMenu(s, this, ofDocuments))
+        .contextMenu(menu, (row, column) -> ForeignKeys.gridMenu(s, this, ofDocuments, row, column))
         // The user's newer selection, even when nothing scrolls: no jump to the end at the count.
         .onSelect(() -> toLast = false)
         .loading(this::gridRowLoaded, (from, to) -> wantGrid(s, from, to))
