@@ -259,6 +259,7 @@ public final class Shell {
   static final class Reader {
 
     private static final int MAX_NESTING = 200;
+    private static final String A_VALUE = "A value";
 
     final String text;
     int at;
@@ -357,8 +358,8 @@ public final class Shell {
       char c = peek();
       int start = at;
       return switch (c) {
-        case '{' -> nested("A value", start, this::object);
-        case '[' -> nested("A value", start, this::array);
+        case '{' -> nested(A_VALUE, start, this::object);
+        case '[' -> nested(A_VALUE, start, this::array);
         case '\'', '"' -> string();
         case '/' -> regex();
         default -> {
@@ -671,7 +672,7 @@ public final class Shell {
         return constant(type, start);
       }
       var starts = new ArrayList<Integer>();
-      var args = nested("A value", start, () -> arguments(starts));
+      var args = nested(A_VALUE, start, () -> arguments(starts));
       var constructor = MAKERS.get(type);
       if (constructor == null) {
         throw new SyntaxException("Unknown name " + type + ": a value is needed here", start);
