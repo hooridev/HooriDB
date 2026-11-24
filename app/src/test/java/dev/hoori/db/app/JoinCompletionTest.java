@@ -367,6 +367,17 @@ class JoinCompletionTest {
     assertEquals(
         "customers c ON c.id = orders.customer_id",
         options(console.c.tree("listed")).getFirst());
+
+    // The word typed in the slot is no table of the statement, even where it names one fully.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM orders JOIN orders")
+            + COMPLETE
+            + "snap typed-whole\n");
+    assertEquals(
+        "orders o ON o.id = orders.parent_id",
+        options(console.c.tree("typed-whole")).getFirst());
   }
 
   @Test

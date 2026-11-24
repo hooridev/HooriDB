@@ -313,9 +313,9 @@ public record Context(
     int depth = 0;
     for (int i = 0; i < cursor; i++) {
       var token = tokens.get(i);
-      if (token.kind() == Kind.OPEN) {
+      if (token.kind() == Kind.OPEN || token.text().equals("[")) {
         depth++;
-      } else if (token.text().equals(")")) {
+      } else if (token.text().equals(")") || token.text().equals("]")) {
         depth--;
       } else if (token.upper().equals("FROM") && introduces(tokens, i)) {
         item = i;

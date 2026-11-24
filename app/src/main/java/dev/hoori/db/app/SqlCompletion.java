@@ -118,11 +118,16 @@ record SqlCompletion() implements Suggestions.Strategy {
       return;
     }
     boolean aliased = prior.stream().anyMatch(r -> r.alias() != null);
-    // The names the new alias must not take: the statement's, but for the word being typed.
-    var typed = context.typed();
-    var used = context.tables().stream()
-        .filter(r -> typed.isEmpty() || r.alias() != null || !r.name().equalsIgnoreCase(typed))
-        .toList();
+    // The names the new alias must not take: the statement's, but for the word being typed, the
+    // reference that follows the last of the left ones.
+    var used = new ArrayList<>(context.tables());
+    int last = 0;
+    while (used.get(last) != prior.getLast()) {
+      last++;
+    }
+    if (!context.typed().isEmpty() && last + 1 < used.size()) {
+      used.remove(last + 1);
+    }
     for (var ref : prior) {
       var table = known.table(ref.schema(), ref.name());
       if (table == null) {

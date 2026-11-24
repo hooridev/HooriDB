@@ -489,5 +489,9 @@ class ContextTest {
     assertEquals(
         List.of(ref(null, "a", null), ref(null, "b", null)),
         at("SELECT * FROM a JOIN b ON a.id IN (1, 2) JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null)),
+        at("SELECT * FROM a JOIN b ON ARRAY[a.id, 2] = ARRAY[1, 2] JOIN |", POSTGRESQL)
+            .left());
   }
 }
