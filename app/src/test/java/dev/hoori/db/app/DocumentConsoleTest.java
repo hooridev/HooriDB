@@ -187,6 +187,12 @@ class DocumentConsoleTest {
     assertTrue(c.tree("wrong").contains("Not expected here"), c.tree("wrong"));
   }
 
+  /** Picks a presentation mode from the console result's documents select. */
+  static String show(String mode) {
+    return "press #result-shown\nframe\nadvance 1\nframe\n" + "press role=menuitem label=\"" + mode
+        + "\"\nframe\nadvance 1\nframe\n";
+  }
+
   ConsoleTab tab(App<State> app) {
     return app.state().consoles(null).getFirst();
   }
@@ -259,7 +265,10 @@ class DocumentConsoleTest {
             + "snap result-json\n");
     assertEquals(ConsoleTab.Mode.AUTO, tab(app).mode);
     var resultJson = c.tree("result-json");
-    assertTrue(line(resultJson, "role=radio label=\"JSON\"").contains("checked"), resultJson);
+    assertTrue(
+        line(resultJson, "#result-shown ").contains("role=combobox label=\"Show documents as\""),
+        resultJson);
+    assertTrue(ConsoleTest.near(resultJson, "#result-shown").contains("\"JSON\""), resultJson);
     assertTrue(line(resultJson, "#json").contains("\\\"customer\\\": \\\"Ada\\\""), resultJson);
   }
 
@@ -384,9 +393,8 @@ class DocumentConsoleTest {
   }
 
   /**
-   * In a narrow MongoDB result footer, the status line keeps room while the switcher, paging and
-   * Pin stay inside the card. Reading is stopped first: with Stop reading beside them, the controls
-   * alone are wider than the card at 800 px.
+   * In a narrow MongoDB result footer with the cursor open, Stop reading, the documents picker,
+   * paging, and Pin stay inside the card across Grid, JSON, and Tree views.
    */
   @ParameterizedTest
   @ValueSource(ints = {0, 400})
@@ -407,26 +415,35 @@ class DocumentConsoleTest {
         "size 800 760\nframe\n"
             + type(query)
             + RUN
-            + "press role=button label=\"Stop reading\"\nframe\n"
-            + SETTLE
             + "snap narrow-grid\n"
-            + "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap narrow-mongo\n");
+            + show("JSON")
+            + "snap narrow-json\n"
+            + show("Tree")
+            + "snap narrow-tree\n");
     String grid = c.tree("narrow-grid");
     assertTrue(
         widthOf(grid, "#result-status ") >= (sidebar > 0 ? 60 : 140),
         "grid status=" + widthOf(grid, "#result-status ") + "\n" + grid);
-    assertTrue(TableTabTest.end(grid, "#pin ") <= TableTabTest.end(grid, "#grid "), grid);
-
-    String tree = c.tree("narrow-mongo");
-    assertTrue(tree.contains("#result-shown "), tree);
-    assertTrue(tree.contains("#paging "), tree);
-    assertEquals(0, widthOf(tree, "#rows-in-view "), tree);
-    float statusWidth = widthOf(tree, "#result-status ");
-    if (sidebar == 0) {
-      assertTrue(statusWidth >= 70, "status=" + statusWidth + "\n" + tree);
+    for (String control : List.of("#stop-reading ", "#result-shown ", "#pin ")) {
+      assertTrue(
+          TableTabTest.end(grid, control) <= TableTabTest.end(grid, "#grid "),
+          control + "\n" + grid);
     }
-    float edge = TableTabTest.end(tree, "#json ");
-    assertTrue(TableTabTest.end(tree, "#paging ") <= edge, tree);
-    assertTrue(TableTabTest.end(tree, "#pin ") <= edge, tree);
+
+    for (String view : List.of("json", "tree")) {
+      String tree = c.tree("narrow-" + view);
+      assertTrue(tree.contains("#stop-reading "), tree);
+      assertTrue(tree.contains("#result-shown "), tree);
+      assertTrue(tree.contains("#paging "), tree);
+      assertEquals(0, widthOf(tree, "#rows-in-view "), tree);
+      float statusWidth = widthOf(tree, "#result-status ");
+      if (sidebar == 0) {
+        assertTrue(statusWidth >= 70, "status=" + statusWidth + "\n" + tree);
+      }
+      float edge = TableTabTest.end(tree, view.equals("json") ? "#json " : "#documents ");
+      for (String control : List.of("#stop-reading ", "#result-shown ", "#paging ", "#pin ")) {
+        assertTrue(TableTabTest.end(tree, control) <= edge, control + "\n" + tree);
+      }
+    }
   }
 }

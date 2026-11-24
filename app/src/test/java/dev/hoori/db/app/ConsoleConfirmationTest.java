@@ -501,14 +501,9 @@ class ConsoleConfirmationTest {
         narrow);
     assertTrue(narrow.contains("#stop-reading "), narrow);
     float status = widthOf(narrow, "#result-status ");
-    if (width == 1173) {
-      // Half the footer: the grid's width less the footer's padding.
-      assertTrue(status >= (widthOf(narrow, "#grid ") - 32) / 2 - 1, narrow);
-      assertTrue(widthOf(narrow, "#edit-status ") > 0, narrow);
-    } else {
-      assertEquals(0, widthOf(narrow, "#edit-status "), narrow);
-      assertTrue(status >= (sidebar > 0 ? 100 : 180), narrow);
-    }
+    // Half the footer: the grid's width less the footer's padding.
+    assertTrue(status >= (widthOf(narrow, "#grid ") - 32) / 2 - 1, narrow);
+    assertTrue(widthOf(narrow, "#edit-status ") > 0, narrow);
     assertTrue(TableTabTest.end(narrow, "#pin ") <= TableTabTest.end(narrow, "#grid "), narrow);
     c.run(app, "move #result-status\nframe\nadvance 1\nframe\nframe\nsnap tip\n");
     String tip = c.tree("tip");

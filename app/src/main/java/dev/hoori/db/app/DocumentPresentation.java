@@ -9,8 +9,10 @@ import com.rethinkj.ui.Style;
 import com.rethinkj.ui.editor.CodeEditor;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Label;
+import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Segmented;
+import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Settings;
@@ -244,6 +246,7 @@ final class DocumentPresentation {
   private final Strategy grid = new Grid();
   private final Strategy json = new Json();
   private final Strategy tree = new Tree();
+  private final Menu.State modeMenu = new Menu.State();
   private Mode mode;
   private long page;
 
@@ -297,6 +300,15 @@ final class DocumentPresentation {
     return Segmented.segmented(List.of(Mode.values()), mode, m -> m.title, onChange)
         .key(key)
         .label("Show documents as");
+  }
+
+  /** The compact select that switches between Grid, JSON, and Tree in a narrow footer. */
+  El picker(String key, Consumer<Mode> onChange) {
+    Theme t = Theme.CURRENT.get();
+    return Select.select(List.of(Mode.values()), mode, m -> m.title, modeMenu, onChange)
+        .key(key)
+        .label("Show documents as")
+        .w(3.5f * t.size().control());
   }
 
   /** Renders the active strategy, or Grid when the data is not a collection of documents. */

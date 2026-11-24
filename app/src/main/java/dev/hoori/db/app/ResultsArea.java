@@ -204,10 +204,13 @@ final class ResultsArea {
         app, s.zone, ofDocuments, () -> gridView(s, app, o), () -> documentPage(s, o));
     var footer = new ArrayList<El>();
     if (tab.canStopReading(s, o)) {
-      footer.add(button(SECONDARY, "Stop reading", () -> tab.stopReading(s)).key("stop-reading"));
+      // An icon, as Pin: the footer of an open MongoDB cursor holds the switcher and paging too.
+      footer.add(
+          Button.icon(Button.Variant.GHOST, Symbol.STOP, "Stop reading", () -> tab.stopReading(s))
+              .key("stop-reading"));
     }
     if (ofDocuments) {
-      footer.add(o.presentation.switcher("result-shown", o.presentation::mode));
+      footer.add(o.presentation.picker("result-shown", o.presentation::mode));
     }
     ResultEdits.editControls(s, tab, o, footer, footer);
     // The edit feedback may shorten to nothing, so the status's tooltip has it too.
