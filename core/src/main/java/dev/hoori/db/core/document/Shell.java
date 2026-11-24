@@ -12,6 +12,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -328,45 +329,55 @@ public final class Shell {
       return null;
     }
 
-    Object value() throws SyntaxException {
-      space();
-      if (nesting > MAX_NESTING) {
+    @FunctionalInterface
+    interface Step<T> {
+      T run() throws SyntaxException;
+    }
+
+    <T> T nested(String what, int offset, Step<T> step) throws SyntaxException {
+      if (nesting >= MAX_NESTING) {
         throw new SyntaxException(
-            "A value cannot be nested more than " + MAX_NESTING + " levels deep",
-            Math.min(at, text.length()),
+            what + " cannot be nested more than " + MAX_NESTING + " levels deep",
+            Math.min(offset, text.length()),
             true);
-      }
-      if (end()) {
-        throw error("A value is missing");
       }
       nesting++;
       try {
-        char c = peek();
-        int start = at;
-        return switch (c) {
-          case '{' -> object();
-          case '[' -> array();
-          case '\'', '"' -> string();
-          case '/' -> regex();
-          default -> {
-            if (c == '-' || c == '+' || c == '.' || c >= '0' && c <= '9') {
-              yield number();
-            }
-            var name = identifier();
-            if (name == null) {
-              throw error("A value is needed here: a document, an array, a string or a number");
-            }
-            yield named(name, start);
-          }
-        };
+        return step.run();
       } finally {
         nesting--;
       }
     }
 
+    Object value() throws SyntaxException {
+      space();
+      if (end()) {
+        throw error("A value is missing");
+      }
+      char c = peek();
+      int start = at;
+      return switch (c) {
+        case '{' -> nested("A value", start, this::object);
+        case '[' -> nested("A value", start, this::array);
+        case '\'', '"' -> string();
+        case '/' -> regex();
+        default -> {
+          if (c == '-' || c == '+' || c == '.' || c >= '0' && c <= '9') {
+            yield number();
+          }
+          var name = identifier();
+          if (name == null) {
+            throw error("A value is needed here: a document, an array, a string or a number");
+          }
+          yield named(name, start);
+        }
+      };
+    }
+
     Document object() throws SyntaxException {
       expect('{', "{ is missing");
       var entries = new ArrayList<Document.Entry>();
+      var positions = new HashMap<String, Integer>();
       while (true) {
         space();
         if (take('}')) {
@@ -374,7 +385,14 @@ public final class Shell {
         }
         var name = fieldName();
         expect(':', ": is missing after the name " + name);
-        put(entries, new Document.Entry(name, value()));
+        var entry = new Document.Entry(name, value());
+        // As in JavaScript, a name given twice keeps its first place and its last value.
+        var previous = positions.putIfAbsent(name, entries.size());
+        if (previous == null) {
+          entries.add(entry);
+        } else {
+          entries.set(previous, entry);
+        }
         if (!take(',')) {
           space();
           if (!take('}')) {
@@ -403,17 +421,6 @@ public final class Shell {
         throw error("A field's name is needed here");
       }
       return name;
-    }
-
-    // As in JavaScript, a name given twice keeps its first place and its last value.
-    private static void put(List<Document.Entry> entries, Document.Entry entry) {
-      for (int i = 0; i < entries.size(); i++) {
-        if (entries.get(i).name().equals(entry.name())) {
-          entries.set(i, entry);
-          return;
-        }
-      }
-      entries.add(entry);
     }
 
     List<Object> array() throws SyntaxException {
@@ -664,7 +671,7 @@ public final class Shell {
         return constant(type, start);
       }
       var starts = new ArrayList<Integer>();
-      var args = arguments(starts);
+      var args = nested("A value", start, () -> arguments(starts));
       var constructor = MAKERS.get(type);
       if (constructor == null) {
         throw new SyntaxException("Unknown name " + type + ": a value is needed here", start);

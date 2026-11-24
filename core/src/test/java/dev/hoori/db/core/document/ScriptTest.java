@@ -369,6 +369,41 @@ class ScriptTest {
     assertTrue(parsed.error().tooLarge());
   }
 
+  @Test
+  void chainedCallsAreBoundedLikeValues() throws Exception {
+    int maximum = 200;
+    var explained = Script.parse("db.c" + ".explain()".repeat(maximum) + ".find()");
+    assertEquals(Shape.REPLY, explained.shape());
+    assertEquals("explain", explained.command().first());
+
+    var sibling = Script.parse("db" + ".getSiblingDB('a')".repeat(maximum) + ".c.find()");
+    assertEquals("a", sibling.database());
+    assertEquals("c", sibling.command().get("find"));
+
+    assertTooDeepCall(
+        "db.c".length() + maximum * ".explain()".length() + 1,
+        "db.c" + ".explain()".repeat(maximum + 1) + ".find()");
+    assertTooDeepCall(
+        "db.c".length() + maximum * ".explain()".length() + 1,
+        "db.c" + ".explain()".repeat(5_000) + ".find()");
+    assertTooDeepCall(
+        "db".length() + maximum * ".getSiblingDB('a')".length() + 1,
+        "db" + ".getSiblingDB('a')".repeat(maximum + 1) + ".c.find()");
+    assertTooDeepCall(
+        "db".length() + maximum * ".getSisterDB('a')".length() + 1,
+        "db" + ".getSisterDB('a')".repeat(maximum + 1) + ".c.find()");
+    assertTooDeepCall(
+        "db".length() + maximum * ".getSiblingDB('a')".length() + 1,
+        "db" + ".getSiblingDB('a')".repeat(5_000) + ".c.find()");
+  }
+
+  private static void assertTooDeepCall(int offset, String statement) {
+    var e = assertThrows(SyntaxException.class, () -> Script.parse(statement));
+    assertEquals("A statement cannot be nested more than 200 levels deep", e.getMessage());
+    assertEquals(offset, e.offset());
+    assertTrue(e.tooLarge());
+  }
+
   private static void assertWhere(int offset, String statement) {
     var e = assertThrows(SyntaxException.class, () -> Script.parse(statement));
     assertEquals(offset, e.offset(), e.getMessage());

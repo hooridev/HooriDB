@@ -93,9 +93,6 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
         return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
       }
       return new Formatted(null, problem(text, Math.clamp(e.offset(), 0, text.length())));
-    } catch (StackOverflowError _) {
-      // Defense in depth for recursion outside the reader's 200-level limit (#82).
-      return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
     }
   }
 
