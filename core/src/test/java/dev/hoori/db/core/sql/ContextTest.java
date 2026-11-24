@@ -493,10 +493,71 @@ class ContextTest {
     assertEquals(
         List.of(ref(null, "orders", "o")),
         at("INSERT INTO archive SELECT * FROM orders o JOIN |", POSTGRESQL).left());
-    // Not a or b, outside the item; c after a comma that ends a join is not read as a table.
+    // A FROM list continued after a join's ON reads the next item and leaves out the earlier ones.
+    var afterOn = at("SELECT * FROM a JOIN b ON a.id = b.a_id, c JOIN d ON |", POSTGRESQL);
+    assertEquals(Asked.ON, afterOn.asked());
+    assertEquals(List.of(ref(null, "c", null), ref(null, "d", null)), afterOn.left());
+    var afterOnJoin = at("SELECT * FROM a JOIN b ON a.id = b.a_id, c JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, afterOnJoin.asked());
+    assertEquals(List.of(ref(null, "c", null)), afterOnJoin.left());
     assertEquals(
-        List.of(ref(null, "d", null)),
-        at("SELECT * FROM a JOIN b ON a.id = b.a_id, c JOIN d ON |", POSTGRESQL).left());
+        List.of(ref(null, "d", null), ref(null, "e", null)),
+        at("SELECT * FROM a JOIN b ON a.id = b.a_id, c, d JOIN e ON |", POSTGRESQL)
+            .left());
+    assertEquals(
+        List.of(ref(null, "c", null), ref(null, "d", null)),
+        at("SELECT * FROM a JOIN b ON a.offset = b.offset, c JOIN d ON |", POSTGRESQL)
+            .left());
+    // A column named as a non-reserved word, such as lock or MySQL's offset, does not end the FROM
+    // clause.
+    assertEquals(
+        List.of(ref(null, "c", null), ref(null, "d", null)),
+        at("SELECT * FROM a JOIN b ON a.id = b.a_id AND offset = 0, c JOIN d ON |", MYSQL)
+            .left());
+    assertEquals(
+        List.of(ref(null, "c", null), ref(null, "d", null)),
+        at("SELECT * FROM a JOIN b ON a.id = b.a_id AND returning = 1, c JOIN d ON |", MYSQL)
+            .left());
+    // Where the server reserves it, RETURNING ends the FROM list.
+    assertEquals(
+        List.of(ref(null, "t", null)), Context.tables("DELETE FROM t RETURNING a, b", POSTGRESQL));
+    assertEquals(
+        List.of(ref(null, "c", null), ref(null, "d", null)),
+        at("SELECT * FROM a JOIN b ON a.id = b.a_id AND lock IS NULL, c JOIN d ON |", POSTGRESQL)
+            .left());
+    // A table may be named as a non-reserved word.
+    assertEquals(
+        List.of(ref(null, "lock", "l")),
+        at("SELECT * FROM lock l JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref("partition", "orders", "o")),
+        at("SELECT * FROM partition.orders o JOIN |", POSTGRESQL).left());
+    // LATERAL names no table.
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null), ref(null, "orders", "customers")),
+        Context.tables(
+            "SELECT * FROM a JOIN b ON true, LATERAL customers() AS feed"
+                + " JOIN orders AS customers ON true",
+            POSTGRESQL));
+    // Commas after clauses that end FROM are never read as tables.
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null)),
+        Context.tables("SELECT * FROM a, b GROUP BY a.id, b.id ORDER BY a.id, b.id", POSTGRESQL));
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null)),
+        Context.tables(
+            "SELECT * FROM a JOIN b ON a.id = b.a_id WHERE a.x = 1 ORDER BY c, d", POSTGRESQL));
+    assertEquals(
+        List.of(ref(null, "a", null)),
+        Context.tables("SELECT * FROM a HAVING count(*) > 1, b", POSTGRESQL));
+    assertEquals(
+        List.of(ref(null, "a", null)), Context.tables("SELECT * FROM a LIMIT 1, 2", MYSQL));
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null)),
+        Context.tables("SELECT * FROM a UNION SELECT x, y FROM b", POSTGRESQL));
+    assertEquals(
+        List.of(ref(null, "a", null)),
+        Context.tables("SELECT * FROM a FOR UPDATE OF a, b", POSTGRESQL));
     assertEquals(
         List.of(ref(null, "a", null), ref(null, "b", null)),
         at("SELECT * FROM a JOIN b ON a.id IN (1, 2) JOIN |", POSTGRESQL).left());
@@ -513,5 +574,95 @@ class ContextTest {
     assertEquals(
         List.of(ref(null, "orders", "o")),
         at("SELECT COUNT(o.| FROM orders o", POSTGRESQL).tables());
+  }
+
+  @Test
+  void columnAliasListsAreKeptOutOfLeftWhileReadingContinues() {
+    var withAs = at("SELECT * FROM customers AS c(customer_pk) JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, withAs.asked());
+    assertEquals(List.of(), withAs.left());
+
+    var withoutAs = at("SELECT * FROM customers c(customer_pk, full_name) JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, withoutAs.asked());
+    assertEquals(List.of(), withoutAs.left());
+
+    // A later FROM item after the column alias list is still read.
+    var nextItem = at("SELECT * FROM customers AS c(customer_pk), orders o JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, nextItem.asked());
+    assertEquals(List.of(ref(null, "orders", "o")), nextItem.left());
+
+    // A non-aliased table in the same FROM item stays in left; the column-aliased one does not.
+    var mixed = at(
+        "SELECT * FROM orders o JOIN customers AS c(customer_pk) ON c.customer_pk = o.customer_id"
+            + " JOIN |",
+        POSTGRESQL);
+    assertEquals(Asked.JOIN, mixed.asked());
+    assertEquals(List.of(ref(null, "orders", "o")), mixed.left());
+
+    // Joining a table with a column alias list does not offer an ON condition for an earlier table.
+    var joinedWithCols = at(
+        "SELECT * FROM orders o JOIN categories ca ON ca.id = o.category_id"
+            + " JOIN customers AS c(customer_pk) ON |",
+        POSTGRESQL);
+    assertEquals(Asked.ANY, joinedWithCols.asked());
+    assertEquals(
+        List.of(ref(null, "orders", "o"), ref(null, "categories", "ca")), joinedWithCols.left());
+
+    // A function that returns a table is no table to join, also after a comma.
+    assertEquals(
+        List.of(), at("SELECT * FROM customers() AS c JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(),
+        at("SELECT * FROM orders o, customers() AS c JOIN |", POSTGRESQL).left());
+
+    // Unclosed column alias list while typing does not throw.
+    assertEquals(
+        List.of(), at("SELECT * FROM customers AS c(customer_pk|", POSTGRESQL).left());
+  }
+
+  @Test
+  void aliasedParenthesizedJoinsHideTheirInnerTablesFromLeft() {
+    var withAs = at(
+        "SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) AS j JOIN |",
+        POSTGRESQL);
+    assertEquals(Asked.JOIN, withAs.asked());
+    assertEquals(List.of(), withAs.left());
+
+    var withoutAs = at(
+        "SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) j JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, withoutAs.asked());
+    assertEquals(List.of(), withoutAs.left());
+
+    // Nested aliased parenthesized join hides all inner tables.
+    assertEquals(
+        List.of(),
+        at(
+                "SELECT * FROM ((orders o JOIN customers c ON c.id = o.customer_id)"
+                    + " JOIN categories ca ON ca.id = o.category_id) AS j JOIN |",
+                POSTGRESQL)
+            .left());
+
+    // A table outside the aliased group stays in left.
+    assertEquals(
+        List.of(ref(null, "categories", "ca")),
+        at(
+                "SELECT * FROM categories ca"
+                    + " JOIN (orders o JOIN customers c ON c.id = o.customer_id) AS j"
+                    + " ON j.category_id = ca.id JOIN |",
+                POSTGRESQL)
+            .left());
+
+    // A parenthesized join without an alias keeps the tables its JOINs name.
+    var unaliased =
+        at("SELECT * FROM (orders o JOIN customers c ON c.id = o.customer_id) JOIN |", POSTGRESQL);
+    assertEquals(Asked.JOIN, unaliased.asked());
+    assertEquals(List.of(ref(null, "customers", "c")), unaliased.left());
+
+    // Inside a group, its own tables alone: the ON there cannot see those before the group.
+    var insideOn = at(
+        "SELECT * FROM orders o JOIN (categories ca JOIN order_items oi ON |) AS j ON true",
+        POSTGRESQL);
+    assertEquals(Asked.ON, insideOn.asked());
+    assertEquals(List.of(ref(null, "order_items", "oi")), insideOn.left());
   }
 }

@@ -3,6 +3,7 @@ package dev.hoori.db.core.sql;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.dialect.SyntaxDialect;
 import dev.hoori.db.core.sql.Statements.Piece;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -18,9 +19,11 @@ import java.util.Set;
  * @param path for {@link Asked#MEMBER}, the names before the dot, such as {@code [public]} after
  *     {@code public.} or {@code [o]} after {@code o.}; else empty
  * @param typed the part of the word before the caret, as written
- * @param tables the tables the statement names, also after the caret
+ * @param tables the tables the statement names, also after the caret, but not the word typed
+ *     where a JOIN asks for a table
  * @param left the tables of the FROM item the caret is in, named before its word: those a JOIN
- *     there joins to, the last of them the one an ON there joins
+ *     there joins to, the last of them the one an ON there joins; not one whose column alias list
+ *     renames its columns, nor one in a parenthesized join that carries an alias
  */
 // shortcut: no parser, so a statement with a CTE or a subquery is not read: it names no tables,
 // and nothing follows a dot in it; parse statements once completion should reach into them.
@@ -72,6 +75,7 @@ public record Context(
       boolean qualifier,
       List<Reference> tables) {}
 
+  private static final String SELECT = "SELECT";
   // The words that end a table's name in a FROM list, so that they are not taken for its alias.
   private static final Set<String> CLAUSES = Set.of(
       "WHERE",
@@ -101,7 +105,7 @@ public record Context(
       "LATERAL",
       "STRAIGHT_JOIN",
       "FETCH",
-      "SELECT",
+      SELECT,
       "PARTITION",
       "TABLESAMPLE",
       "DEFAULT",
@@ -109,6 +113,24 @@ public record Context(
       "INTO",
       "WITH",
       "AS");
+  // Top-level words that end a FROM clause, so commas after them (as in GROUP BY or ORDER BY)
+  // are not read as FROM-list items; only where the server reserves them, as a column may be named
+  // LOCK, or on MySQL OFFSET or RETURNING.
+  private static final Set<String> FROM_ENDERS = Set.of(
+      "WHERE",
+      "GROUP",
+      "ORDER",
+      "HAVING",
+      "LIMIT",
+      "UNION",
+      "EXCEPT",
+      "INTERSECT",
+      "WINDOW",
+      "FOR",
+      "RETURNING",
+      "FETCH",
+      SELECT,
+      "INTO");
   private static final Set<String> INTRODUCERS = Set.of("FROM", "JOIN", "INTO", "UPDATE");
   private static final Context NOTHING =
       new Context(Asked.NOTHING, List.of(), "", List.of(), List.of());
@@ -143,7 +165,9 @@ public record Context(
       path.addFirst(tokens.get(n - 2).identifier());
       n -= 2;
     }
-    var scan = readable ? scan(tokens, null, cursor) : Scan.EMPTY;
+    int skip =
+        path.isEmpty() && !typed.isEmpty() && asked(tokens, n, false) == Asked.JOIN ? cursor : -1;
+    var scan = readable ? scan(tokens, syntax.reservedWords(), null, cursor, skip) : Scan.EMPTY;
     if (!path.isEmpty()) {
       return readable
           ? new Context(Asked.MEMBER, List.copyOf(path), typed, scan.tables, scan.left)
@@ -172,9 +196,9 @@ public record Context(
         || tokens.get(i).kind() == Kind.WORD && CLAUSES.contains(tokens.get(i).upper())) {
       return false;
     }
-    var named = new ArrayList<Reference>();
-    int j = reference(tokens, i, named, null);
-    return j >= 0 && (named.getFirst().alias() != null || condition(tokens, j));
+    var parsed = reference(tokens, i, null);
+    return parsed != null
+        && (parsed.reference().alias() != null || condition(tokens, parsed.end()));
   }
 
   // Whether the token begins a join's condition.
@@ -183,7 +207,8 @@ public record Context(
   }
 
   // Whether no condition follows the caret: nothing, a clause (not the function LEFT() or
-  // RIGHT()), a comma or the statement's end; and no word goes on from the caret.
+  // RIGHT()), a comma, a closing parenthesis or the statement's end; and no word goes on from the
+  // caret.
   private static boolean free(String statement, List<Token> tokens, int at) {
     if (at < statement.length() && word(statement.codePointAt(at))) {
       return false;
@@ -195,7 +220,10 @@ public record Context(
             && i + 1 < tokens.size()
             && tokens.get(i + 1).kind() == Kind.OPEN;
         boolean clause = token.kind() == Kind.WORD && CLAUSES.contains(token.upper()) && !call;
-        return clause || token.kind() == Kind.COMMA || token.text().equals(";");
+        return clause
+            || token.kind() == Kind.COMMA
+            || token.text().equals(")")
+            || token.text().equals(";");
       }
     }
     return true;
@@ -212,9 +240,9 @@ public record Context(
 
   /** The tables the statement names, in order; none in a statement with a CTE or a subquery. */
   public static List<Reference> tables(String statement, Provider provider) {
-    var tokens = tokens(
-        statement, Statements.pieces(statement, provider), provider.dialect().syntax());
-    return readable(tokens) ? scan(tokens, null, -1).tables : List.of();
+    var syntax = provider.dialect().syntax();
+    var tokens = tokens(statement, Statements.pieces(statement, provider), syntax);
+    return readable(tokens) ? scan(tokens, syntax.reservedWords(), null, -1, -1).tables : List.of();
   }
 
   /**
@@ -239,7 +267,9 @@ public record Context(
     }
     boolean readable = readable(tokens);
     var tableTokens = new HashSet<Integer>();
-    var tables = readable ? scan(tokens, tableTokens, -1).tables : List.<Reference>of();
+    var reserved = provider.dialect().syntax().reservedWords();
+    var tables =
+        readable ? scan(tokens, reserved, tableTokens, -1, -1).tables : List.<Reference>of();
     var path = new ArrayList<String>();
     int left = index;
     while (left >= 2
@@ -260,11 +290,20 @@ public record Context(
         tables));
   }
 
-  // Whether the token names a table after it: not the FROM of IS [NOT] DISTINCT FROM.
+  // Whether the token names a table after it: not the FROM of IS [NOT] DISTINCT FROM, nor the
+  // UPDATE of FOR UPDATE or ON UPDATE.
   private static boolean introduces(List<Token> tokens, int i) {
-    boolean distinct = word(tokens, i - 1, "DISTINCT")
+    var upper = tokens.get(i).upper();
+    if (!INTRODUCERS.contains(upper)) {
+      return false;
+    }
+    if (upper.equals("UPDATE") && (word(tokens, i - 1, "FOR") || word(tokens, i - 1, "ON"))) {
+      return false;
+    }
+    boolean distinct = upper.equals("FROM")
+        && word(tokens, i - 1, "DISTINCT")
         && (word(tokens, i - 2, "IS") || word(tokens, i - 2, "NOT") && word(tokens, i - 3, "IS"));
-    return INTRODUCERS.contains(tokens.get(i).upper()) && !distinct;
+    return !distinct;
   }
 
   // Whether the token is a JOIN that takes an ON condition (not CROSS JOIN or NATURAL […] JOIN).
@@ -305,28 +344,54 @@ public record Context(
       return false;
     }
     for (int i = 0; i + 1 < tokens.size(); i++) {
-      if (tokens.get(i).kind() == Kind.OPEN && tokens.get(i + 1).upper().equals("SELECT")) {
+      if (tokens.get(i).kind() == Kind.OPEN && tokens.get(i + 1).upper().equals(SELECT)) {
         return false;
       }
     }
     return true;
   }
 
-  // The index of the last FROM, or comma between the items of its list, before the cursor: what
-  // a JOIN at the cursor joins comes after it. FROM a JOIN b ON a.id = b.a_id, c JOIN d: d joins c.
-  private static int item(List<Token> tokens, int cursor) {
+  // The index of the last FROM, or comma between the items of its list, or of the "(" still open
+  // before the cursor: what a JOIN at the cursor joins comes after it. FROM a JOIN b ON a.id =
+  // b.a_id, c JOIN d: d joins c; FROM a JOIN (b JOIN c: c joins b alone.
+  private static int item(List<Token> tokens, Set<String> reserved, int cursor) {
     int item = -1;
     int depth = 0;
+    boolean inFrom = false;
+    var open = new ArrayDeque<Integer>();
     for (int i = 0; i < cursor; i++) {
       var token = tokens.get(i);
-      depth += nesting(token);
+      int nesting = nesting(token);
+      if (nesting > 0) {
+        open.push(i);
+      } else if (nesting < 0 && !open.isEmpty()) {
+        open.pop();
+      }
+      depth = Math.max(0, depth + nesting);
       // Not the FROM of EXTRACT(YEAR FROM …); a FROM after an unclosed call while it is typed.
-      if (token.upper().equals("FROM") && introduces(tokens, i) && depth <= 0
-          || token.kind() == Kind.COMMA && depth == 0 && item >= 0) {
+      if (token.upper().equals("FROM") && introduces(tokens, i) && depth == 0) {
         item = i;
+        inFrom = true;
+      } else if (depth == 0 && inFrom) {
+        if (token.kind() == Kind.COMMA) {
+          item = i;
+        } else if (endsFrom(tokens, reserved, i)) {
+          inFrom = false;
+        }
       }
     }
-    return item;
+    return open.isEmpty() ? item : Math.max(item, open.peek());
+  }
+
+  private static boolean endsFrom(List<Token> tokens, Set<String> reserved, int i) {
+    var token = tokens.get(i);
+    if (token.text().equals(";")) {
+      return true;
+    }
+    return token.kind() == Kind.WORD
+        && FROM_ENDERS.contains(token.upper())
+        && reserved.contains(token.upper())
+        && (i == 0 || tokens.get(i - 1).kind() != Kind.DOT);
   }
 
   // How the token changes the depth of parentheses and brackets.
@@ -341,60 +406,148 @@ public record Context(
     static final Scan EMPTY = new Scan(List.of(), List.of(), false);
   }
 
-  // Where a table is named: the index of its introducer, of its first token and of the next.
-  private record Span(int introducer, int start, int end) {}
+  // Where a table is named: the index of its introducer, of its first token, of the next, and
+  // whether its columns are not the table's: renamed by a column alias list, or those of a call.
+  private record Span(int introducer, int start, int end, boolean hidesColumns) {}
 
-  private static Scan scan(List<Token> tokens, Set<Integer> tableTokens, int cursor) {
+  private record Parsed(Reference reference, int end, boolean hidesColumns) {}
+
+  private static Scan scan(
+      List<Token> tokens, Set<String> reserved, Set<Integer> tableTokens, int cursor, int skip) {
     var found = new ArrayList<Reference>();
     var spans = new ArrayList<Span>();
-    for (int i = 0; i < tokens.size(); i++) {
-      if (introduces(tokens, i)) {
-        introduced(tokens, i, found, spans, tableTokens);
-      }
-    }
-    int item = item(tokens, cursor);
+    named(tokens, reserved, tableTokens, skip, found, spans);
+    int item = item(tokens, reserved, cursor);
+    var hidden = cursor > 0 ? aliasedGroups(tokens, cursor) : List.<int[]>of();
     var left = new ArrayList<Reference>();
     boolean joinOn = false;
     for (int k = 0; k < found.size(); k++) {
       var span = spans.get(k);
-      if (cursor >= 0 && span.start > item && span.end <= cursor) {
+      boolean usable = !span.hidesColumns() && !inside(hidden, span);
+      if (cursor >= 0 && usable && span.start > item && span.end <= cursor) {
         left.add(found.get(k));
       }
-      joinOn |= span.end == cursor - 1
+      joinOn |= usable
+          && span.end == cursor - 1
           && word(tokens, span.end, "ON")
           && conditionalJoin(tokens, span.introducer);
     }
     return new Scan(List.copyOf(found), List.copyOf(left), joinOn);
   }
 
-  // Adds the tables named after the introducer at the index; a FROM list goes on after a comma.
-  private static void introduced(
+  // Reads the tables named after each introducer, and after each comma of a FROM list.
+  private static void named(
       List<Token> tokens,
-      int i,
+      Set<String> reserved,
+      Set<Integer> tableTokens,
+      int skip,
       List<Reference> found,
-      List<Span> spans,
-      Set<Integer> tableTokens) {
-    boolean list = tokens.get(i).upper().equals("FROM");
-    int j = i + 1;
-    while (j < tokens.size() && tokens.get(j).name()) {
-      int start = j;
-      j = reference(tokens, j, found, tableTokens);
-      if (j < 0) {
-        return;
+      List<Span> spans) {
+    int depth = 0;
+    boolean inFrom = false;
+    for (int i = 0; i < tokens.size(); i++) {
+      var token = tokens.get(i);
+      depth = Math.max(0, depth + nesting(token));
+      if (depth == 0 && inFrom && endsFrom(tokens, reserved, i)) {
+        inFrom = false;
       }
-      spans.add(new Span(i, start, j));
-      // FROM a x, b y: the list goes on after a comma.
-      if (!list || j + 1 >= tokens.size() || tokens.get(j).kind() != Kind.COMMA) {
-        return;
+      if (introduces(tokens, i)) {
+        boolean from = token.upper().equals("FROM");
+        if (from && depth == 0) {
+          inFrom = true;
+        }
+        readTable(tokens, i + 1, i, skip, found, spans, tableTokens);
+      } else if (depth == 0 && inFrom && token.kind() == Kind.COMMA) {
+        readTable(tokens, i + 1, i, skip, found, spans, tableTokens);
       }
-      j++;
     }
   }
 
-  // Adds the table named at the index, with its alias; the index after it, or -1 for a name still
-  // being written, such as "public." before the caret.
-  private static int reference(
-      List<Token> tokens, int from, List<Reference> found, Set<Integer> tableTokens) {
+  // Reads the table reference after an introducer or FROM-list comma, but not the one at skip.
+  private static void readTable(
+      List<Token> tokens,
+      int j,
+      int introducer,
+      int skip,
+      List<Reference> found,
+      List<Span> spans,
+      Set<Integer> tableTokens) {
+    // LATERAL reads a subquery or a call, whose names are not a table's.
+    if (j >= tokens.size() || j == skip || !tokens.get(j).name() || word(tokens, j, "LATERAL")) {
+      return;
+    }
+    var parsed = reference(tokens, j, tableTokens);
+    if (parsed == null) {
+      return;
+    }
+    found.add(parsed.reference());
+    spans.add(new Span(introducer, j, parsed.end(), parsed.hidesColumns()));
+  }
+
+  // Parenthesized groups closed before the cursor that carry an alias (") AS j" or ") j"), whose
+  // inner tables are hidden behind that alias.
+  private static List<int[]> aliasedGroups(List<Token> tokens, int cursor) {
+    var open = new ArrayDeque<Integer>();
+    var hidden = new ArrayList<int[]>();
+    for (int i = 0; i < cursor; i++) {
+      var token = tokens.get(i);
+      if (token.kind() == Kind.OPEN) {
+        open.push(i);
+      } else if (token.text().equals(")") && !open.isEmpty()) {
+        int start = open.pop();
+        if (aliasAfter(tokens, i + 1) >= 0) {
+          hidden.add(new int[] {start, i});
+        }
+      }
+    }
+    return hidden;
+  }
+
+  private static boolean inside(List<int[]> hidden, Span span) {
+    for (var group : hidden) {
+      if (group[0] < span.start && span.end <= group[1]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // The index after an optional [AS] alias starting at j, or -1 for none.
+  private static int aliasAfter(List<Token> tokens, int j) {
+    if (j < tokens.size() && tokens.get(j).upper().equals("AS")) {
+      j++;
+    }
+    if (j < tokens.size()
+        && tokens.get(j).name()
+        && (tokens.get(j).kind() == Kind.QUOTED
+            || !CLAUSES.contains(tokens.get(j).upper()))) {
+      return j + 1;
+    }
+    return -1;
+  }
+
+  // The index after the balanced parenthesized group starting at from, or tokens.size() if
+  // unclosed.
+  private static int skipParens(List<Token> tokens, int from) {
+    int depth = 0;
+    int j = from;
+    while (j < tokens.size()) {
+      var token = tokens.get(j++);
+      if (token.kind() == Kind.OPEN) {
+        depth++;
+      } else if (token.text().equals(")")) {
+        depth--;
+        if (depth <= 0) {
+          return j;
+        }
+      }
+    }
+    return j;
+  }
+
+  // The table named at the index, with its alias and optional column alias list; null for a name
+  // still being written, such as "public." before the caret.
+  private static Parsed reference(List<Token> tokens, int from, Set<Integer> tableTokens) {
     var names = new ArrayList<String>();
     int j = from;
     names.add(tokens.get(j++).identifier());
@@ -405,25 +558,26 @@ public record Context(
       j += 2;
     }
     if (j < tokens.size() && tokens.get(j).kind() == Kind.DOT) {
-      return -1;
+      return null;
     }
     if (tableTokens != null) {
       tableTokens.add(j - 1);
     }
-    if (j < tokens.size() && tokens.get(j).upper().equals("AS")) {
-      j++;
-    }
+    // A call, as of a function that returns a table: customers() AS c.
+    boolean hidesColumns = j < tokens.size() && tokens.get(j).kind() == Kind.OPEN;
     String alias = null;
-    if (j < tokens.size()
-        && tokens.get(j).name()
-        && (tokens.get(j).kind() == Kind.QUOTED
-            || !CLAUSES.contains(tokens.get(j).upper()))) {
-      alias = tokens.get(j++).identifier();
+    int afterAlias = aliasAfter(tokens, j);
+    if (afterAlias >= 0) {
+      alias = tokens.get(afterAlias - 1).identifier();
+      j = afterAlias;
+    }
+    if (alias != null && j < tokens.size() && tokens.get(j).kind() == Kind.OPEN) {
+      hidesColumns = true;
+      j = skipParens(tokens, j);
     }
     var name = names.getLast();
     var schema = names.size() > 1 ? names.get(names.size() - 2) : null;
-    found.add(new Reference(schema, name, alias));
-    return j;
+    return new Parsed(new Reference(schema, name, alias), j, hidesColumns);
   }
 
   /** Whether the code point belongs to a word as the kit's completion takes it. */
