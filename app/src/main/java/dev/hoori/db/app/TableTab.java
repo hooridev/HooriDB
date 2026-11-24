@@ -1697,6 +1697,10 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
         .contextMenu(
             menu, List.of(Menu.item("Refresh", () -> refresh(s)).icon(Symbol.ARROW_CLOCKWISE)))
+        // The user's newer place, by key, press or editor: no jump to the end at the count.
+        // shortcut: the wheel cannot cancel it yet, until the kit tells user scrolling
+        // (rethinkj/ui#576).
+        .onSelect(() -> toLast = false)
         .loading(this::gridRowLoaded, (from, to) -> wantGrid(s, from, to))
         // Nothing to do: the build it causes brings the footer's rows in view along.
         .onRowsInView((from, to) -> {});
