@@ -138,6 +138,43 @@ public abstract class RowsDialect {
     return column + " " + operator + " " + literal(value);
   }
 
+  /**
+   * The condition builder operators offered for a column of {@code field}'s kind, in display
+   * order. Columns that cannot be filtered offer only the null checks.
+   */
+  List<ColumnFilter.Operator> operators(Field field) {
+    if (field.kind() == null) {
+      return List.of(ColumnFilter.Operator.IS_NULL, ColumnFilter.Operator.IS_NOT_NULL);
+    }
+    return switch (field.kind()) {
+      case TEXT ->
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.CONTAINS,
+            ColumnFilter.Operator.STARTS_WITH,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL);
+      case INTEGER, DECIMAL, DATE, TIME, DATE_TIME, DATE_TIME_ZONED ->
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.AT_LEAST,
+            ColumnFilter.Operator.AT_MOST,
+            ColumnFilter.Operator.BETWEEN,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL);
+      case BOOLEAN ->
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL);
+      case JSON, OTHER, BINARY ->
+        List.of(ColumnFilter.Operator.IS_NULL, ColumnFilter.Operator.IS_NOT_NULL);
+    };
+  }
+
   /** The parameter that takes the value in a statement: {@code ?}, or an expression of it. */
   abstract String parameter(Object value);
 

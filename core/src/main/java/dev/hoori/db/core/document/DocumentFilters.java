@@ -1,6 +1,7 @@
 package dev.hoori.db.core.document;
 
 import dev.hoori.db.core.data.ColumnFilter;
+import dev.hoori.db.core.data.Condition;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.query.QueryException;
@@ -46,22 +47,118 @@ public final class DocumentFilters {
   private DocumentFilters() {}
 
   /**
-   * A filter document for the given column filters, with one entry per filter.
+   * The condition builder operators offered for {@code field}'s sampled type, in display order,
+   * including {@code Exists} and {@code Does not exist}. Empty for paths that cannot be filtered.
+   */
+  public static List<ColumnFilter.Operator> operators(Field field) {
+    Objects.requireNonNull(field, "field");
+    if (!validPath(field.name())) {
+      return List.of();
+    }
+    return switch (valueType(field.type())) {
+      case STRING ->
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.CONTAINS,
+            ColumnFilter.Operator.STARTS_WITH,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL,
+            ColumnFilter.Operator.EXISTS,
+            ColumnFilter.Operator.DOES_NOT_EXIST);
+      case INT, LONG, DOUBLE, DECIMAL, DATE, OBJECT_ID ->
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.AT_LEAST,
+            ColumnFilter.Operator.AT_MOST,
+            ColumnFilter.Operator.BETWEEN,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL,
+            ColumnFilter.Operator.EXISTS,
+            ColumnFilter.Operator.DOES_NOT_EXIST);
+      case BOOL ->
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL,
+            ColumnFilter.Operator.EXISTS,
+            ColumnFilter.Operator.DOES_NOT_EXIST);
+      case UNSUPPORTED ->
+        List.of(
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL,
+            ColumnFilter.Operator.EXISTS,
+            ColumnFilter.Operator.DOES_NOT_EXIST);
+    };
+  }
+
+  /**
+   * A filter document for the given column filters, with one entry per filter (or {@code $and}
+   * where two filters name the same field).
    *
    * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when a field cannot be
    *     filtered or a value is invalid for its sampled type
    */
   public static Document filter(List<ColumnFilter> filters, ZoneId zone) throws QueryException {
     Objects.requireNonNull(filters, "filters");
+    return filter(Condition.Group.and(filters), zone);
+  }
+
+  /**
+   * A filter document for {@code condition}, using flat fields for an {@code AND} group of
+   * distinct fields and {@code $and}/{@code $or} for disjunctions, nested groups, or repeated
+   * fields.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when a field cannot be
+   *     filtered or a value is invalid for its sampled type
+   */
+  public static Document filter(Condition condition, ZoneId zone) throws QueryException {
+    Objects.requireNonNull(condition, "condition");
     Objects.requireNonNull(zone, "zone");
-    if (filters.isEmpty()) {
+    return switch (condition) {
+      case ColumnFilter f -> new Document(List.of(entry(f, zone)));
+      case Condition.Group(boolean any, var children) -> group(any, children, zone);
+    };
+  }
+
+  private static Document group(boolean any, List<Condition> children, ZoneId zone)
+      throws QueryException {
+    if (children.isEmpty()) {
       return Document.EMPTY;
     }
-    var entries = new ArrayList<Document.Entry>(filters.size());
-    for (var f : filters) {
-      entries.add(entry(f, zone));
+    if (!any && flatDistinct(children)) {
+      var entries = new ArrayList<Document.Entry>(children.size());
+      for (var child : children) {
+        entries.add(entry((ColumnFilter) child, zone));
+      }
+      return new Document(entries);
     }
-    return new Document(entries);
+    var parts = new ArrayList<Document>(children.size());
+    for (var child : children) {
+      var doc = filter(child, zone);
+      if (!doc.isEmpty()) {
+        parts.add(doc);
+      }
+    }
+    if (parts.isEmpty()) {
+      return Document.EMPTY;
+    }
+    if (parts.size() == 1) {
+      return parts.getFirst();
+    }
+    return Document.of(any ? "$or" : "$and", Document.array(parts));
+  }
+
+  private static boolean flatDistinct(List<Condition> children) {
+    var seen = new HashSet<String>(children.size());
+    for (var child : children) {
+      if (!(child instanceof ColumnFilter f) || !seen.add(f.field().name())) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -74,12 +171,25 @@ public final class DocumentFilters {
   public static String filterText(String base, List<ColumnFilter> filters, ZoneId zone)
       throws QueryException {
     Objects.requireNonNull(filters, "filters");
+    return filterText(base, Condition.Group.and(filters), zone);
+  }
+
+  /**
+   * Shell filter text combining optional hand-written {@code base} text with {@code condition}
+   * using {@code $and}.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when {@code base} is not a
+   *     valid shell document or any filter is invalid
+   */
+  public static String filterText(String base, Condition condition, ZoneId zone)
+      throws QueryException {
+    Objects.requireNonNull(condition, "condition");
     Objects.requireNonNull(zone, "zone");
     var trimmed = base == null ? "" : base.strip();
-    if (filters.isEmpty()) {
+    var added = filter(condition, zone);
+    if (added.isEmpty()) {
       return trimmed;
     }
-    var added = filter(filters, zone);
     if (trimmed.isEmpty()) {
       return Shell.compact(added);
     }
@@ -101,10 +211,23 @@ public final class DocumentFilters {
     }
   }
 
+  /** Whether {@code name} is a valid MongoDB field path (dot-separated segments, none empty or $). */
+  private static boolean validPath(String name) {
+    if (name == null || name.isEmpty()) {
+      return false;
+    }
+    for (var segment : name.split("\\.", -1)) {
+      if (segment.isEmpty() || segment.startsWith("$")) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private static Document.Entry entry(ColumnFilter filter, ZoneId zone) throws QueryException {
     var field = filter.field();
     var name = field.name();
-    if (name == null || name.isEmpty() || name.indexOf('.') >= 0 || name.startsWith("$")) {
+    if (!validPath(name)) {
       throw refused(name, "cannot be filtered");
     }
     if (filter.spec() instanceof ColumnFilter.Null(boolean isNull)) {
@@ -112,9 +235,16 @@ public final class DocumentFilters {
       var isNullType = Document.of("$type", "null");
       return new Document.Entry(name, isNull ? isNullType : Document.of("$not", isNullType));
     }
+    if (filter.spec() instanceof ColumnFilter.Exists(boolean exists)) {
+      return new Document.Entry(name, Document.of("$exists", exists));
+    }
+    if (filter.spec() instanceof ColumnFilter.Not(var inner)) {
+      return negate(field, inner, zone);
+    }
     var type = valueType(field.type());
     return switch (filter.spec()) {
-      case ColumnFilter.Null _ -> throw new AssertionError();
+      case ColumnFilter.Null _, ColumnFilter.Exists _, ColumnFilter.Not _ ->
+        throw new AssertionError();
       case ColumnFilter.Text(var match, var value) -> textEntry(field, type, match, value, zone);
       case ColumnFilter.Regex(var expression) -> {
         if (type != ValueType.STRING) {
@@ -128,6 +258,31 @@ public final class DocumentFilters {
       case ColumnFilter.Between(var from, var to) -> betweenEntry(field, type, from, to, zone);
       case ColumnFilter.OneOf(var values) -> oneOfEntry(field, type, values, zone);
     };
+  }
+
+  private static Document.Entry negate(Field field, ColumnFilter.Spec inner, ZoneId zone)
+      throws QueryException {
+    if (inner instanceof ColumnFilter.Null(boolean isNull)) {
+      return entry(new ColumnFilter(field, new ColumnFilter.Null(!isNull)), zone);
+    }
+    if (inner instanceof ColumnFilter.Exists(boolean exists)) {
+      return entry(new ColumnFilter(field, new ColumnFilter.Exists(!exists)), zone);
+    }
+    if (inner instanceof ColumnFilter.Not(var nested)) {
+      return entry(new ColumnFilter(field, nested), zone);
+    }
+    var positive = entry(new ColumnFilter(field, inner), zone).value();
+    if (positive instanceof Document doc && doc.has("$regex")) {
+      var pattern = (String) doc.get("$regex");
+      var options = doc.get("$options") instanceof String o ? o : "";
+      // MongoDB requires a BSON RegExp inside $not, not { $regex, $options }.
+      return new Document.Entry(
+          field.name(), Document.of("$not", new Bson.Regex(pattern, options)));
+    }
+    if (positive instanceof Document doc && !doc.isEmpty() && doc.first().startsWith("$")) {
+      return new Document.Entry(field.name(), Document.of("$not", doc));
+    }
+    return new Document.Entry(field.name(), Document.of("$ne", positive));
   }
 
   private static Document.Entry textEntry(

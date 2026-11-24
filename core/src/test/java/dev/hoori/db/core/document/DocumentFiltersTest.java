@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.hoori.db.core.data.ColumnFilter;
+import dev.hoori.db.core.data.Condition;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.query.QueryException;
@@ -145,8 +146,11 @@ class DocumentFiltersTest {
     var paid = new Field("paid", "bool", Kind.BOOLEAN);
     var created = new Field("created", "date", Kind.DATE_TIME_ZONED);
     var id = new Field("_id", "objectId", Kind.OTHER);
-    var dotted = new Field("meta.tag", "string", Kind.TEXT);
+    var leadingDot = new Field(".tag", "string", Kind.TEXT);
+    var trailingDot = new Field("meta.", "string", Kind.TEXT);
+    var doubleDot = new Field("meta..tag", "string", Kind.TEXT);
     var dollar = new Field("$score", "double", Kind.DECIMAL);
+    var nestedDollar = new Field("meta.$tag", "string", Kind.TEXT);
 
     List<ColumnFilter> bad = List.of(
         new ColumnFilter(
@@ -164,8 +168,11 @@ class DocumentFiltersTest {
         new ColumnFilter(id, new ColumnFilter.Text(ColumnFilter.Match.EQUALS, "not-an-oid")),
         new ColumnFilter(id, new ColumnFilter.Text(ColumnFilter.Match.CONTAINS, "507f")),
         new ColumnFilter(count, new ColumnFilter.Regex("123")),
-        new ColumnFilter(dotted, new ColumnFilter.Text(ColumnFilter.Match.CONTAINS, "x")),
-        new ColumnFilter(dollar, new ColumnFilter.Null(true)));
+        new ColumnFilter(leadingDot, new ColumnFilter.Text(ColumnFilter.Match.CONTAINS, "x")),
+        new ColumnFilter(trailingDot, new ColumnFilter.Text(ColumnFilter.Match.CONTAINS, "x")),
+        new ColumnFilter(doubleDot, new ColumnFilter.Text(ColumnFilter.Match.CONTAINS, "x")),
+        new ColumnFilter(dollar, new ColumnFilter.Null(true)),
+        new ColumnFilter(nestedDollar, new ColumnFilter.Exists(true)));
     for (var filter : bad) {
       assertEquals(
           QueryException.Failure.CLAUSE_REFUSED,
@@ -181,5 +188,92 @@ class DocumentFiltersTest {
                 QueryException.class,
                 () -> DocumentFilters.filterText("{ bad:", List.of(ok), BERLIN))
             .failure());
+  }
+
+  @Test
+  void supportsConditionGroupsNegationExistsNestedPathsAndOperators() throws Exception {
+    var customer = new Field("customer", "string", Kind.TEXT);
+    var city = new Field("address.city", "string", Kind.TEXT);
+    var count = new Field("count", "int", Kind.INTEGER);
+    var paid = new Field("paid", "bool", Kind.BOOLEAN);
+    var address = new Field("address", "object", Kind.JSON);
+
+    // Operators per sampled type, including Exists / Does not exist.
+    assertEquals(
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.CONTAINS,
+            ColumnFilter.Operator.STARTS_WITH,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL,
+            ColumnFilter.Operator.EXISTS,
+            ColumnFilter.Operator.DOES_NOT_EXIST),
+        DocumentFilters.operators(city));
+    assertEquals(
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.AT_LEAST,
+            ColumnFilter.Operator.AT_MOST,
+            ColumnFilter.Operator.BETWEEN,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL,
+            ColumnFilter.Operator.EXISTS,
+            ColumnFilter.Operator.DOES_NOT_EXIST),
+        DocumentFilters.operators(count));
+    assertEquals(
+        List.of(
+            ColumnFilter.Operator.EQUALS,
+            ColumnFilter.Operator.NOT_EQUAL,
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL,
+            ColumnFilter.Operator.EXISTS,
+            ColumnFilter.Operator.DOES_NOT_EXIST),
+        DocumentFilters.operators(paid));
+    assertEquals(
+        List.of(
+            ColumnFilter.Operator.IS_NULL,
+            ColumnFilter.Operator.IS_NOT_NULL,
+            ColumnFilter.Operator.EXISTS,
+            ColumnFilter.Operator.DOES_NOT_EXIST),
+        DocumentFilters.operators(address));
+    assertEquals(List.of(), DocumentFilters.operators(new Field("$score", "double", Kind.DECIMAL)));
+
+    // OR with nested AND, Not equal ($not regex on string, $ne on int), Exists, and nested path.
+    var condition = Condition.Group.or(List.of(
+        new ColumnFilter(city, ColumnFilter.Operator.EQUALS.spec(List.of("Berlin"))),
+        Condition.Group.and(List.of(
+            new ColumnFilter(count, ColumnFilter.Operator.NOT_EQUAL.spec(List.of("0"))),
+            new ColumnFilter(address, ColumnFilter.Operator.EXISTS.spec(List.of())),
+            new ColumnFilter(customer, ColumnFilter.Operator.NOT_EQUAL.spec(List.of("Grace")))))));
+    var text = DocumentFilters.filterText("", condition, BERLIN);
+    assertEquals(
+        "{ $or: [ { 'address.city': { $regex: '^Berlin\\\\z', $options: 'i' } },"
+            + " { count: { $ne: 0 }, address: { $exists: true }, customer: { $not: /^Grace\\z/i }"
+            + " } ] }",
+        text);
+    Shell.document(text);
+
+    // Repeated field in AND uses $and so keys do not collide.
+    var repeated = Condition.Group.and(List.of(
+        new ColumnFilter(count, ColumnFilter.Operator.AT_LEAST.spec(List.of("1"))),
+        new ColumnFilter(count, ColumnFilter.Operator.NOT_EQUAL.spec(List.of("5")))));
+    var repeatedText = DocumentFilters.filterText("", repeated, BERLIN);
+    assertEquals("{ $and: [ { count: { $gte: 1 } }, { count: { $ne: 5 } } ] }", repeatedText);
+    Shell.document(repeatedText);
+
+    // Nested OR inside AND uses $and and $or.
+    var andWithOr = Condition.Group.and(List.of(
+        new ColumnFilter(address, ColumnFilter.Operator.DOES_NOT_EXIST.spec(List.of())),
+        Condition.Group.or(List.of(
+            new ColumnFilter(paid, ColumnFilter.Operator.EQUALS.spec(List.of("true"))),
+            new ColumnFilter(count, ColumnFilter.Operator.AT_MOST.spec(List.of("3")))))));
+    var andWithOrText = DocumentFilters.filterText("", andWithOr, BERLIN);
+    assertEquals(
+        "{ $and: [ { address: { $exists: false } }, { $or: [ { paid: true }, { count: { $lte: 3 }"
+            + " } ] } ] }",
+        andWithOrText);
+    Shell.document(andWithOrText);
   }
 }
