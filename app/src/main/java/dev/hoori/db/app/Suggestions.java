@@ -26,9 +26,13 @@ final class Suggestions {
 
   /**
    * A name it may suggest, as it is listed, and as it is put in, quoted where it needs to be; and
-   * whether it belongs to the statement's tables.
+   * its ranking priority (higher ranks first within prefix or substring matches).
    */
-  record Candidate(String name, String shown, String text, Icon symbol, String kind, boolean own) {}
+  record Candidate(String name, String shown, String text, Icon symbol, String kind, int priority) {
+    Candidate(String name, String shown, String text, Icon symbol, String kind, boolean own) {
+      this(name, shown, text, symbol, kind, own ? 1 : 0);
+    }
+  }
 
   /** What a language suggests: its words, and the names of what the tree has read. */
   sealed interface Strategy permits SqlCompletion, ShellCompletion {
@@ -143,7 +147,7 @@ final class Suggestions {
     return Ranking.rank(
             strategy.candidates(known, statement, caret, word),
             Candidate::name,
-            Candidate::own,
+            Candidate::priority,
             word)
         .stream()
         .map(c -> new Completion.Entry(c.shown(), c.symbol(), c.kind(), c.text()))

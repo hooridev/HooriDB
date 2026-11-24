@@ -76,7 +76,7 @@ class ContextTest {
         at("SELECT `Shop`.`Order Items`.na|", MYSQL).path());
     assertEquals(Asked.TABLE, at("SELECT * FROM ord|", POSTGRESQL).asked());
     assertEquals("ord", at("SELECT * FROM ord|", POSTGRESQL).typed());
-    assertEquals(Asked.TABLE, at("SELECT * FROM orders JOIN |", POSTGRESQL).asked());
+    assertEquals(Asked.JOIN, at("SELECT * FROM orders JOIN |", POSTGRESQL).asked());
     assertEquals(Asked.ANY, at("SEL|", POSTGRESQL).asked());
     assertEquals(Asked.ANY, at("SELECT id, |", POSTGRESQL).asked());
     assertEquals(Asked.ANY, at("|", POSTGRESQL).asked());
@@ -104,12 +104,12 @@ class ContextTest {
         new Named("total", true));
     assertEquals(
         List.of("order_id", "ORDER", "orders", "Ordinal", "record"),
-        Ranking.rank(candidates, Named::name, Named::ofStatement, "ord").stream()
+        Ranking.rank(candidates, Named::name, c -> c.ofStatement() ? 1 : 0, "ord").stream()
             .map(Named::name)
             .toList());
     assertEquals(
         List.of("customer_id", "order_id", "total", "ORDER", "orders", "Ordinal", "record"),
-        Ranking.rank(candidates, Named::name, Named::ofStatement, "").stream()
+        Ranking.rank(candidates, Named::name, c -> c.ofStatement() ? 1 : 0, "").stream()
             .map(Named::name)
             .toList());
   }
@@ -246,7 +246,7 @@ class ContextTest {
         new Named("void", false));
     assertEquals(
         List.of("id", "idle", "customer_id", "paid", "void"),
-        Ranking.rank(candidates, Named::name, Named::ofStatement, "id").stream()
+        Ranking.rank(candidates, Named::name, c -> c.ofStatement() ? 1 : 0, "id").stream()
             .map(Named::name)
             .toList());
   }
@@ -329,5 +329,189 @@ class ContextTest {
     assertTrue(symbolAt("SELECT 1|23 FROM orders", POSTGRESQL).isEmpty());
     assertTrue(symbolAt("SELECT | FROM orders", POSTGRESQL).isEmpty());
     assertTrue(symbolAt("SELECT o|.total FROM orders o", POSTGRESQL).isEmpty());
+  }
+
+  @Test
+  void joinSlotDistinguishesConditionalJoinsFromCrossNaturalAndOtherTableSlots() {
+    // Conditional joins ask for JOIN.
+    for (var join : List.of(
+        "JOIN",
+        "INNER JOIN",
+        "LEFT JOIN",
+        "LEFT OUTER JOIN",
+        "RIGHT JOIN",
+        "RIGHT OUTER JOIN",
+        "FULL JOIN",
+        "FULL OUTER JOIN")) {
+      var ctx = at("SELECT * FROM orders o " + join + " |", POSTGRESQL);
+      assertEquals(Asked.JOIN, ctx.asked(), join);
+      assertEquals(1, ctx.left().size(), join);
+      assertEquals(List.of(ref(null, "orders", "o")), ctx.tables(), join);
+    }
+    // Typing in a JOIN slot is not one of the tables to the left.
+    var typing = at("SELECT * FROM orders o JOIN cu|", POSTGRESQL);
+    assertEquals(Asked.JOIN, typing.asked());
+    assertEquals("cu", typing.typed());
+    assertEquals(1, typing.left().size());
+    assertEquals(List.of(ref(null, "orders", "o")), typing.left());
+
+    // Tables after the caret are not to the left.
+    var middle =
+        at("SELECT * FROM orders o JOIN | JOIN customers c ON c.id = o.customer_id", POSTGRESQL);
+    assertEquals(Asked.JOIN, middle.asked());
+    assertEquals(1, middle.left().size());
+    assertEquals(List.of(ref(null, "orders", "o")), middle.left());
+
+    // CROSS JOIN, NATURAL […] JOIN, FROM, INTO and UPDATE stay TABLE.
+    for (var sql : List.of(
+        "SELECT * FROM |",
+        "INSERT INTO |",
+        "UPDATE |",
+        "SELECT * FROM orders o CROSS JOIN |",
+        "SELECT * FROM orders o CROSS JOIN cu|",
+        "SELECT * FROM orders o NATURAL JOIN |",
+        "SELECT * FROM orders o NATURAL INNER JOIN |",
+        "SELECT * FROM orders o NATURAL LEFT JOIN |",
+        "SELECT * FROM orders o NATURAL LEFT OUTER JOIN |",
+        "SELECT * FROM orders o NATURAL RIGHT JOIN |",
+        "SELECT * FROM orders o NATURAL RIGHT OUTER JOIN |",
+        "SELECT * FROM orders o NATURAL FULL JOIN |",
+        "SELECT * FROM orders o NATURAL FULL OUTER JOIN |")) {
+      assertEquals(Asked.TABLE, at(sql, POSTGRESQL).asked(), sql);
+    }
+
+    // Schema-qualified typing after JOIN still asks for MEMBER.
+    var qualified = at("SELECT * FROM orders o JOIN public.cu|", POSTGRESQL);
+    assertEquals(Asked.MEMBER, qualified.asked());
+    assertEquals(List.of("public"), qualified.path());
+    assertEquals(1, qualified.left().size());
+  }
+
+  @Test
+  void onSlotMatchesOnlyRightAfterTheOnOfAConditionalJoin() {
+    var aliased = at("SELECT * FROM orders o JOIN customers c ON |", POSTGRESQL);
+    assertEquals(Asked.ON, aliased.asked());
+    assertEquals(2, aliased.left().size());
+    assertEquals(List.of(ref(null, "orders", "o"), ref(null, "customers", "c")), aliased.tables());
+
+    var typed = at("SELECT * FROM orders o JOIN customers c ON c|", POSTGRESQL);
+    assertEquals(Asked.ON, typed.asked());
+    assertEquals("c", typed.typed());
+    assertEquals(2, typed.left().size());
+
+    var unaliased = at("SELECT * FROM orders LEFT OUTER JOIN public.customers ON |", POSTGRESQL);
+    assertEquals(Asked.ON, unaliased.asked());
+    assertEquals(2, unaliased.left().size());
+
+    var withAs = at("SELECT * FROM orders o JOIN public.customers AS c ON |", POSTGRESQL);
+    assertEquals(Asked.ON, withAs.asked());
+    assertEquals(2, withAs.left().size());
+
+    var chained = at(
+        "SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id"
+            + " JOIN order_items oi ON |",
+        POSTGRESQL);
+    assertEquals(Asked.ON, chained.asked());
+    assertEquals(3, chained.left().size());
+
+    // A later JOIN after the caret is not to the left.
+    var beforeLater = at(
+        "SELECT * FROM orders o JOIN customers c ON | JOIN order_items oi ON oi.order_id = o.id",
+        POSTGRESQL);
+    assertEquals(Asked.ON, beforeLater.asked());
+    assertEquals(2, beforeLater.left().size());
+    assertEquals(
+        List.of(ref(null, "orders", "o"), ref(null, "customers", "c")), beforeLater.left());
+
+    // Dot after ON asks for MEMBER, not ON.
+    assertEquals(
+        Asked.MEMBER,
+        at("SELECT * FROM orders o JOIN customers c ON c.|", POSTGRESQL).asked());
+
+    // Anything else after ON or non-join ON asks for ANY.
+    for (var sql : List.of(
+        "SELECT * FROM orders o JOIN customers c ON|",
+        "SELECT * FROM orders o JOIN customers c ON c.id = |",
+        "SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id AND |",
+        "SELECT * FROM orders o JOIN customers c ON |TRUE",
+        "SELECT * FROM orders o JOIN customers c ON | LEFT(o.code, 1) = 'A'",
+        "SELECT * FROM orders o CROSS JOIN customers c ON |",
+        "SELECT * FROM orders o NATURAL JOIN customers c ON |",
+        "SELECT * FROM orders o ON |",
+        "CREATE INDEX idx ON |",
+        "INSERT INTO orders (id) VALUES (1) ON |")) {
+      assertEquals(Asked.ANY, at(sql, POSTGRESQL).asked(), sql);
+    }
+  }
+
+  @Test
+  void aJoinOrOnThatHasItsConditionAlreadyAsksForNoNewOne() {
+    for (var sql : List.of(
+        "SELECT * FROM orders o JOIN cu|stomers c ON c.id = o.customer_id",
+        "SELECT * FROM orders o JOIN | customers c USING (id)",
+        "SELECT * FROM orders o JOIN cu| AS buyer")) {
+      assertEquals(Asked.TABLE, at(sql, POSTGRESQL).asked(), sql);
+    }
+    assertEquals(
+        Asked.ANY,
+        at("SELECT * FROM orders o JOIN order_items oi ON oi|.order_id = o.id", POSTGRESQL)
+            .asked());
+    assertEquals(
+        Asked.ANY,
+        at("SELECT * FROM orders o JOIN order_items oi ON |oi.order_id = o.id", POSTGRESQL)
+            .asked());
+    assertEquals(
+        Asked.ON,
+        at("SELECT * FROM orders o JOIN order_items oi ON | WHERE o.id = 1", POSTGRESQL)
+            .asked());
+    assertEquals(
+        Asked.ON,
+        at("SELECT * FROM orders o JOIN order_items oi ON |;", POSTGRESQL).asked());
+    assertEquals(
+        Asked.ON,
+        at("SELECT * FROM orders o JOIN order_items oi ON | LEFT JOIN items i ON true", POSTGRESQL)
+            .asked());
+    assertEquals(
+        Asked.ON,
+        at("SELECT * FROM orders o JOIN order_items oi ON | WHERE (o.id = 1)", POSTGRESQL)
+            .asked());
+    assertEquals(
+        Asked.TABLE,
+        at("SELECT * FROM orders o JOIN | ON o.customer_id = 1", POSTGRESQL).asked());
+  }
+
+  @Test
+  void theTablesToTheLeftAreThoseOfTheFromItemTheCaretIsIn() {
+    assertEquals(
+        List.of(ref(null, "categories", "ca"), ref(null, "customers", "c")),
+        at("SELECT * FROM orders o, categories ca JOIN customers c ON |", POSTGRESQL)
+            .left());
+    assertEquals(
+        List.of(ref(null, "orders", "o")),
+        at("SELECT * FROM items i UNION ALL SELECT * FROM orders o JOIN |", POSTGRESQL)
+            .left());
+    assertEquals(
+        List.of(ref(null, "orders", "o")),
+        at("INSERT INTO archive SELECT * FROM orders o JOIN |", POSTGRESQL).left());
+    // Not a or b, outside the item; c after a comma that ends a join is not read as a table.
+    assertEquals(
+        List.of(ref(null, "d", null)),
+        at("SELECT * FROM a JOIN b ON a.id = b.a_id, c JOIN d ON |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null)),
+        at("SELECT * FROM a JOIN b ON a.id IN (1, 2) JOIN |", POSTGRESQL).left());
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null)),
+        at("SELECT * FROM a JOIN b ON ARRAY[a.id, 2] = ARRAY[1, 2] JOIN |", POSTGRESQL)
+            .left());
+    assertEquals(
+        List.of(ref(null, "a", null), ref(null, "b", null)),
+        at("SELECT * FROM a JOIN b ON EXTRACT(YEAR FROM a.at) = 2020 JOIN |", POSTGRESQL)
+            .left()
+            .subList(0, 2));
+    // A FROM after a call still being typed names its tables.
+    assertEquals(
+        List.of(ref(null, "orders", "o")),
+        at("SELECT COUNT(o.| FROM orders o", POSTGRESQL).tables());
   }
 }
