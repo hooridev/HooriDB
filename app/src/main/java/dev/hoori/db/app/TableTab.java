@@ -1807,9 +1807,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .copyLimit(
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
         .contextMenu(menu, (row, column) -> ForeignKeys.gridMenu(s, this, ofDocuments, row, column))
-        // The user's newer place, by key, press or editor: no jump to the end at the count.
-        // shortcut: the wheel cannot cancel it yet, until the kit tells user scrolling
-        // (rethinkj/ui#576).
+        // The user's newer selection, even when nothing scrolls: no jump to the end at the count.
         .onSelect(() -> toLast = false)
         .loading(this::gridRowLoaded, (from, to) -> wantGrid(s, from, to))
         // Nothing to do: the build it causes brings the footer's rows in view along.
@@ -1821,7 +1819,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     El grid = DataGrid.dataGrid(shown, count, options)
         .key("grid")
         .label("Rows of " + table.name())
-        .defaultFocus();
+        .defaultFocus()
+        // Any user scroll of the grid's rows or columns cancels a pending jump to the end.
+        .onUserScroll(() -> toLast = false);
     if (edited) {
       Predicate<Key> guard = k -> ResultEdits.rejectUnloadedKey(app, this, k);
       grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
