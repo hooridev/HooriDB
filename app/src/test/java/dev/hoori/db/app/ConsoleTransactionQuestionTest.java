@@ -73,7 +73,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     var shop = s.consoles(SHOP.id()).getFirst();
     var inventory = s.consoles(INVENTORY.id()).getFirst();
     var window = s.tabs.groupOf(inventory);
-    var main = s.tabs.main();
+    var main = s.tabs.main().active();
     // In a frame, as a drag's release, so that the windows it changes are built again.
     app.post(
         () -> s.tabs.dock(main, main.tabs().indexOf(shop), window, window.tabs().size()));

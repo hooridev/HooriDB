@@ -51,7 +51,7 @@ final class Frame {
 
   static El view(State s) {
     Theme t = Theme.CURRENT.get();
-    var main = s.tabs.main();
+    var main = s.tabs.main().active();
     // One dialog at a time: what the catalog asks waits for the others to close.
     El asked = ownDialog(s) ? null : s.catalog.dialog(s, main);
     El question = question(s, main);
@@ -179,7 +179,7 @@ final class Frame {
   /** The tabs of a window, each with its content; the main window's empty one says what goes in. */
   private static El tabs(State s, TabGroups.Group<Tab> group, App<State> app) {
     return s.tabs.tabs(
-        group,
+        group.frame(),
         tab -> switch (tab) {
           case TableTab x ->
             new Tabs.Tab(
@@ -206,7 +206,7 @@ final class Frame {
         },
         tab -> switch (tab) {
           case null ->
-            group == s.tabs.main()
+            group == s.tabs.main().active()
                 ? emptyState(
                     Symbol.TABLE,
                     "No tabs open",
@@ -686,7 +686,7 @@ final class Frame {
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
     boolean several = group.tabs().size() > 1;
     boolean tree =
-        group == s.tabs.main() && s.loaded && !s.workspace().entries().isEmpty();
+        group == s.tabs.main().active() && s.loaded && !s.workspace().entries().isEmpty();
     return List.of(
         Menu.submenu(
             "&File",
@@ -787,7 +787,7 @@ final class Frame {
         || s.dialogs.queryDialog != null
         || s.dialogs.about
         || s.dialogs.driverList != null
-        || asks(s, s.tabs.main());
+        || asks(s, s.tabs.main().active());
   }
 
   /** Gives the focus to the tree of the workspace. */

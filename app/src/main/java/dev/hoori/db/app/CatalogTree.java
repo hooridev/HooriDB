@@ -1489,7 +1489,8 @@ final class CatalogTree {
         var p = s.profile(n.id());
         yield List.of(
             Menu.item("New console", () -> s.openConsole(n.id())).icon(Symbol.CODE),
-            Menu.item("Server monitor", () -> s.openMonitor(n.id(), s.tabs.main()))
+            Menu.item(
+                    "Server monitor", () -> s.openMonitor(n.id(), s.tabs.main().active()))
                 .icon(Symbol.SERVER),
             Menu.separator(),
             Menu.item("Disconnect", active(n.id()) ? () -> disconnect(s, n.id()) : null)
@@ -1603,7 +1604,7 @@ final class CatalogTree {
 
   /** The dialog that asks something for the catalog, or null: one at a time. */
   El dialog(State s, TabGroups.Group<Tab> group) {
-    boolean main = group == s.tabs.main();
+    boolean main = group == s.tabs.main().active();
     if (main && disconnecting != null) {
       return CatalogDialogs.disconnect(s, disconnecting);
     }
@@ -1617,7 +1618,7 @@ final class CatalogTree {
 
   /** Whether {@link #dialog} shows one in the window of these tabs, without making it. */
   boolean asks(State s, TabGroups.Group<Tab> group) {
-    boolean main = group == s.tabs.main();
+    boolean main = group == s.tabs.main().active();
     return main && (disconnecting != null || asking() != null) || forPassword(s, group) != null;
   }
 
@@ -1625,7 +1626,7 @@ final class CatalogTree {
   private Live forPassword(State s, TabGroups.Group<Tab> group) {
     for (var live : lives.values()) {
       // In the window that asked, while it is open; else in the main one, where its tabs went.
-      var asked = live.window != null ? live.window : s.tabs.main();
+      var asked = live.window != null ? live.window : s.tabs.main().active();
       if (live.phase instanceof Live.ForPassword && asked == group) {
         return live;
       }
