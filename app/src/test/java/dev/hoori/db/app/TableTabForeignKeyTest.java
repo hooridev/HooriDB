@@ -202,29 +202,35 @@ class TableTabForeignKeyTest {
     assertFalse(plain.contains("label=\"Go to"), plain);
     assertTrue(plain.contains("role=menuitem label=\"Referenced by\""), plain);
 
-    // Rows 0 and 1 selected, the active cell in row 1: a press on row 0 follows neither row.
+    // Rows 0 and 1 selected, active cell in row 1 (customer_id = NULL): pressing row 0's cell
+    // follows row 0 (customer_id = 10), not the active cell.
     c.run(
         app,
         "key Escape\n" + SHOWN + "press #cell-0-2\nframe\npress #cell-1-2 shift\nframe\n"
             + rightClick(0, 2) + "snap two-rows\n");
     String twoRows = c.tree("two-rows");
-    assertFalse(twoRows.contains("label=\"Go to"), twoRows);
-    assertFalse(twoRows.contains("label=\"Referenced by\""), twoRows);
-    assertTrue(twoRows.contains("role=menuitem label=\"Refresh\""), twoRows);
-
-    // Row 1 deselected again, the active cell stays there: a press on row 0 still follows neither.
+    assertTrue(twoRows.contains("role=menuitem label=\"Go to customers\""), twoRows);
+    assertFalse(
+        line(twoRows, "role=menuitem label=\"Go to customers\"").contains("disabled"), twoRows);
+    assertTrue(twoRows.contains("role=menuitem label=\"Referenced by\""), twoRows);
     c.run(
         app,
-        "key Escape\n" + SHOWN + "press #cell-1-2 control\nframe\n" + rightClick(0, 2)
-            + "snap deselected\n");
-    assertFalse(c.tree("deselected").contains("label=\"Go to"), c.tree("deselected"));
+        "press role=menuitem label=\"Go to customers\"\n" + SHOWN + SETTLE + "snap two-rows-go\n");
+    assertEquals("\"id\" = 10", tabNamed(app, "customers").filter.where());
+    assertTrue(cell(c.tree("two-rows-go"), 0, 1).contains("\"Alice\""), c.tree("two-rows-go"));
 
-    // Nothing selected, a press on a row's number: the menu has Refresh alone.
-    c.run(app, "key Escape\n" + SHOWN);
-    tabNamed(app, "orders").selection.clear();
-    c.run(app, "press #number-0 right\n" + SHOWN + "snap no-cell\n");
-    assertFalse(c.tree("no-cell").contains("label=\"Go to"), c.tree("no-cell"));
-    assertTrue(c.tree("no-cell").contains("role=menuitem label=\"Refresh\""), c.tree("no-cell"));
+    // Row 1 deselected with Ctrl while active cell stays at row 1: pressing row 0 still follows
+    // row 0.
+    c.run(
+        app,
+        "press role=tab label=\"orders\"\n" + SHOWN + "press #cell-0-2\nframe\n"
+            + "press #cell-1-2 shift\nframe\npress #cell-1-2 control\nframe\n"
+            + rightClick(0, 2) + "snap deselected\n");
+    String deselected = c.tree("deselected");
+    assertTrue(deselected.contains("role=menuitem label=\"Go to customers\""), deselected);
+    assertFalse(
+        line(deselected, "role=menuitem label=\"Go to customers\"").contains("disabled"),
+        deselected);
 
     // Right-click `dual_id` (col 6, in TWO outgoing FKs): shows "Go to" submenu with both targets.
     c.run(app, "key Escape\n" + SHOWN + rightClick(0, 6) + "snap multi-fk\n");
@@ -235,7 +241,7 @@ class TableTabForeignKeyTest {
     assertTrue(multiSub.contains("role=menuitem label=\"customers (dual_id → id)\""), multiSub);
     assertTrue(multiSub.contains("role=menuitem label=\"partners (dual_id → id)\""), multiSub);
 
-    // Choose customers (dual_id → id) from the Go to submenu: opens customers filtered to "id" =
+    // Choose customers (dual_id → id) from the Go to submenu: reuses customers filtered to "id" =
     // 20.
     c.run(
         app,
@@ -243,6 +249,85 @@ class TableTabForeignKeyTest {
             + "snap cust-tab\n");
     assertEquals("\"id\" = 20", tabNamed(app, "customers").filter.where());
     assertTrue(cell(c.tree("cust-tab"), 0, 1).contains("\"Bob\""), c.tree("cust-tab"));
+
+    // Back to orders, row 0 selected, right-click row 1's number: shows all outgoing keys in
+    // "Go to" plus "Referenced by", acting on row 1 (customer_id NULL -> disabled; dual_id = 10 ->
+    // enabled and filters customers to "id" = 10).
+    c.run(
+        app,
+        "press role=tab label=\"orders\"\n" + SHOWN + "press #cell-0-2\nframe\n"
+            + "press #number-1 right\n" + SHOWN + "snap row-number\n");
+    String rowNumber = c.tree("row-number");
+    assertTrue(rowNumber.contains("role=menuitem label=\"Go to\""), rowNumber);
+    assertTrue(rowNumber.contains("role=menuitem label=\"Referenced by\""), rowNumber);
+    c.run(app, "press role=menuitem label=\"Go to\"\n" + SHOWN + "snap row-number-go\n");
+    String rowNumberGo = c.tree("row-number-go");
+    assertTrue(
+        line(rowNumberGo, "role=menuitem label=\"customers (customer_id → id)\"")
+            .contains("disabled"),
+        rowNumberGo);
+    assertFalse(
+        line(rowNumberGo, "role=menuitem label=\"customers (dual_id → id)\"").contains("disabled"),
+        rowNumberGo);
+    assertTrue(
+        rowNumberGo.contains("role=menuitem label=\"billing.regions (region_a, region_b → a, b)\""),
+        rowNumberGo);
+    c.run(
+        app,
+        "press role=menuitem label=\"customers (dual_id → id)\"\n" + SHOWN + SETTLE
+            + "snap row-number-target\n");
+    assertEquals("\"id\" = 10", tabNamed(app, "customers").filter.where());
+    assertTrue(
+        cell(c.tree("row-number-target"), 0, 1).contains("\"Alice\""), c.tree("row-number-target"));
+
+    // Nothing selected, right-click row 0's number: still acts on row 0 (dual_id = 20).
+    c.run(app, "press role=tab label=\"orders\"\n" + SHOWN);
+    tabNamed(app, "orders").selection.clear();
+    c.run(
+        app,
+        "frame\npress #number-0 right\n" + SHOWN + "press role=menuitem label=\"Go to\"\n" + SHOWN
+            + "press role=menuitem label=\"customers (dual_id → id)\"\n" + SHOWN + SETTLE
+            + "snap cleared-number\n");
+    assertEquals("\"id\" = 20", tabNamed(app, "customers").filter.where());
+    assertTrue(cell(c.tree("cleared-number"), 0, 1).contains("\"Bob\""), c.tree("cleared-number"));
+
+    // On a table with a single outgoing key (order_items), right-clicking a row number offers
+    // "Go to orders" directly (no submenu).
+    c.run(
+        app,
+        "press role=tab label=\"order_items\"\n" + SHOWN + "press #number-0 right\n" + SHOWN
+            + SETTLE + "snap single-out-number\n");
+    String singleOut = c.tree("single-out-number");
+    assertTrue(singleOut.contains("role=menuitem label=\"Go to orders\""), singleOut);
+    assertFalse(singleOut.contains("label=\"Referenced by\""), singleOut);
+    c.run(app, "key Escape\n" + SHOWN);
+
+    // Menu key (ContextMenu) acts on the focused cell: select row 0 customer_id (10) and open via
+    // ContextMenu key -> follows "id" = 10.
+    c.run(
+        app,
+        "press role=tab label=\"orders\"\n" + SHOWN + "press #cell-0-2\nframe\n"
+            + "key ContextMenu\n" + SHOWN + "snap menu-key\n");
+    String menuKey = c.tree("menu-key");
+    assertTrue(menuKey.contains("role=menuitem label=\"Go to customers\""), menuKey);
+    assertFalse(
+        line(menuKey, "role=menuitem label=\"Go to customers\"").contains("disabled"), menuKey);
+    assertTrue(menuKey.contains("role=menuitem label=\"Referenced by\""), menuKey);
+    c.run(
+        app,
+        "press role=menuitem label=\"Go to customers\"\n" + SHOWN + SETTLE
+            + "snap menu-key-target\n");
+    assertEquals("\"id\" = 10", tabNamed(app, "customers").filter.where());
+    assertTrue(
+        cell(c.tree("menu-key-target"), 0, 1).contains("\"Alice\""), c.tree("menu-key-target"));
+
+    // Nothing selected and Menu key pressed (no cell, row -1): menu has Refresh alone.
+    c.run(app, "press role=tab label=\"orders\"\n" + SHOWN);
+    tabNamed(app, "orders").selection.clear();
+    c.run(app, "frame\nkey ContextMenu\n" + SHOWN + "snap no-cell\n");
+    assertFalse(c.tree("no-cell").contains("label=\"Go to"), c.tree("no-cell"));
+    assertFalse(c.tree("no-cell").contains("label=\"Referenced by\""), c.tree("no-cell"));
+    assertTrue(c.tree("no-cell").contains("role=menuitem label=\"Refresh\""), c.tree("no-cell"));
   }
 
   @Test

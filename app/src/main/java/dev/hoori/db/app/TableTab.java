@@ -1806,7 +1806,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .nullText(Cells.nullText(s.settings.copyNull()))
         .copyLimit(
             100_000, copy -> say(s, "Only rows that were read can be copied; select fewer rows."))
-        .contextMenu(menu, ForeignKeys.gridMenu(s, this, ofDocuments))
+        .contextMenu(menu, (row, column) -> ForeignKeys.gridMenu(s, this, ofDocuments, row, column))
         // The user's newer place, by key, press or editor: no jump to the end at the count.
         // shortcut: the wheel cannot cancel it yet, until the kit tells user scrolling
         // (rethinkj/ui#576).

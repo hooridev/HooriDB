@@ -43,12 +43,12 @@ By default, HooriDB reuses a console that is already open on the same connection
 
 ## Follow foreign keys
 
-Right-click a cell in an SQL table's grid to jump along its foreign keys:
+Right-click a cell or row number in an SQL table's grid to jump along its foreign keys:
 
 - **Go to ‹table›** (or a **Go to** submenu when the column belongs to more than one outgoing key): opens the referenced table filtered to the current row's key value(s).
 - **Referenced by ▸ ‹table› (‹columns› → ‹key columns›)**: opens a referencing table filtered to the rows that point at the current row.
 
-Composite keys filter on all of their columns joined with `AND`. An item is disabled when any needed value in the row is `NULL`, shortened (cut short), or has an uncommitted edit, and where its value is a `real` or `FLOAT`, a timestamp with a time zone, or text with a backslash, whose literal might not match. The items act on the selected cell, so they show only while one cell is selected. If the target table is already open in a tab (including a self-reference to the same table), HooriDB reuses that tab, keeps its applied `ORDER BY`, and asks first if it has uncommitted changes.
+Composite keys filter on all of their columns joined with `AND`. An item is disabled when any needed value in the row is `NULL`, shortened (cut short), or has an uncommitted edit, and where its value is a `real` or `FLOAT`, a timestamp with a time zone, or text with a backslash, whose literal might not match. The items act on the cell the menu opened on, and on a row number they act on that row (**Go to** for every outgoing key of the table, and **Referenced by**). If the target table is already open in a tab (including a self-reference to the same table), HooriDB reuses that tab, keeps its applied `ORDER BY`, and asks first if it has uncommitted changes.
 
 ## How values are displayed
 
