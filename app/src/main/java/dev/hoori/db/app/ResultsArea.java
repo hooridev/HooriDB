@@ -198,8 +198,8 @@ final class ResultsArea {
     if (o.fields == null) {
       return changed(s, o, pin);
     }
-    String about = about(o);
-    boolean ofDocuments = !o.documents.isEmpty();
+    boolean ofDocuments = o.ofDocuments;
+    String about = about(o, ofDocuments);
     var presented = o.presentation.view(
         app, s.zone, ofDocuments, () -> gridView(s, app, o), () -> documentPage(s, o));
     var footer = new ArrayList<El>();
@@ -252,15 +252,14 @@ final class ResultsArea {
   }
 
   /** What a result's status line says: how many of its rows it holds, and its statement. */
-  private static String about(ConsoleTab.Output o) {
-    boolean whole = !o.documents.isEmpty();
+  private static String about(ConsoleTab.Output o, boolean documents) {
     // Of a read left open, the server's estimate, short and first, as the footer may be narrow;
     // none
     // below the rows read.
     String count = o.estimated > 0 && o.estimated >= o.rows.size() && (o.more || o.cut)
         ? String.format(Locale.ROOT, "%,d", o.rows.size()) + " of about "
-            + ConsoleTab.rows(o.estimated, whole)
-        : ConsoleTab.rows(o.rows.size(), whole);
+            + ConsoleTab.rows(o.estimated, documents)
+        : ConsoleTab.rows(o.rows.size(), documents);
     String held;
     if (o.more) {
       held = count + " so far · cursor open, more as it scrolls";
@@ -273,7 +272,7 @@ final class ResultsArea {
             case LIMIT -> "limit reached, the rest was not read";
           };
     } else if (o.dropped > 0) {
-      held = "the first " + count + " of " + ConsoleTab.rows(o.rows.size() + o.dropped, whole)
+      held = "the first " + count + " of " + ConsoleTab.rows(o.rows.size() + o.dropped, documents)
           + "; the rest was read and not kept";
     } else {
       held = count;

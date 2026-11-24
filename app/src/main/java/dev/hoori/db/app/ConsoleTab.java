@@ -137,6 +137,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
     // Of a server of documents, the documents of the rows, whole, and how they show.
     final List<Document> documents = new ArrayList<>();
+    final boolean ofDocuments; // from the console's language as it ran, also where none came
     final DocumentPresentation presentation;
     final ResultEdits edits = new ResultEdits();
 
@@ -145,11 +146,13 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         String statement,
         List<Field> fields,
         long count,
+        boolean ofDocuments,
         DocumentPresentation.Mode initial) {
       this.number = number;
       this.statement = statement;
       this.fields = fields;
       this.count = count;
+      this.ofDocuments = ofDocuments;
       this.presentation = new DocumentPresentation(initial);
       if (fields != null) {
         widths = new float[fields.size()];
@@ -1679,10 +1682,11 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         }
         case Result.Rows r -> {
           finished();
-          var initial = !r.documents().isEmpty()
+          boolean ofDocuments = documents(s);
+          var initial = ofDocuments
               ? DocumentPresentation.of(s.settings.documentView())
               : DocumentPresentation.Mode.GRID;
-          var output = new Output(++results, sql, r.fields(), 0, initial);
+          var output = new Output(++results, sql, r.fields(), 0, ofDocuments, initial);
           output.rows.addAll(r.rows());
           output.documents.addAll(r.documents());
           output.dropped = dropped == null ? 0 : dropped.get(i);
@@ -1692,7 +1696,8 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         }
         case Result.Count(var count) -> {
           finished();
-          outputs.add(new Output(++results, sql, null, count, DocumentPresentation.Mode.GRID));
+          outputs.add(
+              new Output(++results, sql, null, count, false, DocumentPresentation.Mode.GRID));
         }
         case Failure _ -> {
           // no tab: the failure is said where the portion is taken, through failure(portion)
