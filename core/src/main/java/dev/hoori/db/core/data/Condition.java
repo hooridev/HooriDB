@@ -24,13 +24,11 @@ public sealed interface Condition permits ColumnFilter, Condition.Group {
 
     /** Combines {@code conditions} with {@code AND}. */
     public static Group and(List<? extends Condition> conditions) {
-      Objects.requireNonNull(conditions, "conditions");
       return new Group(false, List.copyOf(conditions));
     }
 
     /** Combines {@code conditions} with {@code OR}. */
     public static Group or(List<? extends Condition> conditions) {
-      Objects.requireNonNull(conditions, "conditions");
       return new Group(true, List.copyOf(conditions));
     }
   }

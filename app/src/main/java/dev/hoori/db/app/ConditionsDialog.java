@@ -43,7 +43,7 @@ final class ConditionsDialog {
   private final ConditionBuilder.State ui = new ConditionBuilder.State();
 
   /** Opens the dialog, starting from the applied clause when it is still reflected in the field. */
-  void open(boolean hasApplied) {
+  void start(boolean hasApplied) {
     open = true;
     draft = hasApplied ? applied : EMPTY;
   }
@@ -53,12 +53,16 @@ final class ConditionsDialog {
   }
 
   /** Builds the modal dialog with the condition builder, Cancel, and Apply. */
-  El view(Provider provider, List<Field> availableFields, boolean loadingPaths, Runnable onApply) {
+  El view(
+      Provider provider,
+      List<Field> availableFields,
+      boolean loadingPaths,
+      Runnable onApply,
+      Runnable close) {
     Theme t = Theme.CURRENT.get();
     var kitFields = kitFields(provider, availableFields);
     El builder = ConditionBuilder.conditionBuilder(kitFields, draft, ui, next -> draft = next);
     El content = col().w(3.2f * t.size().field()).child(builder);
-    Runnable close = this::close;
     El cancel = button(SECONDARY, "Cancel", close).key("conditions-cancel");
     El apply = button(PRIMARY, "Apply", onApply).key("conditions-apply");
     Dialog.Options options = Dialog.options().defaultButton(apply);

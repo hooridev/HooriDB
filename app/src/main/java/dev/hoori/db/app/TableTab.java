@@ -216,6 +216,11 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   /** One column of a header filter, by name, so its funnel and chip follow the applied filter. */
   record HeaderFilter(String column, DataGrid.Filter.Spec spec) {}
 
+  /** What the WHERE/Filter text is made of: header filters, the builder's clause, hand-written. */
+  private record Made(List<HeaderFilter> headers, ConditionBuilder.Clause builder, String manual) {
+    static final Made NONE = new Made(List.of(), ConditionsDialog.EMPTY, "");
+  }
+
   /**
    * The whole value of a cell that a page holds in part, asked for by its row as read: the text,
    * null for NULL, or why it could not be read, once it came.
@@ -898,7 +903,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var keptFilters = keepFilters ? headerFilters : List.<HeaderFilter>of();
     var keptConditions = keepFilters ? conditions.applied : ConditionsDialog.EMPTY;
     var keptManual = keepFilters ? manualWhere : "";
-    apply(s, next, keptSort, keptFilters, keptConditions, keptManual, false, false);
+    apply(s, next, keptSort, new Made(keptFilters, keptConditions, keptManual), false, false);
   }
 
   /** Applies a WHERE clause from foreign key navigation, keeping the applied ORDER BY. */
@@ -920,15 +925,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         return;
       }
     }
-    apply(
-        s,
-        new Rows.Filter(trimmed, filter.order()),
-        sorted,
-        List.of(),
-        ConditionsDialog.EMPTY,
-        "",
-        true,
-        false);
+    apply(s, new Rows.Filter(trimmed, filter.order()), sorted, Made.NONE, true, false);
   }
 
   /** Drops the note of an unapplied WHERE once the WHERE field holds the applied one. */
@@ -994,9 +991,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         s,
         next,
         List.copyOf(nextSorted),
-        headerFilters,
-        conditions.applied,
-        manualWhere,
+        new Made(headerFilters, conditions.applied, manualWhere),
         false,
         true);
   }
@@ -1037,9 +1032,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         s,
         next,
         sorted,
-        nextFilters,
-        nextConditions,
-        nextFilters.isEmpty() ? "" : base,
+        new Made(nextFilters, nextConditions, nextFilters.isEmpty() ? "" : base),
         true,
         false);
   }
@@ -1054,7 +1047,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     order.completion.close();
     boolean hasApplied =
         !conditions.applied.conditions().isEmpty() && where.text.strip().equals(filter.where());
-    conditions.open(hasApplied);
+    conditions.start(hasApplied);
     if (Language.of(profile.provider()).documents()) {
       readPaths(s);
     }
@@ -1129,12 +1122,25 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var provider = profile.provider();
     var available = builderFields(provider);
     return conditions.view(
-        provider, available, readingPaths != null, () -> applyConditions(s, provider, available));
+        provider,
+        available,
+        readingPaths != null,
+        () -> applyConditions(s, provider, available),
+        this::closeConditions);
+  }
+
+  /** Closes the builder and gives up a sample of paths it no longer waits for. */
+  private void closeConditions() {
+    conditions.close();
+    if (readingPaths != null) {
+      readingPaths.cancel();
+      readingPaths = null;
+    }
   }
 
   /** Translates the builder's applicable conditions into WHERE/Filter and applies them. */
   private void applyConditions(State s, Provider provider, List<Field> available) {
-    conditions.close();
+    closeConditions();
     if (!canApply(s) || columns == null) {
       return;
     }
@@ -1152,7 +1158,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       if (empty) {
         clause = base;
       } else {
-        var byName = new HashMap<String, Field>(available.size());
+        var byName = HashMap.<String, Field>newHashMap(available.size());
         for (var f : available) {
           byName.putIfAbsent(f.name(), f);
         }
@@ -1171,16 +1177,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var nextApplied = empty ? ConditionsDialog.EMPTY : conditions.draft;
     var nextManual = empty ? "" : base;
     var next = new Rows.Filter(clause, filter.order());
-    apply(s, next, sorted, nextFilters, nextApplied, nextManual, true, false);
+    apply(s, next, sorted, new Made(nextFilters, nextApplied, nextManual), true, false);
   }
 
   private void apply(
       State s,
       Rows.Filter next,
       List<Sort> nextSorted,
-      List<HeaderFilter> nextFilters,
-      ConditionBuilder.Clause nextConditions,
-      String nextManual,
+      Made made,
       boolean syncWhere,
       boolean syncOrder) {
     var profile = s.profile(id);
@@ -1201,9 +1205,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         where.text = checked.where();
         where.caret = where.text.length();
         where.completion.close();
-        headerFilters = nextFilters;
-        conditions.applied = nextConditions;
-        manualWhere = nextManual;
+        made(made);
       }
       if (syncOrder) {
         order.text = checked.order();
@@ -1219,8 +1221,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         new Guard.Act("filter", this),
         "the filter is applied",
         List.of(this),
-        () -> apply(
-            s, checked, nextSorted, nextFilters, nextConditions, nextManual, syncWhere, syncOrder),
+        () -> apply(s, checked, nextSorted, made, syncWhere, syncOrder),
         Guard.Scope.CHANGES)) {
       return;
     }
@@ -1235,9 +1236,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       order.completion.close();
     }
     sorted = nextSorted;
-    headerFilters = nextFilters;
-    conditions.applied = nextConditions;
-    manualWhere = nextManual;
+    made(made);
     filter = checked;
     settleUnapplied();
     query++;
@@ -1255,6 +1254,12 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     selection.clear();
     selection.scrollToRow(0);
     open(s, false);
+  }
+
+  private void made(Made made) {
+    headerFilters = made.headers();
+    conditions.applied = made.builder();
+    manualWhere = made.manual();
   }
 
   private String whereText(

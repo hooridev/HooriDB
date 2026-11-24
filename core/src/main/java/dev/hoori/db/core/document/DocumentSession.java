@@ -331,19 +331,14 @@ public final class DocumentSession implements AutoCloseable {
       Map<String, Integer> present) {
     for (var entry : document.entries()) {
       var key = entry.name();
-      if (key.isEmpty() || key.indexOf('.') >= 0 || key.startsWith("$")) {
+      var path = prefix.isEmpty() ? key : prefix + "." + key;
+      if (key.isEmpty()
+          || key.indexOf('.') >= 0
+          || key.startsWith("$")
+          || !types.containsKey(path) && types.size() >= maxPaths) {
         continue;
       }
-      var path = prefix.isEmpty() ? key : prefix + "." + key;
-      var held = types.get(path);
-      if (held == null) {
-        if (types.size() >= maxPaths) {
-          continue;
-        }
-        held = new LinkedHashSet<>();
-        types.put(path, held);
-      }
-      held.add(Bson.type(entry.value()));
+      types.computeIfAbsent(path, x -> new LinkedHashSet<>()).add(Bson.type(entry.value()));
       present.merge(path, 1, Integer::sum);
       if (entry.value() instanceof Document sub && depth < maxDepth) {
         collectPaths(sub, path, depth + 1, maxDepth, maxPaths, types, present);

@@ -3517,24 +3517,17 @@ class TableTabTest {
     assertEquals(beforeInvalid, servers.calls.size(), servers.calls.toString());
     assertEquals(expectedFilter, tab(app).filter.where());
 
-    // 3. Refresh clears cached paths; closing the tab while paths is held cancels the read.
+    // 3. Refresh clears cached paths; Cancel gives up a sample of paths under way.
     c.run(app, "press #refresh\nframe\n" + SETTLE);
-    var cancelGate = servers.hold("paths " + path);
-    c.run(app, """
-            press #conditions
-            frame
-            advance 1
-            frame
-            press #conditions-cancel
-            frame
-            advance 1
-            frame
-            key W control
-            frame
-            """);
+    var paths = "paths " + path;
+    var cancelGate = servers.hold(paths);
+    long sampled = servers.calls.stream().filter(paths::equals).count();
+    c.run(app, "press #conditions\nframe\nadvance 1\nframe\n");
+    eventually(() -> servers.calls.stream().filter(paths::equals).count() > sampled);
+    c.run(app, "press #conditions-cancel\nframe\nadvance 1\nframe\n");
+    eventually(() -> servers.interrupted.contains(paths));
     cancelGate.countDown();
     c.run(app, SETTLE);
-    assertTrue(servers.interrupted.contains("paths " + path), servers.interrupted.toString());
   }
 
   private int linkOf(String call) {
