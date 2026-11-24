@@ -112,7 +112,7 @@ kept beside the workspace (`statement-log.jsonl`, up to 8 MB and one older file,
 written in batches. A connection to MongoDB goes through its Java driver, downloaded as the JDBC
 drivers are, with its parts beside it, and through a bridge of core's that is loaded beside the
 driver; its host may name a DNS SRV record that lists the servers, as `mongodb+srv://` does, with TLS on by default and no
-port; its user may be defined in a database other than `admin`, which it names (`authSource`); it
+port; its user may be defined in a database other than `admin`, which it names (`authSource`); pasting a `mongodb://` or `mongodb+srv://` connection string into the connection dialog's Host field switches to MongoDB and fills its fields (keeping the password in the password field alone, naming unused options and further hosts in a note, and reporting an invalid string without echoing credentials); it
 may be read-only, which sends only commands that read, as find, aggregate without `$out` or `$merge`
 and counts, and refuses the others unsent. Its databases and collections show in the tree, with the
 fields that a sample of their documents has and their indexes under an Indexes node; a collection opens in a tab as a grid of its fields,
