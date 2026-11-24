@@ -24,11 +24,19 @@ import java.util.Set;
  * @param left the tables of the FROM item the caret is in, named before its word: those a JOIN
  *     there joins to, the last of them the one an ON there joins; not one whose column alias list
  *     renames its columns, nor one in a parenthesized join that carries an alias
+ * @param parenthesized the table right after the opening parenthesis of each parenthesized FROM
+ *     item and the alias of each aliased one (with null {@code schema} and {@code name}), kept
+ *     out of {@code tables} so that only alias generation sees them
  */
 // shortcut: no parser, so a statement with a CTE or a subquery is not read: it names no tables,
 // and nothing follows a dot in it; parse statements once completion should reach into them.
 public record Context(
-    Asked asked, List<String> path, String typed, List<Reference> tables, List<Reference> left) {
+    Asked asked,
+    List<String> path,
+    String typed,
+    List<Reference> tables,
+    List<Reference> left,
+    List<Reference> parenthesized) {
 
   /** What kind of name fits at the caret. */
   public enum Asked {
@@ -57,8 +65,9 @@ public record Context(
 
   /**
    * A table the statement names after {@code FROM}, {@code JOIN}, {@code INTO} or {@code UPDATE},
-   * with its schema and alias where it has them, else null. Names are as the server takes them:
-   * a quoted one as quoted, an unquoted one on PostgreSQL in lower case.
+   * with its schema and alias where it has them, else null; in {@link Context#parenthesized()}, a
+   * parenthesized group's alias has null {@code schema} and {@code name}. Names are as the server
+   * takes them: a quoted one as quoted, an unquoted one on PostgreSQL in lower case.
    */
   public record Reference(String schema, String name, String alias) {}
 
@@ -133,7 +142,7 @@ public record Context(
       "INTO");
   private static final Set<String> INTRODUCERS = Set.of("FROM", "JOIN", "INTO", "UPDATE");
   private static final Context NOTHING =
-      new Context(Asked.NOTHING, List.of(), "", List.of(), List.of());
+      new Context(Asked.NOTHING, List.of(), "", List.of(), List.of(), List.of());
 
   /**
    * What the caret, an offset in the statement's text, asks for. The text may hold comments
@@ -170,11 +179,12 @@ public record Context(
     var scan = readable ? scan(tokens, syntax.reservedWords(), null, cursor, skip) : Scan.EMPTY;
     if (!path.isEmpty()) {
       return readable
-          ? new Context(Asked.MEMBER, List.copyOf(path), typed, scan.tables, scan.left)
+          ? new Context(
+              Asked.MEMBER, List.copyOf(path), typed, scan.tables, scan.left, scan.parenthesized)
           : NOTHING;
     }
     var asked = asked(tokens, n, scan.joinOn && free(statement, tokens, at));
-    return new Context(asked, List.of(), typed, scan.tables, scan.left);
+    return new Context(asked, List.of(), typed, scan.tables, scan.left, scan.parenthesized);
   }
 
   // What the word after the n tokens asks for, where no dot comes before it.
@@ -402,8 +412,9 @@ public record Context(
     return token.text().equals(")") || token.text().equals("]") ? -1 : 0;
   }
 
-  private record Scan(List<Reference> tables, List<Reference> left, boolean joinOn) {
-    static final Scan EMPTY = new Scan(List.of(), List.of(), false);
+  private record Scan(
+      List<Reference> tables, List<Reference> left, List<Reference> parenthesized, boolean joinOn) {
+    static final Scan EMPTY = new Scan(List.of(), List.of(), List.of(), false);
   }
 
   // Where a table is named: the index of its introducer, of its first token, of the next, and
@@ -416,7 +427,8 @@ public record Context(
       List<Token> tokens, Set<String> reserved, Set<Integer> tableTokens, int cursor, int skip) {
     var found = new ArrayList<Reference>();
     var spans = new ArrayList<Span>();
-    named(tokens, reserved, tableTokens, skip, found, spans);
+    var parenthesized = new ArrayList<Reference>();
+    named(tokens, reserved, tableTokens, skip, found, spans, parenthesized);
     int item = item(tokens, reserved, cursor);
     var hidden = cursor > 0 ? aliasedGroups(tokens, cursor) : List.<int[]>of();
     var left = new ArrayList<Reference>();
@@ -432,7 +444,7 @@ public record Context(
           && word(tokens, span.end, "ON")
           && conditionalJoin(tokens, span.introducer);
     }
-    return new Scan(List.copyOf(found), List.copyOf(left), joinOn);
+    return new Scan(List.copyOf(found), List.copyOf(left), List.copyOf(parenthesized), joinOn);
   }
 
   // Reads the tables named after each introducer, and after each comma of a FROM list.
@@ -442,7 +454,8 @@ public record Context(
       Set<Integer> tableTokens,
       int skip,
       List<Reference> found,
-      List<Span> spans) {
+      List<Span> spans,
+      List<Reference> parenthesized) {
     int depth = 0;
     boolean inFrom = false;
     for (int i = 0; i < tokens.size(); i++) {
@@ -453,13 +466,43 @@ public record Context(
       }
       if (introduces(tokens, i)) {
         boolean from = token.upper().equals("FROM");
-        if (from && depth == 0) {
-          inFrom = true;
-        }
+        inFrom |= from && depth == 0;
         readTable(tokens, i + 1, i, skip, found, spans, tableTokens);
+        // Not the FROM of EXTRACT(YEAR FROM (…)).
+        if (!from || depth == 0) {
+          readParen(tokens, i + 1, skip, parenthesized);
+        }
       } else if (depth == 0 && inFrom && token.kind() == Kind.COMMA) {
         readTable(tokens, i + 1, i, skip, found, spans, tableTokens);
+        readParen(tokens, i + 1, skip, parenthesized);
       }
+    }
+  }
+
+  // Reads, for alias generation alone, what a parenthesized FROM item at from names that tables
+  // leaves out: each group's alias, the table after its opening parentheses, and the table after
+  // each comma of a group's own list, as MySQL's (a, b).
+  private static void readParen(
+      List<Token> tokens, int from, int skip, List<Reference> parenthesized) {
+    int j = from;
+    while (j < tokens.size() && tokens.get(j).kind() == Kind.OPEN) {
+      int close = skipParens(tokens, j);
+      int after = aliasAfter(tokens, close);
+      if (after >= 0) {
+        parenthesized.add(new Reference(null, null, tokens.get(after - 1).identifier()));
+      }
+      int depth = 0;
+      for (int k = j + 1; k < close; k++) {
+        depth += nesting(tokens.get(k));
+        if (depth == 0 && tokens.get(k).kind() == Kind.COMMA) {
+          readTable(tokens, k + 1, k, skip, parenthesized, new ArrayList<>(), null);
+          readParen(tokens, k + 1, skip, parenthesized);
+        }
+      }
+      j++;
+    }
+    if (j > from) {
+      readTable(tokens, j, j - 1, skip, parenthesized, new ArrayList<>(), null);
     }
   }
 
