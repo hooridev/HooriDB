@@ -44,6 +44,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import org.bson.BsonArray;
 import org.bson.BsonBinary;
+import org.bson.BsonBinaryReader;
 import org.bson.BsonBoolean;
 import org.bson.BsonDateTime;
 import org.bson.BsonDbPointer;
@@ -58,12 +59,18 @@ import org.bson.BsonMaxKey;
 import org.bson.BsonMinKey;
 import org.bson.BsonNull;
 import org.bson.BsonObjectId;
+import org.bson.BsonReader;
 import org.bson.BsonRegularExpression;
 import org.bson.BsonString;
 import org.bson.BsonSymbol;
 import org.bson.BsonTimestamp;
+import org.bson.BsonType;
 import org.bson.BsonUndefined;
 import org.bson.BsonValue;
+import org.bson.RawBsonDocument;
+import org.bson.codecs.BsonValueCodec;
+import org.bson.codecs.DecoderContext;
+import org.bson.io.ByteBufferBsonInput;
 import org.bson.types.Decimal128;
 import org.bson.types.ObjectId;
 
@@ -174,8 +181,9 @@ final class Mongo {
         throw DocumentException.of(Kind.CANCELLED, "");
       }
       try {
-        var reply =
-            client.getDatabase(database).runCommand(session, document(command), BsonDocument.class);
+        var reply = client
+            .getDatabase(database)
+            .runCommand(session, document(command), RawBsonDocument.class);
         return document(reply);
       } catch (RuntimeException e) {
         throw failure(e);
@@ -348,27 +356,49 @@ final class Mongo {
     };
   }
 
-  /** The driver's document as core's. */
-  static Document document(BsonDocument bson) {
-    var entries = new ArrayList<Document.Entry>(bson.size());
-    for (var entry : bson.entrySet()) {
-      entries.add(new Document.Entry(entry.getKey(), value(entry.getValue())));
+  private static final BsonValueCodec BSON_VALUE = new BsonValueCodec();
+  private static final DecoderContext DECODER = DecoderContext.builder().build();
+
+  /** The driver's raw BSON document as core's, keeping duplicate field names in their order. */
+  static Document document(RawBsonDocument raw) {
+    try (var reader = new BsonBinaryReader(new ByteBufferBsonInput(raw.getByteBuffer()))) {
+      return readDocument(reader);
     }
+  }
+
+  private static Document readDocument(BsonReader reader) {
+    reader.readStartDocument();
+    var entries = new ArrayList<Document.Entry>();
+    while (reader.readBsonType() != BsonType.END_OF_DOCUMENT) {
+      var name = reader.readName();
+      entries.add(new Document.Entry(name, readValue(reader)));
+    }
+    reader.readEndDocument();
     return new Document(entries);
   }
 
-  static Object value(BsonValue value) {
+  private static Object readValue(BsonReader reader) {
+    return switch (reader.getCurrentBsonType()) {
+      case DOCUMENT -> readDocument(reader);
+      case ARRAY -> {
+        reader.readStartArray();
+        var items = new ArrayList<Object>();
+        while (reader.readBsonType() != BsonType.END_OF_DOCUMENT) {
+          items.add(readValue(reader));
+        }
+        reader.readEndArray();
+        yield Document.array(items);
+      }
+      case JAVASCRIPT_WITH_SCOPE ->
+        new Bson.Code(reader.readJavaScriptWithScope(), readDocument(reader));
+      default -> value(BSON_VALUE.decode(reader, DECODER));
+    };
+  }
+
+  private static Object value(BsonValue value) {
     return switch (value.getBsonType()) {
       case DOUBLE -> value.asDouble().getValue();
       case STRING -> value.asString().getValue();
-      case DOCUMENT -> document(value.asDocument());
-      case ARRAY -> {
-        var items = new ArrayList<Object>();
-        for (var item : value.asArray()) {
-          items.add(value(item));
-        }
-        yield Document.array(items);
-      }
       case BINARY -> {
         var binary = value.asBinary();
         yield new Bson.Binary(binary.getType() & 0xff, binary.getData());
@@ -389,10 +419,6 @@ final class Mongo {
       }
       case JAVASCRIPT -> new Bson.Code(value.asJavaScript().getCode(), null);
       case SYMBOL -> new Bson.Symbol(value.asSymbol().getSymbol());
-      case JAVASCRIPT_WITH_SCOPE -> {
-        var code = value.asJavaScriptWithScope();
-        yield new Bson.Code(code.getCode(), document(code.getScope()));
-      }
       case INT32 -> value.asInt32().getValue();
       case TIMESTAMP -> {
         var timestamp = value.asTimestamp();
@@ -404,7 +430,8 @@ final class Mongo {
       case DECIMAL128 -> new Bson.Decimal128(value.asDecimal128().getValue().toString());
       case MIN_KEY -> Bson.Special.MIN_KEY;
       case MAX_KEY -> Bson.Special.MAX_KEY;
-      case END_OF_DOCUMENT -> throw new IllegalArgumentException("Not a value");
+      case DOCUMENT, ARRAY, JAVASCRIPT_WITH_SCOPE, END_OF_DOCUMENT ->
+        throw new IllegalArgumentException("Not a scalar value: " + value.getBsonType());
     };
   }
 }
