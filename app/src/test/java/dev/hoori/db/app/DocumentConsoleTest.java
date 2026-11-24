@@ -28,6 +28,7 @@ import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Result;
+import dev.hoori.db.core.execution.Transaction;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
@@ -452,6 +453,45 @@ class DocumentConsoleTest {
         ConsoleTest.near(c.tree("idle"), "#result-status")
             .contains("the first 200 documents; reading stopped after being idle"),
         c.tree("idle"));
+  }
+
+  /**
+   * A failed give-up on a MongoDB console shows the "Not run" problem and log line as usual, keeps
+   * {@link Transaction#NONE}, and closing the console asks nothing about a transaction.
+   */
+  @Test
+  void aFailedGiveUpOnMongoDbConsoleDoesNotAskAboutATransactionOnClose() throws Exception {
+    var docs = java.util.stream.IntStream.rangeClosed(1, 500)
+        .mapToObj(i -> Document.of("_id", i, "customer", "c" + i, "total", (double) i))
+        .toList();
+    var fields = Values.found(docs);
+    var rows = docs.stream().map(d -> Values.row(fields, d)).toList();
+    var first = "db.orders.find()";
+    var second = "db.customers.find()";
+    c.servers.statement(first, List.of(new Result.Rows(fields, 0, rows, docs)));
+    c.servers.statement(second, List.of(new Result.Count(0)));
+    c.servers.failsAtGiveUp(
+        first, FakeServers.serverError(Failure.Kind.OTHER, "killCursors rejected"));
+
+    var app = console();
+    c.run(app, type(first + ";\n" + second) + ConsoleTest.RUN_ALL + "snap failed\n");
+    assertTrue(
+        c.servers.calls.contains("close " + MONGO + " " + first), c.servers.calls.toString());
+    assertFalse(
+        c.servers.calls.contains("run " + MONGO + " " + second), c.servers.calls.toString());
+    assertTrue(line(c.tree("failed"), "#problem").contains(ConsoleTab.NOT_RUN), c.tree("failed"));
+    assertTrue(
+        tab(app)
+            .log
+            .contains(
+                new ConsoleTab.Logged(ConsoleTab.Level.ERROR, second, null, ConsoleTab.NOT_RUN)),
+        tab(app).log.toString());
+    assertEquals(Transaction.NONE, tab(app).transaction);
+    assertFalse(tab(app).atStake());
+
+    c.run(app, "press #close-0\nframe\nadvance 1\nframe\n" + SETTLE + "snap closed\n");
+    assertFalse(c.tree("closed").contains("role=dialog"), c.tree("closed"));
+    assertTrue(app.state().consoles(null).isEmpty());
   }
 
   /**
