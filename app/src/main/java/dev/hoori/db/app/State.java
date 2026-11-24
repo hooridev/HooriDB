@@ -414,7 +414,7 @@ final class State {
 
   /** Opens the workspace query in a console tab, or raises the one already open for it. */
   void openQuery(UUID id) {
-    openQuery(id, tabs.main());
+    openQuery(id, tabs.main().active());
   }
 
   /**
@@ -1077,7 +1077,7 @@ final class State {
    * whichever window; a table that became a view of its name, or the reverse, is read anew there.
    */
   void openTable(UUID id, Table table) {
-    openTable(id, table, tabs.main());
+    openTable(id, table, tabs.main().active());
   }
 
   /**
@@ -1126,7 +1126,7 @@ final class State {
    * else on the one its profile names, else on the one it finds by itself.
    */
   void openConsole(UUID id) {
-    openConsole(id, tabs.main());
+    openConsole(id, tabs.main().active());
   }
 
   /** As {@link #openConsole(UUID)}, in the window of these tabs. */
@@ -1135,7 +1135,7 @@ final class State {
     if (profile == null) {
       return;
     }
-    var at = group == tabs.main() && selected != null && selected.id().equals(id)
+    var at = group == tabs.main().active() && selected != null && selected.id().equals(id)
         ? CatalogTree.database(selected)
         : null;
     openConsole(id, group, at == null ? database(profile) : at, "");
@@ -1203,7 +1203,7 @@ final class State {
    * tree, or that of the node selected, else that of the window's active tab; null for none.
    */
   UUID consoleFor(TabGroups.Group<Tab> group) {
-    if (group == tabs.main()
+    if (group == tabs.main().active()
         && selected != null
         && !(selected instanceof Node.Folder)
         && !(selected instanceof Node.Query)) {
@@ -1441,7 +1441,8 @@ final class State {
    * Opens the window of a tab torn off or moved to a new window: its title bar, its tabs and their
    * status lines, over the same state.
    */
-  Windows.Handle openWindow(TabGroups.Group<Tab> group, Window.Options options) {
+  Windows.Handle openWindow(TabGroups.Frame<Tab> frame, Window.Options options) {
+    var group = frame.active(); // its only group, as tab groups do not split here
     App<State> window =
         new App<>(this, s -> Frame.window(s, group)).provide(Theme.CURRENT, s -> s.theme);
     window.textRendering(app.textRendering());

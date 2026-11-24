@@ -272,7 +272,8 @@ final class ConsoleEditor {
       return;
     }
     var group = s.tabs.groupOf(tab);
-    Frame.focusContentSoon(s, s.openTable(tab.id, table, group == null ? s.tabs.main() : group));
+    Frame.focusContentSoon(
+        s, s.openTable(tab.id, table, group == null ? s.tabs.main().active() : group));
   }
 
   /** Resolves the SQL identifier at {@code offset} in {@link ConsoleTab#text} to a table or column. */
