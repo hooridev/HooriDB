@@ -275,12 +275,17 @@ public final class DocumentFilters {
     if (!DECIMAL.matcher(s).matches()) {
       throw refused(name, "expects a decimal number: " + raw);
     }
+    BigDecimal number;
     try {
-      new BigDecimal(s);
-      return new Bson.Decimal128(s);
+      number = new BigDecimal(s);
     } catch (NumberFormatException _) {
       throw refused(name, "expects a decimal number: " + raw);
     }
+    // A Decimal128 keeps 34 digits, and BSON refuses to round.
+    if (number.signum() != 0 && number.stripTrailingZeros().precision() > 34) {
+      throw refused(name, "takes at most 34 significant digits: " + raw);
+    }
+    return new Bson.Decimal128(s);
   }
 
   private static Instant parseDate(String name, String raw, ZoneId zone) throws QueryException {

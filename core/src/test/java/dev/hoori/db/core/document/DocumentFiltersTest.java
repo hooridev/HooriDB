@@ -146,6 +146,10 @@ class DocumentFiltersTest {
     var dollar = new Field("$score", "double", Kind.DECIMAL);
 
     List<ColumnFilter> bad = List.of(
+        new ColumnFilter(
+            new Field("amount", "decimal", Kind.DECIMAL),
+            new ColumnFilter.Text(
+                ColumnFilter.Match.EQUALS, "1.00000000000000000000000000000000001")),
         new ColumnFilter(count, new ColumnFilter.Text(ColumnFilter.Match.EQUALS, "abc")),
         new ColumnFilter(count, new ColumnFilter.Text(ColumnFilter.Match.EQUALS, "1.5")),
         new ColumnFilter(total, new ColumnFilter.Between("abc", "10")),
