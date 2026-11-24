@@ -1354,18 +1354,17 @@ final class ResultEdits {
   /**
    * Edit status, pending count badge, Revert and Commit… controls for an editable SQL grid: the
    * status, as why a cell is read-only, goes to {@code status}; the pending
-   * count and the buttons go to {@code actions}, which may be the same list, or null for none.
+   * count, the buttons and a running commit's progress go to {@code actions}, which may be the same
+   * list, or null for none.
    */
   static void editControls(State s, Host host, Target target, List<El> status, List<El> actions) {
-    Theme t = Theme.CURRENT.get();
     var edits = target.edits();
     if (edits.writing != null) {
-      status.add(row()
-          .gap(t.space().s())
-          .align(Style.Align.CENTER)
-          .key("edit-status")
-          .child(Progress.spinner().label("Committing"))
-          .child(Label.label(Label.Variant.MUTED, "Committing…")));
+      // Beside Cancel where the actions have a line of their own: a narrow status line has no
+      // room for it beside the paging and a read's progress.
+      var line = actions != null ? actions : status;
+      line.add(Progress.spinner().label("Committing"));
+      line.add(Label.label(Label.Variant.MUTED, "Committing…").key("edit-status"));
       if (actions != null) {
         actions.add(button(
                 SECONDARY,

@@ -68,7 +68,7 @@ class LayoutTest {
     return script.toString();
   }
 
-  private static float widthOf(String tree, String match) {
+  static float widthOf(String tree, String match) {
     var line = line(tree, match);
     var matcher = BOX.matcher(line);
     assertTrue(matcher.find(), "no box in: " + line);
