@@ -117,7 +117,6 @@ record SqlCompletion() implements Suggestions.Strategy {
     if (prior.isEmpty()) {
       return;
     }
-    boolean aliased = prior.stream().anyMatch(r -> r.alias() != null);
     // The names the new alias must not take: the statement's, but for the word being typed, the
     // reference that follows the last of the left ones.
     var used = new ArrayList<>(context.tables());
@@ -128,6 +127,7 @@ record SqlCompletion() implements Suggestions.Strategy {
     if (!context.typed().isEmpty() && last + 1 < used.size()) {
       used.remove(last + 1);
     }
+    boolean aliased = used.stream().anyMatch(r -> r.alias() != null);
     for (var ref : prior) {
       var table = known.table(ref.schema(), ref.name());
       if (table == null) {
@@ -307,10 +307,12 @@ record SqlCompletion() implements Suggestions.Strategy {
         : Names.quoted(other.container().name(), known.provider) + "." + name;
   }
 
+  // Whether the statement names a table of that name without an alias: the same table, or one of
+  // another schema, which the server would not tell apart from the new one.
   private static boolean alreadyUnaliased(
-      List<Context.Reference> prior, Suggestions.Known known, Table other) {
-    for (var ref : prior) {
-      if (ref.alias() == null && other.equals(known.table(ref.schema(), ref.name()))) {
+      List<Context.Reference> used, Suggestions.Known known, Table other) {
+    for (var ref : used) {
+      if (ref.alias() == null && known.same(ref.name(), other.name())) {
         return true;
       }
     }

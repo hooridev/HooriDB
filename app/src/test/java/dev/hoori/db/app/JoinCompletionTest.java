@@ -378,10 +378,21 @@ class JoinCompletionTest {
     assertEquals(
         "orders o ON o.id = orders.parent_id",
         options(console.c.tree("typed-whole")).getFirst());
+
+    // An alias anywhere in the statement makes the new table take one.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM categories customers, orders JOIN cu")
+            + COMPLETE
+            + "snap aliased-elsewhere\n");
+    assertEquals(
+        "customers c ON c.id = orders.customer_id",
+        options(console.c.tree("aliased-elsewhere")).getFirst());
   }
 
   @Test
-  void aTargetThatAnEarlierSchemaOnThePathShadowsIsWrittenWithItsSchema() throws Exception {
+  void aTargetElsewhereOnThePathIsWrittenWithItsSchemaAndANameTwiceTakesAnAlias() throws Exception {
     servers.serve(QUOTED, Provider.POSTGRESQL, "16.4", """
         shop
           shop_app
@@ -393,6 +404,10 @@ class JoinCompletionTest {
             orders
               *id: bigint
               customer_id: integer > customers.id
+              archive_id: bigint > archive.orders.id
+          archive
+            orders
+              *id: bigint
         """);
     var app = console.console(ODD);
     console.c.run(
@@ -407,11 +422,23 @@ class JoinCompletionTest {
             + SETTLE
             + open("orders")
             + SETTLE
+            + open("archive")
+            + SETTLE
             + type("SELECT * FROM orders o JOIN ")
             + COMPLETE
             + "snap shadowed\n");
     assertEquals(
         "public.customers c ON c.id = o.customer_id",
         options(console.c.tree("shadowed")).getFirst());
+
+    // Two tables named orders: the new one takes an alias, as the server would not tell them apart.
+    console.c.run(
+        app,
+        "key Escape\nkey A control\nkey Delete\n"
+            + type("SELECT * FROM orders JOIN ")
+            + COMPLETE
+            + "snap twice\n");
+    var twice = options(console.c.tree("twice"));
+    assertTrue(twice.contains("archive.orders o ON o.id = orders.archive_id"), twice.toString());
   }
 }

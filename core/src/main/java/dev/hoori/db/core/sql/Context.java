@@ -160,7 +160,8 @@ public record Context(
     return new Context(asked, List.of(), typed, scan.tables, scan.left);
   }
 
-  // Whether the table named at the index already has its ON or USING, as while one is replaced.
+  // Whether the table named at the index already has its alias, ON or USING, as while one is
+  // replaced.
   private static boolean conditioned(List<Token> tokens, int i) {
     if (word(tokens, i, "ON") || word(tokens, i, "USING")) {
       return true;
@@ -170,8 +171,10 @@ public record Context(
         || tokens.get(i).kind() == Kind.WORD && CLAUSES.contains(tokens.get(i).upper())) {
       return false;
     }
-    int j = reference(tokens, i, new ArrayList<>(), null);
-    return j >= 0 && (word(tokens, j, "ON") || word(tokens, j, "USING"));
+    var named = new ArrayList<Reference>();
+    int j = reference(tokens, i, named, null);
+    return j >= 0
+        && (named.getFirst().alias() != null || word(tokens, j, "ON") || word(tokens, j, "USING"));
   }
 
   // Whether no condition follows the offset: nothing, a clause, a comma or the statement's end.

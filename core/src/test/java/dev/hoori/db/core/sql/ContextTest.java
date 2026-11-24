@@ -446,7 +446,8 @@ class ContextTest {
   void aJoinOrOnThatHasItsConditionAlreadyAsksForNoNewOne() {
     for (var sql : List.of(
         "SELECT * FROM orders o JOIN cu|stomers c ON c.id = o.customer_id",
-        "SELECT * FROM orders o JOIN | customers c USING (id)")) {
+        "SELECT * FROM orders o JOIN | customers c USING (id)",
+        "SELECT * FROM orders o JOIN cu| AS buyer")) {
       assertEquals(Asked.TABLE, at(sql, POSTGRESQL).asked(), sql);
     }
     assertEquals(
