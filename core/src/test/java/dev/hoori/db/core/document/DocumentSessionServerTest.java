@@ -165,6 +165,9 @@ class DocumentSessionServerTest {
       assertEquals(
           List.of(250, 249, 248),
           reverseIds.documents().stream().map(d -> d.get("_id")).toList());
+      // A $natural order goes alone, as the server takes it.
+      var natural = session.read(ORDERS, fields, 0, 3, Document.EMPTY, Document.of("$natural", 1));
+      assertEquals(3, natural.documents().size());
     }
   }
 

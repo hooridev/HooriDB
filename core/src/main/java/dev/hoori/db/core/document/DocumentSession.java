@@ -363,7 +363,8 @@ public final class DocumentSession implements AutoCloseable {
     if (sort == null || sort.isEmpty()) {
       return Document.of("_id", 1);
     }
-    return sort.has("_id") ? sort : sort.with("_id", 1);
+    // The server takes a $natural order alone, and it is a stable order of its own.
+    return sort.has("_id") || sort.has("$natural") ? sort : sort.with("_id", 1);
   }
 
   /**

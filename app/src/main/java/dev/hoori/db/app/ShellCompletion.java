@@ -265,7 +265,7 @@ record ShellCompletion() implements Suggestions.Strategy {
   private static Object name(String quoted) {
     try {
       return Shell.parse(quoted);
-    } catch (SyntaxException e) {
+    } catch (SyntaxException _) {
       return null;
     }
   }

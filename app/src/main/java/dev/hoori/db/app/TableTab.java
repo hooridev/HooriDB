@@ -1034,9 +1034,14 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
   }
 
+  /** A page the user chose: no jump to the end once counted. */
+  private void chosen(State s, long page) {
+    toLast = false;
+    turn(s, page);
+  }
+
   /** Shows the page of documents whole, read where it is not. */
   void turn(State s, long to) {
-    toLast = false; // another page chosen: no jump to the end once counted
     presentation.page(to);
     long page = presentation.page();
     if (closed || columns == null || opening != null || failure != null) {
@@ -1531,9 +1536,9 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     var paging = new DocumentPresentation.Paging(
         page > 0,
         (page + 1) * PAGE < shown(),
-        () -> turn(s, 0),
-        () -> turn(s, page - 1),
-        () -> turn(s, page + 1),
+        () -> chosen(s, 0),
+        () -> chosen(s, page - 1),
+        () -> chosen(s, page + 1),
         () -> lastPage(s));
     return new DocumentPresentation.DocumentPage(
         "q" + query + "-p" + page,
@@ -1597,10 +1602,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
     // The refused clauses beside, not in place of, why the applied ones could not be read.
-    El refusal = refused == null
-        ? null
-        : Callout.callout(
-            Callout.Kind.DANGER, ofDocuments ? "Filter refused" : "Clause refused", refused);
+    var title = ofDocuments ? "Filter refused" : "Clause refused";
+    El refusal = refused == null ? null : Callout.callout(Callout.Kind.DANGER, title, refused);
     if (failure == null) {
       return refusal;
     }
