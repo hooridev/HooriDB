@@ -394,8 +394,7 @@ public final class PostgreSql implements Dialect {
           + " LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid" + EQ + "i.indrelid"
           + " AND a.attnum" + EQ + "k.attnum"
           + " AND k.attnum OPERATOR(pg_catalog.>) 0"
-          + " WHERE n.nspname" + EQ + "? AND c.relname" + EQ + "?"
-          + " AND c.relkind" + EQ + "ANY ('{r,p}'::pg_catalog.\"char\"[])"
+          + NAMED
           + " AND k.pos OPERATOR(pg_catalog.<=) i.indnkeyatts"
           + " AND i.indislive"
           + " ORDER BY i.indisprimary DESC, ic.relname, k.pos";

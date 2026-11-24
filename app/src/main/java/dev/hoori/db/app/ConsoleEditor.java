@@ -36,6 +36,8 @@ import java.util.Map;
  */
 final class ConsoleEditor {
 
+  private static final String PRIMARY_KEY = " · primary key";
+
   private static final String ERROR_LAYER = "error";
   private static final String STATEMENTS_LAYER = "statements";
 
@@ -419,7 +421,7 @@ final class ConsoleEditor {
         var c = columns.get(i);
         md.append("- ").append(code(c.name())).append(' ').append(code(c.type()));
         if (c.keyPosition() > 0) {
-          md.append(" · primary key");
+          md.append(PRIMARY_KEY);
         }
       }
     }
@@ -434,7 +436,7 @@ final class ConsoleEditor {
     var md = new StringBuilder();
     md.append("**Column** ").append(code(column.name())).append(' ').append(code(column.type()));
     if (column.keyPosition() > 0) {
-      md.append(" · primary key");
+      md.append(PRIMARY_KEY);
     } else if (!column.nullable()) {
       md.append(" · not null");
     }
@@ -506,7 +508,7 @@ final class ConsoleEditor {
       }
       md.append(')');
       if (index.primary()) {
-        md.append(" · primary key");
+        md.append(PRIMARY_KEY);
       } else if (index.unique()) {
         md.append(" · unique");
       }

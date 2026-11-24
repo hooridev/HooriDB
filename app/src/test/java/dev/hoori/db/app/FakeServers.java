@@ -962,6 +962,7 @@ final class FakeServers implements Servers {
       return rows("read " + path + " " + from + "-" + to + suffix, t, isWrite(filter), table -> {
         // As core reads: the columns given must be the table's now, by name, order and type.
         var now = table.children().stream()
+            .filter(line -> !isIndexLine(line.text()))
             .map(line -> {
               var parsed = columnLine(line.text());
               return List.of(parsed.name(), parsed.type());

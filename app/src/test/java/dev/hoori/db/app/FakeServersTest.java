@@ -246,6 +246,7 @@ class FakeServersTest {
     assertEquals(
         List.of("id", "customer_id", "code"),
         link.columns(orders).stream().map(Column::name).toList());
+    assertEquals(3, link.read(orders, link.columns(orders), 0, 10).rows().size());
 
     var recorded = new CopyOnWriteArrayList<Sent>();
     var indexes = Journal.recording(recorded::add, () -> link.indexes(orders));
