@@ -1230,7 +1230,7 @@ final class State {
    * connection, a server of documents, or one not connected.
    */
   Exported exportFor(TabGroups.Group<Tab> group) {
-    var node = group == tabs.main() ? selected : null;
+    var node = group == tabs.main().active() ? selected : null;
     if (node instanceof Node.Problem(var of)) {
       node = of;
     }
