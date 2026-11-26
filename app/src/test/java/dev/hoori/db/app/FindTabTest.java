@@ -165,9 +165,8 @@ class FindTabTest {
     assertTrue(editor.contains("readonly"), editor);
     // The match selected.
     assertTrue(editor.endsWith("caret 71 (3:21) anchor 77"), editor);
-    // It cannot run, not by its buttons nor by Control+Enter.
+    // It cannot run, not by its button nor by Control+Enter or Control+Shift+Enter.
     assertTrue(line(tree, "role=button label=\"Run\"").contains("disabled"), tree);
-    assertTrue(line(tree, "role=button label=\"Run all\"").contains("disabled"), tree);
     c.run(app, "key Enter control\nframe\nkey Enter control shift\nframe\n" + SETTLE);
     c.run(app, "snap ran\n");
     assertTrue(c.tree("ran").contains("A definition to read is not run"), c.tree("ran"));
