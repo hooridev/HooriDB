@@ -147,7 +147,12 @@ public record Editable(Table table, List<Column> columns, List<Column> edited) {
       Connection writer, Provider provider, Table table, List<Column> columns)
       throws QueryException {
     try {
-      return provider.dialect().rows().describe(writer, provider, table, columns).reads().stream()
+      return provider
+          .dialect()
+          .rows()
+          .describe(writer, provider, table, columns, false)
+          .reads()
+          .stream()
           .map(read -> read.field().kind())
           .toList();
     } catch (QueryException e) {

@@ -12,6 +12,7 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
@@ -840,6 +841,14 @@ final class CatalogTree {
    * runs on it never holds up the tree or a table tab.
    */
   Session session(State s, UUID id, String database) {
+    return session(s, id, database, false);
+  }
+
+  /**
+   * As {@link #session(State, UUID, String)}, and where {@code browsing}, read-only at the server
+   * on a server of SQL, as the tree's own, for what only reads, such as an export.
+   */
+  Session session(State s, UUID id, String database, boolean browsing) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected)) {
       return null;
@@ -847,8 +856,17 @@ final class CatalogTree {
     // A console finds a lost connection in what its statements give, not through the tree.
     var lane = new Lane(e -> {});
     var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
+    if (browsing) {
+      profile = browsing(profile);
+    }
     lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
     return new Session(lane, live.driver, live.password.clone());
+  }
+
+  /** Whether the connected server holds schemas in its databases, false while not connected. */
+  boolean schemas(UUID id) {
+    var live = lives.get(id);
+    return live != null && live.phase instanceof Live.Connected c && c.schemas();
   }
 
   /** The names of the connection's databases as the tree read them, or none where it has not. */
@@ -1591,11 +1609,33 @@ final class CatalogTree {
       }
       case Node.Problem n ->
         List.of(Menu.item(TRY_AGAIN, () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));
+      case Node.OfTable n
+      when files(s, n.id()) ->
+        List.of(
+            Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
+            refresh,
+            copy,
+            Menu.separator(),
+            exportItem(s, connected, n.id(), n.table().container(), n.table()),
+            Menu.item(
+                    IMPORT,
+                    connected && n.table().kind() == Table.Kind.TABLE
+                        ? () -> s.openImport(n.id(), n.table())
+                        : null)
+                .icon(Symbol.ARROW_IMPORT));
       case Node.OfTable n ->
         List.of(
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
             refresh,
             copy);
+      case Node.OfSchema n
+      when files(s, n.id()) ->
+        List.of(
+            refresh, copy, Menu.separator(), exportItem(s, connected, n.id(), n.schema(), null));
+      case Node.OfDatabase n
+      when files(s, n.id()) && !schemas(n.id()) ->
+        List.of(
+            refresh, copy, Menu.separator(), exportItem(s, connected, n.id(), n.database(), null));
       case Node.ForeignKeys(var id, var table) ->
         List.of(Menu.item(
                 "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
@@ -1612,6 +1652,24 @@ final class CatalogTree {
       case Node.OfIndex _ -> List.of(copy);
       default -> List.of(refresh, copy);
     };
+  }
+
+  /** What exports the data of tables, and imports a file into a table. */
+  static final String EXPORT = "Export data…";
+
+  static final String IMPORT = "Import data…";
+
+  /** Export data… of the container's tables, the table checked alone where one is given. */
+  private static Menu.Item exportItem(
+      State s, boolean connected, UUID id, Container container, Table table) {
+    return Menu.item(EXPORT, connected ? () -> s.openExport(id, container, table) : null)
+        .icon(Symbol.ARROW_EXPORT_LTR);
+  }
+
+  /** Whether the connection's tables are written to files and read from them: those of SQL. */
+  static boolean files(State s, UUID id) {
+    var profile = s.profile(id);
+    return profile != null && !Language.of(profile.provider()).documents();
   }
 
   /**

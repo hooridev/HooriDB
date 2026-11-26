@@ -31,11 +31,12 @@ public abstract class RowsDialect {
   abstract String count();
 
   /**
-   * How the table's columns are read. Where the server is asked for them before the page, a read
-   * fails as {@link QueryException.Failure#COLUMNS_CHANGED} where they are not the given ones.
+   * How the table's columns are read: whole, as an export reads them, or cut as a page holds them.
+   * Where the server is asked for them before the page, a read fails as {@link
+   * QueryException.Failure#COLUMNS_CHANGED} where they are not the given ones.
    */
   abstract Rows.Described describe(
-      Connection connection, Provider provider, Table table, List<Column> columns)
+      Connection connection, Provider provider, Table table, List<Column> columns, boolean whole)
       throws QueryException;
 
   /**

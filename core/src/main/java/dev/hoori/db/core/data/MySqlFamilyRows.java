@@ -94,10 +94,10 @@ abstract class MySqlFamilyRows extends RowsDialect {
   // bit(1) and bit(8) alike as BIT.
   @Override
   Rows.Described describe(
-      Connection connection, Provider provider, Table table, List<Column> columns) {
+      Connection connection, Provider provider, Table table, List<Column> columns, boolean whole) {
     return new Rows.Described(
         columns.stream()
-            .map(column -> read(Rows.source(provider, column), column.type()))
+            .map(column -> read(Rows.source(provider, column, whole), column.type()))
             .toList(),
         0);
   }

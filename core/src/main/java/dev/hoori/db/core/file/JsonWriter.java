@@ -1,0 +1,134 @@
+package dev.hoori.db.core.file;
+
+import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.Kind;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.List;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.JsonEncoding;
+import tools.jackson.core.JsonGenerator;
+import tools.jackson.core.ObjectReadContext;
+import tools.jackson.core.ObjectWriteContext;
+import tools.jackson.core.StreamWriteFeature;
+import tools.jackson.core.json.JsonFactory;
+
+/**
+ * JSON, as {@link Format.Json} says: an object per row, its members in the fields' order. Numbers
+ * and truths are JSON's own but a floating point number that is not finite, which is its text; a
+ * JSON column's value goes in as the JSON it is, where it is one value of valid JSON, and as its
+ * text otherwise; every other value is its text, as {@link Texts} writes it.
+ */
+final class JsonWriter implements RowWriter {
+
+  private static final JsonFactory FACTORY = JsonFactory.builder()
+      .rootValueSeparator("")
+      .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+      .disable(StreamWriteFeature.AUTO_CLOSE_TARGET)
+      .build();
+
+  private final Format.Json format;
+  private final JsonGenerator json;
+  private List<Field> fields = List.of();
+  private long rows;
+
+  JsonWriter(Format.Json format, OutputStream out) {
+    this.format = format;
+    this.json = FACTORY.createGenerator(ObjectWriteContext.empty(), out, JsonEncoding.UTF8);
+  }
+
+  @Override
+  public void fields(List<Field> fields) throws IOException {
+    this.fields = List.copyOf(fields);
+    if (format.layout() == Format.Layout.ARRAY) {
+      raw("[");
+    }
+  }
+
+  @Override
+  public void row(List<Object> values) throws IOException {
+    var line = format.lineEnd().text();
+    if (format.layout() == Format.Layout.ARRAY) {
+      raw(rows == 0 ? line : "," + line);
+    }
+    rows++;
+    try {
+      json.writeStartObject();
+      for (var i = 0; i < values.size(); i++) {
+        json.writeName(fields.get(i).name());
+        value(fields.get(i).kind(), values.get(i));
+      }
+      json.writeEndObject();
+    } catch (JacksonException e) {
+      throw failed(e, "Row " + rows + " cannot be written: ");
+    }
+    if (format.layout() == Format.Layout.LINES) {
+      raw(line);
+    }
+  }
+
+  private void value(Kind kind, Object value) {
+    switch (value) {
+      case null -> json.writeNull();
+      case Long number -> json.writeNumber(number);
+      case BigInteger number -> json.writeNumber(number);
+      case BigDecimal number -> json.writeNumber(number);
+      case Float number when Float.isFinite(number) -> json.writeNumber(number);
+      case Double number when Double.isFinite(number) -> json.writeNumber(number);
+      case Boolean truth -> json.writeBoolean(truth);
+      case String text
+      when kind == Kind.JSON && valid(text) -> {
+        try (var parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
+          parser.nextToken();
+          json.copyCurrentStructure(parser);
+        }
+      }
+      default -> json.writeString(Texts.of(value));
+    }
+  }
+
+  // Whether the text is one value of JSON, and nothing after it.
+  private static boolean valid(String text) {
+    try (var parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
+      if (parser.nextToken() == null) {
+        return false;
+      }
+      parser.skipChildren();
+      return parser.nextToken() == null;
+    } catch (JacksonException _) {
+      return false;
+    }
+  }
+
+  private void raw(String text) throws IOException {
+    try {
+      json.writeRaw(text);
+    } catch (JacksonException e) {
+      throw failed(e, "");
+    }
+  }
+
+  // The stream's own failure, which the generator wraps, or the generator's.
+  private static IOException failed(JacksonException e, String what) {
+    return e.getCause() instanceof IOException io
+        ? io
+        : new IOException(what + e.getOriginalMessage(), e);
+  }
+
+  @Override
+  public void finish() throws IOException {
+    if (format.layout() == Format.Layout.ARRAY) {
+      raw(
+          rows == 0
+              ? "]" + format.lineEnd().text()
+              : format.lineEnd().text() + "]" + format.lineEnd().text());
+    }
+    try {
+      json.flush();
+    } catch (JacksonException e) {
+      throw failed(e, "");
+    }
+  }
+}

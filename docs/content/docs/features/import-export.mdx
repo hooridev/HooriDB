@@ -1,0 +1,103 @@
+---
+title: Import and export
+description: Write tables to CSV, TSV or JSON files, and read CSV or TSV files into a table.
+---
+
+You can export the rows of tables and views on PostgreSQL, MySQL and MariaDB to files, and import a CSV or TSV file into a table. MongoDB collections cannot be imported or exported yet.
+
+## Export tables
+
+1. Open **Export data…** in either of two ways:
+   - Right-click a table, a view, a schema, or (on MySQL and MariaDB) a database in Workspace.
+   - Select one in Workspace, or open a table's tab, and choose **File > Export data…**. The command palette (`Ctrl+Shift+P`) has the same command.
+2. Check the tables and views to export. When you open the dialog from a table, only that table is checked. **All** and **None** check or clear the whole list.
+3. Choose a **Format**:
+   - **CSV**: values separated by commas, semicolons or pipes.
+   - **TSV**: values separated by tabs.
+   - **JSON array**: one array with an object per row.
+   - **JSON Lines**: one object per line.
+4. When one table is checked, choose its **Columns**. With several tables, every column of each table is written.
+5. Press **Choose…** beside **Folder** and pick the folder for the files.
+6. Press **Export**.
+
+Each table goes into a file of its own, named after the table: `orders.csv`, `orders.tsv`, `orders.json` or `orders.jsonl`. Characters that file systems refuse become `_`. Two names that differ only in case get a number, such as `Orders-2.csv`.
+
+A file of the same name is replaced only once the new file is complete. If an export fails or you cancel it, the folder stays as it was, and no partial file is left behind.
+
+### Options for CSV and TSV
+
+| Option | What it does |
+| --- | --- |
+| **Delimiter** | Comma, semicolon or pipe for CSV. TSV always uses a tab. |
+| **Header** | Write the column names as the first row. |
+| **Quote** | Double quote `"` or single quote `'`. A quote inside a value is doubled. |
+| **Quoting** | **Where needed** quotes a value only if it holds the delimiter, the quote, a line break, or the text that stands for NULL. **Every value but NULL** quotes all values. |
+| **NULL as** | The text written for NULL. It is empty by default. NULL is always written unquoted, so an empty text (`""`) stays apart from NULL. |
+| **Encoding** | UTF-8, UTF-8 with BOM (which spreadsheet apps recognize), UTF-16 LE or BE (with a byte order mark), ISO-8859-1 or Windows-1252. If a value has a character the encoding cannot write, that table fails. |
+| **Line ends** | CRLF, as Windows and RFC 4180 use, or LF. |
+
+JSON files are always UTF-8. You can choose their line ends.
+
+### How values are written
+
+Values are written as the server returns them, whole. Long text and binary values are not cut short as they are in the grid.
+
+- Numbers are written in full, without an exponent, except floating-point numbers. Booleans are written as `true` and `false`.
+- Dates, times and date-times use ISO 8601, such as `2024-03-31T02:30:00`.
+- A moment (`timestamp with time zone` on PostgreSQL, `timestamp` on MySQL and MariaDB) is written in UTC with its offset, such as `2024-03-31T02:30:00.123+00:00`.
+- Binary data is written as hexadecimal.
+- A value that has no Java type, such as MySQL's zero date `0000-00-00`, is written as the server's own text.
+- In JSON, numbers and booleans stay JSON numbers and booleans. A JSON column is written as nested JSON when its value is valid JSON, and as a string otherwise. `NaN` and the infinities are written as strings.
+
+### How rows are read
+
+The export runs on its own session, which is read-only at the server. It never uses the Workspace connection, so browsing keeps working during an export.
+
+Each table is read with one statement whose rows are streamed from the server and written to the file as they arrive, so a large table is never held in memory. The dialog shows which table is being written and how many rows so far.
+
+**Cancel** stops the table being written and skips the remaining tables. Tables that were already written keep their files.
+
+## Import a file into a table
+
+1. Right-click a table in Workspace and choose **Import data…**. You can also select a table, or open its tab, and choose **File > Import data…**.
+2. Press **Choose…** beside **File** and pick a CSV, TSV or text file. A `.tsv` file sets the delimiter to Tab.
+3. Set **Delimiter**, **Header**, **Quote**, **Encoding** and **NULL as** to match the file. The preview below shows its first 20 rows as these options read them, and updates as you change them.
+4. Under **Columns of** the table, choose which column of the file goes into each table column. When the file has a header, columns are matched by name, ignoring case. Otherwise they are matched by position. **Not imported** leaves a column to its default.
+5. Choose how rows are written:
+   - **Before**: **Keep its rows** adds to the table. **Empty the table first** deletes all its rows in the same transaction as the first rows written.
+   - **Transaction**: **All rows or none** writes everything in one transaction. **Commit each batch** commits after each batch, so rows that were committed stay if the import stops or you cancel it.
+   - **Batch**: how many rows each `INSERT` writes, from 1 to 100,000 (1,000 by default).
+   - **On error**: **Stop at the row**, or **Skip the row and go on**.
+6. Press **Import**.
+
+When the import ends, the dialog says how many rows were written. If it stopped, it shows the line it stopped at and the server's message. Skipped rows are listed with their line in the file and the reason; the first 1,000 are shown, and all are counted. Open tabs of the table that have no pending edits load its rows again.
+
+### How the file is read
+
+- A quoted value may contain the delimiter, line breaks, and the quote character doubled.
+- Lines can end in LF, CRLF or CR. Empty lines are skipped.
+- An unquoted value equal to **NULL as** is NULL. A quoted value is always text, so `""` is an empty text even when **NULL as** is empty.
+- A byte order mark at the start of the file is skipped.
+- If the file has bytes that are not valid in the chosen encoding, the preview and the import say so.
+- A row with a different number of values than the header (or the first row, without a header) cannot be imported. It stops the import or is skipped.
+
+Values go to the server as text, which the server converts to the column's type. These are converted first:
+
+- A moment with an offset, such as `2024-03-31T02:30:00+02:00`, is stored as that moment.
+- A date and time may use `T` or a space between them.
+- A boolean may be `true`, `false`, `t`, `f`, `1`, `0`, `yes` or `no`.
+- Binary data is read as hexadecimal, with or without a leading `\x` or `0x`.
+
+Files that HooriDB exports therefore import back unchanged.
+
+### How rows are written
+
+The import runs on its own session. Each batch is one `INSERT` of many rows, with its values sent as parameters. If a batch fails, HooriDB rolls back to a savepoint taken before it and writes that batch's rows one at a time, which finds the row that fails. If the table cannot take any row (it is gone, or you lack the privilege) or the connection is lost, the import stops.
+
+**Cancel** stops the import and rolls back the open transaction. With **All rows or none**, nothing is imported. With **Commit each batch**, the batches committed before the cancel stay.
+
+A read-only connection refuses an import before anything is sent. The dialog only says why.
+
+## Statement log
+
+The statement log (**View > Statement log**) lists the export's reads under **Export**, and the import's `DELETE`, `INSERT`s and savepoints under **Import**. As for Changes, the log does not show an import failure's message, because it may quote a row of the file. The dialog shows it to you.

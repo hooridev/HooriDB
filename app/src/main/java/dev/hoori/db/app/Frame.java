@@ -102,6 +102,8 @@ final class Frame {
     root.overlay(s.dialogs.folderDialog == null ? null : s.dialogs.folderDialog.view(s));
     root.overlay(s.dialogs.queryDialog == null ? null : s.dialogs.queryDialog.view(s));
     root.overlay(s.dialogs.about ? aboutDialog(s) : null);
+    root.overlay(s.dialogs.export == null ? null : s.dialogs.export.view(s));
+    root.overlay(s.dialogs.importing == null ? null : s.dialogs.importing.view(s));
     root.overlay(asked);
     root.overlay(question);
     root.overlay(confirmation);
@@ -129,7 +131,9 @@ final class Frame {
         || s.dialogs.deleting != null
         || s.dialogs.folderDialog != null
         || s.dialogs.queryDialog != null
-        || s.dialogs.about;
+        || s.dialogs.about
+        || s.dialogs.export != null
+        || s.dialogs.importing != null;
   }
 
   /**
@@ -689,6 +693,8 @@ final class Frame {
     var console = s.consoleFor(group);
     // What opens a dialog of the main window waits for the one open there, from every window.
     boolean free = !mainDialog(s);
+    var export = s.exportFor(group);
+    var into = s.importFor(group);
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
     boolean several = group.tabs().size() > 1;
     boolean tree =
@@ -713,6 +719,10 @@ final class Frame {
                         "Server monitor",
                         console == null ? null : () -> s.openMonitor(console, group))
                     .icon(Symbol.SERVER),
+                Menu.item(CatalogTree.EXPORT, free && export != null ? inMain(s, export) : null)
+                    .icon(Symbol.ARROW_EXPORT_LTR),
+                Menu.item(CatalogTree.IMPORT, free && into != null ? inMain(s, into) : null)
+                    .icon(Symbol.ARROW_IMPORT),
                 Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c && c.id != null
@@ -793,6 +803,8 @@ final class Frame {
         || s.dialogs.queryDialog != null
         || s.dialogs.about
         || s.dialogs.driverList != null
+        || s.dialogs.export != null
+        || s.dialogs.importing != null
         || asks(s, s.tabs.main().active());
   }
 

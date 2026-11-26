@@ -28,6 +28,9 @@ public final class Journal {
 
   public static final String ROLLBACK = "rollback()";
   public static final String CANCEL = "cancel()";
+  public static final String SAVEPOINT = "setSavepoint()";
+  public static final String ROLLBACK_TO_SAVEPOINT = "rollback(savepoint)";
+  public static final String RELEASE_SAVEPOINT = "releaseSavepoint(savepoint)";
 
   private Journal() {}
 
@@ -75,7 +78,7 @@ public final class Journal {
           if (!masked.equals(sql)) {
             return new Shown(masked, Outcome.WITHHELD);
           }
-          return new Shown(masked, purpose == Purpose.CHANGES ? Outcome.ROW_WITHHELD : null);
+          return new Shown(masked, quotesRows(purpose) ? Outcome.ROW_WITHHELD : null);
         },
         outcome,
         call);
@@ -135,6 +138,11 @@ public final class Journal {
     }
     return send(
         purpose, null, () -> new Shown(called, Outcome.ROW_WITHHELD), value -> Outcome.DONE, call);
+  }
+
+  // Whether a failure of what is sent for the purpose may quote the row it writes.
+  private static boolean quotesRows(Purpose purpose) {
+    return purpose == Purpose.CHANGES || purpose == Purpose.IMPORT;
   }
 
   /** The call that switches auto-commit, by what it is called. */

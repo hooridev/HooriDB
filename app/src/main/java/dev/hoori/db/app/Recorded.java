@@ -14,6 +14,7 @@ import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.Inserts;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.DocumentEdit;
@@ -32,6 +33,7 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -243,6 +245,40 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     @Override
     public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
       return recorded(of(edit.collection()), () -> link.write(edit));
+    }
+
+    @Override
+    public long export(Table table, List<Column> columns, List<Integer> chosen, Rows.Each each)
+        throws QueryException, IOException {
+      return withFiles(of(table), () -> link.export(table, columns, chosen, each));
+    }
+
+    @Override
+    public Inserts.Report insert(
+        Table table,
+        List<Column> columns,
+        List<Integer> targets,
+        Inserts.Source source,
+        Inserts.Options options,
+        Inserts.Progress progress)
+        throws QueryException, IOException {
+      return withFiles(
+          of(table), () -> link.insert(table, columns, targets, source, options, progress));
+    }
+
+    /** A call that reads or writes a file besides the server, as {@link #recorded} logs it. */
+    private interface FileCall<T> {
+      T call() throws QueryException, IOException;
+    }
+
+    private <T> T withFiles(String database, FileCall<T> call) throws QueryException, IOException {
+      try {
+        return recorded(database, call::call);
+      } catch (QueryException | IOException | RuntimeException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalStateException(e); // none other is thrown
+      }
     }
 
     @Override

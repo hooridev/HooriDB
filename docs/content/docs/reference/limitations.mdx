@@ -29,7 +29,14 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 - On PostgreSQL, code completions assume the default search path (`"$user", public`) and do not follow custom `search_path` settings. Tables in system schemas appear in completions only after you expand them in Workspace.
 - Statements longer than 64 KB are not recorded in History, and History keeps at most 1,000 statements per connection.
 - You cannot copy rows from the **Messages** tab.
-- There is no SQL formatter, data import/export, or visual query plan viewer.
+- There is no SQL formatter or visual query plan viewer.
+
+## Import and export
+
+- [Import and export](/docs/features/import-export) handle tables and views of PostgreSQL, MySQL and MariaDB only, not MongoDB collections, and not a console's query.
+- Export writes CSV, TSV and JSON, one file per table. Import reads CSV and TSV into a table that exists. There is no SQL `INSERT`, XML or `xlsx` format, no table created from a file, no update of rows by their key, and no saved settings to run again.
+- With several tables checked, every column is exported, in the table's order.
+- Moments are written in UTC. A PostgreSQL date before the common era is written with ISO 8601's year numbering, such as `-0001-01-01`, which PostgreSQL does not read back.
 
 ## MongoDB
 

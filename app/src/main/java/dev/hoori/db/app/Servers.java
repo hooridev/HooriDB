@@ -18,6 +18,7 @@ import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.Inserts;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
@@ -42,6 +43,7 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.SqlMonitor;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -168,6 +170,26 @@ interface Servers {
 
     /** Writes pending changes in one transaction on this connection, as {@link Changes#write}. */
     Changes.Outcome write(Changes changes) throws QueryException;
+
+    /**
+     * Reads all the table's rows with the chosen columns, whole, and hands them over as they come,
+     * as {@link Rows#each}: the number of rows.
+     */
+    long export(Table table, List<Column> columns, List<Integer> chosen, Rows.Each each)
+        throws QueryException, IOException;
+
+    /**
+     * Writes the source's rows into the table in batches, as {@link Inserts#write}; a read-only
+     * connection refuses it before anything is sent.
+     */
+    Inserts.Report insert(
+        Table table,
+        List<Column> columns,
+        List<Integer> targets,
+        Inserts.Source source,
+        Inserts.Options options,
+        Inserts.Progress progress)
+        throws QueryException, IOException;
 
     /** Runs one single-document edit on this connection, as {@link DocumentSession#write}. */
     DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException;
@@ -434,6 +456,26 @@ interface Servers {
     }
 
     @Override
+    public long export(Table table, List<Column> columns, List<Integer> chosen, Rows.Each each)
+        throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A collection is not exported to files yet");
+    }
+
+    @Override
+    public Inserts.Report insert(
+        Table table,
+        List<Column> columns,
+        List<Integer> targets,
+        Inserts.Source source,
+        Inserts.Options options,
+        Inserts.Progress progress)
+        throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A collection does not import files yet");
+    }
+
+    @Override
     public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
       usable();
       try {
@@ -671,6 +713,27 @@ interface Servers {
     public Changes.Outcome write(Changes changes) throws QueryException {
       usable();
       return changes.write(connection, provider);
+    }
+
+    @Override
+    public long export(Table table, List<Column> columns, List<Integer> chosen, Rows.Each each)
+        throws QueryException, IOException {
+      usable();
+      return Rows.each(connection, provider, table, columns, chosen, each);
+    }
+
+    @Override
+    public Inserts.Report insert(
+        Table table,
+        List<Column> columns,
+        List<Integer> targets,
+        Inserts.Source source,
+        Inserts.Options options,
+        Inserts.Progress progress)
+        throws QueryException, IOException {
+      usable();
+      return Inserts.write(
+          connection, provider, table, columns, targets, source, options, readOnly, progress);
     }
 
     @Override

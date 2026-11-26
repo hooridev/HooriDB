@@ -22,7 +22,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.StringJoiner;
 import java.util.TreeMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
@@ -299,29 +298,21 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     }
     Outcome outcome;
     try {
-      Query.within(
-          connection,
-          provider,
-          Execution.ENDING,
-          () -> Journal.call(Purpose.TRANSACTION, Journal.autoCommit(false), () -> {
-            connection.setAutoCommit(false);
-            return null;
-          }));
+      Transactions.begin(connection, provider);
       outcome = run(connection, provider, all, checks.size());
     } catch (QueryException | RuntimeException e) {
       try {
-        end(connection, provider, false);
+        Transactions.end(connection, provider, false);
       } catch (QueryException ended) {
         e.addSuppressed(ended);
       }
       throw e;
     }
-    end(connection, provider, outcome instanceof Outcome.Committed);
+    Transactions.end(connection, provider, outcome instanceof Outcome.Committed);
     return outcome;
   }
 
-  private static void requireNoTransaction(Connection connection, Provider provider)
-      throws QueryException {
+  static void requireNoTransaction(Connection connection, Provider provider) throws QueryException {
     var status = Status.of(connection, provider);
     if (status.transaction() == Transaction.OPEN
         || status.transaction() == Transaction.FAILED
@@ -396,102 +387,6 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       }
     }
     return read;
-  }
-
-  // Ends the transaction within a bound, an interrupt or not: commits or rolls back, and turns
-  // auto-commit on again. A connection that cannot be left as it was found is aborted, which has
-  // the server roll back what it did not commit; nothing after the commit or rollback fails what it
-  // did, and nothing begins once the connection is given up for the bound.
-  private static void end(Connection connection, Provider provider, boolean commit)
-      throws QueryException {
-    // Whether the transaction ended as it was to, committed or rolled back.
-    var ended = new AtomicBoolean();
-    var givenUp = new AtomicBoolean();
-    try {
-      Query.within(
-          connection,
-          provider,
-          Execution.ENDING,
-          () -> {
-            finish(connection, commit, ended, givenUp);
-            return null;
-          },
-          () -> givenUp.set(true));
-    } catch (QueryException e) {
-      if (!ended.get()) {
-        throw e;
-      }
-    }
-  }
-
-  private static void finish(
-      Connection connection, boolean commit, AtomicBoolean ended, AtomicBoolean givenUp)
-      throws SQLException {
-    if (connection.getAutoCommit()) {
-      return; // never begun
-    }
-    var failed = commit ? commit(connection, ended, givenUp) : null;
-    if (!ended.get()) {
-      rollBack(connection, commit, ended, failed);
-    }
-    try {
-      Journal.call(Purpose.TRANSACTION, Journal.autoCommit(true), () -> {
-        connection.setAutoCommit(true);
-        return null;
-      });
-    } catch (SQLException _) {
-      abort(connection);
-    }
-    if (failed != null) {
-      throw failed;
-    }
-  }
-
-  // The commit's failure, or null where it committed.
-  private static SQLException commit(
-      Connection connection, AtomicBoolean ended, AtomicBoolean givenUp) {
-    if (givenUp.get()) {
-      return new SQLException("Given up before the commit", "08006");
-    }
-    try {
-      Journal.callWithheld(Purpose.TRANSACTION, Journal.COMMIT, () -> {
-        connection.commit();
-        return null;
-      });
-      ended.set(true);
-      return null;
-    } catch (SQLException e) {
-      return e;
-    }
-  }
-
-  // Rolls back, after the commit failed where it did, which fails in its place.
-  private static void rollBack(
-      Connection connection, boolean commit, AtomicBoolean ended, SQLException failed)
-      throws SQLException {
-    try {
-      Journal.call(Purpose.TRANSACTION, Journal.ROLLBACK, () -> {
-        connection.rollback();
-        return null;
-      });
-      ended.set(!commit);
-    } catch (SQLException e) {
-      // pgjdbc would commit as auto-commit is turned on.
-      abort(connection);
-      if (failed != null) {
-        failed.addSuppressed(e);
-        throw failed;
-      }
-      throw e;
-    }
-  }
-
-  private static void abort(Connection connection) {
-    try {
-      connection.abort(Runnable::run);
-    } catch (SQLException | RuntimeException _) {
-      // Not even an abort is possible; the connection is given up all the same.
-    }
   }
 
   private String sql(

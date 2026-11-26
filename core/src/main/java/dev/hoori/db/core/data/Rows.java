@@ -12,6 +12,8 @@ import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Clauses;
+import java.io.IOException;
+import java.io.Serial;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Connection;
@@ -183,8 +185,14 @@ public final class Rows {
   }
 
   // What a column is read from: the name and type its field shows, and its name through the alias,
-  // or null for a column of a statement's result.
-  record Source(String name, String type, String sql) {}
+  // or null for a column of a statement's result; and whether a table's column is read whole, as
+  // an export reads it, rather than cut to LIMIT, as a page holds it.
+  record Source(String name, String type, String sql, boolean whole) {
+
+    Source(String name, String type, String sql) {
+      this(name, type, sql, false);
+    }
+  }
 
   /**
    * The number of rows of the table or view as the server's planner estimates it, without reading
@@ -324,7 +332,7 @@ public final class Rows {
     check(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
     var dialect = provider.dialect().rows();
-    var described = dialect.describe(connection, provider, table, columns);
+    var described = dialect.describe(connection, provider, table, columns, false);
     var reads = described.reads();
     var key = columns.stream().anyMatch(column -> column.keyPosition() > 0);
     var places = dialect.places(table);
@@ -377,6 +385,150 @@ public final class Rows {
       throw changed(table);
     }
     return page;
+  }
+
+  /** What takes the rows of a table as {@link #each} reads them, one after another. */
+  public interface Each {
+
+    /** The fields of the rows to come, before the first. */
+    void fields(List<Field> fields) throws IOException;
+
+    /** The values of a row, of the Java types the fields' kinds say, whole. */
+    void row(List<Object> values) throws IOException;
+  }
+
+  /** How many rows a portion of {@link #each} brings from the server. */
+  static final int PORTION = 1000;
+
+  /**
+   * Reads all the rows of the table or view, in no particular order, with the chosen columns, and
+   * hands them to {@code each} as they come, never all at once: in one statement whose rows the
+   * driver brings in portions or streams, where the server sends them in portions only within a
+   * transaction in one of its own, which ends as the read does. Values are whole, unlike a page's:
+   * a text, JSON, any other value as the server writes it and binary data, however long.
+   *
+   * <p>The call blocks; an interrupt of the calling thread cancels it, as {@link Query} does, and
+   * also where {@code each} fails, the transaction of its own ends within {@link
+   * dev.hoori.db.core.execution.Execution#ENDING}. The connection must have auto-commit on and no
+   * transaction open, as one that only reads has.
+   *
+   * @param columns all the table's columns, in their order, as {@link #read} takes them
+   * @param chosen the indexes of the columns to read among them, in the order their values come
+   * @return the number of rows read
+   * @throws IOException where {@code each} failed so, after the read was given up
+   * @throws IllegalArgumentException if no column, or one twice or out of range, is chosen, a
+   *     column is not the table's, or a PostgreSQL connection is to another database than the
+   *     table's
+   */
+  public static long each(
+      Connection connection,
+      Provider provider,
+      Table table,
+      List<Column> columns,
+      List<Integer> chosen,
+      Each each)
+      throws QueryException, IOException {
+    requireColumnsOf(table, columns);
+    if (chosen.isEmpty()
+        || chosen.stream().distinct().count() != chosen.size()
+        || chosen.stream().anyMatch(i -> i < 0 || i >= columns.size())) {
+      throw new IllegalArgumentException("Columns " + chosen + " of " + columns.size());
+    }
+    requireConnectedTo(connection, provider, table);
+    var dialect = provider.dialect().rows();
+    var reads = dialect.describe(connection, provider, table, columns, true).reads();
+    var picked = chosen.stream().map(reads::get).toList();
+    var selected = picked.stream().flatMap(r -> r.sql().stream()).toList();
+    // Where the columns as they are now come with the rows, from a join to none of them, they
+    // tell the fields' kinds, as a page's do.
+    var witness = dialect.witness();
+    var expressions = new ArrayList<>(selected);
+    if (witness) {
+      expressions.add(WITNESS + ".*");
+    }
+    var from = qualified(provider, table);
+    var sql = "SELECT " + String.join(", ", expressions) + " FROM " + from + " AS " + ALIAS
+        + (witness
+            ? " LEFT JOIN (SELECT * FROM " + from + " LIMIT 0) AS " + WITNESS + " ON FALSE"
+            : "");
+    var session = provider.dialect().session();
+    var own = !session.queriesInOwnTransaction().isEmpty();
+    if (own) {
+      Transactions.begin(connection, provider);
+    }
+    long read;
+    try {
+      read = Journal.sql(
+          provider,
+          Purpose.EXPORT,
+          sql,
+          Outcome::rows,
+          () -> Query.stream(connection, provider, sql, session.fetchSize(PORTION), result -> {
+            var shown = witness
+                ? dialect.witnessed(columns, reads, result.getMetaData(), selected.size())
+                : reads.stream().map(Read::field).toList();
+            try {
+              if (shown == null) {
+                throw changed(table);
+              }
+              each.fields(chosen.stream().map(shown::get).toList());
+              var n = 0L;
+              while (result.next()) {
+                each.row(row(result, picked));
+                n++;
+              }
+              return n;
+            } catch (IOException | QueryException e) {
+              // Rows left unread would come to their end as the result closes.
+              if (session.pendingRowsHoldConnection()) {
+                session.cancel(connection, result.getStatement());
+              }
+              throw new Unread(e);
+            }
+          }));
+    } catch (QueryException | RuntimeException e) {
+      if (own) {
+        try {
+          Transactions.end(connection, provider, false);
+        } catch (QueryException ended) {
+          e.addSuppressed(ended);
+        }
+      }
+      if (e.getCause() instanceof Unread unread) {
+        switch (unread.getCause()) {
+          case IOException failed -> throw failed;
+          case QueryException failed -> throw failed;
+          default -> throw e;
+        }
+      }
+      throw e;
+    }
+    if (own) {
+      Transactions.end(connection, provider, false);
+    }
+    return read;
+  }
+
+  // What ended a read of each's before its last row, through the worker of Query.
+  private static final class Unread extends RuntimeException {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
+
+    Unread(Exception failure) {
+      super(failure);
+    }
+  }
+
+  // The values of the row the result is on, read as the reads say, each from its first column.
+  private static List<Object> row(ResultSet result, List<Read> reads) throws SQLException {
+    var values = new Object[reads.size()];
+    var index = 1;
+    for (var i = 0; i < values.length; i++) {
+      values[i] = reads.get(i).value().read(result, index);
+      index += reads.get(i).sql().size();
+    }
+    return Collections.unmodifiableList(Arrays.asList(values));
   }
 
   /**
@@ -443,13 +595,7 @@ public final class Rows {
   private static List<List<Object>> rows(ResultSet result, List<Read> reads) throws SQLException {
     var read = new ArrayList<List<Object>>();
     while (result.next()) {
-      var values = new Object[reads.size()];
-      var index = 1;
-      for (var i = 0; i < values.length; i++) {
-        values[i] = reads.get(i).value().read(result, index);
-        index += reads.get(i).sql().size();
-      }
-      read.add(Collections.unmodifiableList(Arrays.asList(values)));
+      read.add(row(result, reads));
     }
     return read;
   }
@@ -594,8 +740,8 @@ public final class Rows {
     return reads;
   }
 
-  static Source source(Provider provider, Column column) {
-    return new Source(column.name(), column.type(), column(provider, column.name()));
+  static Source source(Provider provider, Column column, boolean whole) {
+    return new Source(column.name(), column.type(), column(provider, column.name()), whole);
   }
 
   private static String column(Provider provider, String name) {
@@ -658,6 +804,15 @@ public final class Rows {
     if (source.sql() == null) {
       return whole(source, kind);
     }
+    if (source.whole()) {
+      // From the first character on, which is all of it; the length tells NULL apart, also where
+      // the start, such as concat()'s, gives an empty text for it.
+      return new Read(
+          field(source, kind),
+          source.sql(),
+          List.of(start.apply(source.sql()) + ", 1)", length + source.sql() + ")"),
+          (rows, index) -> rows.getString(index + 1) == null ? null : rows.getString(index));
+    }
     return new Read(
         field(source, kind),
         source.sql(),
@@ -697,6 +852,13 @@ public final class Rows {
   }
 
   static Read binary(Source source, UnaryOperator<String> sql, String length) {
+    if (source.whole()) {
+      return new Read(
+          field(source, Kind.BINARY), source.sql(), List.of(source.sql()), (rows, i) -> {
+            var bytes = rows.getBytes(i);
+            return bytes == null ? null : new Binary(bytes, bytes.length);
+          });
+    }
     if (source.sql() == null) {
       return new Read(field(source, Kind.BINARY), null, List.of(), (rows, index) -> {
         var bytes = rows.getBytes(index);

@@ -18,6 +18,7 @@ import dev.hoori.db.core.data.Change;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.Inserts;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Origin;
 import dev.hoori.db.core.data.Page;
@@ -47,6 +48,7 @@ import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.EditableQuery;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -164,6 +166,7 @@ final class FakeServers implements Servers {
   private final Map<String, Answer> statements = new ConcurrentHashMap<>();
   private final Map<String, Supplier<Answer>> dynamicStatements = new ConcurrentHashMap<>();
   private final java.util.Set<String> refused = ConcurrentHashMap.newKeySet();
+  private final Map<String, java.util.Set<String>> refusedValues = new ConcurrentHashMap<>();
   private final Map<String, DocumentEdit.Outcome> forced = new ConcurrentHashMap<>();
   private final java.util.Set<String> writing = ConcurrentHashMap.newKeySet();
 
@@ -248,6 +251,15 @@ final class FakeServers implements Servers {
   /** Makes {@link Link#write} for {@code key} return {@link Changes.Outcome.Refused}. */
   FakeServers refuse(String key) {
     refused.add(key);
+    return this;
+  }
+
+  /**
+   * An import into the table at the path fails a row that holds the value, as a server refuses a
+   * key it has already: the row is skipped or stops the import, as its options say.
+   */
+  FakeServers refusesImported(String path, String value) {
+    refusedValues.computeIfAbsent(path, k -> ConcurrentHashMap.newKeySet()).add(value);
     return this;
   }
 
@@ -1428,6 +1440,170 @@ final class FakeServers implements Servers {
       }
     }
 
+    // Rows of the table as a read gives them, all of them, whole, through core's journal.
+    @Override
+    public long export(Table t, List<Column> columns, List<Integer> chosen, Rows.Each each)
+        throws QueryException, IOException {
+      var path = path(t);
+      var key = "export " + path;
+      var fields = columns.stream()
+          .map(c -> new Field(c.name(), c.type(), kind(c.type())))
+          .toList();
+      try {
+        return Journal.sql(made.provider(), Purpose.EXPORT, key, Outcome::rows, () -> {
+          var rows = table(key, t, false, table -> materializeRows(path, columns));
+          each.fields(chosen.stream().map(fields::get).toList());
+          for (var row : rows) {
+            each.row(chosen.stream().map(row::get).toList());
+          }
+          return (long) rows.size();
+        });
+      } catch (QueryException | IOException | RuntimeException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
+    // Rows of a file into the table, a batch at a time, as core's import writes them: each batch
+    // keyed import <host>/<path> <n> from 1 after the import's own key, its values read as the
+    // columns' kinds say, a row refused where it has a value refusesImported names.
+    @Override
+    public Inserts.Report insert(
+        Table t,
+        List<Column> columns,
+        List<Integer> targets,
+        Inserts.Source source,
+        Inserts.Options options,
+        Inserts.Progress progress)
+        throws QueryException, IOException {
+      var path = path(t);
+      var key = "import " + path;
+      if (readOnly) {
+        throw QueryException.of(
+            QueryException.Failure.OTHER,
+            "The connection is read-only, which writes nothing into " + t.name());
+      }
+      note(key);
+      try {
+        call(key, queryFailure(QueryException.Failure.CANCELLED));
+      } catch (QueryException e) {
+        throw e;
+      } catch (Exception _) {
+        throw queryFailure(QueryException.Failure.OTHER);
+      }
+      var refusing = refusedValues.getOrDefault(path, java.util.Set.of());
+      var committed = new ArrayList<>(options.empty() ? List.of() : materializeRows(path, columns));
+      int before = committed.size();
+      var open = new ArrayList<>(committed);
+      var failed = new ArrayList<Inserts.Failed>();
+      long read = 0;
+      long failures = 0;
+      int batches = 0;
+      var batch = new ArrayList<List<Object>>();
+      Inserts.Failed stopped = null;
+      try {
+        for (var row = source.next(); row != null && stopped == null; row = source.next()) {
+          read++;
+          Inserts.Failed failure = null;
+          switch (row) {
+            case Inserts.Row.Unreadable(var line, var reason) ->
+              failure = new Inserts.Failed(line, reason);
+            case Inserts.Row.Values(var line, var texts) -> {
+              var made = new Object[columns.size()];
+              for (int i = 0; i < targets.size() && failure == null; i++) {
+                var text = texts.get(i);
+                var column = columns.get(targets.get(i));
+                if (text != null && refusing.contains(text)) {
+                  failure = new Inserts.Failed(
+                      line, "ERROR: duplicate key value violates unique constraint");
+                } else if (text == null && !column.nullable()) {
+                  failure = new Inserts.Failed(
+                      line, "ERROR: null value in column \"" + column.name() + "\"");
+                } else {
+                  try {
+                    made[targets.get(i)] = imported(kind(column.type()), text);
+                  } catch (RuntimeException _) {
+                    failure = new Inserts.Failed(
+                        line, "ERROR: invalid input syntax for " + column.type() + ": " + text);
+                  }
+                }
+              }
+              if (failure == null) {
+                batch.add(Collections.unmodifiableList(Arrays.asList(made)));
+              }
+            }
+          }
+          if (failure != null) {
+            failures++;
+            failed.add(failure);
+            if (options.onError() == Inserts.OnError.STOP) {
+              stopped = failure;
+            }
+          }
+          if (stopped == null && batch.size() >= options.batch()) {
+            batches =
+                batch(key, ++batches, batch, open, committed, options, progress, read, failures);
+          }
+        }
+        if (stopped == null && !batch.isEmpty()) {
+          batches =
+              batch(key, ++batches, batch, open, committed, options, progress, read, failures);
+        }
+        if (stopped == null) {
+          committed.clear();
+          committed.addAll(open);
+        }
+      } finally {
+        values.put(path, List.copyOf(committed));
+        counts.put(path, (long) committed.size());
+        estimates.put(path, OptionalLong.of(committed.size()));
+      }
+      var written = committed.size() - before;
+      done.add(key);
+      return new Inserts.Report(
+          new Inserts.Count(read, written, written, failures), failed, stopped);
+    }
+
+    // Writes the batch into the open rows, and commits them where each batch commits: its number.
+    private int batch(
+        String key,
+        int number,
+        List<List<Object>> batch,
+        List<List<Object>> open,
+        List<List<Object>> committed,
+        Inserts.Options options,
+        Inserts.Progress progress,
+        long read,
+        long failures)
+        throws QueryException {
+      var at = key + " " + number;
+      Journal.sql(
+          made.provider(),
+          Purpose.IMPORT,
+          "INSERT INTO " + key.substring("import ".length()) + " VALUES " + batch.size() + " rows",
+          Outcome.Changed::new,
+          () -> {
+            note(at);
+            try {
+              call(at, queryFailure(QueryException.Failure.CANCELLED));
+            } catch (QueryException e) {
+              throw e;
+            } catch (Exception _) {
+              throw queryFailure(QueryException.Failure.OTHER);
+            }
+            return (long) batch.size();
+          });
+      open.addAll(batch);
+      batch.clear();
+      if (options.commit() == Inserts.Commit.EACH_BATCH) {
+        committed.clear();
+        committed.addAll(open);
+      }
+      progress.at(new Inserts.Count(read, open.size(), committed.size(), failures));
+      return number;
+    }
+
     @Override
     public Changes.Outcome write(Changes changes) throws QueryException {
       if (busy.incrementAndGet() > 1) {
@@ -2170,6 +2346,20 @@ final class FakeServers implements Servers {
       return Kind.TEXT;
     }
     return Kind.OTHER;
+  }
+
+  /** A file's text as the fake keeps it in a column of the kind, as a server would read it. */
+  static Object imported(Kind kind, String text) {
+    if (text == null) {
+      return null;
+    }
+    return switch (kind) {
+      case INTEGER -> Long.valueOf(text.strip());
+      case DECIMAL -> new BigDecimal(text.strip());
+      case BOOLEAN -> Boolean.parseBoolean(text.strip());
+      case DATE -> LocalDate.parse(text.strip());
+      default -> text;
+    };
   }
 
   /** A value made up from the row's position. */

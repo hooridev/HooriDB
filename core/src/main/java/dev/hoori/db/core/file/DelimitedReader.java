@@ -1,0 +1,164 @@
+package dev.hoori.db.core.file;
+
+import java.io.Closeable;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * Reads delimited text a row at a time, as {@link Format.Delimited} says; its header is a row like
+ * any other here. A quoted value may hold the delimiter, the quote character doubled and line ends;
+ * after its closing quote, what comes before the next delimiter is taken as it is. Lines end with
+ * LF, CRLF or CR, and a line that holds nothing at all is no row. A byte order mark of the encoding
+ * at the start is skipped, and a byte that is no character of the encoding fails the read.
+ */
+final class DelimitedReader implements Closeable {
+
+  /** A row, by the line it starts on, from 1; null for an unquoted value that is NULL's text. */
+  record Record(long line, List<String> values) {}
+
+  private final Format.Delimited format;
+  private final Reader in;
+  private final char[] buffer = new char[64 * 1024];
+  private int at;
+  private int filled;
+  private long line = 1;
+  private boolean started;
+
+  DelimitedReader(Format.Delimited format, InputStream in) {
+    this.format = format;
+    this.in = new InputStreamReader(
+        in,
+        format
+            .encoding()
+            .charset()
+            .newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT));
+  }
+
+  /** The next row, or null after the last. */
+  Record next() throws IOException {
+    if (!started) {
+      started = true;
+      var first = read();
+      if (first != Encoding.MARK && first >= 0) {
+        unread();
+      }
+    }
+    int c;
+    // Lines that hold nothing are skipped.
+    while ((c = read()) == '\n' || c == '\r') {
+      end(c);
+    }
+    if (c < 0) {
+      return null;
+    }
+    unread();
+    var start = line;
+    var values = new ArrayList<String>();
+    var value = new StringBuilder();
+    var quoted = false;
+    while (true) {
+      c = read();
+      if (c == format.quote() && value.isEmpty() && !quoted) {
+        quoted = true;
+        quoted(value, start);
+      } else if (c == format.delimiter()) {
+        values.add(value(value, quoted));
+        value.setLength(0);
+        quoted = false;
+      } else if (c < 0 || c == '\n' || c == '\r') {
+        end(c);
+        values.add(value(value, quoted));
+        return new Record(start, Collections.unmodifiableList(values));
+      } else {
+        value.append((char) c);
+      }
+    }
+  }
+
+  // The rest of a quoted value, up to its closing quote, whose line ends count.
+  private void quoted(StringBuilder value, long at) throws IOException {
+    while (true) {
+      var c = read();
+      if (c < 0) {
+        throw new IOException("The quoted value of line " + at + " does not end");
+      }
+      if (c == format.quote()) {
+        var next = read();
+        if (next != format.quote()) {
+          if (next >= 0) {
+            unread();
+          }
+          return;
+        }
+      } else if (c == '\r' || c == '\n') {
+        var next = c == '\r' ? read() : -1;
+        if (next >= 0 && next != '\n') {
+          unread();
+        }
+        line++;
+        value.append(c == '\r' && next == '\n' ? "\r\n" : String.valueOf((char) c));
+        continue;
+      }
+      value.append((char) c);
+    }
+  }
+
+  private String value(StringBuilder value, boolean quoted) {
+    var text = value.toString();
+    return !quoted && text.equals(format.nullText()) ? null : text;
+  }
+
+  // Past the line end that the character begins, CRLF as one.
+  private void end(int c) throws IOException {
+    if (c == '\r') {
+      var next = read();
+      if (next >= 0 && next != '\n') {
+        unread();
+      }
+    }
+    if (c >= 0) {
+      line++;
+    }
+  }
+
+  // The next character, or -1 at the end.
+  private int read() throws IOException {
+    if (at < filled) {
+      return buffer[at++];
+    }
+    try {
+      filled = in.read(buffer);
+    } catch (CharacterCodingException e) {
+      throw new IOException(
+          "Line " + line + " holds bytes that are no text of "
+              + format.encoding().label(),
+          e);
+    }
+    if (filled <= 0) {
+      filled = 0;
+      at = 0;
+      return -1;
+    }
+    at = 1;
+    return buffer[0];
+  }
+
+  // Takes back the character read last, which is in the buffer still.
+  private void unread() {
+    at--;
+  }
+
+  @Override
+  public void close() throws IOException {
+    in.close();
+  }
+}
