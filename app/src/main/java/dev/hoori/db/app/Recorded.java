@@ -10,6 +10,7 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Editable;
@@ -32,6 +33,11 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.transfer.Batch;
+import dev.hoori.db.core.transfer.Position;
+import dev.hoori.db.core.transfer.Selection;
+import dev.hoori.db.core.transfer.Source;
+import dev.hoori.db.core.transfer.Target;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -321,6 +327,132 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
         @Override
         public Optional<List<Block>> locks() throws QueryException {
           return monitor.locks();
+        }
+      };
+    }
+
+    // What a copy reads, logged about the database of the table it reads.
+    @Override
+    public Source source() throws QueryException {
+      var source = link.source();
+      return new Source() {
+        @Override
+        public Provider provider() {
+          return source.provider();
+        }
+
+        @Override
+        public void prepare() throws Exception {
+          recorded(null, () -> {
+            source.prepare();
+            return null;
+          });
+        }
+
+        @Override
+        public List<Column> columns(Table table) throws Exception {
+          return recorded(of(table), () -> source.columns(table));
+        }
+
+        @Override
+        public long count(Table table) throws Exception {
+          return recorded(of(table), () -> source.count(table));
+        }
+
+        @Override
+        public Batch read(Selection selection, Position from, int count) throws Exception {
+          return recorded(of(selection.table()), () -> source.read(selection, from, count));
+        }
+      };
+    }
+
+    // What a copy writes, logged about the database of the table it writes.
+    @Override
+    public Target target() throws QueryException {
+      var target = link.target();
+      return new Target() {
+        @Override
+        public Provider provider() {
+          return target.provider();
+        }
+
+        @Override
+        public boolean readOnly() {
+          return target.readOnly();
+        }
+
+        @Override
+        public void prepare() throws Exception {
+          recorded(null, () -> {
+            target.prepare();
+            return null;
+          });
+        }
+
+        @Override
+        public Shape shape(Table table) throws Exception {
+          return recorded(of(table), () -> target.shape(table));
+        }
+
+        @Override
+        public List<ForeignKey> foreignKeys(Table table) throws Exception {
+          return recorded(of(table), () -> target.foreignKeys(table));
+        }
+
+        @Override
+        public boolean hasRows(Table table) throws Exception {
+          return recorded(of(table), () -> target.hasRows(table));
+        }
+
+        @Override
+        public void begin() throws Exception {
+          recorded(null, () -> {
+            target.begin();
+            return null;
+          });
+        }
+
+        @Override
+        public long empty(Table table) throws Exception {
+          return recorded(of(table), () -> target.empty(table));
+        }
+
+        @Override
+        public long write(Table table, List<String> columns, List<List<Object>> rows)
+            throws Exception {
+          return recorded(of(table), () -> target.write(table, columns, rows));
+        }
+
+        @Override
+        public void written(Table table, List<String> columns) throws Exception {
+          recorded(of(table), () -> {
+            target.written(table, columns);
+            return null;
+          });
+        }
+
+        @Override
+        public void commit() throws Exception {
+          recorded(null, () -> {
+            target.commit();
+            return null;
+          });
+        }
+
+        @Override
+        public void rollback() throws Exception {
+          recorded(null, () -> {
+            target.rollback();
+            return null;
+          });
+        }
+
+        @Override
+        public void end() throws Exception {
+          recorded(null, () -> {
+            target.end();
+            return null;
+          });
         }
       };
     }

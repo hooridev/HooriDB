@@ -10,6 +10,7 @@ import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.SystemAppearance;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -1043,6 +1044,7 @@ final class State {
     exitAt = noticed;
     consoles(null).forEach(ConsoleTab::end);
     monitors(null).forEach(m -> m.end(this));
+    transfers(null).forEach(x -> x.end(this));
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
       if (exits == at && guard.quitting() && closing > waived) {
@@ -1214,6 +1216,7 @@ final class State {
       case TableTab x -> x.id;
       case ConsoleTab x -> x.id;
       case MonitorTab x -> x.id;
+      case TransferTab x -> x.id();
     };
   }
 
@@ -1236,6 +1239,72 @@ final class State {
     var monitor = new MonitorTab(this, id);
     tabs.add(group, group.tabs().size(), monitor);
     monitor.open(this);
+  }
+
+  /**
+   * Opens Copy tables of the connection's database or schema, or of the connection where the
+   * container is null, in the window of these tabs, on sessions of its own; not for a server of
+   * documents.
+   */
+  void openTransfer(UUID id, Container container, TabGroups.Group<Tab> group) {
+    var profile = profile(id);
+    if (profile == null) {
+      return;
+    }
+    if (profile.provider().keepsDocuments()) {
+      tell(profile.provider().displayName() + "'s collections are not copied yet");
+      return;
+    }
+    var transfer = new TransferTab(this, id, container);
+    tabs.add(group, group.tabs().size(), transfer);
+    transfer.open(this);
+  }
+
+  /**
+   * What Copy tables of the File menu copies from: in the main window the connection, database or
+   * schema of the node selected in the tree, else the connection of the window's active tab; null
+   * for none, as for a server of documents.
+   */
+  Copied transferFor(TabGroups.Group<Tab> group) {
+    var node = group == tabs.main().active() ? selected : null;
+    if (node instanceof Node.Problem(var of)) {
+      node = of;
+    }
+    Copied found = switch (node) {
+      case Node.Connection(var id) -> new Copied(id, null);
+      case Node.OfDatabase(var id, var database) -> new Copied(id, database);
+      case Node.OfSchema(var id, var schema) -> new Copied(id, schema);
+      case Node.OfTable(var id, var table) -> new Copied(id, table.container());
+      case Node.OfColumn(var id, var column) -> new Copied(id, column.table().container());
+      case null, default -> {
+        var id = consoleFor(group);
+        yield id == null ? null : new Copied(id, null);
+      }
+    };
+    var profile = found == null ? null : profile(found.id());
+    return profile == null || profile.provider().keepsDocuments() ? null : found;
+  }
+
+  /** What Copy tables is opened on: a connection, and its database or schema, or null. */
+  record Copied(UUID id, Container container) {}
+
+  /** The tabs that copy tables, in every window, from or into the connection, or all for null. */
+  List<TransferTab> transfers(UUID id) {
+    var all = new ArrayList<TransferTab>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof TransferTab x && (id == null || x.on(id))) {
+          all.add(x);
+        }
+      }
+    }
+    return all;
+  }
+
+  /** A copy of tables' title: its source connection's name. */
+  String title(TransferTab tab) {
+    var profile = profile(tab.id());
+    return (profile == null ? "" : name(profile) + ": ") + "Copy tables";
   }
 
   /** The server monitors of every window, of the connection or of all where it is null. */
@@ -1355,6 +1424,7 @@ final class State {
       }
     }
     all.addAll(monitors(id));
+    all.addAll(transfers(id));
     close(all);
   }
 
@@ -1370,6 +1440,7 @@ final class State {
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
+    transfers(id).forEach(x -> x.ended(this, id));
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -1391,6 +1462,9 @@ final class State {
     }
     for (var monitor : monitors(id)) {
       monitor.connected(this);
+    }
+    for (var transfer : transfers(id)) {
+      transfer.connected(this, id);
     }
   }
 
@@ -1631,6 +1705,7 @@ final class State {
     tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    transfers(null).forEach(TransferTab::close);
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();

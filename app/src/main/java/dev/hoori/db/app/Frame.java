@@ -203,6 +203,11 @@ final class Frame {
                 .icon(Symbol.SERVER)
                 .hue(ConnectionColors.hue(s.color(x.id)))
                 .busy(x.busy());
+          case TransferTab x ->
+            new Tabs.Tab(s.title(x))
+                .icon(Symbol.COPY)
+                .hue(ConnectionColors.hue(s.color(x.id())))
+                .busy(x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -217,6 +222,7 @@ final class Frame {
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
           case MonitorTab x -> x.view(s, app);
+          case TransferTab x -> x.view(s, app);
         });
   }
 
@@ -227,6 +233,7 @@ final class Frame {
       case TableTab x -> s.title(x);
       case ConsoleTab x -> s.title(x);
       case MonitorTab x -> s.title(x);
+      case TransferTab x -> s.title(x);
     };
   }
 
@@ -687,6 +694,7 @@ final class Frame {
   static List<Menu.Item> menus(State s, TabGroups.Group<Tab> group, boolean modal) {
     var palette = s.palette(group);
     var console = s.consoleFor(group);
+    var copied = s.transferFor(group);
     // What opens a dialog of the main window waits for the one open there, from every window.
     boolean free = !mainDialog(s);
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
@@ -713,6 +721,12 @@ final class Frame {
                         "Server monitor",
                         console == null ? null : () -> s.openMonitor(console, group))
                     .icon(Symbol.SERVER),
+                Menu.item(
+                        "Copy tables…",
+                        copied == null
+                            ? null
+                            : () -> s.openTransfer(copied.id(), copied.container(), group))
+                    .icon(Symbol.COPY),
                 Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c && c.id != null

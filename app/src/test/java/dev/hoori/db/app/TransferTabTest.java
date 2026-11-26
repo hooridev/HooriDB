@@ -1,0 +1,223 @@
+package dev.hoori.db.app;
+
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
+import static dev.hoori.db.app.CatalogTreeTest.open;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.rethinkj.ui.App;
+import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.log.Purpose;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.OptionalLong;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+/** Copy tables: a tab that copies tables' rows between two databases, on sessions of its own. */
+class TransferTabTest {
+
+  static final String HOST = "copy.example.com";
+  static final String OUTLINE = """
+      shop
+        items
+          *id: int(11)
+          name: varchar(200)
+        stock
+          *item_id: int(11)
+          quantity: int(11)
+      archive
+        items
+          *id: int(11)
+          name: varchar(200)
+          note: text
+      ~mysql
+      """;
+  static final ConnectionProfile MARIA =
+      ConnectionProfile.of(Provider.MARIADB).withName("maria").withHost(HOST).withUser("app");
+  static final String TAB = "maria: Copy tables";
+  static final String ITEMS = HOST + "/archive.items";
+
+  @TempDir
+  Path dir;
+
+  final CatalogTreeTest c = new CatalogTreeTest();
+
+  @BeforeEach
+  void setUp() throws Exception {
+    c.dir = dir;
+    c.setUp();
+    c.servers.serve(HOST, Provider.MARIADB, "11.4.2-MariaDB", OUTLINE);
+    c.servers.rows(HOST + "/shop.items", 5, OptionalLong.of(5));
+    c.servers.values(ITEMS, List.of());
+  }
+
+  @AfterEach
+  void tearDown() throws Exception {
+    c.tearDown();
+  }
+
+  /** The app with maria connected, and Copy tables opened from its database shop. */
+  App<State> opened(ConnectionProfile profile) throws Exception {
+    var app = c.app(profile);
+    c.ready(app, profile);
+    c.run(app, START + open("maria") + SETTLE + menu("shop", "Copy tables…") + SETTLE);
+    return app;
+  }
+
+  /** Chooses the option of the combo box. */
+  static String choose(String box, String option) {
+    return "press role=combobox label=\"" + box + "\"\nframe\nadvance 1\nframe\n"
+        + "press role=menuitem label=\"" + option + "\"\nframe\nadvance 1\nframe\n";
+  }
+
+  static final String COPY = "press role=button label=\"Copy\"\nframe\n";
+
+  @Test
+  void itOpensOnTheDatabaseWithTheTargetToChoose() throws Exception {
+    var app = opened(MARIA);
+    c.run(app, "snap opened\n");
+    var tree = c.tree("opened");
+    assertTrue(tree.contains(TAB), tree);
+    assertTrue(tree.contains("label=\"items\""), tree);
+    assertTrue(tree.contains("label=\"stock\""), tree);
+    // The same database on both ends reads what it writes.
+    assertTrue(tree.contains("The source and the target are the same"), tree);
+
+    c.run(app, choose("Target database", "archive") + SETTLE + "snap chosen\n");
+    var chosen = c.tree("chosen");
+    assertFalse(chosen.contains("The source and the target are the same"), chosen);
+    assertTrue(chosen.contains("In the target"), chosen);
+    assertTrue(chosen.contains("Not in the target"), chosen);
+    // Each end reads on a session of its own, never the tree's.
+    assertTrue(app.state().transfers(null).getFirst().source.lane != null);
+  }
+
+  @Test
+  void aCopySkipsATableTheTargetLacksAndSaysWhy() throws Exception {
+    var app = opened(MARIA);
+    c.run(
+        app,
+        choose("Target database", "archive")
+            + SETTLE
+            + "press role=radio label=\"Skip the table\"\nframe\n"
+            + COPY
+            + SETTLE
+            + "snap copied\n");
+    var tree = c.tree("copied");
+    assertTrue(tree.contains("Copied 1 of 2 tables"), tree);
+    assertTrue(tree.contains("stock: The target has no table stock"), tree);
+    assertTrue(tree.contains("5 rows copied"), tree);
+    var rows = c.servers.rowsOf(ITEMS);
+    assertEquals(5, rows.size());
+    // By name: the target's column the source lacks gets nothing.
+    assertEquals(3, rows.getFirst().size());
+    assertEquals(null, rows.getFirst().get(2));
+    assertTrue(
+        c.servers.calls.contains("copy read " + HOST + "/shop.items 0"),
+        c.servers.calls.toString());
+    assertTrue(c.servers.calls.contains("copy commit " + HOST));
+  }
+
+  @Test
+  void aTargetWithRowsStopsTheCopyBeforeAnythingIsWritten() throws Exception {
+    c.servers.values(ITEMS, List.of(List.of(7, "old", "x"), List.of(8, "old", "y")));
+    var app = opened(MARIA);
+    c.run(
+        app,
+        choose("Target database", "archive")
+            + SETTLE
+            + "press role=checkbox label=\"stock\"\nframe\n"
+            + COPY
+            + SETTLE
+            + "snap stopped\n");
+    var tree = c.tree("stopped");
+    assertTrue(tree.contains("The copy stopped at a failure"), tree);
+    assertTrue(tree.contains("has rows"), tree);
+    assertEquals(2, c.servers.rowsOf(ITEMS).size());
+    assertTrue(c.servers.calls.stream().noneMatch(k -> k.startsWith("copy write")));
+
+    c.run(app, choose("Where items has rows", "Empty it first") + COPY + SETTLE + "snap emptied\n");
+    assertTrue(c.tree("emptied").contains("Copied"), c.tree("emptied"));
+    assertEquals(5, c.servers.rowsOf(ITEMS).size());
+  }
+
+  @Test
+  void aCancelRollsBackWhatWasNotCommitted() throws Exception {
+    var app = opened(MARIA);
+    var gate = c.servers.hold("copy write " + ITEMS);
+    c.run(
+        app,
+        choose("Target database", "archive")
+            + SETTLE
+            + "press role=checkbox label=\"stock\"\nframe\n"
+            + COPY
+            + "frame\nadvance 1\nframe\nsnap running\n");
+    assertTrue(c.tree("running").contains("label=\"Cancel the copy\""), c.tree("running"));
+    c.run(
+        app, "press role=button label=\"Cancel the copy\"\nframe\n" + SETTLE + "snap cancelled\n");
+    gate.countDown();
+    var tree = c.tree("cancelled");
+    assertTrue(tree.contains("Cancelled"), tree);
+    assertTrue(
+        c.servers.interrupted.contains("copy write " + ITEMS), c.servers.interrupted.toString());
+    assertTrue(c.servers.calls.contains("copy rollback " + HOST), c.servers.calls.toString());
+    assertEquals(0, c.servers.rowsOf(ITEMS).size());
+  }
+
+  @Test
+  void aReadOnlyTargetIsRefusedBeforeTheCopy() throws Exception {
+    var app = opened(MARIA.withReadOnly(true));
+    c.run(app, choose("Target database", "archive") + SETTLE + "snap read-only\n");
+    var tree = c.tree("read-only");
+    assertTrue(tree.contains("The target connection is read-only"), tree);
+    assertTrue(
+        tree.lines().anyMatch(l -> l.contains("label=\"Copy\"") && l.contains("disabled")), tree);
+  }
+
+  @Test
+  void theStatementLogShowsWhatTheCopySent() throws Exception {
+    var app = opened(MARIA);
+    c.run(
+        app,
+        choose("Target database", "archive")
+            + SETTLE
+            + "press role=checkbox label=\"stock\"\nframe\n"
+            + COPY
+            + SETTLE);
+    var logged = app.state().statements.entries().stream()
+        .filter(e -> e.sent().purpose() == Purpose.TRANSFER)
+        .map(e -> e.sent().text())
+        .toList();
+    assertTrue(logged.contains("copy write " + ITEMS), logged.toString());
+    assertEquals("Copy", LogPanel.part(Purpose.TRANSFER));
+  }
+
+  @Test
+  void theFileMenuOpensItForTheConnectionSelected() throws Exception {
+    var app = c.app(MARIA);
+    c.ready(app, MARIA);
+    c.run(
+        app,
+        START
+            + open("maria")
+            + SETTLE
+            + "press role=menuitem label=\"File\"\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Copy tables…\"\nframe\nadvance 1\nframe\n"
+            + SETTLE
+            + "snap file\n");
+    assertEquals(1, app.state().transfers(null).size());
+    assertTrue(c.tree("file").contains(TAB), c.tree("file"));
+    assertEquals(
+        List.of(),
+        app.state().transfers(null).getFirst().checked().stream()
+            .filter(t -> !t.container().name().equals("shop"))
+            .toList());
+  }
+}

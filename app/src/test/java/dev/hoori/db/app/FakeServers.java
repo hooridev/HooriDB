@@ -47,6 +47,11 @@ import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.EditableQuery;
+import dev.hoori.db.core.transfer.Batch;
+import dev.hoori.db.core.transfer.Position;
+import dev.hoori.db.core.transfer.Selection;
+import dev.hoori.db.core.transfer.Source;
+import dev.hoori.db.core.transfer.Target;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -1965,6 +1970,176 @@ final class FakeServers implements Servers {
         return new Status(Transaction.OPEN, false); // pgjdbc's, while core reads in its own
       }
       return new Status(transaction, !manual);
+    }
+
+    // A copy's call on a table: as a call on its rows, recorded as the copy's.
+    private <T> T copying(String key, Table t, boolean writes, RowsCall<T> call)
+        throws QueryException {
+      return Journal.sql(
+          made.provider(),
+          Purpose.TRANSFER,
+          key,
+          done -> Outcome.DONE,
+          () -> table(key, t, writes, call));
+    }
+
+    // Rows written and not committed, applied as the transaction commits.
+    private final List<Runnable> uncommitted = new ArrayList<>();
+
+    @Override
+    public Source source() {
+      return new Source() {
+        @Override
+        public Provider provider() {
+          return made.provider();
+        }
+
+        @Override
+        public void prepare() {}
+
+        @Override
+        public List<Column> columns(Table table) throws CatalogException {
+          return FakeLink.this.columns(table);
+        }
+
+        @Override
+        public long count(Table t) throws QueryException {
+          var path = path(t);
+          return copying("copy count " + path, t, false, table ->
+              (long) materializeRows(path, tableColumns(t, table)).size());
+        }
+
+        @Override
+        public Batch read(Selection selection, Position from, int count) throws QueryException {
+          var t = selection.table();
+          var path = path(t);
+          var at = from instanceof Position.At(var offset) ? offset : 0;
+          return copying("copy read " + path + " " + at, t, false, table -> {
+            var columns = tableColumns(t, table);
+            var all = materializeRows(path, columns);
+            var names = columns.stream().map(Column::name).toList();
+            var rows = new ArrayList<List<Object>>();
+            for (var i = at; i < Math.min(all.size(), at + count); i++) {
+              var row = all.get((int) i);
+              var values = new ArrayList<Object>();
+              for (var column : selection.columns()) {
+                var value = row.get(names.indexOf(column.name()));
+                values.add(value == null ? null : String.valueOf(value));
+              }
+              rows.add(Collections.unmodifiableList(values));
+            }
+            return new Batch(
+                rows, rows.size() < count ? Position.END : new Position.At(at + rows.size()));
+          });
+        }
+      };
+    }
+
+    @Override
+    public Target target() {
+      return new Target() {
+        @Override
+        public Provider provider() {
+          return made.provider();
+        }
+
+        @Override
+        public boolean readOnly() {
+          return readOnly;
+        }
+
+        @Override
+        public void prepare() {}
+
+        @Override
+        public Shape shape(Table table) throws CatalogException {
+          return new Shape(FakeLink.this.columns(table), java.util.Set.of());
+        }
+
+        @Override
+        public List<ForeignKey> foreignKeys(Table table) throws CatalogException {
+          return FakeLink.this.foreignKeys(table);
+        }
+
+        @Override
+        public boolean hasRows(Table t) throws QueryException {
+          var path = path(t);
+          return copying(
+              "copy has rows " + path,
+              t,
+              false,
+              table -> !materializeRows(path, tableColumns(t, table)).isEmpty());
+        }
+
+        @Override
+        public void begin() {
+          noted("copy begin " + host);
+        }
+
+        @Override
+        public long empty(Table t) throws QueryException {
+          var path = path(t);
+          return copying("empty " + path, t, true, table -> {
+            var before = materializeRows(path, tableColumns(t, table)).size();
+            uncommitted.add(() -> store(path, new ArrayList<>()));
+            return (long) before;
+          });
+        }
+
+        @Override
+        public long write(Table t, List<String> columns, List<List<Object>> rows)
+            throws QueryException {
+          var path = path(t);
+          return copying("copy write " + path, t, true, table -> {
+            var into = tableColumns(t, table);
+            var made = new ArrayList<List<Object>>();
+            for (var row : rows) {
+              var values = new ArrayList<Object>();
+              for (var column : into) {
+                var at = columns.indexOf(column.name());
+                values.add(at < 0 ? null : row.get(at));
+              }
+              made.add(Collections.unmodifiableList(values));
+            }
+            uncommitted.add(() -> {
+              var stored = new ArrayList<>(materializeRows(path, into));
+              stored.addAll(made);
+              store(path, stored);
+            });
+            return (long) rows.size();
+          });
+        }
+
+        @Override
+        public void written(Table table, List<String> columns) {}
+
+        @Override
+        public void commit() throws Exception {
+          var key = "copy commit " + host;
+          note(key);
+          call(key, queryFailure(QueryException.Failure.CANCELLED));
+          uncommitted.forEach(Runnable::run);
+          uncommitted.clear();
+        }
+
+        @Override
+        public void rollback() {
+          noted("copy rollback " + host);
+          uncommitted.clear();
+        }
+
+        @Override
+        public void end() {
+          uncommitted.clear();
+        }
+      };
+    }
+
+    // The table's rows, and how many it has, as a write leaves them.
+    private void store(String path, List<List<Object>> rows) {
+      values.put(path, rows);
+      counts.put(path, (long) rows.size());
+      estimates.put(path, OptionalLong.of(rows.size()));
     }
 
     @Override

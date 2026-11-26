@@ -42,6 +42,10 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.SqlMonitor;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.transfer.Source;
+import dev.hoori.db.core.transfer.SqlSource;
+import dev.hoori.db.core.transfer.SqlTarget;
+import dev.hoori.db.core.transfer.Target;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -199,6 +203,15 @@ interface Servers {
 
     /** What the server does now, read on this connection, as {@link Monitor} says. */
     Monitor monitor() throws QueryException;
+
+    /** This connection as what a copy of tables reads, as {@link SqlSource}. */
+    Source source() throws QueryException;
+
+    /**
+     * This connection as what a copy of tables writes, as {@link SqlTarget}; one of a read-only
+     * profile says so, and the copy is refused.
+     */
+    Target target() throws QueryException;
 
     /**
      * Gives up the statement whose rows are not all read, if one is, as {@link Execution#abandon}:
@@ -509,6 +522,17 @@ interface Servers {
       return new DocumentMonitor(session);
     }
 
+    // shortcut: collections are not copied yet; a copy of documents belongs here once they are.
+    @Override
+    public Source source() {
+      throw new UnsupportedOperationException("Collections are not copied yet");
+    }
+
+    @Override
+    public Target target() {
+      throw new UnsupportedOperationException("Collections are not copied yet");
+    }
+
     @Override
     public Abandoned giveUp() {
       var left = open.getAndSet(null);
@@ -742,6 +766,18 @@ interface Servers {
     public Monitor monitor() throws QueryException {
       usable();
       return new SqlMonitor(connection, provider);
+    }
+
+    @Override
+    public Source source() throws QueryException {
+      usable();
+      return new SqlSource(connection, provider);
+    }
+
+    @Override
+    public Target target() throws QueryException {
+      usable();
+      return new SqlTarget(connection, provider, version, readOnly);
     }
 
     @Override
