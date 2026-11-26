@@ -68,6 +68,39 @@ class PairingTest {
         pairing.keyedTarget().stream().map(Column::keyPosition).toList());
   }
 
+  // A partial unique index, or one not valid yet, names not every row once.
+  @Test
+  void aPartialUniqueIndexPairsNoRows() {
+    var source = List.of(
+        new Column(SOURCE, "code", "varchar(10)", false, 0),
+        new Column(SOURCE, "b", "int", false, 0));
+    var target = List.of(
+        new Column(TARGET, "code", "varchar(10)", false, 0),
+        new Column(TARGET, "b", "int", false, 0));
+    var partial = new Index("by_code", SOURCE, List.of("code"), true, false, "", true);
+    var whole = new Index("by_code", TARGET, List.of("code"), true, false);
+    assertInstanceOf(
+        Pairing.Unpaired.class,
+        Pairing.of(SOURCE, source, List.of(partial), TARGET, target, List.of(whole)));
+    assertInstanceOf(
+        Pairing.Unpaired.class,
+        Pairing.of(
+            SOURCE,
+            source,
+            List.of(whole),
+            TARGET,
+            target,
+            List.of(new Index("by_code", TARGET, List.of("code"), true, false, "", true))));
+    assertEquals(
+        "by_b",
+        paired(
+                source,
+                List.of(partial, new Index("by_b", SOURCE, List.of("b"), true, false)),
+                target,
+                List.of(whole, new Index("by_b", TARGET, List.of("b"), true, false)))
+            .keyName());
+  }
+
   @Test
   void tablesWithoutAKeyBothHaveCannotBeCompared() {
     var source = List.of(column(SOURCE, "id", "int", 1));
@@ -87,26 +120,39 @@ class PairingTest {
             column(SOURCE, "id", "int", 1),
             column(SOURCE, "at", "date", 0),
             column(SOURCE, "n", "int", 0),
-            column(SOURCE, "j", "json", 0)),
+            column(SOURCE, "j", "json", 0),
+            column(SOURCE, "d", "numeric(5,2)", 0)),
         List.of(),
         List.of(
             column(TARGET, "id", "numeric", 1),
             column(TARGET, "at", "text", 0),
             column(TARGET, "n", "numeric(5,2)", 0),
-            column(TARGET, "j", "longtext", 0)),
+            column(TARGET, "j", "longtext", 0),
+            column(TARGET, "d", "int", 0)),
         List.of());
+    // Integers fit in decimals, but decimals in integers would lose their fractions, and the rows
+    // would differ again after each apply.
     var read = pairing.read(
-        fields(Kind.INTEGER, Kind.DATE, Kind.INTEGER, Kind.JSON),
-        fields(Kind.DECIMAL, Kind.TEXT, Kind.DECIMAL, Kind.TEXT));
-    assertEquals(List.of("at"), read.unlike());
+        fields(Kind.INTEGER, Kind.DATE, Kind.INTEGER, Kind.JSON, Kind.DECIMAL),
+        fields(Kind.DECIMAL, Kind.TEXT, Kind.DECIMAL, Kind.TEXT, Kind.INTEGER));
+    assertEquals(List.of("at", "d"), read.unlike());
     assertEquals(3, read.columns().size());
     assertEquals(List.of(), read.onlyInSource());
+    var decimalKey = assertThrows(
+        CompareException.class,
+        () -> pairing.read(
+            fields(Kind.DECIMAL, Kind.DATE, Kind.INTEGER, Kind.JSON, Kind.DECIMAL),
+            fields(Kind.INTEGER, Kind.DATE, Kind.INTEGER, Kind.JSON, Kind.DECIMAL)));
+    assertEquals(
+        "Column id of the key holds decimals in the source, which the integers of the target"
+            + " cannot hold, so the rows cannot be paired.",
+        decimalKey.getMessage());
 
     var badKey = assertThrows(
         CompareException.class,
         () -> pairing.read(
-            fields(Kind.TEXT, Kind.DATE, Kind.INTEGER, Kind.JSON),
-            fields(Kind.INTEGER, Kind.DATE, Kind.INTEGER, Kind.JSON)));
+            fields(Kind.TEXT, Kind.DATE, Kind.INTEGER, Kind.JSON, Kind.DECIMAL),
+            fields(Kind.INTEGER, Kind.DATE, Kind.INTEGER, Kind.JSON, Kind.DECIMAL)));
     assertEquals(
         "Column id of the key holds text in the source and numbers in the target, which sort"
             + " apart, so the rows cannot be paired.",

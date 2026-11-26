@@ -20,13 +20,15 @@ import java.util.stream.IntStream;
 /**
  * How the rows of two tables are compared: their columns matched by name, and the key, of columns
  * both have, whose values pair a row of the source with the row of the target. The key is the
- * source's primary key, or else one of its unique keys, whose columns are all {@code NOT NULL},
- * that the target has too, as its primary key or a unique key of the same columns.
+ * source's primary key, or else one of its unique keys, whose columns are all {@code NOT NULL} and
+ * which holds for every row, not {@link Index#partial}, that the target has too, as its primary key
+ * or such a unique key of the same columns.
  *
  * <p>Once their reads say what kinds the columns' values are, {@link #read} leaves out the matched
- * columns whose kinds the two read differently, as a number and a text, which are then neither
- * compared nor written. Numbers of any kind compare by their value, and texts of {@link Kind#TEXT},
- * {@link Kind#JSON} and {@link Kind#OTHER} by their text.
+ * columns whose kinds the two read differently, as a number and a text, or whose target cannot
+ * hold the source's values, as integers the decimals of the source; these are then neither
+ * compared nor written. Numbers compare by their value, and texts of {@link Kind#TEXT}, {@link
+ * Kind#JSON} and {@link Kind#OTHER} by their text.
  *
  * @param sourceColumns all the source's columns, in their order
  * @param targetColumns all the target's columns, in their order
@@ -34,7 +36,8 @@ import java.util.stream.IntStream;
  *     source's order
  * @param key the key's columns, in its order
  * @param keyName what the key is, as the user is told: {@code primary key}, or a unique key's name
- * @param unlike the names of the columns left out of {@code columns} as their kinds differ
+ * @param unlike the names of the columns left out of {@code columns} as their kinds differ, or the
+ *     target's cannot hold the source's values
  */
 public record Pairing(
     Table source,
@@ -117,7 +120,8 @@ public record Pairing(
   }
 
   // The keys whose values name each row once: the primary key, then each unique key of columns
-  // that are not null, by name; each as the names of its columns in its order.
+  // that are not null and of every row, not partial, by name; each as the names of its columns in
+  // its order.
   private static Map<String, List<String>> keys(List<Column> columns, List<Index> indexes) {
     var keys = new LinkedHashMap<String, List<String>>();
     var primary = columns.stream()
@@ -134,7 +138,7 @@ public record Pairing(
           && index.columns().stream()
               .allMatch(name -> columns.stream()
                   .anyMatch(column -> column.name().equals(name) && !column.nullable()));
-      if (index.unique() && !index.primary() && whole) {
+      if (index.unique() && !index.primary() && !index.partial() && whole) {
         sorted.put(index.name(), index.columns());
       }
     }
@@ -184,10 +188,10 @@ public record Pairing(
 
   /**
    * As the reads of both tables say their columns' kinds, in the columns' order: the columns of
-   * kinds that compare differently are left out.
+   * kinds that compare differently, or whose target cannot hold the source's values, are left out.
    *
-   * @throws CompareException if a column of the key is of such kinds, which order apart, or the
-   *     reads have other columns than the tables had
+   * @throws CompareException if a column of the key is of such kinds, or the reads have other
+   *     columns than the tables had
    */
   public Pairing read(List<Field> source, List<Field> target) throws CompareException {
     if (source.size() != sourceColumns.size() || target.size() != targetColumns.size()) {
@@ -199,12 +203,17 @@ public record Pairing(
     for (var pair : columns) {
       var mine = source.get(pair.source()).kind();
       var theirs = target.get(pair.target()).kind();
-      if (alike(mine, theirs)) {
+      if (holds(theirs, mine)) {
         compared.add(pair);
       } else if (key.contains(pair)) {
-        throw new CompareException("Column " + sourceColumns.get(pair.source()).name()
-            + " of the key holds " + what(mine) + " in the source and " + what(theirs)
-            + " in the target, which sort apart, so the rows cannot be paired.");
+        var name = sourceColumns.get(pair.source()).name();
+        throw new CompareException(
+            numeric(mine) && numeric(theirs)
+                ? "Column " + name + " of the key holds decimals in the source, which the integers"
+                    + " of the target cannot hold, so the rows cannot be paired."
+                : "Column " + name + " of the key holds " + what(mine) + " in the source and "
+                    + what(theirs) + " in the target, which sort apart, so the rows cannot be"
+                    + " paired.");
       } else {
         left.add(sourceColumns.get(pair.source()).name());
       }
@@ -213,9 +222,13 @@ public record Pairing(
         this.source, sourceColumns, this.target, targetColumns, compared, key, keyName, left);
   }
 
-  // Values of these kinds compare and sort alike.
-  private static boolean alike(Kind a, Kind b) {
-    return a == b || numeric(a) && numeric(b) || KeyedRead.textual(a) && KeyedRead.textual(b);
+  // Whether a column of the target's kind holds the values of the source's, which compare and sort
+  // alike there: integers in decimals, but not decimals in integers, which would round them, so
+  // that the rows differ again after each apply.
+  private static boolean holds(Kind target, Kind source) {
+    return target == source
+        || source == Kind.INTEGER && target == Kind.DECIMAL
+        || KeyedRead.textual(target) && KeyedRead.textual(source);
   }
 
   private static boolean numeric(Kind kind) {
