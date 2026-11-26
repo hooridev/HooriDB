@@ -115,6 +115,44 @@ class DelimitedTest {
   }
 
   @Test
+  void readsBackTheNullsOfAFileOfOneColumnAsTheEmptyLinesTheyAre() throws IOException {
+    var name = List.of(new Field("name", "text", Kind.TEXT));
+    var rows =
+        List.of(row((Object) null), row("a"), row((Object) null), row(""), row((Object) null));
+    for (var format : List.of(
+        Format.Delimited.CSV,
+        Format.Delimited.CSV.withHeader(false).withLineEnd(LineEnd.LF),
+        Format.Delimited.TSV.withNullText("\\N"))) {
+      var read = read(format, bytes(format, name, rows));
+      var values = read.stream().map(DelimitedReader.Record::values).toList();
+      var header = format.header() ? List.of(List.of("name")) : List.<List<String>>of();
+      var expected = new ArrayList<List<String>>(header);
+      rows.forEach(r -> expected.add(Arrays.asList(Texts.of(r.getFirst()))));
+      assertEquals(expected, values, format.toString());
+      for (int i = 0; i < read.size(); i++) {
+        assertEquals(i + 1, read.get(i).line(), format.toString());
+      }
+    }
+    // An empty line is the empty value of a file of one column, but before its header.
+    assertEquals(
+        List.of(List.of("x"), List.of(""), List.of("y"), List.of("")),
+        read(Format.Delimited.TSV.withNullText("\\N").withHeader(false), utf8("x\n\ny\n\n"))
+            .stream()
+            .map(DelimitedReader.Record::values)
+            .toList());
+    assertEquals(
+        List.of(
+            new DelimitedReader.Record(2, List.of("name")),
+            new DelimitedReader.Record(3, Arrays.asList((String) null)),
+            new DelimitedReader.Record(4, List.of("b"))),
+        read(Format.Delimited.CSV, utf8("\nname\n\nb\n")));
+  }
+
+  private static byte[] utf8(String text) {
+    return text.getBytes(StandardCharsets.UTF_8);
+  }
+
+  @Test
   void writesAndSkipsTheMarkOfItsEncoding() throws IOException {
     var marked = Format.Delimited.CSV.withEncoding(Encoding.UTF_8_BOM);
     var bytes = bytes(marked, FIELDS, List.of(row(1L, "Grüße")));
