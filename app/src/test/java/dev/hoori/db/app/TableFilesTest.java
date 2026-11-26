@@ -164,6 +164,19 @@ class TableFilesTest {
   }
 
   @Test
+  void writesTheColumnsInTheTablesOrderWhateverTheOrderTheyWereCheckedIn() throws Exception {
+    var app = exporting("customers");
+    c.run(
+        app,
+        check("id") + check("id") + "dialog " + quoted(out) + "\n" + press("choose-folder")
+            + "await\nframe\n" + press("export") + SETTLE + "snap done\n");
+    assertTrue(line(c.tree("done"), "#export-outcome").contains("Exported"), c.tree("done"));
+    assertEquals(
+        "id,name\r\n1,Alice\r\n2,\"Bob, \"\"B\"\"\"\r\n",
+        Files.readString(out.resolve("customers.csv")));
+  }
+
+  @Test
   void aCancelledExportLeavesNoFile() throws Exception {
     var gate = servers.hold("export " + CUSTOMERS);
     var app = exporting("customers");

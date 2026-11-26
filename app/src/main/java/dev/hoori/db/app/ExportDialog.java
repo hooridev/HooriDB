@@ -29,6 +29,7 @@ import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.file.Encoding;
 import dev.hoori.db.core.file.Export;
+import dev.hoori.db.core.file.FileProblem;
 import dev.hoori.db.core.file.Format;
 import dev.hoori.db.core.file.LineEnd;
 import dev.hoori.db.core.query.QueryException;
@@ -39,6 +40,8 @@ import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -92,10 +95,11 @@ final class ExportDialog {
   final Options options = new Options();
   Path folder;
 
-  // The columns of the one table checked, and those chosen; null while not read or not one.
+  // The columns of the one table checked, and those chosen, in the table's order; null while not
+  // read or not one.
   private Table columnsOf;
   List<Column> columns;
-  final Set<Integer> chosen = new LinkedHashSet<>();
+  final SortedSet<Integer> chosen = new TreeSet<>();
 
   // The export as it runs, and what it came to.
   private Lane.Asked running;
@@ -190,8 +194,14 @@ final class ExportDialog {
     var detail = switch (e) {
       case QueryException q -> q.detail().isEmpty() ? q.getMessage() : q.detail();
       case CatalogException c -> c.getMessage();
+      case IOException io -> FileProblem.of(io);
       default -> e.getMessage() == null ? e.toString() : e.getMessage();
     };
+    return words(s, id, detail);
+  }
+
+  // The server's words, unless they hold the connection's password.
+  private static String words(State s, UUID id, String detail) {
     return CatalogTree.words(s.catalog.live(id), detail);
   }
 
@@ -307,10 +317,10 @@ final class ExportDialog {
               }
               outcome = new Outcome.Failed(table, name, e.getMessage());
             } catch (IOException e) {
-              outcome = new Outcome.Failed(table, name, e.getMessage());
+              outcome = new Outcome.Failed(table, name, FileProblem.of(e));
             }
             var done = outcome;
-            app.post(() -> finished(run, done));
+            app.post(() -> finished(app.state(), run, done));
           }
           return null;
         },
@@ -363,9 +373,14 @@ final class ExportDialog {
     }
   }
 
-  private void finished(int run, Outcome outcome) {
+  private void finished(State s, int run, Outcome outcome) {
     if (run == runs) {
-      outcomes.add(outcome);
+      outcomes.add(
+          switch (outcome) {
+            case Outcome.Failed(var table, var file, var why) ->
+              new Outcome.Failed(table, file, words(s, id, why));
+            case Outcome.Written w -> w;
+          });
     }
   }
 
