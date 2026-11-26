@@ -81,7 +81,12 @@ final class Lane {
    * once the call ends, or by {@link #close} if it never starts. The driver is held from here
    * until the closing has ended, so that a delete of its version waits for it.
    */
-  void open(Servers servers, ConnectionProfile profile, char[] password, LoadedDriver driver) {
+  void open(
+      Servers servers,
+      ConnectionProfile profile,
+      char[] password,
+      LoadedDriver driver,
+      Duration timeout) {
     if (driver != null) {
       release = driver.hold();
     }
@@ -89,7 +94,7 @@ final class Lane {
     copy = given;
     opening = run(Priority.VIEW, () -> {
       try {
-        link = servers.open(profile, given, driver);
+        link = servers.open(profile, given, driver, timeout);
         return link;
       } catch (ConnectionException | RuntimeException e) {
         fail(e); // the calls behind it fail as it did

@@ -7,7 +7,7 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 
 ## Table data
 
-- You cannot edit, insert, or delete rows in a table grid. Use an [SQL console](/docs/features/console) to change data.
+- A table tab grid edits, inserts, and deletes rows only in tables with a primary key (see [Table data](/docs/features/table-data#edit-insert-and-delete-rows)). In an [SQL console](/docs/features/console#edit-query-results), single-table `SELECT` results with a primary key support updating existing cells only: a new row may not match the query, and the console does not run the query again after a commit, so deleted rows would still show.
 - You cannot filter or sort rows in the grid.
 - A table grid displays at most 2,147,483,647 rows, and copying from a grid is limited to 100,000 selected cells at once from rows that are already loaded.
 - Values longer than 1,024 characters can be fetched whole in the value panel only for tables with a primary key and for MongoDB collections (by the document's `_id`). In tables without a primary key, and in SQL console results, the value panel shows only the first 1,024 characters.
@@ -35,12 +35,13 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 
 Some of these limits are tracked in [issue #57](https://github.com/hooridev/HooriDB/issues/57).
 
-- Connections support a single host and port, or a `mongodb+srv://` host. Host lists are not supported, and the options a `mongodb+srv://` host lists in its DNS TXT record, such as `replicaSet` or `loadBalanced`, are not read.
+- Connections support a single host and port, or a `mongodb+srv://` host. Host lists are not supported, and the options a `mongodb+srv://` host lists in its DNS TXT record, such as `replicaSet` or `loadBalanced`, are not read. Pasting a connection string with multiple hosts or options without a field uses the first host and supported options and lists the rest under **Host**.
 - Only user name and password authentication (SCRAM) is supported: no X.509 certificates, LDAP, Kerberos, or AWS IAM, which authenticate against `$external`.
 - Pages are read by offset, ordered by `_id`. On a view that projects out or duplicates `_id`, documents can repeat or be skipped between pages.
 - A collection's fields in the tree and grid come from a sample of 100 documents, so fields absent from that sample do not appear there; **JSON** and **Tree** still show them.
 - The console parses [shell statements](/docs/features/mongodb#run-shell-statements-in-a-console) without JavaScript: variables, functions, and loops are not supported.
 - There are no transactions in a MongoDB console.
+- A collection's tab edits, inserts, copies, and deletes [one document at a time](/docs/features/mongodb#edit-insert-copy-and-delete-documents) in a dialog: not cells in the grid, not several documents at once, and not a console's result; an `_id` cannot be changed. The check for a document changed meanwhile does not see a value whose type alone changed while it compares equal: a number of another type at the same value, such as `1` to `Long('1')`, or a string turned into a symbol of the same text.
 
 ## Connections and appearance
 
@@ -51,7 +52,6 @@ Some of these limits are tracked in [issue #57](https://github.com/hooridev/Hoor
   - For a hard limit, log in as a user who has only read permissions.
 - There is no built-in support for SSH tunnels, client TLS certificates, or custom driver parameters.
 - Connections cannot be imported or exported from the UI.
-- Theme selection (**Dark theme** / **Light theme**) is not saved across restarts; HooriDB starts in dark theme each time.
 
 ## Updates
 

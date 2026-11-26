@@ -19,6 +19,7 @@ import static dev.hoori.db.app.ConsoleTransactions.CHAIN;
 import static dev.hoori.db.app.ConsoleTransactions.MANUAL;
 import static dev.hoori.db.app.ConsoleTransactions.OPENED;
 import static dev.hoori.db.app.ConsoleTransactions.badge;
+import static dev.hoori.db.app.LayoutTest.widthOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,7 +27,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.query.QueryException;
@@ -38,6 +41,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /** What a console asks before a statement: a large read it reads whole, a change of every row. */
@@ -162,6 +166,51 @@ class ConsoleConfirmationTest {
     assertFalse(c.tree("anyway").contains("role=dialog"), c.tree("anyway"));
   }
 
+  /** A question after an open read waits until that read is given up, which it may wait long. */
+  @Test
+  void aQuestionAfterAnOpenReadAsksOnceTheReadIsGivenUp() throws Exception {
+    var app = t.k.console(SHOP);
+    var close = "close " + PG + " " + BIG;
+    var gate = servers.hold(close);
+    try {
+      c.run(app, type(String.join(";\n", BIG, WIPE)) + "key Enter control shift\nframe\n");
+      // No await once the give-up started: it would wait for the gate.
+      for (int i = 0;
+          i < 12 && (tab(app).outputs.isEmpty() || !tab(app).outputs.getFirst().cut);
+          i++) {
+        c.run(app, "await\nframe\n");
+      }
+      eventually(() -> servers.calls.contains(close));
+      c.run(app, "frame\nadvance 1\nframe\nsnap closing\n");
+      assertFalse(c.tree("closing").contains(EVERY), c.tree("closing"));
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE + "snap asked\n");
+    assertTrue(c.tree("asked").contains(EVERY), c.tree("asked"));
+    var read = tab(app).outputs.getFirst();
+    assertTrue(read.cut);
+    assertEquals(200, read.rows.size());
+    c.run(app, ANYWAY);
+    assertTrue(ran(WIPE), servers.calls.toString());
+  }
+
+  /** Where giving up the open read fails, the statement that waited for it says it did not run. */
+  @Test
+  void aFailedGiveUpBeforeAQuestionSaysTheStatementDidNotRun() throws Exception {
+    servers.failsAtGiveUp(BIG, FakeServers.serverError(Failure.Kind.CONSTRAINT, "no end"));
+    var app = t.k.console(SHOP);
+    c.run(app, type(String.join(";\n", BIG, WIPE)) + RUN_ALL + "snap failed\n");
+    assertFalse(c.tree("failed").contains(EVERY), c.tree("failed"));
+    assertFalse(ran(WIPE), servers.calls.toString());
+    assertTrue(
+        tab(app)
+            .log
+            .contains(
+                new ConsoleTab.Logged(ConsoleTab.Level.ERROR, WIPE, null, ConsoleTab.NOT_RUN)),
+        tab(app).log.toString());
+  }
+
   /** Cancelled in the empty transaction a chained Commit began, it leaves that empty. */
   @Test
   void aCancelledReadLeavesTheChainedTransactionEmpty() throws Exception {
@@ -197,8 +246,11 @@ class ConsoleConfirmationTest {
   void theToolbarsCancelStopsTheEstimate() throws Exception {
     var app = estimating();
     c.run(app, "snap estimating\n");
-    assertTrue(line(c.tree("estimating"), "#run").contains("busy"), c.tree("estimating"));
-    c.run(app, "press #cancel\nframe\n" + SETTLE + MESSAGES + "snap cancelled\n");
+    assertTrue(line(c.tree("estimating"), "#run ").contains("busy"), c.tree("estimating"));
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + SETTLE
+            + MESSAGES + "snap cancelled\n");
     String cancelled = c.tree("cancelled");
     assertTrue(servers.interrupted.contains(EXPLAIN), servers.interrupted.toString());
     assertFalse(ran(BIG), servers.calls.toString());
@@ -369,9 +421,206 @@ class ConsoleConfirmationTest {
     var app = t.k.console(SHOP);
     c.run(app, type(BIG + ";\n" + ORDERS) + RUN_ALL + "snap ran\n");
     assertTrue(ran(BIG) && ran(ORDERS), servers.calls.toString());
-    assertTrue(
-        servers.calls.stream().noneMatch(k -> k.startsWith("explain ")), servers.calls.toString());
     assertFalse(c.tree("ran").contains("role=dialog"), c.tree("ran"));
+    // BIG was left as ORDERS ran, so only the open read ORDERS asks the planner, after it ran.
+    assertFalse(servers.calls.contains("explain " + PG + " " + BIG), servers.calls.toString());
+    int ranOrders = servers.calls.indexOf("run " + PG + " " + ORDERS);
+    int explainedOrders = servers.calls.indexOf("explain " + PG + " " + ORDERS);
+    assertTrue(ranOrders >= 0 && explainedOrders > ranOrders, servers.calls.toString());
+  }
+
+  @Test
+  void aLazyReadShowsThePlannersEstimateOnItsOwnConnection() throws Exception {
+    servers.plans(BIG, 2_400_000).plans(COUNT, 10);
+    var app = t.k.console(SHOP);
+    c.run(app, type(BIG) + RUN + "snap open\n");
+    String open = c.tree("open");
+    assertFalse(open.contains("role=dialog"), open);
+    assertTrue(
+        ConsoleTest.near(open, "#result-status")
+            .contains("200 of about 2,400,000 rows so far · cursor open, more as it scrolls"),
+        open);
+    int ranBig = servers.calls.indexOf("run " + PG + " " + BIG);
+    int explainedBig = servers.calls.indexOf(EXPLAIN);
+    assertTrue(ranBig >= 0 && explainedBig > ranBig, servers.calls.toString());
+    // The estimate ran on the estimates' connection, not on the console's session or the tree's.
+    var session = number("run " + PG + " " + BIG);
+    var tree = number("databases " + PG);
+    var planner = number(EXPLAIN);
+    assertFalse(planner.equals(session) || planner.equals(tree), servers.linked.toString());
+    assertTrue(
+        servers.linked.stream()
+            .filter(k -> k.startsWith(planner + " "))
+            .allMatch(k -> k.startsWith(planner + " explain ")),
+        servers.linked.toString());
+    assertTrue(
+        servers.linked.stream().noneMatch(k -> k.startsWith(session + " explain ")),
+        servers.linked.toString());
+    assertTrue(
+        servers.linked.stream().noneMatch(k -> k.startsWith(tree + " explain ")),
+        servers.linked.toString());
+
+    // Stopped early, the partial result keeps the estimate.
+    c.run(app, "press role=button label=\"Stop reading\"\nframe\n" + SETTLE + "snap stopped\n");
+    String stopped = c.tree("stopped");
+    assertTrue(
+        ConsoleTest.near(stopped, "#result-status")
+            .contains("the first 200 of about 2,400,000 rows; reading stopped"),
+        stopped);
+
+    // Scrolled to its end, the exact count stands and no estimate shows.
+    c.run(app, RUN + "scroll #grid row 180\nframe\nframe\n" + SETTLE + "snap ended\n");
+    String endedStatus = ConsoleTest.near(c.tree("ended"), "#result-status");
+    assertTrue(endedStatus.contains("\"300 rows · "), endedStatus);
+    assertFalse(endedStatus.contains(" of about "), endedStatus);
+
+    // A read that finishes in its first portion needs no estimate and asks none.
+    c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN);
+    assertFalse(servers.calls.contains("explain " + PG + " " + COUNT), servers.calls.toString());
+  }
+
+  /**
+   * The status keeps half the footer, as a table tab's does, so the read-only explanation shortens
+   * first and is in the status's tooltip; a narrow tab keeps Pin inside the card.
+   */
+  @ParameterizedTest
+  @CsvSource({"800, 0", "800, 400", "1173, 0"})
+  void aNarrowResultFooterKeepsRoomForTheStatusLine(int width, int sidebar) throws Exception {
+    servers.plans(BIG, 2_400_000);
+    var app = t.k.console(SHOP);
+    if (sidebar > 0) {
+      app.state().sidebar = Split.Position.first(sidebar);
+    }
+    c.run(
+        app,
+        "size " + width + " 760\nframe\n" + type(BIG) + RUN + "advance 1\nframe\nsnap narrow\n");
+    String narrow = c.tree("narrow");
+    assertTrue(
+        ConsoleTest.near(narrow, "#result-status")
+            .contains("200 of about 2,400,000 rows so far · cursor open, more as it scrolls"),
+        narrow);
+    assertTrue(narrow.contains("#stop-reading "), narrow);
+    float status = widthOf(narrow, "#result-status ");
+    // Half the footer: the grid's width less the footer's padding.
+    assertTrue(status >= (widthOf(narrow, "#grid ") - 32) / 2 - 1, narrow);
+    assertTrue(widthOf(narrow, "#edit-status ") > 0, narrow);
+    assertTrue(TableTabTest.end(narrow, "#pin ") <= TableTabTest.end(narrow, "#grid "), narrow);
+    c.run(app, "move #result-status\nframe\nadvance 1\nframe\nframe\nsnap tip\n");
+    String tip = c.tree("tip");
+    assertTrue(
+        ConnectionsTest.line(tip, "role=tooltip").contains(ResultEdits.NOT_EDITABLE_RESULT), tip);
+  }
+
+  @Test
+  void aHeldEstimateDoesNotHoldTheFirstRowsAndCancelsWhenLeft() throws Exception {
+    var app = t.k.console(SHOP);
+    c.run(app, type(COUNT) + RUN); // session open on shop
+    var gate = servers.hold(EXPLAIN);
+    try {
+      c.run(app, type(";\n" + BIG) + "key Enter control\nframe\nawait\nframe\n");
+      eventually(() -> servers.calls.contains(EXPLAIN));
+      c.run(app, "advance 1\nframe\nsnap held\n");
+      String held = c.tree("held");
+      assertEquals(200, tab(app).outputs.getFirst().rows.size());
+      assertFalse(tab(app).busy());
+      String heldStatus = ConsoleTest.near(held, "#result-status");
+      assertTrue(heldStatus.contains("200 rows so far · cursor open, more as it scrolls"), held);
+      assertFalse(heldStatus.contains(" of about "), held);
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE + "snap estimated\n");
+    String estimated = c.tree("estimated");
+    assertTrue(
+        ConsoleTest.near(estimated, "#result-status")
+            .contains("200 of about 5,000,000 rows so far · cursor open, more as it scrolls"),
+        estimated);
+
+    // Leaving the read while a new estimate is held cancels the estimate on the planner lane.
+    var second = servers.hold(EXPLAIN);
+    try {
+      int explainBefore = (int) servers.calls.stream().filter(EXPLAIN::equals).count();
+      c.run(app, "press #sql\nkey Enter control\nframe\nawait\nframe\n");
+      eventually(() -> servers.calls.stream().filter(EXPLAIN::equals).count() > explainBefore);
+      c.run(app, "advance 1\nframe\npress role=button label=\"Stop reading\"\nframe\n");
+      eventually(() -> servers.interrupted.contains(EXPLAIN));
+    } finally {
+      second.countDown();
+    }
+    c.run(app, SETTLE + "snap stopped\n");
+    String stopped = ConsoleTest.near(c.tree("stopped"), "#result-status");
+    assertTrue(stopped.contains("the first 200 rows; reading stopped"), stopped);
+    assertFalse(stopped.contains(" of about "), stopped);
+  }
+
+  @Test
+  void aMissingOrFailedEstimateLeavesTodaysStatusLine() throws Exception {
+    var app = t.k.console(SHOP);
+    // Missing plan (same OptionalLong.empty() as Plan.callsOut): today's text stays.
+    c.run(app, type(ORDERS) + RUN + "snap missing\n");
+    assertTrue(servers.done.contains("explain " + PG + " " + ORDERS), servers.done.toString());
+    String missing = ConsoleTest.near(c.tree("missing"), "#result-status");
+    assertTrue(missing.contains("200 rows so far · cursor open, more as it scrolls"), missing);
+    assertFalse(missing.contains(" of about "), missing);
+
+    // Failed estimate: today's text stays, with no error or notice.
+    servers.fail(EXPLAIN, FakeServers.queryFailure(QueryException.Failure.OTHER));
+    c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(BIG) + RUN + "snap failed\n");
+    assertTrue(servers.failed.contains(EXPLAIN), servers.failed.toString());
+    String failed = ConsoleTest.near(c.tree("failed"), "#result-status");
+    assertTrue(failed.contains("200 rows so far · cursor open, more as it scrolls"), failed);
+    assertFalse(failed.contains(" of about "), failed);
+    assertEquals(null, tab(app).problem);
+    assertTrue(app.state().notices.isEmpty(), app.state().notices.toString());
+  }
+
+  /**
+   * A read the console expected to keep lazy in Auto, but whose server status forces it to be read
+   * whole (as with a driver that cannot report auto-commit), asks first where the planner
+   * estimates more rows than KEPT.
+   */
+  @Test
+  void aReadForcedWholeByUnknownAutoCommitAsksBeforeRunning() throws Exception {
+    servers.cannotReport(MARIA);
+    var app = t.k.console(INVENTORY);
+    c.run(app, type(BIG) + RUN + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains(LARGE), asked);
+    assertTrue(servers.calls.contains("explain " + MARIA + " " + BIG), servers.calls.toString());
+    assertFalse(servers.calls.contains("run " + MARIA + " " + BIG), servers.calls.toString());
+    c.run(app, ANYWAY + "snap ran\n");
+    String ran = c.tree("ran");
+    assertFalse(ran.contains("role=dialog"), ran);
+    assertTrue(
+        servers.calls.contains("next " + MARIA + " " + BIG + " 200"), servers.calls.toString());
+    assertTrue(ConsoleTest.near(ran, "#result-status").contains("\"300 rows · "), ran);
+  }
+
+  /**
+   * Disconnecting while a read forced whole by unknown auto-commit runs asks as for any running
+   * read whole.
+   */
+  @Test
+  void disconnectingWhileAReadForcedWholeRunsAsks() throws Exception {
+    servers.cannotReport(MARIA);
+    var app = t.k.console(INVENTORY);
+    c.run(app, CatalogTreeTest.open(INVENTORY.name()) + SETTLE);
+    var key = "run " + MARIA + " " + ORDERS;
+    var gate = servers.hold(key);
+    c.run(app, type(ORDERS) + "key Enter control\nframe\nframe\n");
+    eventually(() -> servers.calls.contains(key));
+    c.run(
+        app,
+        "press role=treeitem label=\"" + INVENTORY.name() + "\" level=1 right\nframe\n" + OPENED
+            + "press role=menuitem label=\"Disconnect\"\nframe\n" + OPENED + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains("role=dialog label=\"Roll back the transaction?\""), asked);
+    assertTrue(asked.contains("A statement still runs on"), asked);
+    assertTrue(app.state().catalog.connected(INVENTORY.id()));
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED);
+    gate.countDown();
+    c.run(app, SETTLE);
+    assertTrue(app.state().catalog.connected(INVENTORY.id()));
   }
 
   /** An EXPLAIN that fails: the read runs, and PostgreSQL's transaction goes on. */

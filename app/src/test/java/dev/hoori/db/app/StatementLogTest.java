@@ -1,8 +1,10 @@
 package dev.hoori.db.app;
 
+import static dev.hoori.db.app.CatalogTreeTest.PG;
 import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
 import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.menu;
 import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.PASSWORD;
 import static dev.hoori.db.app.ConnectionsTest.line;
@@ -10,17 +12,32 @@ import static dev.hoori.db.app.ConsoleTest.COUNT;
 import static dev.hoori.db.app.ConsoleTest.MISSING;
 import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.FakeServers.session;
 import static dev.hoori.db.app.TableTabTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.StatementLogStore;
+import dev.hoori.db.core.log.Logged;
+import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.log.Sent;
+import dev.hoori.db.core.monitor.Block;
+import dev.hoori.db.core.monitor.Counter;
+import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.sql.Secrets;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -244,5 +261,153 @@ class StatementLogTest {
     assertFalse(new StatementLogStore(dir.resolve("config")).enabled());
     c.run(app, "press #statement-log-on\nframe\n" + SETTLE + open("sales") + SETTLE);
     assertTrue(app.state().statements.entries().size() > before);
+  }
+
+  private static Logged entry(String sql) {
+    return new Logged(
+        SHOP.id(),
+        new Sent(
+            Instant.now(), Purpose.STATEMENT, "shop", sql, Duration.ofMillis(1), Outcome.DONE));
+  }
+
+  @Test
+  void exitWaitsForAHeldWriteAndClosesOnceItEnds() throws Exception {
+    var app = shop();
+    var started = new CountDownLatch(1);
+    var gate = new CountDownLatch(1);
+    app.state().statements.beforeCall = () -> {
+      started.countDown();
+      try {
+        gate.await();
+      } catch (InterruptedException _) {
+        Thread.currentThread().interrupt();
+      }
+    };
+    try {
+      app.state().statements.add(entry("SELECT 41"));
+      app.state().requestClose();
+      assertTrue(started.await(5, TimeUnit.SECONDS), "the first write started");
+      c.run(app, "frame\n");
+      assertFalse(app.windows().all().isEmpty(), "Exit waits for the held write");
+      // Another entry arrives while the first write runs; both are written before closing.
+      app.state().statements.add(entry("SELECT 42"));
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE);
+    assertTrue(app.windows().all().isEmpty(), "Exit closes once the writes have ended");
+    var kept = Files.readString(dir.resolve("config").resolve(StatementLogStore.FILE));
+    assertTrue(kept.contains("SELECT 41"), kept);
+    assertTrue(kept.contains("SELECT 42"), kept);
+  }
+
+  @Test
+  void aFailedWriteDoesNotBlockExit() throws Exception {
+    var app = shop();
+    var started = new CountDownLatch(1);
+    var gate = new CountDownLatch(1);
+    var failed = new AtomicBoolean();
+    app.state().statements.beforeCall = () -> {
+      if (failed.getAndSet(true)) {
+        return; // the first write alone fails
+      }
+      started.countDown();
+      try {
+        gate.await();
+      } catch (InterruptedException _) {
+        Thread.currentThread().interrupt();
+      }
+      throw new IOException("disk full");
+    };
+    try {
+      app.state().statements.add(entry("SELECT 41"));
+      app.state().requestClose();
+      assertTrue(started.await(5, TimeUnit.SECONDS), "the write started");
+      // Another entry comes while the write that fails runs: it is written, with what failed.
+      app.state().statements.add(entry("SELECT 42"));
+      c.run(app, "frame\n");
+      assertFalse(app.windows().all().isEmpty(), "Exit waits while the write runs");
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE);
+    assertTrue(app.windows().all().isEmpty(), "a failed write does not keep HooriDB open");
+    assertEquals("disk full", app.state().statements.problem());
+    var kept = Files.readString(dir.resolve("config").resolve(StatementLogStore.FILE));
+    assertTrue(kept.contains("SELECT 41"), kept);
+    assertTrue(kept.contains("SELECT 42"), kept);
+
+    // Entries left unsaved from an earlier failed write do not hold a later Exit either.
+    var second = shop();
+    second.state().statements.beforeCall = () -> {
+      throw new IOException("disk full");
+    };
+    second.state().statements.add(entry("SELECT 42"));
+    c.run(second, SETTLE);
+    assertEquals("disk full", second.state().statements.problem());
+    second.state().requestClose();
+    c.run(second, "frame\n");
+    assertTrue(second.windows().all().isEmpty(), "earlier unsaved entries do not hold Exit");
+  }
+
+  @Test
+  void theServerMonitorsEndsAreLoggedAsMonitorWhileItsReadsAreNot() throws Exception {
+    servers.sessions(PG, session("101", "ada", "SELECT pg_sleep(60)"), session("102", "bob", ""));
+    servers.variables(PG, new ServerVariable("work_mem", "4MB", "default"));
+    servers.counters(PG, new Counter("commits", "42"));
+    servers.locks(PG, new Block("101", "102", "public.orders", "ShareLock"));
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START + open("shop-prod") + SETTLE + menu("shop-prod", "Server monitor") + SETTLE
+            + "press role=radio label=\"Variables\"\n" + MonitorTabTest.SHOWN + SETTLE
+            + "press role=radio label=\"Status\"\n" + MonitorTabTest.SHOWN + SETTLE
+            + "press role=radio label=\"Locks\"\n" + MonitorTabTest.SHOWN + SETTLE
+            + "press role=radio label=\"Sessions\"\n" + MonitorTabTest.SHOWN + SETTLE
+            + MonitorTabTest.pick(2) + "press #end-session\n" + MonitorTabTest.SHOWN
+            + "press #question-go\n" + MonitorTabTest.SHOWN + SETTLE + TOGGLE
+            + filter("Part", "Monitor") + "snap monitor\n");
+    var entries = app.state().statements.entries();
+    assertTrue(
+        entries.stream()
+            .anyMatch(e -> e.sent().purpose() == Purpose.MONITOR
+                && e.sent().text().equals("end " + PG + " 102")),
+        entries.toString());
+    assertFalse(
+        entries.stream()
+            .anyMatch(e -> e.sent().text().startsWith("sessions ")
+                || e.sent().text().startsWith("variables ")
+                || e.sent().text().startsWith("status ")
+                || e.sent().text().startsWith("locks ")),
+        entries.toString());
+    var log = panel(c.tree("monitor"));
+    assertTrue(log.contains("\"Monitor\""), log);
+    assertTrue(log.contains("\"end " + PG + " 102\""), log);
+    assertFalse(log.contains("\"Tree\""), log);
+  }
+
+  /** Changing the time zone setting updates the times shown in the statement log. */
+  @Test
+  void timeZoneSettingUpdatesStatementLogTimes() throws Exception {
+    var app = c.app(SHOP);
+    c.run(app, START);
+    app.state()
+        .statements
+        .add(new Logged(
+            SHOP.id(),
+            new Sent(
+                Instant.parse("2026-01-15T10:30:00Z"),
+                Purpose.STATEMENT,
+                "shop",
+                COUNT,
+                Duration.ofMillis(4),
+                Outcome.rows(1))));
+    c.run(app, SETTLE + TOGGLE + "snap berlin\n");
+    assertTrue(panel(c.tree("berlin")).contains("\"11:30:00.000\""), panel(c.tree("berlin")));
+
+    app.post(() -> app.state().choose(Settings.DEFAULT.withTimeZone(ZoneId.of("UTC"))));
+    c.run(app, "await\nframe\nsnap utc\n");
+    assertTrue(panel(c.tree("utc")).contains("\"10:30:00.000\""), panel(c.tree("utc")));
   }
 }

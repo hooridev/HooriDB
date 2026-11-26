@@ -11,46 +11,82 @@ with their passwords in the system keyring and the rest in the workspace (`works
 of folders and connections, which the first start fills from an earlier version's `connections.json`
 where it is missing, and tested from their dialog, which downloads the JDBC driver from Maven
 Central after asking: the recommended version, or one the connection chose from the repository's
-list. The sidebar, Workspace, shows folders, nested to any depth up to 240, beside the connections:
-its "+", the File menu and a folder's menu make a folder, named in a dialog, or a connection, which
-go into the folder selected or that of the connection selected, and a duplicate goes right after its
-original; a folder is renamed in a dialog, folders and connections move by Move to, which lists the
-top and every folder by its path, or by dragging them before, after or into a folder, in any order,
-and a move leaves a connection connected with its tabs; whether a folder is open is saved, and
-Delete… of one that holds something asks first, with the number of its connections, and moves what
-it holds up a level or deletes it, each connection as its own Delete… does after the questions of
-all their consoles, and then the folder; one whose password the keyring did not delete stays, with
-its folder, and the dialog names it. File, Drivers… lists the versions downloaded of each kind with
+list. The sidebar, Workspace, shows folders, nested to any depth up to 240, beside the connections and
+queries: its "+", the File menu and a folder's menu make a folder, named in a dialog, a connection,
+or a query (SQL or MongoDB shell, not bound to a connection), which go into the folder selected or
+that of the entry selected, and a duplicate goes right after its original; a folder or query is
+renamed in a dialog, folders, connections and queries move by Move to, which lists the top and every
+folder by its path, or by dragging them before, after or into a folder, in any order, and a move
+leaves a connection connected with its tabs; whether a folder is open is saved, and Delete… of one
+that holds something asks first, with the number of its connections and queries, and moves what it
+holds up a level or deletes it, each connection as its own Delete… does after the questions of all
+their consoles and open query tabs, and then the folder; one whose password the keyring did not
+delete stays, with its folder, and the dialog names it. Opening a query opens a console tab bound
+to it (one tab per query, titled by its name, colored by its current target, autosaving text edits
+into `workspace.json`, colored, split and completed by standard SQL until it has a target);
+running it asks for the target connection in a menu at the caret
+(connections of its language, the last target first, then connected ones, with color mark, folder
+path and read-only note), silently re-running only when exactly one connection of that language is connected and is
+the last target, and switching targets asks via the console's existing question before ending the
+old session, clearing every result (pinned too) and resetting the database to the new target's
+default. File, Drivers… lists the versions downloaded of each kind with
 their sizes, downloads one and deletes one that no open connection uses. Opening a connection in the
-tree connects and reads its databases, schemas, tables and views, and columns, one level at a time
+tree connects and reads its databases, schemas, tables and views, and columns with their foreign
+keys and indexes (marking key columns, listing outgoing and incoming keys under a table's Foreign
+keys node, where Enter or a double press opens the related table, and listing indexes with their
+columns under its Indexes node), one level at a time
 as they are opened; several connections are open at once. A double press or Enter on a table or view
 opens its rows in a tab, read late in pages on its connection's lane, with the rows in view in its
-status line and buttons that scroll a page back or on, or to the first or last row; tabs move and
-tear off into windows of their own. The columns of a table and of a console's result fit their first
-rows once, and a table's fit again where a refresh finds other columns. A moment, a timestamp with a
-time zone, shows and is copied in the computer's time zone, with the offset it has there.
+status line, buttons that scroll a page back or on, or to the first or last row, and, on SQL
+servers, WHERE and ORDER BY fields with completion that narrow and order the rows and count,
+a Conditions… button beside WHERE that opens the kit's condition builder over the table's columns
+(with OR, nested groups and Not equal, translated by the dialect, joined to hand-written text and
+synced with header filters where both express a flat AND),
+sortable and filterable column headers (other than JSON and OTHER, and binary data for filters;
+Shift+press adds a sort column, and header filters with chips above the grid join their conditions
+into WHERE with AND while keeping hand-written text) that write their clauses into WHERE or ORDER
+BY and apply them after asking about pending edits,
+grid context menu items to follow outgoing and incoming foreign keys from a row (opening or reusing
+the related table's tab filtered to its key values, keeping ORDER BY and asking about pending edits),
+and Open in console to add its SELECT and applied clauses to the end of a console open on its
+database, or to a new console where none is or Settings asks for a new one; tabs move and tear off into
+windows of their own. The columns of a table and of a console's result fit their
+first rows once, and a table's fit again where a refresh finds other columns. A moment, a timestamp
+with a time zone, shows and is copied in the computer's time zone, with the offset it has there.
 Shift+Enter in a grid, or the button in its
 status line, opens a panel beside it with the value of the current cell, which follows the
 selection: JSON (PostgreSQL's `json` and `jsonb`, MySQL's and MariaDB's `json`) formatted and
-colored, and with its first problem marked where it is not valid; a table reads a value cut short
-whole by its row's primary key, and a console's result shows the start it holds. A connection can
+colored, and with its first problem marked and shown after its line where it is not valid; a table reads a value cut short
+whole by its row's primary key, a console's result keeps long values whole up to a budget and
+their start beyond it, and a MongoDB console's shows the value in its document. A connection can
 carry a color, which marks its row and its tabs. "New console", in a connection's menu or the File
-menu, opens a tab with an SQL editor that runs the statement at the caret, the selection or all of
-them on a connection of its own, with each result's rows read in portions as they scroll, a count
-for a change, and a log of what ran in Messages, an error at the place the server names underlined
-in the editor with the caret there, and completions of keywords and of the schemas, tables and
-columns the tree read or reads for it; it switches databases and cancels what runs. It commits each
-statement by itself in Auto, and in Manual Commit and Rollback end the transaction, whose state it
+menu, opens a tab with an SQL editor that runs the statement at the caret, which it outlines, the
+selection or all of them on a connection of its own, with each result's rows read in portions as they scroll, its
+open cursor shown with the planner's estimate and Stop reading and given up by itself after 30 s
+idle or at 100,000 rows, a
+count for a change, and a log of what ran in Messages, a gutter marker on each statement's first
+line (before it ran, to run it; after, its last outcome with time and rows or count to run it again,
+moving with edits), an error at the place the server names in its own markup layer so it moves with
+edits and shows its message after its line with the caret there, quick documentation on hover or
+Control+Q for a table's kind, schema, columns, foreign keys and indexes or a column's type, table and
+foreign key references (reading what the
+tree lacks for the next hover), Control+B and Control+click on a table or column name to open its
+table in a tab (or the referenced table where the column is in one outgoing foreign key), Control+Alt+L to lay its SQL out, changing only white space, and completions of
+keywords, foreign-key joins and ON conditions, and the schemas, tables and columns the tree read or
+reads for it; it switches
+databases and cancels what runs. It commits each statement by itself in Auto, and in Manual Commit
+and Rollback end the transaction, whose state it
 shows as the server says it, and as possibly open where the server has not said; closing it,
 switching auto-commit or the database, disconnecting, changing or deleting its connection and
 closing HooriDB ask first while one may be open. In Manual, and while a transaction is open, it
 reads each result whole before showing it and keeps the first 100,000 rows of each, asking first
 where the server's plan estimates more; it asks before an UPDATE or DELETE without a WHERE in any
-mode; while a change of its connection is saved or deleted it runs nothing. A connection to a server
-of SQL may be read-only: each of its sessions, the tree's, a console's and the planner's, is
-read-only at the server from its opening, on any database, so that the server refuses what writes,
-and a statement that would turn that off is not sent. What finishing a session's work reports, a
-read's commit as it is given up, Commit's or Rollback's failure or warnings, a closing session's
+mode; while a change of its connection is saved or deleted it runs nothing. The tree's and the
+counts' sessions of a connection to a server of SQL are always read-only at the server from their
+opening, on any database, so that browsing refuses what writes, and a clause that would turn that
+off is not sent; such a connection may also be read-only as a whole, which makes its consoles' and
+planner's sessions read-only too and its tables not editable. What finishing a session's work
+reports, a read's commit as it is given up, Commit's or Rollback's failure or warnings, a closing session's
 failure, and any outcome of a call on its session that the console no longer takes, as when it was
 cancelled or closed, goes to a list of notices in the main window until dismissed, and stops what
 waited on it; a Commit or Rollback that fails or does not answer can be left by ending the
@@ -60,34 +96,46 @@ another; one that does not answer can be given up, and what is asked of the keyr
 behind it; a saved password it does not give in time is asked of the user, and where the dialog does
 not know what the keyring holds, not keeping the password there deletes it. A command palette
 (Control+Shift+P, or the View menu) runs the menus' commands in its window, and after `@`
-(Control+P) finds the tables and views the tree has read by name and opens one, reading a database
-it has not read when chosen; the menus give keys to a new console, closing a tab, the next and
-previous tab, and the focus on the tree or the tab. Consoles are kept: their texts, connections and
-databases are saved a moment after each change, beside the workspace, and reopened unconnected at
-the next start; each statement run from a console goes into its connection's history
+(Control+P) finds the tables and views the tree has read and workspace queries by name and opens
+one, reading a database it has not read when chosen; the menus give keys to a new console, closing
+a tab, the next and previous tab, and the focus on the tree or the tab. Consoles and open workspace
+query tabs are kept: a console's text, connection and database, and a query tab's id and last
+target (with its text kept in `workspace.json` alone), are saved beside the workspace and reopened
+unconnected at the next start; each statement run from a console goes into its connection's history
 (`history.json`, at most 1,000 a connection, owner-only), which History lists, searches, inserts
-from and clears; Save query keeps the selection, or else the whole text, under a name
-(`queries.json`, owner-only), which Saved queries lists, searches, inserts from and deletes. The
+from and clears; Save to workspace saves a console's selection, or else its whole text, as a query
+in its connection's folder in `workspace.json`. The
 statement log, a panel below the tabs that starts collapsed and that the status line, the View menu
 and the palette open, lists what every connection sent, from the tree, a table's grid, the
-estimates, the transactions, the consoles and the searches, with its time, connection, part, duration and
-outcome, and the chosen statement whole in its dialect's colors; it filters by connection, part
-and outcome, searches, copies a statement, clears, and can be turned off. A password in a statement
-or a MongoDB command is masked before it is logged, and the log is kept beside the workspace
-(`statement-log.jsonl`, up to 8 MB and one older file, owner-only), written in batches. A
-connection to MongoDB goes through its Java driver, downloaded as the JDBC drivers are, with its
-parts beside it, and through a bridge of core's that is loaded beside the driver; its host may name
-a DNS SRV record that lists the servers, as `mongodb+srv://` does, with TLS on by default and no
-port; its user may be defined in a database other than `admin`, which it names (`authSource`); it
+estimates, the transactions, the consoles, the searches and the server monitor's cancels and
+ends, with its time, connection, part, duration and outcome, and the chosen statement whole in its
+dialect's colors; it filters by connection, part and outcome, searches, copies a statement, clears,
+and can be turned off. A password in a statement or a MongoDB command is masked before it is
+logged, and the log is kept beside the workspace (`statement-log.jsonl`, up to 8 MB and one older
+file, owner-only), written in batches. A connection to MongoDB goes through its Java driver, downloaded as the JDBC
+drivers are, with its parts beside it, and through a bridge of core's that is loaded beside the
+driver; its host may name a DNS SRV record that lists the servers, as `mongodb+srv://` does, with TLS on by default and no
+port; its user may be defined in a database other than `admin`, which it names (`authSource`); pasting a `mongodb://` or `mongodb+srv://` connection string into the connection dialog's Host field switches to MongoDB and fills its fields (keeping the password in the password field alone, naming unused options and further hosts in a note, and reporting an invalid string without echoing credentials); it
 may be read-only, which sends only commands that read, as find, aggregate without `$out` or `$merge`
 and counts, and refuses the others unsent. Its databases and collections show in the tree, with the
-fields that a sample of their documents has; a collection opens in a tab as a grid of its fields,
+fields that a sample of their documents has and their indexes under an Indexes node; a collection opens in a tab as a grid of its fields,
 read in pages, with a document or an array in a cell as Relaxed Extended JSON and a field a
 document does not have as an empty cell, where a `null` shows NULL, or a page of documents at a
-time as Relaxed Extended JSON or as a tree of their fields. Its console runs
-statements of the shell without JavaScript (`db.c.find(…)` with its cursor's calls, `aggregate`,
-counts, `distinct`, the writes, indexes, `runCommand`, `use` and `show`), shows their documents in
-the same three ways, underlines where a statement goes wrong, lays its statements out with
+time as Relaxed Extended JSON or as a tree of their fields, with Filter and Sort fields (each one
+shell document with colors and completion; blank or `{}` clears it) above all three views that
+narrow and order the documents and counts (with `_id: 1` appended as tie-breaker unless Sort names
+`_id`, and no estimate while filtered), a Conditions… button beside Filter that opens the condition
+builder with Exists / Does not exist, Not equal, OR, nested groups and subdocument field paths
+sampled in the background (up to depth 3 and 200 paths), sortable and filterable grid headers (for fields without
+`.` and not starting with `$`) that write their sort document into Sort and their typed header
+filters (with chips above the view, joined to hand-written text with `$and`) into Filter, and Open
+in console to add its `db.getCollection(…).find(…)` with the applied Filter and Sort to a console
+as SQL's does. Its console runs statements of the shell without JavaScript (`db.c.find(…)` with
+its cursor's calls, `aggregate`, counts, `distinct`, the writes, indexes, `runCommand`, `use` and
+`show`), shows their documents in
+the same three ways, marks where a statement goes wrong in its own markup layer with its message
+after its line, puts run and last-outcome markers in the gutter on each statement's first line, lays
+its statements out with
 Control+Alt+L, changing only white space, completes collections, methods, operators and fields, and
 asks before an update or delete of every document; it has no transactions. "Server monitor", in a
 connection's menu, the File menu or the palette, opens a tab with the server's sessions, variables,
@@ -110,14 +158,37 @@ which runs. On MariaDB and MySQL each column's collation decides the case of a t
 finds the collections and the fields of a sample of their documents by name, and their values by
 `$regex` over the string fields, nested ones included, or equality for a number, also on a
 read-only connection. Run from its app image,
-HooriDB looks for a newer GitHub release at each start, in the channel Help chooses, Stable or
-Nightly (at first that of its own version), downloads it and restarts into it through its own Exit
-when asked; the new version confirms once its window has shown its first frame, and the updater's
-helper puts the old version back where it does not, and a version put back is not offered again
-until a higher one comes out. Help, About HooriDB shows the version that runs, its channel of
+HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
+Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
+tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
+version confirms once its window has shown its first frame, and the updater's helper puts the old
+version back where it does not, and a version put back is not offered again until a higher one comes
+out. Help, About HooriDB shows the version that runs, its channel of
 updates, its authors, license and website. Started from the unpacked Linux bundle, it puts itself
-into the application menu, which gives its windows their icon in the dock. Nothing can be edited,
-filtered or sorted yet.
+into the application menu, which gives its windows their icon in the dock. The main window's
+placement, the sidebar's width and the statement log's open state, height and detail split are kept
+(`ui-state.json`). The theme, System, Light or Dark, where System follows the
+computer's scheme, is kept in `settings.json`, read before the first frame, with the accent, the
+rows' density, whether a console marks the word at the caret, the case of SQL keywords it completes,
+whether Open in console reuses an open console
+and whether the start looks for an update. File, Settings… (Control+,, or the palette) opens or
+raises a modeless settings window over the shared state, with pages General, Appearance, Editor,
+Databases and History & log, where every change applies at once, a changed row can be reset and
+each page has Restore defaults. A console's result of a SELECT on one table that core finds
+editable, and a SQL table's tab with a primary key, can be edited: changed cells are marked, a
+table's tab also stages new rows (with empty cells taking their server `DEFAULT`, distinct from
+`NULL`) and rows marked for deletion until committed, Revert takes back the selection or all, and
+Commit… shows the UPDATEs, DELETEs and INSERTs in a DML Preview and writes them all or nothing on a
+connection of its own, after the console's question where its transaction may be open; a table's
+tab keeps edited and deleted rows across dropped pages, reads the table anew after an insert, a
+delete or a key change, and asks before Refresh or a changed WHERE or ORDER BY. A collection's tab
+on a writable connection edits, inserts, copies (without its `_id`) and deletes one document at a
+time, from any of its three views, in a dialog of the shell's notation with the console's colors,
+completion and error marks; it opens only a document whose text reads back as the same document,
+shows the command before it is sent on the writer's connection, writes nothing over a document that
+changed since it was read (`$expr` equal to the document read, which a type alone changed at an
+equal value still matches) and says so, and reads the collection anew. Nothing else can be edited
+yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it
@@ -219,9 +290,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
 - Every statement and command that core sends goes through `dev.hoori.db.core.log.Journal`, with
   its purpose, which records it for the recorder a caller bound and masks a password first, as the
   dialect's `passwordWords` and `DocumentDialect.secretFields` say; a new send goes through it too.
-  Not yet: the writes of `data.Changes` and the reads of the rows dialects' `changeable`, which
-  nothing in the app calls so far, and what the server monitor (`core.monitor`) sends.
-  The app binds it per call on a lane's link (`Recorded`), so recording never waits for the disk.
+  The app binds it per call on a lane's link (`Recorded`), so recording never waits for the disk;
+  it binds none for the server monitor's reads, which repeat every few seconds and would fill the
+  log, only for its cancels and ends (`Purpose.MONITOR`).
 - The shell's syntax is lexed in one place, core's `dev.hoori.db.core.document.Lexer`: splitting
   statements (`Script.split`, `Statements`), reading them (`Shell`), coloring (`ShellSyntax`, which
   maps its tokens to `Theme.Code`), laying out (`Layout`, which Control+Alt+L runs) and completing
@@ -265,7 +336,8 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
 - The catalog's tests run against `FakeServers`: made-up servers by host, each written as an outline
   of databases, schemas, tables and columns, whose calls a test holds at a gate or fails by their
   key, such as `tables <host>/<database>.<schema>`. Each connection's calls run one at a time on its
-  `Lane`, so a held call also holds the calls behind it on that connection.
+  `Lane`, so a held call also holds the calls behind it on that connection. A held `open` fails as
+  timed out once the connect timeout it was given has passed, as a driver's does.
 - A script's `type "…"` types one character at a time, as a keyboard does, so the kit's completion
   list opens from a word's second letter, and a `key Enter` after it takes a suggestion. Text that
   must go in as it is, in one edit, is pasted with `clipboard "…"` and `key V control`, as the
@@ -276,7 +348,10 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `frame` twice after `scroll`, and only then do the reads of those rows start. `FakeServers` makes
   up a table's rows from their position (`rows`, `values`), whose moments show in Europe/Berlin, as
   the catalog's tests set `State.zone`, whatever the machine's zone; its reads are keyed
-  `read <host>/<path> <from>-<to>`, and those of a whole value, which `whole` gives,
+  `read <host>/<path> <from>-<to>`, with ` WHERE …` and ` ORDER BY …`, on MongoDB ` FILTER …` and
+  ` SORT …`, after them where a filter applies, which `values`, `documents`, `counts` and
+  `estimates` also take after the path, refusing a clause or an invalid document as core does, and
+  those of a whole value, which `whole` gives,
   `whole <host>/<path> <column> <key>`, and, as core's do, fail as columns changed when the columns
   they are given are not the table's now; `FakeServers.queryFailure` makes core's typed failure.
   Its calls go through core's `Journal` as core's do, a catalog read or a page by its key and a
@@ -288,11 +363,14 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   invalid. Their calls are keyed `run <host> <sql>` for the first portion and
   `next <host> <sql> <from>` for each further one, and a held one that is interrupted ends with a
   cancelled failure, as core's does. A console opens its own connection behind the tree's, so a
-  server's `open` key is called twice, and once more where the first estimate of a read runs, on the
-  connection that only estimates use. Each fake connection keeps a transaction and auto-commit as
-  the servers do: `BEGIN`, `COMMIT` and `ROLLBACK` are known statements, and on MariaDB and MySQL
-  `SET autocommit=0` or `=1` and `SET completion_type=1`; auto-commit off opens a transaction with
-  any other statement, as `begins` does with one; an error fails PostgreSQL's, a failed COMMIT ends
+  server's `open` key is called twice, and once more on a console's first plain SQL read, on the
+  connection that only estimates use, and once more where a table's rows are counted other than at
+  its opening, on the connection that only such counts use, and once more where a console's result
+  is checked for editability or committed, on the writer connection (`editable <host> <sql>` and
+  `write <host>/<path>`). Each fake connection keeps a
+  transaction and auto-commit as the servers do: `BEGIN`, `COMMIT` and `ROLLBACK` are known
+  statements, and on MariaDB and MySQL `SET autocommit=0` or `=1` and `SET completion_type=1`;
+  auto-commit off opens a transaction with any other statement, as `begins` does with one; an error fails PostgreSQL's, a failed COMMIT ends
   it there and leaves MariaDB's and MySQL's unless it is of class 40 (`rolledBack`, `deadlock()`),
   which rolls it back, DDL commits theirs, and `rollBackBehind` ends it as a server does by itself;
   a `ROLLBACK TO` a savepoint leaves it open. The server's auto-commit and the driver's idea of it
@@ -315,7 +393,8 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   status is keyed `transaction <host>`. The planner's estimate of a console's read runs on that
   connection, keyed `explain <host> <sql>`, with what `plans` gives, on the database `estimatedOn`
   names; `linked` notes every call after the number of the link it ran on, so a test tells the
-  console's session from the tree's.
+  console's session from the tree's, `readOnly(link)` tells whether a link was opened read-only,
+  and `writes` marks a SQL fragment that a read-only link refuses while a writable link runs it.
 - A server monitor's reads run against `FakeServers` too: `sessions`, `variables`, `counters` and
   `locks` give what a host's server has, besides the monitor's own session, numbered as its link;
   the reads are keyed `sessions <host>`, `variables <host>`, `status <host>` and `locks <host>`,

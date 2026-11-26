@@ -45,4 +45,11 @@ public final class MariaDbRows extends MySqlFamilyRows {
   boolean bitLikeTinyint() {
     return false;
   }
+
+  // MariaDB's catalog calls a json column longtext, which describe() reads as TEXT, while its
+  // driver reports JSON in a statement's result; both hold and bind text.
+  @Override
+  boolean compatibleKind(Kind result, Kind table) {
+    return result == table || result == Kind.JSON && table == Kind.TEXT;
+  }
 }

@@ -189,4 +189,51 @@ class WorkspaceTest {
     var nowhere = UUID.randomUUID();
     assertThrows(IllegalArgumentException.class, () -> TREE.dissolve(nowhere));
   }
+
+  @Test
+  void queriesLiveBesideConnectionsInFolders() {
+    var q1 = new Workspace.Query(
+        UUID.randomUUID(), "Orders", "SELECT * FROM orders", Workspace.Language.SQL);
+    var q2 = new Workspace.Query(
+        UUID.randomUUID(), "Active", "db.users.find({active: true})", Workspace.Language.SHELL);
+    var sub = folder("sub", q2);
+    var root = folder("root", B, q1, sub);
+    var ws = new Workspace(List.of(root, A));
+
+    assertEquals(List.of(q1, q2), ws.queries());
+    assertEquals(List.of(q1, q2), root.queries());
+    assertEquals(List.of(q2), sub.queries());
+    assertEquals(q1, ws.query(q1.id()));
+    assertNull(ws.query(A.id()));
+    assertEquals(List.of(root, sub), ws.path(q2.id()));
+
+    // Put replaces in place at any depth, and adds at the top when new.
+    var edited = q2.withText("db.users.find()");
+    assertEquals(edited, ws.put(edited).query(q2.id()));
+    assertEquals(
+        List.of(root.id(), sub.id()),
+        ws.put(edited).path(q2.id()).stream().map(Workspace.Folder::id).toList());
+    var q3 = new Workspace.Query(UUID.randomUUID(), "Count", "SELECT 1", Workspace.Language.SQL);
+    assertEquals(List.of(), ws.put(q3).path(q3.id()));
+
+    // Rename, duplicate (after), move, remove, dissolve.
+    assertEquals("All orders", ws.rename(q1.id(), "All orders").query(q1.id()).name());
+    assertEquals(List.of(q1, q3, q2), ws.after(q1.id(), q3).queries());
+    assertFalse(ws.canMove(A.id(), q1.id(), Place.INTO), "cannot move into a query");
+    assertTrue(ws.canMove(q2.id(), q1.id(), Place.BEFORE));
+    assertTrue(ws.canMove(q1.id(), null, Place.INTO));
+    var moved = ws.move(q2.id(), null, Place.INTO);
+    assertEquals(List.of(), moved.path(q2.id()));
+    assertNull(ws.remove(q1.id()).query(q1.id()));
+    assertEquals(
+        List.of(root.id()),
+        ws.dissolve(sub.id()).path(q2.id()).stream().map(Workspace.Folder::id).toList());
+
+    // Unique id across queries, connections, and folders.
+    var dup = new Workspace.Query(A.id(), "Dup", "", Workspace.Language.SQL);
+    var both = List.<Workspace.Entry>of(A, dup);
+    assertThrows(IllegalArgumentException.class, () -> new Workspace(both));
+    assertEquals(Workspace.Language.SQL, Workspace.Language.of(Provider.POSTGRESQL));
+    assertEquals(Workspace.Language.SHELL, Workspace.Language.of(Provider.MONGODB));
+  }
 }

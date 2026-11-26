@@ -3,9 +3,11 @@ package dev.hoori.db.core.document;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
 import dev.hoori.db.core.data.Page;
@@ -19,6 +21,7 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -37,6 +40,12 @@ public final class DocumentSession implements AutoCloseable {
 
   /** Documents a collection's fields are read from, at random where the server can. */
   public static final int SAMPLE = 100;
+
+  /** Maximum nesting depth of subdocument paths sampled for filtering (1 = top-level only). */
+  public static final int MAX_PATH_DEPTH = 3;
+
+  /** Maximum number of field paths returned by {@link #paths(Table)}. */
+  public static final int MAX_PATHS = 200;
 
   private static final String CURSOR = "cursor";
   private static final String BATCH_SIZE = "batchSize";
@@ -74,7 +83,7 @@ public final class DocumentSession implements AutoCloseable {
    * As {@link #command(String, Document)}, for the purpose given, which {@link Journal} records
    * with it.
    */
-  private Document command(Purpose purpose, String database, Document command)
+  public Document command(Purpose purpose, String database, Document command)
       throws DocumentException {
     if (retired) {
       throw DocumentException.of(
@@ -102,13 +111,14 @@ public final class DocumentSession implements AutoCloseable {
     if (ok instanceof Number n && n.doubleValue() == 0) {
       var code = reply.get("code") instanceof Number c ? c.intValue() : 0;
       var name = reply.get("codeName") instanceof String s ? s : "";
-      var message = reply.get("errmsg") instanceof String s ? s : "";
+      var message = reply.get(ERRMSG) instanceof String s ? s : "";
       throw DocumentException.server(code, name, message);
     }
     return reply;
   }
 
   private static final Set<String> WRITES = Set.of("insert", "update", "delete");
+  private static final String ERRMSG = "errmsg";
 
   // What a reply says the command came to: the documents of its cursor's batch, those a write
   // changed, or nothing more.
@@ -126,7 +136,7 @@ public final class DocumentSession implements AutoCloseable {
           ? errors.getFirst()
           : reply.get("writeConcernError");
       if (failed instanceof Document error) {
-        var message = error.get("errmsg") instanceof String s && !s.isBlank() ? s : "Write error";
+        var message = error.get(ERRMSG) instanceof String s && !s.isBlank() ? s : "Write error";
         return new Outcome.Failed(message);
       }
       var changed = reply.get("nModified") instanceof Number m ? m : reply.get("n");
@@ -238,7 +248,11 @@ public final class DocumentSession implements AutoCloseable {
     types.put("_id", new LinkedHashSet<>());
     Map<String, Integer> present = new LinkedHashMap<>();
     for (var document : documents) {
+      var seen = new HashSet<String>(); // a name a document repeats counts once, as its first
       for (var entry : document.entries()) {
+        if (!seen.add(entry.name())) {
+          continue;
+        }
         types
             .computeIfAbsent(entry.name(), x -> new LinkedHashSet<>())
             .add(Bson.type(entry.value()));
@@ -268,6 +282,166 @@ public final class DocumentSession implements AutoCloseable {
     return nullable ? type + " | null" : type;
   }
 
+  /**
+   * The filterable field paths of a collection's documents, sampled as {@link #fields(Table)} does
+   * and descending into subdocuments up to {@link #MAX_PATH_DEPTH} levels and {@link #MAX_PATHS}
+   * paths.
+   */
+  public List<Field> paths(Table collection) throws CatalogException {
+    try {
+      return paths(sample(collection));
+    } catch (DocumentException e) {
+      throw catalog(e);
+    }
+  }
+
+  /**
+   * The filterable field paths that {@code documents} have, descending into subdocuments up to
+   * {@link #MAX_PATH_DEPTH} levels and {@link #MAX_PATHS} paths, typed as {@link #fields} types
+   * them and skipping keys that are empty, contain {@code .}, or start with {@code $}.
+   */
+  public static List<Field> paths(List<Document> documents) {
+    return paths(documents, MAX_PATH_DEPTH, MAX_PATHS);
+  }
+
+  static List<Field> paths(List<Document> documents, int maxDepth, int maxPaths) {
+    if (maxDepth <= 0 || maxPaths <= 0) {
+      return List.of();
+    }
+    Map<String, Set<String>> types = new LinkedHashMap<>();
+    if (documents.isEmpty() || documents.stream().anyMatch(d -> d.has("_id"))) {
+      types.put("_id", new LinkedHashSet<>());
+    }
+    Map<String, Integer> present = new LinkedHashMap<>();
+    for (var document : documents) {
+      collectPaths(document, "", 1, maxDepth, maxPaths, types, present);
+    }
+    var fields = new ArrayList<Field>(types.size());
+    for (var entry : types.entrySet()) {
+      var path = entry.getKey();
+      var held = new ArrayList<>(entry.getValue());
+      boolean nullable = held.remove("null") || present.getOrDefault(path, 0) < documents.size();
+      var type = type(path, held, nullable);
+      fields.add(new Field(path, type, Values.kind(type)));
+    }
+    return List.copyOf(fields);
+  }
+
+  private static void collectPaths(
+      Document document,
+      String prefix,
+      int depth,
+      int maxDepth,
+      int maxPaths,
+      Map<String, Set<String>> types,
+      Map<String, Integer> present) {
+    var seen = new HashSet<String>(); // a name a document repeats counts once, as its first
+    for (var entry : document.entries()) {
+      var key = entry.name();
+      var path = prefix.isEmpty() ? key : prefix + "." + key;
+      if (!seen.add(key)
+          || key.isEmpty()
+          || key.indexOf('.') >= 0
+          || key.startsWith("$")
+          || !types.containsKey(path) && types.size() >= maxPaths) {
+        continue;
+      }
+      types.computeIfAbsent(path, x -> new LinkedHashSet<>()).add(Bson.type(entry.value()));
+      present.merge(path, 1, Integer::sum);
+      if (entry.value() instanceof Document sub && depth < maxDepth) {
+        collectPaths(sub, path, depth + 1, maxDepth, maxPaths, types, present);
+      }
+    }
+  }
+
+  /**
+   * The indexes of a collection, {@code _id_} first and then by name: each with its key entries in
+   * key order, whether it is unique or {@code _id_}, and TTL, partial and sparse in its detail. A
+   * view or a collection that does not exist has none.
+   */
+  public List<Index> indexes(Table collection) throws CatalogException {
+    if (collection.kind() == Table.Kind.VIEW) {
+      return List.of();
+    }
+    try {
+      var documents = all(
+          Purpose.CATALOG,
+          database(collection),
+          Document.of("listIndexes", collection.name(), CURSOR, Document.EMPTY));
+      return indexes(collection, documents);
+    } catch (DocumentException e) {
+      if (e.kind() == DocumentException.Kind.SERVER
+          && e.code() == DocumentException.NAMESPACE_NOT_FOUND) {
+        return List.of();
+      }
+      throw catalog(e);
+    }
+  }
+
+  /** The indexes described by the {@code listIndexes} documents, as {@link #indexes(Table)} says. */
+  public static List<Index> indexes(Table collection, List<Document> documents) {
+    var indexes = new ArrayList<Index>(documents.size());
+    for (var document : documents) {
+      if (!(document.get("name") instanceof String name) || name.isEmpty()) {
+        continue;
+      }
+      boolean primary = "_id_".equals(name);
+      boolean unique = primary || Boolean.TRUE.equals(document.get("unique"));
+      indexes.add(
+          new Index(name, collection, indexKeys(document), unique, primary, indexDetail(document)));
+    }
+    indexes.sort(Comparator.comparing(Index::primary).reversed().thenComparing(Index::name));
+    return List.copyOf(indexes);
+  }
+
+  // The key entries in order, replacing a text index's {_fts: "text", _ftsx: 1} with its weights'
+  // fields in place.
+  private static List<String> indexKeys(Document document) {
+    if (!(document.get("key") instanceof Document key)) {
+      return List.of();
+    }
+    var weights = document.get("weights") instanceof Document w && !w.isEmpty() ? w : null;
+    var columns = new ArrayList<String>(key.size());
+    boolean expandedText = false;
+    for (var entry : key.entries()) {
+      if (weights != null && "_fts".equals(entry.name()) && "text".equals(entry.value())) {
+        for (var field : weights.entries()) {
+          columns.add(field.name() + ": text");
+        }
+        expandedText = true;
+      } else if (expandedText && "_ftsx".equals(entry.name())) {
+        // Companion key of _fts, already replaced by the text fields above.
+      } else {
+        columns.add(entry.name() + ": " + indexKeyValue(entry.value()));
+      }
+    }
+    return columns;
+  }
+
+  // A number's sign is its direction, as the server orders it: {a: 2} is ascending.
+  private static String indexKeyValue(Object value) {
+    return switch (value) {
+      case String s -> s;
+      case Number n -> n.doubleValue() < 0 ? "-1" : "1";
+      case Bson.Decimal128 d -> d.text().startsWith("-") ? "-1" : "1";
+      case null, default -> Shell.compact(value);
+    };
+  }
+
+  private static String indexDetail(Document document) {
+    var parts = new ArrayList<String>(3);
+    if (document.get("expireAfterSeconds") instanceof Number ttl) {
+      parts.add("TTL " + ttl.longValue() + " s");
+    }
+    if (document.get("partialFilterExpression") instanceof Document) {
+      parts.add("partial");
+    }
+    if (Boolean.TRUE.equals(document.get("sparse"))) {
+      parts.add("sparse");
+    }
+    return String.join(" · ", parts);
+  }
+
   // Reading documents
 
   /**
@@ -275,7 +449,15 @@ public final class DocumentSession implements AutoCloseable {
    * for a view, which the server would have to run to count.
    */
   public OptionalLong estimate(Table collection) throws QueryException {
-    if (collection.kind() == Table.Kind.VIEW) {
+    return estimate(collection, Document.EMPTY);
+  }
+
+  /**
+   * As {@link #estimate(Table)}, narrowed by the filter: empty where a filter is set, as the
+   * collection's metadata count ignores it.
+   */
+  public OptionalLong estimate(Table collection, Document filter) throws QueryException {
+    if (collection.kind() == Table.Kind.VIEW || filter != null && !filter.isEmpty()) {
       return OptionalLong.empty();
     }
     try {
@@ -291,17 +473,20 @@ public final class DocumentSession implements AutoCloseable {
 
   /** The exact number of a collection's documents. */
   public long count(Table collection) throws QueryException {
+    return count(collection, Document.EMPTY);
+  }
+
+  /** The exact number of a collection's documents matching the filter. */
+  public long count(Table collection, Document filter) throws QueryException {
+    var pipeline = filter != null && !filter.isEmpty()
+        ? Document.array(Document.of("$match", filter), Document.of("$count", "n"))
+        : Document.array(Document.of("$count", "n"));
     try {
       var documents = all(
           Purpose.ROWS,
           database(collection),
           Document.of(
-              "aggregate",
-              collection.name(),
-              "pipeline",
-              Document.array(Document.of("$count", "n")),
-              CURSOR,
-              Document.EMPTY));
+              "aggregate", collection.name(), "pipeline", pipeline, CURSOR, Document.EMPTY));
       return documents.isEmpty() || !(documents.getFirst().get("n") instanceof Number n)
           ? 0
           : n.longValue();
@@ -316,10 +501,25 @@ public final class DocumentSession implements AutoCloseable {
    */
   public Page read(Table collection, List<Column> fields, long from, long to)
       throws QueryException {
+    return read(collection, fields, from, to, Document.EMPTY, Document.EMPTY);
+  }
+
+  /**
+   * As {@link #read(Table, List, long, long)}, narrowed by {@code filter} and ordered by {@code
+   * sort} followed by {@code _id: 1} unless {@code sort} names {@code _id}, so paging stays
+   * deterministic.
+   */
+  public Page read(
+      Table collection, List<Column> fields, long from, long to, Document filter, Document sort)
+      throws QueryException {
     if (to <= from) {
       return Values.page(fields, List.of()); // a limit of 0 would be no limit
     }
-    var command = Document.of("find", collection.name(), "sort", Document.of("_id", 1));
+    var command = Document.of("find", collection.name());
+    if (filter != null && !filter.isEmpty()) {
+      command = command.with("filter", filter);
+    }
+    command = command.with("sort", effectiveSort(sort));
     if (from > 0) {
       command = command.with("skip", from);
     }
@@ -331,6 +531,14 @@ public final class DocumentSession implements AutoCloseable {
     } catch (DocumentException e) {
       throw query(e);
     }
+  }
+
+  private static Document effectiveSort(Document sort) {
+    if (sort == null || sort.isEmpty()) {
+      return Document.of("_id", 1);
+    }
+    // The server takes a $natural order alone, and it is a stable order of its own.
+    return sort.has("_id") || sort.has("$natural") ? sort : sort.with("_id", 1);
   }
 
   /**
@@ -404,6 +612,57 @@ public final class DocumentSession implements AutoCloseable {
     } catch (SyntaxException e) {
       throw new IllegalArgumentException("The row's _id cannot name its document", e);
     }
+  }
+
+  /**
+   * Runs one single-document edit ({@code replaceOne}, {@code insertOne}, or {@code deleteOne})
+   * through {@link #command(Purpose, String, Document)} under {@link Purpose#CHANGES}, refusing
+   * views and read-only sessions.
+   *
+   * @return {@link DocumentEdit.Outcome.Written} when the write applied, {@link
+   *     DocumentEdit.Outcome.Changed} when a replace or delete matched nothing ({@code n == 0}), or
+   *     {@link DocumentEdit.Outcome.Unconfirmed} when the server could not confirm it
+   */
+  public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+    if (edit.collection().kind() != Table.Kind.TABLE) {
+      throw QueryException.of(QueryException.Failure.OTHER, "Views cannot be edited");
+    }
+    try {
+      var reply = command(Purpose.CHANGES, database(edit.collection()), edit.command());
+      checkWriteErrors(reply);
+      if (reply.get("writeConcernError") instanceof Document concern) {
+        var message = concern.get(ERRMSG) instanceof String m && !m.isBlank()
+            ? m
+            : "The write concern failed";
+        return new DocumentEdit.Outcome.Unconfirmed(message);
+      }
+      long n = reply.get("n") instanceof Number num ? num.longValue() : 0;
+      if (n == 0) {
+        if (edit instanceof DocumentEdit.Insert) {
+          throw QueryException.of(
+              QueryException.Failure.OTHER, "Insert did not write any document");
+        }
+        return new DocumentEdit.Outcome.Changed();
+      }
+      return new DocumentEdit.Outcome.Written();
+    } catch (DocumentException e) {
+      throw query(e);
+    }
+  }
+
+  private static void checkWriteErrors(Document reply) throws DocumentException {
+    if (reply.get("writeErrors") instanceof List<?> errors
+        && !errors.isEmpty()
+        && errors.getFirst() instanceof Document error) {
+      throw writeError(error, "Write failed");
+    }
+  }
+
+  private static DocumentException writeError(Document error, String fallback) {
+    int code = error.get("code") instanceof Number n ? n.intValue() : 0;
+    var name = error.get("codeName") instanceof String s ? s : "";
+    var message = error.get(ERRMSG) instanceof String s && !s.isBlank() ? s : fallback;
+    return DocumentException.server(code, name, message);
   }
 
   // Cursors
@@ -632,6 +891,7 @@ public final class DocumentSession implements AutoCloseable {
     var failure = switch (e.kind()) {
       case CANCELLED -> QueryException.Failure.CANCELLED;
       case CONNECTION_LOST, UNREACHABLE, TIMED_OUT -> QueryException.Failure.CONNECTION_LOST;
+      case READ_ONLY -> QueryException.Failure.ACCESS_DENIED;
       case SERVER ->
         switch (e.code()) {
           case DocumentException.UNAUTHORIZED -> QueryException.Failure.ACCESS_DENIED;

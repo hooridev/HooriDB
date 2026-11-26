@@ -6,6 +6,8 @@ import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.Key;
+import com.rethinkj.ui.Len;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
@@ -19,10 +21,18 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.data.Cut;
+import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.execution.Transaction;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
 
 /**
  * A console's results area: the results of its last runs in tabs, each rows in a grid, documents
@@ -31,8 +41,15 @@ import java.util.List;
  */
 final class ResultsArea {
 
+  private static final long COPY_LIMIT = 100_000;
+
   private final ConsoleTab tab;
   private final DataGrid.Selection logSelection = new DataGrid.Selection(DataGrid.Mode.CELLS);
+  // The whole document value last read for the value panel, reused across frames while on the same
+  // cell so JSON is neither serialized nor formatted anew on every frame.
+  private Document wholeDocument;
+  private Field wholeField;
+  private Object wholeValue;
 
   ResultsArea(ConsoleTab tab) {
     this.tab = tab;
@@ -144,7 +161,7 @@ final class ResultsArea {
 
   /** The tree's connection failed while the console waited for it: why, with Try again. */
   private El strandedNote(State s) {
-    var trouble = s.catalog.problem(s, new Node.Connection(tab.id));
+    var trouble = tab.id == null ? null : s.catalog.problem(s, new Node.Connection(tab.id));
     var actions = new ArrayList<El>();
     if (trouble != null && trouble.password()) {
       actions.add(button(SECONDARY, "Enter password…", () -> tab.retry(s, true)));
@@ -181,23 +198,42 @@ final class ResultsArea {
     if (o.fields == null) {
       return changed(s, o, pin);
     }
-    String about = about(o);
-    boolean ofDocuments = !o.documents.isEmpty();
+    boolean ofDocuments = o.ofDocuments;
+    String about = about(o, ofDocuments);
     var presented = o.presentation.view(
         app, s.zone, ofDocuments, () -> gridView(s, app, o), () -> documentPage(s, o));
     var footer = new ArrayList<El>();
+    if (tab.canStopReading(s, o)) {
+      // An icon, as Pin: the footer of an open MongoDB cursor holds the switcher and paging too.
+      footer.add(
+          Button.icon(Button.Variant.GHOST, Symbol.STOP, "Stop reading", () -> tab.stopReading(s))
+              .key("stop-reading"));
+    }
     if (ofDocuments) {
-      footer.add(o.presentation.switcher("result-shown", o.presentation::mode));
+      footer.add(o.presentation.picker("result-shown", o.presentation::mode));
+    }
+    ResultEdits.editControls(s, tab, o, footer, footer);
+    // The edit feedback may shorten to nothing, so the status's tooltip has it too.
+    String why = null;
+    for (El e : footer) {
+      if ("edit-status".equals(e.key())) {
+        why = e.text().string();
+      }
     }
     footer.addAll(presented.footer());
     footer.add(pin);
+    El label = Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis();
+    El status = why == null
+        ? Tooltip.whenShortened(label, about)
+        : Tooltip.tooltip(label, about + "\n" + why);
+    // As in a table's tab: the status keeps half the footer, so the texts at the end shorten first.
+    status.style().minWidth = Len.percent(0.5f);
     return col()
         .grow(1)
         .minSize(0, 0)
+        .child(ResultEdits.writeProblemCallout(o.edits))
         .child(presented.body().grow(1))
-        .child(Card.footer(
-            Label.label(Label.Variant.MUTED, about).key("result-status").ellipsis(),
-            footer.toArray(El[]::new)));
+        .child(Card.footer(status, footer.toArray(El[]::new)));
   }
 
   /** A count: the number of rows, or documents, the statement changed. */
@@ -215,22 +251,34 @@ final class ResultsArea {
             Label.label(Label.Variant.MUTED, ConsoleTab.brief(o.statement)).ellipsis(), pin));
   }
 
-  /** What a result's status line says: its statement, and how many of its rows it holds. */
-  private static String about(ConsoleTab.Output o) {
-    boolean whole = !o.documents.isEmpty();
-    String count = ConsoleTab.rows(o.rows.size(), whole);
+  /** What a result's status line says: how many of its rows it holds, and its statement. */
+  private static String about(ConsoleTab.Output o, boolean documents) {
+    // Of a read left open, the server's estimate, short and first, as the footer may be narrow;
+    // none
+    // below the rows read.
+    String count = o.estimated > 0 && o.estimated >= o.rows.size() && (o.more || o.cut)
+        ? String.format(Locale.ROOT, "%,d", o.rows.size()) + " of about "
+            + ConsoleTab.rows(o.estimated, documents)
+        : ConsoleTab.rows(o.rows.size(), documents);
     String held;
     if (o.more) {
-      held = count + " so far, more as it scrolls";
+      held = count + " so far · cursor open, more as it scrolls";
     } else if (o.cut) {
-      held = "the first " + count + "; the rest was not read";
+      held = "the first " + count + "; "
+          + switch (o.cutReason) {
+            case LEFT -> "the rest was not read";
+            case STOPPED -> "reading stopped";
+            case IDLE -> "reading stopped after being idle";
+            case LIMIT -> "limit reached, the rest was not read";
+          };
     } else if (o.dropped > 0) {
-      held = "the first " + count + " of " + ConsoleTab.rows(o.rows.size() + o.dropped, whole)
+      held = "the first " + count + " of " + ConsoleTab.rows(o.rows.size() + o.dropped, documents)
           + "; the rest was read and not kept";
     } else {
       held = count;
     }
-    return ConsoleTab.brief(o.statement) + " · " + held;
+    // The rows first: a long statement is cut short at the end, not the state of its read.
+    return held + " · " + ConsoleTab.brief(o.statement);
   }
 
   /** The page of the result's documents for the JSON and Tree strategies. */
@@ -276,14 +324,20 @@ final class ResultsArea {
   }
 
   /**
-   * The result's grid and value panel input: a text cut short stays so, as the statement may not
-   * name a row to read it by.
+   * The result's grid and value panel input: where the result holds documents whole, the panel
+   * takes the cell's value from the document; a text cut short beyond a SQL result's budget stays
+   * so, as the statement may not name a row to read it by.
    */
   private DocumentPresentation.GridView gridView(State s, App<State> app, ConsoleTab.Output o) {
     int row = o.selection.row();
     int column = o.selection.column();
     ValuePanel.Cell cell = null;
     String note = null;
+    if (!tab.value.open && wholeDocument != null) {
+      wholeDocument = null;
+      wholeField = null;
+      wholeValue = null;
+    }
     // A row beyond those read is the one that asks for more.
     if (tab.value.open
         && row >= 0
@@ -291,7 +345,7 @@ final class ResultsArea {
         && column >= 0
         && column < o.fields.size()) {
       var field = o.fields.get(column);
-      var v = row < o.rows.size() ? o.rows.get(row).get(column) : null;
+      var v = row < o.rows.size() ? panelValue(o, row, column) : null;
       cell = new ValuePanel.Cell(field.name(), field.type(), field.kind(), v);
       if (v instanceof Cut) {
         note = Cells.icon(v).tooltip() + "; a result keeps no more";
@@ -307,14 +361,84 @@ final class ResultsArea {
         null);
   }
 
-  /** The result's rows, read-only, with the table tab's cells. */
+  /** The cell's whole value for the value panel, cached across frames while on the same cell. */
+  private Object panelValue(ConsoleTab.Output o, int row, int column) {
+    if (o.edits.changes != null
+        && o.edits.changes.cellStatus(row, column) != DataGrid.Status.UNCHANGED) {
+      wholeDocument = null;
+      wholeField = null;
+      wholeValue = null;
+      return o.edits.changes.cell(row, column);
+    }
+    if (o.documents.isEmpty() || row >= o.documents.size()) {
+      wholeDocument = null;
+      wholeField = null;
+      wholeValue = null;
+      return o.rows.get(row).get(column);
+    }
+    var document = o.documents.get(row);
+    var field = o.fields.get(column);
+    if (document != wholeDocument || !field.equals(wholeField)) {
+      wholeDocument = document;
+      wholeField = field;
+      wholeValue = Values.whole(field, document);
+    }
+    return wholeValue;
+  }
+
+  // shortcut: an editable result keeps the kit's copy limit for paste and clear, so Control+C of
+  // one
+  // cell copies it whole here; drop this once they have a limit of their own (rethinkj/ui#511).
+  private static boolean copiesOneWhole(
+      App<State> app, ConsoleTab.Output o, Key k, ZoneId zone, String nullText) {
+    boolean copy =
+        k.modifiers() == Key.CONTROL && (k.name().equals("C") || k.name().equals("Insert"));
+    if (!copy || o.selection.isEditing()) {
+      return false;
+    }
+    var ranges = o.selection.ranges();
+    var only = ranges.size() == 1 ? ranges.getFirst() : null;
+    if (!ranges.isEmpty()
+        && (only == null || only.top() != only.bottom() || only.left() != only.right())) {
+      return false;
+    }
+    int row = only == null ? o.selection.row() : only.top();
+    int column = only == null ? o.selection.column() : only.left();
+    if (row < 0 || row >= o.rows.size() || column < 0 || column >= o.fields.size()) {
+      return false;
+    }
+    var at = new DataGrid.Range(row, column, row, column);
+    copy(app, o, new DataGrid.Copy(List.of(at), false, 1), zone, nullText);
+    return true;
+  }
+
+  /** The cell's whole value: from the document where the result holds documents, else the row's. */
+  private static Object cellValue(ConsoleTab.Output o, int row, int column) {
+    return !o.documents.isEmpty() && row < o.documents.size()
+        ? Values.whole(o.fields.get(column), o.documents.get(row))
+        : o.rows.get(row).get(column);
+  }
+
+  /** The result's rows, editable where core found the result editable, with the table tab's cells. */
   private El grid(State s, App<State> app, ConsoleTab.Output o) {
     var zone = s.zone;
+    var nullText = Cells.nullText(s.settings.copyNull());
+    var editable = o.edits.editable;
+    var changes = o.edits.changes;
+    // While a write runs, an act holds the console or its connection was opened again, no edit,
+    // paste, undo or redo comes between; the changes staged stay shown.
+    BooleanSupplier free = () ->
+        o.edits.writing == null && s.guard.locked(tab) == null && ResultEdits.current(s, tab, o);
     var columns = new ArrayList<DataGrid.Column>();
     for (int c = 0; c < o.fields.size(); c++) {
       int at = c;
+      var field = o.fields.get(c);
+      var col = Cells.column(
+          field, o.widths, c, row -> row < o.rows.size() ? o.rows.get(row).get(at) : null, zone);
       columns.add(
-          Cells.column(o.fields.get(c), o.widths, c, row -> o.rows.get(row).get(at), zone));
+          editable != null && changes != null
+              ? ResultEdits.editedColumn(o, col, at, free, true)
+              : col);
     }
     var options = DataGrid.options()
         .select(o.selection)
@@ -322,11 +446,59 @@ final class ResultsArea {
         .fitColumns(o.fit)
         .rowNumbers()
         .copy(app.clipboard())
+        .nullText(nullText)
+        // Every copy whole; an editable result keeps the kit's limit, which also bounds a paste or
+        // clear of a selection (rethinkj/ui#511).
+        .copyLimit(editable == null ? 0 : 100_000, copy -> copy(app, o, copy, zone, nullText))
         .loading(row -> row < o.rows.size(), (_, last) -> tab.want(s, o, last));
-    int count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), DocumentPresentation.GRID_ROWS);
-    return DataGrid.dataGrid(columns, count, options)
-        .key("grid")
-        .label("Rows of result " + o.number);
+    int count;
+    if (editable != null && changes != null) {
+      ResultEdits.configureGrid(s, o, options, free, false);
+      count = changes.rowCount();
+    } else {
+      count = (int) Math.min(o.rows.size() + (o.more ? 1L : 0L), DocumentPresentation.GRID_ROWS);
+    }
+    El grid =
+        DataGrid.dataGrid(columns, count, options).key("grid").label("Rows of result " + o.number);
+    if (editable != null && changes != null) {
+      Predicate<Key> guard = k ->
+          ResultEdits.rejectUnloadedKey(app, o, k) || copiesOneWhole(app, o, k, zone, nullText);
+      grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
+    }
+    return grid;
+  }
+
+  /**
+   * Copies the selected cells: one cell whole, as the grid's own cells hold only the start of a
+   * long text; more cells as the grid shows them, which bounds the text of a large selection.
+   */
+  // shortcut: the grid copies what it shows (rethinkj/ui#414); drop this once it copies it whole.
+  private static void copy(
+      App<State> app, ConsoleTab.Output o, DataGrid.Copy copy, ZoneId zone, String nullText) {
+    if (copy.cells() > COPY_LIMIT) {
+      return;
+    }
+    for (var range : copy.ranges()) {
+      if (range.bottom() >= o.rows.size()) {
+        return;
+      }
+    }
+    boolean one = copy.cells() == 1;
+    var changes = o.edits.changes;
+    var whole = new ArrayList<DataGrid.Column>(o.fields.size());
+    for (int c = 0; c < o.fields.size(); c++) {
+      var field = o.fields.get(c);
+      int at = c;
+      whole.add(new DataGrid.Column(field.name(), 0, Cells.type(field.kind()), row -> {
+        if (changes != null && changes.cellStatus(row, at) != DataGrid.Status.UNCHANGED) {
+          return changes.cell(row, at);
+        }
+        return one
+            ? Cells.text(cellValue(o, row, at), zone)
+            : Cells.cell(o.rows.get(row).get(at), zone);
+      }));
+    }
+    app.clipboard().write(DataGrid.copyText(whole, copy.ranges(), copy.headers(), nullText));
   }
 
   /** What ran, how long it took, what it gave, and what the server said along the way. */

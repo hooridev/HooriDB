@@ -38,6 +38,53 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
     return new ShellSyntax(Theme.CURRENT.get().code());
   }
 
+  /** Colors as {@link #of()}, with Ctrl+Alt+L formatting a single shell document. */
+  static Highlighter document() {
+    var delegate = of();
+    return new Highlighter() {
+      @Override
+      public Object line(String line, Object state, Spans out) {
+        return delegate.line(line, state, out);
+      }
+
+      @Override
+      public boolean marksBrackets() {
+        return delegate.marksBrackets();
+      }
+
+      @Override
+      public String lineComment() {
+        return delegate.lineComment();
+      }
+
+      @Override
+      public Function<String, Formatted> formatter() {
+        return ShellSyntax::formatDocument;
+      }
+    };
+  }
+
+  // A document is laid out as the argument of a statement, so that, as in a console, only white
+  // space changes: its comments stay, and ObjectId() or ISODate() in it are not evaluated.
+  private static final String AROUND = "db.c.insertOne(";
+
+  /** A single shell document laid out as {@link Layout} does, or where it fails to parse. */
+  static Formatted formatDocument(String text) {
+    var laid = format(AROUND + text + "\n)");
+    if (laid.text() == null) {
+      var at = laid.problem();
+      return at.kind() == Formatted.Kind.TOO_LARGE
+          ? laid
+          : new Formatted(
+              null, problem(text, Math.clamp(at.from() - AROUND.length(), 0, text.length())));
+    }
+    var out = laid.text();
+    if (!out.startsWith(AROUND) || !out.endsWith(")")) {
+      return new Formatted(text, null); // not one document: left as it is
+    }
+    return new Formatted(out.substring(AROUND.length(), out.length() - 1).strip(), null);
+  }
+
   @Override
   public Object line(String line, Object state, Spans out) {
     var tokens = new ArrayList<Lexer.Token>();
@@ -93,17 +140,12 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
         return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
       }
       return new Formatted(null, problem(text, Math.clamp(e.offset(), 0, text.length())));
-    } catch (StackOverflowError _) {
-      // Defense in depth for recursion outside the reader's 200-level limit (#82).
-      return new Formatted(null, new Formatted.Problem(0, 0, Formatted.Kind.TOO_LARGE));
     }
   }
 
-  /**
-   * The problem at the offset: a string or block comment not closed that it is in or ends at, else
-   * the token there or after it in the statement, else the statement's end.
-   */
-  private static Formatted.Problem problem(String text, int at) {
+  /** The problem at the offset: a string or block comment not closed that it is in or ends at, else
+   * the token there or after it in the statement, else the statement's end. */
+  static Formatted.Problem problem(String text, int at) {
     int end = Script.split(text).stream()
         .mapToInt(Script.Piece::end)
         .filter(e -> e >= at)

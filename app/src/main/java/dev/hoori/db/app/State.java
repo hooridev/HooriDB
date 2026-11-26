@@ -7,12 +7,14 @@ import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.window.SystemAppearance;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.dialect.Dialect;
@@ -29,6 +31,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -43,6 +46,8 @@ final class State {
   static final double KEYRING_SECONDS = 5;
 
   App<State> app; // runs the clock and the windows, and says whether the window is maximized
+  Settings settings = Settings.DEFAULT;
+  SystemAppearance appearance = new SystemAppearance(SystemAppearance.Scheme.UNKNOWN, 0, false);
   Theme theme = Theme.DARK;
   ZoneId zone = ZoneId.systemDefault(); // the computer's, in which moments show
   Split.Position sidebar = DEFAULT_SIDEBAR;
@@ -79,11 +84,15 @@ final class State {
   List<ConnectionProfile> profiles = List.of();
   // Its folders by id, for the tree, which asks for them at every frame; set with it too.
   private Map<UUID, Workspace.Folder> folders = Map.of();
+  // Its queries by id, for the tree and open query tabs; set with it too.
+  private Map<UUID, Workspace.Query> queries = Map.of();
+  private int queryEdits; // counted for delayed workspace saves on query text edits
   boolean loaded; // whether the workspace was loaded, or failed to
   String loadError; // why the workspace could not be loaded, or null
   // Where what a file that could not be understood held is kept once a save replaced it, or null.
   private String setAside;
   String saveError; // why the workspace could not be saved, or null
+  private static final String IS_DELETED = " is deleted";
   private boolean unsaved; // the workspace differs from what was last written
   Keyring keyring; // null while it is looked up
   private boolean lookingForKeyring;
@@ -123,6 +132,7 @@ final class State {
   State(Path folder, Services services, String version) {
     this.store = new WorkspaceStore(folder);
     this.keeping = new Keeping(folder, this);
+    this.keeping.restoreLayout();
     this.updates = new Updates(folder, services.updater(), version);
     this.version = version;
     this.findKeyring = services.keyring();
@@ -139,7 +149,7 @@ final class State {
   void start() {
     load();
     startUpdates();
-    statements.start(app);
+    statements.start(app, this::settled);
     keeping.start();
   }
 
@@ -150,9 +160,16 @@ final class State {
 
   /** A tab closed, by the user or with its connection: a console's text is no longer kept. */
   private void tabClosed(Tab tab) {
+    guard.drop(tab);
     tab.close();
-    if (tab instanceof ConsoleTab) {
+    if (tab instanceof ConsoleTab c) {
       keeping.persist(keeping.consolesKept);
+      if (c.queryId != null) {
+        keeping.queryClosed(c.queryId);
+      }
+      if (c.queryId != null && unsaved) {
+        persist();
+      }
     }
   }
 
@@ -176,7 +193,6 @@ final class State {
           change(found);
           loaded = true;
           setAside = null;
-          keeping.dropOrphanQueries();
           lookForKeyring();
           keeping.restore();
         },
@@ -247,7 +263,12 @@ final class State {
 
   /** The folder of the id, or null where there is none. */
   Workspace.Folder folder(UUID id) {
-    return folders.get(id);
+    return id == null ? null : folders.get(id);
+  }
+
+  /** The query of the id, or null where there is none. */
+  Workspace.Query query(UUID id) {
+    return id == null ? null : queries.get(id);
   }
 
   /**
@@ -274,6 +295,190 @@ final class State {
   boolean folderOpen(UUID id) {
     var folder = folders.get(id);
     return folder != null && folder.open();
+  }
+
+  /** Opens the dialog for a new query, which goes where {@link #folderFor} the selection. */
+  void newQuery() {
+    var language = Workspace.Language.SQL;
+    if (selected instanceof Node.Query(var id)) {
+      var q = query(id);
+      if (q != null) {
+        language = q.language();
+      }
+    } else if (selected != null && !(selected instanceof Node.Folder)) {
+      var p = profile(selected.id());
+      if (p != null) {
+        language = Workspace.Language.of(p.provider());
+      }
+    }
+    dialogs.queryDialog = QueryDialog.create(folderFor(selected), language);
+  }
+
+  /** A new query of the name and language, last in the folder of the id or at the top; selected. */
+  void createQuery(UUID in, String name, Workspace.Language language) {
+    dialogs.queryDialog = null;
+    var query = new Workspace.Query(UUID.randomUUID(), name, "", language);
+    var at = folder(in) == null ? null : in;
+    change(revealing(workspace.into(at, query), query.id()));
+    selected = new Node.Query(query.id());
+    persist();
+  }
+
+  /** Opens Save to workspace for a console's text, placing it in its connection's folder. */
+  void saveToWorkspace(ConsoleTab console, String text) {
+    if (!canChange() || text.isBlank()) {
+      return;
+    }
+    var path = console.id == null ? null : workspace.path(console.id);
+    UUID in = path == null || path.isEmpty() ? null : path.getLast().id();
+    var language = console.language(this).workspace();
+    dialogs.queryDialog = QueryDialog.save(in, text, language);
+    var window = app == null ? null : app.windows().of(app);
+    if (window != null) {
+      window.raise();
+    }
+  }
+
+  /** Creates a workspace query from a console's text. */
+  void createSavedQuery(UUID in, String name, String text, Workspace.Language language) {
+    dialogs.queryDialog = null;
+    var query = new Workspace.Query(UUID.randomUUID(), name, text, language);
+    var at = folder(in) == null ? null : in;
+    change(revealing(workspace.into(at, query), query.id()));
+    selected = new Node.Query(query.id());
+    persist();
+    tell("Saved the query " + name + " to the workspace");
+  }
+
+  void askRenameQuery(UUID id) {
+    var query = query(id);
+    if (query != null) {
+      dialogs.queryDialog = QueryDialog.rename(id, query.name());
+    }
+  }
+
+  void renameQuery(UUID id, String name) {
+    dialogs.queryDialog = null;
+    if (query(id) != null) {
+      change(workspace.rename(id, name));
+      persist();
+    }
+  }
+
+  /** A copy of the query under a new id, right after it. */
+  void duplicateQuery(Workspace.Query query) {
+    var copy = new Workspace.Query(
+        UUID.randomUUID(), query.name() + " (copy)", query.text(), query.language());
+    change(workspace.after(query.id(), copy));
+    selected = new Node.Query(copy.id());
+    persist();
+  }
+
+  /** The act of deleting the query, which its open tab's question asks for. */
+  static Guard.Act deleteQueryAct(UUID id) {
+    return new Guard.Act("delete query", id);
+  }
+
+  void askDeleteQuery(UUID id) {
+    var query = query(id);
+    if (query != null) {
+      dialogs.queryDialog = QueryDialog.delete(id, query.name());
+    }
+  }
+
+  /** Deletes the query, asking first if its open tab has something at stake, and closes its tab. */
+  void deleteQuery(UUID id) {
+    var query = query(id);
+    if (query == null) {
+      dialogs.queryDialog = null;
+      return;
+    }
+    var tab = queryTab(id);
+    if (tab != null
+        && guard.asks(
+            this,
+            deleteQueryAct(id),
+            query.name() + IS_DELETED,
+            List.of(tab),
+            () -> deleteQuery(id))) {
+      return;
+    }
+    dialogs.queryDialog = null;
+    if (tab != null) {
+      close(List.of(tab));
+    }
+    change(workspace.remove(id));
+    if (new Node.Query(id).equals(selected)) {
+      selected = null;
+    }
+    persist();
+  }
+
+  /** Opens the workspace query in a console tab, or raises the one already open for it. */
+  void openQuery(UUID id) {
+    openQuery(id, tabs.main().active());
+  }
+
+  /**
+   * As {@link #openQuery(UUID)}, opening a new tab in the window of these tabs; returns the tabs
+   * that hold it, or null when no query has the id.
+   */
+  TabGroups.Group<Tab> openQuery(UUID id, TabGroups.Group<Tab> into) {
+    var query = query(id);
+    if (query == null) {
+      return null;
+    }
+    var existing = queryTab(id);
+    if (existing != null) {
+      var group = tabs.groupOf(existing);
+      tabs.select(group, group.tabs().indexOf(existing));
+      var window = group.window() != null ? group.window() : app.windows().of(app);
+      if (window != null) {
+        window.raise();
+      }
+      return group;
+    }
+    var tab = ConsoleTab.ofQuery(this, query);
+    tabs.add(into, into.tabs().size(), tab);
+    keeping.persist(keeping.consolesKept);
+    return into;
+  }
+
+  /** The open console tab bound to the workspace query, in whichever window; or null. */
+  ConsoleTab queryTab(UUID queryId) {
+    if (queryId == null) {
+      return null;
+    }
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof ConsoleTab x && queryId.equals(x.queryId)) {
+          return x;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** A workspace query's text changed in its tab: kept in memory and saved after a moment. */
+  void queryEdited(UUID id, String text) {
+    var query = query(id);
+    if (query == null || query.text().equals(text)) {
+      return;
+    }
+    change(workspace.put(query.withText(text)));
+    if (!guard.quitting()) {
+      quitAnyway = false;
+    }
+    unsaved = true;
+    if (saving != null) {
+      saveAgain = true; // the save on its way wrote the text before this edit
+    }
+    int at = ++queryEdits;
+    app.after(Keeping.EDIT_SECONDS, () -> {
+      if (queryEdits == at && unsaved && !quitAnyway) {
+        persist();
+      }
+    });
   }
 
   /** Opens the dialog for a new folder, which goes where {@link #folderFor} the selection. */
@@ -330,7 +535,9 @@ final class State {
   }
 
   private static boolean entry(Node node) {
-    return node instanceof Node.Folder || node instanceof Node.Connection;
+    return node instanceof Node.Folder
+        || node instanceof Node.Connection
+        || node instanceof Node.Query;
   }
 
   /**
@@ -444,10 +651,24 @@ final class State {
       catalog.drop(this, profile.id()); // what failed before the change is out of date
     }
     if (!color) {
-      // Their sessions were opened with what changed; the save asked them first, and locked them.
-      consoles(profile.id()).forEach(ConsoleTab::end);
+      changed(profile);
     }
     persist();
+  }
+
+  /**
+   * Its consoles' sessions were opened with what changed; the save asked them first, and locked
+   * them. A query tab of another language than the connection's now lets go of it.
+   */
+  private void changed(ConnectionProfile profile) {
+    for (var console : consoles(profile.id())) {
+      if (console.queryId != null
+          && Workspace.Language.of(profile.provider()) != console.queryLanguage) {
+        console.detachTarget(this);
+      } else {
+        console.end();
+      }
+    }
   }
 
   /**
@@ -524,8 +745,8 @@ final class State {
         || guard.asks(
             this,
             deleteAct(profile),
-            name(profile) + " is deleted",
-            consoles(profile.id()),
+            name(profile) + IS_DELETED,
+            guarded(profile.id()),
             this::delete)) {
       return;
     }
@@ -552,9 +773,18 @@ final class State {
       return;
     }
     var held = folder.connections();
-    var consoles = held.stream().flatMap(p -> consoles(p.id()).stream()).toList();
+    var asking = new ArrayList<Guard.Guarded>();
+    for (var p : held) {
+      asking.addAll(guarded(p.id()));
+    }
+    for (var q : folder.queries()) {
+      var tab = queryTab(q.id());
+      if (tab != null && !asking.contains(tab)) {
+        asking.add(tab);
+      }
+    }
     var act = deleteFolderAct(id);
-    if (guard.asks(this, act, folder.name() + " is deleted", consoles, () -> deleteFolder(id))) {
+    if (guard.asks(this, act, folder.name() + IS_DELETED, asking, () -> deleteFolder(id))) {
       return;
     }
     remove(act, folder.name() + " is being deleted", held, id);
@@ -567,6 +797,10 @@ final class State {
   private void remove(Guard.Act act, String what, List<ConnectionProfile> profiles, UUID folder) {
     var ids = new HashSet<UUID>();
     profiles.forEach(p -> ids.add(p.id()));
+    var held = folder(folder);
+    if (held != null) { // its queries' tabs, on whatever connection they run
+      held.queries().forEach(q -> ids.add(q.id()));
+    }
     if (!guard.lock(this, act, what, ids)) {
       return;
     }
@@ -580,7 +814,6 @@ final class State {
     closeTabs(profile.id()); // its consoles, and with them their texts
     keeping.forget(profile.id());
     change(workspace.remove(profile.id()));
-    keeping.forgetQueries(profile.id());
     if (selected != null && selected.id().equals(profile.id())) {
       selected = null;
     }
@@ -601,8 +834,14 @@ final class State {
     dialogs.folderDialog = null;
     var folder = folder(id);
     if (folder != null && folder.connections().isEmpty()) {
+      var openQueries = folder.queries().stream()
+          .map(q -> queryTab(q.id()))
+          .filter(Objects::nonNull)
+          .toList();
+      close(openQueries);
       change(workspace.remove(id));
-      if (selected instanceof Node.Folder(var at) && folder(at) == null) {
+      if (selected instanceof Node.Folder(var at) && folder(at) == null
+          || selected instanceof Node.Query(var q) && query(q) == null) {
         selected = null;
       }
       persist();
@@ -735,8 +974,9 @@ final class State {
   }
 
   private void close() {
-    // The consoles first: their answers come back here, and Cancel gives up closing.
-    if (guard.asks(this, Guard.EXIT, "HooriDB closes", consoles(null), this::close)) {
+    // The consoles and edited tables first: their answers come back here, and Cancel gives up
+    // closing.
+    if (guard.asks(this, Guard.EXIT, "HooriDB closes", guarded(null), this::close)) {
       return;
     }
     if (dialogs.dialog != null) {
@@ -773,7 +1013,8 @@ final class State {
     // The one way out: the file saved, unless the user chose to go without it ("anyway" waives
     // that alone); then every console's session ends, and HooriDB waits for each to say how, as
     // long as their closing is bounded, waiving only those it said it could not confirm. The
-    // consoles and the history are saved last, as ending a session may add to them.
+    // consoles, the history and the statement log are saved last, as ending a session may add to
+    // them.
     if (unsaved && !quitAnyway) {
       persist();
       return;
@@ -788,7 +1029,7 @@ final class State {
       stay("HooriDB stayed open: a session reported a problem as it closed. See the connections.");
       return;
     }
-    if (!keeping.waits()) { // what the sessions' ends added
+    if (!keeping.waits() && !statements.waits()) { // what the sessions' ends added
       if (updates.restartWith != null) {
         updates.restartNow(this);
       } else {
@@ -840,7 +1081,7 @@ final class State {
    * whichever window; a table that became a view of its name, or the reverse, is read anew there.
    */
   void openTable(UUID id, Table table) {
-    openTable(id, table, tabs.main());
+    openTable(id, table, tabs.main().active());
   }
 
   /**
@@ -853,7 +1094,7 @@ final class State {
             x.table.container().equals(table.container()) && x.table.name().equals(table.name()))
         .findFirst();
     if (open.isEmpty()) {
-      var tab = new TableTab(id, table);
+      var tab = TableTab.of(this, id, table);
       tabs.add(into, into.tabs().size(), tab);
       tab.open(this, false);
       return into;
@@ -866,8 +1107,7 @@ final class State {
       window.raise();
     }
     if (!tab.table.equals(table)) {
-      tab.table = table;
-      tab.open(this, true);
+      tab.replace(this, table);
     }
     return group;
   }
@@ -890,7 +1130,7 @@ final class State {
    * else on the one its profile names, else on the one it finds by itself.
    */
   void openConsole(UUID id) {
-    openConsole(id, tabs.main());
+    openConsole(id, tabs.main().active());
   }
 
   /** As {@link #openConsole(UUID)}, in the window of these tabs. */
@@ -899,13 +1139,67 @@ final class State {
     if (profile == null) {
       return;
     }
-    var at = group == tabs.main() && selected != null && selected.id().equals(id)
+    var at = group == tabs.main().active() && selected != null && selected.id().equals(id)
         ? CatalogTree.database(selected)
         : null;
-    var console = new ConsoleTab(id, at == null ? database(profile) : at);
+    openConsole(id, group, at == null ? database(profile) : at, "");
+  }
+
+  /**
+   * Opens a console on the connection and database in the window of these tabs, with the given
+   * initial text and the caret at its end.
+   */
+  void openConsole(UUID id, TabGroups.Group<Tab> group, String database, String text) {
+    var console = ConsoleTab.of(this, id, database);
     console.take(this);
+    console.text = text;
+    console.editor.select(text.length(), text.length());
     tabs.add(group, group.tabs().size(), console);
     keeping.persist(keeping.consolesKept);
+  }
+
+  /**
+   * Sends a table's SQL to an open console on the same connection and database when {@link
+   * Settings#openInConsole()} reuses one—preferring a console in {@code group}—or opens a new
+   * console in {@code group}.
+   */
+  void openInConsole(UUID id, TabGroups.Group<Tab> group, String database, String sql) {
+    if (settings.openInConsole() == Settings.OpenInConsole.REUSE) {
+      var console = findConsole(id, database, group);
+      if (console != null) {
+        var found = tabs.groupOf(console);
+        tabs.select(found, found.tabs().indexOf(console));
+        var window = found.window() != null ? found.window() : app.windows().of(app);
+        if (window != null) {
+          window.raise();
+        }
+        // At the end after a blank line, closing the statement before it, as one step of Undo.
+        int end = console.text.length();
+        console.editor.select(end, end);
+        var blank = console.text.isBlank() || console.text.endsWith("\n\n");
+        console.insert(app, blank ? sql : "\n" + sql);
+        return;
+      }
+    }
+    openConsole(id, group, database, sql);
+  }
+
+  /** An open console of the connection on the database, one in these tabs first; or null. */
+  private ConsoleTab findConsole(UUID id, String database, TabGroups.Group<Tab> preferred) {
+    var groups = new ArrayList<>(tabs.groups());
+    groups.remove(preferred);
+    groups.addFirst(preferred);
+    for (var group : groups) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof ConsoleTab x
+            && x.queryId == null
+            && id.equals(x.id)
+            && Objects.equals(x.database, database)) {
+          return x;
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -913,7 +1207,10 @@ final class State {
    * tree, or that of the node selected, else that of the window's active tab; null for none.
    */
   UUID consoleFor(TabGroups.Group<Tab> group) {
-    if (group == tabs.main() && selected != null && !(selected instanceof Node.Folder)) {
+    if (group == tabs.main().active()
+        && selected != null
+        && !(selected instanceof Node.Folder)
+        && !(selected instanceof Node.Query)) {
       return selected.id();
     }
     return switch (group.activeTab()) {
@@ -1081,17 +1378,19 @@ final class State {
     }
   }
 
-  /** The user closes a tab, by its cross or Control+W: a console asks first. */
+  /** The user closes a tab, by its cross or Control+W: a console or edited table asks first. */
   private void closeTab(TabGroups.Group<Tab> group, int index) {
-    if (!(group.tabs().get(index) instanceof ConsoleTab x
+    var tab = group.tabs().get(index);
+    if (tab instanceof Guard.Guarded x
         && guard.asks(
             this,
             new Guard.Act("close", x),
-            "the console closes",
+            x instanceof ConsoleTab ? "the console closes" : "the tab closes",
             List.of(x),
-            () -> closeTab(x)))) {
-      tabs.close(group, index);
+            () -> closeTab(tab))) {
+      return;
     }
+    tabs.close(group, index);
   }
 
   private void closeTab(Tab tab) {
@@ -1101,12 +1400,25 @@ final class State {
     }
   }
 
+  /** The tabs that may hold uncommitted work (consoles and tables), of the connection or all. */
+  List<Guard.Guarded> guarded(UUID id) {
+    var all = new ArrayList<Guard.Guarded>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof Guard.Guarded g && (id == null || id.equals(g.connectionId()))) {
+          all.add(g);
+        }
+      }
+    }
+    return all;
+  }
+
   /** The consoles of every window, of the connection or of all where it is null. */
   List<ConsoleTab> consoles(UUID id) {
     var all = new ArrayList<ConsoleTab>();
     for (var group : tabs.groups()) {
       for (var tab : group.tabs()) {
-        if (tab instanceof ConsoleTab x && (id == null || x.id.equals(id))) {
+        if (tab instanceof ConsoleTab x && (id == null || id.equals(x.id))) {
           all.add(x);
         }
       }
@@ -1125,10 +1437,16 @@ final class State {
     };
   }
 
-  /** Closes the tabs of the connection, in every window. */
+  /** Closes the tabs of the connection, in every window; query tabs detach their target. */
   private void closeTabs(UUID id) {
     var all = new ArrayList<Tab>(tables(id));
-    all.addAll(consoles(id));
+    for (var console : consoles(id)) {
+      if (console.queryId == null) {
+        all.add(console);
+      } else {
+        console.detachTarget(this);
+      }
+    }
     all.addAll(monitors(id));
     all.addAll(finds(id));
     close(all);
@@ -1157,7 +1475,11 @@ final class State {
   /** The connection connected anew: its tabs read again what they showed, its consoles run. */
   void connected(UUID id) {
     for (var tab : tables(id)) {
-      tab.open(this, true);
+      if (tab.atStake()) {
+        tab.reconnected(this);
+      } else {
+        tab.open(this, true);
+      }
     }
     for (var console : consoles(id)) {
       console.connected(this);
@@ -1198,15 +1520,20 @@ final class State {
   }
 
   /**
-   * A console's title: its connection and its database, numbered where another console has the
-   * same.
+   * A console's title: a workspace query's name, else its connection and its database, numbered
+   * where another console has the same.
    */
   String title(ConsoleTab tab) {
+    if (tab.queryId != null) {
+      var query = query(tab.queryId);
+      return query != null ? query.name() : "";
+    }
     var profile = profile(tab.id);
     var title = (profile == null ? "" : name(profile))
         + (tab.database.isEmpty() ? "" : ": " + tab.database);
     var same = consoles(null).stream()
-        .filter(x -> x.id.equals(tab.id) && x.database.equals(tab.database))
+        .filter(x ->
+            x.queryId == null && Objects.equals(x.id, tab.id) && x.database.equals(tab.database))
         .toList();
     return same.size() < 2 ? title : title + " (" + (same.indexOf(tab) + 1) + ")";
   }
@@ -1215,7 +1542,8 @@ final class State {
    * Opens the window of a tab torn off or moved to a new window: its title bar, its tabs and their
    * status lines, over the same state.
    */
-  Windows.Handle openWindow(TabGroups.Group<Tab> group, Window.Options options) {
+  Windows.Handle openWindow(TabGroups.Frame<Tab> frame, Window.Options options) {
+    var group = frame.active(); // its only group, as tab groups do not split here
     App<State> window =
         new App<>(this, s -> Frame.window(s, group)).provide(Theme.CURRENT, s -> s.theme);
     window.textRendering(app.textRendering());
@@ -1277,16 +1605,27 @@ final class State {
   private void change(Workspace changed) {
     workspace = changed;
     profiles = changed.connections();
-    var byId = new HashMap<UUID, Workspace.Folder>();
-    index(changed.entries(), byId);
-    folders = byId;
+    var foldersById = new HashMap<UUID, Workspace.Folder>();
+    var queriesById = new HashMap<UUID, Workspace.Query>();
+    index(changed.entries(), foldersById, queriesById);
+    folders = foldersById;
+    queries = queriesById;
   }
 
-  private static void index(List<Workspace.Entry> entries, Map<UUID, Workspace.Folder> byId) {
+  private static void index(
+      List<Workspace.Entry> entries,
+      Map<UUID, Workspace.Folder> foldersById,
+      Map<UUID, Workspace.Query> queriesById) {
     for (var entry : entries) {
-      if (entry instanceof Workspace.Folder f) {
-        byId.put(f.id(), f);
-        index(f.entries(), byId);
+      switch (entry) {
+        case Workspace.Folder f -> {
+          foldersById.put(f.id(), f);
+          index(f.entries(), foldersById, queriesById);
+        }
+        case Workspace.Query q -> queriesById.put(q.id(), q);
+        case ConnectionProfile _ -> {
+          // a connection is found by its own list, profiles
+        }
       }
     }
   }
@@ -1314,10 +1653,60 @@ final class State {
     return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
   }
 
-  /** Switches to a theme and says so in the status line. */
-  void useTheme(Theme theme, String name) {
-    this.theme = theme;
-    tell(name + " on");
+  /**
+   * Replaces the user's settings, re-resolving what derives from them and saving the file a moment
+   * later; an equal value does nothing.
+   */
+  void choose(Settings next) {
+    if (applySettings(next)) {
+      keeping.settingsChanged();
+    }
+  }
+
+  /**
+   * Applies loaded settings without saving; an equal value does nothing, so loading the defaults
+   * leaves any {@link #theme} or {@link #zone} a test set directly.
+   */
+  boolean applySettings(Settings next) {
+    if (Objects.requireNonNull(next, "settings").equals(settings)) {
+      return false;
+    }
+    var was = settings;
+    settings = next;
+    if (next.look() != was.look()
+        || next.accent() != was.accent()
+        || next.density() != was.density()) {
+      theme = Keeping.theme(next, appearance);
+    }
+    if (!Objects.equals(next.timeZone(), was.timeZone())) {
+      zone = next.timeZone() != null ? next.timeZone() : ZoneId.systemDefault();
+    }
+    if (!was.checkForUpdates() && next.checkForUpdates()) {
+      updates.turnedOn(this);
+    }
+    return true;
+  }
+
+  /** The operating system's appearance changed: re-resolves the theme where it follows it. */
+  void systemChanged(SystemAppearance next) {
+    var now = next == null ? new SystemAppearance(SystemAppearance.Scheme.UNKNOWN, 0, false) : next;
+    if (now.equals(appearance)) {
+      return;
+    }
+    var was = appearance;
+    appearance = now;
+    if (settings.look() == Settings.Look.SYSTEM && now.scheme() != was.scheme()) {
+      theme = Keeping.theme(settings, appearance);
+    }
+  }
+
+  /** Moves the sidebar divider and keeps its width. */
+  void moveSidebar(Split.Position position) {
+    if (position.equals(sidebar)) {
+      return;
+    }
+    sidebar = position;
+    keeping.sidebar(position);
   }
 
   /** Shows a message in the status line for {@link #MESSAGE_SECONDS}, on the app's clock. */
@@ -1340,6 +1729,7 @@ final class State {
     if (dialogs.dialog != null) {
       dialogs.dialog.close(this); // and what it reads, its driver's dialog's too
     }
+    tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
     finds(null).forEach(FindTab::close);

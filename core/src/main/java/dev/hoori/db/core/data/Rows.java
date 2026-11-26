@@ -5,12 +5,13 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
-import dev.hoori.db.core.dialect.ErrorDialect.Condition;
+import dev.hoori.db.core.dialect.ErrorDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sql.Clauses;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Connection;
@@ -23,8 +24,12 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -33,6 +38,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.StringJoiner;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
@@ -73,6 +79,12 @@ public final class Rows {
   /** How many characters of a text, and how many bytes of binary data, a page holds. */
   public static final int LIMIT = 1024;
 
+  /**
+   * The most characters of one text that a statement's result or a document's value keeps whole
+   * for the value panel; a longer one is cut to {@link #LIMIT}, as the panel lays it out whole.
+   */
+  public static final int WHOLE_LIMIT = 1024 * 1024;
+
   // A date, and a date and time, as PostgreSQL writes them with DateStyle ISO, which pgjdbc sets,
   // and as MariaDB and MySQL write them; PostgreSQL's years go beyond 9999, and before the common
   // era they end in BC. A timestamp with time zone of a statement's result has the offset of the
@@ -85,15 +97,66 @@ public final class Rows {
       Pattern.compile("(\\d\\d):(\\d\\d):(\\d\\d)(?:\\.(\\d{1,9}))?([+-]\\d\\d(?::\\d\\d){0,2})?");
   // The rows of a plan's node, "rows=900" in PostgreSQL's and "rows=238e+6" in MySQL's tree.
   private static final DateTimeFormatter OFFSET = DateTimeFormatter.ofPattern("xxxxx");
+  private static final DateTimeFormatter ANY_OFFSET_TIME = new DateTimeFormatterBuilder()
+      .append(DateTimeFormatter.ISO_LOCAL_TIME)
+      .parseLenient()
+      .appendOffset("+HH:MM:ss", "Z")
+      .toFormatter(Locale.ROOT)
+      .withResolverStyle(ResolverStyle.STRICT);
+  private static final DateTimeFormatter ANY_OFFSET_DATE_TIME = new DateTimeFormatterBuilder()
+      .append(DateTimeFormatter.ISO_LOCAL_DATE)
+      .appendLiteral('T')
+      .append(DateTimeFormatter.ISO_LOCAL_TIME)
+      .parseLenient()
+      .appendOffset("+HH:MM:ss", "Z")
+      .toFormatter(Locale.ROOT)
+      .withResolverStyle(ResolverStyle.STRICT);
+  private static final String AND = " AND ";
+  private static final String OR = " OR ";
+  private static final Pattern FILTER_INTEGER = Pattern.compile("[+-]?\\d+");
+  private static final Pattern FILTER_DECIMAL =
+      Pattern.compile("[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?");
   private static final Pattern PLAN_ROWS =
       Pattern.compile("[( ]rows=(\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?)[ )]");
 
   // The alias of the table in every statement that reads its rows, and of the table joined to it
   // whose columns say what the table's are now.
-  static final String ALIAS = "r";
+  /** The alias by which a read names the table, which the clauses of a {@link Filter} may use. */
+  public static final String ALIAS = "r";
+
   private static final String WITNESS = "w";
 
   private Rows() {}
+
+  /**
+   * How a table's rows are narrowed and ordered on the server, as the user typed the SQL clauses:
+   * each is empty or blank for none.
+   *
+   * @param where the condition of a {@code WHERE} clause, without {@code WHERE}
+   * @param order the expressions of an {@code ORDER BY} clause, without {@code ORDER BY}
+   */
+  public record Filter(String where, String order) {
+
+    /** No filter and no user order. */
+    public static final Filter NONE = new Filter("", "");
+
+    public Filter {
+      where = where == null ? "" : where;
+      order = order == null ? "" : order;
+    }
+
+    public boolean hasWhere() {
+      return !where.isBlank();
+    }
+
+    public boolean hasOrder() {
+      return !order.isBlank();
+    }
+
+    public boolean empty() {
+      return !hasWhere() && !hasOrder();
+    }
+  }
 
   interface Value {
     Object read(ResultSet rows, int index) throws SQLException;
@@ -112,6 +175,11 @@ public final class Rows {
     Read withBytes(String bytes) {
       return new Read(field, column, sql, value, bytes);
     }
+
+    Read withOrigin(Origin origin) {
+      return new Read(
+          new Field(field.name(), field.type(), field.kind(), origin), column, sql, value, bytes);
+    }
   }
 
   // What a column is read from: the name and type its field shows, and its name through the alias,
@@ -127,8 +195,24 @@ public final class Rows {
    */
   public static OptionalLong estimate(Connection connection, Provider provider, Table table)
       throws QueryException {
+    return estimate(connection, provider, table, Filter.NONE, false);
+  }
+
+  /**
+   * As {@link #estimate(Connection, Provider, Table)}, narrowed by the filter's {@code WHERE}
+   * clause where given.
+   *
+   * @param readOnly whether the session is read-only, where each clause is also checked with
+   *     {@link dev.hoori.db.core.sql.ReadWrite}
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} before anything is sent
+   *     where a clause of the filter is refused by {@link Clauses}
+   */
+  public static OptionalLong estimate(
+      Connection connection, Provider provider, Table table, Filter filter, boolean readOnly)
+      throws QueryException {
+    check(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
-    var select = "SELECT * FROM " + qualified(provider, table);
+    var select = "SELECT * FROM " + filtered(provider, table, filter);
     return provider.dialect().rows().estimate(connection, provider, table, select);
   }
 
@@ -147,8 +231,25 @@ public final class Rows {
   /** The exact number of rows of the table or view, which the server counts one by one. */
   public static long count(Connection connection, Provider provider, Table table)
       throws QueryException {
+    return count(connection, provider, table, Filter.NONE, false);
+  }
+
+  /**
+   * As {@link #count(Connection, Provider, Table)}, narrowed by the filter's {@code WHERE} clause
+   * where given.
+   *
+   * @param readOnly whether the session is read-only, where each clause is also checked with
+   *     {@link dev.hoori.db.core.sql.ReadWrite}
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} before anything is sent
+   *     where a clause of the filter is refused by {@link Clauses}
+   */
+  public static long count(
+      Connection connection, Provider provider, Table table, Filter filter, boolean readOnly)
+      throws QueryException {
+    check(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
-    var sql = "SELECT " + provider.dialect().rows().count() + " FROM " + qualified(provider, table);
+    var sql = "SELECT " + provider.dialect().rows().count() + " FROM "
+        + filtered(provider, table, filter);
     return Journal.sql(
         provider,
         Purpose.ROWS,
@@ -193,10 +294,34 @@ public final class Rows {
       long from,
       long to)
       throws QueryException {
+    return read(connection, provider, table, columns, from, to, Filter.NONE, false);
+  }
+
+  /**
+   * As {@link #read(Connection, Provider, Table, List, long, long)}, narrowed by the filter's
+   * {@code WHERE} clause and ordered by its {@code ORDER BY} clause first, then by the table's own
+   * order so that paging stays stable.
+   *
+   * @param readOnly whether the session is read-only, where each clause is also checked with
+   *     {@link dev.hoori.db.core.sql.ReadWrite}
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} before anything is sent
+   *     where a clause of the filter is refused by {@link Clauses}
+   */
+  public static Page read(
+      Connection connection,
+      Provider provider,
+      Table table,
+      List<Column> columns,
+      long from,
+      long to,
+      Filter filter,
+      boolean readOnly)
+      throws QueryException {
     if (from < 0 || to < from) {
       throw new IllegalArgumentException("Rows from " + from + " to " + to);
     }
     requireColumnsOf(table, columns);
+    check(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
     var dialect = provider.dialect().rows();
     var described = dialect.describe(connection, provider, table, columns);
@@ -213,15 +338,14 @@ public final class Rows {
     if (witness) {
       expressions.add(WITNESS + ".*");
     }
-    var sql = "SELECT "
-        + String.join(", ", expressions)
-        + " FROM " + qualified(provider, table) + " AS " + ALIAS
-        + (witness
-            ? " LEFT JOIN (SELECT * FROM " + qualified(provider, table) + " LIMIT 0) AS " + WITNESS
-                + " ON FALSE"
-            : "")
-        + order(provider, columns, reads, places, children)
-        + " LIMIT " + (to - from) + " OFFSET " + from;
+    var sql = page(
+        expressions,
+        qualified(provider, table),
+        witness,
+        filter,
+        orderTerms(provider, columns, reads, places, children),
+        provider.quote(orderColumn(columns)),
+        " LIMIT " + (to - from) + " OFFSET " + from);
     var fields = reads.stream().map(Read::field).toList();
     Page page;
     try {
@@ -237,7 +361,17 @@ public final class Rows {
             return shown == null ? null : new Page(shown, List.copyOf(rows(result, reads)));
           }));
     } catch (QueryException e) {
-      throw columnGone(provider, e) ? changed(table) : e;
+      if (columnGone(provider, e)) {
+        if (filter.empty()) {
+          throw changed(table);
+        }
+        // An unknown column may be the user's clause's or one the table lost: no rows read without
+        // the filter fail as changed in the latter case. Without a witness, describe() has told.
+        if (witness) {
+          read(connection, provider, table, columns, from, from, Filter.NONE, false);
+        }
+      }
+      throw e;
     }
     if (page == null) {
       throw changed(table);
@@ -329,11 +463,95 @@ public final class Rows {
   private static boolean columnGone(Provider provider, QueryException e) {
     return e.failure() == QueryException.Failure.NOT_FOUND
         && e.getCause() instanceof SQLException sql
-        && Condition.COLUMN_GONE.in(
+        && ErrorDialect.Condition.COLUMN_GONE.in(
             provider, sql.getSQLState() == null ? "" : sql.getSQLState(), sql.getErrorCode());
   }
 
-  private static String order(
+  /**
+   * Checks the filter's clauses against {@link Clauses}, as {@link #read}, {@link #count} and
+   * {@link #estimate} do before sending anything to the server.
+   *
+   * @param readOnly whether the session is read-only, where each clause is also checked with
+   *     {@link dev.hoori.db.core.sql.ReadWrite}
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} where a clause is refused
+   */
+  public static void check(Provider provider, Filter filter, boolean readOnly)
+      throws QueryException {
+    checkClause("WHERE", filter.where(), provider, readOnly);
+    checkClause("ORDER BY", filter.order(), provider, readOnly);
+  }
+
+  private static void checkClause(String name, String clause, Provider provider, boolean readOnly)
+      throws QueryException {
+    var problem = Clauses.problem(clause, provider, readOnly);
+    if (problem.isPresent()) {
+      var detail = switch (problem.get()) {
+        case MULTIPLE -> "The " + name + " clause holds more than one statement";
+        case UNCLOSED -> "The " + name + " clause leaves a string or comment open";
+        case PARENTHESES -> "The " + name + " clause has unbalanced parentheses";
+        case READ_ONLY -> "The session is read-only, and the " + name + " clause may turn that off";
+      };
+      throw QueryException.of(QueryException.Failure.CLAUSE_REFUSED, detail);
+    }
+  }
+
+  private static String where(Filter filter) {
+    return filter.hasWhere() ? " WHERE (\n" + filter.where() + "\n)" : "";
+  }
+
+  // The table and its rows' condition, the table by the alias that a page reads it by, so that a
+  // clause names the same in a count and an estimate.
+  private static String filtered(Provider provider, Table table, Filter filter) {
+    return qualified(provider, table) + (filter.hasWhere() ? " AS " + ALIAS + where(filter) : "");
+  }
+
+  // The statement of a page: without a filter as ever. Where the server has a witness, whose names
+  // a clause's bare names would clash with, the clauses go in a derived table of the table's rows;
+  // with a user order, that is the page, which an index may give, its rows numbered in that order.
+  private static String page(
+      List<String> expressions,
+      String table,
+      boolean witness,
+      Filter filter,
+      List<String> tieBreakers,
+      String number,
+      String limit) {
+    var source = table + " AS " + ALIAS + where(filter);
+    List<String> order = new ArrayList<>();
+    if (filter.hasOrder()) {
+      // Not in parentheses, as "(a DESC, b)" is no order; on lines of its own, bounded by Clauses.
+      order.add("\n" + filter.order() + "\n");
+    }
+    order.addAll(tieBreakers);
+    var rest = limit;
+    if (witness && filter.hasOrder()) {
+      var by = String.join(", ", order);
+      source = "(SELECT " + ALIAS + ".*, ROW_NUMBER() OVER (ORDER BY " + by + ") AS " + number
+          + " FROM (SELECT " + ALIAS + ".* FROM " + source + " ORDER BY " + by + limit + ") AS "
+          + ALIAS + ") AS " + ALIAS;
+      order = List.of(ALIAS + "." + number);
+      rest = "";
+    } else if (witness && filter.hasWhere()) {
+      source = "(SELECT " + ALIAS + ".* FROM " + source + ") AS " + ALIAS;
+    }
+    return "SELECT " + String.join(", ", expressions) + " FROM " + source
+        + (witness
+            ? " LEFT JOIN (SELECT * FROM " + table + " LIMIT 0) AS " + WITNESS + " ON FALSE"
+            : "")
+        + (order.isEmpty() ? "" : " ORDER BY " + String.join(", ", order))
+        + rest;
+  }
+
+  // A name for the rows' number that is none of the table's columns, as the server compares names.
+  private static String orderColumn(List<Column> columns) {
+    var name = new StringBuilder("__hoori_order");
+    while (columns.stream().anyMatch(column -> column.name().equalsIgnoreCase(name.toString()))) {
+      name.append('_');
+    }
+    return name.toString();
+  }
+
+  private static List<String> orderTerms(
       Provider provider,
       List<Column> columns,
       List<Read> reads,
@@ -354,7 +572,7 @@ public final class Rows {
       }
       reads.stream().map(Read::bytes).filter(Objects::nonNull).forEach(order::add);
     }
-    return order.isEmpty() ? "" : " ORDER BY " + String.join(", ", order);
+    return order;
   }
 
   // How a table's columns are read, and the table as the dialect's children() names it, or 0.
@@ -369,7 +587,9 @@ public final class Rows {
     var reads = new ArrayList<Read>();
     for (var i = 1; i <= metadata.getColumnCount(); i++) {
       var type = metadata.getColumnTypeName(i);
-      reads.add(dialect.read(new Source(metadata.getColumnLabel(i), type, null), metadata, i));
+      var read = dialect.read(new Source(metadata.getColumnLabel(i), type, null), metadata, i);
+      var origin = dialect.origin(metadata, i);
+      reads.add(origin == null ? read : read.withOrigin(origin));
     }
     return reads;
   }
@@ -432,7 +652,8 @@ public final class Rows {
 
   // One character more than the limit tells that there is more; the server counts characters, as
   // code points, where Java counts UTF-16 units. A NULL has no length, also where the start, such
-  // as concat()'s, is an empty text. A statement's result has the whole text, which is cut here.
+  // as concat()'s, is an empty text. A statement's result reads the whole text, which RowReader
+  // cuts beyond its budget.
   static Read text(Source source, Kind kind, UnaryOperator<String> start, String length) {
     if (source.sql() == null) {
       return whole(source, kind);
@@ -446,22 +667,33 @@ public final class Rows {
             rows.getString(index + 1) == null ? null : cut(rows.getString(index), rows, index + 1));
   }
 
+  /** Reads a column of a statement's result as its whole text, which {@link RowReader} bounds. */
+  static final Value WHOLE_TEXT = ResultSet::getString;
+
+  /**
+   * A column of a statement's result read whole as text; {@link RowReader} keeps a value longer
+   * than {@link #LIMIT} code points whole while its budget allows and cuts the rest.
+   */
   static Read whole(Source source, Kind kind) {
-    return new Read(field(source, kind), null, List.of(), (rows, index) -> {
-      var text = rows.getString(index);
-      return text == null || text.codePointCount(0, text.length()) <= LIMIT
-          ? text
-          : new Cut(text.substring(0, text.offsetByCodePoints(0, LIMIT)), OptionalLong.empty());
-    });
+    return new Read(field(source, kind), null, List.of(), WHOLE_TEXT);
   }
 
   static Object cut(String text, ResultSet rows, int length) throws SQLException {
-    if (text == null || text.codePointCount(0, text.length()) <= LIMIT) {
-      return text;
-    }
-    return new Cut(
-        text.substring(0, text.offsetByCodePoints(0, LIMIT)),
-        OptionalLong.of(rows.getLong(length)));
+    return tooLong(text) ? new Cut(start(text), OptionalLong.of(rows.getLong(length))) : text;
+  }
+
+  static Cut cut(String text) {
+    return new Cut(start(text), OptionalLong.empty());
+  }
+
+  static boolean tooLong(String text) {
+    return text != null
+        && text.length() > LIMIT
+        && (text.length() > 2 * LIMIT || text.codePointCount(0, text.length()) > LIMIT);
+  }
+
+  private static String start(String text) {
+    return text.substring(0, text.offsetByCodePoints(0, LIMIT));
   }
 
   static Read binary(Source source, UnaryOperator<String> sql, String length) {
@@ -579,8 +811,416 @@ public final class Rows {
     return eras && date.getYear() <= 0 ? " BC" : "";
   }
 
-  static String qualified(Provider provider, Table table) {
+  /** The table's qualified SQL name: its container and name, each quoted for the provider. */
+  public static String qualified(Provider provider, Table table) {
     return provider.quote(table.container().name()) + "." + provider.quote(table.name());
+  }
+
+  /**
+   * A {@code WHERE} condition (without {@code WHERE}) matching each column to its value, quoted
+   * and formatted as a literal of the provider's SQL, joined with {@code AND}.
+   *
+   * @throws IllegalArgumentException if {@code columns} is empty, has another size than {@code
+   *     values}, names an empty column, or a value is {@code null}, {@link Missing#FIELD}, read
+   *     only in part ({@link Cut} or a {@link Binary#cut} value), or of no kind's Java type
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(Provider provider, List<String> columns, List<Object> values) {
+    Objects.requireNonNull(provider, "provider");
+    Objects.requireNonNull(columns, "columns");
+    Objects.requireNonNull(values, "values");
+    if (columns.isEmpty() || columns.size() != values.size()) {
+      throw new IllegalArgumentException("Expected at least one column and one value per column");
+    }
+    var dialect = provider.dialect().rows();
+    var condition = new StringJoiner(AND);
+    for (var i = 0; i < columns.size(); i++) {
+      var column = columns.get(i);
+      var value = values.get(i);
+      if (column == null || column.isEmpty()) {
+        throw new IllegalArgumentException("Column name cannot be empty");
+      }
+      if (value == null || value == Missing.FIELD || !Changes.whole(value) || !exact(value)) {
+        throw new IllegalArgumentException("A value of column " + column + " cannot filter rows");
+      }
+      condition.add(provider.quote(column) + " = " + dialect.literal(value));
+    }
+    return condition.toString();
+  }
+
+  // shortcut: refuses values whose literal may not equal what is stored (a FLOAT's decimal, a
+  // moment's offset, a backslash under either escape mode); compare them as unchanged() does
+  // where such keys turn up.
+  private static boolean exact(Object value) {
+    return !(value instanceof Float)
+        && !(value instanceof OffsetDateTime)
+        && !(value instanceof String text && text.contains("\\"));
+  }
+
+  /**
+   * The condition builder operators the provider's dialect offers for {@code field}, in display
+   * order.
+   *
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static List<ColumnFilter.Operator> operators(Provider provider, Field field) {
+    Objects.requireNonNull(provider, "provider");
+    Objects.requireNonNull(field, "field");
+    return provider.dialect().rows().operators(field);
+  }
+
+  /**
+   * A {@code WHERE} condition (without {@code WHERE}) for the given column filters, formatted in
+   * the provider's SQL dialect and joined with {@code AND}; empty when {@code filters} is empty.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when a column cannot be
+   *     filtered or a value is invalid for the column's kind
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(Provider provider, List<ColumnFilter> filters, ZoneId zone)
+      throws QueryException {
+    return where(provider, "", filters, zone);
+  }
+
+  /**
+   * As {@link #where(Provider, List, ZoneId)}, joining {@code filters} onto an optional
+   * hand-written {@code base} clause with {@code (<base>) AND <conditions>}.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when {@code base} is
+   *     refused by {@link Clauses} or any column filter is invalid
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(
+      Provider provider, String base, List<ColumnFilter> filters, ZoneId zone)
+      throws QueryException {
+    Objects.requireNonNull(filters, "filters");
+    return where(provider, base, Condition.Group.and(filters), zone);
+  }
+
+  /**
+   * A {@code WHERE} condition (without {@code WHERE}) for {@code condition}, formatted in the
+   * provider's SQL dialect; empty when {@code condition} is an empty group.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when a column cannot be
+   *     filtered or a value is invalid for the column's kind
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(Provider provider, Condition condition, ZoneId zone)
+      throws QueryException {
+    return where(provider, "", condition, zone);
+  }
+
+  /**
+   * As {@link #where(Provider, Condition, ZoneId)}, joining {@code condition} onto an optional
+   * hand-written {@code base} clause with {@code (<base>) AND <conditions>}, parenthesizing a
+   * top-level {@code OR} group so precedence is preserved.
+   *
+   * @throws QueryException {@link QueryException.Failure#CLAUSE_REFUSED} when {@code base} is
+   *     refused by {@link Clauses} or any filter is invalid
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String where(Provider provider, String base, Condition condition, ZoneId zone)
+      throws QueryException {
+    Objects.requireNonNull(provider, "provider");
+    Objects.requireNonNull(condition, "condition");
+    Objects.requireNonNull(zone, "zone");
+    var dialect = provider.dialect().rows();
+    var trimmed = base == null ? "" : base.strip();
+    var rendered = render(provider, dialect, condition, zone);
+    if (rendered.sql().isEmpty()) {
+      return trimmed;
+    }
+    if (!trimmed.isEmpty()) {
+      checkClause("WHERE", trimmed, provider, true);
+    }
+    if (trimmed.isEmpty()) {
+      return rendered.sql();
+    }
+    var added = rendered.disjunction() ? "(" + rendered.sql() + ")" : rendered.sql();
+    // A line comment at the end takes in what follows, which the check refuses; a line break ends
+    // it. MySQL's bare -- at the end, which needs the break it lost to strip(), passes the check.
+    var joined = "(" + trimmed + ")" + AND + added;
+    try {
+      if (!trimmed.endsWith("--")) {
+        checkClause("WHERE", joined, provider, true);
+        return joined;
+      }
+    } catch (QueryException _) {
+      // Ended below.
+    }
+    return "(" + trimmed + "\n)" + AND + added;
+  }
+
+  // Rendered SQL and whether it is a multi-term group or a top-level OR disjunction.
+  private record Rendered(String sql, boolean group, boolean disjunction, boolean compound) {
+    static final Rendered EMPTY = new Rendered("", false, false, false);
+  }
+
+  private static Rendered render(
+      Provider provider, RowsDialect dialect, Condition condition, ZoneId zone)
+      throws QueryException {
+    return switch (condition) {
+      case ColumnFilter filter -> {
+        var sql = condition(provider, dialect, filter, zone);
+        boolean twoBound = filter.spec() instanceof ColumnFilter.Between(var from, var to)
+            && !from.isBlank()
+            && !to.isBlank();
+        yield new Rendered(sql, false, false, twoBound);
+      }
+      case Condition.Group(boolean any, var children) -> {
+        var parts = new ArrayList<Rendered>(children.size());
+        for (var child : children) {
+          var rendered = render(provider, dialect, child, zone);
+          if (!rendered.sql().isEmpty()) {
+            parts.add(rendered);
+          }
+        }
+        if (parts.isEmpty()) {
+          yield Rendered.EMPTY;
+        }
+        if (parts.size() == 1) {
+          yield parts.getFirst();
+        }
+        var joiner = new StringJoiner(any ? OR : AND);
+        for (var part : parts) {
+          boolean wrap = part.group() || (any && part.compound());
+          joiner.add(wrap ? "(" + part.sql() + ")" : part.sql());
+        }
+        yield new Rendered(joiner.toString(), true, any, true);
+      }
+    };
+  }
+
+  private static String condition(
+      Provider provider, RowsDialect dialect, ColumnFilter filter, ZoneId zone)
+      throws QueryException {
+    var field = filter.field();
+    var name = field.name();
+    if (name == null || name.isEmpty()) {
+      throw refused("Column name cannot be empty");
+    }
+    var quoted = provider.quote(name);
+    var kind = field.kind();
+    if (filter.spec() instanceof ColumnFilter.Null(boolean isNull)) {
+      return quoted + (isNull ? " IS NULL" : " IS NOT NULL");
+    }
+    if (filter.spec() instanceof ColumnFilter.Exists) {
+      throw refused(name, "does not support existence checks");
+    }
+    if (filter.spec() instanceof ColumnFilter.Not(var inner)) {
+      return "NOT (" + condition(provider, dialect, new ColumnFilter(field, inner), zone) + ")";
+    }
+    // Binary data shows as hex, which no text of the server's matches.
+    if (kind == null || kind == Kind.JSON || kind == Kind.OTHER || kind == Kind.BINARY) {
+      throw refused(name, "cannot be filtered");
+    }
+    return switch (filter.spec()) {
+      case ColumnFilter.Null _, ColumnFilter.Exists _, ColumnFilter.Not _ ->
+        throw new AssertionError();
+      case ColumnFilter.Text(var match, var value) ->
+        textCondition(dialect, quoted, field, match, value, zone);
+      case ColumnFilter.Regex(var expression) -> {
+        if (expression.isEmpty()) {
+          throw refused("Regular expression for " + name + " cannot be empty");
+        }
+        yield dialect.matches(quoted, field, expression);
+      }
+      case ColumnFilter.Between(var from, var to) ->
+        betweenCondition(dialect, quoted, field, from, to, zone);
+      case ColumnFilter.OneOf(var values) -> oneOfCondition(dialect, quoted, field, values, zone);
+    };
+  }
+
+  private static String textCondition(
+      RowsDialect dialect,
+      String quoted,
+      Field field,
+      ColumnFilter.Match match,
+      String value,
+      ZoneId zone)
+      throws QueryException {
+    var kind = field.kind();
+    return switch (match) {
+      case CONTAINS -> dialect.like(quoted, field, "%" + escapeLike(value) + "%");
+      case STARTS_WITH -> dialect.like(quoted, field, escapeLike(value) + "%");
+      case EQUALS, EXACTLY -> {
+        if (kind == Kind.TEXT) {
+          yield match == ColumnFilter.Match.EXACTLY
+              ? dialect.equalsExactly(quoted, field, value)
+              : dialect.equalsIgnoringCase(quoted, field, value);
+        }
+        yield dialect.compare(quoted, field, "=", parseFilterValue(field, value, zone));
+      }
+    };
+  }
+
+  private static String betweenCondition(
+      RowsDialect dialect, String quoted, Field field, String from, String to, ZoneId zone)
+      throws QueryException {
+    var kind = field.kind();
+    if (kind == Kind.BOOLEAN) {
+      throw refused(field.name(), "does not support range filters");
+    }
+    var lo = from.strip();
+    var hi = to.strip();
+    if (lo.isEmpty() && hi.isEmpty()) {
+      throw refused("Range filter on " + field.name() + " needs at least one bound");
+    }
+    var parts = new StringJoiner(AND);
+    if (!lo.isEmpty()) {
+      parts.add(dialect.compare(quoted, field, ">=", parseFilterValue(field, lo, zone)));
+    }
+    if (!hi.isEmpty()) {
+      parts.add(dialect.compare(quoted, field, "<=", parseFilterValue(field, hi, zone)));
+    }
+    return parts.toString();
+  }
+
+  private static String oneOfCondition(
+      RowsDialect dialect, String quoted, Field field, List<String> values, ZoneId zone)
+      throws QueryException {
+    if (values.isEmpty()) {
+      return "FALSE";
+    }
+    var items = new StringJoiner(", ");
+    for (var value : values) {
+      items.add(dialect.literal(parseFilterValue(field, value, zone)));
+    }
+    return quoted + " IN (" + items + ")";
+  }
+
+  private static Object parseFilterValue(Field field, String raw, ZoneId zone)
+      throws QueryException {
+    var name = field.name();
+    return switch (field.kind()) {
+      case TEXT -> raw;
+      case INTEGER -> {
+        var s = raw.strip();
+        if (!FILTER_INTEGER.matcher(s).matches()) {
+          throw refused(name, "expects a whole number: " + raw);
+        }
+        yield new BigInteger(s);
+      }
+      case DECIMAL -> {
+        var s = raw.strip();
+        if (s.length() > 100 || !FILTER_DECIMAL.matcher(s).matches()) {
+          throw refused(name, "expects a decimal number: " + raw);
+        }
+        try {
+          var decimal = new BigDecimal(s);
+          if (Math.abs(decimal.scale()) > 1000) {
+            throw refused(name, "number exponent is too large: " + raw);
+          }
+          yield decimal;
+        } catch (NumberFormatException _) {
+          throw refused(name, "expects a decimal number: " + raw);
+        }
+      }
+      case BOOLEAN -> parseBoolean(name, raw);
+      case DATE -> {
+        try {
+          yield LocalDate.parse(raw.strip());
+        } catch (DateTimeParseException _) {
+          throw refused(name, "expects a date (YYYY-MM-DD): " + raw);
+        }
+      }
+      case TIME -> parseFilterTime(name, raw);
+      case DATE_TIME -> parseFilterDateTime(name, raw);
+      case DATE_TIME_ZONED -> parseMoment(name, raw, zone);
+      case BINARY, JSON, OTHER -> throw refused(name, "cannot be filtered");
+    };
+  }
+
+  private static Object parseFilterTime(String name, String raw) throws QueryException {
+    var s = raw.strip();
+    try {
+      return LocalTime.parse(s);
+    } catch (DateTimeParseException _) {
+      try {
+        return OffsetTime.parse(s, ANY_OFFSET_TIME);
+      } catch (DateTimeParseException _) {
+        throw refused(name, "expects a time (HH:MM:SS): " + raw);
+      }
+    }
+  }
+
+  private static LocalDateTime parseFilterDateTime(String name, String raw) throws QueryException {
+    var s = raw.strip();
+    try {
+      return LocalDateTime.parse(s.replace(' ', 'T'));
+    } catch (DateTimeParseException _) {
+      try {
+        return LocalDate.parse(s).atStartOfDay();
+      } catch (DateTimeParseException _) {
+        throw refused(name, "expects a date and time without an offset: " + raw);
+      }
+    }
+  }
+
+  /**
+   * Parses a boolean filter value ({@code true}/{@code false} and common shorthands), throwing
+   * {@link QueryException.Failure#CLAUSE_REFUSED} otherwise.
+   */
+  public static Boolean parseBoolean(String name, String raw) throws QueryException {
+    return switch (raw.strip().toLowerCase(Locale.ROOT)) {
+      case "true", "t", "1", "yes", "y", "on" -> Boolean.TRUE;
+      case "false", "f", "0", "no", "n", "off" -> Boolean.FALSE;
+      default -> throw refused(name, "expects true or false: " + raw);
+    };
+  }
+
+  /**
+   * Parses a timestamp-with-time-zone filter value (with offset, or local in {@code zone}) into an
+   * {@link OffsetDateTime} in UTC, throwing {@link QueryException.Failure#CLAUSE_REFUSED}
+   * otherwise.
+   */
+  public static OffsetDateTime parseMoment(String name, String raw, ZoneId zone)
+      throws QueryException {
+    var s = raw.strip();
+    var iso = s.replace(' ', 'T');
+    try {
+      return OffsetDateTime.parse(iso, ANY_OFFSET_DATE_TIME).withOffsetSameInstant(ZoneOffset.UTC);
+    } catch (DateTimeParseException _) {
+      // Try without offset, in the user's zone.
+    }
+    try {
+      var local = LocalDateTime.parse(iso);
+      if (zone.getRules().getValidOffsets(local).size() != 1) {
+        throw refused("Time on " + name + " is skipped or repeated in " + zone.getId()
+            + "; add an offset such as +01:00");
+      }
+      return local.atZone(zone).toOffsetDateTime().withOffsetSameInstant(ZoneOffset.UTC);
+    } catch (DateTimeParseException _) {
+      // Try date-only at start of day in the user's zone.
+    }
+    try {
+      return LocalDate.parse(s)
+          .atStartOfDay(zone)
+          .toOffsetDateTime()
+          .withOffsetSameInstant(ZoneOffset.UTC);
+    } catch (DateTimeParseException _) {
+      throw refused(name, "expects a date and time: " + raw);
+    }
+  }
+
+  private static String escapeLike(String value) {
+    var out = new StringBuilder(value.length());
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      if (c == '!' || c == '%' || c == '_') {
+        out.append('!');
+      }
+      out.append(c);
+    }
+    return out.toString();
+  }
+
+  private static QueryException refused(String detail) {
+    return QueryException.of(QueryException.Failure.CLAUSE_REFUSED, detail);
+  }
+
+  private static QueryException refused(String column, String detail) {
+    return refused("Column " + column + " " + detail);
   }
 
   static void requireColumnsOf(Table table, List<Column> columns) {

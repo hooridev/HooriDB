@@ -26,18 +26,25 @@ import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
+import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.StoredConsole;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.secret.Keyring;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -127,6 +134,39 @@ class ConsoleHistoryTest {
   }
 
   @Test
+  @Disabled("An edit asked of an editor never built is lost: rethinkj/ui#545")
+  void openInConsoleAddsToAKeptConsoleNeverShown() throws Exception {
+    // The last one kept is the one shown; the console on shop was never built.
+    new ConsoleStore(config())
+        .save(List.of(
+            new StoredConsole(SHOP.id(), "shop", "SELECT 3"),
+            new StoredConsole(SHOP.id(), "inventory", "SELECT 2;")));
+    var app = c.again(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START
+            + CatalogTreeTest.open("shop-prod")
+            + SETTLE
+            + CatalogTreeTest.open("shop")
+            + SETTLE
+            + CatalogTreeTest.open("public")
+            + SETTLE
+            + TableTabTest.table("orders")
+            + SETTLE
+            + "press role=button label=\"Open in console\"\nframe\nadvance 1\nframe\n"
+            + SAVED);
+    var shop = app.state().consoles(SHOP.id()).getFirst();
+    assertEquals(shop, app.state().tabs.main().active().activeTab());
+    var text = "SELECT 3;\n\nSELECT * FROM \"public\".\"orders\";";
+    assertEquals(text, shop.text, "not lost at the first press");
+    assertEquals(text.length(), shop.editor.caret());
+    assertEquals(new StoredConsole(SHOP.id(), "shop", text), consoles().getFirst());
+    c.run(app, "key Z control\nframe\n");
+    assertEquals("SELECT 3", shop.text, "one step of Undo");
+  }
+
+  @Test
   void aDeletedConnectionTakesItsConsolesAndItsHistoryAlong() throws Exception {
     var app = k.console(SHOP);
     c.run(app, type(COUNT) + RUN + SAVED);
@@ -154,7 +194,9 @@ class ConsoleHistoryTest {
     c.run(app, CLEAR + type(MISSING) + RUN);
     var held = servers.hold("run " + PG + " " + ORDERS);
     c.run(app, CLEAR + type(ORDERS) + "key Enter control\nframe\n");
-    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\n");
     held.countDown();
     c.run(app, SETTLE + CLEAR + SAVED);
     return app;
@@ -407,7 +449,10 @@ class ConsoleHistoryTest {
     var tab = k.tab(app);
     c.run(app, type("\n" + PAY) + "key Enter control\nframe\nframe\n");
     eventually(tab::outcomeWaiting);
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE);
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + SETTLE);
     assertEquals(new Outcome.Changed(3), app.state().keeping.history.getLast().outcome());
   }
 
@@ -439,6 +484,60 @@ class ConsoleHistoryTest {
     // Sent, and the made-up server does not know it: short, it would be kept as failed.
     assertTrue(line(c.tree("long"), "#run-status").contains("Failed after"), c.tree("long"));
     assertEquals(List.of(), app.state().keeping.history);
+  }
+
+  @Test
+  void historyShowsItsTimesInTheConfiguredZone() throws Exception {
+    new HistoryStore(config())
+        .save(List.of(new HistoryEntry(
+            SHOP.id(),
+            COUNT,
+            Instant.parse("2026-01-15T10:30:00Z"),
+            Duration.ofMillis(4),
+            new Outcome.Rows())));
+    var app = c.again(SHOP);
+    c.ready(app, SHOP);
+    app.state().zone = ZoneId.of("Asia/Tokyo");
+    c.run(app, START + menu(SHOP.name(), "New console") + SETTLE + HISTORY + "snap tokyo\n");
+    assertTrue(
+        cell(dialog(c.tree("tokyo")), 0, 1).contains("2026-01-15 19:30:00"),
+        dialog(c.tree("tokyo")));
+    app.state().zone = ZoneId.of("America/New_York");
+    app.invalidate();
+    c.run(app, "frame\nsnap ny\n");
+    assertTrue(
+        cell(dialog(c.tree("ny")), 0, 1).contains("2026-01-15 05:30:00"), dialog(c.tree("ny")));
+  }
+
+  /** With keepHistory off, running statements leaves history.json unchanged and keeps what was there. */
+  @Test
+  void keepHistoryOffRecordsNothingNewAndKeepsExistingHistory() throws Exception {
+    var existing = new HistoryEntry(
+        SHOP.id(),
+        "SELECT 0",
+        Instant.parse("2026-01-15T10:30:00Z"),
+        Duration.ofMillis(4),
+        new Outcome.Rows());
+    new HistoryStore(config()).save(List.of(existing));
+    new SettingsStore(config()).save(Settings.DEFAULT.withKeepHistory(false));
+    var file = config().resolve(HistoryStore.FILE);
+    String before = Files.readString(file);
+
+    var app = c.again(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START
+            + menu(SHOP.name(), "New console")
+            + SETTLE
+            + type(COUNT)
+            + RUN
+            + CLEAR
+            + type(PAY)
+            + RUN
+            + SAVED);
+    assertEquals(before, Files.readString(file));
+    assertEquals(List.of(existing), app.state().keeping.history);
   }
 
   /**

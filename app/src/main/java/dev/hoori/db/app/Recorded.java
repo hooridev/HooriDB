@@ -4,12 +4,19 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.data.Changes;
+import dev.hoori.db.core.data.Editable;
+import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
+import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
@@ -23,10 +30,16 @@ import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Logged;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Sent;
+import dev.hoori.db.core.monitor.Block;
+import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Monitor;
+import dev.hoori.db.core.monitor.ServerSession;
+import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 
@@ -42,7 +55,8 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
   static final String WITHHELD = "/* Not shown, as it holds the connection's password. */";
 
   @Override
-  public Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
+  public Link open(
+      ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout)
       throws ConnectionException {
     // What opening sends, as a read-only profile's statement, is logged as the link's calls are.
     var id = profile.id();
@@ -51,8 +65,8 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
       var link = log.on()
           ? Journal.recording(
               sent -> secret.log(log, id, sent, null),
-              () -> servers.open(profile, password, driver))
-          : servers.open(profile, password, driver);
+              () -> servers.open(profile, password, driver, timeout))
+          : servers.open(profile, password, driver, timeout);
       return new RecordedLink(link, id, secret, log);
     } catch (ConnectionException | RuntimeException e) {
       secret.wipe();
@@ -107,7 +121,7 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     return new Sent(sent.at(), sent.purpose(), on, text, sent.took(), outcome);
   }
 
-  /** A link that logs each of its calls; its copy of the password goes when it closes. */
+  /** A link that logs each of its calls; its copy of the password goes when it closes or aborts. */
   static final class RecordedLink implements Link {
 
     private final Link link;
@@ -177,13 +191,28 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     @Override
-    public OptionalLong estimate(Table table) throws QueryException {
-      return recorded(of(table), () -> link.estimate(table));
+    public List<Field> paths(Table table) throws CatalogException {
+      return recorded(of(table), () -> link.paths(table));
     }
 
     @Override
-    public long count(Table table) throws QueryException {
-      return recorded(of(table), () -> link.count(table));
+    public List<ForeignKey> foreignKeys(Table table) throws CatalogException {
+      return recorded(of(table), () -> link.foreignKeys(table));
+    }
+
+    @Override
+    public List<Index> indexes(Table table) throws CatalogException {
+      return recorded(of(table), () -> link.indexes(table));
+    }
+
+    @Override
+    public OptionalLong estimate(Table table, Rows.Filter filter) throws QueryException {
+      return recorded(of(table), () -> link.estimate(table, filter));
+    }
+
+    @Override
+    public long count(Table table, Rows.Filter filter) throws QueryException {
+      return recorded(of(table), () -> link.count(table, filter));
     }
 
     @Override
@@ -193,14 +222,31 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     @Override
-    public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
-      return recorded(of(table), () -> link.read(table, columns, from, to));
+    public Page read(Table table, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException {
+      return recorded(of(table), () -> link.read(table, columns, from, to, filter));
     }
 
     @Override
     public String whole(Table table, List<Column> columns, List<Object> row, int column)
         throws QueryException {
       return recorded(of(table), () -> link.whole(table, columns, row, column));
+    }
+
+    @Override
+    public Optional<Editable> editable(
+        String sql, List<Field> fields, boolean createdTemporaryTable) throws QueryException {
+      return recorded(null, () -> link.editable(sql, fields, createdTemporaryTable));
+    }
+
+    @Override
+    public Changes.Outcome write(Changes changes) throws QueryException {
+      return recorded(of(changes.table()), () -> link.write(changes));
+    }
+
+    @Override
+    public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+      return recorded(of(edit.collection()), () -> link.write(edit));
     }
 
     @Override
@@ -245,10 +291,42 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
       });
     }
 
-    // Not logged yet: what the monitor sends runs outside the link's calls.
+    // Only cancels and ends are logged: the monitor's periodic reads run unbound so that they do
+    // not fill the statement log.
     @Override
     public Monitor monitor() throws QueryException {
-      return link.monitor();
+      var monitor = link.monitor();
+      return new Monitor() {
+        @Override
+        public List<ServerSession> sessions() throws QueryException {
+          return monitor.sessions();
+        }
+
+        @Override
+        public boolean cancel(ServerSession session) throws QueryException {
+          return recorded(null, () -> monitor.cancel(session));
+        }
+
+        @Override
+        public boolean end(ServerSession session) throws QueryException {
+          return recorded(null, () -> monitor.end(session));
+        }
+
+        @Override
+        public List<ServerVariable> variables() throws QueryException {
+          return monitor.variables();
+        }
+
+        @Override
+        public List<Counter> status() throws QueryException {
+          return monitor.status();
+        }
+
+        @Override
+        public Optional<List<Block>> locks() throws QueryException {
+          return monitor.locks();
+        }
+      };
     }
 
     @Override
@@ -287,7 +365,11 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
 
     @Override
     public void abort() {
-      link.abort();
+      try {
+        link.abort();
+      } finally {
+        secret.wipe();
+      }
     }
   }
 }

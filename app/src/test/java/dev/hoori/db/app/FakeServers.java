@@ -4,16 +4,29 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Binary;
+import dev.hoori.db.core.data.Change;
+import dev.hoori.db.core.data.Changes;
+import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Origin;
 import dev.hoori.db.core.data.Page;
+import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.Bson;
+import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.DocumentEdit;
+import dev.hoori.db.core.document.DocumentSession;
+import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
@@ -37,6 +50,7 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sql.EditableQuery;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -46,15 +60,22 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 /**
  * Made-up servers, by host: what they hold is written as an outline, each call can be held at a
@@ -63,7 +84,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>An outline has a database per line, its schemas indented under it where the provider has
  * schemas, then the tables, then the columns as {@code name: type}. A {@code ~} before a name marks
- * a system database or schema, {@code @} a view and {@code *} a column of the primary key.
+ * a system database or schema, {@code @} a view and {@code *} a column of the primary key. A
+ * column line may end with {@code > [<name>:] [<container>.]<table>.<column> [on delete|update
+ * <rule>]...} to declare a foreign key ({@code <container>} defaults to the column's own, {@code
+ * <name>} to {@code <table>_<column>_fkey}; columns on one table sharing a name form a composite
+ * key in column order; unspecified rules default to {@link ForeignKey.Rule#NO_ACTION}). Reading a
+ * table's foreign keys is keyed {@code foreign keys <host>/<path>}, with the path as of {@code
+ * columns}. An index line under a table or collection is written as {@code #<name> (<col1>, <col2>)
+ * [unique|primary] [| <detail>]} (ordered primary key first, then by name). Reading a table's
+ * indexes is keyed {@code indexes <host>/<path>}, with the path as of {@code columns}.
  *
  * <p>A table has rows made up from their position, of the kinds its columns' types say, 3 unless
  * {@link #rows} says how many, or the rows {@link #values} gives. Its rows' calls are keyed {@code
@@ -127,18 +156,56 @@ final class FakeServers implements Servers {
   final List<String> calls = new CopyOnWriteArrayList<>(); // in the order they began
   // The calls of the links, each after the link's number, from 1 in the order they were opened.
   final List<String> linked = new CopyOnWriteArrayList<>();
+  private final AtomicInteger opened = new AtomicInteger(); // links numbered, also at once
   final List<String> done = new CopyOnWriteArrayList<>(); // the reads that returned
   final List<String> passwords = new CopyOnWriteArrayList<>();
   final List<String> closed = new CopyOnWriteArrayList<>(); // the links closed, by database
   final List<String> interrupted = new CopyOnWriteArrayList<>();
   final List<String> failed = new CopyOnWriteArrayList<>(); // the calls that failed as set
+  final List<Duration> timeouts = new CopyOnWriteArrayList<>(); // the timeouts given to open
   volatile boolean overlapped; // two calls ran at once on one connection
   volatile boolean dead; // a gate ignores interrupts, as a server that no longer answers
   private final Map<String, Long> counts = new ConcurrentHashMap<>();
   private final Map<String, OptionalLong> estimates = new ConcurrentHashMap<>();
   private final Map<String, List<List<Object>>> values = new ConcurrentHashMap<>();
+  private final Map<String, List<Document>> documents = new ConcurrentHashMap<>();
   private final Map<String, String> wholes = new ConcurrentHashMap<>();
   private final Map<String, Answer> statements = new ConcurrentHashMap<>();
+  private final Map<String, Supplier<Answer>> dynamicStatements = new ConcurrentHashMap<>();
+  private final java.util.Set<String> refused = ConcurrentHashMap.newKeySet();
+  private final Map<String, DocumentEdit.Outcome> forced = new ConcurrentHashMap<>();
+  private final java.util.Set<String> writing = ConcurrentHashMap.newKeySet();
+
+  /**
+   * Marks a SQL fragment (such as {@code nextval(}) as writing at the server: a read-only link
+   * refuses a clause or statement holding it while a writable link runs it.
+   */
+  FakeServers writes(String fragment) {
+    writing.add(fragment.toLowerCase(Locale.ROOT));
+    return this;
+  }
+
+  /** Whether the link opened with the given 1-based number was opened read-only. */
+  boolean readOnly(int link) {
+    return links.stream().filter(l -> l.number == link).findFirst().orElseThrow().readOnly;
+  }
+
+  private boolean isWrite(String sql) {
+    if (sql == null || sql.isEmpty() || writing.isEmpty()) {
+      return false;
+    }
+    var lower = sql.toLowerCase(Locale.ROOT);
+    for (var fragment : writing) {
+      if (lower.contains(fragment)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean isWrite(Rows.Filter filter) {
+    return filter != null && (isWrite(filter.where()) || isWrite(filter.order()));
+  }
 
   /** How long each portion of a statement took, as the server would say. */
   static final Duration TOOK = Duration.ofMillis(4);
@@ -148,13 +215,59 @@ final class FakeServers implements Servers {
 
   /** The statement, as written, gives these results, and the server says these messages. */
   FakeServers statement(String sql, List<Result> results, Message... messages) {
+    dynamicStatements.remove(sql);
     statements.put(sql, new Answer(List.copyOf(results), List.of(messages)));
+    return this;
+  }
+
+  /** The statement, as written, computes its answer on each run (e.g. reading live table rows). */
+  FakeServers statement(String sql, Supplier<Answer> answer) {
+    statements.remove(sql);
+    dynamicStatements.put(sql, answer);
     return this;
   }
 
   /** The statement no longer gives what {@link #statement} said, as the server changed. */
   void forget(String sql) {
     statements.remove(sql);
+    dynamicStatements.remove(sql);
+  }
+
+  /** The current rows stored for the table at {@code path}, or null if none were set. */
+  List<List<Object>> rowsOf(String path) {
+    return values.get(path);
+  }
+
+  /** The current documents stored for the collection at {@code path}, or null if none were set. */
+  List<Document> documentsOf(String path) {
+    return documents.get(path);
+  }
+
+  /** Makes the next {@link Link#write(DocumentEdit)} for {@code key} match nothing (Changed). */
+  FakeServers missNext(String key) {
+    return nextEdit(key, new DocumentEdit.Outcome.Changed());
+  }
+
+  /** Makes the next {@link Link#write(DocumentEdit)} for {@code key} end so, writing nothing. */
+  FakeServers nextEdit(String key, DocumentEdit.Outcome outcome) {
+    forced.put(key, outcome);
+    return this;
+  }
+
+  /** Makes {@link Link#write} for {@code key} return {@link Changes.Outcome.Refused}. */
+  FakeServers refuse(String key) {
+    refused.add(key);
+    return this;
+  }
+
+  /** Clears a refusal set by {@link #refuse}. */
+  void allow(String key) {
+    refused.remove(key);
+  }
+
+  /** A result field carrying a table column origin for fake editable results. */
+  static Field originField(String name, String type, String catalog, String table, String column) {
+    return new Field(name, type, kind(type), new Origin.Named(catalog, table, column));
   }
 
   private final java.util.Set<String> beginning = ConcurrentHashMap.newKeySet();
@@ -382,6 +495,12 @@ final class FakeServers implements Servers {
     return rows(path, rows.size(), OptionalLong.of(rows.size()));
   }
 
+  /** The collection at the path has these documents, which the server estimates right. */
+  FakeServers documents(String path, List<Document> docs) {
+    documents.put(path, List.copyOf(docs));
+    return rows(path, docs.size(), OptionalLong.of(docs.size()));
+  }
+
   /**
    * The whole text of the column of the table at the path, for the row whose key has the values,
    * joined by commas; a row without one is not found.
@@ -427,10 +546,15 @@ final class FakeServers implements Servers {
         key,
         connecting
             ? ConnectionException.of(ConnectionException.Failure.CANCELLED, "")
-            : CatalogException.of(CatalogException.Failure.CANCELLED, ""));
+            : CatalogException.of(CatalogException.Failure.CANCELLED, ""),
+        null);
   }
 
   private void call(String key, Exception cancelled) throws Exception {
+    call(key, cancelled, null);
+  }
+
+  private void call(String key, Exception cancelled, Duration timeout) throws Exception {
     calls.add(key);
     var gate = gates.get(key);
     var passing = passes.get(key);
@@ -453,7 +577,15 @@ final class FakeServers implements Servers {
         }
       } else {
         try {
-          gate.await();
+          if (timeout != null) {
+            if (!gate.await(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
+              throw ConnectionException.of(
+                  ConnectionException.Failure.TIMED_OUT,
+                  "timed out after " + timeout.toSeconds() + " s");
+            }
+          } else {
+            gate.await();
+          }
         } catch (InterruptedException _) {
           interrupted.add(key);
           Thread.currentThread().interrupt();
@@ -470,18 +602,20 @@ final class FakeServers implements Servers {
   }
 
   @Override
-  public Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
+  public Link open(
+      ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout)
       throws ConnectionException {
     var made = servers.get(profile.host());
     if (made == null) {
       throw ConnectionException.of(ConnectionException.Failure.UNREACHABLE, "no such host");
     }
     passwords.add(new String(password));
+    timeouts.add(timeout);
     boolean perDatabase = made.provider() == Provider.POSTGRESQL;
     var database = profile.database().isBlank() ? profile.user() : profile.database();
     var key = "open " + profile.host() + (perDatabase ? "/" + database : "");
     try {
-      call(key, true);
+      call(key, ConnectionException.of(ConnectionException.Failure.CANCELLED, ""), timeout);
     } catch (ConnectionException e) {
       throw e;
     } catch (Exception e) {
@@ -496,14 +630,15 @@ final class FakeServers implements Servers {
           ConnectionException.Failure.NO_SUCH_DATABASE,
           "FATAL: database \"" + database + "\" does not exist");
     }
-    var link = new FakeLink(profile.host(), made, perDatabase ? database : null);
+    var link =
+        new FakeLink(profile.host(), made, perDatabase ? database : null, profile.readOnly());
     link.current = perDatabase || profile.database().isBlank() ? null : profile.database();
     links.add(link);
     return link;
   }
 
   private final class FakeLink implements Link {
-    private final int number = links.size() + 1;
+    private final int number = opened.incrementAndGet();
 
     private void note(String key) {
       linked.add(number + " " + key);
@@ -517,6 +652,7 @@ final class FakeServers implements Servers {
     private final String host;
     private final Made made;
     private final String database;
+    private final boolean readOnly;
     private final AtomicInteger busy = new AtomicInteger();
     // The session's auto-commit and transaction, on the lane's thread only.
     private boolean manual; // the server's auto-commit off, as its status says it
@@ -538,10 +674,11 @@ final class FakeServers implements Servers {
       return servers.get(host).root();
     }
 
-    FakeLink(String host, Made made, String database) {
+    FakeLink(String host, Made made, String database, boolean readOnly) {
       this.host = host;
       this.made = made;
       this.database = database;
+      this.readOnly = readOnly;
     }
 
     @Override
@@ -648,23 +785,76 @@ final class FakeServers implements Servers {
 
     @Override
     public List<Column> columns(Table t) throws CatalogException {
-      var c = t.container();
-      var path = (c instanceof Schema s ? s.database().name() + "." + s.name() : c.name()) + "."
-          + t.name();
-      return read("columns " + host + "/" + path, c.database(), () -> {
-        var list = new ArrayList<Column>();
-        int key = 0;
-        var table = find(container(c), t.name());
+      return read("columns " + path(t), t.container().database(), () -> {
+        var table = find(container(t.container()), t.name());
         if (table == null) {
           throw CatalogException.of(CatalogException.Failure.NOT_FOUND, t.name());
         }
-        for (var line : table.children()) {
-          var text = line.text();
-          boolean inKey = text.startsWith("*");
-          var parts = (inKey ? text.substring(1) : text).split(": ", 2);
-          list.add(new Column(t, parts[0], parts[1], !inKey, inKey ? ++key : 0));
+        return tableColumns(t, table);
+      });
+    }
+
+    @Override
+    public List<Field> paths(Table t) throws CatalogException {
+      if (!made.provider().keepsDocuments()) {
+        return List.of();
+      }
+      return read("paths " + path(t), t.container().database(), () -> {
+        var table = find(container(t.container()), t.name());
+        if (table == null) {
+          throw CatalogException.of(CatalogException.Failure.NOT_FOUND, t.name());
         }
-        return list;
+        var docs = documents.get(path(t));
+        if (docs != null) {
+          return DocumentSession.paths(docs);
+        }
+        return tableColumns(t, table).stream()
+            .filter(c ->
+                !c.name().isEmpty() && c.name().indexOf('.') < 0 && !c.name().startsWith("$"))
+            .map(c -> new Field(c.name(), c.type(), Values.kind(c.type())))
+            .toList();
+      });
+    }
+
+    @Override
+    public List<ForeignKey> foreignKeys(Table t) throws CatalogException {
+      if (made.provider().keepsDocuments() || t.kind() != Table.Kind.TABLE) {
+        return List.of();
+      }
+      return read("foreign keys " + path(t), t.container().database(), () -> {
+        boolean schemas = made.provider().supports(Capability.SCHEMAS, ServerVersion.UNKNOWN);
+        var found = new ArrayList<ForeignKey>();
+        if (schemas) {
+          var dbOutline = find(root(), t.container().database().name());
+          if (dbOutline != null) {
+            var db = new Database(name(dbOutline), dbOutline.text().startsWith("~"));
+            for (var schemaOutline : dbOutline.children()) {
+              var schema =
+                  new Schema(db, name(schemaOutline), schemaOutline.text().startsWith("~"));
+              collectForeignKeys(t, dbOutline, schema, schemaOutline, true, found);
+            }
+          }
+        } else {
+          for (var dbOutline : root().children()) {
+            var db = new Database(name(dbOutline), dbOutline.text().startsWith("~"));
+            collectForeignKeys(t, root(), db, dbOutline, false, found);
+          }
+        }
+        found.sort(Comparator.comparing(ForeignKey::name)
+            .thenComparing(fk -> fk.table().container().name())
+            .thenComparing(fk -> fk.table().name()));
+        return List.copyOf(found);
+      });
+    }
+
+    @Override
+    public List<Index> indexes(Table t) throws CatalogException {
+      if (t.kind() != Table.Kind.TABLE) {
+        return List.of();
+      }
+      return read("indexes " + path(t), t.container().database(), () -> {
+        var table = find(container(t.container()), t.name());
+        return table == null ? List.of() : tableIndexes(t, table);
       });
     }
 
@@ -677,15 +867,21 @@ final class FakeServers implements Servers {
 
     // A call on a table's rows: on its database, one at a time, held and failed by its key.
     private <T> T rows(String key, Table t, RowsCall<T> call) throws QueryException {
+      return rows(key, t, false, call);
+    }
+
+    private <T> T rows(String key, Table t, boolean writes, RowsCall<T> call)
+        throws QueryException {
       return Journal.sql(
           made.provider(),
           Purpose.ROWS,
           key,
           read -> read instanceof Page page ? Outcome.rows(page.rows().size()) : Outcome.rows(1),
-          () -> table(key, t, call));
+          () -> table(key, t, writes, call));
     }
 
-    private <T> T table(String key, Table t, RowsCall<T> call) throws QueryException {
+    private <T> T table(String key, Table t, boolean writes, RowsCall<T> call)
+        throws QueryException {
       if (busy.incrementAndGet() > 1) {
         overlapped = true;
       }
@@ -704,6 +900,10 @@ final class FakeServers implements Servers {
         } catch (Exception _) {
           throw queryFailure(QueryException.Failure.OTHER);
         }
+        if (readOnly && writes) {
+          throw QueryException.of(
+              QueryException.Failure.OTHER, "ERROR: cannot execute in a read-only transaction");
+        }
         if (table == null) {
           throw queryFailure(QueryException.Failure.NOT_FOUND);
         }
@@ -717,10 +917,47 @@ final class FakeServers implements Servers {
       }
     }
 
+    private void check(Rows.Filter filter) throws QueryException {
+      if (filter == null || filter.empty()) {
+        return;
+      }
+      if (made.provider().keepsDocuments()) {
+        Servers.Documents.parse(filter);
+        return;
+      }
+      Rows.check(made.provider(), filter, readOnly);
+    }
+
+    private String suffix(Rows.Filter filter) {
+      if (filter == null || filter.empty()) {
+        return "";
+      }
+      var text = new StringBuilder();
+      boolean docs = made.provider().keepsDocuments();
+      if (filter.hasWhere()) {
+        text.append(docs ? " FILTER " : " WHERE ").append(filter.where());
+      }
+      if (filter.hasOrder()) {
+        text.append(docs ? " SORT " : " ORDER BY ").append(filter.order());
+      }
+      return text.toString();
+    }
+
     @Override
-    public OptionalLong estimate(Table t) throws QueryException {
+    public OptionalLong estimate(Table t, Rows.Filter filter) throws QueryException {
+      check(filter);
       var path = path(t);
-      return rows("estimate " + path, t, table -> estimates.getOrDefault(path, OptionalLong.of(3)));
+      var key = path + suffix(filter);
+      boolean filteredDocs =
+          made.provider().keepsDocuments() && filter != null && filter.hasWhere();
+      return rows(
+          "estimate " + key,
+          t,
+          table -> filteredDocs
+              ? OptionalLong.empty()
+              : estimates.containsKey(key)
+                  ? estimates.get(key)
+                  : estimates.getOrDefault(path, OptionalLong.of(3)));
     }
 
     @Override
@@ -769,30 +1006,61 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public long count(Table t) throws QueryException {
+    public long count(Table t, Rows.Filter filter) throws QueryException {
+      check(filter);
       var path = path(t);
-      return rows("count " + path, t, table -> counts.getOrDefault(path, 3L));
+      var key = path + suffix(filter);
+      return rows(
+          "count " + key,
+          t,
+          isWrite(filter),
+          table -> counts.containsKey(key) ? counts.get(key) : counts.getOrDefault(path, 3L));
     }
 
     @Override
-    public Page read(Table t, List<Column> columns, long from, long to) throws QueryException {
+    public Page read(Table t, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException {
+      check(filter);
       var path = path(t);
-      return rows("read " + path + " " + from + "-" + to, t, table -> {
+      var suffix = suffix(filter);
+      var key = path + suffix;
+      return rows("read " + path + " " + from + "-" + to + suffix, t, isWrite(filter), table -> {
         // As core reads: the columns given must be the table's now, by name, order and type.
         var now = table.children().stream()
-            .map(line -> List.of(line.text().replaceFirst("^\\*", "").split(": ", 2)))
+            .filter(line -> !isIndexLine(line.text()))
+            .map(line -> {
+              var parsed = columnLine(line.text());
+              return List.of(parsed.name(), parsed.type());
+            })
             .toList();
         var asked = columns.stream().map(c -> List.of(c.name(), c.type())).toList();
         if (!now.equals(asked)) {
           return null;
         }
-        var fields = columns.stream()
-            .map(c -> new Field(c.name(), c.type(), kind(c.type())))
-            .toList();
-        var given = values.get(path);
-        long count = given != null ? given.size() : counts.getOrDefault(path, 3L);
+        var docs = documents.get(key);
+        if (docs == null && values.get(key) == null && counts.get(key) == null) {
+          docs = documents.get(path);
+        }
+        var fields = docs != null
+            ? Values.fields(columns)
+            : columns.stream()
+                .map(c -> new Field(c.name(), c.type(), kind(c.type())))
+                .toList();
+        var given = values.get(key);
+        Long counted = counts.get(key);
+        if (given == null && counted == null) {
+          given = values.get(path);
+          counted = counts.get(path);
+        }
+        long count = docs != null
+            ? docs.size()
+            : given != null ? given.size() : counted != null ? counted : 3L;
         var rows = new ArrayList<List<Object>>();
         for (long i = from; i < Math.min(to, count); i++) {
+          if (docs != null) {
+            rows.add(Values.row(fields, docs.get((int) i)));
+            continue;
+          }
           if (given != null) {
             rows.add(given.get((int) i));
             continue;
@@ -803,7 +1071,12 @@ final class FakeServers implements Servers {
           }
           rows.add(Collections.unmodifiableList(Arrays.asList(row)));
         }
-        return new Page(List.copyOf(fields), List.copyOf(rows));
+        return docs != null
+            ? new Page(
+                List.copyOf(fields),
+                List.copyOf(rows),
+                docs.subList((int) Math.min(from, count), (int) Math.min(to, count)))
+            : new Page(List.copyOf(fields), List.copyOf(rows));
       });
     }
 
@@ -819,6 +1092,607 @@ final class FakeServers implements Servers {
       var at = path(t) + " " + columns.get(column).name() + " " + key;
       return rows("whole " + at, t, table -> Optional.ofNullable(wholes.get(at)))
           .orElseThrow(() -> queryFailure(QueryException.Failure.NOT_FOUND));
+    }
+
+    @Override
+    public Optional<Editable> editable(
+        String sql, List<Field> fields, boolean createdTemporaryTable) throws QueryException {
+      var key = "editable " + host + " " + sql;
+      return Journal.sql(
+          made.provider(),
+          Purpose.CATALOG,
+          key,
+          found -> Outcome.rows(found.isPresent() ? 1 : 0),
+          () -> resolveEditable(key, sql, fields, createdTemporaryTable));
+    }
+
+    private Optional<Editable> resolveEditable(
+        String key, String sql, List<Field> fields, boolean createdTemporaryTable)
+        throws QueryException {
+      if (busy.incrementAndGet() > 1) {
+        overlapped = true;
+      }
+      try {
+        try {
+          note(key);
+          call(key, queryFailure(QueryException.Failure.CANCELLED));
+        } catch (QueryException e) {
+          throw e;
+        } catch (Exception _) {
+          throw queryFailure(QueryException.Failure.OTHER);
+        }
+        var list = EditableQuery.singleTable(sql, made.provider()).orElse(null);
+        if (list == null
+            || !list.subqueries().isEmpty() && list.items() != fields.size()
+            || createdTemporaryTable && Editable.temporaryTablesShadow(made.provider())) {
+          done.add(key);
+          return Optional.empty();
+        }
+        var origins = new ArrayList<Origin>(fields.size());
+        for (int i = 0; i < fields.size(); i++) {
+          origins.add(list.subqueries().contains(i) ? null : fields.get(i).origin());
+        }
+        Origin.Named sample = null;
+        for (var origin : origins) {
+          if (origin == null) {
+            continue;
+          }
+          if (!(origin instanceof Origin.Named named)) {
+            done.add(key);
+            return Optional.empty();
+          }
+          if (sample == null) {
+            sample = named;
+          } else if (!sample.sameTable(named)) {
+            done.add(key);
+            return Optional.empty();
+          }
+        }
+        if (sample == null) {
+          done.add(key);
+          return Optional.empty();
+        }
+        var resolved = findTable(sample.catalog(), sample.table());
+        if (resolved == null) {
+          done.add(key);
+          return Optional.empty();
+        }
+        var cols = tableColumns(resolved.table(), resolved.outline());
+        if (cols.stream().noneMatch(c -> c.keyPosition() > 0)) {
+          done.add(key);
+          return Optional.empty();
+        }
+        var byName = new HashMap<String, Column>();
+        cols.forEach(c -> byName.put(c.name(), c));
+        var named = new ArrayList<Column>(fields.size());
+        for (var origin : origins) {
+          named.add(origin instanceof Origin.Named n ? byName.get(n.column()) : null);
+        }
+        boolean mysqlFamily = made.provider() != Provider.POSTGRESQL;
+        var edited = new ArrayList<Column>(fields.size());
+        for (int i = 0; i < fields.size(); i++) {
+          var col = named.get(i);
+          boolean timestamp = mysqlFamily
+              && col != null
+              && col.type().toLowerCase(Locale.ROOT).startsWith("timestamp");
+          boolean ok = col != null && Collections.frequency(named, col) == 1 && !timestamp;
+          edited.add(ok ? col : null);
+        }
+        boolean keyed = cols.stream().filter(c -> c.keyPosition() > 0).allMatch(edited::contains);
+        done.add(key);
+        return keyed ? Optional.of(new Editable(resolved.table(), cols, edited)) : Optional.empty();
+      } finally {
+        busy.decrementAndGet();
+      }
+    }
+
+    private record ResolvedOutline(Table table, Outline outline) {}
+
+    private ResolvedOutline findTable(String catalog, String tableName) {
+      if (made.provider() == Provider.POSTGRESQL) {
+        String dbName;
+        String schemaName;
+        int dot = catalog.indexOf('.');
+        if (dot >= 0) {
+          dbName = catalog.substring(0, dot);
+          schemaName = catalog.substring(dot + 1);
+        } else {
+          dbName = database != null ? database : catalog;
+          schemaName = dot < 0 && database != null ? catalog : "public";
+        }
+        if (database != null && !dbName.equals(database)) {
+          return null;
+        }
+        var dbOutline = find(root(), dbName);
+        if (dbOutline == null) {
+          return null;
+        }
+        var schemaOutline = find(dbOutline, schemaName);
+        if (schemaOutline == null) {
+          return null;
+        }
+        var tableOutline = find(schemaOutline, tableName);
+        if (tableOutline == null || tableOutline.text().startsWith("@")) {
+          return null;
+        }
+        var db = new Database(dbName, dbOutline.text().startsWith("~"));
+        var schema = new Schema(db, schemaName, schemaOutline.text().startsWith("~"));
+        return new ResolvedOutline(new Table(schema, tableName, Table.Kind.TABLE), tableOutline);
+      }
+      var dbOutline = find(root(), catalog);
+      if (dbOutline == null) {
+        return null;
+      }
+      var tableOutline = find(dbOutline, tableName);
+      if (tableOutline == null || tableOutline.text().startsWith("@")) {
+        return null;
+      }
+      var db = new Database(catalog, dbOutline.text().startsWith("~"));
+      return new ResolvedOutline(new Table(db, tableName, Table.Kind.TABLE), tableOutline);
+    }
+
+    private record ColumnLine(String name, String type, boolean inKey, List<String> references) {}
+
+    private static ColumnLine columnLine(String text) {
+      boolean inKey = text.startsWith("*");
+      var parts = (inKey ? text.substring(1) : text).split(": ", 2);
+      var rest = parts[1];
+      int arrow = rest.indexOf(" > ");
+      if (arrow < 0) {
+        return new ColumnLine(parts[0], rest, inKey, List.of());
+      }
+      var refs = Arrays.stream(rest.substring(arrow + 3).split(" > "))
+          .map(String::strip)
+          .filter(s -> !s.isEmpty())
+          .toList();
+      return new ColumnLine(parts[0], rest.substring(0, arrow).stripTrailing(), inKey, refs);
+    }
+
+    private static boolean isIndexLine(String text) {
+      return text.startsWith("#");
+    }
+
+    private static List<Column> tableColumns(Table t, Outline table) {
+      var list = new ArrayList<Column>();
+      int key = 0;
+      for (var line : table.children()) {
+        if (isIndexLine(line.text())) {
+          continue;
+        }
+        var parsed = columnLine(line.text());
+        list.add(new Column(
+            t, parsed.name(), parsed.type(), !parsed.inKey(), parsed.inKey() ? ++key : 0));
+      }
+      return list;
+    }
+
+    private static List<Index> tableIndexes(Table t, Outline table) {
+      var found = new ArrayList<Index>();
+      for (var line : table.children()) {
+        var text = line.text();
+        if (!isIndexLine(text)) {
+          continue;
+        }
+        // The detail comes after the last " | ", so that it may hold parentheses of its own.
+        int pipe = text.lastIndexOf(" | ");
+        var detail = pipe < 0 ? "" : text.substring(pipe + 3).strip();
+        text = pipe < 0 ? text : text.substring(0, pipe);
+        int open = text.indexOf('(');
+        int close = text.lastIndexOf(')');
+        if (open < 2 || close <= open) {
+          throw new IllegalArgumentException("Bad index: " + text);
+        }
+        var indexName = text.substring(1, open).strip();
+        var columns = splitIndexColumns(text.substring(open + 1, close));
+        if (indexName.isEmpty() || columns.isEmpty()) {
+          throw new IllegalArgumentException("Bad index: " + text);
+        }
+        var kind = text.substring(close + 1).strip().toLowerCase(Locale.ROOT);
+        boolean primary;
+        boolean unique;
+        switch (kind) {
+          case "" -> {
+            unique = false;
+            primary = false;
+          }
+          case "unique" -> {
+            unique = true;
+            primary = false;
+          }
+          case "primary" -> {
+            unique = true;
+            primary = true;
+          }
+          default -> throw new IllegalArgumentException("Bad index: " + text);
+        }
+        found.add(new Index(indexName, t, columns, unique, primary, detail));
+      }
+      found.sort(Comparator.comparing(Index::primary).reversed().thenComparing(Index::name));
+      return List.copyOf(found);
+    }
+
+    private static List<String> splitIndexColumns(String spec) {
+      var parts = new ArrayList<String>();
+      int depth = 0;
+      int start = 0;
+      for (int i = 0; i < spec.length(); i++) {
+        char ch = spec.charAt(i);
+        if (ch == '(') {
+          depth++;
+        } else if (ch == ')') {
+          depth--;
+        } else if (ch == ',' && depth == 0) {
+          var part = spec.substring(start, i).strip();
+          if (!part.isEmpty()) {
+            parts.add(part);
+          }
+          start = i + 1;
+        }
+      }
+      var last = spec.substring(start).strip();
+      if (!last.isEmpty()) {
+        parts.add(last);
+      }
+      return parts;
+    }
+
+    private static final java.util.regex.Pattern FK_RULE = java.util.regex.Pattern.compile(
+        "(?i)\\s*on\\s+(delete|update)\\s+(cascade|restrict|no\\s+action|set\\s+null|set\\s+default)");
+
+    private static final class PendingKey {
+      final Table table;
+      final Table referenced;
+      final List<String> columns = new ArrayList<>();
+      final List<String> referencedColumns = new ArrayList<>();
+      ForeignKey.Rule onUpdate = ForeignKey.Rule.NO_ACTION;
+      ForeignKey.Rule onDelete = ForeignKey.Rule.NO_ACTION;
+
+      PendingKey(Table table, Table referenced) {
+        this.table = table;
+        this.referenced = referenced;
+      }
+    }
+
+    private static void applyRules(PendingKey pending, String text) {
+      int pos = 0;
+      var m = FK_RULE.matcher(text);
+      while (pos < text.length()) {
+        m.region(pos, text.length());
+        if (!m.lookingAt()) {
+          throw new IllegalArgumentException("Bad foreign key rule: " + text);
+        }
+        var rule = switch (m.group(2).toUpperCase(Locale.ROOT).replaceAll("\\s+", "_")) {
+          case "CASCADE" -> ForeignKey.Rule.CASCADE;
+          case "RESTRICT" -> ForeignKey.Rule.RESTRICT;
+          case "NO_ACTION" -> ForeignKey.Rule.NO_ACTION;
+          case "SET_NULL" -> ForeignKey.Rule.SET_NULL;
+          case "SET_DEFAULT" -> ForeignKey.Rule.SET_DEFAULT;
+          default -> throw new IllegalArgumentException("Bad foreign key rule: " + text);
+        };
+        if (m.group(1).equalsIgnoreCase("delete")) {
+          pending.onDelete = rule;
+        } else {
+          pending.onUpdate = rule;
+        }
+        pos = m.end();
+      }
+    }
+
+    private static void collectForeignKeys(
+        Table target,
+        Outline containersRoot,
+        Container container,
+        Outline containerOutline,
+        boolean schemas,
+        List<ForeignKey> found) {
+      for (var tableOutline : containerOutline.children()) {
+        if (tableOutline.text().startsWith("@")) {
+          continue;
+        }
+        var table = new Table(container, name(tableOutline), Table.Kind.TABLE);
+        var byName = new LinkedHashMap<String, PendingKey>();
+        for (var line : tableOutline.children()) {
+          if (isIndexLine(line.text())) {
+            continue;
+          }
+          var parsed = columnLine(line.text());
+          var references = parsed.references();
+          for (int r = 0; r < references.size(); r++) {
+            var ref = references.get(r);
+            int colon = ref.indexOf(':');
+            String keyName;
+            String spec;
+            if (colon >= 0) {
+              keyName = ref.substring(0, colon).strip();
+              spec = ref.substring(colon + 1).strip();
+            } else {
+              // A key of its own for each unnamed reference of the column.
+              keyName = table.name() + "_" + parsed.name() + "_fkey" + (r == 0 ? "" : r + 1);
+              spec = ref;
+            }
+            int space = spec.indexOf(' ');
+            var targetSpec = space < 0 ? spec : spec.substring(0, space);
+            var rulesSpec = space < 0 ? "" : spec.substring(space + 1).strip();
+            var parts = targetSpec.split("\\.", -1);
+            if (parts.length != 2 && parts.length != 3) {
+              throw new IllegalArgumentException("Bad foreign key reference: " + ref);
+            }
+            var refContainerName = parts.length == 3 ? parts[0] : container.name();
+            var refTableName = parts[parts.length - 2];
+            var refColumnName = parts[parts.length - 1];
+            var refContainerOutline = find(containersRoot, refContainerName);
+            boolean refSystem =
+                refContainerOutline != null && refContainerOutline.text().startsWith("~");
+            Container refContainer = schemas
+                ? new Schema(container.database(), refContainerName, refSystem)
+                : new Database(refContainerName, refSystem);
+            var referenced = new Table(refContainer, refTableName, Table.Kind.TABLE);
+            var pending = byName.computeIfAbsent(keyName, _ -> new PendingKey(table, referenced));
+            pending.columns.add(parsed.name());
+            pending.referencedColumns.add(refColumnName);
+            if (!rulesSpec.isEmpty()) {
+              applyRules(pending, rulesSpec);
+            }
+          }
+        }
+        for (var entry : byName.entrySet()) {
+          var p = entry.getValue();
+          if (p.table.equals(target) || p.referenced.equals(target)) {
+            found.add(new ForeignKey(
+                entry.getKey(),
+                p.table,
+                p.columns,
+                p.referenced,
+                p.referencedColumns,
+                p.onUpdate,
+                p.onDelete));
+          }
+        }
+      }
+    }
+
+    @Override
+    public Changes.Outcome write(Changes changes) throws QueryException {
+      if (busy.incrementAndGet() > 1) {
+        overlapped = true;
+      }
+      try {
+        var path = path(changes.table());
+        var key = "write " + path;
+        try {
+          note(key);
+          call(key, queryFailure(QueryException.Failure.CANCELLED));
+        } catch (QueryException e) {
+          throw e;
+        } catch (Exception _) {
+          throw queryFailure(QueryException.Failure.OTHER);
+        }
+        if (readOnly) {
+          throw QueryException.of(
+              QueryException.Failure.OTHER,
+              "ERROR: cannot execute write in a read-only transaction");
+        }
+        if (refused.contains(key)) {
+          done.add(key);
+          return new Changes.Outcome.Refused();
+        }
+        for (var st : changes.statements(made.provider())) {
+          Journal.sql(
+              made.provider(), Purpose.CHANGES, st.sql(), _ -> new Outcome.Changed(1), () -> null);
+        }
+        var tableOutline = container(changes.table().container()) == null
+            ? null
+            : find(container(changes.table().container()), changes.table().name());
+        if (tableOutline == null) {
+          throw queryFailure(QueryException.Failure.NOT_FOUND);
+        }
+        var stored = materializeRows(path, changes.columns());
+        var keyCols = IntStream.range(0, changes.columns().size())
+            .filter(i -> changes.columns().get(i).keyPosition() > 0)
+            .boxed()
+            .sorted(Comparator.comparingInt(i -> changes.columns().get(i).keyPosition()))
+            .toList();
+        var ordered = new ArrayList<Change>();
+        for (var kind : List.of(Change.Update.class, Change.Delete.class, Change.Insert.class)) {
+          for (var change : changes.changes()) {
+            if (kind.isInstance(change)) {
+              ordered.add(change);
+            }
+          }
+        }
+        // Check every update and delete against the rows as read before applying, as core does.
+        for (var change : ordered) {
+          switch (change) {
+            case Change.Update(var origRow, var newVals) -> {
+              long count = stored.stream()
+                  .filter(row ->
+                      keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))
+                          && newVals.keySet().stream()
+                              .allMatch(c -> Objects.equals(row.get(c), origRow.get(c))))
+                  .count();
+              if (count != 1) {
+                done.add(key);
+                return new Changes.Outcome.Missed(change, count);
+              }
+            }
+            case Change.Delete(var origRow) -> {
+              long count = stored.stream()
+                  .filter(row ->
+                      keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k))))
+                  .count();
+              if (count != 1) {
+                done.add(key);
+                return new Changes.Outcome.Missed(change, count);
+              }
+            }
+            case Change.Insert _ -> {
+              // A new row has no row to check.
+            }
+          }
+        }
+        var next = new ArrayList<>(stored);
+        for (var change : ordered) {
+          switch (change) {
+            case Change.Update(var origRow, var newVals) -> {
+              int matched = -1;
+              long count = 0;
+              for (int r = 0; r < next.size(); r++) {
+                var row = next.get(r);
+                if (keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))) {
+                  matched = r;
+                  count++;
+                }
+              }
+              if (count != 1) {
+                done.add(key);
+                return new Changes.Outcome.Missed(change, count);
+              }
+              var updated = new ArrayList<>(next.get(matched));
+              newVals.forEach(updated::set);
+              next.set(matched, Collections.unmodifiableList(updated));
+            }
+            case Change.Delete(var origRow) -> {
+              int matched = -1;
+              long count = 0;
+              for (int r = 0; r < next.size(); r++) {
+                var row = next.get(r);
+                if (keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))) {
+                  matched = r;
+                  count++;
+                }
+              }
+              if (count != 1) {
+                done.add(key);
+                return new Changes.Outcome.Missed(change, count);
+              }
+              next.remove(matched);
+            }
+            case Change.Insert(var newVals) -> {
+              var inserted = new Object[changes.columns().size()];
+              newVals.forEach((c, v) -> inserted[c] = v);
+              next.add(Collections.unmodifiableList(Arrays.asList(inserted)));
+            }
+          }
+        }
+        values.put(path, List.copyOf(next));
+        counts.put(path, (long) next.size());
+        estimates.put(path, OptionalLong.of(next.size()));
+        done.add(key);
+        return new Changes.Outcome.Committed();
+      } finally {
+        busy.decrementAndGet();
+      }
+    }
+
+    @Override
+    public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+      if (busy.incrementAndGet() > 1) {
+        overlapped = true;
+      }
+      try {
+        var collection = edit.collection();
+        var path = path(collection);
+        var key = "edit " + path;
+        try {
+          note(key);
+          call(key, queryFailure(QueryException.Failure.CANCELLED));
+        } catch (QueryException e) {
+          throw e;
+        } catch (Exception _) {
+          throw queryFailure(QueryException.Failure.OTHER);
+        }
+        if (readOnly) {
+          throw QueryException.of(
+              QueryException.Failure.ACCESS_DENIED,
+              "The connection is read-only: "
+                  + edit.command().first()
+                  + " was not sent, as it may change data");
+        }
+        var tableOutline = container(collection.container()) == null
+            ? null
+            : find(container(collection.container()), collection.name());
+        if (tableOutline == null) {
+          throw queryFailure(QueryException.Failure.NOT_FOUND);
+        }
+        if (tableOutline.text().startsWith("@") || collection.kind() != Table.Kind.TABLE) {
+          throw QueryException.of(QueryException.Failure.OTHER, "Views cannot be edited");
+        }
+        var forcedOutcome = forced.remove(key);
+        var outcome = Journal.command(
+            made.provider().documents(),
+            Purpose.CHANGES,
+            collection.container().database().name(),
+            edit.command(),
+            result -> new Outcome.Changed(result instanceof DocumentEdit.Outcome.Written ? 1 : 0),
+            () -> forcedOutcome != null ? forcedOutcome : applyDocumentEdit(path, edit));
+        done.add(key);
+        return outcome;
+      } finally {
+        busy.decrementAndGet();
+      }
+    }
+
+    private DocumentEdit.Outcome applyDocumentEdit(String path, DocumentEdit edit)
+        throws QueryException {
+      var stored = new ArrayList<>(documents.getOrDefault(path, List.of()));
+      switch (edit) {
+        case DocumentEdit.Replace(var _, var original, var replacement) -> {
+          int index = stored.indexOf(original);
+          if (index < 0) {
+            return new DocumentEdit.Outcome.Changed();
+          }
+          var next = replacement.has("_id") ? replacement : prependId(original, replacement);
+          stored.set(index, next);
+        }
+        case DocumentEdit.Insert(var _, var doc) -> {
+          var next =
+              doc.has("_id") ? doc : prependId(Document.of("_id", Bson.ObjectId.next()), doc);
+          var id = next.get("_id");
+          if (stored.stream().anyMatch(d -> d.has("_id") && Objects.equals(d.get("_id"), id))) {
+            throw QueryException.of(
+                QueryException.Failure.OTHER, "E11000 duplicate key error on _id");
+          }
+          stored.add(next);
+        }
+        case DocumentEdit.Delete(var _, var original) -> {
+          int index = stored.indexOf(original);
+          if (index < 0) {
+            return new DocumentEdit.Outcome.Changed();
+          }
+          stored.remove(index);
+        }
+      }
+      documents.put(path, List.copyOf(stored));
+      counts.put(path, (long) stored.size());
+      estimates.put(path, OptionalLong.of(stored.size()));
+      return new DocumentEdit.Outcome.Written();
+    }
+
+    private static Document prependId(Document source, Document target) {
+      var entries = new ArrayList<Document.Entry>(target.size() + 1);
+      entries.add(new Document.Entry("_id", source.get("_id")));
+      entries.addAll(target.entries());
+      return new Document(entries);
+    }
+
+    private List<List<Object>> materializeRows(String path, List<Column> columns) {
+      var given = values.get(path);
+      if (given != null) {
+        return given;
+      }
+      long count = counts.getOrDefault(path, 3L);
+      var fields = columns.stream()
+          .map(c -> new Field(c.name(), c.type(), kind(c.type())))
+          .toList();
+      var rows = new ArrayList<List<Object>>();
+      for (long i = 0; i < count; i++) {
+        var row = new Object[fields.size()];
+        for (int c = 0; c < row.length; c++) {
+          row[c] = columns.get(c).nullable() && i % 7 == 6 ? null : value(fields.get(c), i);
+        }
+        rows.add(Collections.unmodifiableList(Arrays.asList(row)));
+      }
+      return rows;
     }
 
     private Outline container(Container c) {
@@ -838,6 +1712,7 @@ final class FakeServers implements Servers {
           || word.equals("BEGIN")
           || word.equals("START")
           || setting.matches("setautocommit=[01]|setcompletion_type=[01]");
+      var dynamic = dynamicStatements.get(sql);
       var answer = pg && transaction == Transaction.FAILED && !ends
           ? new Answer(
               List.of(new Failure(
@@ -855,15 +1730,33 @@ final class FakeServers implements Servers {
                   "",
                   "")),
               List.of())
-          : statements.getOrDefault(
-              sql,
-              known
-                  ? new Answer(List.of(new Result.Count(0)), List.of())
-                  : new Answer(
-                      List.of(serverError(
-                          Failure.Kind.INVALID,
-                          "syntax error at or near \"" + sql.split("\\s+", 2)[0] + "\"")),
-                      List.of()));
+          : readOnly && isWrite(sql)
+              ? new Answer(
+                  List.of(new Failure(
+                      Failure.Kind.OTHER,
+                      "ERROR: cannot execute in a read-only transaction",
+                      "25006",
+                      0,
+                      0,
+                      "",
+                      0,
+                      0,
+                      "",
+                      "",
+                      "",
+                      "")),
+                  List.of())
+              : dynamic != null
+                  ? dynamic.get()
+                  : statements.getOrDefault(
+                      sql,
+                      known
+                          ? new Answer(List.of(new Result.Count(0)), List.of())
+                          : new Answer(
+                              List.of(serverError(
+                                  Failure.Kind.INVALID,
+                                  "syntax error at or near \"" + sql.split("\\s+", 2)[0] + "\"")),
+                              List.of()));
       return new Run() {
         private int result; // of the answer, the one read next
         private long position; // in its rows
@@ -920,7 +1813,11 @@ final class FakeServers implements Servers {
               if (next instanceof Result.Rows r) {
                 int from = (int) position;
                 int to = (int) Math.min(r.rows().size(), position + count);
-                out.add(new Result.Rows(r.fields(), from, r.rows().subList(from, to)));
+                out.add(new Result.Rows(
+                    r.fields(),
+                    from,
+                    r.rows().subList(from, to),
+                    r.documents().isEmpty() ? List.of() : r.documents().subList(from, to)));
                 position = to;
                 if (to < r.rows().size()) {
                   more = true;
@@ -1317,35 +2214,38 @@ final class FakeServers implements Servers {
         @Override
         public List<ServerSession> sessions() throws QueryException {
           var key = "sessions " + host;
-          try {
-            note(key);
-            call(key, queryFailure(QueryException.Failure.CANCELLED));
-          } catch (QueryException e) {
-            throw e;
-          } catch (Exception e) {
-            throw queryFailure(QueryException.Failure.OTHER);
-          }
-          done.add(key);
-          var all = new ArrayList<ServerSession>();
-          all.add(new ServerSession(
-              String.valueOf(number),
-              "",
-              "",
-              true,
-              true,
-              "hoori",
-              "HooriDB (10.0.0.1:5000)",
-              "shop",
-              "active",
-              "SELECT the sessions",
-              Duration.ZERO,
-              ""));
-          // Masked as core's monitors mask them, which keeps each statement's digest.
-          var provider = servers.get(host).provider();
-          for (var session : FakeServers.this.sessions.getOrDefault(host, List.of())) {
-            all.add(session.withStatement(Credentials.mask(session.statement(), provider)));
-          }
-          return all;
+          return Journal.sql(
+              made.provider(), Purpose.MONITOR, key, list -> Outcome.rows(list.size()), () -> {
+                try {
+                  note(key);
+                  call(key, queryFailure(QueryException.Failure.CANCELLED));
+                } catch (QueryException e) {
+                  throw e;
+                } catch (Exception e) {
+                  throw queryFailure(QueryException.Failure.OTHER);
+                }
+                done.add(key);
+                var all = new ArrayList<ServerSession>();
+                all.add(new ServerSession(
+                    String.valueOf(number),
+                    "",
+                    "",
+                    true,
+                    true,
+                    "hoori",
+                    "HooriDB (10.0.0.1:5000)",
+                    "shop",
+                    "active",
+                    "SELECT the sessions",
+                    Duration.ZERO,
+                    ""));
+                // Masked as core's monitors mask them, which keeps each statement's digest.
+                var provider = servers.get(host).provider();
+                for (var session : FakeServers.this.sessions.getOrDefault(host, List.of())) {
+                  all.add(session.withStatement(Credentials.mask(session.statement(), provider)));
+                }
+                return all;
+              });
         }
 
         @Override
@@ -1367,15 +2267,18 @@ final class FakeServers implements Servers {
         }
 
         private void read(String key) throws QueryException {
-          try {
-            note(key);
-            call(key, queryFailure(QueryException.Failure.CANCELLED));
-          } catch (QueryException e) {
-            throw e;
-          } catch (Exception e) {
-            throw queryFailure(QueryException.Failure.OTHER);
-          }
-          done.add(key);
+          Journal.sql(made.provider(), Purpose.MONITOR, key, _ -> Outcome.DONE, () -> {
+            try {
+              note(key);
+              call(key, queryFailure(QueryException.Failure.CANCELLED));
+            } catch (QueryException e) {
+              throw e;
+            } catch (Exception e) {
+              throw queryFailure(QueryException.Failure.OTHER);
+            }
+            done.add(key);
+            return null;
+          });
         }
 
         @Override
@@ -1390,32 +2293,34 @@ final class FakeServers implements Servers {
 
         private boolean stop(String key, ServerSession session, boolean idle)
             throws QueryException {
-          try {
-            note(key);
-            call(key, queryFailure(QueryException.Failure.CANCELLED));
-          } catch (QueryException e) {
-            throw e;
-          } catch (Exception e) {
-            throw queryFailure(QueryException.Failure.OTHER);
-          }
-          done.add(key);
-          var now = new ArrayList<ServerSession>();
-          boolean found = false;
-          for (var other : FakeServers.this.sessions.getOrDefault(host, List.of())) {
-            // As a server that checks the session's start, and for a cancel its statement.
-            if (!other.id().equals(session.id())
-                || !other.started().equals(session.started())
-                || idle && !other.operation().equals(session.operation())) {
-              now.add(other);
-              continue;
+          return Journal.sql(made.provider(), Purpose.MONITOR, key, found -> Outcome.DONE, () -> {
+            try {
+              note(key);
+              call(key, queryFailure(QueryException.Failure.CANCELLED));
+            } catch (QueryException e) {
+              throw e;
+            } catch (Exception e) {
+              throw queryFailure(QueryException.Failure.OTHER);
             }
-            found = true;
-            if (idle) {
-              now.add(FakeServers.session(other.id(), other.user(), "", other.started()));
+            done.add(key);
+            var now = new ArrayList<ServerSession>();
+            boolean found = false;
+            for (var other : FakeServers.this.sessions.getOrDefault(host, List.of())) {
+              // As a server that checks the session's start, and for a cancel its statement.
+              if (!other.id().equals(session.id())
+                  || !other.started().equals(session.started())
+                  || idle && !other.operation().equals(session.operation())) {
+                now.add(other);
+                continue;
+              }
+              found = true;
+              if (idle) {
+                now.add(FakeServers.session(other.id(), other.user(), "", other.started()));
+              }
             }
-          }
-          FakeServers.this.sessions.put(host, List.copyOf(now));
-          return found;
+            FakeServers.this.sessions.put(host, List.copyOf(now));
+            return found;
+          });
         }
       };
     }

@@ -7,6 +7,8 @@ HooriDB connects to MongoDB through the official MongoDB Java driver. A MongoDB 
 
 ## Connect to MongoDB
 
+You can paste a `mongodb://` or `mongodb+srv://` connection string directly into the **Host** field. HooriDB switches the **Type** to **MongoDB**, decodes percent-encoded user names, passwords, and database names, and fills **Host**, **Port**, **SRV**, **Database**, **TLS**, **User**, **Auth database**, and **Password** (keeping the password in the password field alone). Any additional hosts or options the dialog has no field for (such as `replicaSet` or `readPreference`) are listed in a note under **Host**; an invalid string leaves the host unchanged and reports why without echoing credentials.
+
 1. Open the connection dialog (see [Your first connection](/docs/get-started/first-connection)) and choose **MongoDB** as the **Type**. The **Port** changes to `27017` unless you already edited it.
 2. Enter the **Host** and **Port** of one server. HooriDB connects only to that server, as the shell does when given a single host; host lists are not supported.
    - For a `mongodb+srv://` address, as MongoDB Atlas gives, check **Servers from DNS** next to **SRV** and enter the host of the address, such as `cluster0.example.net`. The **Port** is hidden, as DNS lists the servers and their ports, and **TLS** changes to **Encrypted, any certificate** unless you already chose it. Options in the address after the host, such as `?appName=…`, are not used.
@@ -34,6 +36,7 @@ Expanding a MongoDB connection in the tree shows its databases, then their colle
 - The databases your user can see are listed; `admin`, `config`, and `local` are shown in muted text. Collections whose names start with `system.` are omitted.
 - Views show an eye icon, as in SQL databases.
 - A collection's fields come from a sample of 100 documents (or the first 100 when the server cannot sample, such as for some views). `_id` comes first and is marked as the key; every other field shows the types it held in the sample, such as `string` or `int | null`. A field that some sampled documents lack is shown as nullable.
+- Collections show an **Indexes** node after their fields listing each index with its key fields and directions or types (`_id_` first, marked `primary key`, `unique`, and TTL, partial, or sparse where applicable). Views have no indexes.
 
 **Refresh** reads the sample again. Fields absent from the sampled documents do not appear in the tree or the grid.
 
@@ -45,11 +48,22 @@ Open a collection or view as you open a table (double-click it, or select it and
 - **JSON**: 200 documents at a time as a formatted array of Relaxed Extended JSON. The paging buttons in the status bar move between pages, as in the grid.
 - **Tree**: the same 200 documents, each as a tree of its fields.
 
-Documents are read in pages ordered by `_id`. The status bar shows the document count just as a table tab shows the [row count](/docs/features/table-data#row-count-and-paging-controls); press **Count documents** for an exact count.
+Documents are read in pages ordered by `_id`. Above all three views, **Filter** and **Sort** accept MongoDB shell documents with highlighting and completion, and **Conditions…** opens the [condition builder](/docs/features/table-data#filter-and-sort-rows) with `Exists` / `Does not exist`, `Not equal`, `OR`, nested groups, and nested subdocument fields such as `address.city` sampled up to three levels deep. The status bar shows the document count just as a table tab shows the [row count](/docs/features/table-data#row-count-and-paging-controls); press **Count documents** for an exact count.
+
+## Edit, insert, copy, and delete documents
+
+On a writable connection, a collection's tab lets you edit, insert, copy, and delete one document at a time from all three views (**Grid**, **JSON**, and **Tree**):
+
+- **Insert document** in the toolbar (or right-click the grid or tree) opens a dialog with a shell editor to insert a new document (`insertOne`). A document without `_id` gets a new `ObjectId`, shown in the preview, which a second try from the same dialog keeps, so a retry after an unconfirmed write cannot insert the document twice where `_id` is unique (not in a time-series collection).
+- **Edit document**, **Copy document**, and **Delete document** in the toolbar (and in the grid and tree context menus) act on the current document: the selected row in **Grid**, the document at the caret in **JSON**, or the top-level document of the selected node in **Tree**.
+- The editor uses MongoDB shell notation with the console's syntax colors, completions, and inline error marks so every BSON type (`ObjectId`, `Long`, `ISODate`, `Decimal128`, `UUID`, `Binary`, regular expressions, and others) stays intact. Before opening an edit or copy dialog, HooriDB checks that the document round-trips identically through shell notation and refuses to open it if not.
+- **Edit** keeps `_id` immutable (leave `_id` unchanged or omit it). **Copy** opens the document without `_id` to insert as a new document.
+- Every write opens a **Command Preview** showing the exact `replaceOne`, `insertOne`, or `deleteOne` command before anything is sent. **Replace** and **Delete** match both `_id` and the full document as it was read (`$expr: { $eq: [ '$$ROOT', { $literal: … } ] }`), so if another client changed or deleted the document meanwhile, nothing is overwritten and the dialog reports it while keeping your text. A change of a value's type alone that still compares equal, such as `1` to `Long('1')`, is not seen (see [Limitations](/docs/reference/limitations#mongodb)).
+- After a write succeeds, the collection tab reloads so all views reflect the server's state. Views and read-only connections do not offer document edits.
 
 ## Run shell statements in a console
 
-**New console** on a MongoDB connection opens a console for MongoDB shell statements. HooriDB parses them itself without JavaScript and sends each as a server command; `use` and `db.getName()` are handled locally by HooriDB. Statements end at a semicolon or at the end of a complete line. You run them the same way as in an [SQL console](/docs/features/console) (the statement at the caret, the selection, or all statements), with **Cancel**, Messages, pinned results, History, [saved queries](/docs/features/saved-queries), and consoles kept across restarts.
+**New console** on a MongoDB connection opens a console for MongoDB shell statements. HooriDB parses them itself without JavaScript and sends each as a server command; `use` and `db.getName()` are handled locally by HooriDB. Statements end at a semicolon or at the end of a complete line. You run them the same way as in an [SQL console](/docs/features/console) (the statement at the caret, the selection, or all statements), with **Cancel**, Messages, pinned results, History, [workspace queries](/docs/features/saved-queries), and consoles kept across restarts.
 
 The console understands:
 
@@ -61,7 +75,7 @@ The console understands:
 
 For a collection whose name is not a valid shell identifier, use `db.getCollection('name')`.
 
-Results that return documents have the same **Grid**, **JSON**, and **Tree** switch as a collection tab. **JSON** and **Tree** show 200 documents at a time with the same paging buttons; the next page reads more documents while the result's cursor is open (running the next statement closes it), and the last page is known once the cursor is read to its end. An insert, update, replace, or delete shows how many documents it changed; the `findOneAnd…` methods show the server's reply.
+Results that return documents have the same **Grid**, **JSON**, and **Tree** views as a collection tab, chosen from the **Show documents as** dropdown in the result footer. **JSON** and **Tree** show 200 documents at a time with the same paging buttons; the next page reads more documents while the result's cursor is open (running the next statement closes it), and the last page is known once the cursor is read to its end. An insert, update, replace, or delete shows how many documents it changed; the `findOneAnd…` methods show the server's reply.
 
 `use <database>` switches the console's **Database** for the statements after it. You can also choose the database from the **Database** dropdown in the toolbar.
 

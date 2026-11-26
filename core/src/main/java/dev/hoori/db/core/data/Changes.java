@@ -6,6 +6,8 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -43,9 +45,10 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   /**
    * @throws IllegalArgumentException if no column is in a primary key, a column is not the
    *     table's, or a change does not fit the columns: a row with a value for another number of
-   *     columns, a column that is none of them, an update without values, a key without a value,
-   *     or a value read only in part, a {@link Cut} or a {@link Binary#cut} one, which can neither
-   *     be written nor name a row
+   *     columns, a column that is none of them, an update without values, a key without a value, an
+   *     update of a column whose value in the row is {@link Missing#FIELD} or read only in part, or
+   *     a value read only in part, a {@link Cut} or a {@link Binary#cut} one, which can neither be
+   *     written nor name a row
    */
   public Changes {
     columns = List.copyOf(columns);
@@ -86,10 +89,14 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
    * it has none. The value that was read takes the cell's change back, and the update's where it
    * was its last.
    *
+   * @throws IllegalArgumentException if the column is out of range, its value in the row is {@link
+   *     Missing#FIELD} or read only in part, or the new value is {@link Missing#FIELD} or read only
+   *     in part
    * @throws IllegalStateException if the row is to be deleted
    */
   public Changes edit(List<Object> row, int column, Object value) {
     requireRow(columns, row);
+    requireOriginal(row, column);
     var key = key(row);
     var changed = new ArrayList<>(changes);
     for (var i = 0; i < changed.size(); i++) {
@@ -236,8 +243,9 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
 
     /**
      * Nothing was written: the change's row was there not once but the given number of times
-     * before the changes began, or its statement met that many rows, as when the row was deleted or its
-     * key changed since it was read, and all was rolled back.
+     * before the changes began, or its statement met that many rows, as when the row was deleted,
+     * its key changed, or a cell an update changes was changed since it was read, and all was
+     * rolled back.
      */
     record Missed(Change change, long rows) implements Outcome {}
 
@@ -253,10 +261,10 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
 
   /**
    * Writes the changes in a transaction of their own, all or nothing: first each row that an update
-   * or deletion names must be there, once, and where there are updates it is locked, so that no
-   * statement meets a row that an earlier one moved to its key, as an update of a key or of what a
-   * generated key or a trigger takes it from can; then the {@link #statements} run one after
-   * another. Where a row is not
+   * or deletion names must be there, once, with each column an update changes still holding its
+   * original value, and where there are updates it is locked, so that no statement meets a row that
+   * an earlier one moved to its key, as an update of a key or of what a generated key or a trigger
+   * takes it from can; then the {@link #statements} run one after another. Where a row is not
    * there once, or a statement meets not exactly one row, or fails, all are rolled back. The
    * connection must have auto-commit on and no transaction open, as one that only reads the table
    * has, and is left so; nothing else may run on it meanwhile.
@@ -282,19 +290,23 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     Rows.requireConnectedTo(connection, provider, table);
     requireNoTransaction(connection, provider);
     var dialect = provider.dialect().rows();
-    var values = statements.stream().flatMap(s -> s.values().stream()).toList();
-    if (!dialect.changeable(connection, provider, table, values)) {
-      return new Outcome.Refused();
-    }
     var checks = checks(provider, statements);
     var all = new ArrayList<>(checks);
     all.addAll(statements);
+    var values = all.stream().flatMap(s -> s.values().stream()).toList();
+    if (!dialect.changeable(connection, provider, table, values)) {
+      return new Outcome.Refused();
+    }
     Outcome outcome;
     try {
-      Query.within(connection, provider, Execution.ENDING, () -> {
-        connection.setAutoCommit(false);
-        return null;
-      });
+      Query.within(
+          connection,
+          provider,
+          Execution.ENDING,
+          () -> Journal.call(Purpose.TRANSACTION, Journal.autoCommit(false), () -> {
+            connection.setAutoCommit(false);
+            return null;
+          }));
       outcome = run(connection, provider, all, checks.size());
     } catch (QueryException | RuntimeException e) {
       try {
@@ -327,9 +339,10 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     var checks = new ArrayList<Statement>();
     for (var statement : statements) {
       switch (statement.change()) {
-        case Change.Update(var row, var _) ->
-          checks.add(check(provider, statement.change(), row, lock));
-        case Change.Delete(var row) -> checks.add(check(provider, statement.change(), row, lock));
+        case Change.Update(var row, var values) ->
+          checks.add(check(provider, statement.change(), row, values, lock));
+        case Change.Delete(var row) ->
+          checks.add(check(provider, statement.change(), row, Map.of(), lock));
         case Change.Insert _ -> {
           // A new row has no row to read before.
         }
@@ -347,11 +360,18 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     for (var i = 0; i < statements.size(); i++) {
       var statement = statements.get(i);
       var check = i < checks;
-      var rows = Query.run(
-          connection,
+      var rows = Journal.sql(
           provider,
+          Purpose.CHANGES,
           statement.sql(),
-          prepared -> execute(dialect, prepared, statement, check));
+          count -> check
+              ? dev.hoori.db.core.log.Outcome.rows(count)
+              : new dev.hoori.db.core.log.Outcome.Changed(count),
+          () -> Query.run(
+              connection,
+              provider,
+              statement.sql(),
+              prepared -> execute(dialect, prepared, statement, check)));
       if (rows != 1) {
         return new Outcome.Missed(statement.change(), rows);
       }
@@ -415,7 +435,10 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       rollBack(connection, commit, ended, failed);
     }
     try {
-      connection.setAutoCommit(true);
+      Journal.call(Purpose.TRANSACTION, Journal.autoCommit(true), () -> {
+        connection.setAutoCommit(true);
+        return null;
+      });
     } catch (SQLException _) {
       abort(connection);
     }
@@ -431,7 +454,10 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       return new SQLException("Given up before the commit", "08006");
     }
     try {
-      connection.commit();
+      Journal.callWithheld(Purpose.TRANSACTION, Journal.COMMIT, () -> {
+        connection.commit();
+        return null;
+      });
       ended.set(true);
       return null;
     } catch (SQLException e) {
@@ -444,7 +470,10 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
       Connection connection, boolean commit, AtomicBoolean ended, SQLException failed)
       throws SQLException {
     try {
-      connection.rollback();
+      Journal.call(Purpose.TRANSACTION, Journal.ROLLBACK, () -> {
+        connection.rollback();
+        return null;
+      });
       ended.set(!commit);
     } catch (SQLException e) {
       // pgjdbc would commit as auto-commit is turned on.
@@ -490,13 +519,25 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     };
   }
 
-  // The statement that reads the change's row, named by its key, and may lock it.
-  private Statement check(Provider provider, Change change, List<Object> row, boolean lock) {
+  // The statement that reads the change's row, named by its key and, for an update, the original
+  // values of the columns it changes, and may lock it.
+  private Statement check(
+      Provider provider,
+      Change change,
+      List<Object> row,
+      Map<Integer, Object> changed,
+      boolean lock) {
     var dialect = provider.dialect().rows();
     var values = new ArrayList<Object>();
-    var sql = "SELECT 1 FROM " + Rows.qualified(provider, table)
-        + where(provider, row, dialect.keyEquality(), parameters(dialect, values))
-        + (lock ? " FOR UPDATE" : "");
+    var parameter = parameters(dialect, values);
+    var where = new StringBuilder(where(provider, row, dialect.keyEquality(), parameter));
+    for (var column : changed.keySet()) {
+      where
+          .append(" AND ")
+          .append(dialect.unchanged(name(provider, column), row.get(column), parameter));
+    }
+    var sql =
+        "SELECT 1 FROM " + Rows.qualified(provider, table) + where + (lock ? " FOR UPDATE" : "");
     return new Statement(change, sql, values, sql);
   }
 
@@ -557,10 +598,26 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
                 && whole(row.get(i)));
   }
 
+  static void requireOriginal(List<Object> row, int column) {
+    if (column < 0 || column >= row.size()) {
+      throw new IllegalArgumentException("No column " + column);
+    }
+    var original = row.get(column);
+    if (original == Missing.FIELD) {
+      throw new IllegalArgumentException("Column " + column + " was not read");
+    }
+    if (!whole(original)) {
+      throw new IllegalArgumentException("Column " + column + " was read only in part");
+    }
+  }
+
   private static void requireValues(List<Column> columns, Map<Integer, Object> values) {
     for (var entry : values.entrySet()) {
       if (entry.getKey() < 0 || entry.getKey() >= columns.size()) {
         throw new IllegalArgumentException("No column " + entry.getKey());
+      }
+      if (entry.getValue() == Missing.FIELD) {
+        throw new IllegalArgumentException("An unread value cannot be written");
       }
       if (!whole(entry.getValue())) {
         throw new IllegalArgumentException("A value read only in part cannot be written");
@@ -568,7 +625,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     }
   }
 
-  private static boolean whole(Object value) {
+  static boolean whole(Object value) {
     return !(value instanceof Cut) && !(value instanceof Binary binary && binary.cut());
   }
 }

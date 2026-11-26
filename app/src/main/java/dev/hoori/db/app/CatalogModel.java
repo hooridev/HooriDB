@@ -10,6 +10,7 @@ import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.Table;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -30,9 +31,44 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       return Tree.ready(
           folder == null ? List.of() : folder.entries().stream().map(Node::of).toList());
     }
+    if (node instanceof Node.Query) {
+      return Tree.ready(List.of());
+    }
     var c = s.catalog;
     var live = c.lives.get(node.id());
     if (live == null) {
+      return Tree.ready(List.of());
+    }
+    if (node instanceof Node.ForeignKeys(var id, var table)) {
+      var keys = live.keys.get(table);
+      var groups = new ArrayList<Node>(2);
+      if (!ForeignKeys.outgoing(table, keys).isEmpty()) {
+        groups.add(new Node.KeyGroup(id, table, false));
+      }
+      if (!ForeignKeys.incoming(table, keys).isEmpty()) {
+        groups.add(new Node.KeyGroup(id, table, true));
+      }
+      return Tree.ready(groups);
+    }
+    if (node instanceof Node.KeyGroup(var id, var table, var incoming)) {
+      var keys = live.keys.get(table);
+      var matching =
+          incoming ? ForeignKeys.incoming(table, keys) : ForeignKeys.outgoing(table, keys);
+      return Tree.ready(matching.stream()
+          .map(k -> (Node) new Node.OfKey(id, table, k, incoming))
+          .toList());
+    }
+    if (node instanceof Node.OfKey) {
+      return Tree.ready(List.of());
+    }
+    if (node instanceof Node.Indexes(var id, var table)) {
+      var indexes = live.indexes.get(table);
+      return Tree.ready(
+          indexes == null
+              ? List.of()
+              : indexes.stream().map(i -> (Node) new Node.OfIndex(id, table, i)).toList());
+    }
+    if (node instanceof Node.OfIndex) {
       return Tree.ready(List.of());
     }
     if (CatalogTree.failedWhole(live, node)) {
@@ -42,6 +78,23 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
     }
     var level = live.levels.get(node);
     if (level instanceof CatalogTree.Read(var children)) {
+      if (node instanceof Node.OfTable(var id, var table)) {
+        var keys = live.keys.get(table);
+        var indexes = live.indexes.get(table);
+        boolean hasKeys = keys != null && !keys.isEmpty();
+        boolean hasIndexes = indexes != null && !indexes.isEmpty();
+        if (hasKeys || hasIndexes) {
+          var all = new ArrayList<Node>(children.size() + 2);
+          all.addAll(children);
+          if (hasKeys) {
+            all.add(new Node.ForeignKeys(id, table));
+          }
+          if (hasIndexes) {
+            all.add(new Node.Indexes(id, table));
+          }
+          return Tree.ready(all);
+        }
+      }
       return Tree.ready(children);
     }
     if (level instanceof CatalogTree.NotRead || level instanceof CatalogTree.NotOpened) {
@@ -62,7 +115,11 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
 
   @Override
   public boolean isLeaf(Node node) {
-    return node instanceof Node.OfColumn || node instanceof Node.Problem;
+    return node instanceof Node.Query
+        || node instanceof Node.OfColumn
+        || node instanceof Node.OfKey
+        || node instanceof Node.OfIndex
+        || node instanceof Node.Problem;
   }
 
   @Override
@@ -97,20 +154,37 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       case Node.Folder(var id) ->
         icon(s.folderOpen(id) ? Symbol.FOLDER_OPEN : Symbol.FOLDER, false);
       case Node.Connection n -> connection(n);
+      case Node.Query(var id) -> icon(Glyphs.query(s.query(id).language()), false);
       case Node.OfDatabase n -> icon(Symbol.DATABASE, n.database().system());
-      case Node.OfSchema n -> icon(Symbol.FOLDER, n.schema().system());
+      case Node.OfSchema n -> icon(Glyphs.SCHEMA, n.schema().system());
       case Node.OfTable n ->
         icon(n.table().kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE, system(n.table()));
-      case Node.OfColumn n ->
-        n.column().keyPosition() > 0
+      case Node.OfColumn n -> columnIcon(n);
+      case Node.ForeignKeys _ -> icon(Symbol.LINK, false);
+      case Node.KeyGroup n -> icon(n.incoming() ? Symbol.ARROW_LEFT : Symbol.ARROW_RIGHT, false);
+      case Node.OfKey _ -> icon(Symbol.LINK, false);
+      case Node.Indexes _ -> icon(Symbol.KEY_MULTIPLE, false);
+      case Node.OfIndex n ->
+        n.index().primary()
             ? Icon.icon(Symbol.KEY, Icon.Variant.WARNING)
-            : icon(Symbol.COLUMN_SINGLE, false);
+            : icon(Symbol.KEY_MULTIPLE, false);
       case Node.Problem n -> Icon.icon(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
     };
   }
 
+  private El columnIcon(Node.OfColumn n) {
+    if (n.column().keyPosition() > 0) {
+      return Icon.icon(Symbol.KEY, Icon.Variant.WARNING);
+    }
+    if (ForeignKeys.isOutgoingColumn(
+        n.column(), s.catalog.foreignKeys(n.id(), n.column().table()))) {
+      return Icon.icon(Symbol.LINK, Icon.Variant.MUTED);
+    }
+    return icon(Symbol.COLUMN_SINGLE, false);
+  }
+
   // A system object's icon is quieter too, as its name is muted.
-  private El icon(Symbol symbol, boolean system) {
+  private El icon(Icon symbol, boolean system) {
     return Icon.icon(symbol, system ? Icon.Variant.DISABLED : Icon.Variant.MUTED);
   }
 

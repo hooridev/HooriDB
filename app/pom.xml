@@ -35,6 +35,11 @@
       <groupId>com.rethinkj.ui</groupId>
       <artifactId>rethinkj-ui-kit</artifactId>
     </dependency>
+    <!-- The code editor of the console, the value panel and the statement log. -->
+    <dependency>
+      <groupId>com.rethinkj.ui</groupId>
+      <artifactId>rethinkj-ui-editor</artifactId>
+    </dependency>
     <!-- The console's SQL highlighter. -->
     <dependency>
       <groupId>com.rethinkj.ui</groupId>

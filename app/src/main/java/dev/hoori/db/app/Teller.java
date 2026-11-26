@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.App;
 import java.util.Arrays;
+import java.util.UUID;
 
 /**
  * The session's {@link Delivery.Tell}: the server's words checked against its own copy of the
@@ -15,10 +16,12 @@ final class Teller implements Delivery.Tell {
   private final String connection;
   private final char[] password; // null where the session has none
   private final ConsoleTab of;
+  private final UUID on; // the connection of the session it tells of
   private boolean wiped;
 
-  Teller(App<State> app, State state, String connection, char[] password, ConsoleTab of) {
+  Teller(App<State> app, State state, UUID on, String connection, char[] password, ConsoleTab of) {
     this.app = app;
+    this.on = on;
     this.state = state;
     this.connection = connection;
     this.password = password;
@@ -40,7 +43,13 @@ final class Teller implements Delivery.Tell {
       said = wiped ? TOO_LATE : ConsoleTab.words(password, what);
     }
     var statement = ConsoleTab.brief(sql == null ? "" : sql);
-    app.post(() -> state.notice(connection, statement, said, failure, of));
+    // A query tab that has moved to another connection since does not show it in its Messages.
+    app.post(() -> state.notice(
+        connection,
+        statement,
+        said,
+        failure,
+        of != null && of.id != null && of.id.equals(on) ? of : null));
   }
 
   /** The session has closed and said all it had to: the password goes. */

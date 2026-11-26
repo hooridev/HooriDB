@@ -2,6 +2,7 @@ package dev.hoori.db.core.document;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Kind;
@@ -98,5 +99,28 @@ class ExtendedJsonTest {
     var text = "a".repeat(Rows.LIMIT - 1) + "😀";
     var cut = assertInstanceOf(Cut.class, Values.value(text, Kind.TEXT));
     assertEquals(Rows.LIMIT - 1, cut.start().length());
+  }
+
+  @Test
+  void wholeKeepsLongValuesUncutAndPreservesMissingAndNull() {
+    var longText = "a".repeat(Rows.LIMIT + 50);
+    var nested = Document.of("body", longText);
+    var array = Document.array(longText, "more");
+    var regex = new Bson.Regex("a".repeat(Rows.LIMIT + 50), "i");
+    var doc = Document.of("t", longText, "d", nested, "a", array, "r", regex, "n", null);
+    var fields = Values.found(List.of(doc));
+    var row = Values.row(fields, doc);
+    assertInstanceOf(Cut.class, row.get(0));
+    assertInstanceOf(Cut.class, row.get(1));
+    assertInstanceOf(Cut.class, row.get(2));
+    assertInstanceOf(Cut.class, row.get(3));
+    assertEquals(longText, Values.whole(fields.get(0), doc));
+    assertEquals(ExtendedJson.of(nested), Values.whole(fields.get(1), doc));
+    assertEquals(ExtendedJson.of(array), Values.whole(fields.get(2), doc));
+    assertEquals(Shell.compact(regex), Values.whole(fields.get(3), doc));
+    assertNull(Values.whole(fields.get(4), doc));
+    assertEquals(Missing.FIELD, Values.whole(fields.get(0), Document.EMPTY));
+    var huge = Document.of("t", "h".repeat(Rows.WHOLE_LIMIT + 1));
+    assertInstanceOf(Cut.class, Values.whole(fields.get(0), huge));
   }
 }

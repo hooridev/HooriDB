@@ -33,6 +33,7 @@ import dev.hoori.db.core.execution.Result;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -111,6 +112,14 @@ class ConsoleTest {
     throw new AssertionError("No " + text + " in\n" + tree);
   }
 
+  /** Where the element with the key is, as its line in the tree says: "x,y wxh". */
+  static String place(String tree, String key) {
+    var m =
+        java.util.regex.Pattern.compile(" (\\d+,\\d+ \\d+x\\d+)").matcher(line(tree, key + " "));
+    assertTrue(m.find(), tree);
+    return m.group(1);
+  }
+
   static String status(String tree) {
     return near(tree, "#run-status");
   }
@@ -153,9 +162,10 @@ class ConsoleTest {
     assertTrue(line(one, "#column-0").contains("label=\"count\""), one);
     assertTrue(cell(one, 0, 0).contains("\"1\""), one);
     assertTrue(status(one).contains("\"Ran in 4 ms · 1 row\""), one);
-    // Its own connection, opened behind the tree's, which the status bar counts alone.
+    // Its own connection and the planner's, opened behind the tree's, which the status bar counts
+    // alone.
     assertEquals(
-        2, servers.calls.stream().filter(k -> k.equals("open " + PG + "/shop")).count());
+        3, servers.calls.stream().filter(k -> k.equals("open " + PG + "/shop")).count());
     String connections = line(one, "#connected");
     assertTrue(
         connections.contains("label=\"1 connected\"") && connections.contains("value=\"ok\""), one);
@@ -221,6 +231,29 @@ class ConsoleTest {
   }
 
   @Test
+  void aFailedContinuationMarksTheRowsReadAsPartial() throws Exception {
+    var partial = "SELECT * FROM partial";
+    servers.statement(
+        partial,
+        List.of(
+            FakeServers.made(250, "id: bigint"),
+            FakeServers.serverError(Failure.Kind.OTHER, "read failed midway")));
+    var app = console(SHOP);
+    c.run(app, type(partial) + RUN + "snap first\n");
+    assertTrue(
+        near(c.tree("first"), "#result-status").contains("200 rows so far"), c.tree("first"));
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE + "snap failed\n");
+    String failed = c.tree("failed");
+    assertTrue(near(failed, "#problem").contains("read failed midway"), failed);
+    assertTrue(
+        near(failed, "#result-status").contains("the first 250 rows; the rest was not read"),
+        failed);
+    var output = tab(app).outputs.getFirst();
+    assertFalse(output.more);
+    assertTrue(output.cut);
+  }
+
+  @Test
   void eachResultFitsItsColumnsToItsFirstRows() throws Exception {
     var app = console(SHOP);
     c.run(app, type(ORDERS) + RUN);
@@ -261,6 +294,47 @@ class ConsoleTest {
   }
 
   @Test
+  void runAllOffersCancelHalfASecondAfterItStartedNotAfterEachStatement() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN); // connected
+    var count = "run " + PG + " " + COUNT;
+    var orders = "run " + PG + " " + ORDERS;
+    var first = servers.hold(count);
+    var second = servers.hold(orders);
+    c.run(app, type("\n" + ORDERS + ";") + "key Enter control shift\nframe\n");
+    eventually(() -> Collections.frequency(servers.calls, count) == 2);
+    c.run(app, "advance 0.3\nframe\n");
+    first.countDown();
+    c.run(app, "await\nframe\nframe\n"); // its outcome sends the second, which is held
+    eventually(() -> servers.calls.contains(orders));
+    assertTrue(servers.calls.contains(orders), servers.calls.toString());
+    c.run(app, "advance 0.3\nframe\nsnap second\n");
+    String later = c.tree("second");
+    assertTrue(later.contains("#cancel "), "0.6 s into the run: " + later);
+    second.countDown();
+    c.run(app, SETTLE);
+  }
+
+  @Test
+  void runPressedByKeyHandsItsFocusToCancelAndBack() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(COUNT + ";") + RUN); // connected
+    var key = "run " + PG + " " + ORDERS;
+    var gate = servers.hold(key);
+    c.run(
+        app,
+        type("\n" + ORDERS) + "focus #run\nkey Enter\nframe\nadvance 0.5\nframe\nadvance 1\nframe\n"
+            + "snap cancelling\n");
+    eventually(() -> servers.calls.contains(key));
+    String cancelling = c.tree("cancelling");
+    assertTrue(line(cancelling, "#cancel").contains("focused"), cancelling);
+    gate.countDown();
+    c.run(app, SETTLE + "snap ran\n");
+    String ran = c.tree("ran");
+    assertTrue(line(ran, "#run ").contains("focused"), ran);
+  }
+
+  @Test
   void cancelStopsTheStatementAndTheFocusStaysInTheEditor() throws Exception {
     var app = console(SHOP);
     c.run(app, type(COUNT + ";") + RUN);
@@ -270,12 +344,20 @@ class ConsoleTest {
     eventually(() -> servers.calls.contains(key));
     String running = c.tree("running");
     assertTrue(line(running, "#run ").contains("busy"), running);
-    assertFalse(line(running, "#cancel").contains("disabled"), running);
+    assertTrue(line(running, "#run ").contains("label=\"Run\""), "not Cancel at once: " + running);
     assertTrue(status(running).contains("\"Running…\""), running);
+    // Run turns into Cancel once the statement has run for a while.
+    c.run(app, "advance 0.5\nframe\nsnap turning\nadvance 1\nframe\nsnap stoppable\n");
+    String turning = c.tree("turning");
+    assertEquals(place(running, "#run"), place(turning, "#cancel"), "in Run's place");
+    assertEquals(place(running, "#mode"), place(turning, "#mode"), "nothing moves");
+    String stoppable = c.tree("stoppable");
+    assertFalse(line(stoppable, "#cancel").contains("disabled"), stoppable);
+    assertFalse(stoppable.contains("#run "), stoppable);
     c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\nsnap cancelled\n");
     eventually(() -> servers.interrupted.contains(key));
     String cancelled = c.tree("cancelled");
-    assertTrue(line(cancelled, "#cancel").contains("disabled"), cancelled);
+    assertTrue(line(cancelled, "#run ").contains("label=\"Run\""), cancelled);
     assertFalse(line(cancelled, "#run ").contains("busy"), cancelled);
     assertTrue(line(cancelled, "#sql").contains("focused"), cancelled);
     assertTrue(status(cancelled).contains("\"Cancelled\""), cancelled);
@@ -465,7 +547,7 @@ class ConsoleTest {
             + "snap inventory\n");
     assertTrue(servers.calls.contains("use " + MARIA + " inventory"), servers.calls.toString());
     assertEquals(
-        2, servers.calls.stream().filter(k -> k.equals("open " + MARIA)).count());
+        3, servers.calls.stream().filter(k -> k.equals("open " + MARIA)).count());
     assertTrue(tabs(c.tree("inventory")).startsWith("inventory: inventory,"));
   }
 
@@ -511,7 +593,7 @@ class ConsoleTest {
     assertTrue(line(window, "#unconnected").contains("label=\"Login refused\""), window);
     assertTrue(window.contains("role=button label=\"Enter password…\""), window);
     assertFalse(line(window, "#run ").contains("busy"), window);
-    assertTrue(line(window, "#cancel").contains("disabled"), window);
+    assertTrue(line(window, "#run ").contains("label=\"Run\""), window);
     assertFalse(status(window).contains("Ran"), window);
     // Its window says it: the tree's callout does not say it again.
     c.run(app, """
@@ -595,7 +677,9 @@ class ConsoleTest {
     String switching = c.tree("switching");
     assertTrue(status(switching).contains("\"Switching to inventory…\""), switching);
     assertTrue(near(switching, "#database").contains("\"No database\""), switching);
-    c.run(app, "press role=button label=\"Cancel\"\nframe\nframe\nsnap cancelled\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\nframe\nsnap cancelled\n");
     eventually(() -> servers.interrupted.contains(key));
     String cancelled = c.tree("cancelled");
     assertTrue(near(cancelled, "#database").contains("\"No database\""), cancelled);
@@ -604,7 +688,7 @@ class ConsoleTest {
     eventually(() -> servers.closed.contains(MARIA));
     c.run(app, "press #sql\n" + RUN);
     assertEquals(
-        3, servers.calls.stream().filter(k -> k.equals("open " + MARIA)).count());
+        4, servers.calls.stream().filter(k -> k.equals("open " + MARIA)).count());
   }
 
   @Test
@@ -618,7 +702,10 @@ class ConsoleTest {
     // Its first portion is read, with more to come, but not delivered before Cancel.
     gate.countDown();
     eventually(() -> servers.done.contains(key));
-    c.run(app, "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap cancelled\n");
+    c.run(
+        app,
+        "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n" + SETTLE
+            + "snap cancelled\n");
     assertTrue(status(c.tree("cancelled")).contains("\"Cancelled\""), c.tree("cancelled"));
     eventually(() -> servers.calls.contains("close " + PG + " " + ORDERS));
   }
@@ -631,7 +718,7 @@ class ConsoleTest {
     c.run(app, type(both) + RUN + "scroll #grid row 180\nframe\nframe\n" + SETTLE + "snap ended\n");
     String ended = c.tree("ended");
     assertTrue(tabs(ended).endsWith("Result 1,Result 2,Messages"), tabs(ended));
-    assertTrue(near(ended, "#result-status").contains("· 250 rows\""), ended);
+    assertTrue(near(ended, "#result-status").contains("\"250 rows ·"), ended);
     // Not a plain read, it was read to its end: two portions' time.
     assertTrue(status(ended).contains("\"Ran in 8 ms · 250 rows · 5 rows changed\""), ended);
   }
@@ -672,6 +759,151 @@ class ConsoleTest {
     String behind = c.tree("behind");
     assertFalse(behind.contains("#unconnected"), behind);
     assertEquals(1, notes(behind), behind);
+  }
+
+  @Test
+  void anOpenReadShowsItsCursorAndStopsAfterBeingIdle() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(ORDERS) + RUN + "snap open\n");
+    String open = c.tree("open");
+    assertTrue(near(open, "#result-status").contains("200 rows so far · cursor open"), open);
+    assertTrue(open.contains("role=button label=\"Stop reading\""), open);
+    var output = tab(app).outputs.getFirst();
+    assertTrue(output.more);
+    assertFalse(output.cut);
+
+    c.run(app, "advance " + ConsoleTab.IDLE_SECONDS + "\nframe\n" + SETTLE + "snap idle\n");
+    assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+    assertFalse(output.more);
+    assertTrue(output.cut);
+    assertEquals(200, output.rows.size());
+    String idle = c.tree("idle");
+    assertTrue(
+        near(idle, "#result-status")
+            .contains("the first 200 rows; reading stopped after being idle"),
+        idle);
+    assertFalse(idle.contains("role=button label=\"Stop reading\""), idle);
+    assertTrue(tab(app).connected());
+    assertTrue(servers.closed.isEmpty(), servers.closed.toString());
+
+    // Scrolling past the loaded rows reads nothing more.
+    c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE);
+    assertFalse(
+        servers.calls.contains("next " + PG + " " + ORDERS + " 200"), servers.calls.toString());
+    assertEquals(200, output.rows.size());
+  }
+
+  @Test
+  void readingAnotherPortionRestartsTheIdleBoundAndStopReadingGivesUpAtOnce() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(ORDERS) + RUN);
+    var output = tab(app).outputs.getFirst();
+    c.run(app, "advance 20\nframe\n");
+    assertFalse(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+    assertTrue(output.more);
+
+    // While a portion is being read, Stop reading is not offered.
+    var next = "next " + PG + " " + ORDERS + " 200";
+    var gate = servers.hold(next);
+    try {
+      c.run(app, "scroll #grid row 180\nframe\nframe\n");
+      eventually(() -> servers.calls.contains(next));
+      c.run(app, "advance 1\nframe\nsnap reading\n");
+      assertFalse(
+          c.tree("reading").contains("role=button label=\"Stop reading\""), c.tree("reading"));
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE + "snap more\n");
+    assertEquals(400, output.rows.size());
+    assertTrue(c.tree("more").contains("role=button label=\"Stop reading\""), c.tree("more"));
+
+    // 20 s more (40 s since the first portion, 20 s since the second): still open.
+    c.run(app, "advance 20\nframe\n");
+    assertFalse(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+    assertTrue(output.more);
+
+    // Stop reading gives it up at once without closing the session.
+    c.run(app, "press role=button label=\"Stop reading\"\nframe\n" + SETTLE + "snap stopped\n");
+    assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+    assertFalse(output.more);
+    assertTrue(output.cut);
+    assertEquals(400, output.rows.size());
+    String stopped = c.tree("stopped");
+    assertTrue(
+        near(stopped, "#result-status").contains("the first 400 rows; reading stopped"), stopped);
+    assertFalse(stopped.contains("role=button label=\"Stop reading\""), stopped);
+    assertTrue(tab(app).connected());
+    assertTrue(servers.closed.isEmpty(), servers.closed.toString());
+
+    // Scrolling reads nothing more, and the next statement runs on the same session.
+    c.run(app, "scroll #grid row 380\nframe\nframe\n" + SETTLE);
+    assertFalse(
+        servers.calls.contains("next " + PG + " " + ORDERS + " 400"), servers.calls.toString());
+    c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN + "snap next\n");
+    assertTrue(status(c.tree("next")).contains("\"Ran in 4 ms · 1 row\""), c.tree("next"));
+    // The tree's, the console's and the estimates' connection: the session is the same.
+    assertEquals(
+        3, servers.calls.stream().filter(k -> k.equals("open " + PG + "/shop")).count());
+  }
+
+  @Test
+  void controlAltLFormatsSqlOrMarksAnUnclosedConstruct() throws Exception {
+    var app = console(SHOP);
+    c.run(
+        app,
+        type("SELECT id, total FROM orders WHERE paid = true AND total > 10 ORDER BY id DESC;")
+            + "key L control alt\nframe\nsnap formatted\n");
+    var expected = """
+        SELECT id,
+               total
+        FROM orders
+        WHERE paid = true
+          AND total > 10
+        ORDER BY id DESC;""";
+    assertEquals(expected, tab(app).text);
+    assertTrue(
+        line(c.tree("formatted"), "#sql").contains("SELECT id,\\n       total\\nFROM orders"),
+        c.tree("formatted"));
+
+    c.run(
+        app,
+        "key A control\nkey Delete\n" + type("SELECT 'open")
+            + "key L control alt\nframe\nsnap unclosed\n");
+    assertEquals("SELECT 'open", tab(app).text);
+    assertTrue(
+        c.tree("unclosed").contains("A string without its closing quote"), c.tree("unclosed"));
+  }
+
+  @Test
+  void aLazyReadStopsAndIsGivenUpAtKeptRows() throws Exception {
+    ConsoleTab.kept = 400;
+    try {
+      var app = console(SHOP);
+      c.run(app, type(ORDERS) + RUN);
+      var output = tab(app).outputs.getFirst();
+      assertTrue(output.more);
+      assertEquals(200, output.rows.size());
+
+      // Second portion reaches the limit; a second SETTLE waits for the give-up it starts.
+      c.run(app, "scroll #grid row 180\nframe\nframe\n" + SETTLE + SETTLE + "snap capped\n");
+      assertEquals(400, output.rows.size());
+      assertFalse(output.more);
+      assertTrue(output.cut);
+      assertTrue(servers.calls.contains("close " + PG + " " + ORDERS), servers.calls.toString());
+      String capped = c.tree("capped");
+      assertTrue(
+          near(capped, "#result-status")
+              .contains("the first 400 rows; limit reached, the rest was not read"),
+          capped);
+      assertFalse(capped.contains("role=button label=\"Stop reading\""), capped);
+
+      c.run(app, "scroll #grid row 380\nframe\nframe\n" + SETTLE);
+      assertFalse(
+          servers.calls.contains("next " + PG + " " + ORDERS + " 400"), servers.calls.toString());
+    } finally {
+      ConsoleTab.kept = ConsoleTab.KEPT;
+    }
   }
 
   /** The callouts that say the server cannot be reached. */

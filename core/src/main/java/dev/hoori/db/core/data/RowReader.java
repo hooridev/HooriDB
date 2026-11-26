@@ -20,21 +20,38 @@ import java.util.List;
  *   <li>On MariaDB and MySQL, a {@code timestamp} is of kind {@link Kind#DATE_TIME}: the time in
  *       the session's zone, as the server writes it, from which the moment cannot be told without
  *       asking the server for its zone.
- *   <li>Text and binary data come whole from the server and are cut here to {@link Rows#LIMIT};
- *       a {@link Cut} has no length, as the size the server stores is not known.
+ *   <li>Text, JSON and other values come whole from the server and are kept whole while their
+ *       lengths fit in {@link #BUDGET} characters per result, each up to {@link
+ *       Rows#WHOLE_LIMIT}; a value longer than {@link Rows#LIMIT} code points that is longer still
+ *       or would exceed what is left is cut to {@link Rows#LIMIT} as a
+ *       {@link Cut} without a length, as the size the server stores is not known. Binary data is
+ *       cut to {@link Rows#LIMIT} bytes.
  * </ul>
+ *
+ * <p>One reader serves one result on one thread, as it counts the characters of long texts kept
+ * whole across the rows it reads.
  */
 public final class RowReader {
 
-  private final List<Rows.Read> reads;
+  /** How many characters of long texts one result keeps whole before cutting the rest. */
+  public static final int BUDGET = 16 * 1024 * 1024;
 
-  private RowReader(List<Rows.Read> reads) {
+  private final List<Rows.Read> reads;
+  private long remaining;
+
+  private RowReader(List<Rows.Read> reads, long budget) {
     this.reads = reads;
+    this.remaining = budget;
   }
 
   /** How the result with this metadata, from a server of this provider, is read. */
   public static RowReader of(Provider provider, ResultSetMetaData metadata) throws SQLException {
-    return new RowReader(Rows.reads(provider, metadata));
+    return of(provider, metadata, BUDGET);
+  }
+
+  static RowReader of(Provider provider, ResultSetMetaData metadata, long budget)
+      throws SQLException {
+    return new RowReader(Rows.reads(provider, metadata), budget);
   }
 
   /** The result's columns. */
@@ -46,8 +63,22 @@ public final class RowReader {
   public List<Object> read(ResultSet rows) throws SQLException {
     var values = new Object[reads.size()];
     for (var i = 0; i < values.length; i++) {
-      values[i] = reads.get(i).value().read(rows, i + 1);
+      var read = reads.get(i);
+      var value = read.value().read(rows, i + 1);
+      values[i] =
+          read.value() == Rows.WHOLE_TEXT && value instanceof String text ? keep(text) : value;
     }
     return Collections.unmodifiableList(Arrays.asList(values));
+  }
+
+  private Object keep(String text) {
+    if (!Rows.tooLong(text)) {
+      return text;
+    }
+    if (text.length() <= Math.min(remaining, Rows.WHOLE_LIMIT)) {
+      remaining -= text.length();
+      return text;
+    }
+    return Rows.cut(text);
   }
 }

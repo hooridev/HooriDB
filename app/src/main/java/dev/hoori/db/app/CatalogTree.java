@@ -14,6 +14,8 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -25,6 +27,7 @@ import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.query.QueryException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -36,6 +39,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * The workspace as a tree: its folders, which the user opens, closes and moves, and its
@@ -47,6 +51,7 @@ import java.util.function.Consumer;
 final class CatalogTree {
 
   static final String TRY_AGAIN = "Try again";
+  private static final String DELETE = "Delete…";
 
   /** What is known of a node's children. */
   sealed interface Level {}
@@ -61,7 +66,8 @@ final class CatalogTree {
   record NotRead(CatalogException.Failure failure, String detail) implements Level {}
 
   /** A database that needs a connection of its own, which could not be opened. */
-  record NotOpened(ConnectionException.Failure failure, String detail) implements Level {}
+  record NotOpened(ConnectionException.Failure failure, String detail, Duration timeout)
+      implements Level {}
 
   /** What the question before an edit or a delete of a connected connection leads to. */
   enum Then {
@@ -111,6 +117,9 @@ final class CatalogTree {
       s.openFolder(id, opens);
       return;
     }
+    if (node instanceof Node.Query) {
+      return;
+    }
     if (!opens) {
       open.remove(node);
       return;
@@ -141,7 +150,10 @@ final class CatalogTree {
           connect(s, id);
         }
       }
+      case Node.Query(var id) -> s.openQuery(id);
       case Node.OfTable(var id, var table) -> s.openTable(id, table);
+      case Node.OfKey(var id, var _, var key, var incoming) ->
+        s.openTable(id, incoming ? key.table() : key.referenced());
       default -> {
         // The rest only open and close, which the tree does.
       }
@@ -344,10 +356,11 @@ final class CatalogTree {
 
   /** Opens the first connection, with the password, which is the live's now. */
   private void connect(State s, Live live, char[] password) {
+    var timeout = s.settings.connectTimeout();
     live.password = password;
     live.phase = new Live.Connecting();
     live.lane = lane(s, live);
-    live.lane.open(servers, live.profile, password, live.driver);
+    live.lane.open(servers, browsing(live.profile), password, live.driver, timeout);
     record Opened(ServerVersion version, String database) {}
     // Right behind the opening, which it fails as.
     live.connecting = live.lane.ask(
@@ -374,13 +387,44 @@ final class CatalogTree {
           var failure = checked instanceof ConnectionException e
               ? e.failure()
               : ConnectionException.Failure.OTHER;
-          live.phase = new Live.Failed(failure, detail(checked), live.password.length > 0);
+          live.phase = new Live.Failed(failure, detail(checked), live.password.length > 0, timeout);
           end(live);
           s.unconnected(live.id());
           s.tell(State.name(live.profile) + ": " + Words.title(failure));
         });
     // Its databases are asked for right behind it, on its lane: they need no answer before.
     read(s, live, new Node.Connection(live.id()));
+  }
+
+  /**
+   * A table's columns and, unless either read failed alone, its foreign keys in both directions
+   * and its indexes.
+   */
+  private record TableRead(List<Column> columns, List<ForeignKey> keys, List<Index> indexes) {}
+
+  private static TableRead readTable(Servers.Link link, Table table) throws CatalogException {
+    var columns = link.columns(table);
+    List<ForeignKey> keys = null;
+    try {
+      keys = link.foreignKeys(table);
+    } catch (CatalogException e) {
+      if (!readAlone(e) || Thread.currentThread().isInterrupted()) {
+        throw e;
+      }
+    }
+    List<Index> indexes = null;
+    try {
+      indexes = link.indexes(table);
+    } catch (CatalogException e) {
+      if (!readAlone(e) || Thread.currentThread().isInterrupted()) {
+        throw e;
+      }
+    }
+    return new TableRead(columns, keys, indexes);
+  }
+
+  private static List<Node> columnNodes(UUID id, List<Column> columns) {
+    return columns.stream().map(x -> (Node) new Node.OfColumn(id, x)).toList();
   }
 
   /** Reads the children of the node on the connection that reads its database. */
@@ -390,16 +434,38 @@ final class CatalogTree {
     if (live.lane == null || c == null && !(node instanceof Node.Connection)) {
       return;
     }
+    if (node instanceof Node.OfTable t) {
+      // The columns are read once at a time: a read of them in the background gives way.
+      if (live.scans.remove(node) instanceof Scan x && x.asked != null) {
+        x.asked.cancel();
+      }
+      var id = live.id();
+      var table = t.table();
+      var asked = live.forgetting;
+      read(s, live, t, link -> readTable(link, table), found -> {
+        live.levels.put(node, new Read(columnNodes(id, found.columns())));
+        if (found.keys() != null && !forgottenSince(live, table, asked)) {
+          live.keys.put(table, found.keys());
+        }
+        // Forgetting a table's keys leaves its indexes: they follow its columns.
+        if (found.indexes() != null) {
+          live.indexes.put(table, found.indexes());
+        }
+      });
+      return;
+    }
     var call = children(live.id(), node, c);
     if (call == null) {
       return;
     }
-    // The columns are read once at a time: a read of them in the background gives way.
-    if (node instanceof Node.OfTable
-        && live.scans.remove(node) instanceof Scan x
-        && x.asked != null) {
-      x.asked.cancel();
-    }
+    read(s, live, node, call, children -> {
+      live.levels.put(node, new Read(children));
+      databasesRead(s, node);
+    });
+  }
+
+  private <T> void read(State s, Live live, Node node, Lane.Call<T> call, Consumer<T> onRead) {
+    var timeout = s.settings.connectTimeout();
     var lane = lane(s, live, database(node));
     var reading = new Reading();
     live.levels.put(node, reading);
@@ -408,16 +474,15 @@ final class CatalogTree {
         "read " + label(s, node),
         Lane.Priority.VIEW,
         call,
-        children -> {
+        result -> {
           if (live.levels.get(node) == reading) {
-            live.levels.put(node, new Read(children));
-            databasesRead(s, node);
+            onRead.accept(result);
             revealed(s, node);
           }
         },
         error -> {
           if (live.levels.get(node) == reading) {
-            readFailed(s, live, node, lane, error);
+            readFailed(s, live, node, lane, error, timeout);
           }
         });
   }
@@ -439,25 +504,29 @@ final class CatalogTree {
             .toList();
       case Node.OfDatabase n -> tables(id, n.database());
       case Node.OfSchema n -> tables(id, n.schema());
-      case Node.OfTable n ->
-        link -> link.columns(n.table()).stream()
-            .map(x -> (Node) new Node.OfColumn(id, x))
-            .toList();
-      case Node.OfColumn n -> null;
-      case Node.Problem n -> null;
-      case Node.Folder n -> null;
+      case Node.OfTable _,
+          Node.OfColumn _,
+          Node.ForeignKeys _,
+          Node.KeyGroup _,
+          Node.OfKey _,
+          Node.Indexes _,
+          Node.OfIndex _,
+          Node.Problem _,
+          Node.Folder _,
+          Node.Query _ -> null;
     };
   }
 
   /** A read of the node's children failed: the node says why, unless the connection was lost. */
-  private void readFailed(State s, Live live, Node node, Lane lane, Exception error) {
+  private void readFailed(
+      State s, Live live, Node node, Lane lane, Exception error, Duration timeout) {
     switch (checked(live, error)) {
       case ConnectionException e -> {
         // The next read opens it again.
         if (live.lanes.remove(database(node), lane)) {
           lane.close();
         }
-        live.levels.put(node, new NotOpened(e.failure(), e.detail()));
+        live.levels.put(node, new NotOpened(e.failure(), e.detail(), timeout));
       }
       case CatalogException e
       when readAlone(e) -> live.levels.put(node, new NotRead(e.failure(), e.detail()));
@@ -504,8 +573,9 @@ final class CatalogTree {
   }
 
   /**
-   * Reads the table's columns where the tree has not, as {@link #scan(State, Node.OfDatabase)}
-   * reads tables, for the completions of a console, which {@link #stop}s it as it closes.
+   * Reads the table's columns and foreign keys where the tree has not, as {@link
+   * #scan(State, Node.OfDatabase)} reads tables, for the completions and quick documentation of a
+   * console, which {@link #stop}s it as it closes.
    */
   Scan scan(State s, Node.OfTable node) {
     var live = lives.get(node.id());
@@ -515,18 +585,24 @@ final class CatalogTree {
       return null; // the tree reads them already
     }
     var id = live.id();
+    var table = node.table();
+    var asked = live.forgetting;
     return scan(
         s,
         live,
         node,
-        "read the columns of " + node.table().name(),
-        link -> link.columns(node.table()),
-        columns -> {
-          if (unread(live.levels.get(node))) {
-            live.levels.put(
-                node,
-                new Read(
-                    columns.stream().map(x -> (Node) new Node.OfColumn(id, x)).toList()));
+        "read the columns of " + table.name(),
+        link -> readTable(link, table),
+        found -> {
+          var columnsUnread = unread(live.levels.get(node));
+          if (columnsUnread) {
+            live.levels.put(node, new Read(columnNodes(id, found.columns())));
+          }
+          if (found.keys() != null && !forgottenSince(live, table, asked)) {
+            live.keys.put(table, found.keys());
+          }
+          if (found.indexes() != null && (columnsUnread || !live.indexes.containsKey(table))) {
+            live.indexes.put(table, found.indexes());
           }
         });
   }
@@ -672,29 +748,65 @@ final class CatalogTree {
    * its database. It is opened as the tree's further connections are, with the password the tree
    * keeps while connected, and closes with them.
    */
-  Lane planner(UUID id, String database) {
+  Lane planner(State s, UUID id, String database) {
+    return auxiliary(s, id, database, live -> live.planners, false);
+  }
+
+  /**
+   * The connection for counts that may take long on the database, opened the first time it is
+   * asked for, and anew where it could not be or is gone; null while the tree's connection is not
+   * connected. Nothing else runs on it, so that a slow count does not hold up the tree or other
+   * tables' pages: on PostgreSQL one per database, else one, as {@link #planner} does. On a SQL
+   * server it is opened read-only at the server even for a writable profile.
+   */
+  Lane counter(State s, UUID id, String database) {
+    return auxiliary(s, id, database, live -> live.counters, true);
+  }
+
+  /**
+   * The connection for deciding whether a result is editable and writing its changes, opened the
+   * first time it is asked for, and anew where it could not be or is gone; null while the tree's
+   * connection is not connected. Nothing else runs on it, so that a write waiting on a lock holds
+   * up neither the tree nor a console's reads: on PostgreSQL one per database, else one, as {@link
+   * #planner} does.
+   */
+  Lane writer(State s, UUID id, String database) {
+    return auxiliary(s, id, database, live -> live.writers, false);
+  }
+
+  private Lane auxiliary(
+      State s, UUID id, String database, Function<Live, Map<String, Lane>> map, boolean readOnly) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected c) || live.password == null) {
       return null;
     }
     var key = c.database() == null ? "" : database;
-    var lane = live.planners.get(key);
+    var lanes = map.apply(live);
+    var lane = lanes.get(key);
     if (lane == null || lane.broken()) {
       if (lane != null) {
         lane.close();
       }
-      // Its loss is the estimate's alone, which then fails and asks nothing.
+      // Its loss is the call's alone, which fails without losing the tree's connection.
       lane = new Lane(e -> {});
       var profile = key.isEmpty() ? live.profile : live.profile.withDatabase(key);
-      lane.open(servers, profile, live.password, live.driver);
-      live.planners.put(key, lane);
+      if (readOnly) {
+        profile = browsing(profile);
+      }
+      lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
+      lanes.put(key, lane);
     }
     return lane;
   }
 
+  /** The profile for the tree's and counts' lanes: read-only on SQL servers, as-is for documents. */
+  private static ConnectionProfile browsing(ConnectionProfile profile) {
+    return profile.provider().keepsDocuments() ? profile : profile.withReadOnly(true);
+  }
+
   /** Whether the connection is connected, so that its lanes can be used. */
   boolean connected(UUID id) {
-    var live = lives.get(id);
+    var live = id == null ? null : lives.get(id);
     return live != null && live.phase instanceof Live.Connected;
   }
 
@@ -729,7 +841,7 @@ final class CatalogTree {
    * tree's connection got; null while that is not connected. It is no lane of the tree's: what
    * runs on it never holds up the tree or a table tab.
    */
-  Session session(UUID id, String database) {
+  Session session(State s, UUID id, String database) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected)) {
       return null;
@@ -737,13 +849,13 @@ final class CatalogTree {
     // A console finds a lost connection in what its statements give, not through the tree.
     var lane = new Lane(e -> {});
     var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
-    lane.open(servers, profile, live.password, live.driver);
+    lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
     return new Session(lane, live.driver, live.password.clone());
   }
 
   /** The names of the connection's databases as the tree read them, or none where it has not. */
   List<String> databases(UUID id) {
-    var live = lives.get(id);
+    var live = id == null ? null : lives.get(id);
     if (live != null && live.levels.get(new Node.Connection(id)) instanceof Read(var children)) {
       return children.stream().map(n -> ((Node.OfDatabase) n).database().name()).toList();
     }
@@ -794,6 +906,49 @@ final class CatalogTree {
       return children.stream().map(n -> ((Node.OfColumn) n).column()).toList();
     }
     return null; // not read, which differs from a table without columns
+  }
+
+  /** The table's foreign keys as the tree read them, or null where it has not. */
+  List<ForeignKey> foreignKeys(UUID id, Table table) {
+    var live = lives.get(id);
+    return live == null ? null : live.keys.get(table);
+  }
+
+  /** The table's indexes as the tree read them, or null where it has not. */
+  List<Index> indexes(UUID id, Table table) {
+    var live = lives.get(id);
+    return live == null ? null : live.indexes.get(table);
+  }
+
+  /**
+   * The table's foreign keys as read elsewhere, cached for the tree, consoles and table tabs
+   * unless they were forgotten after the read was asked, at {@code asked}, a {@link
+   * Live#forgetting}.
+   */
+  void foreignKeysRead(UUID id, Table table, List<ForeignKey> keys, long asked) {
+    var live = lives.get(id);
+    if (live != null && !forgottenSince(live, table, asked)) {
+      live.keys.put(table, keys);
+    }
+  }
+
+  private static void forget(Live live, Node node) {
+    live.forgotten.put(node, ++live.forgetting);
+  }
+
+  private static boolean forgottenSince(Live live, Table table, long asked) {
+    var node = new Node.OfTable(live.id(), table);
+    return live.forgotten.entrySet().stream()
+        .anyMatch(e -> e.getValue() > asked && node.within(e.getKey()));
+  }
+
+  /** Drops the table's cached foreign keys so the next reader fetches them anew. */
+  void forgetForeignKeys(UUID id, Table table) {
+    var live = lives.get(id);
+    if (live != null) {
+      live.keys.remove(table);
+      forget(live, new Node.OfTable(id, table));
+    }
   }
 
   /** The table's columns as read anew elsewhere, which the tree shows where it showed them. */
@@ -858,7 +1013,12 @@ final class CatalogTree {
         lane.close();
       }
       lane = lane(s, live);
-      lane.open(servers, live.profile.withDatabase(database), live.password, live.driver);
+      lane.open(
+          servers,
+          browsing(live.profile.withDatabase(database)),
+          live.password,
+          live.driver,
+          s.settings.connectTimeout());
       live.lanes.put(database, lane);
     }
     return lane;
@@ -886,7 +1046,7 @@ final class CatalogTree {
               case NOT_FOUND -> CatalogException.Failure.NOT_FOUND;
               case ACCESS_DENIED -> CatalogException.Failure.ACCESS_DENIED;
               case CANCELLED -> CatalogException.Failure.CANCELLED;
-              case COLUMNS_CHANGED, OTHER -> CatalogException.Failure.OTHER;
+              case COLUMNS_CHANGED, CLAUSE_REFUSED, OTHER -> CatalogException.Failure.OTHER;
             },
             shown);
       default -> CatalogException.of(CatalogException.Failure.OTHER, shown);
@@ -913,10 +1073,16 @@ final class CatalogTree {
     return switch (node) {
       case Node.Folder n -> null;
       case Node.Connection n -> null;
+      case Node.Query n -> null;
       case Node.OfDatabase n -> n.database().name();
       case Node.OfSchema n -> n.schema().database().name();
       case Node.OfTable n -> n.table().container().database().name();
       case Node.OfColumn n -> n.column().table().container().database().name();
+      case Node.ForeignKeys n -> n.table().container().database().name();
+      case Node.KeyGroup n -> n.table().container().database().name();
+      case Node.OfKey n -> n.table().container().database().name();
+      case Node.Indexes n -> n.table().container().database().name();
+      case Node.OfIndex n -> n.table().container().database().name();
       case Node.Problem(var of) -> database(of);
     };
   }
@@ -959,6 +1125,9 @@ final class CatalogTree {
         live.levels.remove(entry.getKey());
       }
     }
+    live.keys.keySet().removeIf(t -> new Node.OfTable(node.id(), t).within(node));
+    live.indexes.keySet().removeIf(t -> new Node.OfTable(node.id(), t).within(node));
+    forget(live, node);
     Lane.cancel(gone);
     if (node instanceof Node.Connection) {
       // The databases are read anew: their connections go, those still opening too.
@@ -999,7 +1168,7 @@ final class CatalogTree {
     var profile = s.profile(id);
     var name = profile == null ? "the connection" : State.name(profile);
     if (s.guard.asks(
-        s, act, name + " disconnects", s.consoles(id), () -> disconnect(s, act, id, then))) {
+        s, act, name + " disconnects", s.guarded(id), () -> disconnect(s, act, id, then))) {
       return;
     }
     var live = lives.get(id);
@@ -1071,6 +1240,8 @@ final class CatalogTree {
     stopScans(live, new Node.Connection(live.id()), gone);
     Lane.cancel(gone);
     live.levels.clear();
+    live.keys.clear();
+    live.indexes.clear();
     if (live.lane != null) {
       live.lane.close();
       live.lane = null;
@@ -1079,6 +1250,10 @@ final class CatalogTree {
     live.lanes.clear();
     live.planners.values().forEach(Lane::close);
     live.planners.clear();
+    live.counters.values().forEach(Lane::close);
+    live.counters.clear();
+    live.writers.values().forEach(Lane::close);
+    live.writers.clear();
     if (live.password != null) {
       Arrays.fill(live.password, '\0');
       live.password = null;
@@ -1173,10 +1348,16 @@ final class CatalogTree {
     return switch (node) {
       case Node.Folder(var id) -> s.folder(id).name();
       case Node.Connection(var id) -> State.name(s.profile(id));
+      case Node.Query(var id) -> s.query(id).name();
       case Node.OfDatabase n -> n.database().name();
       case Node.OfSchema n -> n.schema().name();
       case Node.OfTable n -> n.table().name();
       case Node.OfColumn n -> n.column().name();
+      case Node.ForeignKeys _ -> "Foreign keys";
+      case Node.KeyGroup n -> n.incoming() ? "Referenced by" : "References";
+      case Node.OfKey n -> n.key().name();
+      case Node.Indexes _ -> "Indexes";
+      case Node.OfIndex n -> n.index().name();
       case Node.Problem(var of) -> name(s, of);
     };
   }
@@ -1191,13 +1372,35 @@ final class CatalogTree {
     };
   }
 
-  /** The muted text after a node's name: a column's type, a connection's kind of server. */
+  /** The muted text after a node's name: a column's type, a key's mapping, a server's kind. */
   String detail(State s, Node node) {
     return switch (node) {
-      case Node.OfColumn n -> n.column().type();
+      case Node.OfColumn n ->
+        ForeignKeys.columnDetail(n.column(), foreignKeys(n.id(), n.column().table()));
+      case Node.OfKey n -> {
+        var profile = s.profile(n.id());
+        yield ForeignKeys.detail(
+            n.table(), n.key(), n.incoming(), profile == null ? null : profile.provider());
+      }
+      case Node.OfIndex n -> indexDetail(n.index());
       case Node.Connection(var id) -> s.profile(id).provider().displayName();
+      case Node.Query(var id) -> QueryDialog.languageLabel(s.query(id).language());
       default -> null;
     };
+  }
+
+  private static String indexDetail(Index index) {
+    var detail =
+        new StringBuilder("(").append(String.join(", ", index.columns())).append(')');
+    if (index.primary()) {
+      detail.append(" · primary key");
+    } else if (index.unique()) {
+      detail.append(" · unique");
+    }
+    if (!index.detail().isEmpty()) {
+      detail.append(" · ").append(index.detail());
+    }
+    return detail.toString();
   }
 
   /**
@@ -1216,10 +1419,10 @@ final class CatalogTree {
     if (failedWhole(live, node)) {
       var p = live.profile;
       return switch (live.phase) {
-        case Live.Failed(var failure, var detail, var withPassword) -> {
+        case Live.Failed(var failure, var detail, var withPassword, var timeout) -> {
           var note = failure == ConnectionException.Failure.UNFIT
               ? "Its settings cannot connect as they are. Edit the connection to complete them."
-              : Words.note(failure, p, withPassword);
+              : Words.note(failure, p, withPassword, timeout);
           yield new Trouble(
               Words.title(failure),
               join(note, detail),
@@ -1237,7 +1440,7 @@ final class CatalogTree {
     return switch (live.levels.get(node)) {
       case NotRead(var failure, var detail) ->
         new Trouble(title(failure), join(text(failure, s, node), detail), false);
-      case NotOpened(var failure, var detail) ->
+      case NotOpened(var failure, var detail, var timeout) ->
         new Trouble(
             "The database could not be opened",
             join(
@@ -1246,7 +1449,8 @@ final class CatalogTree {
                     database(node) == null
                         ? live.profile
                         : live.profile.withDatabase(database(node)),
-                    true),
+                    true,
+                    timeout),
                 detail),
             false);
       case null, default -> null;
@@ -1311,7 +1515,7 @@ final class CatalogTree {
       if (failedWhole(live, node)
           && group.activeTab() instanceof ConsoleTab x
           && x.activity instanceof ConsoleTab.Stranded
-          && x.id.equals(node.id())) {
+          && node.id().equals(x.id)) {
         return null;
       }
     }
@@ -1345,18 +1549,34 @@ final class CatalogTree {
         yield List.of(
             Menu.item("New connection…", s.canChange() ? s::newConnection : null)
                 .icon(Symbol.ADD),
+            Menu.item("New query…", s.canChange() ? s::newQuery : null).icon(Symbol.DOCUMENT),
             Menu.item("New folder…", s.canAddFolder() ? s::newFolder : null).icon(Symbol.FOLDER),
             Menu.separator(),
             Menu.item("Rename…", () -> s.askRenameFolder(n.id())).icon(Symbol.EDIT),
             moveTo(s, n),
             Menu.separator(),
-            Menu.item("Delete…", () -> s.askDeleteFolder(n.id())).icon(Symbol.DELETE));
+            Menu.item(DELETE, () -> s.askDeleteFolder(n.id())).icon(Symbol.DELETE));
+      }
+      case Node.Query n -> {
+        var q = s.query(n.id());
+        if (q == null) {
+          yield List.of();
+        }
+        yield List.of(
+            Menu.item("Open", () -> s.openQuery(q.id())).icon(Glyphs.query(q.language())),
+            Menu.separator(),
+            Menu.item("Rename…", () -> s.askRenameQuery(q.id())).icon(Symbol.EDIT),
+            Menu.item("Duplicate", () -> s.duplicateQuery(q)).icon(Symbol.COPY),
+            moveTo(s, n),
+            Menu.separator(),
+            Menu.item(DELETE, () -> s.askDeleteQuery(q.id())).icon(Symbol.DELETE));
       }
       case Node.Connection n -> {
         var p = s.profile(n.id());
         yield List.of(
             Menu.item("New console", () -> s.openConsole(n.id())).icon(Symbol.CODE),
-            Menu.item("Server monitor", () -> s.openMonitor(n.id(), s.tabs.main()))
+            Menu.item(
+                    "Server monitor", () -> s.openMonitor(n.id(), s.tabs.main().active()))
                 .icon(Symbol.SERVER),
             Menu.separator(),
             Menu.item("Disconnect", active(n.id()) ? () -> disconnect(s, n.id()) : null)
@@ -1369,7 +1589,7 @@ final class CatalogTree {
             Menu.item("Duplicate", () -> s.duplicate(p)).icon(Symbol.COPY),
             moveTo(s, n),
             Menu.separator(),
-            Menu.item("Delete…", () -> change(s, p, Then.DELETE)).icon(Symbol.DELETE));
+            Menu.item(DELETE, () -> change(s, p, Then.DELETE)).icon(Symbol.DELETE));
       }
       case Node.Problem n ->
         List.of(Menu.item(TRY_AGAIN, () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));
@@ -1380,13 +1600,28 @@ final class CatalogTree {
             copy);
       case Node.OfDatabase(var id, var database) -> List.of(find(s, id, database), refresh, copy);
       case Node.OfSchema(var id, var schema) -> List.of(find(s, id, schema), refresh, copy);
+      case Node.ForeignKeys(var id, var table) ->
+        List.of(Menu.item(
+                "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
+            .icon(Symbol.ARROW_CLOCKWISE));
+      case Node.KeyGroup(var id, var table, var _) ->
+        List.of(Menu.item(
+                "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
+            .icon(Symbol.ARROW_CLOCKWISE));
+      case Node.OfKey _ -> List.of(copy);
+      case Node.Indexes(var id, var table) ->
+        List.of(Menu.item(
+                "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
+            .icon(Symbol.ARROW_CLOCKWISE));
+      case Node.OfIndex _ -> List.of(copy);
       default -> List.of(refresh, copy);
     };
   }
 
   /** Find…: a search of the schema or database, in the main window. */
   private static Menu.Item find(State s, UUID id, Container scope) {
-    return Menu.item("Find…", () -> s.openFind(id, scope, s.tabs.main())).icon(Symbol.SEARCH);
+    return Menu.item("Find…", () -> s.openFind(id, scope, s.tabs.main()))
+        .icon(Symbol.SEARCH);
   }
 
   /**
@@ -1489,9 +1724,11 @@ final class CatalogTree {
     }
   }
 
-  /** Whether the user may drag the node: a folder or a connection, not what is below one. */
+  /** Whether the user may drag the node: a folder, a connection or a query, not what is below. */
   static boolean canDrag(Node node) {
-    return node instanceof Node.Folder || node instanceof Node.Connection;
+    return node instanceof Node.Folder
+        || node instanceof Node.Connection
+        || node instanceof Node.Query;
   }
 
   /** Whether the node can go where the pointer is; asked at every step of a drag. */
@@ -1525,7 +1762,7 @@ final class CatalogTree {
 
   /** The dialog that asks something for the catalog, or null: one at a time. */
   El dialog(State s, TabGroups.Group<Tab> group) {
-    boolean main = group == s.tabs.main();
+    boolean main = group == s.tabs.main().active();
     if (main && disconnecting != null) {
       return CatalogDialogs.disconnect(s, disconnecting);
     }
@@ -1539,7 +1776,7 @@ final class CatalogTree {
 
   /** Whether {@link #dialog} shows one in the window of these tabs, without making it. */
   boolean asks(State s, TabGroups.Group<Tab> group) {
-    boolean main = group == s.tabs.main();
+    boolean main = group == s.tabs.main().active();
     return main && (disconnecting != null || asking() != null) || forPassword(s, group) != null;
   }
 
@@ -1547,7 +1784,7 @@ final class CatalogTree {
   private Live forPassword(State s, TabGroups.Group<Tab> group) {
     for (var live : lives.values()) {
       // In the window that asked, while it is open; else in the main one, where its tabs went.
-      var asked = live.window != null ? live.window : s.tabs.main();
+      var asked = live.window != null ? live.window : s.tabs.main().active();
       if (live.phase instanceof Live.ForPassword && asked == group) {
         return live;
       }

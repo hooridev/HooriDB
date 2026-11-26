@@ -14,6 +14,7 @@ import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.Dialog;
+import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
@@ -22,7 +23,7 @@ import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tooltip;
-import dev.hoori.db.core.connection.Provider;
+import com.rethinkj.ui.text.Font;
 import dev.hoori.db.core.execution.Transaction;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -60,22 +61,25 @@ final class ConsoleView {
     };
   }
 
-  /** The toolbar's actions: the database, the transaction's, the runs' and the statements kept. */
-  List<El> actions(State s, Provider provider) {
+  /**
+   * The toolbar's actions: the database at the start, the runs, the transaction's, and the
+   * statements kept at the end. All stay in place whatever the mode or the transaction, so nothing
+   * moves when they change; what cannot be used is off.
+   */
+  List<El> actions(State s, Language language) {
     boolean busy = tab.busy();
     var locked = s.guard.locked(tab);
     var actions = new ArrayList<El>();
     actions.add(databases(s));
-    // Off where Manual cannot be made sure of, which its tooltip and a note say.
-    boolean switchable = !busy && locked == null && tab.unavailable == null;
-    if (Language.of(provider).transactions()) {
+    actions.add(runs(s, locked));
+    if (language.transactions()) {
+      // Off where Manual cannot be made sure of, which its tooltip and a note say.
+      boolean switchable = !busy && locked == null && tab.unavailable == null;
       actions.add(modes(s, switchable));
-    }
-    if (tab.mode == ConsoleTab.Mode.MANUAL || tab.transaction != Transaction.NONE) {
       actions.add(commitButton(s));
       actions.add(rollbackButton(s));
     }
-    actions.addAll(runs(s, busy, locked));
+    actions.add(Card.spacer());
     actions.addAll(kept(s));
     return actions;
   }
@@ -97,27 +101,33 @@ final class ConsoleView {
   }
 
   private El commitButton(State s) {
-    return Tooltip.tooltip(
-        button(
-                SECONDARY,
-                "Commit",
-                tab.canCommit() ? () -> tab.commitTransaction(s) : null,
-                Button.options().icon(Symbol.CHECKMARK).state(busyWith(ConsoleTab.COMMIT)))
-            .key("commit")
-            .keepFocus(),
-        "Commit (Control+Shift+C)");
+    return Button.icon(
+            Button.Variant.GHOST,
+            Symbol.CHECKMARK,
+            "Commit",
+            tab.canCommit() ? () -> tab.commitTransaction(s) : null,
+            Button.options()
+                .state(busyWith(ConsoleTab.COMMIT))
+                .tone(Button.Tone.SUCCESS)
+                .shortcut(Key.CONTROL | Key.SHIFT, "C"))
+        .key("commit")
+        .keepFocus();
   }
 
   private El rollbackButton(State s) {
-    return Tooltip.tooltip(
-        button(
-                SECONDARY,
-                ConsoleTab.ROLLBACK_BUTTON,
-                tab.canRollback() ? () -> tab.rollBackTransaction(s) : null,
-                Button.options().icon(Symbol.ARROW_UNDO).state(busyWith(ConsoleTab.ROLLBACK)))
-            .key("rollback")
-            .keepFocus(),
-        "Roll back (Control+Shift+R)");
+    // In Auto with nothing open, off: no Rollback could say what it undid.
+    boolean offered = tab.mode == ConsoleTab.Mode.MANUAL || tab.transaction != Transaction.NONE;
+    return Button.icon(
+            Button.Variant.GHOST,
+            Symbol.ARROW_UNDO,
+            ConsoleTab.ROLLBACK_BUTTON,
+            offered && tab.canRollback() ? () -> tab.rollBackTransaction(s) : null,
+            Button.options()
+                .state(busyWith(ConsoleTab.ROLLBACK))
+                .tone(Button.Tone.ACCENT)
+                .shortcut(Key.CONTROL | Key.SHIFT, "R"))
+        .key("rollback")
+        .keepFocus();
   }
 
   /** Busy while Commit's or Rollback's own statement runs. */
@@ -125,62 +135,70 @@ final class ConsoleView {
     return tab.firm() && sql.equals(tab.running) ? Button.State.BUSY : Button.State.READY;
   }
 
-  /** Run, Run all and Cancel. */
-  private List<El> runs(State s, boolean busy, String locked) {
-    return List.of(
-        button(
-                PRIMARY,
-                "Run",
-                tab.definition || tab.firm() || locked != null ? null : () -> tab.run(s),
-                Button.options()
-                    .icon(Symbol.PLAY)
-                    // Off, not busy, while a change of its connection is saved or deleted.
-                    .state(
-                        tab.working() && !tab.firm() && locked == null
-                            ? Button.State.BUSY
-                            : Button.State.READY))
-            .key("run")
-            .keepFocus(),
-        button(
-                SECONDARY,
-                "Run all",
-                tab.definition || busy || locked != null ? null : () -> tab.runAll(s))
-            .key("run-all")
-            .keepFocus(),
-        button(
-                SECONDARY,
-                ConsoleTab.CANCEL_BUTTON,
-                busy && !tab.firm() ? () -> tab.cancel(s) : null)
-            .key("cancel")
-            .keepFocus());
+  /**
+   * Run, or Cancel in its place while work has run for a while; Run all is Control+Shift+Enter. In
+   * a place of their own, which the focus stays in when one takes the other's place.
+   */
+  private El runs(State s, String locked) {
+    El button;
+    if (tab.stoppable()) {
+      button = Button.icon(
+              Button.Variant.GHOST,
+              Filled.STOP,
+              ConsoleTab.CANCEL_BUTTON,
+              () -> tab.cancel(s),
+              Button.options().tone(Button.Tone.DANGER))
+          // Its own key: a press begun on Cancel does not end on Run, which takes its place.
+          .key("cancel");
+    } else {
+      button = Button.icon(
+              PRIMARY,
+              Filled.PLAY,
+              "Run",
+              tab.definition || tab.firm() || locked != null ? null : () -> tab.run(s),
+              Button.options()
+                  // Off, not busy, while a change of its connection is saved or deleted.
+                  .state(
+                      tab.working() && !tab.firm() && locked == null
+                          ? Button.State.BUSY
+                          : Button.State.READY)
+                  .shortcut(Key.CONTROL, "Enter"))
+          .key("run");
+    }
+    return row().key("runs").child(button.keepFocus());
   }
 
-  /** Save query, Saved queries and History. */
+  /** Fluent's filled Play and Stop (ic_fluent_*_16_filled) alone; the kit's symbols are outlines. */
+  private static final class Filled {
+    static final Font FONT = Font.resource(ConsoleView.class, "filled-icons.ttf");
+    static final Icon PLAY = Icon.glyph(FONT, 0xE9A2, "Run");
+    static final Icon STOP = Icon.glyph(FONT, 0xF741, "Stop");
+  }
+
+  /** Save to workspace (for consoles not already in the workspace) and History. */
   private List<El> kept(State s) {
-    return List.of(
-        Tooltip.tooltip(
-            Button.icon(
-                    Button.Variant.GHOST,
-                    Symbol.SAVE,
-                    "Save query",
-                    s.keeping.queriesUsable() ? tab::saveQuery : null)
-                .key("query-save-open")
-                .keepFocus(),
-            "Save query: the selection, or else the whole text, under a name"),
-        Tooltip.tooltip(
-            Button.icon(
-                    Button.Variant.GHOST,
-                    Symbol.STAR,
-                    "Saved queries",
-                    s.keeping.queriesUsable() ? tab::openQueries : null)
-                .key("queries-open")
-                .keepFocus(),
-            "Saved queries"),
-        Tooltip.tooltip(
-            Button.icon(Button.Variant.GHOST, Symbol.HISTORY, "History", tab::openHistory)
-                .key("history-open")
-                .keepFocus(),
-            "History"));
+    var items = new ArrayList<El>();
+    if (!tab.isQuery()) {
+      items.add(Tooltip.tooltip(
+          Button.icon(
+                  Button.Variant.GHOST,
+                  Symbol.SAVE,
+                  "Save to workspace",
+                  s.canChange() ? () -> tab.saveToWorkspace(s) : null)
+              .key("query-save-open")
+              .keepFocus(),
+          "Save to workspace: the selection, or else the whole text"));
+    }
+    items.add(Tooltip.tooltip(
+        Button.icon(
+                Button.Variant.GHOST,
+                Symbol.HISTORY,
+                "History",
+                tab.id != null ? tab::openHistory : null)
+            .key("history-open")
+            .keepFocus(),
+        "History"));
+    return items;
   }
 
   /** The databases to switch to: those the tree read, and the one it is on. */
@@ -194,7 +212,7 @@ final class ConsoleView {
             tab.database,
             n -> n.isEmpty() ? "No database" : n,
             databases,
-            n -> tab.use(s, n))
+            tab.id == null ? null : n -> tab.use(s, n))
         .key("database")
         .label("Database")
         .w(6 * t.size().control());
@@ -239,7 +257,7 @@ final class ConsoleView {
       return "Switching to " + (tab.switching.isEmpty() ? "no database" : tab.switching) + "…";
     }
     if (!tab.firm()) {
-      return tab.writes ? "Running; rows show once all are read…" : "Running…";
+      return tab.writes() ? "Running; rows show once all are read…" : "Running…";
     }
     if (ConsoleTab.COMMIT.equals(tab.running)) {
       return "Committing…";
@@ -297,11 +315,14 @@ final class ConsoleView {
     var buttons = new ArrayList<El>();
     buttons.add(button(SECONDARY, ConsoleTab.CANCEL_BUTTON, () -> tab.answer(s, null))
         .key("answer-cancel"));
-    boolean waits = tab.waits();
-    var wording = wording(s, s.title(tab), asked.what(), waits);
+    boolean unpinnedOnly = asked.scope() == Guard.Scope.CHANGES;
+    boolean discarding = asked.scope() != Guard.Scope.TRANSACTION
+        && (tab.writingChanges(unpinnedOnly) || tab.pendingChanges(unpinnedOnly) > 0);
+    boolean waits = !discarding && tab.waits() || discarding && tab.writingChanges(unpinnedOnly);
+    var wording = wording(s, s.title(tab), asked, waits, discarding);
     buttons.addAll(wording.buttons());
     var body = wording.text();
-    if (tab.endFailed && !tab.firm() && tab.work() == null && tab.doubt == null) {
+    if (!discarding && tab.endFailed && !tab.firm() && tab.work() == null && tab.doubt == null) {
       body += " Or end the connection: it is closed, and the server rolls back what was not"
           + " committed.";
       buttons.add(1, endIt(s));
@@ -311,7 +332,7 @@ final class ConsoleView {
         .gap(t.space().m())
         .child(Label.label(body).wrapText())
         .child(
-            waits && tab.doubt == null
+            waits && (discarding || tab.doubt == null)
                 ? row()
                     .gap(t.space().s())
                     .align(Style.Align.CENTER)
@@ -320,7 +341,7 @@ final class ConsoleView {
                 : null)
         // Why the last Commit or Rollback did not end it, where it did not.
         .child(
-            tab.problem == null || waits || tab.doubt != null
+            discarding || tab.problem == null || waits || tab.doubt != null
                 ? null
                 : Callout.callout(Callout.Kind.DANGER, tab.problem.title(), tab.problem.text())
                     .key("question-problem"));
@@ -328,8 +349,29 @@ final class ConsoleView {
         .key("transaction-question");
   }
 
-  /** What the question says on the console {@code name} before the act {@code before}. */
-  private Wording wording(State s, String name, String before, boolean waits) {
+  /** What the question says before pending changes of a result are lost, or while one commits. */
+  private Wording discarding(State s, String name, Guard.Pending.Question asked) {
+    boolean unpinnedOnly = asked.scope() == Guard.Scope.CHANGES;
+    boolean unsure =
+        tab.outputs.stream().anyMatch(o -> (!unpinnedOnly || !o.pinned) && o.edits.unknown);
+    var d = ResultEdits.discardWording(
+        name,
+        asked.what(),
+        tab.writingChanges(unpinnedOnly),
+        tab.pendingChanges(unpinnedOnly),
+        unsure,
+        () -> tab.answer(s, ConsoleTab.STOP_WRITES),
+        () -> tab.answer(s, ConsoleTab.DISCARD));
+    return new Wording(d.title(), d.text(), d.buttons());
+  }
+
+  /** What the question says on the console {@code name} before the act {@code asked}. */
+  private Wording wording(
+      State s, String name, Guard.Pending.Question asked, boolean waits, boolean discarding) {
+    String before = asked.what();
+    if (discarding) {
+      return discarding(s, name, asked);
+    }
     if (tab.doubt != null) {
       return new Wording(
           ConsoleTab.UNSURE,

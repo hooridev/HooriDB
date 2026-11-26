@@ -16,7 +16,9 @@ import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.CommandPalette;
 import com.rethinkj.ui.kit.Dialog;
+import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Label;
+import com.rethinkj.ui.kit.Markdown;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.MenuBar;
 import com.rethinkj.ui.kit.Progress;
@@ -28,10 +30,13 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tabs;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.TitleBar;
+import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.update.Channel;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Predicate;
@@ -46,7 +51,7 @@ final class Frame {
 
   static El view(State s) {
     Theme t = Theme.CURRENT.get();
-    var main = s.tabs.main();
+    var main = s.tabs.main().active();
     // One dialog at a time: what the catalog asks waits for the others to close.
     El asked = ownDialog(s) ? null : s.catalog.dialog(s, main);
     El question = question(s, main);
@@ -73,7 +78,7 @@ final class Frame {
                     Split.Direction.ROW,
                     s.sidebar,
                     State.DEFAULT_SIDEBAR,
-                    p -> s.sidebar = p,
+                    s::moveSidebar,
                     catalog,
                     160,
                     tabs,
@@ -95,6 +100,7 @@ final class Frame {
     }
     root.overlay(s.dialogs.deleting == null ? null : deleteDialog(s));
     root.overlay(s.dialogs.folderDialog == null ? null : s.dialogs.folderDialog.view(s));
+    root.overlay(s.dialogs.queryDialog == null ? null : s.dialogs.queryDialog.view(s));
     root.overlay(s.dialogs.about ? aboutDialog(s) : null);
     root.overlay(asked);
     root.overlay(question);
@@ -122,6 +128,7 @@ final class Frame {
     return s.dialogs.dialog != null
         || s.dialogs.deleting != null
         || s.dialogs.folderDialog != null
+        || s.dialogs.queryDialog != null
         || s.dialogs.about;
   }
 
@@ -172,20 +179,23 @@ final class Frame {
   /** The tabs of a window, each with its content; the main window's empty one says what goes in. */
   private static El tabs(State s, TabGroups.Group<Tab> group, App<State> app) {
     return s.tabs.tabs(
-        group,
+        group.frame(),
         tab -> switch (tab) {
           case TableTab x ->
-            new Tabs.Tab(s.title(x))
-                .icon(x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE)
-                .hue(ConnectionColors.hue(s.color(x.id)))
-                .busy(x.opening != null || x.counting != null);
+            new Tabs.Tab(
+                s.title(x),
+                true,
+                x.atStake(),
+                x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE,
+                ConnectionColors.hue(s.color(x.id)),
+                x.opening != null || x.counting != null || x.writingChanges());
           // What may be open is changes not yet committed: the tab's dot.
           case ConsoleTab x ->
             new Tabs.Tab(
                 s.title(x),
                 true,
                 x.atStake(),
-                Symbol.CODE,
+                x.isQuery() ? Glyphs.query(x.queryLanguage) : Symbol.CODE,
                 ConnectionColors.hue(s.color(x.id)),
                 x.busy());
           case MonitorTab x ->
@@ -201,7 +211,7 @@ final class Frame {
         },
         tab -> switch (tab) {
           case null ->
-            group == s.tabs.main()
+            group == s.tabs.main().active()
                 ? emptyState(
                     Symbol.TABLE,
                     "No tabs open",
@@ -264,40 +274,50 @@ final class Frame {
     return AppIcon.appIcon(16, HooriDb.COLOR, Symbol.DATABASE);
   }
 
-  /** What a console of the window asks about what may be open in it, or null. */
+  /** What a tab of the window asks about what may be open in it, or null. */
   private static El question(State s, TabGroups.Group<Tab> group) {
     var questioned = questioned(s, group);
-    return questioned != null ? questioned.console().question(s) : null;
+    return questioned != null ? questioned.tab().question(s) : null;
   }
 
-  /** The question a console of the window asks about what may be open in it, or null. */
+  /** The question a tab of the window asks about what may be open in it, or null. */
   private static Guard.Pending.Question questioned(State s, TabGroups.Group<Tab> group) {
     return s.guard.pending instanceof Guard.Pending.Question question
-            && s.tabs.groupOf(question.console()) == group
+            && s.tabs.groupOf((Tab) question.tab()) == group
         ? question
         : null;
   }
 
   /**
-   * Whether the window of these tabs shows a dialog of its own, without making it: a console's
-   * question, what its console in front asks before a statement or its History, or what the
-   * catalog asks there.
+   * Whether the window of these tabs shows a dialog of its own, without making it: a tab's
+   * question, a DML preview, what its console in front asks before a statement or its History, or
+   * what the catalog asks there.
    */
   private static boolean asks(State s, TabGroups.Group<Tab> group) {
     return questioned(s, group) != null
+        || group.activeTab() instanceof TableTab table
+            && (table.preview != null || table.documentDialog != null || table.conditions.open)
         || group.activeTab() instanceof ConsoleTab console
-            && (console.confirming != null || console.history != null || console.queries != null)
+            && (console.confirming != null || console.preview != null || console.history != null)
         || group.activeTab() instanceof MonitorTab monitor && monitor.asked != null
         || s.catalog.asks(s, group);
   }
 
   /**
-   * What the window's console in front asks before it sends a statement, or null; that of a
-   * console behind another tab waits until its tab is shown.
+   * What the window's tab in front asks, or null; that of a tab behind another waits until its tab
+   * is shown.
    */
   private static El confirmation(State s, TabGroups.Group<Tab> group) {
     if (group.activeTab() instanceof MonitorTab monitor) {
       return monitor.question(s);
+    }
+    if (group.activeTab() instanceof TableTab table) {
+      El document = table.documentView(s, app(s, group));
+      if (document != null) {
+        return document;
+      }
+      El preview = table.previewDialog(s, app(s, group));
+      return preview != null ? preview : table.conditionsDialog(s);
     }
     if (!(group.activeTab() instanceof ConsoleTab console)) {
       return null;
@@ -306,21 +326,17 @@ final class Frame {
     if (asked != null) {
       return asked;
     }
-    if (console.queries != null) {
-      return console.queries.view(s, console, app(s, group));
+    El preview = console.preview(s, app(s, group));
+    if (preview != null) {
+      return preview;
     }
     return console.history == null ? null : console.history.view(s, console, app(s, group));
   }
 
   /** The question of the History dialog of the window's console in front, or null. */
   private static El historyQuestion(State s, TabGroups.Group<Tab> group) {
-    if (group.activeTab() instanceof ConsoleTab console) {
-      if (console.queries != null) {
-        return console.queries.question(s);
-      }
-      if (console.history != null) {
-        return console.history.question(s, console);
-      }
+    if (group.activeTab() instanceof ConsoleTab console && console.history != null) {
+      return console.history.question(s, console);
     }
     return null;
   }
@@ -369,6 +385,7 @@ final class Frame {
         c.adding,
         List.of(
             Menu.item("New connection…", create).icon(Symbol.ADD),
+            Menu.item("New query…", s.canChange() ? s::newQuery : null).icon(Symbol.DOCUMENT),
             Menu.item("New folder…", s.canAddFolder() ? s::newFolder : null).icon(Symbol.FOLDER)));
     return Card.flush(
         Card.toolbar(WORKSPACE, null, add),
@@ -409,6 +426,8 @@ final class Frame {
                     (node, open) -> c.toggle(s, node, open))
                 .select(s.selected, node -> s.selected = node)
                 .onActivate(node -> c.activate(s, node))
+                // A table opens its tab: reading its columns and keys would hold its first rows.
+                .toggleOnDoublePress(node -> !(node instanceof Node.OfTable))
                 .drag(
                     c.dragging,
                     CatalogTree::canDrag,
@@ -479,14 +498,46 @@ final class Frame {
     El dismiss = button(
             Button.Variant.SECONDARY, notice.dismiss(), modal ? null : s.updates::dismiss)
         .key("update-dismiss");
-    return col()
-        .padding(t.space().s())
-        .child(Callout.callout(
-                notice.kind(),
-                notice.title(),
-                notice.text(),
-                act == null ? new El[] {dismiss} : new El[] {act, dismiss})
-            .key("update"));
+    El callout = Callout.callout(
+            notice.kind(),
+            notice.title(),
+            notice.text(),
+            act == null ? new El[] {dismiss} : new El[] {act, dismiss})
+        .key("update");
+    var details = notice.details();
+    if (details != null) {
+      El changes = updateChanges(notice.title(), details, s.zone);
+      callout = Tooltip.tooltip(callout, () -> changes);
+    }
+    return col().padding(t.space().s()).child(callout);
+  }
+
+  /** What an offered update brings, for its notice's tooltip. */
+  private static El updateChanges(String title, Updates.Details details, ZoneId zone) {
+    Theme t = Theme.CURRENT.get();
+    var changes = details.changes();
+    var date = Format.DATE.text(LocalDate.ofInstant(details.published(), zone));
+    var header = col()
+        .gap(t.space().xs())
+        .child(label(Label.Variant.HEADING, title).wrapText())
+        .child(label(Label.Variant.SMALL, details.version() + " · " + date).wrapText());
+    El body = col().w(t.size().tooltip()).gap(t.space().s()).child(header);
+    if (details.highlights() != null) {
+      body.child(Markdown.fragment(details.highlights(), Markdown.options()));
+      int more = changes.count() - changes.highlights().size();
+      if (more > 0) {
+        body.child(label(
+                Label.Variant.NORMAL,
+                "Plus " + more + (more == 1 ? " more change." : " more changes."))
+            .wrapText());
+      }
+    }
+    String counts = changes.count()
+        + (changes.count() == 1 ? " change" : " changes")
+        + " from "
+        + changes.contributors()
+        + (changes.contributors() == 1 ? " contributor" : " contributors");
+    return body.child(label(Label.Variant.MUTED, counts).wrapText());
   }
 
   /** The download of an update, busy while it runs; null while none does. */
@@ -569,25 +620,40 @@ final class Frame {
   }
 
   /**
-   * The consoles where something may be at stake, as Exit asks about; pressing it shows the first,
+   * The tabs where something may be at stake, as Exit asks about; pressing it shows the first,
    * but not while a dialog is open in the main window or its own, whose tab it would switch. Null
    * while there are none.
    *
    * @param modal whether a dialog is open in the main window
    */
   private static El uncommitted(State s, boolean modal) {
-    var consoles = s.consoles(null).stream().filter(ConsoleTab::atStake).toList();
-    if (consoles.isEmpty()) {
+    var tabs = s.guarded(null).stream().filter(t -> t.atStake(Guard.Scope.BOTH)).toList();
+    if (tabs.isEmpty()) {
       return null;
     }
-    int n = consoles.size();
-    var first = consoles.getFirst();
-    boolean asking = modal || asks(s, s.tabs.groupOf(first));
+    int consoles = 0;
+    int tables = 0;
+    for (var tab : tabs) {
+      if (tab instanceof ConsoleTab) {
+        consoles++;
+      } else {
+        tables++;
+      }
+    }
+    String text;
+    if (tables == 0) {
+      text =
+          consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
+    } else if (consoles == 0) {
+      text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    } else {
+      int n = consoles + tables;
+      text = n + " tabs may hold uncommitted work";
+    }
+    var first = tabs.getFirst();
+    boolean asking = modal || asks(s, s.tabs.groupOf((Tab) first));
     return StatusBar.item(
-            Badge.Kind.WARNING,
-            Symbol.LOCK_OPEN,
-            n + (n == 1 ? " console may" : " consoles may") + " hold uncommitted work",
-            asking ? null : () -> first.show(s))
+            Badge.Kind.WARNING, Symbol.LOCK_OPEN, text, asking ? null : () -> first.show(s))
         .key("uncommitted");
   }
 
@@ -618,8 +684,8 @@ final class Frame {
   }
 
   /**
-   * Only what does something today: a new connection, a console, the drivers, the tabs of the
-   * window, quitting, the palette, the themes, where the focus goes, and About. They are the
+   * Only what does something today: a new connection, a console, the drivers, the settings, the
+   * tabs of the window, quitting, the palette, where the focus goes, and About. They are the
    * commands of the palette too, and their keys act in the window of these tabs, with or without
    * its bar.
    *
@@ -634,7 +700,7 @@ final class Frame {
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
     boolean several = group.tabs().size() > 1;
     boolean tree =
-        group == s.tabs.main() && s.loaded && !s.workspace().entries().isEmpty();
+        group == s.tabs.main().active() && s.loaded && !s.workspace().entries().isEmpty();
     return List.of(
         Menu.submenu(
             "&File",
@@ -643,6 +709,8 @@ final class Frame {
                         "New connection…",
                         free && s.canChange() ? inMain(s, s::newConnection) : null)
                     .icon(Symbol.ADD),
+                Menu.item("New query…", free && s.canChange() ? inMain(s, s::newQuery) : null)
+                    .icon(Symbol.DOCUMENT),
                 Menu.item("New folder…", free && s.canAddFolder() ? inMain(s, s::newFolder) : null)
                     .icon(Symbol.FOLDER),
                 Menu.item(
@@ -662,13 +730,18 @@ final class Frame {
                     .shortcut(Key.CONTROL | Key.SHIFT, "F"),
                 Menu.item(
                         "History…",
-                        !modal && group.activeTab() instanceof ConsoleTab c ? c::openHistory : null)
+                        !modal && group.activeTab() instanceof ConsoleTab c && c.id != null
+                            ? c::openHistory
+                            : null)
                     .icon(Symbol.HISTORY),
                 Menu.item(
                     "Drivers…",
                     s.drivers == null || !free
                         ? null
                         : inMain(s, () -> s.dialogs.driverList = DriversDialog.open(s))),
+                Menu.item("Settings…", s.guard.exiting() ? null : () -> SettingsWindow.open(s))
+                    .icon(Symbol.SETTINGS)
+                    .shortcut(Key.CONTROL, ","),
                 Menu.separator(),
                 Menu.item("Close tab", close).icon(Symbol.DISMISS).shortcut(Key.CONTROL, "W"),
                 Menu.separator(),
@@ -679,12 +752,9 @@ final class Frame {
                 Menu.item("Command palette…", modal ? null : palette::open)
                     .icon(Symbol.SEARCH)
                     .shortcut(Key.CONTROL | Key.SHIFT, "P"),
-                Menu.item("Statement log", inMain(s, s.logPanel::toggle))
+                Menu.item("Statement log", inMain(s, () -> s.logPanel.toggle(s)))
                     .icon(Symbol.TEXT_BULLET_LIST_LTR)
-                    .checked(s.logPanel.open),
-                Menu.separator(),
-                themeItem(s, Theme.DARK, "Dark theme"),
-                themeItem(s, Theme.LIGHT, "Light theme"))),
+                    .checked(s.logPanel.open))),
         Menu.submenu(
             "&Go",
             List.of(
@@ -706,8 +776,6 @@ final class Frame {
         Menu.submenu(
             "&Help",
             List.of(
-                channelItem(s, Channel.STABLE, "Stable updates"),
-                channelItem(s, Channel.NIGHTLY, "Nightly updates"),
                 Menu.item(
                     "Restart to update",
                     free && s.updates.ready != null && !s.guard.exiting()
@@ -737,9 +805,10 @@ final class Frame {
     return s.dialogs.dialog != null
         || s.dialogs.deleting != null
         || s.dialogs.folderDialog != null
+        || s.dialogs.queryDialog != null
         || s.dialogs.about
         || s.dialogs.driverList != null
-        || asks(s, s.tabs.main());
+        || asks(s, s.tabs.main().active());
   }
 
   /** Gives the focus to the tree of the workspace. */
@@ -784,15 +853,5 @@ final class Frame {
       }
     }
     return null;
-  }
-
-  /** Where updates come from; not while HooriDB closes. */
-  private static Menu.Item channelItem(State s, Channel channel, String name) {
-    return Menu.item(name, s.guard.exiting() ? null : () -> s.updates.channel(s, channel))
-        .checked(s.updates.channel() == channel);
-  }
-
-  private static Menu.Item themeItem(State s, Theme theme, String name) {
-    return Menu.item(name, () -> s.useTheme(theme, name)).checked(s.theme == theme);
   }
 }

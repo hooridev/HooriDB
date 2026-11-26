@@ -1,0 +1,402 @@
+package dev.hoori.db.app;
+
+import static dev.hoori.db.app.CatalogTreeTest.PG;
+import static dev.hoori.db.app.CatalogTreeTest.SETTLE;
+import static dev.hoori.db.app.CatalogTreeTest.SHOP;
+import static dev.hoori.db.app.CatalogTreeTest.START;
+import static dev.hoori.db.app.CatalogTreeTest.open;
+import static dev.hoori.db.app.ConnectionsTest.line;
+import static dev.hoori.db.app.TableTabTest.ORDERS;
+import static dev.hoori.db.app.TableTabTest.OUTLINE;
+import static dev.hoori.db.app.TableTabTest.table;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.rethinkj.ui.App;
+import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.window.SystemAppearance;
+import dev.hoori.db.core.connection.Color;
+import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
+import dev.hoori.db.core.secret.Keyring;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.ZoneId;
+import java.util.Arrays;
+import java.util.OptionalLong;
+import java.util.regex.Pattern;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+/** Loading, applying and saving user settings, including the theme and system appearance. */
+class SettingsTest {
+
+  private static final String OPENED = "frame\nadvance 1\nframe\n";
+
+  private static App<State> app(Path config) {
+    return HooriDb.app(
+        config, () -> new Keyring.Unavailable(Keyring.Reason.UNSUPPORTED_PLATFORM, "a test"));
+  }
+
+  /**
+   * Settings in the config folder apply at start; choosing Dark in Settings writes settings.json,
+   * and a new app on the same folder starts dark.
+   */
+  @Test
+  void lightSettingsLoadAndSwitchingToDarkSavesForTheNextStart(@TempDir Path dir)
+      throws IOException {
+    var config = Files.createDirectories(dir.resolve("config"));
+    var out = dir.resolve("out");
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"theme":"light"}
+        """);
+
+    var first = app(config);
+    // Before the file is read, a choice would replace its other settings: none can be made.
+    Script.run("""
+        size 1200 760
+        frame
+        key , control
+        frame
+        window "Settings"
+        press role=option label="Appearance"
+        frame
+        snap loading
+        """, first, out);
+    var loading = Files.readString(out.resolve("settings-loading.tree.txt"));
+    assertTrue(line(loading, "role=radiogroup label=\"Theme\"").contains("disabled"), loading);
+    Script.run("""
+        await
+        frame
+        window "Settings"
+        frame
+        snap appearance
+        """, first, out);
+    assertSame(Theme.LIGHT, first.state().theme);
+    assertEquals(Settings.Look.LIGHT, first.state().settings.look());
+    var appearance = Files.readString(out.resolve("settings-appearance.tree.txt"));
+    assertTrue(line(appearance, "role=radio label=\"Light\"").endsWith(" checked"), appearance);
+    assertTrue(
+        line(appearance, "role=radio label=\"System\"").contains("checked=false"), appearance);
+    assertTrue(line(appearance, "role=radio label=\"Dark\"").contains("checked=false"), appearance);
+
+    Script.run("""
+        window "Settings"
+        press role=radio label="Dark"
+        frame
+        advance 2
+        frame
+        await
+        frame
+        """, first, out);
+
+    assertSame(Theme.DARK, first.state().theme);
+    assertEquals(Settings.Look.DARK, first.state().settings.look());
+    var saved = Files.readString(config.resolve(SettingsStore.FILE));
+    assertTrue(saved.contains("\"theme\"") && saved.contains("\"dark\""), saved);
+
+    var second = app(config);
+    Script.run("""
+        size 1200 760
+        frame
+        await
+        frame
+        key , control
+        frame
+        window "Settings"
+        press role=option label="Appearance"
+        frame
+        snap second-appearance
+        """, second, out);
+    assertSame(Theme.DARK, second.state().theme);
+    assertEquals(Settings.Look.DARK, second.state().settings.look());
+    var secondAppearance = Files.readString(out.resolve("settings-second-appearance.tree.txt"));
+    assertTrue(
+        line(secondAppearance, "role=radio label=\"Dark\"").endsWith(" checked"), secondAppearance);
+  }
+
+  /** A broken settings.json gives one notice and dark defaults, and is set aside on next save. */
+  @Test
+  void aBrokenSettingsFileGivesANoticeAndDarkDefaults(@TempDir Path dir) throws IOException {
+    var config = Files.createDirectories(dir.resolve("config"));
+    var out = dir.resolve("out");
+    Files.writeString(config.resolve(SettingsStore.FILE), "{");
+
+    var app = app(config);
+    Script.run("""
+        size 1200 760
+        frame
+        await
+        frame
+        snap broken
+        """, app, out);
+    assertSame(Theme.DARK, app.state().theme);
+    assertEquals(Settings.DEFAULT, app.state().settings);
+    assertEquals(1, app.state().notices.size());
+    var broken = Files.readString(out.resolve("broken.tree.txt"));
+    assertTrue(broken.contains("Settings · not read"), broken);
+
+    Script.run("""
+        key , control
+        frame
+        window "Settings"
+        press role=option label="Appearance"
+        frame
+        press role=radio label="Light"
+        frame
+        advance 2
+        frame
+        await
+        frame
+        """, app, out);
+    assertEquals("{", Files.readString(config.resolve(SettingsStore.UNREADABLE)));
+    assertEquals(
+        Settings.Look.LIGHT, new SettingsStore(config).load().settings().look());
+  }
+
+  /** Bad values of individual keys fall back to defaults with one notice naming only the keys. */
+  @Test
+  void keysThatFellBackGiveOneNoticeNamingThem(@TempDir Path dir) throws IOException {
+    var config = Files.createDirectories(dir.resolve("config"));
+    var out = dir.resolve("out");
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"theme":"sepia","accent":42,"density":"compact"}
+        """);
+
+    var app = app(config);
+    Script.run("""
+        size 1200 760
+        frame
+        await
+        frame
+        snap fellback
+        """, app, out);
+    assertEquals(1, app.state().notices.size());
+    var notice = app.state().notices.getFirst();
+    assertFalse(notice.failure());
+    assertTrue(notice.what().contains("theme") && notice.what().contains("accent"), notice.what());
+    assertFalse(notice.what().contains("sepia") || notice.what().contains("42"), notice.what());
+    assertEquals(Settings.Density.COMPACT, app.state().settings.density());
+    assertTrue(app.state().theme.grid().rowHeight() < Theme.DARK.grid().rowHeight());
+  }
+
+  /**
+   * System appearance switches System look between Light and Dark, accent and density adjust the
+   * resolved theme, and timeZone updates the resolved zone without clobbering test overrides on
+   * default load.
+   */
+  @Test
+  void resolutionOfAppearanceAccentDensityAndZone(@TempDir Path dir) throws IOException {
+    var config = Files.createDirectories(dir.resolve("config"));
+    var out = dir.resolve("out");
+    var customZone = ZoneId.of("Pacific/Auckland");
+
+    var app = app(config);
+    app.state().theme = Theme.LIGHT;
+    app.state().zone = customZone;
+    Script.run("""
+        size 1200 760
+        frame
+        await
+        frame
+        """, app, out);
+    // Default settings equal the initial state, so test overrides survive the load.
+    assertSame(Theme.LIGHT, app.state().theme);
+    assertEquals(customZone, app.state().zone);
+
+    var s = app.state();
+    // System appearance takes effect when look is SYSTEM.
+    s.systemChanged(new SystemAppearance(SystemAppearance.Scheme.LIGHT, 0, false));
+    assertSame(Theme.LIGHT, s.theme);
+    s.systemChanged(new SystemAppearance(SystemAppearance.Scheme.DARK, 0, false));
+    assertSame(Theme.DARK, s.theme);
+
+    // Explicit DARK with default accent and density resolves to Theme.DARK; ignores system Light.
+    s.choose(Settings.DEFAULT.withLook(Settings.Look.DARK));
+    assertEquals(Theme.DARK, s.theme);
+    assertSame(Theme.DARK, s.theme);
+    s.systemChanged(new SystemAppearance(SystemAppearance.Scheme.LIGHT, 0, false));
+    assertSame(Theme.DARK, s.theme);
+
+    // Accent and density apply on top of the look.
+    s.choose(s.settings.withAccent(Color.TEAL).withDensity(Settings.Density.COMFORTABLE));
+    assertEquals(Theme.Hue.TEAL.dark(), s.theme.accent());
+    assertTrue(s.theme.grid().rowHeight() > Theme.DARK.grid().rowHeight());
+
+    // Time zone resolves to the setting or back to the computer's zone.
+    s.choose(s.settings.withTimeZone(ZoneId.of("UTC")));
+    assertEquals(ZoneId.of("UTC"), s.zone);
+    s.choose(s.settings.withTimeZone(null));
+    assertEquals(ZoneId.systemDefault(), s.zone);
+  }
+
+  /** Exit waits for a pending settings save instead of losing it. */
+  @Test
+  void exitSavesPendingSettingsChange(@TempDir Path dir) throws IOException {
+    var config = Files.createDirectories(dir.resolve("config"));
+    var out = dir.resolve("out");
+    var app = app(config);
+    Script.run("""
+        size 1200 760
+        frame
+        await
+        frame
+        key , control
+        frame
+        window "Settings"
+        press role=option label="Appearance"
+        frame
+        press role=radio label="Light"
+        frame
+        window main
+        press role=menuitem label="File"
+        """ + OPENED + """
+        press role=menuitem label="Exit"
+        frame
+        await
+        frame
+        """, app, out);
+    assertTrue(app.windows().all().isEmpty());
+    assertEquals(
+        Settings.Look.LIGHT, new SettingsStore(config).load().settings().look());
+  }
+
+  /** Preloading with startReading/takeStart applies the settings before the first frame. */
+  @Test
+  void preloadingAppliesSettingsBeforeStart(@TempDir Path dir) throws IOException {
+    var config = Files.createDirectories(dir.resolve("config"));
+    var savedSettings = Settings.DEFAULT.withLook(Settings.Look.LIGHT).withAccent(Color.GREEN);
+    new SettingsStore(config).save(savedSettings);
+
+    var initial = Keeping.startReading(config);
+    var state = new State(
+        config,
+        new Services(
+            () -> new Keyring.Unavailable(Keyring.Reason.UNSUPPORTED_PLATFORM, "a test"),
+            null,
+            Tester.SERVER,
+            Servers.SERVER,
+            null),
+        HooriDb.version());
+    var app = new App<>(state, Frame::view).provide(Theme.CURRENT, s -> s.theme);
+    state.app = app;
+    state.keeping.takeStart(initial);
+
+    assertEquals(savedSettings, state.settings);
+    assertEquals(Theme.LIGHT.withAccent(Theme.Hue.GREEN), state.theme);
+    assertTrue(state.keeping.settingsKept.canSave);
+  }
+
+  private static int height(String tree, String match) {
+    var m = Pattern.compile(" \\d+,\\d+ \\d+x(\\d+)").matcher(line(tree, match));
+    assertTrue(m.find(), line(tree, match));
+    return Integer.parseInt(m.group(1));
+  }
+
+  /**
+   * Accent and row density take effect immediately in dark and light looks: the theme's accent
+   * changes visually and Compact/Default/Comfortable resize both grid and tree rows to 20/24/28;
+   * {@code -Dreview=<folder>} also keeps the pictures there.
+   */
+  @Test
+  void accentAndDensityTakeEffectInDarkAndLightLook(@TempDir Path dir) throws Exception {
+    var c = new CatalogTreeTest();
+    c.dir = dir;
+    c.setUp();
+    try {
+      c.servers.serve(PG, Provider.POSTGRESQL, "16.4", OUTLINE);
+      c.servers.rows(ORDERS, 50, OptionalLong.of(50));
+      var app = c.app(SHOP);
+      c.ready(app, SHOP);
+      c.run(
+          app,
+          START
+              + open("shop-prod")
+              + SETTLE
+              + open("shop")
+              + SETTLE
+              + open("public")
+              + SETTLE
+              + table("orders")
+              + SETTLE
+              + "press #number-0\nframe\n");
+
+      var s = app.state();
+      var out = dir.resolve("out");
+      var review = System.getProperty("review");
+
+      for (var look : new Settings.Look[] {Settings.Look.DARK, Settings.Look.LIGHT}) {
+        String suffix = look == Settings.Look.DARK ? "dark" : "light";
+        Theme base = look == Settings.Look.DARK ? Theme.DARK : Theme.LIGHT;
+
+        // Default accent (blue) and default density (24 px).
+        s.choose(Settings.DEFAULT.withLook(look));
+        app.invalidate(); // as the handler of a choice would
+        c.run(app, "frame\nadvance 1\nframe\nsnap density-default-" + suffix + "\n");
+        var defTree = c.tree("density-default-" + suffix);
+        assertEquals(base.accent(), s.theme.accent());
+        assertEquals(24f, s.theme.grid().rowHeight());
+        assertEquals(24, height(defTree, "#row-0"), defTree);
+        assertEquals(24, height(defTree, "role=treeitem label=\"orders\""), defTree);
+        assertTrue(line(defTree, "#cell-0-0").contains("selected"), defTree);
+
+        // Non-default accent (green) with default density.
+        s.choose(Settings.DEFAULT.withLook(look).withAccent(Color.GREEN));
+        app.invalidate(); // as the handler of a choice would
+        c.run(app, "frame\nadvance 1\nframe\nsnap accent-green-" + suffix + "\n");
+        assertEquals(
+            look == Settings.Look.DARK ? Theme.Hue.GREEN.dark() : Theme.Hue.GREEN.light(),
+            s.theme.accent());
+        assertNotEquals(base.accent(), s.theme.accent());
+        assertFalse(
+            Arrays.equals(
+                Files.readAllBytes(out.resolve("density-default-" + suffix + ".png")),
+                Files.readAllBytes(out.resolve("accent-green-" + suffix + ".png"))),
+            "green accent changes the rendered image in " + suffix);
+
+        // Compact density (20 px).
+        s.choose(Settings.DEFAULT.withLook(look).withDensity(Settings.Density.COMPACT));
+        app.invalidate(); // as the handler of a choice would
+        c.run(app, "frame\nadvance 1\nframe\nsnap density-compact-" + suffix + "\n");
+        var compactTree = c.tree("density-compact-" + suffix);
+        assertEquals(20f, s.theme.grid().rowHeight());
+        assertEquals(20, height(compactTree, "#row-0"), compactTree);
+        assertEquals(20, height(compactTree, "role=treeitem label=\"orders\""), compactTree);
+
+        // Comfortable density (28 px).
+        s.choose(Settings.DEFAULT.withLook(look).withDensity(Settings.Density.COMFORTABLE));
+        app.invalidate(); // as the handler of a choice would
+        c.run(app, "frame\nadvance 1\nframe\nsnap density-comfortable-" + suffix + "\n");
+        var comfortableTree = c.tree("density-comfortable-" + suffix);
+        assertEquals(28f, s.theme.grid().rowHeight());
+        assertEquals(28, height(comfortableTree, "#row-0"), comfortableTree);
+        assertEquals(
+            28, height(comfortableTree, "role=treeitem label=\"orders\""), comfortableTree);
+
+        if (review == null) {
+          continue;
+        }
+        for (var name : new String[] {
+          "density-default-" + suffix,
+          "accent-green-" + suffix,
+          "density-compact-" + suffix,
+          "density-comfortable-" + suffix
+        }) {
+          Files.copy(
+              out.resolve(name + ".png"),
+              Files.createDirectories(Path.of(review)).resolve(name + ".png"),
+              StandardCopyOption.REPLACE_EXISTING);
+        }
+      }
+    } finally {
+      c.tearDown();
+    }
+  }
+}

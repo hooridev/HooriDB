@@ -7,7 +7,9 @@ import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.CatalogTreeTest.START;
 import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.ConnectionsTest.line;
+import static dev.hoori.db.app.FoldersTest.folder;
 import static dev.hoori.db.app.TableTabTest.tabs;
+import static dev.hoori.db.app.WorkspaceQueriesTest.query;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -25,6 +27,7 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Workspace;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -122,14 +125,22 @@ class PaletteTest {
             "File: New console",
             "File: Server monitor",
             "File: Find…",
+            "File: Settings…",
             "File: Close tab",
             "View: Command palette…",
             "View: Statement log",
-            "View: Light theme",
-            "Go: Go to table…",
             // The rows that fit: the rest of Go's and Help's come after.
-            "Go: Next tab")),
+            "Go: Go to table…")),
         all.toString());
+    for (var removed : List.of(
+        "View: System theme",
+        "View: Light theme",
+        "View: Dark theme",
+        "Help: Stable updates",
+        "Help: Nightly updates")) {
+      assertFalse(all.contains(removed), all.toString());
+    }
+    assertTrue(option(open, "File: Settings…").contains("\"Ctrl+,\""), open);
     assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
     // Disabled in the menu, disabled here: no tab is open, and nothing is selected for a console.
@@ -137,9 +148,15 @@ class PaletteTest {
     assertTrue(line(open, "label=\"File: New console\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: Server monitor\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: Find…\"").contains("disabled"), open);
-    assertFalse(line(open, "label=\"View: Light theme\"").contains("disabled"), open);
-    c.run(app, "type \"light th\"\nframe\nkey Enter\n" + SHOWN + "snap ran\n");
-    assertSame(Theme.LIGHT, app.state().theme);
+    assertFalse(line(open, "label=\"View: Statement log\"").contains("disabled"), open);
+    c.run(
+        app,
+        "type \"theme\"\nframe\nsnap no-theme\n"
+            + "key A control\ntype \"updates\"\nframe\nsnap no-updates\n"
+            + "key A control\ntype \"statement l\"\nframe\nkey Enter\n" + SHOWN + "snap ran\n");
+    assertEquals(List.of(), options(c.tree("no-theme")), c.tree("no-theme"));
+    assertEquals(List.of(), options(c.tree("no-updates")), c.tree("no-updates"));
+    assertTrue(app.state().logPanel.open);
     assertFalse(c.tree("ran").contains("label=\"Command palette\""), c.tree("ran"));
   }
 
@@ -420,7 +437,7 @@ class PaletteTest {
             + "window main\nframe\n" + SHOWN + "snap main\n");
     var main = c.tree("main");
     assertTrue(main.contains("role=dialog label=\"New connection\""), main);
-    assertFalse(app.state().palette(app.state().tabs.main()).isOpen());
+    assertFalse(app.state().palette(app.state().tabs.main().active()).isOpen());
     CatalogTreeTest.eventually(() -> c.servers.interrupted.contains(key));
     held.countDown();
     c.run(app, "key Escape\n" + SHOWN + SETTLE + GO_TO + "type \"ev\"\nframe\nsnap after\n");
@@ -728,7 +745,7 @@ class PaletteTest {
             + "type \"close tab\"\nframe\nkey Enter\n" + SHOWN + SETTLE);
     assertEquals(1, app.windows().all().size());
     var s = app.state();
-    assertEquals(java.util.Set.of(s.tabs.main()), s.palettes.keySet());
+    assertEquals(java.util.Set.of(s.tabs.main().active()), s.palettes.keySet());
   }
 
   @Test
@@ -758,6 +775,43 @@ class PaletteTest {
         List.of("orders", "order_totals", "stock", "customers", "low_stock"),
         all.subList(0, 5),
         c.tree("ties"));
+  }
+
+  @Test
+  void atFindsWorkspaceQueriesByNameShowsTheirFolderPathAndOpensTheirTab() throws Exception {
+    var summary = query("Order summary", "SELECT 1;", Workspace.Language.SQL);
+    var quick = query("Quick check", "SELECT 2;", Workspace.Language.SQL);
+    var reports = folder("Reports", true, folder("Monthly", true, summary));
+    var app = c.app(new Workspace(List.of(SHOP, reports, quick)));
+    c.ready(app, SHOP);
+
+    // Works even with no connection open: top-level query shows Workspace and opens on Enter.
+    c.run(
+        app,
+        START + GO_TO + "type \"quick\"\nframe\nsnap quick\nkey Enter\n" + SHOWN + SETTLE
+            + "snap openedQuick\n");
+    var quickTree = c.tree("quick");
+    assertEquals("Quick check", options(quickTree).getFirst(), quickTree);
+    assertTrue(option(quickTree, "Quick check").contains("\"Workspace\""), quickTree);
+    assertEquals("Quick check", tabs(c.tree("openedQuick")));
+    assertTrue(focused(c.tree("openedQuick")).contains("#sql"), focused(c.tree("openedQuick")));
+
+    // With a connection open, tables and nested queries rank together; folder path shows as where.
+    c.run(
+        app,
+        open("shop-prod") + SETTLE + open("shop") + SETTLE + open("public") + SETTLE + GO_TO
+            + "type \"ord\"\nframe\nsnap ord\n"
+            + "press role=option label=\"Order summary\"\n" + SHOWN + SETTLE
+            + "snap openedSummary\n"
+            + GO_TO + "type \"order summary\"\nframe\nkey Enter\n" + SHOWN + "snap again\n");
+    var ord = c.tree("ord");
+    assertEquals(
+        List.of("orders", "order_totals", "Order summary"), options(ord).subList(0, 3), ord);
+    assertTrue(option(ord, "Order summary").contains("\"Reports / Monthly\""), ord);
+    assertEquals("Quick check,Order summary", tabs(c.tree("openedSummary")));
+    assertEquals("Order summary", active(c.tree("openedSummary")));
+    assertTrue(focused(c.tree("openedSummary")).contains("#sql"), focused(c.tree("openedSummary")));
+    assertEquals("Quick check,Order summary", tabs(c.tree("again")), "one tab per query");
   }
 
   /** The active tab's label. */

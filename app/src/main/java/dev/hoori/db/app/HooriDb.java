@@ -106,13 +106,25 @@ public final class HooriDb {
       Servers servers,
       Updater updater,
       String version) {
+    var app = create(folder, keyring, drivers, tester, servers, updater, version);
+    app.state().start();
+    return app;
+  }
+
+  private static App<State> create(
+      Path folder,
+      Callable<Keyring> keyring,
+      Drivers drivers,
+      Tester tester,
+      Servers servers,
+      Updater updater,
+      String version) {
     var state =
         new State(folder, new Services(keyring, drivers, tester, servers, updater), version);
     App<State> app = new App<>(state, Frame::view).provide(Theme.CURRENT, s -> s.theme);
     app.state().app = app;
     // A script's images must not depend on the platform they were made on.
     app.textRendering(TextRendering.LINUX);
-    app.state().start();
     return app;
   }
 
@@ -142,6 +154,7 @@ public final class HooriDb {
     // overlaps with the rest of the start; a script, which draws without a window, needs none.
     GpuPresenter.prepare();
     var folders = AppFolders.find();
+    var initial = Keeping.startReading(folders.config());
     var central = MavenRepository.mavenCentral();
     var drivers = new Drivers(
         folders.data().resolve("drivers"), central, "Maven Central", MavenRepository.CENTRAL);
@@ -150,7 +163,7 @@ public final class HooriDb {
     var updater = Installation.launcher(folders.data().resolve("updates"))
         .map(installation -> Updater.of(installation, System.getProperty("hooridb.releases")))
         .orElse(null);
-    App<State> app = app(
+    App<State> app = create(
         folders.config(),
         Keyring::find,
         drivers,
@@ -159,6 +172,8 @@ public final class HooriDb {
         updater,
         version());
     app.textRendering(TextRendering.platform());
+    app.state().keeping.takeStart(initial);
+    app.state().start();
     // The menu's entry and the dock's icon of an unpacked app image; without them it still runs.
     var os = System.getProperty("os.name");
     var launcher = System.getProperty("jpackage.app-path");
@@ -171,11 +186,18 @@ public final class HooriDb {
     SystemDialogs.reportFailure(NAME, () -> {
       Window.identity(DesktopEntry.ID, NAME);
       Window.Options options = Window.options().icon(ICON).frameless().minimumSize(640, 400);
+      var placement = app.state().keeping.windowPlacement();
+      if (placement != null) {
+        options.placement(placement);
+      }
       try (Window window = Window.open(NAME, 1200, 760, options);
           GpuPresenter presenter = new GpuPresenter(window)) {
         var loop = new WindowLoop(window, app, presenter);
-        // Not at the start: a version whose window cannot show is put back by the helper.
         var state = app.state();
+        // Now, so that the first frame wears it; the loop tells the changes after.
+        state.systemChanged(Window.systemAppearance());
+        loop.appearance(state::systemChanged);
+        // Not at the start: a version whose window cannot show is put back by the helper.
         loop.windows().of(app).onShown(() -> state.updates.shown(state));
         loop.run();
       }

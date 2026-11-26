@@ -49,12 +49,19 @@ final class FolderDialog {
     return new FolderDialog(Kind.DELETE, folder, name);
   }
 
-  /** What a folder holds of its connections, its folders' included. */
-  private static String holds(int n) {
-    if (n == 0) {
-      return "It holds folders, and no connections.";
+  /** What a folder holds of its connections and queries, its folders' included. */
+  private static String holds(int connections, int queries) {
+    if (connections == 0 && queries == 0) {
+      return "It holds folders, and no connections or queries.";
     }
-    return "It holds " + n + (n == 1 ? " connection" : " connections") + ", its folders included.";
+    var parts = new java.util.ArrayList<String>();
+    if (connections > 0) {
+      parts.add(connections + (connections == 1 ? " connection" : " connections"));
+    }
+    if (queries > 0) {
+      parts.add(queries + (queries == 1 ? " query" : " queries"));
+    }
+    return "It holds " + String.join(" and ", parts) + ", its folders included.";
   }
 
   El view(State s) {
@@ -89,7 +96,8 @@ final class FolderDialog {
   private El deleting(State s) {
     Theme t = Theme.CURRENT.get();
     var held = s.folder(folder);
-    int n = held == null ? 0 : held.connections().size();
+    int connections = held == null ? 0 : held.connections().size();
+    int queries = held == null ? 0 : held.queries().size();
     boolean busy = s.removal.running;
     El up = button(PRIMARY, "Move contents up", busy ? null : () -> s.dissolveFolder(folder));
     El contents = button(
@@ -105,12 +113,14 @@ final class FolderDialog {
         .w(ConnectionDialog.width())
         .gap(t.space().m())
         .child(Label.label("Delete the folder " + name + "?").wrapText())
-        .child(Label.label(Label.Variant.MUTED, holds(n)).wrapText())
+        .child(Label.label(Label.Variant.MUTED, holds(connections, queries)).wrapText())
         .child(Label.label(
                 Label.Variant.MUTED,
                 "Move contents up puts what it holds where the folder is, and connections stay"
-                    + " connected. Delete contents deletes them with their passwords in the system"
-                    + " keyring, their consoles and their history.")
+                    + " connected. Delete contents deletes them"
+                    + (queries > 0 ? ", including queries," : "")
+                    + " with their passwords in the system keyring, their consoles and their"
+                    + " history.")
             .wrapText());
     if (s.removal.slow) {
       content.child(Callout.callout(
