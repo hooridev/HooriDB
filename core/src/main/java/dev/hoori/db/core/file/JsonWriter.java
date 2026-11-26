@@ -10,6 +10,7 @@ import java.util.List;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.JsonEncoding;
 import tools.jackson.core.JsonGenerator;
+import tools.jackson.core.JsonParser;
 import tools.jackson.core.ObjectReadContext;
 import tools.jackson.core.ObjectWriteContext;
 import tools.jackson.core.StreamWriteFeature;
@@ -19,7 +20,8 @@ import tools.jackson.core.json.JsonFactory;
  * JSON, as {@link Format.Json} says: an object per row, its members in the fields' order. Numbers
  * and truths are JSON's own but a floating point number that is not finite, which is its text; a
  * JSON column's value goes in as the JSON it is, where it is one value of valid JSON, and as its
- * text otherwise; every other value is its text, as {@link Texts} writes it.
+ * text otherwise, its numbers as they are written there; every other value is its text, as {@link
+ * Texts} writes it.
  */
 final class JsonWriter implements RowWriter {
 
@@ -81,11 +83,22 @@ final class JsonWriter implements RowWriter {
       case String text
       when kind == Kind.JSON && valid(text) -> {
         try (var parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
-          parser.nextToken();
-          json.copyCurrentStructure(parser);
+          copy(parser);
         }
       }
       default -> json.writeString(Texts.of(value));
+    }
+  }
+
+  // Copies the value token by token, its numbers as their text, so that none is read into a double
+  // and written otherwise, as 1.10 as 1.1 or 1e400 as "Infinity".
+  private void copy(JsonParser parser) {
+    for (var token = parser.nextToken(); token != null; token = parser.nextToken()) {
+      if (token.isNumeric()) {
+        json.writeNumber(parser.getString());
+      } else {
+        json.copyCurrentEvent(parser);
+      }
     }
   }
 

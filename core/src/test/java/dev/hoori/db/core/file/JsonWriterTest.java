@@ -66,4 +66,16 @@ class JsonWriterTest {
     assertEquals("", written(Format.Json.LINES, List.of()));
     assertEquals("jsonl", Format.Json.LINES.extension());
   }
+
+  @Test
+  void keepsTheNumbersOfAJsonValueAsTheyAreWritten() throws IOException {
+    var doc = "{\"a\": 1.10, \"b\": [0.1234567890123456789012345, -0], \"d\": 1e400,"
+        + " \"e\": 1E2, \"f\": 12345678901234567890123}";
+    var rows = List.of(Arrays.<Object>asList(1L, null, null, doc, null, null));
+    assertEquals(
+        "{\"id\":1,\"price\":null,\"ok\":null,\"doc\":{\"a\":1.10,"
+            + "\"b\":[0.1234567890123456789012345,-0],\"d\":1e400,\"e\":1E2,"
+            + "\"f\":12345678901234567890123},\"at\":null,\"name\":null}\n",
+        written(Format.Json.LINES, rows));
+  }
 }
