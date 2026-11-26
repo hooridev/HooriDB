@@ -1,8 +1,8 @@
 package dev.hoori.db.core.sync;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.catalog.Catalog;
@@ -13,11 +13,11 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.Connector;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Binary;
-import dev.hoori.db.core.data.Change;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.KeyedRead;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.execution.Execution;
+import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.log.Journal;
@@ -29,6 +29,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -94,7 +95,7 @@ class SyncServerTest {
                 .filter(s -> s.purpose() == Purpose.ROWS && s.text().contains("ORDER BY"))
                 .count());
 
-        apply(provider, compared.pairing(), differences, Choice.ALL);
+        apply(provider, compared.pairing(), Choice.ALL);
         var again = compare(provider, pairing);
         assertEquals(new Tally(0, 0, 0, 4, 4, 4), again.tally());
         try (var other = open(provider)) {
@@ -144,7 +145,7 @@ class SyncServerTest {
         var compared = compare(provider, pairing);
         assertEquals(
             new Tally(1, 0, 1, keys.size() - 2, keys.size(), keys.size() - 1), compared.tally());
-        apply(provider, compared.pairing(), compared.differences(), Choice.ALL);
+        apply(provider, compared.pairing(), Choice.ALL);
         assertEquals(
             new Tally(0, 0, 0, keys.size(), keys.size(), keys.size()),
             compare(provider, pairing).tally());
@@ -180,13 +181,81 @@ class SyncServerTest {
         assertEquals(new Tally(1, 1, 1, 1, 3, 3), compared.tally());
 
         // Only the update: the rest stays as it is.
-        apply(provider, compared.pairing(), compared.differences(), new Choice(false, true, false));
+        apply(provider, compared.pairing(), new Choice(false, true, false));
         assertEquals(new Tally(1, 1, 0, 2, 3, 3), compare(provider, pairing).tally());
       } finally {
         dropAfter(
             provider,
             "DROP TABLE " + qualified(provider, source),
             "DROP TABLE " + qualified(provider, target));
+      }
+    }
+  }
+
+  // A unique value moves from one row to another: a row updated or new takes it from a row
+  // deleted, and a new row from a row updated, which the deletions first, then the updates and
+  // then the new rows let them, each kind in batches of its own and in passes of their own.
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aUniqueValueMovesBetweenRowsAcrossBatches(Provider provider) throws Exception {
+    var source = unique("sync_move_source");
+    var target = unique("sync_move_target");
+    try (var connection = open(provider)) {
+      var create = " (id integer PRIMARY KEY, email varchar(20) NOT NULL UNIQUE)";
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, source) + create,
+          "CREATE TABLE " + qualified(provider, target) + create,
+          "INSERT INTO " + qualified(provider, source)
+              + " VALUES (1, 'a'), (3, 'c'), (6, 'f'), (7, 'g')",
+          "INSERT INTO " + qualified(provider, target)
+              + " VALUES (1, 'b'), (2, 'a'), (5, 'c'), (7, 'f')");
+      try {
+        var pairing = pairing(connection, provider, source, target);
+        var compared = compare(provider, pairing);
+        assertEquals(new Tally(2, 2, 2, 0, 4, 4), compared.tally());
+        var made = apply(provider, compared.pairing(), Choice.ALL);
+        assertEquals(6, made.changes());
+        assertEquals(new Tally(0, 0, 0, 4, 4, 4), compare(provider, pairing).tally());
+      } finally {
+        dropAfter(
+            provider,
+            "DROP TABLE " + qualified(provider, source),
+            "DROP TABLE " + qualified(provider, target));
+      }
+    }
+  }
+
+  // Long values make portions of fewer rows, so that a portion holds no more than about so many
+  // characters, whatever rows it is asked for.
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aKeyedReadsPortionHoldsSoManyCharacters(Provider provider) throws Exception {
+    var pg = provider == Provider.POSTGRESQL;
+    var name = unique("sync_long");
+    var three = pg ? "repeat('x', 3000000)" : "REPEAT('x', 3000000)";
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name) + " (id integer PRIMARY KEY, note "
+              + (pg ? "text" : "mediumtext") + ")",
+          "INSERT INTO " + qualified(provider, name) + " VALUES (1, " + three + "), (2, " + three
+              + "), (3, " + three + "), (4, " + three + ")");
+      try {
+        var table = table(provider, name);
+        var columns = Catalog.columns(connection, provider, table);
+        try (var rows = new Execution(
+            connection, provider, KeyedRead.of(connection, provider, table, columns, List.of(0)))) {
+          var first = (Result.Rows) rows.next(500).results().getFirst();
+          assertEquals(3, first.rows().size());
+          assertEquals(3_000_000, ((String) first.rows().getFirst().get(1)).length());
+          var rest = rows.next(500);
+          assertEquals(1, ((Result.Rows) rest.results().getFirst()).rows().size());
+          assertFalse(rest.more());
+        }
+        assertLeftAsItWas(connection, provider);
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
       }
     }
   }
@@ -204,7 +273,7 @@ class SyncServerTest {
       try (var sourceRows = new Execution(mine, provider, source);
           var targetRows = new Execution(theirs, provider, target)) {
         var merge =
-            new Merge(pairing, Cursor.of(sourceRows::next, 2), Cursor.of(targetRows::next, 2));
+            Merge.of(pairing, Cursor.of(sourceRows::next, 2), Cursor.of(targetRows::next, 2));
         var differences = new ArrayList<Difference>();
         for (var d = merge.next(); d != null; d = merge.next()) {
           differences.add(d);
@@ -216,25 +285,62 @@ class SyncServerTest {
     }
   }
 
-  // The changes the choice takes, two in a batch, in one transaction.
-  private static void apply(
-      Provider provider, Pairing pairing, List<Difference> differences, Choice choice)
+  // The changes the choice takes, two in a batch, in one transaction, the tables read anew on
+  // connections of their own for each pass.
+  private static Batches.Made apply(Provider provider, Pairing pairing, Choice choice)
       throws Exception {
-    try (var connection = open(provider)) {
+    try (var connection = open(provider);
+        var mine = open(provider);
+        var theirs = open(provider)) {
+      Batches.Made made;
       try (var writer = Changes.writer(connection, provider, pairing.target())) {
-        var batch = new ArrayList<Change>();
-        for (var difference : differences) {
-          pairing.change(difference, choice).ifPresent(batch::add);
-          if (batch.size() == 2) {
-            assertTrue(writer.write(pairing.changes(batch)).isEmpty());
-            batch.clear();
-          }
-        }
-        assertTrue(writer.write(pairing.changes(batch)).isEmpty());
+        made = Batches.make(
+            reads(provider, pairing, mine, theirs), choice, 2, writer::write, (_, _) -> {
+              // Nothing shows it.
+            });
+        assertEquals(Optional.empty(), made.ended());
         writer.commit();
       }
       assertLeftAsItWas(connection, provider);
+      return made;
     }
+  }
+
+  // Both tables read anew on the connections, two rows a portion.
+  private static Batches.Reads reads(
+      Provider provider, Pairing pairing, Connection mine, Connection theirs) {
+    return () -> {
+      var sourceRows = new Execution(
+          mine,
+          provider,
+          KeyedRead.of(
+              mine, provider, pairing.source(), pairing.sourceColumns(), pairing.sourceKey()));
+      var targetRows = new Execution(
+          theirs,
+          provider,
+          KeyedRead.of(
+              theirs, provider, pairing.target(), pairing.targetColumns(), pairing.targetKey()));
+      Merge merge;
+      try {
+        merge = Merge.of(pairing, Cursor.of(sourceRows::next, 2), Cursor.of(targetRows::next, 2));
+      } catch (Exception e) {
+        sourceRows.close();
+        targetRows.close();
+        throw e;
+      }
+      return new Batches.Reading() {
+        @Override
+        public Merge merge() {
+          return merge;
+        }
+
+        @Override
+        public void close() {
+          sourceRows.close();
+          targetRows.close();
+        }
+      };
+    };
   }
 
   private static List<String> names(Pairing pairing, Difference.Different different) {
