@@ -28,10 +28,12 @@ import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.data.Inserts;
 import dev.hoori.db.core.file.Encoding;
+import dev.hoori.db.core.file.FileProblem;
 import dev.hoori.db.core.file.Format;
 import dev.hoori.db.core.file.Import;
 import dev.hoori.db.core.file.LineEnd;
 import dev.hoori.db.core.query.QueryException;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -70,13 +72,13 @@ final class ImportDialog {
   Import.Preview preview; // of the file as the options read it, null while none
   String unreadable; // why the preview could not be read
   private int previews; // each preview's number, so that an earlier one is dropped
+  private int previewed; // the number of the preview shown, or of the one that failed
   int[] mapping = new int[0]; // per column of the table, the column of the file, or NONE
 
   Inserts.Options writing = Inserts.Options.DEFAULT;
   final ValueField.Draft batchDraft = new ValueField.Draft();
 
-  private Lane.Asked running;
-  private int runs;
+  private Lane.Stoppable running;
   Inserts.Count count = Inserts.Count.NONE;
   Inserts.Report report;
   boolean cancelled;
@@ -131,8 +133,14 @@ final class ImportDialog {
     var detail = switch (e) {
       case QueryException q -> q.detail().isEmpty() ? q.getMessage() : q.detail();
       case CatalogException c -> c.getMessage();
+      case IOException io -> FileProblem.of(io);
       default -> e.getMessage() == null ? e.toString() : e.getMessage();
     };
+    return words(s, id, detail);
+  }
+
+  // The server's words, unless they hold the connection's password.
+  private static String words(State s, UUID id, String detail) {
     return CatalogTree.words(s.catalog.live(id), detail);
   }
 
@@ -167,10 +175,15 @@ final class ImportDialog {
         error -> problem = "The file could not be chosen: " + error);
   }
 
-  /** Reads the first rows of the file as the options read them now, off the app's thread. */
+  /**
+   * Reads the first rows of the file as the options read them now, off the app's thread; the
+   * preview shown, and the mapping made for it, stay until it comes, but Import waits for it.
+   */
   void preview(State s) {
     var format = format();
+    int number = ++previews;
     if (file == null || format == null) {
+      previewed = number;
       preview = null;
       unreadable = format == null && file != null
           ? "NULL as cannot hold the delimiter, the quote character or a line end."
@@ -178,12 +191,12 @@ final class ImportDialog {
       return;
     }
     var at = file;
-    int number = ++previews;
     s.app.background(
         "preview a file to import",
         () -> Import.preview(at, format, PREVIEWED),
         read -> {
           if (number == previews) {
+            previewed = number;
             var before = preview == null ? null : preview.names();
             preview = read;
             unreadable = null;
@@ -194,10 +207,18 @@ final class ImportDialog {
         },
         e -> {
           if (number == previews) {
+            previewed = number;
             preview = null;
-            unreadable = e.getMessage() == null ? e.toString() : e.getMessage();
+            unreadable = e instanceof IOException io
+                ? FileProblem.of(io)
+                : e.getMessage() == null ? e.toString() : e.getMessage();
           }
         });
+  }
+
+  /** Whether the preview shown is not yet of the options as they are now. */
+  boolean previewing() {
+    return previewed != previews;
   }
 
   // Each column of the table takes the file's column of its name, in any case, where the file
@@ -238,6 +259,9 @@ final class ImportDialog {
     if (file == null) {
       return "Choose the file to import.";
     }
+    if (previewing()) {
+      return "";
+    }
     if (preview == null) {
       return unreadable == null ? "" : unreadable;
     }
@@ -263,74 +287,81 @@ final class ImportDialog {
     var how = writing;
     var app = s.app;
     var into = table;
-    int run = ++runs;
     report = null;
     cancelled = false;
     count = Inserts.Count.NONE;
-    running = lane.ask(
+    // What it posts arrives before its outcome, and a new import begins only after that.
+    running = lane.askStoppable(
         app,
         "import a file",
         Lane.Priority.VIEW,
         link -> {
           try (var rows = Import.open(at, format, from)) {
-            return link.insert(
-                into,
-                all,
-                targets,
-                rows,
-                how,
-                now -> app.post(() -> {
-                  if (run == runs) {
-                    count = now;
-                  }
-                }));
+            return link.insert(into, all, targets, rows, how, now -> app.post(() -> count = now));
           }
         },
         done -> {
-          if (run == runs) {
-            running = null;
-            report = done;
-            count = done.count();
-            if (done.count().committed() > 0) {
-              s.imported(id, into);
-            }
-          }
+          running = null;
+          report = done;
+          count = done.count();
+          cancelled = done.cancelled();
+          imported(s);
         },
         e -> {
-          if (run == runs) {
-            running = null;
+          var stopped = running.stopped();
+          running = null;
+          if (stopped && cancelling(e)) {
+            cancelled = true;
+          } else {
             problem = "The import stopped: " + words(s, id, e)
-                + (how.commit() == Inserts.Commit.ONCE
+                + (count.committed() == 0
                     ? " Nothing was imported."
-                    : " " + ConsoleTab.rows(count.committed()) + " of earlier batches stay.");
+                    : " Earlier batches committed " + ConsoleTab.rows(count.committed())
+                        + ", which stay.");
           }
+          imported(s);
         });
   }
 
-  /** Gives up the import: what its transaction wrote is rolled back. */
-  void cancel(State s) {
+  // Whether the failure is how a cancel ended.
+  private static boolean cancelling(Exception e) {
+    return e instanceof InterruptedException
+        || e instanceof QueryException q
+            && (q.failure() == QueryException.Failure.CANCELLED
+                || q.failure() == QueryException.Failure.ABORTED);
+  }
+
+  // The tabs of the table read it anew where rows were committed.
+  private void imported(State s) {
+    if (count.committed() > 0) {
+      s.imported(id, table);
+    }
+  }
+
+  /** Whether Cancel was pressed, and the import has not yet said what it came to. */
+  boolean cancelling() {
+    return running != null && running.stopped();
+  }
+
+  /**
+   * Cancels the import: what its transaction wrote is rolled back, and once that is done it says
+   * what it committed, as a commit that the cancel came too late for.
+   */
+  void cancel() {
     if (running != null) {
-      running.cancel();
-      running = null;
-      runs++;
-      cancelled = true;
-      if (count.committed() > 0) {
-        s.imported(id, table);
-      }
+      running.stop();
     }
   }
 
   void close(State s) {
-    cancel(s);
+    cancel();
     end(s);
     s.dialogs.importing = null;
   }
 
   /** Ends its session, as Exit and the end of its connection do. */
   void end(State s) {
-    if (running != null) {
-      cancel(s);
-    }
+    cancel();
     if (lane != null) {
       s.closing();
       var closing = lane.close(ended -> {});
@@ -377,7 +408,7 @@ final class ImportDialog {
     }
     boolean busy = running();
     if (busy || report != null || cancelled) {
-      content.child(progress(unit));
+      content.child(progress(s, unit));
     }
     var file = Form.field(
         "File",
@@ -409,7 +440,7 @@ final class ImportDialog {
     El start = button(PRIMARY, "Import", missing == null && !busy ? () -> start(s) : null)
         .key("import");
     El end = busy
-        ? button(SECONDARY, "Cancel", () -> cancel(s)).key("import-cancel")
+        ? button(SECONDARY, "Cancel", cancelling() ? null : this::cancel).key("import-cancel")
         : button(SECONDARY, "Close", close).key("import-close");
     return Dialog.dialog(
             "Import into " + table.name(),
@@ -607,40 +638,38 @@ final class ImportDialog {
     };
   }
 
-  private El progress(float unit) {
+  private El progress(State s, float unit) {
     Theme t = Theme.CURRENT.get();
     var box = col().gap(t.space().s()).key("import-progress");
     if (running()) {
+      var counted = ConsoleTab.rows(count.read()) + " read, " + ConsoleTab.rows(count.written())
+          + " written, " + ConsoleTab.rows(count.committed()) + " committed";
       box.child(row()
           .gap(t.space().s())
           .role("status")
-          .label("Importing")
+          .label(cancelling() ? "Cancelling the import" : "Importing")
           .child(Progress.spinner())
-          .child(label(ConsoleTab.rows(count.read()) + " read, "
-              + ConsoleTab.rows(count.written()) + " written, "
-              + ConsoleTab.rows(count.committed()) + " committed")));
+          .child(label(cancelling() ? "Cancelling… " + counted : counted)));
       return box;
     }
+    var c = count;
     if (cancelled) {
       box.child(Callout.callout(
               Callout.Kind.WARNING,
               "Import cancelled",
-              writing.commit() == Inserts.Commit.ONCE || count.committed() == 0
+              c.committed() == 0
                   ? "Nothing was imported."
-                  : ConsoleTab.rows(count.committed()) + " of earlier batches were committed.")
+                  : "Earlier batches committed " + ConsoleTab.rows(c.committed()) + ".")
           .key("import-outcome"));
-      return box;
-    }
-    var c = report.count();
-    if (report.stopped()) {
+    } else if (report.stopped()) {
       var stop = report.stoppedAt();
       box.child(Callout.callout(
               Callout.Kind.DANGER,
               "Stopped at line " + stop.line(),
-              stop.message() + "\n"
+              words(s, id, stop.message()) + "\n"
                   + (c.committed() == 0
                       ? "Nothing was imported."
-                      : ConsoleTab.rows(c.committed()) + " of earlier batches were committed."))
+                      : "Earlier batches committed " + ConsoleTab.rows(c.committed()) + "."))
           .key("import-outcome"));
     } else {
       box.child(Callout.callout(
@@ -650,7 +679,7 @@ final class ImportDialog {
                   + (c.failed() == 0 ? "." : ", " + ConsoleTab.rows(c.failed()) + " skipped."))
           .key("import-outcome"));
     }
-    var failed = report.failed();
+    var failed = report == null ? List.<Inserts.Failed>of() : report.failed();
     if (!failed.isEmpty() && !(report.stopped() && failed.size() == 1)) {
       var columns = List.of(
           new DataGrid.Column(
@@ -660,7 +689,10 @@ final class ImportDialog {
                   r -> Long.toString(failed.get(r).line()))
               .sortable(false),
           new DataGrid.Column(
-                  "Why", 26 * unit, DataGrid.DataType.TEXT, r -> failed.get(r).message())
+                  "Why",
+                  26 * unit,
+                  DataGrid.DataType.TEXT,
+                  r -> words(s, id, failed.get(r).message()))
               .sortable(false));
       box.child(label(
           c.failed() > failed.size()

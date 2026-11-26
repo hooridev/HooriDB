@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import dev.hoori.db.core.connect.ConnectionException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -203,7 +204,10 @@ class TableFilesTest {
   }
 
   private App<State> importing(Path file, String steps) throws Exception {
-    var app = t.shop();
+    return importing(t.shop(), file, steps);
+  }
+
+  private App<State> importing(App<State> app, Path file, String steps) throws Exception {
     c.run(
         app,
         menu("customers", CatalogTree.IMPORT) + SETTLE + "dialog " + quoted(file) + "\n"
@@ -259,6 +263,104 @@ class TableFilesTest {
     assertTrue(line(done, "#import-outcome").contains("Stopped at line 3"), done);
     assertTrue(done.contains("Nothing was imported."), done);
     assertEquals(2, servers.rowsOf(CUSTOMERS).size());
+  }
+
+  @Test
+  void importWaitsForThePreviewOfOptionsChanged() throws Exception {
+    var file = Files.writeString(out.resolve("people.csv"), "id,name\n3,Carol\n");
+    var app = importing(file, "");
+    assertFalse(line(c.tree("ready"), "#import ").contains("disabled"), c.tree("ready"));
+    // Import, pressed before the file is read again without a header, waits for it.
+    c.run(
+        app,
+        "press role=checkbox label=\"First row names the columns\"\npress #import\n" + SETTLE
+            + "snap again\n");
+    assertFalse(servers.calls.contains("import " + CUSTOMERS), servers.calls.toString());
+    var again = c.tree("again");
+    assertTrue(again.contains("\"Column 1\""), again);
+    assertTrue(shown(again, "map-0").contains("\"Column 1\""), again);
+    assertFalse(line(again, "#import ").contains("disabled"), again);
+  }
+
+  @Test
+  void withholdsWhatFailedWhereItHoldsThePassword() throws Exception {
+    servers.refusesImported(CUSTOMERS, ConnectionsTest.PASSWORD);
+    var file = Files.writeString(
+        out.resolve("people.csv"),
+        "id,name\n3," + ConnectionsTest.PASSWORD + "\nx,Eve\n4," + ConnectionsTest.PASSWORD + "\n");
+    var app = importing(file, "press role=radio label=\"Skip the row and go on\"\nframe\n");
+    c.run(app, press("import") + SETTLE + "snap skipped\n");
+    var skipped = c.tree("skipped");
+    assertTrue(skipped.contains("label=\"Rows that failed\""), skipped);
+    assertTrue(skipped.contains(ConnectionException.WITHHELD), skipped);
+    // The file's own values show in its preview, but no failure says them.
+    assertFalse(skipped.contains("already exists"), skipped);
+  }
+
+  @Test
+  void withholdsTheRowItStoppedAtWhereItHoldsThePassword() throws Exception {
+    servers.refusesImported(CUSTOMERS, ConnectionsTest.PASSWORD);
+    var file = Files.writeString(
+        out.resolve("people.csv"), "id,name\n3,Carol\n4," + ConnectionsTest.PASSWORD + "\n");
+    var app = importing(file, "");
+    c.run(app, press("import") + SETTLE + "snap stopped\n");
+    var stopped = c.tree("stopped");
+    assertTrue(line(stopped, "#import-outcome").contains("Stopped at line 3"), stopped);
+    assertTrue(stopped.contains(ConnectionException.WITHHELD), stopped);
+    assertFalse(stopped.contains("already exists"), stopped);
+  }
+
+  @Test
+  void aCancelledImportSaysWhatItsBatchesCommittedOnceItHasEnded() throws Exception {
+    var gate = servers.hold("import " + CUSTOMERS + " 2");
+    var file = Files.writeString(out.resolve("people.csv"), "id,name\n3,Carol\n4,Dan\n5,Eve\n");
+    var app = importing(
+        file,
+        "press role=radio label=\"Commit each batch\"\nframe\npress #batch\nkey A control\n"
+            + "type \"1\"\nkey Enter\nframe\n");
+    c.run(app, press("import") + SHOWN);
+    CatalogTreeTest.eventually(() -> servers.calls.contains("import " + CUSTOMERS + " 2"));
+    c.run(app, press("import-cancel") + "snap cancelling\n");
+    var cancelling = c.tree("cancelling");
+    assertTrue(cancelling.contains("label=\"Cancelling the import\""), cancelling);
+    assertTrue(line(cancelling, "#import-cancel").contains("disabled"), cancelling);
+
+    c.run(app, SETTLE + SHOWN + "snap cancelled\n");
+    gate.countDown();
+    var cancelled = c.tree("cancelled");
+    assertTrue(line(cancelled, "#import-outcome").contains("Import cancelled"), cancelled);
+    assertTrue(cancelled.contains("Earlier batches committed 1 row."), cancelled);
+    assertTrue(servers.interrupted.contains("import " + CUSTOMERS + " 2"));
+    assertEquals(3, servers.rowsOf(CUSTOMERS).size());
+  }
+
+  @Test
+  void aCancelAsTheImportCommitsSaysAllWentInAndTheTableIsReadAgain() throws Exception {
+    var gate = servers.hold("import " + CUSTOMERS + " commit");
+    var app = t.shop();
+    c.run(app, TableTabTest.table("customers") + SETTLE);
+    var file = Files.writeString(out.resolve("people.csv"), "id,name\n3,Carol\n4,Dan\n");
+    importing(app, file, "");
+    c.run(app, press("import") + SHOWN);
+    CatalogTreeTest.eventually(() -> servers.calls.contains("import " + CUSTOMERS + " commit"));
+    var reads = reads();
+    c.run(app, press("import-cancel") + "snap cancelling\n");
+    assertTrue(c.tree("cancelling").contains("label=\"Cancelling the import\""));
+
+    gate.countDown();
+    c.run(app, SETTLE + SHOWN + SETTLE + "snap done\n");
+    var done = c.tree("done");
+    assertTrue(line(done, "#import-outcome").contains("Imported"), done);
+    assertTrue(done.contains("2 rows written into customers."), done);
+    assertEquals(4, servers.rowsOf(CUSTOMERS).size());
+    assertTrue(reads() > reads, servers.calls.toString());
+  }
+
+  // The reads of the customers' rows so far, as their tab makes them.
+  private long reads() {
+    return servers.calls.stream()
+        .filter(k -> k.startsWith("read " + CUSTOMERS + " "))
+        .count();
   }
 
   @Test
