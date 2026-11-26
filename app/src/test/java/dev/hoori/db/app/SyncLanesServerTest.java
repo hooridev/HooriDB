@@ -17,8 +17,11 @@ import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sync.Choice;
 import dev.hoori.db.core.sync.Pairing;
 import dev.hoori.db.core.sync.Tally;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.UUID;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -62,25 +65,26 @@ class SyncLanesServerTest {
       var writer = lane(server.profile());
       var readOnly = lane(reader);
       try {
-        var from = new Sync.Side(mine, source);
-        var to = new Sync.Side(theirs, target);
-        var pairing =
-            assertInstanceOf(Pairing.Paired.class, Sync.pair(from, to)).pairing();
-        var compared = Sync.compare(from, to, pairing, QUIET);
+        var sides = new Sync.Sides(side(mine, source), side(theirs, target));
+        var pairing = assertInstanceOf(Pairing.Paired.class, Sync.pair(sides)).pairing();
+        var compared = Sync.compare(sides, pairing, provider, QUIET);
         assertEquals(new Tally(1, 1, 1, 1, 3, 3), compared.tally());
         assertEquals(3, compared.kept().size());
 
         // A read-only session takes no writer, before anything is sent.
         var refused = assertThrows(
             QueryException.class,
-            () -> Sync.apply(from, to, readOnly, compared.pairing(), Choice.ALL, QUIET));
+            () -> Sync.apply(
+                sides, readOnly, compared.pairing(), Choice.ALL, new Sync.Commit(), QUIET));
         assertEquals(QueryException.Failure.ACCESS_DENIED, refused.failure());
 
-        var applied = Sync.apply(from, to, writer, compared.pairing(), Choice.ALL, QUIET);
+        var applied =
+            Sync.apply(sides, writer, compared.pairing(), Choice.ALL, new Sync.Commit(), QUIET);
         assertEquals(new Changes.Outcome.Committed(), applied.outcome());
         assertEquals(3, applied.written());
         assertEquals(
-            new Tally(0, 0, 0, 3, 3, 3), Sync.compare(from, to, pairing, QUIET).tally());
+            new Tally(0, 0, 0, 3, 3, 3),
+            Sync.compare(sides, pairing, provider, QUIET).tally());
       } finally {
         for (var lane : new Lane[] {mine, theirs, writer, readOnly}) {
           lane.close(ended -> {}).join();
@@ -93,6 +97,69 @@ class SyncLanesServerTest {
           "DROP TABLE " + qualified(provider, target));
       setup.close();
     }
+  }
+
+  // A script runs as applying would, on any of the servers: a moment of the key written as each
+  // reads it back, which MariaDB reads with no offset in a literal.
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aSavedScriptMakesTheTargetEqualWhenItRuns(Provider provider, @TempDir Path dir)
+      throws Exception {
+    var server = TestServer.of(provider);
+    var suffix = UUID.randomUUID().toString().substring(0, 8);
+    var source = table(provider, "sync_script_source_" + suffix);
+    var target = table(provider, "sync_script_target_" + suffix);
+    var moment = provider == Provider.POSTGRESQL ? "timestamptz" : "timestamp(6)";
+    var setup = ServersServerTest.open(server);
+    try {
+      run(
+          setup,
+          "CREATE TABLE " + qualified(provider, source) + " (at " + moment + " PRIMARY KEY,"
+              + " v integer)",
+          "CREATE TABLE " + qualified(provider, target) + " (at " + moment + " PRIMARY KEY,"
+              + " v integer)",
+          "INSERT INTO " + qualified(provider, source) + " VALUES"
+              + " ('2024-03-01 10:00:00.25', 1), ('2024-03-02 10:00:00', 2)",
+          "INSERT INTO " + qualified(provider, target) + " VALUES"
+              + " ('2024-03-02 10:00:00', 20), ('2024-03-03 10:00:00', 3)");
+      var reader = server.profile().withReadOnly(true);
+      var mine = lane(reader);
+      var theirs = lane(reader);
+      try {
+        var sides = new Sync.Sides(side(mine, source), side(theirs, target));
+        var pairing = assertInstanceOf(Pairing.Paired.class, Sync.pair(sides)).pairing();
+        assertEquals(
+            new Tally(1, 1, 1, 0, 2, 2),
+            Sync.compare(sides, pairing, provider, QUIET).tally());
+        var file = dir.resolve("sync.sql");
+        Sync.script(sides, pairing, Choice.ALL, provider, file, QUIET);
+        for (var line : Files.readAllLines(file)) {
+          if (!line.startsWith("--")
+              && !line.equals("START TRANSACTION;")
+              && !line.equals("COMMIT;")) {
+            run(setup, line.substring(0, line.length() - 1));
+          }
+        }
+        assertEquals(
+            new Tally(0, 0, 0, 2, 2, 2),
+            Sync.compare(sides, pairing, provider, QUIET).tally());
+      } finally {
+        for (var lane : new Lane[] {mine, theirs}) {
+          lane.close(ended -> {}).join();
+        }
+      }
+    } finally {
+      run(
+          setup,
+          "DROP TABLE " + qualified(provider, source),
+          "DROP TABLE " + qualified(provider, target));
+      setup.close();
+    }
+  }
+
+  // A side whose sessions' ends tell nothing.
+  static Sync.Side side(Lane lane, Table table) {
+    return new Sync.Side(lane, table, (sql, what, failure) -> {});
   }
 
   private static Lane lane(ConnectionProfile profile) {

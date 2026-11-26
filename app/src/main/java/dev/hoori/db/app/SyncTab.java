@@ -43,9 +43,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * Compare data: the rows of a table of SQL, the source, compared with those of another, the
@@ -104,17 +109,23 @@ final class SyncTab implements Tab {
   Problem problem; // why the last run failed, until the next
   String said; // what the tab says for a while in its status line, or null
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
+  private List<Line> lines = List.of(); // the grid's lines of what was compared
   private Work work; // the run under way, or null
+  private Sync.Commit commit; // whether the writing under way commits, or null
+  private boolean compareAfter; // whether the writing under way compares again once committed
   private int runs; // counts the runs, so that what one that was given up sends goes nowhere
   private int says;
-  private Lane sourceLane; // the source's session, or null while it has none
-  private Lane targetLane; // the target's session, or null
-  private Lane writerLane; // the session that writes the target, while it does
+  private Opened source; // the source's session, or null while it has none
+  private Opened targetSession; // the target's session, or null
+  private Opened writer; // the session that writes the target, while it does
   private Target targetOf; // the target its session is of
   private float[] widths = new float[0];
   private boolean closed;
 
   private final State state; // for close, which is called without one
+
+  /** A session of the tab's own, and what tells of its ends with the copy of its password. */
+  private record Opened(Lane lane, Teller teller) {}
 
   SyncTab(State state, UUID id, Table table) {
     this.state = state;
@@ -134,23 +145,44 @@ final class SyncTab implements Tab {
         && s.catalog.connected(id);
   }
 
-  /** The tables it can be compared with: those the tree read of connections of its provider. */
+  /**
+   * The tables it can be compared with: those the tree read of connections of its provider, with
+   * those of the same name first, as a copy of the table elsewhere is the likely one.
+   */
   List<Target> candidates(State s) {
+    record Labeled(Target target, boolean other, String label) {}
     var provider = provider(s);
-    var all = new ArrayList<Target>();
+    var all = new ArrayList<Labeled>();
     for (var live : s.catalog.lives.values()) {
       if (live.phase instanceof Live.Connected && live.profile.provider() == provider) {
+        var prefix = State.name(live.profile) + " · ";
         for (var other : s.catalog.tablesRead(live.id())) {
           if (!(live.id().equals(id) && other.equals(table))) {
-            all.add(new Target(live.id(), other));
+            all.add(new Labeled(
+                new Target(live.id(), other),
+                !other.name().equals(table.name()),
+                prefix + path(other)));
           }
         }
       }
     }
-    // Those of the same name first, as a copy of the table elsewhere is the likely one.
-    all.sort(Comparator.comparing((Target x) -> !x.table().name().equals(table.name()))
-        .thenComparing(x -> label(s, x)));
-    return all;
+    all.sort(Comparator.comparing(Labeled::other).thenComparing(Labeled::label));
+    return all.stream().map(Labeled::target).toList();
+  }
+
+  // Whether any table can be chosen, without making their list.
+  private boolean anyCandidate(State s) {
+    var provider = provider(s);
+    for (var live : s.catalog.lives.values()) {
+      if (live.phase instanceof Live.Connected && live.profile.provider() == provider) {
+        for (var other : s.catalog.tablesRead(live.id())) {
+          if (!(live.id().equals(id) && other.equals(table))) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   }
 
   /** What the chooser calls a table: its connection, then its database, schema and name. */
@@ -180,7 +212,7 @@ final class SyncTab implements Tab {
     stop();
     target = chosen;
     found = null;
-    compared = null;
+    show(null);
     problem = null;
     pair(s);
   }
@@ -191,11 +223,7 @@ final class SyncTab implements Tab {
     if (sides == null) {
       return;
     }
-    start(
-        s,
-        Running.PAIRING,
-        progress -> Sync.pair(sides[0], sides[1]),
-        got -> found = (Pairing.Found) got);
+    start(s, Running.PAIRING, progress -> Sync.pair(sides), got -> found = got, null);
   }
 
   /** Compares the rows of both tables anew, pairing them first. */
@@ -204,28 +232,30 @@ final class SyncTab implements Tab {
     if (sides == null) {
       return;
     }
-    compared = null;
+    show(null);
+    var provider = provider(s);
     start(
         s,
         Running.COMPARING,
-        progress -> {
-          var paired = Sync.pair(sides[0], sides[1]);
-          return paired instanceof Pairing.Paired(var pairing)
-              ? Sync.compare(sides[0], sides[1], pairing, progress)
-              : paired;
-        },
+        progress -> Sync.compare(sides, provider, progress),
         got -> {
           switch (got) {
             case Sync.Compared c -> {
-              compared = c;
+              show(c);
               found = new Pairing.Paired(c.pairing());
               selection.clear();
               widths = new float[0];
             }
-            case Pairing.Found f -> found = f;
-            default -> throw new IllegalStateException(String.valueOf(got));
+            case Sync.NotPaired(var why) -> found = why;
           }
-        });
+        },
+        null);
+  }
+
+  // What was compared, and the grid's lines of it, made once.
+  private void show(Sync.Compared c) {
+    compared = c;
+    lines = c == null ? List.of() : lines(c);
   }
 
   /** Opens the dialog of the statements that applying makes, of the differences kept. */
@@ -233,7 +263,7 @@ final class SyncTab implements Tab {
     if (compared == null || running != null || !choice.any()) {
       return;
     }
-    preview = new Preview(Sync.preview(compared, choice, provider(s)));
+    preview = new Preview(Sync.preview(compared, choice));
   }
 
   /**
@@ -251,29 +281,59 @@ final class SyncTab implements Tab {
     if (sides == null) {
       return;
     }
-    var session = s.catalog.session(s, target.id(), database(target.table()), false);
-    if (session == null) {
+    var opened = open(s, target.id(), target.table(), false);
+    if (opened == null) {
       problem = notConnected(s, target.id());
       return;
     }
-    Arrays.fill(session.password(), '\0');
-    var writer = session.lane();
+    var lane = opened.lane();
     var pairing = compared.pairing();
     var chosen = choice;
+    var commits = new Sync.Commit();
+    var to = target;
+    var connection = opened.teller().connection();
     start(
         s,
         Running.APPLYING,
-        progress -> Sync.apply(sides[0], sides[1], writer, pairing, chosen, progress),
-        got -> applied(s, (Sync.Applied) got));
-    writerLane = writer;
+        progress -> Sync.apply(sides, lane, pairing, chosen, commits, progress),
+        got -> applied(s, got),
+        new Late<>() {
+          @Override
+          public void done(Sync.Applied got) {
+            if (commits.begun()) {
+              s.notice(
+                  connection,
+                  COMMIT,
+                  "Wrote " + count(got.written(), "change") + " to " + table(to) + " after its"
+                      + " comparison closed.",
+                  false,
+                  null);
+            }
+          }
+
+          @Override
+          public void failed(Exception error) {
+            if (commits.begun()) {
+              s.notice(connection, COMMIT, commitFailed(s, to, error), true, null);
+            }
+          }
+        });
+    writer = opened;
+    commit = commits;
+    compareAfter = true;
   }
 
+  private static final String COMMIT = "COMMIT";
+
   private void applied(State s, Sync.Applied applied) {
+    commit = null;
     closeWriter(s);
     switch (applied.outcome()) {
       case Changes.Outcome.Committed _ -> {
         say(s, "Wrote " + count(applied.written(), "change") + " to " + table(target) + ".");
-        compare(s);
+        if (compareAfter) {
+          compare(s);
+        }
       }
       case Changes.Outcome.Missed _ ->
         problem = new Problem(
@@ -287,6 +347,21 @@ final class SyncTab implements Tab {
                 + " transactions, or a value of its key is a moment in an hour that the"
                 + " session's zone repeats.");
     }
+  }
+
+  // What a commit that failed came to, in words withheld where they hold a password.
+  private String commitFailed(State s, Target to, Exception error) {
+    return switch (error) {
+      case InterruptedException _ ->
+        "The changes to " + table(to) + " were not committed, as their session closed first.";
+      case QueryException e
+      when gone(e) ->
+        "The session that wrote the changes to " + table(to) + " was lost as they were"
+            + " committed, so whether they were is not known: compare the tables again.";
+      default ->
+        "The changes to " + table(to) + " were not committed: "
+            + words(s, to, String.valueOf(error.getMessage()));
+    };
   }
 
   /** Why the changes cannot be applied now, or null where they can. */
@@ -345,16 +420,16 @@ final class SyncTab implements Tab {
     start(
         s,
         Running.SCRIPTING,
-        progress -> Sync.script(sides[0], sides[1], pairing, chosen, provider, file, progress),
-        got -> say(s, "Saved the script to " + file.getFileName() + "."));
+        progress -> Sync.script(sides, pairing, chosen, provider, file, progress),
+        got -> say(s, "Saved the script to " + file.getFileName() + "."),
+        null);
   }
 
-  /** Gives up what runs, which rolls back what it wrote. */
+  /** Gives up what runs, which rolls back what it wrote; not a commit that has begun. */
   void cancel(State s) {
-    if (running == Running.APPLYING
-        && progress != null
-        && progress.stage() == Sync.Stage.COMMITTING) {
-      return; // the commit runs: its end tells what came of it
+    if (commit != null && !commit.cancel()) {
+      say(s, "The changes are being committed: what came of it shows once it ends.");
+      return;
     }
     if (work != null) {
       say(s, running.title + " was cancelled.");
@@ -363,28 +438,35 @@ final class SyncTab implements Tab {
   }
 
   // What runs is given up, and nothing it sends arrives; a writing ends with its session, which
-  // the server rolls back as it closes where the writing could not.
+  // the server rolls back as it closes where the writing could not. A commit that has begun goes
+  // on, and what came of it goes to the notices, as its session closes behind it.
   private void stop() {
     runs++;
-    if (work != null) {
+    if (work != null && (commit == null || commit.cancel())) {
       work.cancel();
-      work = null;
     }
+    work = null;
+    commit = null;
     running = null;
     progress = null;
     closeWriter(state);
   }
 
   private void closeWriter(State s) {
-    if (writerLane != null) {
-      close(s, writerLane);
-      writerLane = null;
+    if (writer != null) {
+      close(s, writer, false);
+      writer = null;
     }
   }
 
-  // Runs the call in the background as what runs now, its progress and result handed over.
-  private void start(
-      State s, Running what, Work.Reporting<Object, Sync.Progress> call, Handler done) {
+  // Runs the call in the background as what runs now, its progress and result handed over; what
+  // it comes to once the tab has left it goes to late, where there is one, else nowhere.
+  private <T> void start(
+      State s,
+      Running what,
+      Work.Reporting<T, Sync.Progress> call,
+      Consumer<T> done,
+      Late<T> late) {
     stop();
     running = what;
     problem = null;
@@ -399,41 +481,55 @@ final class SyncTab implements Tab {
         },
         got -> {
           if (runs == at) {
-            work = null;
-            running = null;
-            progress = null;
-            done.done(got);
+            over();
+            done.accept(got);
+          } else if (late != null) {
+            late.done(got);
           }
         },
         error -> {
           if (runs == at) {
-            work = null;
-            running = null;
-            progress = null;
+            over();
             failed(s, error);
+          } else if (late != null) {
+            late.failed(error);
           }
         });
   }
 
-  @FunctionalInterface
-  private interface Handler {
-    void done(Object got);
+  // The run under way ended.
+  private void over() {
+    work = null;
+    running = null;
+    progress = null;
+  }
+
+  /** What a run that the tab has left behind came to, as a commit under way when it closed. */
+  private interface Late<T> {
+    void done(T got);
+
+    void failed(Exception error);
   }
 
   private void failed(State s, Exception error) {
+    var began = commit != null && commit.begun();
+    commit = null;
     closeWriter(s);
     if (error instanceof InterruptedException) {
+      if (began) {
+        problem = new Problem("Not committed", commitFailed(s, target, error));
+      }
       return; // its session ended under it
     }
-    var live = s.catalog.live(target == null ? id : target.id());
     if (error instanceof QueryException e && gone(e)) {
       closeSessions(s); // opened anew by the next run
     }
     problem = switch (error) {
+      case QueryException e when began -> new Problem("Not committed", commitFailed(s, target, e));
       case CompareException e -> new Problem("The rows cannot be paired", e.getMessage());
       case QueryException e
       when e.failure() == QueryException.Failure.ACCESS_DENIED ->
-        new Problem("Refused", CatalogTree.words(live, e.detail()));
+        new Problem("Refused", words(s, target, e.detail()));
       case QueryException e
       when e.failure() == QueryException.Failure.CANCELLED ->
         new Problem("Cancelled", "The server cancelled it. Nothing was written.");
@@ -442,13 +538,20 @@ final class SyncTab implements Tab {
         new Problem(
             "Connection lost",
             "A session of the comparison was lost. Nothing was written that was not committed.");
-      case ConnectionException e ->
-        new Problem("Not connected", CatalogTree.words(live, e.getMessage()));
+      case ConnectionException e -> new Problem("Not connected", words(s, target, e.getMessage()));
       case IOException e ->
         new Problem("The file could not be written", String.valueOf(e.getMessage()));
-      default ->
-        new Problem("It failed", CatalogTree.words(live, String.valueOf(error.getMessage())));
+      default -> new Problem("It failed", words(s, target, String.valueOf(error.getMessage())));
     };
+  }
+
+  // The server's words, withheld where they hold the password of either side's connection: a
+  // failure may be the source's as well as the target's.
+  private String words(State s, Target to, String text) {
+    var said = CatalogTree.words(s.catalog.live(id), text);
+    return to == null || to.id().equals(id)
+        ? said
+        : CatalogTree.words(s.catalog.live(to.id()), said);
   }
 
   private static boolean gone(QueryException e) {
@@ -457,42 +560,46 @@ final class SyncTab implements Tab {
   }
 
   /** The sides on the tab's sessions, opened where it has none; null where that cannot be. */
-  private Sync.Side[] sides(State s) {
+  private Sync.Sides sides(State s) {
     if (target == null || closed) {
       return null;
     }
-    if (targetLane != null && !target.equals(targetOf)) {
-      close(s, targetLane);
-      targetLane = null;
+    if (targetSession != null && !target.equals(targetOf)) {
+      close(s, targetSession, true);
+      targetSession = null;
     }
-    if (sourceLane == null || sourceLane.broken()) {
-      sourceLane = open(s, id, table);
-      if (sourceLane == null) {
+    if (source == null || source.lane().broken()) {
+      source = open(s, id, table, true);
+      if (source == null) {
         problem = notConnected(s, id);
         return null;
       }
     }
-    if (targetLane == null || targetLane.broken()) {
-      targetLane = open(s, target.id(), target.table());
+    if (targetSession == null || targetSession.lane().broken()) {
+      targetSession = open(s, target.id(), target.table(), true);
       targetOf = target;
-      if (targetLane == null) {
+      if (targetSession == null) {
         problem = notConnected(s, target.id());
         return null;
       }
     }
-    return new Sync.Side[] {
-      new Sync.Side(sourceLane, table), new Sync.Side(targetLane, target.table())
-    };
+    return new Sync.Sides(side(source, table), side(targetSession, target.table()));
   }
 
-  // A read-only session on the table's database, whose copy of the password is not needed.
-  private static Lane open(State s, UUID id, Table table) {
-    var session = s.catalog.session(s, id, database(table), true);
+  private static Sync.Side side(Opened opened, Table table) {
+    return new Sync.Side(opened.lane(), table, opened.teller());
+  }
+
+  // A session on the table's database, read-only where it only reads, whose copy of the password
+  // its teller keeps to check what the server says, until it has closed.
+  private static Opened open(State s, UUID id, Table table, boolean readOnly) {
+    var session = s.catalog.session(s, id, database(table), readOnly);
     if (session == null) {
       return null;
     }
-    Arrays.fill(session.password(), '\0');
-    return session.lane();
+    var profile = s.profile(id);
+    var name = profile == null ? "" : State.name(profile);
+    return new Opened(session.lane(), new Teller(s.app, s, id, name, session.password(), null));
   }
 
   private static String database(Table table) {
@@ -509,10 +616,14 @@ final class SyncTab implements Tab {
 
   /**
    * A connection of its tables ended: what runs is given up, which rolls back what it wrote, and
-   * its sessions close; what was found stays.
+   * its sessions close; what was found stays. A commit that has begun goes on, as its session
+   * closes behind it, which Exit waits for, and what came of it shows, but no comparison follows.
    */
   void end(State s) {
-    if (running != null) {
+    if (commit != null && commit.begun()) {
+      compareAfter = false;
+      closeWriter(s);
+    } else if (running != null) {
       stop();
       problem = new Problem("Not connected", "A connection of the comparison ended.");
     }
@@ -530,38 +641,47 @@ final class SyncTab implements Tab {
       end(s);
       target = null;
       found = null;
-      compared = null;
+      show(null);
     }
   }
 
   private void closeSessions(State s) {
-    if (sourceLane != null) {
-      close(s, sourceLane);
-      sourceLane = null;
+    if (source != null) {
+      close(s, source, true);
+      source = null;
     }
-    if (targetLane != null) {
-      close(s, targetLane);
-      targetLane = null;
+    if (targetSession != null) {
+      close(s, targetSession, true);
+      targetSession = null;
     }
   }
 
-  // Closes the lane without waiting, as Exit waits for it.
-  private static void close(State s, Lane lane) {
+  // Closes the session without waiting, as Exit waits for it; what its ending said goes to the
+  // notices, and its copy of the password goes once it has.
+  private static void close(State s, Opened opened, boolean reads) {
     s.closing();
-    var closing = lane.close(ended -> {});
+    var tell = opened.teller();
+    var reported = new CompletableFuture<Void>();
+    opened.lane().close(ended -> {
+      try {
+        Session.told(ended, null, reads, Sync.CLOSED, tell);
+      } finally {
+        tell.wipe();
+        reported.complete(null);
+      }
+    });
     s.app.background(
-        "close a session of the comparison",
-        () -> {
-          closing.join();
-          return null;
-        },
-        done -> s.closed(),
-        e -> s.closed());
+        "close a session of the comparison", reported::get, _ -> s.closed(), _ -> s.closed());
   }
 
   /** Whether anything of the tab runs now. */
   boolean busy() {
     return running != null;
+  }
+
+  /** Whether a commit of the changes has begun and not ended. */
+  boolean committing() {
+    return commit != null && commit.begun();
   }
 
   @Override
@@ -595,14 +715,15 @@ final class SyncTab implements Tab {
 
   /** A line of the differences' grid: a row of one of the tables, as the comparison found it. */
   private record Line(
-      String what, List<Object> values, DataGrid.Status status, List<Integer> cells) {}
+      String what, List<Object> values, DataGrid.Status status, Set<Integer> cells) {}
 
   /** The tab's content: the tables, how they pair, what was found, and the status line. */
   El view(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     var actions = new ArrayList<El>();
     if (running != null) {
-      boolean committing = progress != null && progress.stage() == Sync.Stage.COMMITTING;
+      boolean committing =
+          committing() || progress != null && progress.stage() == Sync.Stage.COMMITTING;
       actions.add(
           button(SECONDARY, "Cancel", committing ? null : () -> cancel(s)).key("cancel"));
     }
@@ -662,7 +783,9 @@ final class SyncTab implements Tab {
   // The source, and the chooser of the target.
   private El tables(State s, Theme t) {
     var profile = s.profile(id);
-    var candidates = candidates(s);
+    // Listed only while the chooser is open: they can be many, and each build would sort them.
+    var candidates =
+        chooser.isOpen() ? candidates(s) : target == null ? List.<Target>of() : List.of(target);
     El chooser = ComboBox.comboBox(
             candidates,
             target,
@@ -687,7 +810,7 @@ final class SyncTab implements Tab {
             .align(Style.Align.CENTER)
             .child(Label.label(Label.Variant.MUTED, "Target").w(4 * t.size().control()))
             .child(
-                candidates.isEmpty() && target == null
+                target == null && !anyCandidate(s)
                     ? Label.label(
                             Label.Variant.MUTED,
                             "No other table of a connected connection of this kind is read yet:"
@@ -813,7 +936,7 @@ final class SyncTab implements Tab {
   // target's, with the cells that differ marked.
   private El differences(State s, App<State> app) {
     var pairing = compared.pairing();
-    var lines = lines(pairing);
+    var lines = this.lines;
     if (lines.isEmpty()) {
       return EmptyState.emptyState(
           Symbol.CHECKMARK_CIRCLE,
@@ -865,25 +988,29 @@ final class SyncTab implements Tab {
         .grow(1);
   }
 
-  private List<Line> lines(Pairing pairing) {
+  private static List<Line> lines(Sync.Compared compared) {
     var lines = new ArrayList<Line>();
-    var pairs = pairing.columns();
-    for (var difference : compared.kept()) {
-      switch (difference) {
+    var pairs = compared.pairing().columns();
+    var at = new HashMap<Pairing.Pair, Integer>();
+    for (int i = 0; i < pairs.size(); i++) {
+      at.put(pairs.get(i), i);
+    }
+    for (var kept : compared.kept()) {
+      switch (kept.difference()) {
         case Difference.OnlyInSource(var row) ->
           lines.add(new Line(
               "Only in source",
               pairs.stream().map(p -> row.get(p.source())).toList(),
               DataGrid.Status.NEW,
-              List.of()));
+              Set.of()));
         case Difference.OnlyInTarget(var row) ->
           lines.add(new Line(
               "Only in target",
               pairs.stream().map(p -> row.get(p.target())).toList(),
               DataGrid.Status.DELETED,
-              List.of()));
+              Set.of()));
         case Difference.Different(var mine, var theirs, var cells) -> {
-          var marked = cells.stream().map(pairs::indexOf).toList();
+          var marked = cells.stream().map(at::get).collect(Collectors.toUnmodifiableSet());
           lines.add(new Line(
               "Source",
               pairs.stream().map(p -> mine.get(p.source())).toList(),
@@ -897,7 +1024,7 @@ final class SyncTab implements Tab {
         }
       }
     }
-    return lines;
+    return List.copyOf(lines);
   }
 
   // What the status line says: how far a run has come, or what was found.

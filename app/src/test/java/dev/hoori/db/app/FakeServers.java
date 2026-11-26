@@ -66,6 +66,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -302,9 +303,23 @@ final class FakeServers implements Servers {
     return this;
   }
 
-  /** Giving up the rest of the statement's rows fails so, as a commit of what it changed may. */
+  /**
+   * Giving up the rest of the statement's rows fails so, as a commit of what it changed may; a
+   * keyed read of a table's rows by {@code scan <host>/<path>}.
+   */
   FakeServers failsAtGiveUp(String sql, Failure failure) {
     givingUp.put(sql, failure);
+    return this;
+  }
+
+  private final Set<String> refusing = ConcurrentHashMap.newKeySet();
+
+  /**
+   * The table at the path takes no changes all or nothing, as one of MyISAM: a batch of its
+   * writing comes back refused, and rolls all back.
+   */
+  FakeServers refuses(String path) {
+    refusing.add(path);
     return this;
   }
 
@@ -582,6 +597,29 @@ final class FakeServers implements Servers {
     if (failure != null) {
       failed.add(key);
       throw failure;
+    }
+  }
+
+  // A call that ends whatever interrupts it, as a commit within its bound: held at its gate until
+  // it opens, and the interrupt kept for what follows.
+  private void ending(String key) {
+    calls.add(key);
+    var gate = gates.get(key);
+    if (gate == null) {
+      return;
+    }
+    boolean interrupt = false;
+    while (true) {
+      try {
+        gate.await();
+        break;
+      } catch (InterruptedException _) {
+        interrupted.add(key);
+        interrupt = true;
+      }
+    }
+    if (interrupt) {
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -1551,12 +1589,16 @@ final class FakeServers implements Servers {
 
         @Override
         public Abandoned close() {
-          if (!over) {
+          var unread = !over;
+          if (unread) {
             noted("close scan " + path);
             over = true;
           }
           giving = null;
-          return Abandoned.NOTHING;
+          var failure = unread ? givingUp.get("scan " + path) : null;
+          return failure == null
+              ? Abandoned.NOTHING
+              : new Abandoned(Optional.of(failure), List.of());
         }
       };
       giving = scanned;
@@ -1610,6 +1652,11 @@ final class FakeServers implements Servers {
                 _ -> new Outcome.Changed(1),
                 () -> null);
           }
+          if (refusing.contains(path)) {
+            open = false;
+            noted("rollback " + path);
+            return Optional.of(new Changes.Outcome.Refused());
+          }
           var trial = new ArrayList<>(working);
           var outcome = applied(trial, batch);
           if (!(outcome instanceof Changes.Outcome.Committed)) {
@@ -1623,20 +1670,20 @@ final class FakeServers implements Servers {
           return Optional.empty();
         }
 
+        // As core's, within its bound: an interrupt does not stop it, held or not.
         @Override
         public void commit() throws QueryException {
           var key = "commit " + path;
-          try {
-            note(key);
-            call(key, queryFailure(QueryException.Failure.CANCELLED));
-          } catch (QueryException e) {
-            open = false;
-            throw e;
-          } catch (Exception _) {
-            open = false;
-            throw queryFailure(QueryException.Failure.OTHER);
-          }
+          note(key);
           open = false;
+          ending(key);
+          var failure = failures.get(key);
+          if (failure != null) {
+            failed.add(key);
+            throw failure instanceof QueryException q
+                ? q
+                : queryFailure(QueryException.Failure.OTHER);
+          }
           store(path, working);
           done.add(key);
         }

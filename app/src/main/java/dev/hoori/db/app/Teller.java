@@ -28,6 +28,11 @@ final class Teller implements Delivery.Tell {
     this.of = of;
   }
 
+  /** The connection's name, as its notices say it. */
+  String connection() {
+    return connection;
+  }
+
   App<State> app() {
     return app;
   }

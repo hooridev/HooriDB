@@ -1,21 +1,21 @@
 package dev.hoori.db.app;
 
 import com.rethinkj.ui.Work;
+import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
-import dev.hoori.db.core.data.Change;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sync.Batches;
 import dev.hoori.db.core.sync.Choice;
 import dev.hoori.db.core.sync.Cursor;
 import dev.hoori.db.core.sync.Difference;
 import dev.hoori.db.core.sync.Merge;
 import dev.hoori.db.core.sync.Pairing;
 import dev.hoori.db.core.sync.Tally;
-import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -25,29 +25,43 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * What a comparison of two tables does in the background, on lanes of its own that the tab hands
  * it: pairing their columns, comparing their rows, writing the target's changes in one transaction,
  * or a script of them. Each reads both tables anew, in the key's order, a portion at a time, and
- * holds no more than a portion of each, a batch of changes and the differences it keeps. Nothing
- * here touches the app's state; an interrupt of the thread gives the reads and the writing up.
+ * holds no more than a portion of each, two batches of changes and the differences it keeps, each
+ * bounded in rows and in characters. Nothing here touches the app's state; an interrupt of the
+ * thread gives the reads and the writing up, but not a commit that has begun.
  */
 final class Sync {
 
-  /** How many rows of each table one call reads. */
+  /** How many rows of each table one call reads at most. */
   static final int PORTION = 500;
 
   /** How many differences a comparison keeps to show, of all it counts. */
   static final int KEPT = 1_000;
 
-  /** How many changes go to the server in one call of the writing. */
-  static final int BATCH = 500;
+  /**
+   * About how many characters the differences kept to show hold at most, their statements with
+   * them: each value is kept cut to {@link Rows#LIMIT}, but a row may have many.
+   */
+  static final long KEPT_CHARACTERS = 8L * 1024 * 1024;
+
+  /** What a give-up's failure that a session tells begins with. */
+  static final String GAVE_UP = "Its end, as the comparison went on, failed: ";
+
+  /** What a session's failure as it closed begins with. */
+  static final String CLOSED = "As the comparison's session closed, giving up its rest failed: ";
 
   private Sync() {}
 
-  /** A table and the lane it is read on. */
-  record Side(Lane lane, Table table) {}
+  /** A table, the lane it is read on, and where what ending a read says goes. */
+  record Side(Lane lane, Table table, Delivery.Tell tell) {}
+
+  /** The two tables compared: the source, and the target that is made equal to it. */
+  record Sides(Side source, Side target) {}
 
   /** Where a run is, as its progress says. */
   enum Stage {
@@ -60,10 +74,24 @@ final class Sync {
   record Progress(Stage stage, Tally tally, long written) {}
 
   /**
-   * What a comparison found: the pairing as the reads say the kinds, the source's columns as its
-   * read says them, every count, and the first {@link #KEPT} differences in the key's order.
+   * A difference kept to show, with its long values cut ({@link Difference#shown}), and the
+   * statements of its change, as the preview shows them, with long values cut short.
    */
-  record Compared(Pairing pairing, List<Field> fields, Tally tally, List<Difference> kept) {}
+  record Kept(Difference difference, List<String> statements) {}
+
+  /** What a comparison came to: what it found, or why the tables cannot be compared. */
+  sealed interface Comparison permits Compared, NotPaired {}
+
+  /**
+   * What a comparison found: the pairing as the reads say the kinds, the source's columns as its
+   * read says them, every count, and the first differences in the key's order, at most {@link
+   * #KEPT} and {@link #KEPT_CHARACTERS}.
+   */
+  record Compared(Pairing pairing, List<Field> fields, Tally tally, List<Kept> kept)
+      implements Comparison {}
+
+  /** The tables cannot be compared, as their pairing says. */
+  record NotPaired(Pairing.Unpaired why) implements Comparison {}
 
   /**
    * What writing the changes came to: committed, with how many it wrote, or rolled back as a row
@@ -71,8 +99,41 @@ final class Sync {
    */
   record Applied(Tally tally, long written, Changes.Outcome outcome) {}
 
+  /**
+   * Whether a writing commits or is given up, decided once, by whichever asks first: so that a
+   * cancel either ends the writing before its commit, or comes too late and leaves the writing to
+   * say what came of the commit.
+   */
+  static final class Commit {
+
+    private enum Decided {
+      COMMITTING,
+      GIVEN_UP
+    }
+
+    private final AtomicReference<Decided> decided = new AtomicReference<>();
+
+    /** The writing is to commit: whether it may, as it was not given up. */
+    boolean begin() {
+      return decided.compareAndSet(null, Decided.COMMITTING);
+    }
+
+    /** Gives the writing up, where its commit has not begun: whether it is given up. */
+    boolean cancel() {
+      decided.compareAndSet(null, Decided.GIVEN_UP);
+      return decided.get() == Decided.GIVEN_UP;
+    }
+
+    /** Whether the commit has begun, so that only its end tells what came of the writing. */
+    boolean begun() {
+      return decided.get() == Decided.COMMITTING;
+    }
+  }
+
   /** How the two tables are compared, from their columns and indexes as each lane reads them. */
-  static Pairing.Found pair(Side source, Side target) throws Exception {
+  static Pairing.Found pair(Sides sides) throws Exception {
+    var source = sides.source();
+    var target = sides.target();
     var sourceColumns = Lane.await(source.lane().submit(link -> link.columns(source.table())));
     var sourceIndexes = Lane.await(source.lane().submit(link -> link.indexes(source.table())));
     var targetColumns = Lane.await(target.lane().submit(link -> link.columns(target.table())));
@@ -81,68 +142,83 @@ final class Sync {
         source.table(), sourceColumns, sourceIndexes, target.table(), targetColumns, targetIndexes);
   }
 
-  /** Compares the rows of both tables, reporting the tally as each portion is merged. */
-  static Compared compare(
-      Side source, Side target, Pairing pairing, Work.Progress<Progress> progress)
+  /** Pairs the tables anew, and compares their rows where they pair. */
+  static Comparison compare(Sides sides, Provider provider, Work.Progress<Progress> progress)
       throws Exception {
-    try (var reading = Reading.open(source, target, pairing)) {
-      var merge = reading.merge;
-      var kept = new ArrayList<Difference>();
+    return switch (pair(sides)) {
+      case Pairing.Paired(var pairing) -> compare(sides, pairing, provider, progress);
+      case Pairing.Unpaired why -> new NotPaired(why);
+    };
+  }
+
+  /**
+   * Compares the rows of both tables, reporting the tally as each portion is merged; the
+   * differences kept are cut to show, and their statements made while their values are whole.
+   */
+  static Compared compare(
+      Sides sides, Pairing pairing, Provider provider, Work.Progress<Progress> progress)
+      throws Exception {
+    try (var reading = Reading.open(sides, pairing)) {
+      var merge = reading.merge();
+      var paired = merge.pairing();
+      var reporter = new Reporter(progress, Stage.READING);
+      var kept = new ArrayList<Kept>();
+      long characters = 0;
       for (var d = merge.next(); d != null; d = merge.next()) {
-        if (kept.size() < KEPT) {
-          kept.add(d);
+        if (kept.size() < KEPT && characters < KEPT_CHARACTERS) {
+          var shown = d.shown();
+          var statements = paired
+              .change(d, Choice.ALL)
+              .map(change -> paired.changes(List.of(change)).previews(provider).stream()
+                  .map(statement -> statement + ";")
+                  .toList())
+              .orElse(List.of());
+          kept.add(new Kept(shown, statements));
+          characters += shown.characters() + Rows.characters(statements);
         }
-        reading.report(progress, Stage.READING, 0);
+        reporter.read(merge.tally(), 0);
       }
-      return new Compared(merge.pairing(), merge.sourceFields(), merge.tally(), List.copyOf(kept));
+      return new Compared(paired, merge.sourceFields(), merge.tally(), List.copyOf(kept));
     }
   }
 
   /**
    * Makes the target's rows equal to the source's, as far as the choice goes, in one transaction
-   * on the writer's lane: the rows compared anew, and the changes written a batch at a time, then
-   * committed. Where it does not come to the commit, all is rolled back.
+   * on the writer's lane: the rows compared anew, and the changes written a batch at a time, as
+   * {@link Batches} orders them, then committed once {@code commit} lets it. Where it does not come
+   * to the commit, all is rolled back.
    */
   static Applied apply(
-      Side source,
-      Side target,
+      Sides sides,
       Lane writer,
       Pairing pairing,
       Choice choice,
+      Commit commit,
       Work.Progress<Progress> progress)
       throws Exception {
-    var writing = Lane.await(writer.submit(link -> link.writer(target.table())));
+    var writing = Lane.await(writer.submit(link -> link.writer(sides.target().table())));
     boolean over = false;
-    try (var reading = Reading.open(source, target, pairing)) {
-      var merge = reading.merge;
-      var batch = new ArrayList<Change>();
-      long written = 0;
-      for (var d = merge.next(); d != null; d = merge.next()) {
-        merge.pairing().change(d, choice).ifPresent(batch::add);
-        if (batch.size() == BATCH) {
-          var missed = write(writer, writing, merge.pairing(), batch);
-          if (missed.isPresent()) {
-            over = true;
-            return new Applied(merge.tally(), written, missed.get());
-          }
-          written += BATCH;
-          batch.clear();
-        }
-        reading.report(progress, Stage.WRITING, written);
+    try {
+      var made = Batches.make(
+          () -> Reading.open(sides, pairing),
+          choice,
+          Batches.ROWS,
+          batch -> Lane.await(writer.submit(link -> writing.write(batch))),
+          new Reporter(progress, Stage.WRITING));
+      if (made.ended().isPresent()) {
+        over = true; // rolled back by the writing
+        return new Applied(made.tally(), made.changes(), made.ended().get());
       }
-      var missed = write(writer, writing, merge.pairing(), batch);
-      if (missed.isPresent()) {
-        over = true;
-        return new Applied(merge.tally(), written, missed.get());
+      progress.report(new Progress(Stage.COMMITTING, made.tally(), made.changes()));
+      if (!commit.begin()) {
+        throw new InterruptedException("Given up before the commit");
       }
-      written += batch.size();
-      progress.report(new Progress(Stage.COMMITTING, merge.tally(), written));
       Lane.await(writer.submit(link -> {
         writing.commit();
         return null;
       }));
       over = true;
-      return new Applied(merge.tally(), written, new Changes.Outcome.Committed());
+      return new Applied(made.tally(), made.changes(), new Changes.Outcome.Committed());
     } finally {
       if (!over) {
         // After what runs on the lane now, which may be a batch that an interrupt ends; a lane
@@ -159,24 +235,14 @@ final class Sync {
     }
   }
 
-  // Writes the batch on the writer's lane: empty where it was written, else what rolled back all.
-  private static Optional<Changes.Outcome> write(
-      Lane writer, Servers.Writing writing, Pairing pairing, List<Change> batch) throws Exception {
-    if (batch.isEmpty()) {
-      return Optional.empty();
-    }
-    var changes = pairing.changes(List.copyOf(batch));
-    return Lane.await(writer.submit(link -> writing.write(changes)));
-  }
-
   /**
    * Writes the statements that make the target's rows equal to the source's, as far as the choice
-   * goes, to the file, in one transaction, as the preview shows them; the file is written beside it
-   * first and takes its place once whole, so that a failure or a cancel leaves it as it was.
+   * goes, to the file, in one transaction, in the order that applying writes them, each as a
+   * script runs it ({@link Changes#script}); the file is written beside it first and takes its
+   * place once whole, so that a failure or a cancel leaves it as it was.
    */
   static Tally script(
-      Side source,
-      Side target,
+      Sides sides,
       Pairing pairing,
       Choice choice,
       Provider provider,
@@ -187,23 +253,25 @@ final class Sync {
     var temporary = Files.createTempFile(folder, ".hooridb-", ".sql");
     try {
       Tally tally;
-      try (var reading = Reading.open(source, target, pairing);
-          var out = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
-        var merge = reading.merge;
-        out.write("-- Makes the rows of " + Rows.qualified(provider, target.table())
-            + " equal to those of " + Rows.qualified(provider, source.table()) + ".\n");
+      try (Writer out = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
+        out.write("-- Makes the rows of "
+            + Rows.qualified(provider, sides.target().table()) + " equal to those of "
+            + Rows.qualified(provider, sides.source().table()) + ".\n");
         out.write("START TRANSACTION;\n");
-        long written = 0;
-        for (var d = merge.next(); d != null; d = merge.next()) {
-          var change = merge.pairing().change(d, choice);
-          if (change.isPresent()) {
-            write(out, merge.pairing(), change.get(), provider);
-            written++;
-          }
-          reading.report(progress, Stage.READING, written);
-        }
+        tally = Batches.make(
+                () -> Reading.open(sides, pairing),
+                choice,
+                Batches.ROWS,
+                batch -> {
+                  for (var statement : batch.script(provider)) {
+                    out.write(statement);
+                    out.write(";\n");
+                  }
+                  return Optional.empty();
+                },
+                new Reporter(progress, Stage.READING))
+            .tally();
         out.write("COMMIT;\n");
-        tally = merge.tally();
       }
       Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
       return tally;
@@ -212,91 +280,104 @@ final class Sync {
     }
   }
 
-  /** The statements of the change, as people read them, each ended. */
-  static List<String> statements(Pairing pairing, Change change, Provider provider) {
-    return pairing.changes(List.of(change)).statements(provider).stream()
-        .map(statement -> statement.preview() + ";")
-        .toList();
+  /**
+   * The statements that the choice takes of the kept differences, in the order that applying
+   * writes them: the deletions, then the updates, then the new rows.
+   */
+  static List<String> preview(Compared compared, Choice choice) {
+    var statements = new ArrayList<String>();
+    for (var kind : List.of(
+        Difference.OnlyInTarget.class, Difference.Different.class, Difference.OnlyInSource.class)) {
+      for (var kept : compared.kept()) {
+        if (kind.isInstance(kept.difference()) && choice.takes(kept.difference())) {
+          statements.addAll(kept.statements());
+        }
+      }
+    }
+    return statements;
   }
 
-  private static void write(Writer out, Pairing pairing, Change change, Provider provider)
-      throws IOException {
-    for (var statement : statements(pairing, change, provider)) {
-      out.write(statement);
-      out.write('\n');
+  // Reports the tally once a portion more of rows was read, so that progress does not flood; a
+  // pass that reads the tables anew begins again.
+  private static final class Reporter implements Batches.Progress {
+    private final Work.Progress<Progress> progress;
+    private final Stage stage;
+    private long reported; // the rows read when progress was last reported
+
+    Reporter(Work.Progress<Progress> progress, Stage stage) {
+      this.progress = progress;
+      this.stage = stage;
+    }
+
+    @Override
+    public void read(Tally tally, long changes) {
+      long read = tally.sourceRows() + tally.targetRows();
+      if (read < reported) {
+        reported = 0;
+      }
+      if (read - reported >= PORTION) {
+        reported = read;
+        progress.report(new Progress(stage, tally, changes));
+      }
     }
   }
 
   /**
    * Both tables read in the key's order on their lanes, and merged; closing gives up what is left
-   * of the reads, behind what runs on each lane now.
+   * of the reads, behind what runs on each lane now, and tells what that said.
    */
   // shortcut: MariaDB and MySQL end a read whose rows wait longer than net_write_timeout, 60 s by
   // default, as one side's can while the other reads a long run of keys it lacks; read ahead into
   // a bounded buffer, or the waiting side again, if tables that far apart are compared.
-  private static final class Reading implements AutoCloseable {
+  private record Reading(Merge merge, Run source, Run target) implements Batches.Reading {
 
-    final Merge merge;
-    private final Side source;
-    private final Side target;
-    private final Servers.Run sourceRun;
-    private final Servers.Run targetRun;
-    private long reported; // the rows read when progress was last reported
+    // A side's run of the read.
+    private record Run(Side side, Servers.Run run) {}
 
-    private Reading(
-        Side source, Side target, Servers.Run sourceRun, Servers.Run targetRun, Pairing pairing) {
-      this.source = source;
-      this.target = target;
-      this.sourceRun = sourceRun;
-      this.targetRun = targetRun;
-      this.merge =
-          new Merge(pairing, cursor(source.lane(), sourceRun), cursor(target.lane(), targetRun));
-    }
-
-    static Reading open(Side source, Side target, Pairing pairing) throws Exception {
-      var sourceRun = Lane.await(source
-          .lane()
-          .submit(link -> link.scan(source.table(), pairing.sourceColumns(), pairing.sourceKey())));
+    static Reading open(Sides sides, Pairing pairing) throws Exception {
+      var source = scan(sides.source(), pairing.sourceColumns(), pairing.sourceKey());
+      Run target = null;
       try {
-        var targetRun = Lane.await(target
-            .lane()
-            .submit(
-                link -> link.scan(target.table(), pairing.targetColumns(), pairing.targetKey())));
-        return new Reading(source, target, sourceRun, targetRun, pairing);
+        target = scan(sides.target(), pairing.targetColumns(), pairing.targetKey());
+        var merge = Merge.of(pairing, cursor(source), cursor(target));
+        return new Reading(merge, source, target);
       } catch (Exception e) {
-        giveUp(source.lane(), sourceRun);
+        giveUp(source);
+        if (target != null) {
+          giveUp(target);
+        }
         throw e;
       }
     }
 
-    // Reports the tally once a portion more of rows was read, so that progress does not flood.
-    void report(Work.Progress<Progress> progress, Stage stage, long written) {
-      var tally = merge.tally();
-      long read = tally.sourceRows() + tally.targetRows();
-      if (read - reported >= PORTION) {
-        reported = read;
-        progress.report(new Progress(stage, tally, written));
-      }
+    private static Run scan(Side side, List<Column> columns, List<Integer> key) throws Exception {
+      return new Run(
+          side, Lane.await(side.lane().submit(link -> link.scan(side.table(), columns, key))));
     }
 
     @Override
     public void close() {
-      giveUp(source.lane(), sourceRun);
-      giveUp(target.lane(), targetRun);
+      giveUp(source);
+      giveUp(target);
     }
 
-    // Behind what runs on the lane; a lane that has closed ended the run with its session.
-    private static void giveUp(Lane lane, Servers.Run run) {
+    // Behind what runs on the lane, and what that said to the notices; a lane that has closed
+    // ended the run with its session, and told that as it closed.
+    private static void giveUp(Run of) {
+      var side = of.side();
       try {
-        lane.submit(link -> run.close());
+        side.lane().submit(link -> {
+          Session.told(of.run().close(), read(side.table()), true, GAVE_UP, side.tell());
+          return null;
+        });
       } catch (RejectedExecutionException _) {
         // Closed with its connection.
       }
     }
 
     // The run's portions, each read on its lane.
-    private static Cursor cursor(Lane lane, Servers.Run run) {
-      return Cursor.of(count -> next(lane, run, count), PORTION);
+    private static Cursor cursor(Run of) {
+      return Cursor.of(count -> next(of.side().lane(), of.run(), count), PORTION);
     }
 
     private static Portion next(Lane lane, Servers.Run run, int count)
@@ -312,13 +393,8 @@ final class Sync {
     }
   }
 
-  /** The changes the choice takes of the kept differences, as the preview shows them. */
-  static List<String> preview(Compared compared, Choice choice, Provider provider) {
-    var statements = new ArrayList<String>();
-    for (var difference : compared.kept()) {
-      Optional<Change> change = compared.pairing().change(difference, choice);
-      change.ifPresent(c -> statements.addAll(statements(compared.pairing(), c, provider)));
-    }
-    return statements;
+  /** What a notice calls a comparison's read of the table. */
+  static String read(Table table) {
+    return "Compare data: read of " + table.name();
   }
 }
