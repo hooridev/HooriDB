@@ -2,7 +2,6 @@ package dev.hoori.db.core.file;
 
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
-import dev.hoori.db.core.data.Kind;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.LocalDate;
@@ -57,10 +56,5 @@ final class Texts {
         throw new IllegalArgumentException(
             "A value of " + value.getClass().getName() + " cannot be written");
     };
-  }
-
-  /** Whether the kind's values are numbers or truths, which JSON writes as such. */
-  static boolean literal(Kind kind) {
-    return kind == Kind.INTEGER || kind == Kind.DECIMAL || kind == Kind.BOOLEAN;
   }
 }
