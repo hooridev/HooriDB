@@ -176,7 +176,7 @@ final class FileRunDialog {
     if (file == null || profile == null || busy()) {
       return;
     }
-    var session = s.catalog.session(id, database);
+    var session = s.catalog.session(s, id, database);
     if (session == null) {
       problem = State.name(profile) + " is not connected.";
       return;

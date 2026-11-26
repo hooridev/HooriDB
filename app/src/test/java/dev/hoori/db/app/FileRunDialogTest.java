@@ -169,7 +169,7 @@ class FileRunDialogTest {
 
   // File, Run SQL file… as another window has it, with no dialog of its own open.
   private static Menu.Item runFile(App<State> app) {
-    var file = Frame.menus(app.state(), app.state().tabs.main(), false).getFirst();
+    var file = Frame.menus(app.state(), app.state().tabs.main().active(), false).getFirst();
     return file.submenu().stream()
         .filter(item -> "Run SQL file…".equals(item.label()))
         .findFirst()

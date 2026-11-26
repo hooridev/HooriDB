@@ -77,6 +77,12 @@ final class StandardSql implements SyntaxDialect {
     return false;
   }
 
+  // A body of BEGIN ATOMIC … END kept whole is psql's reading, not the standard's.
+  @Override
+  public boolean atomicBodies() {
+    return false;
+  }
+
   @Override
   public boolean userVariables() {
     return false;

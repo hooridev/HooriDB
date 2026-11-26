@@ -370,7 +370,7 @@ public final class Statements {
    * looked at as what a token there follows.
    */
   static List<Part> parts(String text, int from, Provider provider, String delimiter) {
-    var scan = new Statements(text, provider);
+    var scan = new Statements(text, provider.dialect().syntax());
     scan.parts = new ArrayList<>();
     scan.delimiter = delimiter;
     scan.backslashCommands = provider.dialect().client().backslashCommands();
