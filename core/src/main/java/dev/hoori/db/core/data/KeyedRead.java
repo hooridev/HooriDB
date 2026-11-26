@@ -108,18 +108,17 @@ public final class KeyedRead {
    * the server's order: a merge finds that in keys out of order.
    */
   public static int compare(Object a, Object b) {
-    record Pair(Object a, Object b) {}
-    return switch (new Pair(a, b)) {
-      case Pair(String x, String y) -> codePoints(x, y);
-      case Pair(Number x, Number y) -> numbers(x, y);
-      case Pair(Boolean x, Boolean y) -> Boolean.compare(x, y);
-      case Pair(LocalDate x, LocalDate y) -> x.compareTo(y);
-      case Pair(LocalTime x, LocalTime y) -> x.compareTo(y);
-      case Pair(LocalDateTime x, LocalDateTime y) -> x.compareTo(y);
-      case Pair(OffsetTime x, OffsetTime y) -> x.compareTo(y);
-      case Pair(OffsetDateTime x, OffsetDateTime y) -> x.compareTo(y);
-      case Pair(Binary x, Binary y) -> Arrays.compareUnsigned(x.bytes(), y.bytes());
-      default -> {
+    return switch (a) {
+      case String x when b instanceof String y -> codePoints(x, y);
+      case Number x when b instanceof Number y -> numbers(x, y);
+      case Boolean x when b instanceof Boolean y -> Boolean.compare(x, y);
+      case LocalDate x when b instanceof LocalDate y -> x.compareTo(y);
+      case LocalTime x when b instanceof LocalTime y -> x.compareTo(y);
+      case LocalDateTime x when b instanceof LocalDateTime y -> x.compareTo(y);
+      case OffsetTime x when b instanceof OffsetTime y -> x.compareTo(y);
+      case OffsetDateTime x when b instanceof OffsetDateTime y -> x.compareTo(y);
+      case Binary x when b instanceof Binary y -> Arrays.compareUnsigned(x.bytes(), y.bytes());
+      case null, default -> {
         var by = String.valueOf(a == null ? null : a.getClass().getName())
             .compareTo(String.valueOf(b == null ? null : b.getClass().getName()));
         yield by != 0 ? by : codePoints(String.valueOf(a), String.valueOf(b));

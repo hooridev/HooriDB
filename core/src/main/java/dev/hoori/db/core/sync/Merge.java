@@ -22,17 +22,37 @@ public final class Merge {
 
   private final Side source;
   private final Side target;
-  private Pairing pairing; // as the fields of both reads say, once they began
+  private final Pairing pairing; // as the fields of both reads say
   private long onlyInSource;
   private long onlyInTarget;
   private long different;
   private long equal;
 
-  /** Merges the rows of the cursors as the pairing pairs them; nothing is read yet. */
-  public Merge(Pairing pairing, Cursor source, Cursor target) {
+  private Merge(Pairing pairing, Side source, Side target) {
     this.pairing = pairing;
-    this.source = new Side("source", source, pairing.sourceKey());
-    this.target = new Side("target", target, pairing.targetKey());
+    this.source = source;
+    this.target = target;
+  }
+
+  /**
+   * Merges the rows of the cursors as the pairing pairs them, once the first portion of each says
+   * the kinds of their columns, as {@link Pairing#read} takes them.
+   *
+   * @throws QueryException where a cursor failed
+   * @throws InterruptedException where the thread was interrupted
+   * @throws CompareException where the key's columns read as kinds that sort apart, or the reads
+   *     have other columns than the tables had
+   */
+  public static Merge of(Pairing pairing, Cursor source, Cursor target)
+      throws QueryException, InterruptedException, CompareException {
+    var names = pairing.key().stream()
+        .map(pair -> pairing.sourceColumns().get(pair.source()).name())
+        .toList();
+    var mine = new Side("source", source, pairing.sourceKey(), names);
+    var theirs = new Side("target", target, pairing.targetKey(), names);
+    mine.peek();
+    theirs.peek();
+    return new Merge(pairing.read(mine.fields, theirs.fields), mine, theirs);
   }
 
   /**
@@ -40,15 +60,9 @@ public final class Merge {
    *
    * @throws QueryException where a cursor failed
    * @throws InterruptedException where the thread was interrupted
-   * @throws CompareException where a key came out of order, or the key's columns read as kinds
-   *     that sort apart
+   * @throws CompareException where a key came out of order, or twice
    */
   public Difference next() throws QueryException, InterruptedException, CompareException {
-    if (!source.began || !target.began) {
-      source.peek();
-      target.peek();
-      pairing = pairing.read(source.fields, target.fields);
-    }
     while (true) {
       var mine = source.peek();
       var theirs = target.peek();
@@ -81,12 +95,12 @@ public final class Merge {
     }
   }
 
-  /** The pairing as the reads of both tables say their kinds, once {@link #next} was asked. */
+  /** The pairing as the reads of both tables say their kinds. */
   public Pairing pairing() {
     return pairing;
   }
 
-  /** The source's columns as its read says them, once {@link #next} was asked; none before. */
+  /** The source's columns as its read says them. */
   public List<Field> sourceFields() {
     return source.fields;
   }
@@ -121,25 +135,25 @@ public final class Merge {
     private final String name;
     private final Cursor cursor;
     private final List<Integer> key;
+    private final List<String> names; // the key's columns
     private List<Field> fields = List.of();
     private List<List<Object>> rows = List.of();
     private int at;
-    private boolean began;
     private boolean over;
     private List<Object> last; // the key of the row taken last, or null
     private long read;
 
-    Side(String name, Cursor cursor, List<Integer> key) {
+    Side(String name, Cursor cursor, List<Integer> key, List<String> names) {
       this.name = name;
       this.cursor = cursor;
       this.key = key;
+      this.names = names;
     }
 
     // The row it is on, or null at the end.
     List<Object> peek() throws QueryException, InterruptedException {
       while (at == rows.size() && !over) {
         var next = cursor.next();
-        began = true;
         fields = next.fields();
         rows = next.rows();
         at = 0;
@@ -152,7 +166,13 @@ public final class Merge {
     List<Object> take() throws CompareException {
       var row = rows.get(at++);
       var keyed = key.stream().map(row::get).toList();
-      if (last != null && order(last, keyed) >= 0) {
+      int by = last == null ? -1 : order(last, keyed);
+      if (by == 0) {
+        throw new CompareException("The key (" + String.join(", ", names) + ") is not unique in"
+            + " the " + name + ": rows " + read + " and " + (read + 1) + " have the same values"
+            + " of it, so the rows cannot be paired.");
+      }
+      if (by > 0) {
         throw new CompareException("The rows of the " + name + " did not come in the order of"
             + " the key at row " + (read + 1) + ", as its server orders a value of the key in"
             + " another way, so the rows cannot be paired.");

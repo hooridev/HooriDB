@@ -1,7 +1,6 @@
 package dev.hoori.db.core.sync;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.hoori.db.core.catalog.Column;
@@ -67,12 +66,31 @@ class MergeTest {
         "The rows of the source did not come in the order of the key at row 3, as its server"
             + " orders a value of the key in another way, so the rows cannot be paired.",
         failure.getMessage());
-    var twice = merge(cursor(5, List.of()), cursor(5, List.of(row(1L, "1"), row(1L, "1"))));
-    twice.next();
-    assertInstanceOf(CompareException.class, assertThrows(CompareException.class, twice::next));
   }
 
-  private static Merge merge(Cursor source, Cursor target) {
+  // A key that is not unique, as a partial index's, would pair a row twice.
+  @Test
+  void aKeyThatComesTwiceEndsTheMergeAsNotUnique() throws Exception {
+    var twice =
+        merge(cursor(5, List.of()), cursor(1, List.of(row(1L, "1"), row(2L, "2"), row(2L, "3"))));
+    twice.next();
+    twice.next();
+    assertEquals(
+        "The key (id) is not unique in the target: rows 2 and 3 have the same values of it, so"
+            + " the rows cannot be paired.",
+        assertThrows(CompareException.class, twice::next).getMessage());
+    // Numbers of another type and scale are the same key.
+    var equal = merge(
+        cursor(5, List.of(row(1L, "1"), Arrays.asList(new BigDecimal("1.00"), null))),
+        cursor(5, List.of()));
+    equal.next();
+    assertEquals(
+        "The key (id) is not unique in the source: rows 1 and 2 have the same values of it, so"
+            + " the rows cannot be paired.",
+        assertThrows(CompareException.class, equal::next).getMessage());
+  }
+
+  private static Merge merge(Cursor source, Cursor target) throws Exception {
     var pairing = Pairing.of(
         SOURCE,
         List.of(
@@ -82,7 +100,7 @@ class MergeTest {
         List.of(
             new Column(TARGET, "id", "int", false, 1), new Column(TARGET, "v", "numeric", true, 0)),
         List.of());
-    return new Merge(((Pairing.Paired) pairing).pairing(), source, target);
+    return Merge.of(((Pairing.Paired) pairing).pairing(), source, target);
   }
 
   // The rows, at most so many a portion.
