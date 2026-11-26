@@ -26,15 +26,15 @@ A file of the same name is replaced only once the new file is complete. If an ex
 
 ### Options for CSV and TSV
 
-| Option | What it does |
-| --- | --- |
-| **Delimiter** | Comma, semicolon or pipe for CSV. TSV always uses a tab. |
-| **Header** | Write the column names as the first row. |
-| **Quote** | Double quote `"` or single quote `'`. A quote inside a value is doubled. |
-| **Quoting** | **Where needed** quotes a value only if it holds the delimiter, the quote, a line break, or the text that stands for NULL. **Every value but NULL** quotes all values. |
-| **NULL as** | The text written for NULL. It is empty by default. NULL is always written unquoted, so an empty text (`""`) stays apart from NULL. |
-| **Encoding** | UTF-8, UTF-8 with BOM (which spreadsheet apps recognize), UTF-16 LE or BE (with a byte order mark), ISO-8859-1 or Windows-1252. If a value has a character the encoding cannot write, that table fails. |
-| **Line ends** | CRLF, as Windows and RFC 4180 use, or LF. |
+| Option        | What it does                                                                                                                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Delimiter** | Comma, semicolon or pipe for CSV. TSV always uses a tab.                                                                                                                                                |
+| **Header**    | Write the column names as the first row.                                                                                                                                                                |
+| **Quote**     | Double quote `"` or single quote `'`. A quote inside a value is doubled.                                                                                                                                |
+| **Quoting**   | **Where needed** quotes a value only if it holds the delimiter, the quote, a line break, or the text that stands for NULL. **Every value but NULL** quotes all values.                                  |
+| **NULL as**   | The text written for NULL. It is empty by default. NULL is always written unquoted, so an empty text (`""`) stays apart from NULL.                                                                      |
+| **Encoding**  | UTF-8, UTF-8 with BOM (which spreadsheet apps recognize), UTF-16 LE or BE (with a byte order mark), ISO-8859-1 or Windows-1252. If a value has a character the encoding cannot write, that table fails. |
+| **Line ends** | CRLF, as Windows and RFC 4180 use, or LF.                                                                                                                                                               |
 
 JSON files are always UTF-8. You can choose their line ends.
 
