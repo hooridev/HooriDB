@@ -64,6 +64,31 @@ public final class Journal {
       Function<? super T, Outcome> outcome,
       Call<T, E> call)
       throws E {
+    return sql(provider, purpose, sql, purpose == Purpose.CHANGES, outcome, call);
+  }
+
+  /**
+   * Runs the call that sends the SQL, which writes rows, recorded as {@link #sql} does it, with a
+   * failure's message withheld, as a failed constraint's may quote the row.
+   */
+  public static <T, E extends Exception> T written(
+      Provider provider,
+      Purpose purpose,
+      String sql,
+      Function<? super T, Outcome> outcome,
+      Call<T, E> call)
+      throws E {
+    return sql(provider, purpose, sql, true, outcome, call);
+  }
+
+  private static <T, E extends Exception> T sql(
+      Provider provider,
+      Purpose purpose,
+      String sql,
+      boolean writes,
+      Function<? super T, Outcome> outcome,
+      Call<T, E> call)
+      throws E {
     if (!RECORDER.isBound()) {
       return call.call();
     }
@@ -75,7 +100,7 @@ public final class Journal {
           if (!masked.equals(sql)) {
             return new Shown(masked, Outcome.WITHHELD);
           }
-          return new Shown(masked, purpose == Purpose.CHANGES ? Outcome.ROW_WITHHELD : null);
+          return new Shown(masked, writes ? Outcome.ROW_WITHHELD : null);
         },
         outcome,
         call);

@@ -21,5 +21,11 @@ public enum Purpose {
   /** The database the session is on. */
   SESSION,
   /** The server monitor's cancel of a statement and end of a session. */
-  MONITOR
+  MONITOR,
+  /**
+   * Copying tables' rows into another connection's or database's tables: counting and reading the
+   * source's rows, and emptying and writing the target's. A write's failure's message is not
+   * recorded, as it may quote a row.
+   */
+  TRANSFER
 }

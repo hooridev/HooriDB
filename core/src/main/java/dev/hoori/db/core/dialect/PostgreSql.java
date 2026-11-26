@@ -5,6 +5,7 @@ import static dev.hoori.db.core.connection.Capability.ERROR_POSITION;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN_ANALYZE;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN_JSON;
+import static dev.hoori.db.core.connection.Capability.IDENTITY_OVERRIDE;
 import static dev.hoori.db.core.connection.Capability.SCHEMAS;
 import static dev.hoori.db.core.connection.Capability.TRANSACTIONAL_DDL;
 import static dev.hoori.db.core.dialect.Reflection.call;
@@ -13,7 +14,9 @@ import static dev.hoori.db.core.dialect.Since.since;
 import static dev.hoori.db.core.dialect.Words.union;
 import static dev.hoori.db.core.dialect.Words.words;
 
+import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
@@ -24,17 +27,28 @@ import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.monitor.ServerSession;
+import dev.hoori.db.core.query.Query;
+import dev.hoori.db.core.query.QueryException;
+import java.math.BigDecimal;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 /** PostgreSQL, with pgjdbc. */
 public final class PostgreSql implements Dialect {
@@ -48,7 +62,8 @@ public final class PostgreSql implements Dialect {
       ERROR_POSITION, always(),
       EXPLAIN, always("EXPLAIN "),
       EXPLAIN_JSON, since(9, 0, 0, "EXPLAIN (FORMAT JSON) "),
-      EXPLAIN_ANALYZE, since(7, 2, 0, "EXPLAIN ANALYZE "));
+      EXPLAIN_ANALYZE, since(7, 2, 0, "EXPLAIN ANALYZE "),
+      IDENTITY_OVERRIDE, since(10, 0, 0, null));
   private final Driver driver = new Driver("org.postgresql", "postgresql", "org.postgresql.Driver");
   private final ConnectDialect connecting = new Connect();
   private final CatalogDialect catalog = new Catalog();
@@ -58,6 +73,7 @@ public final class PostgreSql implements Dialect {
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new PostgreSqlRows();
   private final MonitorDialect monitor = new Monitor();
+  private final TransferDialect transfer = new Transfer();
 
   private PostgreSql() {}
 
@@ -129,6 +145,11 @@ public final class PostgreSql implements Dialect {
   @Override
   public MonitorDialect monitor() {
     return monitor;
+  }
+
+  @Override
+  public TransferDialect transfer() {
+    return transfer;
   }
 
   // pgjdbc.
@@ -642,6 +663,109 @@ public final class PostgreSql implements Dialect {
     @Override
     public Set<String> passwordWords() {
       return Set.of("PASSWORD");
+    }
+  }
+
+  // Every value travels as the server writes it, and pgjdbc binds it as of no type, which the
+  // server reads as a value of the column it goes into or is compared with.
+  static final class Transfer implements TransferDialect {
+
+    @Override
+    public Carry carry(Column column) {
+      return Carry.TEXT;
+    }
+
+    @Override
+    public String read(Column column, String name) {
+      return "CAST(" + name + " AS pg_catalog.text)";
+    }
+
+    @Override
+    public void bind(PreparedStatement statement, int index, Object value) throws SQLException {
+      switch (value) {
+        case null -> statement.setNull(index, Types.OTHER);
+        case String text -> statement.setObject(index, text, Types.OTHER);
+        case BigDecimal number -> statement.setBigDecimal(index, number);
+        case byte[] bytes -> statement.setBytes(index, bytes);
+        default -> throw new IllegalArgumentException("No value to copy: " + value.getClass());
+      }
+    }
+
+    @Override
+    public List<String> prepare() {
+      return List.of();
+    }
+
+    // A comparison of rows, which an index of the key serves.
+    @Override
+    public After after(List<String> key) {
+      var values = IntStream.range(0, key.size()).boxed().toList();
+      if (key.size() == 1) {
+        return new After(key.getFirst() + " OPERATOR(pg_catalog.>) ?", values);
+      }
+      return new After(
+          "(" + String.join(", ", key) + ") OPERATOR(pg_catalog.>) ("
+              + String.join(", ", Collections.nCopies(key.size(), "?")) + ")",
+          values);
+    }
+
+    // The table and place of each row, as children of a partitioned table each have their own.
+    @Override
+    public List<String> order(String alias, List<String> columns) {
+      return List.of(alias + ".tableoid", alias + ".ctid");
+    }
+
+    @Override
+    public String insertInto(String table, List<String> columns, boolean overriding) {
+      return "INSERT INTO " + table + " (" + String.join(", ", columns) + ")"
+          + (overriding ? " OVERRIDING SYSTEM VALUE" : "") + " VALUES";
+    }
+
+    // Each sequence of a column copied into, of an identity or a serial, set to the column's
+    // highest value, where it has one: its next value is the one after.
+    @Override
+    public void written(Connection connection, Provider provider, Table table, List<String> columns)
+        throws QueryException {
+      var qualified = Rows.qualified(provider, table);
+      var sql = "SELECT a.attname, pg_catalog.pg_get_serial_sequence(?, a.attname)"
+          + " FROM pg_catalog.pg_attribute a"
+          + " WHERE a.attrelid OPERATOR(pg_catalog.=) CAST(? AS pg_catalog.regclass)"
+          + " AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped";
+      record Sequence(String column, String name) {}
+      var sequences = Journal.sql(
+          provider,
+          Purpose.TRANSFER,
+          sql,
+          found -> Outcome.rows(found.size()),
+          () -> Query.run(connection, provider, sql, statement -> {
+            statement.setString(1, qualified);
+            statement.setString(2, qualified);
+            var found = new ArrayList<Sequence>();
+            try (var rows = statement.executeQuery()) {
+              while (rows.next()) {
+                if (rows.getString(2) != null && columns.contains(rows.getString(1))) {
+                  found.add(new Sequence(rows.getString(1), rows.getString(2)));
+                }
+              }
+            }
+            return found;
+          }));
+      for (var sequence : sequences) {
+        var set = "SELECT pg_catalog.setval(CAST(? AS pg_catalog.regclass), m)"
+            + " FROM (SELECT pg_catalog.max(" + provider.quote(sequence.column()) + ") AS m FROM "
+            + qualified + ") x WHERE m IS NOT NULL";
+        Journal.sql(
+            provider,
+            Purpose.TRANSFER,
+            set,
+            done -> Outcome.DONE,
+            () -> Query.run(connection, provider, set, statement -> {
+              statement.setString(1, sequence.name());
+              try (var rows = statement.executeQuery()) {
+                return rows.next();
+              }
+            }));
+      }
     }
   }
 

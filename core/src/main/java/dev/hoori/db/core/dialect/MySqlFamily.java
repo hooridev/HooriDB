@@ -1,14 +1,22 @@
 package dev.hoori.db.core.dialect;
 
+import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.monitor.ServerSession;
+import java.math.BigDecimal;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -23,6 +31,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
 
   private final CatalogDialect catalog;
   private final ErrorDialect errors = new Errors();
+  private final TransferDialect transfer = new Transfer();
 
   MySqlFamily(boolean flagsHiddenIndexColumns, boolean functionalIndexExpressions) {
     catalog = new Catalog(flagsHiddenIndexColumns, functionalIndexExpressions);
@@ -41,6 +50,11 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   @Override
   public ErrorDialect errors() {
     return errors;
+  }
+
+  @Override
+  public TransferDialect transfer() {
+    return transfer;
   }
 
   static final class Errors implements ErrorDialect {
@@ -452,6 +466,112 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     public Set<String> passwordWords() {
       return Set.of("PASSWORD", "IDENTIFIED", "SOURCE_PASSWORD", "MASTER_PASSWORD");
     }
+  }
+
+  // Numbers travel as numbers, as the servers compare a number with a text as floating point;
+  // binary data, bit values and geometries, which the servers send as they store them, as their
+  // bytes; anything else as the server's text, which it reads as the column's type. Both sessions
+  // write and read moments in UTC, which repeats no hour.
+  static final class Transfer implements TransferDialect {
+
+    private static final Set<String> NUMBERS = Set.of(
+        "tinyint",
+        "smallint",
+        "mediumint",
+        "int",
+        "integer",
+        "bigint",
+        "decimal",
+        "numeric",
+        "year");
+    private static final Set<String> BYTES = Set.of(
+        "bit",
+        "binary",
+        "varbinary",
+        "tinyblob",
+        "blob",
+        "mediumblob",
+        "longblob",
+        "geometry",
+        "point",
+        "linestring",
+        "polygon",
+        "multipoint",
+        "multilinestring",
+        "multipolygon",
+        "geometrycollection",
+        "geomcollection");
+    private static final Set<String> TIMES = Set.of("date", "time", "datetime", "timestamp");
+
+    private static String base(Column column) {
+      return column.type().toLowerCase(Locale.ROOT).split("[( ]", 2)[0];
+    }
+
+    @Override
+    public Carry carry(Column column) {
+      var base = base(column);
+      return NUMBERS.contains(base)
+          ? Carry.NUMBER
+          : BYTES.contains(base) ? Carry.BYTES : Carry.TEXT;
+    }
+
+    // As the server writes them: the drivers' conversions of a date or a number, a tinyint(1)
+    // among them, are not the server's text.
+    @Override
+    public String read(Column column, String name) {
+      var base = base(column);
+      return NUMBERS.contains(base) || TIMES.contains(base) ? "CAST(" + name + " AS CHAR)" : name;
+    }
+
+    @Override
+    public void bind(PreparedStatement statement, int index, Object value) throws SQLException {
+      switch (value) {
+        case null -> statement.setNull(index, Types.NULL);
+        case String text -> statement.setString(index, text);
+        case BigDecimal number -> statement.setBigDecimal(index, number);
+        case byte[] bytes -> statement.setBytes(index, bytes);
+        default -> throw new IllegalArgumentException("No value to copy: " + value.getClass());
+      }
+    }
+
+    @Override
+    public List<String> prepare() {
+      return List.of("SET time_zone = '+00:00'");
+    }
+
+    // Spelled out column by column, as a comparison of rows does not always use the key's index.
+    @Override
+    public After after(List<String> key) {
+      var terms = new ArrayList<String>();
+      var values = new ArrayList<Integer>();
+      for (var i = 0; i < key.size(); i++) {
+        var term = new StringBuilder("(");
+        for (var j = 0; j < i; j++) {
+          term.append(key.get(j)).append(" = ? AND ");
+          values.add(j);
+        }
+        term.append(key.get(i)).append(" > ?)");
+        values.add(i);
+        terms.add(term.toString());
+      }
+      return new After(String.join(" OR ", terms), values);
+    }
+
+    // By all the columns: the servers keep no place of a row that a statement can read.
+    @Override
+    public List<String> order(String alias, List<String> columns) {
+      return columns.stream().map(column -> alias + "." + column).toList();
+    }
+
+    @Override
+    public String insertInto(String table, List<String> columns, boolean overriding) {
+      return "INSERT INTO " + table + " (" + String.join(", ", columns) + ") VALUES";
+    }
+
+    // Their auto-increments move past the values written by themselves.
+    @Override
+    public void written(
+        Connection connection, Provider provider, Table table, List<String> columns) {}
   }
 
   // What their drivers do alike.
