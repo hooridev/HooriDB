@@ -21,8 +21,8 @@ As soon as you choose the target, HooriDB reads the columns and keys of both tab
 - **Columns** are matched by name. The tab lists what is left out:
   - Columns only in the source are not compared or written.
   - Columns only in the target keep their values on update and take their defaults on insert.
-  - Matched columns whose values are of different kinds, such as a date and a text, are not compared.
-- **Rows** are paired by a key that both tables have on the same columns: the source's primary key, or else one of its unique keys whose columns are all `NOT NULL`. Without such a key, the tables cannot be compared, and the tab says so.
+  - Matched columns whose values are of different kinds, such as a date and a text, are not compared. Neither are decimals in the source whose target column holds integers, which would round them.
+- **Rows** are paired by a key that both tables have on the same columns: the source's primary key, or else one of its unique keys whose columns are all `NOT NULL`. A partial unique index, such as PostgreSQL's `CREATE UNIQUE INDEX … WHERE …`, or one that is not valid yet, does not count. Without such a key, the tables cannot be compared, and the tab says so. If a key still comes twice, the comparison stops and says that the key is not unique.
 
 ## Compare
 
@@ -34,7 +34,7 @@ The result shows four counts: rows only in the source, rows only in the target, 
 - **Only in target**: a row the source lacks.
 - **Source** and **Target**: a row that differs appears twice, once with each table's values, and the cells that differ are marked.
 
-The grid shows the first 1,000 differences. The counts always cover the whole tables.
+The grid shows the first 1,000 differences, with long text and binary values cut, as a table's tab shows them. The counts always cover the whole tables.
 
 ### How values compare
 
@@ -53,20 +53,20 @@ Choose what to apply:
 - **Update rows that differ**: only the cells that differ are updated.
 - **Delete rows only in the target**
 
-Press **Apply…** to see the generated `INSERT`, `UPDATE` and `DELETE` statements for the differences shown, then press **Apply**:
+Press **Apply…** to see the generated `DELETE`, `UPDATE` and `INSERT` statements for the differences shown, with long values cut short, then press **Apply**:
 
 1. HooriDB reads both tables again, so the changes match the tables as they are when you apply.
-2. It writes all the changes in one transaction, on a session it opens for the target alone.
+2. It writes all the changes in one transaction, on a session it opens for the target alone: the deletions first, then the updates, then the new rows, so that a unique value, such as an email address, can move from one row to another. Where there are more changes than fit in one batch, it reads the tables again for each kind of change.
 3. Before each update or delete, it checks that the target row still holds the values it read. If a row changed meanwhile, nothing is written.
 4. After the commit, it compares the tables again.
 
-Press **Cancel** while the changes are being written to roll back everything written so far.
+Press **Cancel** while the changes are being written to roll back everything written so far. Once the commit has begun, it can no longer be cancelled: the tab shows what came of it, also when the connection is disconnected meanwhile. If you close the tab during the commit, what came of it appears in the main window's notices.
 
 If the target's connection is read-only, you can still compare the tables, but **Apply…** is disabled.
 
 ## Save as a script
 
-Press **Save as script…** and choose a file. HooriDB then writes the statements that **Apply** would run to that file, wrapped in `START TRANSACTION;` and `COMMIT;`, instead of running them. Like **Apply**, it reads both tables again first. Nothing is written to the target. Text in the script is written as MySQL and MariaDB read it without `NO_BACKSLASH_ESCAPES`.
+Press **Save as script…** and choose a file. HooriDB then writes the statements that **Apply** would run to that file, in the same order, wrapped in `START TRANSACTION;` and `COMMIT;`, instead of running them. Like **Apply**, it reads both tables again first. Nothing is written to the target. Text in the script is written as MySQL and MariaDB read it without `NO_BACKSLASH_ESCAPES`. On MySQL and MariaDB, a `timestamp` is written as `FROM_UNIXTIME(…)` of its seconds, which the session reads in its time zone; in an hour that the zone repeats, it can be the other moment, which **Apply** refuses instead.
 
 ## Limits
 
@@ -74,5 +74,8 @@ Press **Save as script…** and choose a file. HooriDB then writes the statement
 - A `WHERE` filter to compare only some rows is not supported yet.
 - If the target's collation treats two different keys as equal, such as `a` and `A` under a case-insensitive collation, applying fails on the duplicate key and rolls everything back.
 - Generated columns and `GENERATED ALWAYS` identity columns are not recognized yet. An `INSERT` that sets them fails and rolls back.
+- A unique value that moves between two rows that are both updated, such as two rows that swap their emails, can still meet the unique key, which fails and rolls back.
+- A target column of the same kind but less precision or scale, such as `numeric(10,1)` for `numeric(10,2)`, rounds what is written, so the rows still differ after applying.
+- HooriDB holds a bounded portion of each table at a time, but the PostgreSQL and MariaDB drivers fetch up to 501 rows ahead whatever their size, so tables of values of many megabytes each can still need much memory.
 
 Every statement a comparison sends is listed in the statement log (**View → Statement log**).
