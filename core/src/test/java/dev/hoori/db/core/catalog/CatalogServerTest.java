@@ -1047,7 +1047,8 @@ class CatalogServerTest {
             connection,
             "CREATE INDEX idx_m_expr ON idx_sample (lower(c), a) INCLUDE (d)",
             "CREATE INDEX idx_n_long ON idx_sample"
-                + " ((coalesce(c, 'longer than the sixty-three bytes of a name')))");
+                + " ((coalesce(c, 'longer than the sixty-three bytes of a name')))",
+            "CREATE UNIQUE INDEX idx_p_partial ON idx_sample (a) WHERE d > 0");
       } else if (provider == Provider.MYSQL) {
         execute(connection, "CREATE INDEX idx_m_expr ON idx_sample ((lower(c)), a)");
       }
@@ -1065,6 +1066,8 @@ class CatalogServerTest {
         if (provider == Provider.POSTGRESQL) {
           expected.add(
               new Index("idx_m_expr", indexed, List.of("lower(c::text)", "a"), false, false));
+          // Unique only among the rows its predicate takes.
+          expected.add(new Index("idx_p_partial", indexed, List.of("a"), true, false, "", true));
         } else if (provider == Provider.MYSQL) {
           // Verify expression index separately below since MySQL formats expressions with
           // backticks.

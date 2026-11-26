@@ -219,7 +219,7 @@ public final class Catalog {
 
   /**
    * The indexes of {@code table}, primary key first and then by name, each with its key columns or
-   * expressions in key order. Views and foreign tables have none and return an empty list without
+   * expressions in key order, and whether it holds for only some rows. Views and foreign tables have none and return an empty list without
    * querying the server.
    */
   public static List<Index> indexes(Connection connection, Provider provider, Table table)
@@ -236,7 +236,9 @@ public final class Catalog {
           table,
           column == null ? List.of() : List.of(column),
           rows.getBoolean(3),
-          rows.getBoolean(4));
+          rows.getBoolean(4),
+          "",
+          rows.getBoolean(5));
     };
     var parts = query(
         connection, provider, catalog.indexes(), part, table.container().name(), table.name());
@@ -252,7 +254,9 @@ public final class Catalog {
                 last.table(),
                 concat(last.columns(), next.columns()),
                 last.unique(),
-                last.primary()));
+                last.primary(),
+                last.detail(),
+                last.partial()));
       } else {
         merged.add(next);
       }

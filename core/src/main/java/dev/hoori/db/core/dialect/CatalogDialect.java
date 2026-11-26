@@ -72,7 +72,8 @@ public interface CatalogDialect {
   /**
    * The indexes of the table in the schema or database named, taking the container name and table
    * name. Each row is one key position: index name, column name or expression, whether the index is
-   * unique and whether it is the primary key. Non-key included columns are omitted. Rows are
+   * unique, whether it is the primary key, and whether it holds for only some rows, by a predicate
+   * or as it is not valid yet. Non-key included columns are omitted. Rows are
    * ordered with the primary key first, then by index name, and by key order within each index so
    * that each index's columns are consecutive and in key order.
    */
