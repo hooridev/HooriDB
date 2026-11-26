@@ -12,9 +12,12 @@ import com.rethinkj.ui.App;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.transfer.Report;
+import dev.hoori.db.core.transfer.Transfer.Existing;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.OptionalLong;
+import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -218,5 +221,156 @@ class TransferTabTest {
         app.state().transfers(null).getFirst().checked().stream()
             .filter(t -> !t.container().name().equals("shop"))
             .toList());
+  }
+
+  /** Starts the copy of items into archive, which waits at its write: the gate it waits at. */
+  CountDownLatch running(App<State> app) throws Exception {
+    var gate = c.servers.hold("copy write " + ITEMS);
+    c.run(
+        app,
+        choose("Target database", "archive")
+            + SETTLE
+            + "press role=checkbox label=\"stock\"\nframe\n"
+            + COPY
+            + "frame\nadvance 1\nframe\n");
+    assertTrue(app.state().transfers(null).getFirst().running != null);
+    return gate;
+  }
+
+  @Test
+  void closingTheTabWhileACopyRunsAsksFirstAndStopsTheCopy() throws Exception {
+    var app = opened(MARIA);
+    var held = running(app);
+    c.run(app, "key W control\nframe\nadvance 1\nframe\nsnap asked\n");
+    var asked = c.tree("asked");
+    assertTrue(asked.contains("Stop the copy?"), asked);
+    assertEquals(1, app.state().transfers(null).size());
+
+    c.run(app, "press role=button label=\"Cancel\"\nframe\nadvance 1\nframe\n");
+    assertEquals(1, app.state().transfers(null).size());
+    assertTrue(app.state().transfers(null).getFirst().running != null);
+
+    c.run(
+        app,
+        "key W control\nframe\nadvance 1\nframe\n"
+            + "press role=button label=\"Stop the copy\"\nframe\n"
+            + SETTLE
+            + "snap closed\n");
+    held.countDown();
+    assertEquals(List.of(), app.state().transfers(null));
+    assertFalse(c.tree("closed").contains("Stop the copy?"), c.tree("closed"));
+    assertTrue(
+        c.servers.interrupted.contains("copy write " + ITEMS), c.servers.interrupted.toString());
+    assertEquals(0, c.servers.rowsOf(ITEMS).size());
+  }
+
+  @Test
+  void disconnectingWhileACopyRunsAsksFirst() throws Exception {
+    var app = opened(MARIA);
+    var held = running(app);
+    c.run(app, menu("maria", "Disconnect") + "snap asked\n");
+    assertTrue(c.tree("asked").contains("Stop the copy?"), c.tree("asked"));
+    assertTrue(app.state().catalog.connected(MARIA.id()));
+
+    c.run(app, "press role=button label=\"Stop the copy\"\nframe\n" + SETTLE + "snap ended\n");
+    held.countDown();
+    assertFalse(app.state().catalog.connected(MARIA.id()));
+    var tab = app.state().transfers(null).getFirst();
+    assertEquals(null, tab.running);
+    assertEquals(Report.Stage.CANCELLED, tab.report.stage());
+  }
+
+  @Test
+  void anotherConnectionToTheSameDatabaseIsTheSameTarget() throws Exception {
+    var other = ConnectionProfile.of(Provider.MARIADB)
+        .withName("maria 2")
+        .withHost(HOST)
+        .withUser("other");
+    var app = c.app(MARIA, other);
+    c.ready(app, MARIA, other);
+    c.run(
+        app,
+        START
+            + open("maria")
+            + SETTLE
+            + menu("shop", "Copy tables…")
+            + SETTLE
+            + open("maria 2")
+            + SETTLE
+            + choose("Target connection", "maria 2")
+            + SETTLE
+            + choose("Target database", "shop")
+            + SETTLE
+            + "snap same\n");
+    var tree = c.tree("same");
+    assertTrue(tree.contains("The source and the target are the same"), tree);
+
+    c.run(app, choose("Target database", "archive") + SETTLE + "snap other\n");
+    assertFalse(c.tree("other").contains("The source and the target are the same"));
+  }
+
+  @Test
+  void whatIsDoneWhereATableHasRowsIsChosenAgainForAnotherSource() throws Exception {
+    var app = opened(MARIA);
+    c.run(app, choose("Where items has rows", "Empty it first"));
+    var tab = app.state().transfers(null).getFirst();
+    assertEquals(Existing.EMPTY, tab.existing("items"));
+
+    c.run(app, choose("Source database", "archive") + SETTLE);
+    assertEquals(Existing.STOP, tab.existing("items"));
+  }
+
+  @Test
+  void aTargetDatabaseWithoutSchemaToWriteIntoBlocksTheCopy() throws Exception {
+    var host = "pg.copy.example.com";
+    c.servers.serve(host, Provider.POSTGRESQL, "16.4", """
+        shop
+          public
+            items
+              *id: integer
+        bare
+          ~pg_catalog
+            pg_class
+              oid: oid
+        """);
+    var pg = ConnectionProfile.of(Provider.POSTGRESQL)
+        .withName("pg")
+        .withHost(host)
+        .withUser("app")
+        .withDatabase("shop");
+    var app = c.app(pg);
+    c.ready(app, pg);
+    c.run(
+        app,
+        START
+            + open("pg")
+            + SETTLE
+            + menu("shop", "Copy tables…")
+            + SETTLE
+            + choose("Target database", "bare")
+            + SETTLE
+            + "snap bare\n");
+    var tree = c.tree("bare");
+    assertTrue(tree.contains("Target: choose its schema."), tree);
+    assertTrue(
+        tree.lines().anyMatch(l -> l.contains("label=\"Copy\"") && l.contains("disabled")), tree);
+  }
+
+  @Test
+  void exitWhileACopyRunsAsksFirst() throws Exception {
+    var app = opened(MARIA);
+    var held = running(app);
+    var exit = "press role=menuitem label=\"File\"\nframe\nadvance 1\nframe\n"
+        + "press role=menuitem label=\"Exit\"\nframe\nadvance 1\nframe\n";
+    c.run(app, exit + "snap asked\n");
+    assertTrue(c.tree("asked").contains("Stop the copy?"), c.tree("asked"));
+    c.run(app, "press #answer-cancel\nframe\nadvance 1\nframe\n");
+    assertFalse(app.windows().all().isEmpty());
+
+    c.run(app, exit + "press #answer-stop\nframe\n" + SETTLE);
+    held.countDown();
+    c.run(app, SETTLE);
+    assertTrue(app.windows().all().isEmpty());
+    assertEquals(0, c.servers.rowsOf(ITEMS).size());
   }
 }

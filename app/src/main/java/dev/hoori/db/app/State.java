@@ -1376,12 +1376,15 @@ final class State {
     }
   }
 
-  /** The tabs that may hold uncommitted work (consoles and tables), of the connection or all. */
+  /**
+   * The tabs that may hold uncommitted work, consoles and tables, or copy tables, of the
+   * connection or all.
+   */
   List<Guard.Guarded> guarded(UUID id) {
     var all = new ArrayList<Guard.Guarded>();
     for (var group : tabs.groups()) {
       for (var tab : group.tabs()) {
-        if (tab instanceof Guard.Guarded g && (id == null || id.equals(g.connectionId()))) {
+        if (tab instanceof Guard.Guarded g && (id == null || g.on(id))) {
           all.add(g);
         }
       }

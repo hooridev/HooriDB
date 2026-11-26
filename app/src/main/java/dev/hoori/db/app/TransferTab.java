@@ -12,9 +12,11 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
+import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.Checkbox;
+import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
@@ -60,10 +62,12 @@ import java.util.concurrent.atomic.AtomicReference;
  * and the target each have a session and lane of the tab's own, never the tree's, opened on their
  * database once their connection is connected; their databases, schemas and tables are read on it,
  * and the copy runs on it, as core's {@link Copier}. A copy shows how far it is, can be cancelled,
- * and ends with what was copied and what failed. Closing the tab ends both sessions, which cancels
- * a copy under way: the server rolls back what was not committed. Only the app's thread uses it.
+ * and ends with what was copied and what failed. While a copy runs, what would end it, as closing
+ * the tab, disconnecting or deleting either connection or closing HooriDB, asks first, and goes on
+ * once the copy has ended; ending a session cancels the copy, and the server rolls back what was
+ * not committed. Only the app's thread uses it.
  */
-final class TransferTab implements Tab {
+final class TransferTab implements Tab, Guard.Guarded {
 
   static final String COPY = "Copy";
 
@@ -113,12 +117,27 @@ final class TransferTab implements Tab {
       return schema.isEmpty() ? null : new Schema(of, schema, false);
     }
 
-    /** Whether it is the same as the other, so that a copy would read what it writes. */
-    boolean same(End other) {
-      return id != null
-          && id.equals(other.id)
-          && database.equals(other.database)
-          && schema.equals(other.schema);
+    /**
+     * Whether it is the same as the other, so that a copy would read what it writes: the same
+     * database and schema of the same connection, or of another of the same server.
+     */
+    boolean same(State s, End other) {
+      if (id == null
+          || other.id == null
+          || !database.equals(other.database)
+          || !schema.equals(other.schema)) {
+        return false;
+      }
+      if (id.equals(other.id)) {
+        return true;
+      }
+      var mine = s.profile(id);
+      var theirs = s.profile(other.id);
+      return mine != null
+          && theirs != null
+          && mine.provider() == theirs.provider()
+          && mine.host().equalsIgnoreCase(theirs.host())
+          && mine.port() == theirs.port();
     }
   }
 
@@ -200,7 +219,8 @@ final class TransferTab implements Tab {
   }
 
   /** Whether an end is on the connection. */
-  boolean on(UUID id) {
+  @Override
+  public boolean on(UUID id) {
     return id.equals(source.id) || id.equals(target.id);
   }
 
@@ -379,6 +399,7 @@ final class TransferTab implements Tab {
     report = null;
     if (end == source) {
       unchecked.clear();
+      existing.clear();
     }
     // A database of PostgreSQL needs a session of its own; MariaDB and MySQL read any.
     var profile = s.profile(end.id);
@@ -398,6 +419,7 @@ final class TransferTab implements Tab {
     report = null;
     if (end == source) {
       unchecked.clear();
+      existing.clear();
     }
     read(s, end);
   }
@@ -430,12 +452,19 @@ final class TransferTab implements Tab {
             ? null // the view says that it reads
             : end.role + ": choose its database" + (end.schemas == null ? "." : " and schema.");
       }
+      var provider = provider(s, end);
+      if (provider != null && end.container(provider) == null) {
+        return end.role + ": choose its "
+            + (provider.supports(Capability.SCHEMAS, ServerVersion.UNKNOWN)
+                ? "schema."
+                : "database.");
+      }
     }
     var profile = s.profile(target.id);
     if (profile != null && profile.readOnly()) {
       return "The target connection is read-only: nothing can be copied into it.";
     }
-    if (source.same(target)) {
+    if (source.same(s, target)) {
       return "The source and the target are the same: choose another target database"
           + (target.schemas == null || target.schemas.isEmpty() ? "." : " or schema.");
     }
@@ -479,10 +508,12 @@ final class TransferTab implements Tab {
           if (r.stage() == Report.Stage.DONE && r.in(Report.State.FAILED).isEmpty()) {
             read(s, target); // what the target holds now
           }
+          settle(s);
         },
         e -> {
           running = null;
           failed = State.messageOf(e);
+          settle(s);
         });
   }
 
@@ -500,8 +531,84 @@ final class TransferTab implements Tab {
         running = null;
         cancelling = false;
         report = told.get();
+        settle(state);
       }
     });
+  }
+
+  // The question
+
+  @Override
+  public UUID connectionId() {
+    return source.id;
+  }
+
+  /** A copy that runs is at stake: what would end it asks first. */
+  @Override
+  public boolean atStake(Guard.Scope scope) {
+    return scope != Guard.Scope.TRANSACTION && running != null;
+  }
+
+  private Guard.Pending.Question asked(State s) {
+    return s.guard.pending instanceof Guard.Pending.Question question && question.tab() == this
+        ? question
+        : null;
+  }
+
+  @Override
+  public El question(State s) {
+    var asked = asked(s);
+    if (asked == null) {
+      return null;
+    }
+    Theme t = Theme.CURRENT.get();
+    var content = col()
+        .w(ConnectionDialog.width())
+        .gap(t.space().m())
+        .child(label(s.title(this) + " is copying tables. Stop the copy before " + asked.what()
+                + "? What it wrote and did not commit is rolled back.")
+            .wrapText())
+        .child(
+            cancelling
+                ? row()
+                    .gap(t.space().s())
+                    .align(Style.Align.CENTER)
+                    .child(Progress.spinner().label("Stopping"))
+                    .child(label(Label.Variant.MUTED, "Stopping the copy…"))
+                : null);
+    var buttons = List.of(
+        button(SECONDARY, ConsoleTab.CANCEL_BUTTON, () -> answer(s, false)).key("answer-cancel"),
+        button(
+                PRIMARY,
+                "Stop the copy",
+                cancelling ? null : () -> answer(s, true),
+                Button.options().tone(Button.Tone.DANGER))
+            .key("answer-stop"));
+    return Dialog.dialog("Stop the copy?", content, buttons, () -> answer(s, false))
+        .key("transfer-question");
+  }
+
+  // The question's answer: the copy stops, and the act goes on once it has ended; or it runs on,
+  // and the act is given up.
+  private void answer(State s, boolean stop) {
+    if (asked(s) == null) {
+      return;
+    }
+    if (!stop) {
+      s.guard.pending = null;
+      return;
+    }
+    cancel();
+    settle(s);
+  }
+
+  // The copy ended: an act that asked goes on.
+  private void settle(State s) {
+    var asked = asked(s);
+    if (asked != null && !atStake(asked.scope())) {
+      s.guard.pending = null;
+      asked.then().run();
+    }
   }
 
   // The source's calls, each on its lane, waited for: an interrupt cancels the one that runs.

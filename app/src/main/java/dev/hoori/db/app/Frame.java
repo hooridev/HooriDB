@@ -633,21 +633,24 @@ final class Frame {
     }
     int consoles = 0;
     int tables = 0;
+    int copies = 0;
     for (var tab : tabs) {
-      if (tab instanceof ConsoleTab) {
-        consoles++;
-      } else {
-        tables++;
+      switch (tab) {
+        case ConsoleTab _ -> consoles++;
+        case TableTab _ -> tables++;
+        case TransferTab _ -> copies++;
       }
     }
+    int n = consoles + tables + copies;
     String text;
-    if (tables == 0) {
+    if (n == consoles) {
       text =
           consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
-    } else if (consoles == 0) {
+    } else if (n == tables) {
       text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    } else if (n == copies) {
+      text = copies == 1 ? "A copy of tables runs" : copies + " copies of tables run";
     } else {
-      int n = consoles + tables;
       text = n + " tabs may hold uncommitted work";
     }
     var first = tabs.getFirst();

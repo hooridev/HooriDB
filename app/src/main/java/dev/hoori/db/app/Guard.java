@@ -15,11 +15,19 @@ final class Guard {
 
   Pending pending; // the one act that waits, or null
 
-  /** A tab that may hold uncommitted work and asks before an act discards or ends it. */
-  sealed interface Guarded permits ConsoleTab, TableTab {
+  /**
+   * A tab that may hold uncommitted work, or does work that must not end unasked, and asks before
+   * an act discards or ends it.
+   */
+  sealed interface Guarded permits ConsoleTab, TableTab, TransferTab {
 
     /** The connection this tab belongs to, for {@link Pending.Locked}. */
     UUID connectionId();
+
+    /** Whether the tab works on the connection, as the one it belongs to or another. */
+    default boolean on(UUID id) {
+      return id.equals(connectionId());
+    }
 
     /** Whether something within {@code scope} is at stake on this tab. */
     boolean atStake(Scope scope);
@@ -172,7 +180,7 @@ final class Guard {
   String locked(Guarded tab) {
     return pending instanceof Pending.Locked locked
             && (locked.scope() == null
-                || tab.connectionId() != null && locked.scope().contains(tab.connectionId())
+                || locked.scope().stream().anyMatch(tab::on)
                 || tab instanceof ConsoleTab c
                     && c.queryId != null
                     && locked.scope().contains(c.queryId))
