@@ -1,0 +1,54 @@
+---
+title: Copy tables
+description: Copy the rows of tables from one connection, database or schema into another of the same server type.
+---
+
+**Copy tables** copies the rows of tables from one PostgreSQL, MySQL or MariaDB connection into tables of the same name in another connection, database or schema of the same server type. It runs in a tab of its own, on two sessions of its own (one for the source, one for the target), so the workspace tree and other tabs stay usable while it runs.
+
+This first version copies data into tables that already exist in the target. It does not create tables, indexes or foreign keys yet, and does not copy between server types or MongoDB collections.
+
+## Open Copy tables
+
+- Right-click a connection, a database or a schema in the workspace tree and choose **Copy tables…**.
+- Or select one in the tree and choose **File > Copy tables…**, or run **Copy tables…** from the command palette (`Ctrl+Shift+P`).
+
+The tab opens with that connection, database and schema as the source, and the same as the target. Both connections must be connected in the tree; a **Connect** button appears where one is not.
+
+## Choose the source and the target
+
+- **Source**: its **Connection**, **Database** and, on PostgreSQL, **Schema**. Its tables are listed below, all checked. Use **All** and **None**, or the checkboxes, to choose which to copy.
+- **Target**: its **Connection** (of the same server type as the source), **Database** and **Schema**. Beside each table the list says whether the target has a table of that name (`In the target` or `Not in the target`).
+
+**Copy** stays disabled, with the reason beside it, while the source and the target are the same database and schema, no table is checked, or the target connection is read-only.
+
+## What happens where the target has rows
+
+For each table, choose what happens where the target's table already has rows (or set all of them with **Where the target has rows**):
+
+- **Stop**: the table is not copied and counts as failed.
+- **Empty it first**: its rows are deleted (`DELETE`) before any rows are copied.
+- **Append**: the rows are added to those already there.
+
+Tables to be emptied are emptied before any table is copied, those that refer to others by a foreign key first, each in a transaction of its own.
+
+## Columns
+
+Columns are matched by name (if no name matches exactly, a name that differs only in case is used). A column of the source that the target's table lacks fails that table. A column the target generates itself (such as a generated column) is left out, and a column of the target that the source lacks gets its default. Values are copied as the server writes them, so numbers, dates, times with zones, JSON, arrays and binary data arrive unchanged. On PostgreSQL, identity and serial columns take the copied values, and their sequences are set past the highest value copied.
+
+## Options
+
+- **Commit**: **Per table** commits a table once all its rows are written, so a table that fails keeps none of its new rows. **Per batch** commits after each batch, so a table that fails keeps the batches written before the failure.
+- **At an error**: **Stop** ends the run at the first table that fails; **Skip the table** goes on with the next.
+- **Rows per batch**: how many rows are read and written at a time (1,000 by default). Batches of large values are made smaller, so that a batch holds about 8 MB at most.
+
+## Run a copy
+
+Press **Copy**. HooriDB first reads what every table needs: its columns on both sides, how many rows it has, whether the target has rows where it must not, and the target's foreign keys. If a table cannot be copied (for example because the target has no table of that name) and **At an error** is **Stop**, nothing is written at all.
+
+Tables are then copied in the order of their foreign keys, a table after the tables it refers to. Rows are read in pages by the primary key (by position for a table without one) and written in batches of multi-row `INSERT`s, so a table is never held whole in memory. Each page is read on its own: rows changed in the source while it is copied may be copied as they were before or after the change.
+
+While it runs, each table shows how many of its rows were written, and a bar shows the rows of all tables. Press **Cancel** to stop at any point: what was written and not committed is rolled back. Closing the tab or disconnecting either connection cancels the copy as well.
+
+When the run ends, each table shows how many rows were copied, or that it failed, was skipped or cancelled, and a summary lists every table that failed with the server's reason.
+
+Everything the copy sends appears in the statement log (**View > Statement log**) as part **Copy** (a multi-row `INSERT` is logged with its first row of parameters and how many rows it holds). Messages of failed writes are not logged, as they may quote a row.
