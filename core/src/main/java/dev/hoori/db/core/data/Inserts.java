@@ -151,11 +151,18 @@ public final class Inserts {
 
   /**
    * What came of it: the count, in which {@link Count#committed} rows are in the table, the first
-   * {@link #LISTED} rows that failed, and the one it stopped at, or null where it went to the end.
+   * {@link #LISTED} rows that failed, the one it stopped at, or null where it did not stop at a
+   * row, and whether it was cancelled before its end.
    */
-  public record Report(Count count, List<Failed> failed, Failed stoppedAt) {
+  public record Report(Count count, List<Failed> failed, Failed stoppedAt, boolean cancelled) {
 
+    /**
+     * @throws IllegalArgumentException if it both stopped at a row and was cancelled
+     */
     public Report {
+      if (stoppedAt != null && cancelled) {
+        throw new IllegalArgumentException("Stopped at a row and cancelled");
+      }
       failed = failed.stream().sorted(Comparator.comparingLong(Failed::line)).toList();
     }
 
@@ -170,10 +177,13 @@ public final class Inserts {
    * auto-commit on and no transaction open, as one of the import's own has, and is left so;
    * nothing else may run on it meanwhile.
    *
-   * <p>The call blocks. An interrupt of the calling thread cancels the statement that runs and
-   * ends with {@link QueryException.Failure#CANCELLED} or {@link QueryException.Failure#ABORTED},
-   * as {@link Query} does, once the transaction it was in is rolled back; what an earlier batch of
-   * {@link Commit#EACH_BATCH} committed stays, as {@code progress} told it.
+   * <p>The call blocks. An interrupt of the calling thread cancels the statement that runs, as
+   * {@link Query} does, and once the transaction it was in is rolled back the report says that it
+   * was cancelled, with what an earlier batch of {@link Commit#EACH_BATCH} committed, which stays;
+   * the thread is left interrupted. An interrupt as a transaction commits lets the commit end, so
+   * that the report counts it. Where the connection is given up as the cancel runs, the call ends
+   * with {@link QueryException.Failure#ABORTED}, and before the import began with {@link
+   * QueryException.Failure#CANCELLED}.
    *
    * @param columns all the table's columns, in their order, as {@link Rows#read} takes them
    * @param targets the indexes of the columns given values among them, in the order of a row's
@@ -181,8 +191,8 @@ public final class Inserts {
    * @param readOnly whether the connection is read-only, which refuses the import before anything
    *     is sent
    * @throws QueryException where the import could not begin, as for a table that keeps no
-   *     transactions, or stopped for the table, the connection, a cancel, or the commit, after all
-   *     that was not committed was rolled back
+   *     transactions, or stopped for the table, the connection, or the commit, after all that was
+   *     not committed was rolled back
    * @throws IOException where the source failed so, after all that was not committed was rolled
    *     back
    * @throws IllegalArgumentException if no column, or one twice or out of range, is given values,
@@ -248,6 +258,10 @@ public final class Inserts {
         Transactions.end(connection, provider, false);
       } catch (QueryException ended) {
         e.addSuppressed(ended);
+        throw e;
+      }
+      if (e instanceof QueryException q && q.failure() == QueryException.Failure.CANCELLED) {
+        return writing.cancelled();
       }
       throw e;
     }
@@ -329,7 +343,7 @@ public final class Inserts {
         }
       }
       var stopped = batch.isEmpty() ? null : batch(batch, true);
-      return stopped != null ? stop(stopped) : new Report(count(), failed, null);
+      return stopped != null ? stop(stopped) : new Report(count(), failed, null, false);
     }
 
     // Writes the batch, and in a transaction of each batch commits it where asked: the row it
@@ -419,13 +433,19 @@ public final class Inserts {
     private Report stop(Failed failure) {
       fail(failure);
       written = committed;
-      return new Report(count(), failed, failure);
+      return new Report(count(), failed, failure, false);
     }
 
     // The report once the transaction ended, committed where it did not stop.
     Report report(Report report) {
       committed = written;
-      return new Report(count(), report.failed(), report.stoppedAt());
+      return new Report(count(), report.failed(), report.stoppedAt(), false);
+    }
+
+    // Cancelled, once what the transaction wrote was rolled back.
+    Report cancelled() {
+      written = committed;
+      return new Report(count(), failed, null, true);
     }
 
     private Count count() {

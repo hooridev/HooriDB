@@ -1467,7 +1467,9 @@ final class FakeServers implements Servers {
 
     // Rows of a file into the table, a batch at a time, as core's import writes them: each batch
     // keyed import <host>/<path> <n> from 1 after the import's own key, its values read as the
-    // columns' kinds say, a row refused where it has a value refusesImported names.
+    // columns' kinds say, a row refused where it has a value refusesImported names. A cancel of a
+    // batch ends it, with what earlier batches committed; the commit at its end, keyed import
+    // <host>/<path> commit, ends whatever, as core's does within its bound.
     @Override
     public Inserts.Report insert(
         Table t,
@@ -1502,6 +1504,7 @@ final class FakeServers implements Servers {
       int batches = 0;
       var batch = new ArrayList<List<Object>>();
       Inserts.Failed stopped = null;
+      var cancelled = false;
       try {
         for (var row = source.next(); row != null && stopped == null; row = source.next()) {
           read++;
@@ -1516,7 +1519,9 @@ final class FakeServers implements Servers {
                 var column = columns.get(targets.get(i));
                 if (text != null && refusing.contains(text)) {
                   failure = new Inserts.Failed(
-                      line, "ERROR: duplicate key value violates unique constraint");
+                      line,
+                      "ERROR: duplicate key value violates unique constraint\nDetail: Key ("
+                          + column.name() + ")=(" + text + ") already exists.");
                 } else if (text == null && !column.nullable()) {
                   failure = new Inserts.Failed(
                       line, "ERROR: null value in column \"" + column.name() + "\"");
@@ -1551,9 +1556,15 @@ final class FakeServers implements Servers {
               batch(key, ++batches, batch, open, committed, options, progress, read, failures);
         }
         if (stopped == null) {
+          enduring(key + " commit");
           committed.clear();
           committed.addAll(open);
         }
+      } catch (QueryException e) {
+        if (e.failure() != QueryException.Failure.CANCELLED) {
+          throw e;
+        }
+        cancelled = true;
       } finally {
         values.put(path, List.copyOf(committed));
         counts.put(path, (long) committed.size());
@@ -1562,7 +1573,30 @@ final class FakeServers implements Servers {
       var written = committed.size() - before;
       done.add(key);
       return new Inserts.Report(
-          new Inserts.Count(read, written, written, failures), failed, stopped);
+          new Inserts.Count(read, written, written, failures), failed, stopped, cancelled);
+    }
+
+    // A call that an interrupt does not end, as a commit within core's bound: it waits for its
+    // gate, and leaves the thread interrupted.
+    private void enduring(String key) {
+      calls.add(key);
+      var gate = gates.get(key);
+      if (gate == null) {
+        return;
+      }
+      var interrupted = false;
+      while (true) {
+        try {
+          gate.await();
+          break;
+        } catch (InterruptedException _) {
+          interrupted = true;
+          FakeServers.this.interrupted.add(key);
+        }
+      }
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
     }
 
     // Writes the batch into the open rows, and commits them where each batch commits: its number.

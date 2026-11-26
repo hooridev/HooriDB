@@ -233,6 +233,63 @@ class TableFilesServerTest {
 
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aCancelReportsWhatWasCommittedAndOneAtTheCommitLetsItEnd(Provider provider)
+      throws Exception {
+    var name = unique("files_cancel");
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name)
+              + " (id integer PRIMARY KEY, name varchar(10))");
+      try {
+        var table = table(provider, name);
+        var columns = Catalog.columns(connection, provider, table);
+        var file = dir.resolve(name + ".csv");
+        Files.writeString(file, "id,name\n1,a\n2,b\n3,c\n4,d\n5,e\n");
+
+        // Cancelled once the first batch was committed: the second is taken back.
+        var cancelled = load(
+            connection,
+            provider,
+            table,
+            columns,
+            file,
+            new Inserts.Options(false, 2, Inserts.Commit.EACH_BATCH, Inserts.OnError.STOP),
+            count -> Thread.currentThread().interrupt());
+        assertTrue(Thread.interrupted());
+        assertTrue(cancelled.cancelled());
+        assertNull(cancelled.stoppedAt());
+        assertEquals(new Inserts.Count(4, 2, 2, 0), cancelled.count());
+        assertEquals(List.of(1L, 2L), ids(connection, provider, table, columns));
+        assertLeftAsItWas(connection, provider);
+
+        // Cancelled as its one transaction is to commit: the commit ends, and is counted.
+        var committed = load(
+            connection,
+            provider,
+            table,
+            columns,
+            file,
+            new Inserts.Options(true, 2, Inserts.Commit.ONCE, Inserts.OnError.STOP),
+            count -> {
+              if (count.written() == 5) {
+                Thread.currentThread().interrupt();
+              }
+            });
+        assertTrue(Thread.interrupted());
+        assertFalse(committed.cancelled());
+        assertEquals(new Inserts.Count(5, 5, 5, 0), committed.count());
+        assertEquals(List.of(1L, 2L, 3L, 4L, 5L), ids(connection, provider, table, columns));
+        assertLeftAsItWas(connection, provider);
+      } finally {
+        Thread.interrupted();
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
   void refusesATableWhoseStorageKeepsNoTransactions(Provider provider) throws Exception {
     assumeTrue(provider != Provider.POSTGRESQL, "Every table of PostgreSQL keeps transactions");
     var name = unique("files_myisam");
@@ -360,17 +417,21 @@ class TableFilesServerTest {
       Path file,
       Inserts.Options options)
       throws Exception {
+    return load(connection, provider, table, columns, file, options, Inserts.Progress.NONE);
+  }
+
+  private static Inserts.Report load(
+      Connection connection,
+      Provider provider,
+      Table table,
+      List<Column> columns,
+      Path file,
+      Inserts.Options options,
+      Inserts.Progress progress)
+      throws Exception {
     try (var rows = Import.open(file, Format.Delimited.CSV, List.of(0, 1))) {
       return Inserts.write(
-          connection,
-          provider,
-          table,
-          columns,
-          List.of(0, 1),
-          rows,
-          options,
-          false,
-          Inserts.Progress.NONE);
+          connection, provider, table, columns, List.of(0, 1), rows, options, false, progress);
     }
   }
 
