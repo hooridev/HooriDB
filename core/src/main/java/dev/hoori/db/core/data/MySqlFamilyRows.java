@@ -433,8 +433,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
     return "CAST(" + expression + " AS BINARY)";
   }
 
-  // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails
-  // the statement that names it. A moment must come back as itself from the session's time.
+  // A moment must come back as itself from the session's time, and the table keep transactions.
   @Override
   boolean changeable(Connection connection, Provider provider, Table table, List<Object> values)
       throws QueryException {
@@ -460,12 +459,26 @@ abstract class MySqlFamilyRows extends RowsDialect {
         }
       }
     }
+    return transactional(connection, provider, table, Purpose.CHANGES);
+  }
+
+  // The most placeholders of a prepared statement, which the server counts in 16 bits.
+  @Override
+  int parameters() {
+    return 65_535;
+  }
+
+  // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails
+  // the statement that names it.
+  @Override
+  boolean transactional(Connection connection, Provider provider, Table table, Purpose purpose)
+      throws QueryException {
     var sql = "SELECT e.TRANSACTIONS FROM information_schema.TABLES t"
         + " JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE"
         + " WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?";
     return Journal.sql(
         provider,
-        Purpose.CHANGES,
+        purpose,
         sql,
         ok -> Outcome.rows(1),
         () -> Query.run(connection, provider, sql, statement -> {

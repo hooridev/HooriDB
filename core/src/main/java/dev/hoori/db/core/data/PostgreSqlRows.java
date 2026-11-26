@@ -409,6 +409,19 @@ public final class PostgreSqlRows extends RowsDialect {
     return column + " " + keyEquality() + " " + parameter.apply(value);
   }
 
+  // The protocol counts a statement's parameters in 16 bits, which pgjdbc before 42.4 and older
+  // servers take as signed.
+  @Override
+  int parameters() {
+    return Short.MAX_VALUE;
+  }
+
+  // Every table keeps transactions, an unlogged one too.
+  @Override
+  boolean transactional(Connection connection, Provider provider, Table table, Purpose purpose) {
+    return true;
+  }
+
   // An UPDATE or DELETE of a table that others inherit from meets their rows too, whose keys may
   // be its own; a partitioned table's keys are unique across its partitions.
   @Override

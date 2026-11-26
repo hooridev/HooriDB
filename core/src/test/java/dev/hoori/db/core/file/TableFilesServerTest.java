@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.catalog.Catalog;
@@ -224,6 +225,41 @@ class TableFilesServerTest {
                 Inserts.Progress.NONE));
         assertTrue(refused.getMessage().contains("read-only"), refused.getMessage());
         assertEquals(List.of(1L, 2L), ids(connection, provider, table, columns));
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void refusesATableWhoseStorageKeepsNoTransactions(Provider provider) throws Exception {
+    assumeTrue(provider != Provider.POSTGRESQL, "Every table of PostgreSQL keeps transactions");
+    var name = unique("files_myisam");
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name)
+              + " (id integer PRIMARY KEY, name varchar(10)) ENGINE=MyISAM",
+          "INSERT INTO " + qualified(provider, name) + " VALUES (9, 'old')");
+      try {
+        var table = table(provider, name);
+        var columns = Catalog.columns(connection, provider, table);
+        var file = dir.resolve(name + ".csv");
+        // A batch that fails on line 3 would keep line 2's row, which its retry writes again.
+        Files.writeString(file, "id,name\n1,a\n1,again\n2,b\n");
+        var refused = assertThrows(
+            QueryException.class,
+            () -> load(
+                connection,
+                provider,
+                table,
+                columns,
+                file,
+                new Inserts.Options(false, 10, Inserts.Commit.ONCE, Inserts.OnError.SKIP)));
+        assertTrue(refused.getMessage().contains("keeps no transactions"), refused.getMessage());
+        assertEquals(List.of(9L), ids(connection, provider, table, columns));
+        assertLeftAsItWas(connection, provider);
       } finally {
         dropAfter(provider, "DROP TABLE " + qualified(provider, name));
       }

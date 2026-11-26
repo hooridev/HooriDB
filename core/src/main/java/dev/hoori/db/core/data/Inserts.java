@@ -38,17 +38,17 @@ import java.util.StringJoiner;
  * <p>A batch that fails is taken back to the savepoint before it and written again row by row,
  * each within a savepoint of its own, which tells the row that fails: that row is skipped, or the
  * import stops there, as the options say. A failure of the table rather than of a row, a lost
- * connection, a refused access, or a table that is gone, stops it at once.
+ * connection, a refused access, or a table that is gone, stops it at once. So a table whose
+ * storage keeps no transactions, as MyISAM's, which would keep what a rollback is to take back,
+ * takes no import.
  */
 public final class Inserts {
 
   /** How many failures a report lists; it counts them all. */
   public static final int LISTED = 1000;
 
-  // The most parameters of one statement, which PostgreSQL's protocol and MySQL's limit, and the
-  // most characters of values a batch holds before it goes, so that a statement stays far below
-  // the servers' packet sizes.
-  private static final int PARAMETERS = 32_767;
+  // The most characters of values a batch holds before it goes, so that a statement stays far
+  // below the servers' packet sizes.
   private static final long CHARACTERS = 4L * 1024 * 1024;
 
   private Inserts() {}
@@ -180,8 +180,9 @@ public final class Inserts {
    *     values
    * @param readOnly whether the connection is read-only, which refuses the import before anything
    *     is sent
-   * @throws QueryException where the import could not begin, or stopped for the table, the
-   *     connection, a cancel, or the commit, after all that was not committed was rolled back
+   * @throws QueryException where the import could not begin, as for a table that keeps no
+   *     transactions, or stopped for the table, the connection, a cancel, or the commit, after all
+   *     that was not committed was rolled back
    * @throws IOException where the source failed so, after all that was not committed was rolled
    *     back
    * @throws IllegalArgumentException if no column, or one twice or out of range, is given values,
@@ -213,11 +214,14 @@ public final class Inserts {
     }
     Rows.requireConnectedTo(connection, provider, table);
     Changes.requireNoTransaction(connection, provider);
-    var reads = provider
-        .dialect()
-        .rows()
-        .describe(connection, provider, table, columns, false)
-        .reads();
+    var dialect = provider.dialect().rows();
+    if (!dialect.transactional(connection, provider, table, Purpose.IMPORT)) {
+      throw QueryException.of(
+          QueryException.Failure.OTHER,
+          table.name() + " keeps no transactions, as its storage engine, such as MyISAM, has"
+              + " none: what failed could not be taken back, so nothing is imported into it");
+    }
+    var reads = dialect.describe(connection, provider, table, columns, false).reads();
     var kinds = targets.stream().map(i -> reads.get(i).field().kind()).toList();
     var names = new StringJoiner(", ", " (", ")");
     targets.forEach(i -> names.add(provider.quote(columns.get(i).name())));
@@ -233,8 +237,8 @@ public final class Inserts {
       if (options.empty()) {
         writing.empty("DELETE FROM " + Rows.qualified(provider, table));
       }
-      var report =
-          writing.all(source, Math.max(1, Math.min(options.batch(), PARAMETERS / kinds.size())));
+      var rows = Math.max(1, Math.min(options.batch(), dialect.parameters() / kinds.size()));
+      var report = writing.all(source, rows);
       // A stop takes back the transaction it is in, which in one of each batch holds that batch
       // alone.
       Transactions.end(connection, provider, !report.stopped());

@@ -3,6 +3,7 @@ package dev.hoori.db.core.data;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -194,4 +195,14 @@ public abstract class RowsDialect {
   abstract boolean changeable(
       Connection connection, Provider provider, Table table, List<Object> values)
       throws QueryException;
+
+  /** The most values that one statement binds as parameters, as the server and its driver take. */
+  abstract int parameters();
+
+  /**
+   * Whether a rollback takes back what was written into the table: not where its storage keeps no
+   * transactions, as MyISAM's does not.
+   */
+  abstract boolean transactional(
+      Connection connection, Provider provider, Table table, Purpose purpose) throws QueryException;
 }
