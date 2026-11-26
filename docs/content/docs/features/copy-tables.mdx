@@ -19,35 +19,37 @@ The tab opens with that connection, database and schema as the source, and the s
 - **Source**: its **Connection**, **Database** and, on PostgreSQL, **Schema**. Its tables are listed below, all checked. Use **All** and **None**, or the checkboxes, to choose which to copy.
 - **Target**: its **Connection** (of the same server type as the source), **Database** and **Schema**. Beside each table the list says whether the target has a table of that name (`In the target` or `Not in the target`).
 
-**Copy** stays disabled, with the reason beside it, while the source and the target are the same database and schema, no table is checked, or the target connection is read-only.
+**Copy** stays disabled, with the reason beside it, while the source and the target are the same database and schema (of one connection, or of two connections to the same host and port), the target database has no schema to write into, no table is checked, or the target connection is read-only. Where two connections reach the same server by other names, the copy itself finds it: a table that would be copied into itself fails before anything is written.
 
 ## What happens where the target has rows
 
 For each table, choose what happens where the target's table already has rows (or set all of them with **Where the target has rows**):
 
 - **Stop**: the table is not copied and counts as failed.
-- **Empty it first**: its rows are deleted (`DELETE`) before any rows are copied.
+- **Empty it first**: its rows are deleted (`DELETE`) before its rows are copied, in the same transaction.
 - **Append**: the rows are added to those already there.
 
-Tables to be emptied are emptied before any table is copied, those that refer to others by a foreign key first, each in a transaction of its own.
+A table to be emptied is emptied as its turn comes, in the transaction its rows are written in, so that a table whose copy fails before its first commit keeps the rows it had. The tables to be emptied that refer to it by a foreign key are emptied with it, before it, as their rows would keep its rows from being deleted; such a table stays empty where its own copy fails later.
+
+A table to be emptied is not copied, and fails before anything is written, where a foreign key of another table that is not emptied in the same copy would delete its rows with it (`ON DELETE CASCADE`) or change them (`SET NULL`, `SET DEFAULT`). Empty that table in the copy too, or delete its rows first.
 
 ## Columns
 
-Columns are matched by name (if no name matches exactly, a name that differs only in case is used). A column of the source that the target's table lacks fails that table. A column the target generates itself (such as a generated column) is left out, and a column of the target that the source lacks gets its default. Values are copied as the server writes them, so numbers, dates, times with zones, JSON, arrays and binary data arrive unchanged. On PostgreSQL, identity and serial columns take the copied values, and their sequences are set past the highest value copied.
+Columns are matched by name (if no name matches exactly, a name that differs only in case is used). A column of the source that the target's table lacks fails that table. A column the target generates itself (such as a generated column) is left out, and a column of the target that the source lacks gets its default. Values are copied as the server writes them, so numbers, dates, times with zones, JSON, arrays and binary data arrive unchanged. Floating-point values keep every bit. On PostgreSQL, identity and serial columns take the copied values, and their sequences are moved to the highest value the table holds where they are behind it, never back, also where the table failed after batches were committed.
 
 ## Options
 
 - **Commit**: **Per table** commits a table once all its rows are written, so a table that fails keeps none of its new rows. **Per batch** commits after each batch, so a table that fails keeps the batches written before the failure.
 - **At an error**: **Stop** ends the run at the first table that fails; **Skip the table** goes on with the next.
-- **Rows per batch**: how many rows are read and written at a time (1,000 by default). Batches of large values are made smaller, so that a batch holds about 8 MB at most.
+- **Rows per batch**: how many rows are read and written at a time (1,000 by default). A batch also ends once its values pass about 8 MB, from the first batch on, or half of what one statement may carry on MySQL and MariaDB (`max_allowed_packet`) where that is less; a single larger row goes in a batch of its own.
 
 ## Run a copy
 
 Press **Copy**. HooriDB first reads what every table needs: its columns on both sides, how many rows it has, whether the target has rows where it must not, and the target's foreign keys. If a table cannot be copied (for example because the target has no table of that name) and **At an error** is **Stop**, nothing is written at all.
 
-Tables are then copied in the order of their foreign keys, a table after the tables it refers to. Rows are read in pages by the primary key (by position for a table without one) and written in batches of multi-row `INSERT`s, so a table is never held whole in memory. Each page is read on its own: rows changed in the source while it is copied may be copied as they were before or after the change.
+Tables are then copied in the order of their foreign keys, a table after the tables it refers to. Each table's rows are read in one statement, in the order of its primary key where it has one, as they were when the statement began, and written in batches of multi-row `INSERT`s as they come, so a table is never held whole in memory. Tables are read one after another, each at its own moment. A table whose rows refer to rows of the same table is written in the order of its key: a row that refers to a later one fails, and the failure says so.
 
-While it runs, each table shows how many of its rows were written, and a bar shows the rows of all tables. Press **Cancel** to stop at any point: what was written and not committed is rolled back. Closing the tab or disconnecting either connection cancels the copy as well.
+While it runs, each table shows how many of its rows were written, and a bar shows the rows of all tables. Press **Cancel** to stop at any point: what was written and not committed is rolled back. Closing the tab, disconnecting, editing or deleting either connection, and closing HooriDB ask first while a copy runs: **Stop the copy** cancels it, and what was asked for goes on once it has stopped.
 
 When the run ends, each table shows how many rows were copied, or that it failed, was skipped or cancelled, and a summary lists every table that failed with the server's reason.
 
