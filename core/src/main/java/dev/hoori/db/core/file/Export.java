@@ -9,21 +9,24 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
  * Rows written to a file in a format, as they are read: into a file of its own beside the one
  * asked for, which takes the place of that one only once it is whole, so that a failure or a cancel
- * leaves the folder as it was.
+ * leaves the folder as it was. The file is made as any the user makes there, with the permissions
+ * the system gives a new file, not those of a temporary one.
  */
 public final class Export {
 
-  // What file systems refuse in a name, Windows' among them, and what they end a name with.
+  // What file systems refuse in a name, Windows' among them, and the names of its devices.
   private static final Pattern REFUSED = Pattern.compile("[\\x00-\\x1F<>:\"/\\\\|?*]");
   private static final Set<String> DEVICES = Set.of(
       "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
@@ -51,10 +54,12 @@ public final class Export {
   public static long write(Path file, Format format, Reading reading)
       throws IOException, QueryException {
     var folder = file.toAbsolutePath().getParent();
-    var part = Files.createTempFile(folder, "." + file.getFileName() + ".", ".part");
+    var part = folder.resolve("." + file.getFileName() + "." + UUID.randomUUID() + ".part");
+    // Made new, without the owner-only permissions of Files.createTempFile.
+    var opened = Files.newOutputStream(part, StandardOpenOption.CREATE_NEW);
     try {
       long rows;
-      try (var out = new BufferedOutputStream(Files.newOutputStream(part), 64 * 1024)) {
+      try (var out = new BufferedOutputStream(opened, 64 * 1024)) {
         var writer = RowWriter.of(format, out);
         rows = reading.read(writer);
         writer.finish();
@@ -95,11 +100,15 @@ public final class Export {
     return names;
   }
 
+  // Windows drops the dots and spaces a name ends with, and refuses some names that it ends with.
   private static String base(String name) {
-    var base = REFUSED.matcher(name).replaceAll("_").strip();
-    while (base.endsWith(".")) {
-      base = base.substring(0, base.length() - 1);
+    var base = REFUSED.matcher(name).replaceAll("_");
+    var end = base.length();
+    while (end > 0
+        && (base.charAt(end - 1) == '.' || Character.isWhitespace(base.charAt(end - 1)))) {
+      end--;
     }
+    base = base.substring(0, end).strip();
     if (base.isEmpty()) {
       return "_";
     }

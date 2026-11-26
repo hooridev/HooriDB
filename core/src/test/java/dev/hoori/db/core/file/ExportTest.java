@@ -2,6 +2,7 @@ package dev.hoori.db.core.file;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Table;
@@ -45,6 +46,18 @@ class ExportTest {
   }
 
   @Test
+  void makesTheFileWithThePermissionsOfAnyNewFile() throws Exception {
+    assumeTrue(dir.getFileSystem().supportedFileAttributeViews().contains("posix"));
+    var made = Files.createFile(dir.resolve("made"));
+    var file = dir.resolve("t.csv");
+    Export.write(file, Format.Delimited.CSV, each -> {
+      each.fields(FIELDS);
+      return 0;
+    });
+    assertEquals(Files.getPosixFilePermissions(made), Files.getPosixFilePermissions(file));
+  }
+
+  @Test
   void leavesTheFolderAsItWasWhereTheReadingFails() throws Exception {
     var file = dir.resolve("t.json");
     Files.writeString(file, "old");
@@ -70,11 +83,19 @@ class ExportTest {
   @Test
   void namesFilesAsFileSystemsTakeThemOncePerFolder() {
     var db = new Database("db", false);
-    var tables = Stream.of("orders", "Orders", "a/b:c?", "con", "dots...", "orders")
+    var tables = Stream.of("orders", "Orders", "a/b:c?", "con", "dots...", "orders", "a .", " . ")
         .map(name -> new Table(db, name, Table.Kind.TABLE))
         .toList();
     assertEquals(
-        List.of("orders.csv", "Orders-2.csv", "a_b_c_.csv", "con_.csv", "dots.csv", "orders-3.csv"),
+        List.of(
+            "orders.csv",
+            "Orders-2.csv",
+            "a_b_c_.csv",
+            "con_.csv",
+            "dots.csv",
+            "orders-3.csv",
+            "a.csv",
+            "_.csv"),
         Export.fileNames(tables, Format.Delimited.CSV));
   }
 }
