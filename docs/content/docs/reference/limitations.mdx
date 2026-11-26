@@ -37,6 +37,8 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 - Export writes CSV, TSV and JSON, one file per table. Import reads CSV and TSV into a table that exists. There is no SQL `INSERT`, XML or `xlsx` format, no table created from a file, no update of rows by their key, and no saved settings to run again.
 - With several tables checked, every column is exported, in the table's order.
 - Moments are written in UTC. A PostgreSQL date before the common era is written with ISO 8601's year numbering, such as `-0001-01-01`, which PostgreSQL does not read back.
+- A table whose storage engine keeps no transactions, such as MyISAM, cannot be imported into.
+- In a CSV or TSV file of one column, every empty line is a row, also one at the end of a file that was written by hand.
 
 ## MongoDB
 

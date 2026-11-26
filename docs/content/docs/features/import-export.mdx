@@ -16,13 +16,13 @@ You can export the rows of tables and views on PostgreSQL, MySQL and MariaDB to 
    - **TSV**: values separated by tabs.
    - **JSON array**: one array with an object per row.
    - **JSON Lines**: one object per line.
-4. When one table is checked, choose its **Columns**. With several tables, every column of each table is written.
+4. When one table is checked, choose its **Columns**. They are written in the table's order, whatever order you check them in. With several tables, every column of each table is written.
 5. Press **Choose…** beside **Folder** and pick the folder for the files.
 6. Press **Export**.
 
-Each table goes into a file of its own, named after the table: `orders.csv`, `orders.tsv`, `orders.json` or `orders.jsonl`. Characters that file systems refuse become `_`. Two names that differ only in case get a number, such as `Orders-2.csv`.
+Each table goes into a file of its own, named after the table: `orders.csv`, `orders.tsv`, `orders.json` or `orders.jsonl`. Characters that file systems refuse become `_`, and dots and spaces at the end of a name, which Windows drops, are left out. Two names that differ only in case get a number, such as `Orders-2.csv`.
 
-A file of the same name is replaced only once the new file is complete. If an export fails or you cancel it, the folder stays as it was, and no partial file is left behind.
+A file of the same name is replaced only once the new file is complete. If an export fails or you cancel it, the folder stays as it was, and no partial file is left behind. The file gets the permissions the system gives any new file you make there.
 
 ### Options for CSV and TSV
 
@@ -47,7 +47,7 @@ Values are written as the server returns them, whole. Long text and binary value
 - A moment (`timestamp with time zone` on PostgreSQL, `timestamp` on MySQL and MariaDB) is written in UTC with its offset, such as `2024-03-31T02:30:00.123+00:00`.
 - Binary data is written as hexadecimal.
 - A value that has no Java type, such as MySQL's zero date `0000-00-00`, is written as the server's own text.
-- In JSON, numbers and booleans stay JSON numbers and booleans. A JSON column is written as nested JSON when its value is valid JSON, and as a string otherwise. `NaN` and the infinities are written as strings.
+- In JSON, numbers and booleans stay JSON numbers and booleans. A JSON column is written as nested JSON when its value is valid JSON, with its numbers exactly as the value has them (`1.10` stays `1.10`), and as a string otherwise. `NaN` and the infinities are written as strings.
 
 ### How rows are read
 
@@ -70,12 +70,14 @@ Each table is read with one statement whose rows are streamed from the server an
    - **On error**: **Stop at the row**, or **Skip the row and go on**.
 6. Press **Import**.
 
-When the import ends, the dialog says how many rows were written. If it stopped, it shows the line it stopped at and the server's message. Skipped rows are listed with their line in the file and the reason; the first 1,000 are shown, and all are counted. Open tabs of the table that have no pending edits load its rows again.
+When the import ends, the dialog says how many rows were written. If it stopped, it shows the line it stopped at and the server's message. Skipped rows are listed with their line in the file and the reason; the first 1,000 are shown, and all are counted. A message that contains the connection's password is not shown. Open tabs of the table that have no pending edits load its rows again.
+
+While a changed option is read into the preview, **Import** waits for it, so that the mapping is always made for the file as the options read it.
 
 ### How the file is read
 
 - A quoted value may contain the delimiter, line breaks, and the quote character doubled.
-- Lines can end in LF, CRLF or CR. Empty lines are skipped.
+- Lines can end in LF, CRLF or CR. Empty lines are skipped, except in a file of one column: there an empty line is a row whose value is empty, which is NULL when **NULL as** is empty, as HooriDB writes a NULL of such a file. Empty lines before the header are skipped there too.
 - An unquoted value equal to **NULL as** is NULL. A quoted value is always text, so `""` is an empty text even when **NULL as** is empty.
 - A byte order mark at the start of the file is skipped.
 - If the file has bytes that are not valid in the chosen encoding, the preview and the import say so.
@@ -94,7 +96,9 @@ Files that HooriDB exports therefore import back unchanged.
 
 The import runs on its own session. Each batch is one `INSERT` of many rows, with its values sent as parameters. If a batch fails, HooriDB rolls back to a savepoint taken before it and writes that batch's rows one at a time, which finds the row that fails. If the table cannot take any row (it is gone, or you lack the privilege) or the connection is lost, the import stops.
 
-**Cancel** stops the import and rolls back the open transaction. With **All rows or none**, nothing is imported. With **Commit each batch**, the batches committed before the cancel stay.
+A table whose storage engine keeps no transactions, such as MyISAM, MEMORY or Aria on MySQL and MariaDB, cannot be imported into: a rollback would not take back what a failed batch or a stop wrote, so rows could go in twice. HooriDB refuses the import before it writes anything.
+
+**Cancel** stops the import and rolls back the open transaction. The dialog shows **Cancelling…** until the server has done that, and then what was committed: with **All rows or none**, nothing, and with **Commit each batch**, the batches committed before the cancel, which stay. A cancel that comes as the last transaction commits lets the commit finish, and the dialog says that all rows were imported.
 
 A read-only connection refuses an import before anything is sent. The dialog only says why.
 

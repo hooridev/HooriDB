@@ -154,8 +154,9 @@ table's menu, the File menu and the palette, reads a CSV or TSV file into the ta
 of its first rows as the options read them and each column of the table given a column of the file
 or left to its default, keeping the table's rows or deleting them first, in multi-row `INSERT`s of a
 batch size in one transaction or one per batch, stopping at a row that fails or skipping it, found
-by savepoints and listed by its line, on a session of its own; a read-only connection refuses it
-before anything is sent. Run from its app image,
+by savepoints and listed by its line, on a session of its own; a read-only connection, and a table
+whose storage keeps no transactions, as MyISAM's, refuse it before anything is sent, and a cancel
+shows what was committed once the session has rolled back or committed. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
 Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
 tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
@@ -395,7 +396,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   and `writes` marks a SQL fragment that a read-only link refuses while a writable link runs it.
 - A table's export runs against `FakeServers` as its reads do, keyed `export <host>/<path>`, with the
   rows `values` or `rows` give, written by core's file writers; an import is keyed
-  `import <host>/<path>` and each of its batches `import <host>/<path> <n>`, from 1, with the file
+  `import <host>/<path>`, each of its batches `import <host>/<path> <n>`, from 1, a cancel of which
+  ends it as cancelled, and its commit `import <host>/<path> commit`, which an interrupt does not
+  end, with the file
   read by core and its values read as the columns' kinds say, a NULL for a column that takes none
   refused, and a row that holds a value `refusesImported` names refused as a duplicate key; a read-only link
   refuses it unsent. Core's `TableFilesServerTest` writes every kind of value to files on each
