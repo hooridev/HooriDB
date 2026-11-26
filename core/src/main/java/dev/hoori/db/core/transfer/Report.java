@@ -22,9 +22,7 @@ public record Report(Stage stage, String problem, List<Entry> tables) {
   public enum Stage {
     /** It reads what it needs of each table, before it writes anything. */
     PREPARING,
-    /** It empties the tables to be emptied. */
-    EMPTYING,
-    /** It copies the tables' rows. */
+    /** It copies the tables' rows, emptying those to be emptied first. */
     COPYING,
     /** It ended, every table copied or skipped after a failure. */
     DONE,
@@ -45,7 +43,7 @@ public record Report(Stage stage, String problem, List<Entry> tables) {
   public enum State {
     /** Its turn has not come yet. */
     WAITING,
-    /** Its rows are deleted. */
+    /** Its rows are deleted, with those of the tables to be emptied that refer to it. */
     EMPTYING,
     /** Its rows are copied. */
     COPYING,

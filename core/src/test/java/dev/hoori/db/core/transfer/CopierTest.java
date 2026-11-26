@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -42,8 +43,11 @@ class CopierTest {
   private CountDownLatch holding; // a read of the second batch waits for it, where set
   private CountDownLatch held = new CountDownLatch(1);
   private boolean readOnly;
+  private String sourceIdentity = "from server";
+  private String targetIdentity = "into server";
+  private OptionalLong limit = OptionalLong.empty();
 
-  // A row written and not committed yet.
+  // A row written, or a table emptied where the row is null, not committed yet.
   private record Pending(String table, List<Object> row) {}
 
   @Test
@@ -151,7 +155,8 @@ class CopierTest {
     assertEquals(10, report.tables().getFirst().written());
     assertEquals(0, report.tables().getFirst().kept());
     assertTrue(!targetRows.containsKey("x"), targetRows.toString());
-    assertEquals(List.of("rollback", "end"), calls.subList(calls.size() - 2, calls.size()));
+    assertEquals(
+        List.of("rollback", "close x", "end"), calls.subList(calls.size() - 3, calls.size()));
     assertTrue(interrupted.get());
     assertEquals(report, told.getLast());
   }
@@ -169,7 +174,7 @@ class CopierTest {
   }
 
   @Test
-  void largeRowsAreReadFewerAtATime() {
+  void largeRowsAreReadFewerAtATimeFromTheFirstBatchOn() {
     var large = "x".repeat(1024 * 1024); // 2 MB a row, as it is counted
     sourceRows.put(
         "x",
@@ -180,8 +185,132 @@ class CopierTest {
 
     assertEquals(State.COPIED, report.tables().getFirst().state());
     assertEquals(
-        List.of("read x 0 10", "read x 10 4"),
-        calls.stream().filter(c -> c.startsWith("read")).toList());
+        List.of("batch x 4", "batch x 4", "batch x 4"),
+        calls.stream().filter(c -> c.startsWith("batch")).toList());
+    assertTrue(calls.contains("next x 10 " + Copier.BUDGET), calls.toString());
+  }
+
+  @Test
+  void aBatchTakesHalfOfWhatAStatementOfTheTargetMayCarry() {
+    var large = "x".repeat(1024 * 1024);
+    sourceRows.put(
+        "x",
+        new ArrayList<>(
+            IntStream.range(0, 3).mapToObj(i -> List.<Object>of(large)).toList()));
+    limit = OptionalLong.of(4L * 1024 * 1024);
+
+    var report = run(transfer(OnError.STOP, Commit.TABLE, 10, "x"));
+
+    assertEquals(State.COPIED, report.tables().getFirst().state());
+    assertTrue(calls.contains("next x 10 " + 2L * 1024 * 1024), calls.toString());
+    assertEquals(
+        List.of("batch x 1", "batch x 1", "batch x 1"),
+        calls.stream().filter(c -> c.startsWith("batch")).toList());
+  }
+
+  @Test
+  void aTableToEmptyKeepsItsRowsWhereItsCopyFails() {
+    rows("x", 3);
+    rows("y", 2);
+    targetRows.put("x", new ArrayList<>(List.of(List.of("old x"))));
+    targetRows.put("y", new ArrayList<>(List.of(List.of("old y"))));
+    failing.put("write x", QueryException.of(QueryException.Failure.OTHER, "too long"));
+    var copies = List.of(
+        new Copy(from("x"), into("x"), Existing.EMPTY),
+        new Copy(from("y"), into("y"), Existing.EMPTY));
+
+    var stopped = run(new Transfer(copies, Commit.TABLE, OnError.STOP, 10));
+
+    assertEquals(List.of(State.FAILED, State.SKIPPED), states(stopped));
+    assertEquals(List.of(List.of("old x")), targetRows.get("x"));
+    assertEquals(List.of(List.of("old y")), targetRows.get("y"));
+
+    var skipped = run(new Transfer(copies, Commit.BATCH, OnError.SKIP, 10));
+
+    assertEquals(List.of(State.FAILED, State.COPIED), states(skipped));
+    assertEquals(List.of(List.of("old x")), targetRows.get("x"));
+    assertEquals(2, targetRows.get("y").size());
+  }
+
+  @Test
+  void aTableToEmptyFailsWhereAKeyOfATableNotEmptiedWouldChangeItsRows() {
+    rows("parent", 1);
+    rows("child", 1);
+    targetRows.put("parent", new ArrayList<>(List.of(List.of("old"))));
+    keys.add(new ForeignKey(
+        "kept_fk",
+        into("kept"),
+        List.of("v"),
+        into("parent"),
+        List.of("v"),
+        null,
+        ForeignKey.Rule.CASCADE));
+    // A key of a table emptied in the copy too changes nothing that stays.
+    keys.add(new ForeignKey(
+        "child_fk",
+        into("child"),
+        List.of("v"),
+        into("parent"),
+        List.of("v"),
+        null,
+        ForeignKey.Rule.SET_NULL));
+
+    var report = run(new Transfer(
+        List.of(
+            new Copy(from("parent"), into("parent"), Existing.EMPTY),
+            new Copy(from("child"), into("child"), Existing.EMPTY)),
+        Commit.TABLE,
+        OnError.STOP,
+        10));
+
+    assertEquals(Stage.STOPPED, report.stage());
+    var parent = report.tables().getFirst();
+    assertEquals(State.FAILED, parent.state());
+    assertTrue(
+        parent.problem().contains("delete rows of kept, by its foreign key kept_fk"),
+        parent.problem());
+    assertEquals(State.SKIPPED, report.tables().get(1).state(), report.toString());
+    assertTrue(calls.stream().noneMatch(c -> c.startsWith("empty")), calls.toString());
+    assertEquals(List.of(List.of("old")), targetRows.get("parent"));
+  }
+
+  @Test
+  void aTableOfTheSameServerIsNotCopiedIntoItself() {
+    rows("x", 2);
+    targetIdentity = sourceIdentity;
+    var itself = new Copy(from("x"), from("x"), Existing.EMPTY);
+
+    var report = run(new Transfer(List.of(itself), Commit.TABLE, OnError.STOP, 10));
+
+    assertEquals(State.FAILED, report.tables().getFirst().state());
+    assertTrue(report.tables().getFirst().problem().contains("the same table"));
+    assertTrue(calls.stream().noneMatch(c -> c.startsWith("empty")), calls.toString());
+
+    // Another database of the same server is another table.
+    assertEquals(
+        Stage.DONE, run(transfer(OnError.STOP, Commit.TABLE, 10, "x")).stage(), calls.toString());
+  }
+
+  @Test
+  void aTableThatRefersToItselfSaysSoWhereAWriteFails() {
+    rows("x", 3);
+    keys.add(new ForeignKey("self", into("x"), List.of("v"), into("x"), List.of("v"), null, null));
+    failing.put("write x", QueryException.of(QueryException.Failure.OTHER, "violates the key"));
+
+    var report = run(transfer(OnError.STOP, Commit.TABLE, 10, "x"));
+
+    assertEquals("violates the key " + Copier.SELF, report.tables().getFirst().problem());
+  }
+
+  @Test
+  void theRowsKeptOfATableThatFailsMoveItsSequencesOn() {
+    rows("x", 25);
+    failing.put("write x 2", QueryException.of(QueryException.Failure.OTHER, "check"));
+
+    run(transfer(OnError.STOP, Commit.BATCH, 10, "x"));
+
+    var after = calls.subList(calls.indexOf("rollback"), calls.size());
+    assertEquals(List.of("rollback", "written x", "commit", "close x", "end"), after);
   }
 
   private Report run(Transfer transfer) {
@@ -242,6 +371,11 @@ class CopierTest {
       }
 
       @Override
+      public String identity() {
+        return sourceIdentity;
+      }
+
+      @Override
       public List<Column> columns(Table table) {
         return CopierTest.columns(table);
       }
@@ -252,17 +386,39 @@ class CopierTest {
       }
 
       @Override
-      public Batch read(Selection selection, Position from, int count) throws Exception {
-        var at = from instanceof Position.At(var offset) ? (int) offset : 0;
-        calls.add("read " + selection.table().name() + " " + at + " " + count);
-        if (holding != null && at > 0) {
-          held.countDown();
-          holding.await(); // until interrupted
-        }
-        var all = sourceRows.get(selection.table().name());
-        var rows = all.subList(Math.min(at, all.size()), Math.min(at + count, all.size()));
-        return new Batch(
-            rows, rows.size() < count ? Position.END : new Position.At(at + rows.size()));
+      public Reading read(Selection selection) {
+        var name = selection.table().name();
+        calls.add("read " + name);
+        var all = sourceRows.get(name);
+        return new Reading() {
+          private int at;
+
+          @Override
+          public Batch next(int count, long budget) throws Exception {
+            calls.add("next " + name + " " + count + " " + budget);
+            if (holding != null && at > 0) {
+              held.countDown();
+              holding.await(); // until interrupted
+            }
+            var rows = new ArrayList<List<Object>>();
+            long size = 0;
+            while (at < all.size() && rows.size() < count) {
+              var bytes = Batch.size(all.get(at));
+              if (!rows.isEmpty() && size + bytes > budget) {
+                break;
+              }
+              rows.add(all.get(at++));
+              size += bytes;
+            }
+            calls.add("batch " + name + " " + rows.size());
+            return new Batch(rows, at < all.size());
+          }
+
+          @Override
+          public void close() {
+            calls.add("close " + name);
+          }
+        };
       }
     };
   }
@@ -284,6 +440,16 @@ class CopierTest {
       @Override
       public void prepare() {
         calls.add("prepare target");
+      }
+
+      @Override
+      public String identity() {
+        return targetIdentity;
+      }
+
+      @Override
+      public OptionalLong statementLimit() {
+        return limit;
       }
 
       @Override
@@ -311,7 +477,7 @@ class CopierTest {
       @Override
       public long empty(Table table) {
         calls.add("empty " + table.name());
-        targetRows.put(table.name(), new ArrayList<>());
+        pending.add(new Pending(table.name(), null));
         return 1;
       }
 
@@ -335,7 +501,11 @@ class CopierTest {
       public void commit() {
         calls.add("commit");
         for (var row : pending) {
-          targetRows.computeIfAbsent(row.table(), t -> new ArrayList<>()).add(row.row());
+          if (row.row() == null) {
+            targetRows.put(row.table(), new ArrayList<>());
+          } else {
+            targetRows.computeIfAbsent(row.table(), t -> new ArrayList<>()).add(row.row());
+          }
         }
         pending.clear();
       }

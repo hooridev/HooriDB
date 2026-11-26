@@ -34,7 +34,6 @@ import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.transfer.Batch;
-import dev.hoori.db.core.transfer.Position;
 import dev.hoori.db.core.transfer.Selection;
 import dev.hoori.db.core.transfer.Source;
 import dev.hoori.db.core.transfer.Target;
@@ -360,8 +359,28 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
         }
 
         @Override
-        public Batch read(Selection selection, Position from, int count) throws Exception {
-          return recorded(of(selection.table()), () -> source.read(selection, from, count));
+        public String identity() throws Exception {
+          return recorded(null, source::identity);
+        }
+
+        @Override
+        public Reading read(Selection selection) throws Exception {
+          var database = of(selection.table());
+          var reading = recorded(database, () -> source.read(selection));
+          return new Reading() {
+            @Override
+            public Batch next(int count, long budget) throws Exception {
+              return recorded(database, () -> reading.next(count, budget));
+            }
+
+            @Override
+            public void close() throws Exception {
+              recorded(database, () -> {
+                reading.close();
+                return null;
+              });
+            }
+          };
         }
       };
     }
@@ -387,6 +406,16 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
             target.prepare();
             return null;
           });
+        }
+
+        @Override
+        public String identity() throws Exception {
+          return recorded(null, target::identity);
+        }
+
+        @Override
+        public OptionalLong statementLimit() throws Exception {
+          return recorded(null, target::statementLimit);
         }
 
         @Override

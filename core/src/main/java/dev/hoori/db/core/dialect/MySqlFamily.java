@@ -14,7 +14,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -468,10 +467,10 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     }
   }
 
-  // Numbers travel as numbers, as the servers compare a number with a text as floating point;
-  // binary data, bit values and geometries, which the servers send as they store them, as their
-  // bytes; anything else as the server's text, which it reads as the column's type. Both sessions
-  // write and read moments in UTC, which repeats no hour.
+  // Numbers travel as numbers, as a value written into a column of a number goes through floating
+  // point where it comes as a text; binary data, bit values and geometries, which the servers send
+  // as they store them, as their bytes; anything else as the server's text, which it reads as the
+  // column's type. Both sessions write and read moments in UTC, which repeats no hour.
   static final class Transfer implements TransferDialect {
 
     private static final Set<String> NUMBERS = Set.of(
@@ -516,10 +515,14 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     }
 
     // As the server writes them: the drivers' conversions of a date or a number, a tinyint(1)
-    // among them, are not the server's text.
+    // among them, are not the server's text. A float the servers write with six digits, which
+    // need not name it; as a double, which holds it exactly, they write as many as name it.
     @Override
     public String read(Column column, String name) {
       var base = base(column);
+      if (base.equals("float")) {
+        return "(" + name + " + 0e0)";
+      }
       return NUMBERS.contains(base) || TIMES.contains(base) ? "CAST(" + name + " AS CHAR)" : name;
     }
 
@@ -534,33 +537,30 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       }
     }
 
+    // The source's server waits this long for a batch to be written before it gives up the rows
+    // it sends.
     @Override
     public List<String> prepare() {
-      return List.of("SET time_zone = '+00:00'");
+      return List.of("SET time_zone = '+00:00'", "SET SESSION net_write_timeout = 600");
     }
 
-    // Spelled out column by column, as a comparison of rows does not always use the key's index.
+    // By what the column's EXTRA says, which every version has.
     @Override
-    public After after(List<String> key) {
-      var terms = new ArrayList<String>();
-      var values = new ArrayList<Integer>();
-      for (var i = 0; i < key.size(); i++) {
-        var term = new StringBuilder("(");
-        for (var j = 0; j < i; j++) {
-          term.append(key.get(j)).append(" = ? AND ");
-          values.add(j);
-        }
-        term.append(key.get(i)).append(" > ?)");
-        values.add(i);
-        terms.add(term.toString());
-      }
-      return new After(String.join(" OR ", terms), values);
+    public String generated() {
+      return "SELECT column_name FROM information_schema.columns"
+          + " WHERE table_schema = ? AND table_name = ?"
+          + " AND (extra LIKE '%VIRTUAL%' OR extra LIKE '%STORED%' OR extra LIKE '%PERSISTENT%')";
     }
 
-    // By all the columns: the servers keep no place of a row that a statement can read.
+    // The database is the table's own.
     @Override
-    public List<String> order(String alias, List<String> columns) {
-      return columns.stream().map(column -> alias + "." + column).toList();
+    public String identity() {
+      return "SELECT @@hostname, @@port, @@datadir";
+    }
+
+    @Override
+    public Optional<String> statementLimit() {
+      return Optional.of("SELECT @@max_allowed_packet");
     }
 
     @Override

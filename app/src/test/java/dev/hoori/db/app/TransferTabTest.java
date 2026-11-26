@@ -120,8 +120,7 @@ class TransferTabTest {
     assertEquals(3, rows.getFirst().size());
     assertEquals(null, rows.getFirst().get(2));
     assertTrue(
-        c.servers.calls.contains("copy read " + HOST + "/shop.items 0"),
-        c.servers.calls.toString());
+        c.servers.calls.contains("copy read " + HOST + "/shop.items"), c.servers.calls.toString());
     assertTrue(c.servers.calls.contains("copy commit " + HOST));
   }
 

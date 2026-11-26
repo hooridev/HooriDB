@@ -18,6 +18,7 @@ import java.sql.Connection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.OptionalLong;
 
 /**
  * A target on a connection to a server of SQL, which writes through {@link Query}, so that an
@@ -40,24 +41,47 @@ public record SqlTarget(
    */
   static final int MOST_PARAMETERS = Short.MAX_VALUE;
 
-  // The columns of a table that the server generates, which take no value.
-  private static final String GENERATED = "SELECT column_name FROM information_schema.columns"
-      + " WHERE table_schema = ? AND table_name = ? AND generation_expression <> ''";
-
   @Override
   public void prepare() throws QueryException {
     new SqlSource(connection, provider).prepare();
   }
 
   @Override
+  public String identity() throws QueryException {
+    return SqlSource.identity(connection, provider);
+  }
+
+  @Override
+  public OptionalLong statementLimit() throws QueryException {
+    var limit = provider.dialect().transfer().statementLimit();
+    if (limit.isEmpty()) {
+      return OptionalLong.empty();
+    }
+    var sql = limit.get();
+    return Journal.sql(
+        provider,
+        Purpose.TRANSFER,
+        sql,
+        most -> Outcome.rows(1),
+        () -> Query.query(connection, provider, sql, rows -> {
+          if (!rows.next()) {
+            return OptionalLong.empty();
+          }
+          var most = rows.getLong(1);
+          return rows.wasNull() ? OptionalLong.empty() : OptionalLong.of(most);
+        }));
+  }
+
+  @Override
   public Shape shape(Table table) throws CatalogException, QueryException {
     var columns = Catalog.columns(connection, provider, table);
+    var sql = provider.dialect().transfer().generated();
     var generated = Journal.sql(
         provider,
         Purpose.CATALOG,
-        GENERATED,
+        sql,
         names -> Outcome.rows(names.size()),
-        () -> Query.run(connection, provider, GENERATED, statement -> {
+        () -> Query.run(connection, provider, sql, statement -> {
           statement.setString(1, table.container().name());
           statement.setString(2, table.name());
           var names = new HashSet<String>();

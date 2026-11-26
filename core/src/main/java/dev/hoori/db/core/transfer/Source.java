@@ -18,6 +18,12 @@ public interface Source {
   /** Puts the session in the state a copy reads in, as the dialect says. */
   void prepare() throws Exception;
 
+  /**
+   * What names the server and database the session is on, as the dialect reads it: two sessions on
+   * the same give the same.
+   */
+  String identity() throws Exception;
+
   /** The table's columns, in their order, with their places in the primary key. */
   List<Column> columns(Table table) throws Exception;
 
@@ -25,9 +31,26 @@ public interface Source {
   long count(Table table) throws Exception;
 
   /**
-   * At most {@code count} rows of the selection from the position on, and where the rows after
-   * them begin: by the key, or by position where there is none. Each batch is read on its own, so
-   * that rows inserted, deleted or given another key meanwhile may be read twice or not at all.
+   * Starts reading the selection's rows, in the order of its key where it has one: in one
+   * statement, whose rows come a batch at a time. Until the reading is closed, the session serves
+   * nothing else.
    */
-  Batch read(Selection selection, Position from, int count) throws Exception;
+  Reading read(Selection selection) throws Exception;
+
+  /** A table's rows as they are read, a batch at a time. */
+  interface Reading {
+
+    /**
+     * The next rows: at most {@code count}, and no more than about {@code budget} bytes of them, as
+     * {@link Batch#size(List)} counts, but for a first row larger than that; none, and no more,
+     * once all were read.
+     */
+    Batch next(int count, long budget) throws Exception;
+
+    /**
+     * Ends the reading, giving up the rows not read yet; it ends within a bound, an interrupt or
+     * not.
+     */
+    void close() throws Exception;
+  }
 }

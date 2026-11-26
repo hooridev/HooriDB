@@ -6,8 +6,8 @@ import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Rows;
-import dev.hoori.db.core.dialect.TransferDialect;
 import dev.hoori.db.core.dialect.TransferDialect.Carry;
+import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -17,21 +17,25 @@ import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.Stream;
+import java.util.StringJoiner;
 
 /**
  * A source on a connection to a server of SQL, which reads through {@link Query}, so that an
  * interrupt cancels what runs on the server, and records what it sends with {@link Journal}. The
- * connection serves nothing else while a call runs.
+ * connection serves nothing else while a call runs, nor while a reading is open.
  */
 public record SqlSource(Connection connection, Provider provider) implements Source {
 
   // The alias of the table in a read.
   private static final String ALIAS = "r";
+
+  // How many rows the first fetch of a reading asks for, before the size of its rows is known.
+  private static final int FIRST = 16;
 
   @Override
   public void prepare() throws QueryException {
@@ -43,6 +47,30 @@ public record SqlSource(Connection connection, Provider provider) implements Sou
           done -> Outcome.DONE,
           () -> Query.run(connection, provider, sql, statement -> statement.execute()));
     }
+  }
+
+  @Override
+  public String identity() throws QueryException {
+    return identity(connection, provider);
+  }
+
+  // The values of the dialect's identity, a line each.
+  static String identity(Connection connection, Provider provider) throws QueryException {
+    var sql = provider.dialect().transfer().identity();
+    return Journal.sql(
+        provider,
+        Purpose.TRANSFER,
+        sql,
+        named -> Outcome.rows(1),
+        () -> Query.query(connection, provider, sql, rows -> {
+          var named = new StringJoiner("\n");
+          if (rows.next()) {
+            for (var i = 1; i <= rows.getMetaData().getColumnCount(); i++) {
+              named.add(String.valueOf(rows.getString(i)));
+            }
+          }
+          return named.toString();
+        }));
   }
 
   @Override
@@ -65,104 +93,243 @@ public record SqlSource(Connection connection, Provider provider) implements Sou
   }
 
   @Override
-  public Batch read(Selection selection, Position from, int count) throws QueryException {
-    if (from instanceof Position.End) {
-      return new Batch(List.of(), Position.END);
-    }
-    if (count < 1) {
-      throw new IllegalArgumentException("A batch of " + count + " rows");
-    }
+  public Reading read(Selection selection) {
     var dialect = provider.dialect().transfer();
-    var read = Stream.concat(selection.columns().stream(), selection.key().stream())
-        .map(column -> dialect.read(column, name(column)))
-        .toList();
-    var key = selection.key().stream().map(this::name).toList();
     var sql = new StringBuilder("SELECT ")
-        .append(String.join(", ", read))
+        .append(String.join(
+            ", ",
+            selection.columns().stream()
+                .map(column -> dialect.read(column, ALIAS + "." + provider.quote(column.name())))
+                .toList()))
         .append(" FROM ")
         .append(Rows.qualified(provider, selection.table()))
         .append(' ')
         .append(ALIAS);
-    var parameters = new ArrayList<Object>();
-    long offset = 0;
-    switch (from) {
-      case Position.After(var values) -> {
-        var after = dialect.after(key);
-        sql.append(" WHERE ").append(after.sql());
-        after.values().forEach(i -> parameters.add(values.get(i)));
-      }
-      case Position.At(var at) -> offset = at;
-      case Position.Start _, Position.End _ -> {}
+    if (!selection.key().isEmpty()) {
+      sql.append(" ORDER BY ")
+          .append(String.join(
+              ", ",
+              selection.key().stream()
+                  .map(column -> ALIAS + "." + provider.quote(column.name()))
+                  .toList()));
     }
-    var order = key.isEmpty()
-        ? dialect.order(
-            ALIAS,
-            selection.columns().stream().map(c -> provider.quote(c.name())).toList())
-        : key;
-    sql.append(" ORDER BY ").append(String.join(", ", order)).append(" LIMIT ").append(count);
-    if (offset > 0) {
-      sql.append(" OFFSET ").append(offset);
-    }
-    var text = sql.toString();
-    var carries = Stream.concat(selection.columns().stream(), selection.key().stream())
-        .map(dialect::carry)
-        .toList();
-    var at = offset;
-    return Journal.sql(
+    return new SqlReading(
+        connection,
         provider,
-        Purpose.TRANSFER,
-        text,
-        batch -> new Outcome.Rows(batch.rows().size(), !(batch.next() instanceof Position.End)),
-        () -> Query.run(connection, provider, text, statement -> {
-          for (var i = 0; i < parameters.size(); i++) {
-            dialect.bind(statement, i + 1, parameters.get(i));
-          }
-          try (var rows = statement.executeQuery()) {
-            return batch(rows, carries, selection, count, at);
-          }
-        }));
+        sql.toString(),
+        selection.columns().stream().map(dialect::carry).toList());
   }
 
-  private String name(Column column) {
-    return ALIAS + "." + provider.quote(column.name());
-  }
+  /**
+   * The rows of one statement, read as they come: the driver fetches them in portions, of a size
+   * that fits the budget once the first rows told how large they are. Where the server sends rows
+   * in portions only within a transaction, the reading has one of its own. The connection's calls
+   * run one at a time; the cancel of the call that runs comes from the waiting thread.
+   */
+  private static final class SqlReading implements Reading {
 
-  // The rows read, the selection's columns of each, and where the next batch begins: after the
-  // last row's key, or after its position, where the batch is full.
-  private static Batch batch(
-      ResultSet rows, List<Carry> carries, Selection selection, int count, long offset)
-      throws SQLException {
-    var read = new ArrayList<List<Object>>();
-    List<Object> last = List.of();
-    var columns = selection.columns().size();
-    while (rows.next()) {
+    private final Connection connection;
+    private final Provider provider;
+    private final String sql;
+    private final List<Carry> carries;
+    private volatile Statement statement;
+    private ResultSet rows;
+    private List<Object> ahead; // the row read past the budget of the last batch, or null
+    private boolean own; // whether it turned auto-commit off for a transaction of its own
+    private boolean over; // whether its rows were all read, or it was closed
+
+    SqlReading(Connection connection, Provider provider, String sql, List<Carry> carries) {
+      this.connection = connection;
+      this.provider = provider;
+      this.sql = sql;
+      this.carries = carries;
+    }
+
+    @Override
+    public Batch next(int count, long budget) throws QueryException {
+      if (count < 1) {
+        throw new IllegalArgumentException("A batch of " + count + " rows");
+      }
+      if (over) {
+        return Batch.LAST;
+      }
+      if (statement != null) {
+        return read(count, budget);
+      }
+      return Journal.sql(
+          provider,
+          Purpose.TRANSFER,
+          sql,
+          batch -> new Outcome.Rows(batch.rows().size(), batch.more()),
+          () -> read(count, budget));
+    }
+
+    private Batch read(int count, long budget) throws QueryException {
+      var session = provider.dialect().session();
+      return Query.run(
+          connection,
+          provider,
+          () -> {
+            var running = statement;
+            if (running != null) {
+              Journal.call(Purpose.TRANSFER, Journal.CANCEL, () -> {
+                session.cancel(connection, running);
+                return null;
+              });
+            }
+          },
+          () -> {
+            if (statement == null) {
+              execute();
+            }
+            return batch(count, budget);
+          },
+          batch -> false);
+    }
+
+    private void execute() throws SQLException {
+      var session = provider.dialect().session();
+      if (!session.queriesInOwnTransaction().isEmpty() && connection.getAutoCommit()) {
+        Journal.call(Purpose.TRANSACTION, Journal.autoCommit(false), () -> {
+          connection.setAutoCommit(false);
+          return null;
+        });
+        own = true;
+      }
+      session.keepWriteTimeout(connection);
+      var made = connection.createStatement();
+      statement = made;
+      made.setEscapeProcessing(false);
+      made.setFetchSize(session.fetchSize(FIRST));
+      rows = made.executeQuery(sql);
+    }
+
+    private Batch batch(int count, long budget) throws SQLException {
+      var read = new ArrayList<List<Object>>();
+      long size = 0;
+      if (ahead != null) {
+        read.add(ahead);
+        size = Batch.size(ahead);
+        ahead = null;
+      }
+      while (read.size() < count) {
+        if (!rows.next()) {
+          finish();
+          return new Batch(read, false);
+        }
+        var row = row();
+        var bytes = Batch.size(row);
+        if (!read.isEmpty() && size + bytes > budget) {
+          ahead = row;
+          break;
+        }
+        read.add(row);
+        size += bytes;
+      }
+      // As many rows a fetch as the budget holds of rows of this size.
+      var fit = size <= 0 ? count : budget * read.size() / size;
+      try {
+        rows.setFetchSize(provider.dialect().session().fetchSize(Math.clamp(fit, 1, count)));
+      } catch (SQLException _) {
+        // The driver fetches as it began to.
+      }
+      return new Batch(read, true);
+    }
+
+    private List<Object> row() throws SQLException {
       var values = new Object[carries.size()];
       for (var i = 0; i < values.length; i++) {
-        values[i] = value(rows, i + 1, carries.get(i));
+        values[i] = switch (carries.get(i)) {
+          case TEXT -> rows.getString(i + 1);
+          case NUMBER -> {
+            var text = rows.getString(i + 1);
+            yield text == null ? null : new BigDecimal(text);
+          }
+          case BYTES -> rows.getBytes(i + 1);
+        };
       }
-      read.add(Collections.unmodifiableList(Arrays.asList(values).subList(0, columns)));
-      last = Arrays.asList(values).subList(columns, values.length);
+      return Collections.unmodifiableList(Arrays.asList(values));
     }
-    Position next;
-    if (read.size() < count) {
-      next = Position.END;
-    } else if (selection.key().isEmpty()) {
-      next = new Position.At(offset + read.size());
-    } else {
-      next = new Position.After(last);
-    }
-    return new Batch(read, next);
-  }
 
-  private static Object value(ResultSet rows, int index, TransferDialect.Carry carry)
-      throws SQLException {
-    return switch (carry) {
-      case TEXT -> rows.getString(index);
-      case NUMBER -> {
-        var text = rows.getString(index);
-        yield text == null ? null : new BigDecimal(text);
+    // All rows were read: the statement ends, and its transaction, which only read.
+    private void finish() throws SQLException {
+      over = true;
+      closeStatement();
+      if (own) {
+        own = false;
+        Journal.call(Purpose.TRANSACTION, Journal.COMMIT, () -> {
+          connection.commit();
+          return null;
+        });
+        autoCommitOn();
       }
-      case BYTES -> rows.getBytes(index);
-    };
+    }
+
+    @Override
+    public void close() throws QueryException {
+      if (over && !own) {
+        return;
+      }
+      Query.within(connection, provider, Execution.ENDING, () -> {
+        if (!over) {
+          over = true;
+          giveUp();
+        }
+        if (own) {
+          own = false;
+          if (!connection.getAutoCommit()) {
+            Journal.call(Purpose.TRANSACTION, Journal.ROLLBACK, () -> {
+              connection.rollback();
+              return null;
+            });
+          }
+          autoCommitOn();
+        }
+        return null;
+      });
+    }
+
+    // Stops the rows on their way where they hold the connection, and reads what still comes.
+    private void giveUp() throws SQLException {
+      var session = provider.dialect().session();
+      if (statement != null && rows != null && session.pendingRowsHoldConnection()) {
+        try {
+          Journal.call(Purpose.TRANSFER, Journal.CANCEL, () -> {
+            session.cancel(connection, statement);
+            return null;
+          });
+          while (rows.next()) {
+            // Read and dropped.
+          }
+        } catch (SQLException _) {
+          // The server ended the statement, its cancel among the reasons: nothing more comes.
+        }
+      }
+      closeStatement();
+    }
+
+    private void closeStatement() throws SQLException {
+      var made = statement;
+      statement = null;
+      try {
+        if (rows != null) {
+          rows.close();
+        }
+      } finally {
+        rows = null;
+        if (made != null) {
+          made.close();
+        }
+      }
+    }
+
+    private void autoCommitOn() throws SQLException {
+      if (!connection.getAutoCommit()) {
+        Journal.call(Purpose.TRANSACTION, Journal.autoCommit(true), () -> {
+          connection.setAutoCommit(true);
+          return null;
+        });
+      }
+    }
   }
 }

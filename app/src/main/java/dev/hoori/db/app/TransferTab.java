@@ -35,7 +35,6 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.transfer.Batch;
 import dev.hoori.db.core.transfer.Copier;
-import dev.hoori.db.core.transfer.Position;
 import dev.hoori.db.core.transfer.Report;
 import dev.hoori.db.core.transfer.Selection;
 import dev.hoori.db.core.transfer.Source;
@@ -50,6 +49,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -531,8 +531,27 @@ final class TransferTab implements Tab {
       }
 
       @Override
-      public Batch read(Selection selection, Position from, int count) throws Exception {
-        return lane.call(link -> link.source().read(selection, from, count));
+      public String identity() throws Exception {
+        return lane.call(link -> link.source().identity());
+      }
+
+      @Override
+      public Reading read(Selection selection) throws Exception {
+        var reading = lane.call(link -> link.source().read(selection));
+        return new Reading() {
+          @Override
+          public Batch next(int count, long budget) throws Exception {
+            return lane.call(link -> reading.next(count, budget));
+          }
+
+          @Override
+          public void close() throws Exception {
+            lane.call(link -> {
+              reading.close();
+              return null;
+            });
+          }
+        };
       }
     };
   }
@@ -565,6 +584,16 @@ final class TransferTab implements Tab {
           link.target().prepare();
           return null;
         });
+      }
+
+      @Override
+      public String identity() throws Exception {
+        return lane.call(link -> link.target().identity());
+      }
+
+      @Override
+      public OptionalLong statementLimit() throws Exception {
+        return lane.call(link -> link.target().statementLimit());
       }
 
       @Override
@@ -894,7 +923,7 @@ final class TransferTab implements Tab {
         Progress.labeled("Reading the tables", 0, tables(report.tables().size()))
             .wFull()
             .key("transfer-progress");
-      case EMPTYING, COPYING -> progressView();
+      case COPYING -> progressView();
       case DONE -> {
         var failures = report.in(Report.State.FAILED);
         yield failures.isEmpty()

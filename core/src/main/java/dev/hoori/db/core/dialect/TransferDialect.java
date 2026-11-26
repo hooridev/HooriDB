@@ -8,11 +8,12 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * How a provider's tables' rows are copied into another of its servers: how each column's values
- * are read so that the other server takes them back for the same values, how a page of rows comes
- * after another, and what a table needs once its rows are written.
+ * are read so that the other server takes them back for the same values, what tells two sessions
+ * on the same server and database apart, and what a table needs once its rows are written.
  */
 public interface TransferDialect {
 
@@ -34,37 +35,35 @@ public interface TransferDialect {
 
   /**
    * Binds a value as it was read, a {@code String}, {@code BigDecimal}, {@code byte[]} or null, so
-   * that the server takes it as a value of the column it goes into or is compared with.
+   * that the server takes it as a value of the column it goes into.
    */
   void bind(PreparedStatement statement, int index, Object value) throws SQLException;
 
   /**
    * The statements that put each session of a copy, the source's and the target's, alike where
-   * the text of a value depends on the session, as the zone a moment is written in.
+   * the text of a value depends on the session, as the zone a moment is written in, and keep the
+   * source's rows coming while the target writes.
    */
   List<String> prepare();
 
   /**
-   * The condition that a row comes after a row of the given values of the primary key, whose
-   * columns are given quoted in their order, in the order of those columns.
-   *
-   * @return the condition with a parameter {@code ?} for each value, and for each parameter the
-   *     index of its value among the key's
+   * The query of the names of a table's columns that the server computes itself, which take no
+   * value, with the name of the table's schema, or database where it has none, and the table's
+   * name as its parameters.
    */
-  After after(List<String> key);
-
-  /** A condition with parameters, and the index of each one's value. */
-  record After(String sql, List<Integer> values) {
-    public After {
-      values = List.copyOf(values);
-    }
-  }
+  String generated();
 
   /**
-   * The expressions that order the rows of a table without a primary key, read through the alias
-   * with the given columns, so that a position names the same row while the table does not change.
+   * The query whose one row names the server and the database the session is on, so that two
+   * sessions on the same read the same values.
    */
-  List<String> order(String alias, List<String> columns);
+  String identity();
+
+  /**
+   * The query whose one value is the most bytes one statement may carry to the server; empty
+   * where it has no such limit.
+   */
+  Optional<String> statementLimit();
 
   /**
    * The {@code INSERT} into the qualified table's quoted columns up to its {@code VALUES}, which
@@ -77,8 +76,8 @@ public interface TransferDialect {
 
   /**
    * What the table needs once rows were copied into the columns: on PostgreSQL its sequences, of
-   * its identity and serial columns, set past the values copied, so that a new row's does not take
-   * one of them.
+   * its identity and serial columns, moved past the values the table holds where they are behind,
+   * so that a new row's does not take one of them; never back.
    */
   void written(Connection connection, Provider provider, Table table, List<String> columns)
       throws QueryException;

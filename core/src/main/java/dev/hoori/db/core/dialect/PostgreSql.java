@@ -42,13 +42,11 @@ import java.sql.Statement;
 import java.sql.Types;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
-import java.util.stream.IntStream;
 
 /** PostgreSQL, with pgjdbc. */
 public final class PostgreSql implements Dialect {
@@ -691,28 +689,28 @@ public final class PostgreSql implements Dialect {
       }
     }
 
+    // A float written with as many digits as name it, also before PostgreSQL 12 wrote them so.
     @Override
     public List<String> prepare() {
-      return List.of();
+      return List.of("SET extra_float_digits = 3");
     }
 
-    // A comparison of rows, which an index of the key serves.
+    // Which every version has, saying NEVER before PostgreSQL 12.
     @Override
-    public After after(List<String> key) {
-      var values = IntStream.range(0, key.size()).boxed().toList();
-      if (key.size() == 1) {
-        return new After(key.getFirst() + " OPERATOR(pg_catalog.>) ?", values);
-      }
-      return new After(
-          "(" + String.join(", ", key) + ") OPERATOR(pg_catalog.>) ("
-              + String.join(", ", Collections.nCopies(key.size(), "?")) + ")",
-          values);
+    public String generated() {
+      return "SELECT column_name FROM information_schema.columns"
+          + " WHERE table_schema = ? AND table_name = ? AND is_generated = 'ALWAYS'";
     }
 
-    // The table and place of each row, as children of a partitioned table each have their own.
+    // The moment its server started, which no other shares, and the database.
     @Override
-    public List<String> order(String alias, List<String> columns) {
-      return List.of(alias + ".tableoid", alias + ".ctid");
+    public String identity() {
+      return "SELECT pg_catalog.pg_postmaster_start_time(), pg_catalog.current_database()";
+    }
+
+    @Override
+    public Optional<String> statementLimit() {
+      return Optional.empty();
     }
 
     @Override
@@ -721,8 +719,9 @@ public final class PostgreSql implements Dialect {
           + (overriding ? " OVERRIDING SYSTEM VALUE" : "") + " VALUES";
     }
 
-    // Each sequence of a column copied into, of an identity or a serial, set to the column's
-    // highest value, where it has one: its next value is the one after.
+    // Each sequence of a column copied into, of an identity or a serial, moved to the column's
+    // highest value where that is within its bounds and its next value is not past it already:
+    // its next value is the one after. A sequence that counts down is left as it is.
     @Override
     public void written(Connection connection, Provider provider, Table table, List<String> columns)
         throws QueryException {
@@ -751,14 +750,21 @@ public final class PostgreSql implements Dialect {
             return found;
           }));
       for (var sequence : sequences) {
-        var set = "SELECT pg_catalog.setval(CAST(? AS pg_catalog.regclass), m)"
-            + " FROM (SELECT pg_catalog.max(" + provider.quote(sequence.column()) + ") AS m FROM "
-            + qualified + ") x WHERE m IS NOT NULL";
+        var set = "SELECT pg_catalog.setval(s.id, x.m)"
+            + " FROM (SELECT CAST(? AS pg_catalog.regclass) AS id) s"
+            + " JOIN pg_catalog.pg_sequence p ON p.seqrelid OPERATOR(pg_catalog.=) s.id"
+            + " CROSS JOIN LATERAL (SELECT pg_catalog.pg_sequence_last_value(s.id) AS v) l"
+            + " CROSS JOIN (SELECT pg_catalog.max(" + provider.quote(sequence.column()) + ") AS m"
+            + " FROM " + qualified + ") x"
+            + " WHERE p.seqincrement OPERATOR(pg_catalog.>) 0"
+            + " AND x.m OPERATOR(pg_catalog.>=) p.seqmin AND x.m OPERATOR(pg_catalog.<=) p.seqmax"
+            + " AND (x.m OPERATOR(pg_catalog.>) l.v"
+            + " OR l.v IS NULL AND x.m OPERATOR(pg_catalog.>=) p.seqstart)";
         Journal.sql(
             provider,
             Purpose.TRANSFER,
             set,
-            done -> Outcome.DONE,
+            moved -> Outcome.rows(moved ? 1 : 0),
             () -> Query.run(connection, provider, set, statement -> {
               statement.setString(1, sequence.name());
               try (var rows = statement.executeQuery()) {

@@ -48,7 +48,6 @@ import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.EditableQuery;
 import dev.hoori.db.core.transfer.Batch;
-import dev.hoori.db.core.transfer.Position;
 import dev.hoori.db.core.transfer.Selection;
 import dev.hoori.db.core.transfer.Source;
 import dev.hoori.db.core.transfer.Target;
@@ -2010,17 +2009,19 @@ final class FakeServers implements Servers {
         }
 
         @Override
-        public Batch read(Selection selection, Position from, int count) throws QueryException {
+        public String identity() {
+          return host;
+        }
+
+        @Override
+        public Reading read(Selection selection) throws QueryException {
           var t = selection.table();
           var path = path(t);
-          var at = from instanceof Position.At(var offset) ? offset : 0;
-          return copying("copy read " + path + " " + at, t, false, table -> {
+          var all = copying("copy read " + path, t, false, table -> {
             var columns = tableColumns(t, table);
-            var all = materializeRows(path, columns);
             var names = columns.stream().map(Column::name).toList();
             var rows = new ArrayList<List<Object>>();
-            for (var i = at; i < Math.min(all.size(), at + count); i++) {
-              var row = all.get((int) i);
+            for (var row : materializeRows(path, columns)) {
               var values = new ArrayList<Object>();
               for (var column : selection.columns()) {
                 var value = row.get(names.indexOf(column.name()));
@@ -2028,9 +2029,21 @@ final class FakeServers implements Servers {
               }
               rows.add(Collections.unmodifiableList(values));
             }
-            return new Batch(
-                rows, rows.size() < count ? Position.END : new Position.At(at + rows.size()));
+            return rows;
           });
+          return new Reading() {
+            private int at;
+
+            @Override
+            public Batch next(int count, long budget) {
+              var rows = all.subList(at, Math.min(all.size(), at + count));
+              at += rows.size();
+              return new Batch(rows, at < all.size());
+            }
+
+            @Override
+            public void close() {}
+          };
         }
       };
     }
@@ -2050,6 +2063,16 @@ final class FakeServers implements Servers {
 
         @Override
         public void prepare() {}
+
+        @Override
+        public String identity() {
+          return host;
+        }
+
+        @Override
+        public OptionalLong statementLimit() {
+          return OptionalLong.empty();
+        }
 
         @Override
         public Shape shape(Table table) throws CatalogException {

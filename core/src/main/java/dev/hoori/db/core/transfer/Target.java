@@ -5,6 +5,7 @@ import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.Set;
 
 /**
@@ -21,6 +22,15 @@ public interface Target {
 
   /** Puts the session in the state a copy writes in, as the dialect says. */
   void prepare() throws Exception;
+
+  /** What names the server and database the session is on, as {@link Source#identity}. */
+  String identity() throws Exception;
+
+  /**
+   * The most bytes one statement may carry to the server, where it has such a limit, as the
+   * dialect reads it; empty where it has none.
+   */
+  OptionalLong statementLimit() throws Exception;
 
   /** The table's columns and which of them the server generates, which take no value. */
   Shape shape(Table table) throws Exception;
