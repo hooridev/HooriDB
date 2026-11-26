@@ -7,6 +7,8 @@ hoori.customers.insertMany([
   { _id: 2, name: 'Grace', email: null, born: ISODate('1906-12-09T00:00:00Z'), tags: ['navy'] },
   { _id: 3, name: 'Edsger', born: ISODate('1930-05-11T00:00:00Z'), score: NumberLong(42) },
 ]);
+hoori.customers.createIndex({ email: 1 }, { unique: true, sparse: true });
+hoori.customers.createIndex({ name: 'text', tags: 'text' });
 
 const orders = [];
 for (let i = 1; i <= 250; i++) {
@@ -15,6 +17,8 @@ for (let i = 1; i <= 250; i++) {
 }
 hoori.orders.insertMany(orders);
 hoori.orders.createIndex({ customer: 1 });
+hoori.orders.createIndex({ customer: 1, total: -1 }, { partialFilterExpression: { paid: true } });
+hoori.orders.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 3600 });
 
 hoori.createView('paid_orders', 'orders', [{ $match: { paid: true } }]);
 hoori.createCollection('empty');

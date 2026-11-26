@@ -23,11 +23,14 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 /** How MariaDB's and MySQL's tables and results are read alike; their drivers differ. */
@@ -63,8 +66,23 @@ abstract class MySqlFamilyRows extends RowsDialect {
             return OptionalLong.empty();
           }
           var estimate = rows.getLong("rows");
-          return rows.wasNull() ? OptionalLong.empty() : OptionalLong.of(estimate);
+          return rows.wasNull()
+              ? OptionalLong.empty()
+              : OptionalLong.of(Math.round(estimate * filtered(rows) / 100));
         }));
+  }
+
+  // The percent of the rows examined that a condition keeps, where the plan says, as of a filter.
+  // shortcut: MariaDB's EXPLAIN has no such column, and its EXPLAIN EXTENDED says 100 without the
+  // statistics of ANALYZE TABLE … PERSISTENT FOR ALL; ask its optimizer otherwise if a filtered
+  // estimate on MariaDB matters.
+  private static double filtered(ResultSet rows) {
+    try {
+      var filtered = rows.getDouble("filtered");
+      return rows.wasNull() ? 100 : filtered;
+    } catch (SQLException _) {
+      return 100;
+    }
   }
 
   @Override
@@ -151,6 +169,60 @@ abstract class MySqlFamilyRows extends RowsDialect {
     return read(source, catalogType(source.type(), metadata.getPrecision(column)));
   }
 
+  // Both drivers give the original catalog, table and column names from the wire metadata without
+  // querying the server; an empty table name marks an expression or union column.
+  @Override
+  Origin origin(ResultSetMetaData metadata, int column) throws SQLException {
+    var table = metadata.getTableName(column);
+    if (table == null || table.isEmpty()) {
+      return null;
+    }
+    var catalog = metadata.getCatalogName(column);
+    var name = metadata.getColumnName(column);
+    if (catalog == null || catalog.isEmpty() || name == null || name.isEmpty()) {
+      return null;
+    }
+    return new Origin.Named(catalog, table, name);
+  }
+
+  // A session's temporary table reports the same catalog and table name as a permanent table of
+  // that name, so another session cannot tell them apart and would write into the permanent one.
+  @Override
+  boolean temporaryTablesShadow() {
+    return true;
+  }
+
+  @Override
+  Optional<Resolved> resolve(Connection connection, Provider provider, Origin sample)
+      throws QueryException {
+    if (!(sample instanceof Origin.Named named)) {
+      return Optional.empty();
+    }
+    var sql = "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES"
+        + " WHERE TABLE_SCHEMA = CAST(? AS BINARY) AND TABLE_NAME = CAST(? AS BINARY)"
+        + " AND TABLE_TYPE = 'BASE TABLE'";
+    var catalog = provider.dialect().catalog();
+    var table = Journal.sql(
+        provider,
+        Purpose.CATALOG,
+        sql,
+        found -> Outcome.rows(found == null ? 0 : 1),
+        () -> Query.run(connection, provider, sql, statement -> {
+          statement.setString(1, named.catalog());
+          statement.setString(2, named.table());
+          try (var rows = statement.executeQuery()) {
+            return rows.next()
+                ? new Table(catalog.database(rows), rows.getString(2), Table.Kind.TABLE)
+                : null;
+          }
+        }));
+    if (table == null) {
+      return Optional.empty();
+    }
+    return Optional.of(new Resolved(
+        table, origin -> origin instanceof Origin.Named col ? col.column() : null));
+  }
+
   // The type as the catalog would name it, from what the driver reports: MariaDB Connector/J
   // names tinyint(1) BOOLEAN, and its json JSON as MySQL's, which its catalog calls longtext,
   // while MySQL Connector/J reports tinyint(1) and bit(1) alike as a BIT of precision 1, which is
@@ -202,12 +274,12 @@ abstract class MySqlFamilyRows extends RowsDialect {
             : new Rows.Read(
                 Rows.field(source, Kind.DATE_TIME_ZONED),
                 source.sql(),
-                List.of(asText.apply(source.sql()), "UNIX_TIMESTAMP(" + source.sql() + ")"),
+                List.of(asText.apply(source.sql()), unixTimestamp(source.sql())),
                 MySqlFamilyRows::timestamp);
       case "json" -> Rows.text(source, Kind.JSON, start, length);
       case "char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set" ->
         Rows.text(source, Kind.TEXT, start, length)
-            .withBytes(Rows.bytes(source, name -> "CAST(" + name + " AS BINARY)"));
+            .withBytes(Rows.bytes(source, MySqlFamilyRows::bytes));
       // The spatial types are sent as the server stores them: an SRID and the geometry's WKB.
       case "binary",
           "varbinary",
@@ -273,6 +345,51 @@ abstract class MySqlFamilyRows extends RowsDialect {
     };
   }
 
+  // Text in UTF-8 compared by its bytes, as unchanged() does, so that no collation makes accents
+  // or, where it should count, case alike.
+  private String bytes(String column, String value, boolean lower) {
+    var left = utf8(column);
+    var right = utf8(literal(value));
+    return lower
+        ? bytes("LOWER(" + left + ")") + " = " + bytes("LOWER(" + right + ")")
+        : bytes(left) + " = " + bytes(right);
+  }
+
+  @Override
+  String like(String column, Field field, String pattern) {
+    return "LOWER(" + utf8(column) + ") LIKE LOWER(" + utf8(literal(pattern))
+        + ") COLLATE utf8mb4_bin ESCAPE '!'";
+  }
+
+  @Override
+  String equalsIgnoringCase(String column, Field field, String value) {
+    return bytes(column, value, true);
+  }
+
+  @Override
+  String equalsExactly(String column, Field field, String value) {
+    return bytes(column, value, false);
+  }
+
+  @Override
+  String matches(String column, Field field, String expression) {
+    return utf8(column) + " REGEXP " + literal("(?i)" + expression);
+  }
+
+  // A moment as the seconds it stores, as unchanged() compares it: MariaDB reads no offset in a
+  // literal. A FLOAT as the text it was read as, of six digits.
+  @Override
+  String compare(String column, Field field, String operator, Object value) {
+    if (value instanceof OffsetDateTime moment) {
+      return unixTimestamp(column) + " " + operator + " " + literal(seconds(moment));
+    }
+    if (field.type() != null && field.type().toLowerCase(Locale.ROOT).startsWith("float")) {
+      return "CAST(CAST(" + column + " AS CHAR) AS FLOAT) " + operator + " CAST(" + literal(value)
+          + " AS FLOAT)";
+    }
+    return super.compare(column, field, operator, value);
+  }
+
   // A moment as the seconds since 1970, as UNIX_TIMESTAMP() reads it: the server takes a text of a
   // timestamp in the session's zone, and the session must keep it, which a DATETIME's DEFAULT
   // CURRENT_TIMESTAMP is written in. FROM_UNIXTIME() gives the time in that zone, which in an
@@ -282,22 +399,66 @@ abstract class MySqlFamilyRows extends RowsDialect {
     return value instanceof OffsetDateTime ? "FROM_UNIXTIME(?)" : "?";
   }
 
+  // Texts compare by their UTF-8 bytes so no collation or PAD SPACE blurs them; binary values
+  // (including bit(n) and spatial types) compare as bytes, as MariaDB compares BIT with a bound
+  // binary value numerically otherwise; a FLOAT as the text it was read as, of six digits, which
+  // a number of more digits does not equal.
+  @Override
+  String unchanged(String column, Object value, Function<Object, String> parameter) {
+    if (value == null) {
+      return column + " IS NULL";
+    }
+    if (value instanceof String) {
+      return bytes(utf8(column)) + " = " + bytes(parameter.apply(value));
+    }
+    if (value instanceof Binary) {
+      return bytes(column) + " = " + bytes(parameter.apply(value));
+    }
+    if (value instanceof Float) {
+      return "CAST(CAST(" + column + " AS CHAR) AS FLOAT) = CAST(" + parameter.apply(value)
+          + " AS FLOAT)";
+    }
+    // As the moment it stores, which the session's zone may show alike for two.
+    if (value instanceof OffsetDateTime moment) {
+      return unixTimestamp(column) + " = " + parameter.apply(seconds(moment));
+    }
+    return column + " = " + parameter.apply(value);
+  }
+
+  private static String utf8(String expression) {
+    return "CONVERT(" + expression + " USING utf8mb4)";
+  }
+
+  private static String unixTimestamp(String expression) {
+    return "UNIX_TIMESTAMP(" + expression + ")";
+  }
+
+  private static String bytes(String expression) {
+    return "CAST(" + expression + " AS BINARY)";
+  }
+
   // Engines such as MyISAM, MEMORY and Aria keep no transactions; a table that is not found fails
   // the statement that names it. A moment must come back as itself from the session's time.
   @Override
   boolean changeable(Connection connection, Provider provider, Table table, List<Object> values)
       throws QueryException {
+    var checked = new HashSet<OffsetDateTime>();
     for (var value : values) {
-      if (value instanceof OffsetDateTime moment) {
+      if (value instanceof OffsetDateTime moment && checked.add(moment)) {
         var seconds = seconds(moment);
-        var back = Query.run(
-            connection, provider, "SELECT UNIX_TIMESTAMP(FROM_UNIXTIME(?))", statement -> {
+        var roundTrip = "SELECT UNIX_TIMESTAMP(FROM_UNIXTIME(?))";
+        var back = Journal.sql(
+            provider,
+            Purpose.CHANGES,
+            roundTrip,
+            b -> Outcome.rows(1),
+            () -> Query.run(connection, provider, roundTrip, statement -> {
               statement.setBigDecimal(1, seconds);
               try (var rows = statement.executeQuery()) {
                 rows.next();
                 return rows.getBigDecimal(1);
               }
-            });
+            }));
         if (back == null || back.compareTo(seconds) != 0) {
           return false;
         }
@@ -306,13 +467,18 @@ abstract class MySqlFamilyRows extends RowsDialect {
     var sql = "SELECT e.TRANSACTIONS FROM information_schema.TABLES t"
         + " JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE"
         + " WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?";
-    return Query.run(connection, provider, sql, statement -> {
-      statement.setString(1, table.container().name());
-      statement.setString(2, table.name());
-      try (var rows = statement.executeQuery()) {
-        return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
-      }
-    });
+    return Journal.sql(
+        provider,
+        Purpose.CHANGES,
+        sql,
+        ok -> Outcome.rows(1),
+        () -> Query.run(connection, provider, sql, statement -> {
+          statement.setString(1, table.container().name());
+          statement.setString(2, table.name());
+          try (var rows = statement.executeQuery()) {
+            return !rows.next() || "YES".equalsIgnoreCase(rows.getString(1));
+          }
+        }));
   }
 
   private static BigDecimal seconds(OffsetDateTime moment) {

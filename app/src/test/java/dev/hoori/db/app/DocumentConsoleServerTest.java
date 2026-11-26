@@ -9,6 +9,7 @@ import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.RUN_ALL;
 import static dev.hoori.db.app.ConsoleTest.near;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static dev.hoori.db.app.DocumentConsoleTest.show;
 import static dev.hoori.db.app.TableTabTest.cell;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -54,7 +55,8 @@ class DocumentConsoleServerTest {
   App<State> console(ConnectionProfile profile) throws Exception {
     var server = TestServer.of(Provider.MONGODB);
     // The app's tests load made-up drivers; its connections go through the real one.
-    Servers real = (p, password, driver) -> Servers.SERVER.open(p, password, server.driver());
+    Servers real = (p, password, driver, timeout) ->
+        Servers.SERVER.open(p, password, server.driver(), timeout);
     var app = c.app(real, () -> new Keyring.Available(c.secrets), profile);
     c.ready(app, profile);
     app.state().rememberPassword(profile.id(), TestServer.password());
@@ -78,13 +80,36 @@ class DocumentConsoleServerTest {
     assertTrue(cell(grid, 0, 0).contains("\"250\""), grid);
     assertTrue(cell(grid, 0, 1).contains("\"375\""), grid);
     assertTrue(near(grid, "#result-status").contains("3 documents"), grid);
-    c.run(app, "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap json\n");
+    c.run(app, show("JSON") + "snap json\n");
     var json = line(c.tree("json"), "#json");
     assertTrue(json.contains("\\\"_id\\\": 250,"), json);
     assertTrue(json.contains("\\\"$numberDecimal\\\": \\\"375\\\""), json);
-    c.run(app, "press role=radio label=\"Tree\"\nframe\nadvance 1\nframe\nsnap tree\n");
+    c.run(app, show("Tree") + "snap tree\n");
     var tree = c.tree("tree");
     assertTrue(tree.contains("role=treeitem label=\"250\""), tree);
+  }
+
+  @Test
+  void anEmptyFindStillShowsTheViewSwitcherAndZeroDocuments() throws Exception {
+    var app = console(docs());
+    c.run(app, type("db.orders.find({ _id: \"none\" })") + RUN + "snap empty-grid\n");
+    var grid = c.tree("empty-grid");
+    assertTrue(near(grid, "#result-status").contains("0 documents"), grid);
+    assertTrue(
+        line(grid, "#result-shown ").contains("role=combobox label=\"Show documents as\""), grid);
+    assertTrue(near(grid, "#result-shown").contains("\"Grid\""), grid);
+    c.run(app, show("Tree") + "snap empty-tree\n");
+    var tree = c.tree("empty-tree");
+    assertTrue(near(tree, "#result-shown").contains("\"Tree\""), tree);
+    assertTrue(tree.contains("#no-documents"), tree);
+    assertTrue(line(tree, "#rows-in-view").contains("\"No documents\""), tree);
+    assertTrue(line(tree, "role=button label=\"Next page\"").contains("disabled"), tree);
+    c.run(app, show("JSON") + "snap empty-json\n");
+    var json = c.tree("empty-json");
+    assertTrue(near(json, "#result-shown").contains("\"JSON\""), json);
+    assertTrue(json.contains("#no-documents"), json);
+    assertTrue(line(json, "#rows-in-view").contains("\"No documents\""), json);
+    assertTrue(near(json, "#result-status").contains("0 documents"), json);
   }
 
   @Test
@@ -100,10 +125,7 @@ class DocumentConsoleServerTest {
   @Test
   void theDocumentsShownWholeTurnAPageAtATimeAndTheNextIsRead() throws Exception {
     var app = console(docs());
-    c.run(
-        app,
-        type("db.orders.find()") + RUN
-            + "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\nsnap first\n");
+    c.run(app, type("db.orders.find()") + RUN + show("JSON") + "snap first\n");
     var first = c.tree("first");
     assertTrue(line(first, "#rows-in-view").contains("\"Documents 1–200\""), first);
     assertTrue(line(first, "role=button label=\"Previous page\"").contains("disabled"), first);
@@ -130,9 +152,11 @@ class DocumentConsoleServerTest {
     c.run(
         app,
         type("db.orders.find()") + RUN
-            + "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\n"
+            + show("JSON")
             + "press role=button label=\"Next page\"\nframe\nsnap reading\n"
-            + "press role=button label=\"Cancel\"\nframe\n" + SETTLE + "snap after\n");
+            + "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+            + SETTLE
+            + "snap after\n");
     var reading = c.tree("reading");
     assertTrue(reading.contains("Reading documents…"), reading);
     var after = c.tree("after");
@@ -191,7 +215,7 @@ class DocumentConsoleServerTest {
         type("db.orders.find({ a: 1 b: 2 })") + RUN + "snap error\n" + MESSAGES
             + "snap messages\n");
     var error = c.tree("error");
-    assertTrue(line(error, "#sql").contains("underline 22-23"), line(error, "#sql"));
+    assertTrue(line(error, "#sql").contains("squiggle 22-23"), line(error, "#sql"));
     assertTrue(c.tree("messages").contains("A comma or } is missing"), c.tree("messages"));
   }
 
@@ -241,5 +265,31 @@ class DocumentConsoleServerTest {
     c.run(app, open("hoori") + SETTLE + "press #sql\ntype \"db.or\"\nframe\nsnap offered\n");
     var options = ConsoleEditorTest.options(c.tree("offered"));
     assertEquals("orders", options.getFirst(), options.toString());
+  }
+
+  @Test
+  void stopReadingFreesTheOpenCursorAndLeavesTheLoadedDocuments() throws Exception {
+    var app = console(docs());
+    c.run(app, type("db.orders.find()") + RUN + "snap open\n");
+    String open = c.tree("open");
+    assertTrue(near(open, "#result-status").contains("200 documents so far · cursor open"), open);
+    assertTrue(open.contains("role=button label=\"Stop reading\""), open);
+    c.run(app, "press role=button label=\"Stop reading\"\nframe\n" + SETTLE + "snap stopped\n");
+    String stopped = c.tree("stopped");
+    assertTrue(
+        near(stopped, "#result-status").contains("the first 200 documents; reading stopped"),
+        stopped);
+    assertFalse(stopped.contains("role=button label=\"Stop reading\""), stopped);
+    // In JSON view, Next page is disabled because no more documents will be read.
+    c.run(app, show("JSON") + "snap json\n");
+    assertTrue(
+        line(c.tree("json"), "role=button label=\"Next page\"").contains("disabled"),
+        c.tree("json"));
+    // The session stays usable for the next statement.
+    c.run(
+        app,
+        "press #sql\nkey A control\nkey Delete\n" + type("db.orders.countDocuments({})") + RUN
+            + "snap count\n");
+    assertTrue(cell(c.tree("count"), 0, 0).contains("\"250\""), c.tree("count"));
   }
 }

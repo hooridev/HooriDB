@@ -5,9 +5,13 @@ import static dev.hoori.db.app.ConnectionsTest.line;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
+import com.rethinkj.ui.kit.Split;
+import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connect.ConnectionException.Failure;
@@ -15,6 +19,8 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.HistoryStore;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.driver.Driver;
@@ -34,6 +40,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** The catalog: connections that open onto what their servers hold. */
 class CatalogTreeTest {
@@ -579,7 +587,7 @@ class CatalogTreeTest {
     assertTrue(row(tables, "customers").contains("label=\"table\""), tables);
     assertTrue(row(tables, "order_totals").contains("label=\"eye\""), tables);
     assertTrue(row(tables, "shop").contains("label=\"database\""), tables);
-    assertTrue(row(tables, "public").contains("label=\"folder\""), tables);
+    assertTrue(row(tables, "public").contains("label=\"schema\""), tables);
     String columns = tree("columns");
     assertEquals(
         List.of("        id", "        customer_id", "        placed_at", "        total"),
@@ -1101,5 +1109,553 @@ class CatalogTreeTest {
     assertEquals(List.of("shop-prod", "  Disconnected"), rows(tree("end")));
     assertFalse(servers.calls.contains("columns " + PG + "/shop.public.orders"), "used again");
     eventually(() -> servers.closed.contains(PG + "/shop"));
+  }
+
+  /** A held open fails after the configured connect timeout, and the note names it. */
+  @Test
+  void aHeldOpenFailsAfterTheConfiguredConnectTimeout() throws Exception {
+    new SettingsStore(dir.resolve("config"))
+        .save(Settings.DEFAULT.withConnectTimeout(Duration.ofSeconds(1)));
+    var app = app(SHOP);
+    ready(app, SHOP);
+    servers.hold("open " + PG + "/shop");
+    run(app, START + open("shop-prod") + SETTLE + "snap timed\n");
+    String timed = tree("timed");
+    assertTrue(timed.contains("No answer in time"), timed);
+    assertTrue(timed.contains("did not answer on port 5432 within 1 second."), timed);
+    assertEquals(List.of(Duration.ofSeconds(1)), servers.timeouts);
+  }
+
+  static final String FK_OUTLINE = """
+      shop
+        public
+          customers
+            *id: integer
+            name: text
+          orders
+            *id: bigint
+            customer_id: integer > customers.id on delete cascade
+            parent_id: bigint > orders.id on update set null
+            region_a: integer > region_fk: billing.regions.a on delete restrict
+            region_b: integer > region_fk: billing.regions.b
+            total: numeric(12,2)
+          order_items
+            *order_id: bigint > orders.id on delete cascade
+            *line: integer
+          @order_totals
+            customer_id: integer
+            total: numeric
+        billing
+          regions
+            *a: integer
+            *b: integer
+      """;
+
+  @Test
+  void foreignKeysShowOnColumnsAndUnderForeignKeysNodeAndEnterOpensRelatedTable() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", FK_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("Foreign keys")
+            + open("References")
+            + open("Referenced by")
+            + "snap foreign-keys-tree\n");
+    var fkTree = tree("foreign-keys-tree");
+    assertEquals(
+        List.of(
+            "shop-prod",
+            "  shop",
+            "    public",
+            "      customers",
+            "      orders",
+            "        id",
+            "        customer_id",
+            "        parent_id",
+            "        region_a",
+            "        region_b",
+            "        total",
+            "        Foreign keys",
+            "          References",
+            "            orders_customer_id_fkey",
+            "            orders_parent_id_fkey",
+            "            region_fk",
+            "          Referenced by",
+            "            order_items_order_id_fkey",
+            "            orders_parent_id_fkey",
+            "      order_items",
+            "      order_totals",
+            "    billing"),
+        rows(fkTree));
+
+    // Column icons and details: key columns show link icon and target(s), plain columns only type.
+    assertTrue(
+        row(fkTree, "id").contains("label=\"" + Symbol.KEY.label() + "\""), row(fkTree, "id"));
+    assertTrue(row(fkTree, "id").contains("\"bigint\""), row(fkTree, "id"));
+    assertFalse(row(fkTree, "id").contains("→"), row(fkTree, "id"));
+    assertTrue(
+        row(fkTree, "customer_id").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(fkTree, "customer_id"));
+    assertTrue(
+        row(fkTree, "customer_id").contains("\"integer → customers.id\""),
+        row(fkTree, "customer_id"));
+    assertTrue(
+        row(fkTree, "parent_id").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(fkTree, "parent_id"));
+    assertTrue(
+        row(fkTree, "parent_id").contains("\"bigint → orders.id\""), row(fkTree, "parent_id"));
+    assertTrue(
+        row(fkTree, "region_a").contains("\"integer → billing.regions.a\""),
+        row(fkTree, "region_a"));
+    assertTrue(
+        row(fkTree, "region_b").contains("\"integer → billing.regions.b\""),
+        row(fkTree, "region_b"));
+    assertTrue(
+        row(fkTree, "total").contains("label=\"" + Symbol.COLUMN_SINGLE.label() + "\""),
+        row(fkTree, "total"));
+    assertTrue(row(fkTree, "total").contains("\"numeric(12,2)\""), row(fkTree, "total"));
+
+    // Foreign keys node, group icons, and constraint rows with mapping and non-default rules.
+    assertTrue(
+        row(fkTree, "Foreign keys").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(fkTree, "Foreign keys"));
+    assertTrue(
+        row(fkTree, "References").contains("label=\"" + Symbol.ARROW_RIGHT.label() + "\""),
+        row(fkTree, "References"));
+    assertTrue(
+        row(fkTree, "Referenced by").contains("label=\"" + Symbol.ARROW_LEFT.label() + "\""),
+        row(fkTree, "Referenced by"));
+    assertTrue(
+        row(fkTree, "orders_customer_id_fkey").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(fkTree, "orders_customer_id_fkey"));
+    assertTrue(
+        row(fkTree, "orders_customer_id_fkey")
+            .contains("\"(customer_id) → customers(id) · ON DELETE CASCADE\""),
+        row(fkTree, "orders_customer_id_fkey"));
+    assertTrue(
+        row(fkTree, "region_fk")
+            .contains("\"(region_a, region_b) → billing.regions(a, b) · ON DELETE RESTRICT\""),
+        row(fkTree, "region_fk"));
+    assertTrue(
+        row(fkTree, "order_items_order_id_fkey")
+            .contains("\"order_items(order_id) → (id) · ON DELETE CASCADE\""),
+        row(fkTree, "order_items_order_id_fkey"));
+
+    // Enter on an outgoing entry opens the referenced table; Enter on incoming opens referencing.
+    run(
+        app,
+        "press role=treeitem label=\"orders_customer_id_fkey\"\nkey Enter\nframe\n"
+            + SETTLE
+            + "snap opened-ref\n");
+    assertTrue(
+        line(tree("opened-ref"), "role=tab label=\"customers\"").contains("selected"),
+        tree("opened-ref"));
+
+    run(
+        app,
+        "press role=treeitem label=\"order_items_order_id_fkey\"\nkey Enter\nframe\n"
+            + SETTLE
+            + "snap opened-inc\n");
+    assertTrue(
+        line(tree("opened-inc"), "role=tab label=\"order_items\"").contains("selected"),
+        tree("opened-inc"));
+
+    // A column that is both primary key and foreign key keeps the primary key icon and shows
+    // target.
+    run(app, open("order_items") + SETTLE + "snap pk-fk\n");
+    var pkFk = tree("pk-fk");
+    assertTrue(
+        row(pkFk, "order_id").contains("label=\"" + Symbol.KEY.label() + "\""),
+        row(pkFk, "order_id"));
+    assertFalse(
+        row(pkFk, "order_id").contains("label=\"" + Symbol.LINK.label() + "\""),
+        row(pkFk, "order_id"));
+    assertTrue(row(pkFk, "order_id").contains("\"bigint → orders.id\""), row(pkFk, "order_id"));
+  }
+
+  @Test
+  void mariadbHidesRestrictRuleAsDefaultInTree() throws Exception {
+    servers.serve(MARIA, Provider.MARIADB, "11.4.2-MariaDB", """
+        warehouse
+          items
+            *id: int(11)
+          stock
+            *item_id: int(11) > items.id on delete restrict on update cascade
+        """);
+    var app = app(INVENTORY);
+    ready(app, INVENTORY);
+    run(
+        app,
+        START
+            + open("inventory")
+            + SETTLE
+            + open("warehouse")
+            + SETTLE
+            + open("stock")
+            + SETTLE
+            + open("Foreign keys")
+            + open("References")
+            + "snap maria-fk\n");
+    var mariaFk = row(tree("maria-fk"), "stock_item_id_fkey");
+    assertTrue(mariaFk.contains("\"(item_id) → items(id) · ON UPDATE CASCADE\""), mariaFk);
+    assertFalse(mariaFk.contains("RESTRICT"), mariaFk);
+  }
+
+  @Test
+  void refreshReadsForeignKeysAgainAndKeyFailureKeepsColumns() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", FK_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var ordersKey = "foreign keys " + PG + "/shop.public.orders";
+    var customersKey = "foreign keys " + PG + "/shop.public.customers";
+    servers.fail(customersKey, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("customers")
+            + SETTLE
+            + "snap initial\n");
+    assertEquals(
+        1, servers.calls.stream().filter(ordersKey::equals).count(), servers.calls.toString());
+    // customers' key read failed alone: its columns are still shown, no Foreign keys node, not
+    // cached.
+    var initial = tree("initial");
+    assertTrue(rows(initial).contains("        name"), initial);
+    assertEquals(
+        1, rows(initial).stream().filter("        Foreign keys"::equals).count(), initial);
+    var pub = new dev.hoori.db.core.catalog.Schema(
+        new dev.hoori.db.core.catalog.Database("shop", false), "public", false);
+    var customers = new dev.hoori.db.core.catalog.Table(
+        pub, "customers", dev.hoori.db.core.catalog.Table.Kind.TABLE);
+    assertEquals(null, app.state().catalog.foreignKeys(SHOP.id(), customers));
+
+    // Refresh on orders reads its foreign keys again.
+    run(app, menu("orders", "Refresh") + SETTLE);
+    assertEquals(
+        2, servers.calls.stream().filter(ordersKey::equals).count(), servers.calls.toString());
+
+    // Healing customers and refreshing it reads and caches its keys.
+    servers.heal(customersKey);
+    run(app, menu("customers", "Refresh") + SETTLE);
+    assertEquals(1, app.state().catalog.foreignKeys(SHOP.id(), customers).size());
+  }
+
+  @Test
+  void openingATableTabAndExpandingAViewReadNoForeignKeys() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", FK_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + "press role=treeitem label=\"orders\"\nkey Enter\nframe\n"
+            + SETTLE
+            // A double press opens the table's tab and leaves its columns shut.
+            + "press role=treeitem label=\"customers\" clicks 2\nframe\n"
+            + SETTLE
+            + open("order_totals")
+            + SETTLE
+            + "snap end\n");
+    assertTrue(
+        servers.calls.stream().anyMatch(c -> c.startsWith("read " + PG + "/shop.public.orders ")),
+        servers.calls.toString());
+    assertTrue(
+        servers.calls.stream()
+            .anyMatch(c -> c.startsWith("read " + PG + "/shop.public.customers ")),
+        servers.calls.toString());
+    assertTrue(
+        servers.calls.contains("columns " + PG + "/shop.public.order_totals"),
+        servers.calls.toString());
+    assertFalse(
+        servers.calls.stream().anyMatch(c -> c.startsWith("foreign keys ")),
+        servers.calls.toString());
+    assertFalse(
+        servers.calls.stream().anyMatch(c -> c.startsWith("indexes ")), servers.calls.toString());
+  }
+
+  static final String INDEX_OUTLINE = """
+      shop
+        public
+          customers
+            *id: integer
+            email: text
+            #customers_email_uidx (email) unique
+            #customers_pkey (id) primary
+          orders
+            *id: bigint
+            customer_id: integer > customers.id on delete cascade
+            placed_at: timestamp
+            code: text
+            #orders_customer_placed_idx (customer_id, placed_at)
+            #orders_code_expr_idx (lower(code)) unique
+            #orders_pkey (id) primary
+          notes
+            body: text
+      """;
+
+  @Test
+  void indexesShowUnderIndexesNodeBesideForeignKeysWithDetailsIconsAndCopyName() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", INDEX_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("Indexes")
+            + open("notes")
+            + SETTLE
+            + "snap indexes-tree\n");
+    var idxTree = tree("indexes-tree");
+    assertEquals(
+        List.of(
+            "shop-prod",
+            "  shop",
+            "    public",
+            "      customers",
+            "      orders",
+            "        id",
+            "        customer_id",
+            "        placed_at",
+            "        code",
+            "        Foreign keys",
+            "        Indexes",
+            "          orders_pkey",
+            "          orders_code_expr_idx",
+            "          orders_customer_placed_idx",
+            "      notes",
+            "        body"),
+        rows(idxTree));
+
+    // Icons and muted details for Indexes and its leaf entries.
+    assertTrue(
+        row(idxTree, "Indexes").contains("label=\"" + Symbol.KEY_MULTIPLE.label() + "\""),
+        row(idxTree, "Indexes"));
+    assertTrue(
+        row(idxTree, "orders_pkey").contains("label=\"" + Symbol.KEY.label() + "\""),
+        row(idxTree, "orders_pkey"));
+    assertTrue(
+        row(idxTree, "orders_pkey").contains("\"(id) · primary key\""),
+        row(idxTree, "orders_pkey"));
+    assertTrue(
+        row(idxTree, "orders_code_expr_idx")
+            .contains("label=\"" + Symbol.KEY_MULTIPLE.label() + "\""),
+        row(idxTree, "orders_code_expr_idx"));
+    assertTrue(
+        row(idxTree, "orders_code_expr_idx").contains("\"(lower(code)) · unique\""),
+        row(idxTree, "orders_code_expr_idx"));
+    assertTrue(
+        row(idxTree, "orders_customer_placed_idx").contains("\"(customer_id, placed_at)\""),
+        row(idxTree, "orders_customer_placed_idx"));
+
+    // Enter on an index row opens no tab; Copy name copies the index name.
+    int tabsBefore = app.state().tabs.main().active().tabs().size();
+    run(
+        app,
+        "press role=treeitem label=\"orders_customer_placed_idx\"\nkey Enter\nframe\n"
+            + menu("orders_customer_placed_idx", "Copy name"));
+    assertEquals(tabsBefore, app.state().tabs.main().active().tabs().size());
+    assertEquals("orders_customer_placed_idx", app.clipboard().read());
+
+    // Refresh on Indexes refreshes the parent table and re-reads its indexes.
+    var ordersIdx = "indexes " + PG + "/shop.public.orders";
+    assertEquals(
+        1, servers.calls.stream().filter(ordersIdx::equals).count(), servers.calls.toString());
+    run(app, menu("Indexes", "Refresh") + SETTLE);
+    assertEquals(
+        2, servers.calls.stream().filter(ordersIdx::equals).count(), servers.calls.toString());
+  }
+
+  @Test
+  void refreshReadsIndexesAgainAndIndexFailureKeepsColumnsAndForeignKeys() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", INDEX_OUTLINE);
+    var app = app(SHOP);
+    ready(app, SHOP);
+    var customersIdx = "indexes " + PG + "/shop.public.customers";
+    servers.fail(customersIdx, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("customers")
+            + SETTLE
+            + "snap initial\n");
+    var initial = tree("initial");
+    assertTrue(rows(initial).contains("        email"), initial);
+    assertTrue(rows(initial).contains("        Foreign keys"), initial);
+    assertFalse(rows(initial).contains("        Indexes"), initial);
+    var pub = new dev.hoori.db.core.catalog.Schema(
+        new dev.hoori.db.core.catalog.Database("shop", false), "public", false);
+    var customers = new dev.hoori.db.core.catalog.Table(
+        pub, "customers", dev.hoori.db.core.catalog.Table.Kind.TABLE);
+    assertEquals(null, app.state().catalog.indexes(SHOP.id(), customers));
+
+    servers.heal(customersIdx);
+    run(app, menu("customers", "Refresh") + SETTLE + "snap healed\n");
+    assertEquals(2, app.state().catalog.indexes(SHOP.id(), customers).size());
+    assertTrue(rows(tree("healed")).contains("        Indexes"), tree("healed"));
+  }
+
+  static final String MONGO_INDEX_OUTLINE = """
+      hoori
+        orders
+          *_id: objectId
+          customer: int
+          total: decimal
+          expiresAt: date
+          #customer_1_total_-1 (customer: 1, total: -1) | partial
+          #expiresAt_1 (expiresAt: 1) | TTL 3600 s
+          #_id_ (_id: 1) primary
+        customers
+          *_id: objectId
+          name: string
+          email: string
+          tags: array
+          #email_1 (email: 1) unique | sparse
+          #name_text_tags_text (name: text, tags: text)
+          #_id_ (_id: 1) primary
+        @paid_orders
+          _id: objectId
+          total: decimal
+      """;
+
+  @Test
+  void mongoDbIndexesShowUnderIndexesNodeWithDetailsAndRefusedReadKeepsFields() throws Exception {
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", MONGO_INDEX_OUTLINE);
+    var customersIdx = "indexes " + DocumentConsoleTest.MONGO + "/hoori.customers";
+    servers.fail(customersIdx, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    var docs = DocumentConsoleTest.DOCS;
+    var app = app(docs);
+    ready(app, docs);
+    run(
+        app,
+        START
+            + open(docs.name())
+            + SETTLE
+            + open("hoori")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("Indexes")
+            + open("customers")
+            + SETTLE
+            + open("paid_orders")
+            + SETTLE
+            + "snap mongo-indexes\n");
+    var idxTree = tree("mongo-indexes");
+    assertEquals(
+        List.of(
+            "docs",
+            "  hoori",
+            "    orders",
+            "      _id",
+            "      customer",
+            "      total",
+            "      expiresAt",
+            "      Indexes",
+            "        _id_",
+            "        customer_1_total_-1",
+            "        expiresAt_1",
+            "    customers",
+            "      _id",
+            "      name",
+            "      email",
+            "      tags",
+            "    paid_orders",
+            "      _id",
+            "      total"),
+        rows(idxTree));
+
+    assertTrue(
+        row(idxTree, "_id_").contains("label=\"" + Symbol.KEY.label() + "\""),
+        row(idxTree, "_id_"));
+    assertTrue(row(idxTree, "_id_").contains("\"(_id: 1) · primary key\""), row(idxTree, "_id_"));
+    assertTrue(
+        row(idxTree, "customer_1_total_-1").contains("\"(customer: 1, total: -1) · partial\""),
+        row(idxTree, "customer_1_total_-1"));
+    assertTrue(
+        row(idxTree, "expiresAt_1").contains("\"(expiresAt: 1) · TTL 3600 s\""),
+        row(idxTree, "expiresAt_1"));
+    assertFalse(
+        servers.calls.contains("indexes " + DocumentConsoleTest.MONGO + "/hoori.paid_orders"),
+        servers.calls.toString());
+
+    // Healing customers' index read and refreshing shows unique, sparse and text indexes.
+    servers.heal(customersIdx);
+    run(
+        app,
+        "press role=treeitem label=\"orders\"\nkey ArrowLeft\nframe\n"
+            + menu("customers", "Refresh")
+            + SETTLE
+            + open("Indexes")
+            + "snap healed\n");
+    var healed = tree("healed");
+    assertTrue(
+        row(healed, "email_1").contains("\"(email: 1) · unique · sparse\""),
+        row(healed, "email_1"));
+    assertTrue(
+        row(healed, "name_text_tags_text").contains("\"(name: text, tags: text)\""),
+        row(healed, "name_text_tags_text"));
+  }
+
+  /**
+   * The pictures of a collection's indexes for a review, light and dark, into the folder that {@code
+   * -Dreview=<folder>} names; skipped without it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"dark", "light"})
+  void mongoDbIndexPictures(String look) throws Exception {
+    var review = System.getProperty("review");
+    assumeTrue(review != null, "-Dreview=<folder> asks for the pictures");
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", MONGO_INDEX_OUTLINE);
+    var docs = DocumentConsoleTest.DOCS;
+    var app = app(docs);
+    app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    app.state().sidebar = Split.Position.first(440); // room for the indexes' keys and details
+    ready(app, docs);
+    Script.run(
+        START + open(docs.name()) + SETTLE + open("hoori") + SETTLE + open("orders") + SETTLE
+            + open("Indexes") + open("customers") + SETTLE
+            // Down past its fields to its own Indexes, which shares its label with orders'.
+            + "key ArrowDown\n".repeat(5) + "key ArrowRight\nframe\n"
+            + "snap mongodb-indexes-" + look + "\n",
+        app,
+        Files.createDirectories(Path.of(review)));
   }
 }

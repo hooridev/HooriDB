@@ -37,6 +37,7 @@ import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.ConnectionString;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.dialect.Dialect;
@@ -46,8 +47,10 @@ import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -89,6 +92,8 @@ final class ConnectionDialog {
   private boolean portByHand; // the port no longer follows the provider
   private boolean tlsByHand; // the TLS no longer follows the host
   private boolean hostTyped;
+  private String pastedNote; // unused options or further hosts of a pasted connection string
+  private String pastedError; // why a pasted connection string could not be read
   boolean triedToSave; // Save or a test was tried: the fields say what keeps them
   // The kit's password field holds a String, which cannot be wiped; it goes with the dialog.
   String password = "";
@@ -177,7 +182,9 @@ final class ConnectionDialog {
   }
 
   static ConnectionDialog create(State s) {
-    var dialog = new ConnectionDialog(ConnectionProfile.of(Provider.POSTGRESQL), true);
+    var profile =
+        ConnectionProfile.of(Provider.POSTGRESQL).withReadOnly(s.settings.newConnectionsReadOnly());
+    var dialog = new ConnectionDialog(profile, true);
     dialog.driver(s);
     return dialog;
   }
@@ -334,7 +341,8 @@ final class ConnectionDialog {
 
   /** Whether Save can go: the profile can connect, and something changed. */
   boolean ready() {
-    return editing.valid()
+    return pastedError == null
+        && editing.valid()
         && editing.value().problems().isEmpty()
         && changed()
         && !asking()
@@ -343,7 +351,10 @@ final class ConnectionDialog {
 
   /** Whether the form, the port's text included, holds a profile that can connect. */
   boolean formValid() {
-    return editing.valid() && !portTyped() && editing.value().problems().isEmpty();
+    return pastedError == null
+        && editing.valid()
+        && !portTyped()
+        && editing.value().problems().isEmpty();
   }
 
   /** Whether the port field holds a text that is no port, which the user typed. */
@@ -366,7 +377,7 @@ final class ConnectionDialog {
     // The consoles ask first, before anything is written, so that Cancel leaves it all as it was;
     // then they start nothing until the save is done.
     if (ends(s, profile)
-        && (s.guard.asks(s, act, SAVED, s.consoles(id), () -> save(s))
+        && (s.guard.asks(s, act, SAVED, s.guarded(id), () -> save(s))
             || !s.guard.lock(s, act, State.name(profile) + " is being saved", Set.of(id)))) {
       return;
     }
@@ -561,6 +572,8 @@ final class ConnectionDialog {
     if (provider == editing.value().provider()) {
       return;
     }
+    pastedNote = null;
+    pastedError = null;
     editing.at(PROVIDER).set(provider);
     editing.at(DRIVER_VERSION).set(null); // a version of the other kind's driver
     switch (provider.traits()) {
@@ -585,12 +598,100 @@ final class ConnectionDialog {
     editing.at(PORT).set(port);
   }
 
-  private void host(String host) {
+  private void host(State s, String text) {
+    var inserted = pasted(editing.value().host(), text);
+    if (inserted != null) {
+      // What was pasted, not only the field's whole text: pasted after a host, that would not
+      // parse, and the field would show the pasted string with its password. The clipboard's text
+      // where the field took it as it is, else the part the edit put in, else the whole text.
+      var read = s.app.clipboard().read();
+      var clip = read == null ? "" : read.strip();
+      var candidates = new LinkedHashSet<String>();
+      // Compared without spaces and control characters, which the field may turn into others.
+      if (!clip.isEmpty() && squeezed(text).contains(squeezed(clip))) {
+        candidates.add(clip);
+      }
+      candidates.add(inserted.strip());
+      candidates.add(text.strip());
+      for (var candidate : candidates) {
+        for (var provider : PROVIDERS) {
+          Optional<ConnectionString> parsed;
+          try {
+            parsed = provider.traits().connectionString(candidate);
+          } catch (IllegalArgumentException e) {
+            // Host stays as it was: a broken string's credentials never enter the element tree.
+            pastedNote = null;
+            pastedError = e.getMessage();
+            return;
+          }
+          if (parsed.isPresent()) {
+            apply(s, provider, parsed.get());
+            return;
+          }
+        }
+      }
+    }
+    pastedNote = null;
+    pastedError = null;
     hostTyped = true;
-    editing.at(HOST).set(host);
+    editing.at(HOST).set(text);
     if (!tlsByHand) {
       editing.at(TLS).set(tlsByDefault(editing.value()));
     }
+  }
+
+  private static String squeezed(String text) {
+    return text.replaceAll("[\\s\\p{Z}\\p{Cntrl}]", "");
+  }
+
+  /** What one edit put in where it was more than one character, as a paste does; else null. */
+  private static String pasted(String before, String after) {
+    int prefix = 0;
+    int limit = Math.min(before.length(), after.length());
+    while (prefix < limit && before.charAt(prefix) == after.charAt(prefix)) {
+      prefix++;
+    }
+    int suffix = 0;
+    while (suffix < limit - prefix
+        && before.charAt(before.length() - 1 - suffix)
+            == after.charAt(after.length() - 1 - suffix)) {
+      suffix++;
+    }
+    return after.length() - prefix - suffix > 1
+        ? after.substring(prefix, after.length() - suffix)
+        : null;
+  }
+
+  private void apply(State s, Provider provider, ConnectionString cs) {
+    provider(s, provider);
+    hostTyped = true;
+    editing.at(HOST).set(cs.host());
+    editing.at(PORT).draft().clear();
+    port(cs.port());
+    srv(cs.srv());
+    tls(cs.tls());
+    editing.at(USER).set(cs.user());
+    editing.at(DATABASE).set(cs.database());
+    editing.at(AUTH_DATABASE).set(cs.authDatabase());
+    password(cs.password()); // an earlier string's password is not this server's
+    pastedError = null;
+    pastedNote = pastedNote(cs);
+  }
+
+  private static String pastedNote(ConnectionString cs) {
+    if (cs.unused().isEmpty() && cs.otherHosts().isEmpty()) {
+      return null;
+    }
+    if (cs.otherHosts().isEmpty()) {
+      return "Not used: " + String.join(", ", cs.unused());
+    }
+    if (cs.unused().isEmpty()) {
+      return "Other hosts not used: " + String.join(", ", cs.otherHosts());
+    }
+    return "Other hosts not used: "
+        + String.join(", ", cs.otherHosts())
+        + ". Not used: "
+        + String.join(", ", cs.unused());
   }
 
   private void srv(boolean srv) {
@@ -771,7 +872,7 @@ final class ConnectionDialog {
     var p = editing.value();
     var problems = p.problems();
     var type = typeField(s, open);
-    var address = address(open, problems);
+    var address = address(s, open, problems);
     var database = field(
             "Database",
             textField(locked(open, editing.at(DATABASE)), "Optional")
@@ -841,7 +942,7 @@ final class ConnectionDialog {
   }
 
   /** The host, and its port beside it but with SRV, where DNS gives the servers' ports. */
-  private Form.Entry address(boolean open, Set<ConnectionProfile.Problem> problems) {
+  private Form.Entry address(State s, boolean open, Set<ConnectionProfile.Problem> problems) {
     Theme t = Theme.CURRENT.get();
     var p = editing.value();
     var host = field(
@@ -851,11 +952,14 @@ final class ConnectionDialog {
                 textField(
                         p.host(),
                         p.srv() ? "As in mongodb+srv://" : "Name or address",
-                        open ? this::host : null)
+                        open ? v -> host(s, v) : null)
                     .key("host")
                     .wFull()))
         .required()
-        .error(or(error(problems, ConnectionProfile.Field.HOST), probe.error(Probe.At.HOST)));
+        .warning(pastedNote)
+        .error(or(
+            pastedError,
+            or(error(problems, ConnectionProfile.Field.HOST), probe.error(Probe.At.HOST))));
     if (p.srv()) {
       return host;
     }

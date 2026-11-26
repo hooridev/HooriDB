@@ -14,6 +14,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.function.BiFunction;
@@ -32,6 +33,36 @@ class CatalogTest {
         IllegalArgumentException.class, () -> Catalog.tables(null, Provider.POSTGRESQL, database));
     assertThrows(
         IllegalArgumentException.class, () -> Catalog.tables(null, Provider.MARIADB, schema));
+  }
+
+  @Test
+  void viewsAndForeignTablesHaveNoForeignKeysWithoutQueryingTheServer() throws Exception {
+    var database = new Database("hoori", false);
+    var schema = new Schema(database, "public", false);
+    assertEquals(
+        List.of(),
+        Catalog.foreignKeys(null, Provider.POSTGRESQL, new Table(schema, "v", Table.Kind.VIEW)));
+    assertEquals(
+        List.of(),
+        Catalog.foreignKeys(null, Provider.POSTGRESQL, new Table(schema, "f", Table.Kind.FOREIGN)));
+    assertEquals(
+        List.of(),
+        Catalog.foreignKeys(null, Provider.MYSQL, new Table(database, "v", Table.Kind.VIEW)));
+  }
+
+  @Test
+  void viewsAndForeignTablesHaveNoIndexesWithoutQueryingTheServer() throws Exception {
+    var database = new Database("hoori", false);
+    var schema = new Schema(database, "public", false);
+    assertEquals(
+        List.of(),
+        Catalog.indexes(null, Provider.POSTGRESQL, new Table(schema, "v", Table.Kind.VIEW)));
+    assertEquals(
+        List.of(),
+        Catalog.indexes(null, Provider.POSTGRESQL, new Table(schema, "f", Table.Kind.FOREIGN)));
+    assertEquals(
+        List.of(),
+        Catalog.indexes(null, Provider.MYSQL, new Table(database, "v", Table.Kind.VIEW)));
   }
 
   @Test

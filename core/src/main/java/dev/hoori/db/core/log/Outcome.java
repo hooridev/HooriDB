@@ -14,6 +14,9 @@ public sealed interface Outcome {
   /** The message of a failure that is not shown, as what failed carried a password. */
   String WITHHELD = "The message is not shown, as the statement holds a password.";
 
+  /** The message of a failure that is not shown, as it may quote a row that was written. */
+  String ROW_WITHHELD = "The message is not shown, as it may quote values of the row.";
+
   /** It gave rows: as many as were read with it, and whether it has more. */
   record Rows(long count, boolean more) implements Outcome {}
 

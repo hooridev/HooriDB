@@ -1,9 +1,9 @@
 ---
 title: Table data
-description: Look at a table's rows in the grid, page through them, and read a value whole in the value panel.
+description: Look at and edit a table's rows in the grid, page through them, and read a value whole in the value panel.
 ---
 
-Opening a table or view displays its rows in a read-only data grid. If the same table is already open in a tab (even in another window), HooriDB switches to that tab instead of opening a second copy. A MongoDB collection opens the same way, with its documents shown as a grid, JSON, or a tree; see [MongoDB](/docs/features/mongodb#look-at-a-collections-documents).
+Opening a table or view displays its rows in a data grid. If the same table is already open in a tab (even in another window), HooriDB switches to that tab instead of opening a second copy. A MongoDB collection opens the same way, with its documents shown as a grid, JSON, or a tree; see [MongoDB](/docs/features/mongodb#look-at-a-collections-documents).
 
 <Shot
   name="table"
@@ -25,8 +25,8 @@ The tab toolbar shows the table's path (`database.schema.table` or `database.tab
 
 The bottom status bar of a table tab shows:
 
-- On the left: the row count. For tables estimated below 100,000 rows, HooriDB counts the exact total automatically. For larger tables, it shows the server's estimate (`About … rows, as the server estimates`), or `At least …` where the server gives no estimate. Press **Count rows** to run an exact count, or press **Stop counting** to cancel it while it runs.
-- On the right: how long the last page read took, which rows are currently visible (for example, `Rows 5,001–5,024`), four paging buttons, and the **Value** panel toggle.
+- On the left: the row count. For tables estimated below 100,000 rows, HooriDB counts the exact total automatically. For larger tables, it shows the server's estimate (`About … rows, as the server estimates`), or `At least …` where the server gives no estimate. Press **Count rows** to run an exact count, or press **Stop counting** to cancel it while it runs. While a count runs, the line starts with `Counting…`, and after a count failed with `Count failed`, whose reason shows when you hover it.
+- On the right: how long the last page read took, which rows are currently visible (for example, `Rows 5,001–5,024`), four paging buttons, and the **Value** panel toggle. In a narrow tab, the texts on the right are shortened first, so that the row count keeps at least half of the status bar.
 
 Use the four paging buttons to move the view without changing your selection:
 
@@ -34,6 +34,34 @@ Use the four paging buttons to move the view without changing your selection:
 - **Previous page** (up chevron): scroll up by one screen of rows.
 - **Next page** (down chevron): scroll down by one screen of rows.
 - **Last page** (down arrow): jump to the known end of the table.
+
+## Filter and sort rows
+
+Above the grid, a table tab shows **WHERE** and **ORDER BY** fields on SQL connections (**Filter** and **Sort** on MongoDB collections), each with syntax highlighting and completion. Press `Enter` in either field to apply it.
+
+Press **Conditions…** beside **WHERE** (or **Filter**) to build conditions visually with `AND` / `OR`, nested groups, `Not equal`, ranges (`At least`, `At most`, `Between`), text matching (`Contains`, `Starts with`), `Is NULL` / `Is not NULL`, and on MongoDB `Exists` / `Does not exist` and nested subdocument paths such as `address.city` (sampled from the collection's documents in the background). Pressing **Apply** translates the active conditions in the server's dialect, writes them into **WHERE** or **Filter** (joined with `AND` to any hand-written text), and applies them after asking if there are uncommitted edits. Where both can express the same flat `AND` filter with one condition per filterable column, the builder and the header filter chips stay in sync.
+
+You can also filter and sort directly from the column headers:
+
+- **Sort:** Click a column header to sort ascending, descending, or off; `Shift+click` adds a secondary sort column. The generated clause is written into **ORDER BY** (or **Sort**) and applied.
+- **Filter:** Click the funnel icon in a column header (or press `Alt+ArrowDown` on a cell in that column) to open the filter popover. The offered operators match the column's type: text matching (`Contains`, `Starts with` and `Equals` whatever the case, `Equals exactly` with it, `Matches regular expression`), ranges (`Between`, with either bound optional) and `Equals` for numbers, dates, and times, `One of` checkboxes for booleans, and `Is NULL` / `Is not NULL`. Applying writes the condition into **WHERE** (in the server's SQL dialect) or **Filter** (as a MongoDB shell document with values typed by the field's sampled type: numbers, dates, `ObjectId`, booleans) and runs it, asking first if there are uncommitted edits.
+- **Chips and hand-written clauses:** Active header filters appear as chips above the grid so you can remove individual conditions or **Clear all**. If the clause field already holds hand-written text, header filters are joined to it with `AND` (`(…) AND …` in SQL, `{ $and: [ … ] }` in MongoDB), and clearing all header filters leaves your hand-written text applied alone. Editing **WHERE** or **Filter** by hand removes the header filter marks and chips and keeps your text; a header filter set then is joined to what you wrote.
+- **Unsupported columns:** SQL `JSON` and `OTHER` columns, and MongoDB fields whose names contain `.` or start with `$`, do not offer header sorting or header filtering. SQL binary columns, which show as hex, offer no header filter.
+
+## Open in console
+
+Press **Open in console** in the tab toolbar to send a table's `SELECT` statement (including any applied `WHERE` and `ORDER BY` clauses) or a MongoDB collection's `db.getCollection(…).find(…)` statement (including any applied Filter and Sort) to a console on its database.
+
+By default, HooriDB reuses a console that is already open on the same connection and database, preferring one in the same window. It brings that console to the front and adds the statement at the end of its text, after a blank line and closed with a semicolon, with the caret after it; a statement left without a semicolon at the end is closed first. **Undo** takes the addition back. If no such console is open, a new one opens. To always open a new console instead, choose **Always a new console** for **Open in console** under **File > Settings… > Databases**.
+
+## Follow foreign keys
+
+Right-click a cell or row number in an SQL table's grid to jump along its foreign keys:
+
+- **Go to ‹table›** (or a **Go to** submenu when the column belongs to more than one outgoing key): opens the referenced table filtered to the current row's key value(s).
+- **Referenced by ▸ ‹table› (‹columns› → ‹key columns›)**: opens a referencing table filtered to the rows that point at the current row.
+
+Composite keys filter on all of their columns joined with `AND`. An item is disabled when any needed value in the row is `NULL`, shortened (cut short), or has an uncommitted edit, and where its value is a `real` or `FLOAT`, a timestamp with a time zone, or text with a backslash, whose literal might not match. The items act on the cell the menu opened on, and on a row number they act on that row (**Go to** for every outgoing key of the table, and **Referenced by**). If the target table is already open in a tab (including a self-reference to the same table), HooriDB reuses that tab, keeps its applied `ORDER BY`, and asks first if it has uncommitted changes.
 
 ## How values are displayed
 
@@ -63,4 +91,15 @@ What the value panel shows:
 - For JSON columns (PostgreSQL `json` and `jsonb`, MySQL and MariaDB `json`), valid JSON is formatted and syntax-colored. Invalid JSON is shown as received with its first syntax error underlined.
 - If a text or JSON value was shortened to 1,024 characters in the grid, HooriDB reads the full value from the server by the row's primary key when you view it in the value panel. If the table has no primary key, or if reading the full value fails, the panel shows the shortened start and says so.
 
-Table tabs are read-only; editing, filtering, and sorting are not supported yet. See [Limitations](/docs/reference/limitations).
+## Edit, insert, and delete rows
+
+On PostgreSQL, MySQL, and MariaDB, a permanent table with a primary key on a writable connection can be edited directly in its grid:
+
+- **Edit cells:** Double-click a cell, press `Enter` or `F2`, or start typing to edit it. Press `Ctrl+0` to set `NULL` (on nullable columns), `Delete` to clear, `Ctrl+V` to paste, and `Ctrl+Z` / `Ctrl+Y` to undo or redo.
+- **Insert rows:** Press `Insert` or `Ctrl++` (or right-click the grid and choose **Insert row**) to add a new row after the current row. Cells left empty show muted `DEFAULT` and are left out of the `INSERT` statement so the server fills in their defaults (a row with every cell empty shows as `VALUES (DEFAULT)` for its first column); press `Ctrl+0` on a nullable cell to set an explicit `NULL`.
+- **Delete rows:** Select one or more loaded rows and press `Ctrl+-` or `Ctrl+Delete` (or right-click and choose **Delete rows**) to mark them for deletion. Marked rows stay visible and struck through until committed, and pressing the shortcut again on marked rows unmarks them; deleting a new row removes it right away.
+- **Revert:** Press **Revert selection** in the edit bar to revert changed cells, unmark deleted rows, and remove new rows in the current selection, or press **Revert all** to discard every pending change.
+- **Preview and commit:** Press **Commit…** to open the **DML Preview** dialog, which shows all generated `UPDATE`, `DELETE`, and `INSERT` statements together before anything is sent. Confirming **Commit** writes them all or nothing in one transaction on a dedicated write connection, checking that each updated or deleted row still matches by primary key (and original cell values for updates). After a commit that inserts, deletes, or changes a primary key, the table reloads so you see the server's rows and generated keys.
+- **Guards and read-only cases:** HooriDB asks before discarding pending changes on Refresh, a changed `WHERE` or `ORDER BY`, closing the tab, disconnecting, editing or deleting the connection, or exiting. Views, tables without a primary key, read-only connections, and binary or cut-short cells stay read-only, with the reason shown in the status line.
+
+Tables without a primary key remain read-only; for editing MongoDB documents, see [MongoDB](/docs/features/mongodb#edit-insert-copy-and-delete-documents), and see [Limitations](/docs/reference/limitations).

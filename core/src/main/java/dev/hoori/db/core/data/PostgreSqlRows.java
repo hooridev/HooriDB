@@ -4,8 +4,10 @@ import static dev.hoori.db.core.data.Rows.ALIAS;
 import static dev.hoori.db.core.data.Rows.LIMIT;
 
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.CatalogDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -23,9 +25,14 @@ import java.sql.Types;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.function.Function;
 
 /** How PostgreSQL's tables and results are read, with pgjdbc. */
 public final class PostgreSqlRows extends RowsDialect {
@@ -157,6 +164,72 @@ public final class PostgreSqlRows extends RowsDialect {
     return read(source, field(metadata, column, "getOID"), metadata.getColumnType(column));
   }
 
+  // pgjdbc's Field holds the table OID and column position without querying the server; a position
+  // of 0 or below marks an expression or a system column such as ctid.
+  @Override
+  Origin origin(ResultSetMetaData metadata, int column) {
+    var table = Integer.toUnsignedLong(field(metadata, column, "getTableOid"));
+    var position = field(metadata, column, "getPositionInTable");
+    return table == 0 || position <= 0 ? null : new Origin.Oid(table, position);
+  }
+
+  // PostgreSQL tells temporary tables apart by relpersistence on the OID itself.
+  @Override
+  boolean temporaryTablesShadow() {
+    return false;
+  }
+
+  @Override
+  Optional<Resolved> resolve(Connection connection, Provider provider, Origin sample)
+      throws QueryException {
+    if (!(sample instanceof Origin.Oid oid)) {
+      return Optional.empty();
+    }
+    var sql = "SELECT d.datname, d.datistemplate, n.nspname, c.relname, a.attnum, a.attname"
+        + " FROM pg_catalog.pg_class c"
+        + " JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace"
+        + " JOIN pg_catalog.pg_database d"
+        + " ON d.datname OPERATOR(pg_catalog.=) pg_catalog.current_database()"
+        + " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid"
+        + " WHERE c.oid OPERATOR(pg_catalog.=) '" + oid.table() + "'::pg_catalog.oid"
+        + " AND c.relkind OPERATOR(pg_catalog.=) ANY ('{r,p}'::pg_catalog.\"char\"[])"
+        + " AND c.relpersistence OPERATOR(pg_catalog.<>) 't'"
+        + " AND a.attnum OPERATOR(pg_catalog.>) 0"
+        + " AND NOT a.attisdropped";
+    var catalog = provider.dialect().catalog();
+    var found = Journal.sql(
+        provider,
+        Purpose.CATALOG,
+        sql,
+        columns -> Outcome.rows(columns == null ? 0 : columns.names().size()),
+        () -> Query.query(connection, provider, sql, rows -> found(rows, catalog)));
+    if (found == null) {
+      return Optional.empty();
+    }
+    var names = found.names();
+    return Optional.of(new Resolved(
+        found.table(),
+        origin -> origin instanceof Origin.Oid col ? names.get(col.position()) : null));
+  }
+
+  private record Found(Table table, Map<Integer, String> names) {}
+
+  // The table of the rows, one per column, with its columns' names by position; null without rows.
+  private static Found found(ResultSet rows, CatalogDialect catalog) throws SQLException {
+    Table table = null;
+    var names = new HashMap<Integer, String>();
+    while (rows.next()) {
+      if (table == null) {
+        var schemaName = rows.getString(3);
+        var schema =
+            new Schema(catalog.database(rows), schemaName, catalog.systemSchema(schemaName));
+        table = new Table(schema, rows.getString(4), Table.Kind.TABLE);
+      }
+      names.put(rows.getInt(5), rows.getString(6));
+    }
+    return table == null ? null : new Found(table, Map.copyOf(names));
+  }
+
   // pgjdbc's own field of the result has the OIDs of the column's type and table, which JDBC does
   // not give; where they cannot be read, 0 makes every column text, and a table one with children.
   private static int field(ResultSetMetaData metadata, int column, String getter) {
@@ -257,8 +330,55 @@ public final class PostgreSqlRows extends RowsDialect {
       case BigDecimal number -> text(number);
       case Float number when Float.isFinite(number) -> text(number);
       case Double number when Double.isFinite(number) -> text(number);
-      default -> "'" + text(value).replace("'", "''") + "'";
+      // E'…' reads alike whatever standard_conforming_strings says.
+      default -> {
+        var text = text(value);
+        yield !(value instanceof String) || text.indexOf('\\') < 0
+            ? "'" + text.replace("'", "''") + "'"
+            : "E'" + text.replace("\\", "\\\\").replace("'", "''") + "'";
+      }
     };
+  }
+
+  // A column of a built-in text type as it is; another, as an enum or a domain, as text, which
+  // LOWER, ILIKE and ~* take.
+  private static String asText(String column, Field field) {
+    var type = field.type() == null ? "" : field.type().toLowerCase(Locale.ROOT);
+    int length = type.indexOf('(');
+    return switch (length < 0 ? type : type.substring(0, length).strip()) {
+      // As the catalog's format_type() and the driver write them.
+      case "text", "character varying", "varchar", "character", "bpchar", "name" -> column;
+      default -> "CAST(" + column + " AS pg_catalog.text)";
+    };
+  }
+
+  @Override
+  String like(String column, Field field, String pattern) {
+    return asText(column, field) + " ILIKE " + literal(pattern) + " ESCAPE '!'";
+  }
+
+  @Override
+  String equalsIgnoringCase(String column, Field field, String value) {
+    return "LOWER(" + asText(column, field) + ") = LOWER(" + literal(value) + ")";
+  }
+
+  // By bytes, as a case-insensitive collation of the column would make cases alike.
+  @Override
+  String equalsExactly(String column, Field field, String value) {
+    return asText(column, field) + " COLLATE pg_catalog.\"C\" = " + literal(value);
+  }
+
+  @Override
+  String matches(String column, Field field, String expression) {
+    return asText(column, field) + " ~* " + literal(expression);
+  }
+
+  // A number as an untyped literal, which the server reads as the column's type: a real, also
+  // behind a domain, keeps fewer digits than a numeric literal compared as double precision.
+  @Override
+  String compare(String column, Field field, String operator, Object value) {
+    var operand = value instanceof BigDecimal number ? "'" + text(number) + "'" : literal(value);
+    return column + " " + operator + " " + operand;
   }
 
   private static String text(Object value) {
@@ -272,6 +392,23 @@ public final class PostgreSqlRows extends RowsDialect {
     return "?";
   }
 
+  // Texts (including json, other types and server texts such as infinity) compare byte-wise
+  // through the type's output function, as the read reads them, which covers types without '=' and
+  // catches differences a collation or '=' would blur. NULL is told as the read tells it, by
+  // num_nulls(), as IS NULL holds for a composite whose fields are all NULL and concat() gives ''.
+  @Override
+  String unchanged(String column, Object value, Function<Object, String> parameter) {
+    var nulls = "pg_catalog.num_nulls(" + column + ") " + keyEquality();
+    if (value == null) {
+      return nulls + " 1";
+    }
+    if (value instanceof String) {
+      return nulls + " 0 AND pg_catalog.concat(" + column + ") COLLATE pg_catalog.\"C\" "
+          + keyEquality() + " " + parameter.apply(value);
+    }
+    return column + " " + keyEquality() + " " + parameter.apply(value);
+  }
+
   // An UPDATE or DELETE of a table that others inherit from meets their rows too, whose keys may
   // be its own; a partitioned table's keys are unique across its partitions.
   @Override
@@ -280,12 +417,17 @@ public final class PostgreSqlRows extends RowsDialect {
     var sql = "SELECT c.relhassubclass AND c.relkind OPERATOR(pg_catalog.=) 'r'"
         + " FROM pg_catalog.pg_class c"
         + " WHERE c.oid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(?)";
-    return Query.run(connection, provider, sql, statement -> {
-      statement.setString(1, Rows.qualified(provider, table));
-      try (var rows = statement.executeQuery()) {
-        return !rows.next() || !rows.getBoolean(1);
-      }
-    });
+    return Journal.sql(
+        provider,
+        Purpose.CHANGES,
+        sql,
+        ok -> Outcome.rows(1),
+        () -> Query.run(connection, provider, sql, statement -> {
+          statement.setString(1, Rows.qualified(provider, table));
+          try (var rows = statement.executeQuery()) {
+            return !rows.next() || !rows.getBoolean(1);
+          }
+        }));
   }
 
   // The output function's text of a PostgreSQL value of any type, which counts as NULL where

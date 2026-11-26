@@ -2,19 +2,20 @@ package dev.hoori.db.app;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
-import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Menu;
 import dev.hoori.db.core.AppFolders;
 import dev.hoori.db.core.DesktopEntry;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.secret.Keyring;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -75,33 +76,6 @@ class HooriDbTest {
     assertFalse(ConnectionsTest.line(about, "#version").contains("role=button"), about);
   }
 
-  /** The View menu switches the theme, and the status line says so for a while. */
-  @Test
-  void theViewMenuSwitchesTheTheme(@TempDir Path out) throws IOException {
-    App<State> app = app(out);
-    Script.run("""
-        size 1200 760
-        frame
-        press role=menuitem label="View"
-        frame
-        advance 0.3
-        frame
-        press role=menuitem label="Light theme"
-        frame
-        advance 0.3
-        frame
-        snap light
-        advance 5
-        frame
-        snap later
-        """, app, out);
-    assertSame(Theme.LIGHT, app.state().theme);
-    String light = Files.readString(out.resolve("light.tree.txt"));
-    assertTrue(light.contains("#message") && light.contains("\"Light theme on\""), light);
-    String later = Files.readString(out.resolve("later.tree.txt"));
-    assertFalse(later.contains("#message"), "the message went after its time: " + later);
-  }
-
   /**
    * Help, About HooriDB shows the version, here a development build, its authors, license and
    * website, in either theme; Close and Enter close it. It waits while another dialog is open.
@@ -124,16 +98,6 @@ class HooriDbTest {
         advance 1
         frame
         """;
-    String light = """
-        press role=menuitem label="View"
-        frame
-        advance 1
-        frame
-        press role=menuitem label="Light theme"
-        frame
-        advance 1
-        frame
-        """;
     String newConnection = """
         press role=menuitem label="File"
         frame
@@ -147,8 +111,13 @@ class HooriDbTest {
         """;
     App<State> app = app(out);
     Script.run(
-        "size 1200 760\nframe\nawait\nframe\n" + open + "snap dark\n" + close + "snap closed\n"
-            + light + open + "snap light\nkey Enter\nframe\nadvance 1\nframe\nsnap entered\n"
+        "size 1200 760\nframe\nawait\nframe\n" + open + "snap dark\n" + close + "snap closed\n",
+        app,
+        out);
+    app.state().choose(app.state().settings.withLook(Settings.Look.LIGHT));
+    app.invalidate();
+    Script.run(
+        "frame\n" + open + "snap light\nkey Enter\nframe\nadvance 1\nframe\nsnap entered\n"
             + newConnection,
         app,
         out);
@@ -173,8 +142,17 @@ class HooriDbTest {
     // The menus behind a dialog take no presses, so the item is looked at where they are made.
     String busy = Files.readString(out.resolve("busy.tree.txt"));
     assertTrue(busy.contains("role=dialog label=\"New connection\""), busy);
-    var help = Frame.menus(app.state(), app.state().tabs.main(), true).getLast();
+    var menus = Frame.menus(app.state(), app.state().tabs.main().active(), true);
+    var view = menus.get(1);
+    assertEquals("&View", view.label());
+    assertEquals(
+        List.of("Command palette…", "Statement log"),
+        view.submenu().stream().map(Menu.Item::label).toList());
+    var help = menus.getLast();
     assertEquals("&Help", help.label());
+    assertEquals(3, help.submenu().size());
+    assertEquals("Restart to update", help.submenu().get(0).label());
+    assertTrue(help.submenu().get(1).isSeparator());
     assertEquals("About HooriDB", help.submenu().getLast().label());
     assertFalse(help.submenu().getLast().isEnabled());
   }
@@ -182,7 +160,8 @@ class HooriDbTest {
   @Test
   void exitClosesTheWindow(@TempDir Path out) throws IOException {
     App<State> app = app(out);
-    Script.run("""
+    Script.run(
+        """
         size 1200 760
         frame
         press role=menuitem label="File"
@@ -191,7 +170,9 @@ class HooriDbTest {
         frame
         press role=menuitem label="Exit"
         frame
-        """, app, out);
+        await
+        frame
+        """, app, out); // Exit waits for the statement log to be read, so that its entries stay
     assertTrue(app.windows().all().isEmpty());
   }
 

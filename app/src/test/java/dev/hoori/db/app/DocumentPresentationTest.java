@@ -214,4 +214,70 @@ class DocumentPresentationTest {
     assertTrue(emptyTree.contains("#no-documents"), emptyTree);
     assertTrue(line(emptyTree, "#rows-in-view").contains("\"No documents\""), emptyTree);
   }
+
+  @Test
+  void jsonAndTreeTrackCurrentDocumentAtCaretAndSelection() throws Exception {
+    var presentation = new DocumentPresentation(DocumentPresentation.Mode.JSON);
+    var valuePanel = new ValuePanel();
+    var first = Document.of("_id", 1, "name", "Ada", "nested", Document.of("city", "London"));
+    var second = Document.of("_id", 2, "name", "Grace");
+    var docs = List.of(first, second);
+
+    var state = new State(dir, new Services(null, null, null, null, null), HooriDb.version());
+    var app = new App<>(state, s -> {
+          var view = presentation.view(
+              s.app,
+              ZONE,
+              true,
+              () -> new DocumentPresentation.GridView(
+                  () -> Label.label("grid-body").key("grid"),
+                  valuePanel,
+                  null,
+                  null,
+                  false,
+                  null,
+                  null),
+              () -> new DocumentPresentation.DocumentPage(
+                  "p0",
+                  docs,
+                  0,
+                  docs.size(),
+                  0,
+                  docs.size(),
+                  false,
+                  "Documents of test",
+                  new DocumentPresentation.Paging(
+                      false, false, () -> {}, () -> {}, () -> {}, null)));
+          return col()
+              .grow(1)
+              .child(view.body())
+              .child(Card.footer(Label.label("status"), view.footer().toArray(El[]::new)));
+        })
+        .provide(Theme.CURRENT, s -> s.theme);
+    state.app = app;
+
+    // Initial JSON caret at start resolves to the first document.
+    Script.run("size 800 500\nframe\n", app, dir);
+    assertEquals(first, presentation.currentDocument());
+
+    // Moving caret down into the second document resolves to the second document.
+    Script.run("press #json\nkey End control\nkey ArrowUp\nkey ArrowUp\nframe\n", app, dir);
+    assertEquals(second, presentation.currentDocument());
+
+    // Switching to Tree mode: nothing selected yet -> null; selecting a nested field resolves its
+    // top-level document.
+    app.post(() -> presentation.mode(DocumentPresentation.Mode.TREE));
+    Script.run("await\nframe\nadvance 1\nframe\n", app, dir);
+    assertEquals(null, presentation.currentDocument());
+
+    Script.run(
+        "press role=treeitem label=\"1\"\nkey ArrowRight\nframe\n"
+            + "press role=treeitem label=\"nested\"\nframe\n",
+        app,
+        dir);
+    assertEquals(first, presentation.currentDocument());
+
+    Script.run("press role=treeitem label=\"2\"\nframe\n", app, dir);
+    assertEquals(second, presentation.currentDocument());
+  }
 }

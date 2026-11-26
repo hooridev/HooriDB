@@ -12,6 +12,8 @@ import com.rethinkj.ui.Script;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
@@ -1281,6 +1283,156 @@ class ConnectionsTest {
     assertTrue(after(tree, "label=\"shop-prod\"").contains("value=\"PostgreSQL\""), tree);
     assertTrue(after(tree, "label=\"analytics\"").contains("value=\"MariaDB\""), tree);
     assertTrue(after(tree, "label=\"legacy\"").contains("value=\"MySQL\""), tree);
+  }
+
+  /** New connections start read-only when configured; editing and duplicating keep their own. */
+  @Test
+  void newConnectionsStartReadOnlyWhenConfiguredWhileSavedProfilesKeepTheirs() throws IOException {
+    var existing = shop();
+    store(existing);
+    new SettingsStore(dir.resolve("config"))
+        .save(Settings.DEFAULT.withNewConnectionsReadOnly(true));
+    App<State> app = app();
+    run(app, ADD_CONNECTION + """
+        frame
+        advance 1
+        frame
+        snap created
+        press role=textbox label="Host"
+        type "ro.example.com"
+        frame
+        press role=button label="Save"
+        frame
+        """ + SETTLE + """
+        advance 1
+        frame
+        """ + EDIT_SHOP + """
+        snap edited
+        key Escape
+        frame
+        advance 1
+        frame
+        press role=treeitem label="shop-prod" right
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Duplicate"
+        frame
+        """ + SETTLE);
+    String created = tree("created");
+    assertFalse(
+        line(created, "role=checkbox label=\"Read-only\"").contains("checked=false"), created);
+    assertTrue(line(created, "role=checkbox label=\"Read-only\"").contains("checked"), created);
+    String edited = tree("edited");
+    assertTrue(line(edited, "role=checkbox label=\"Read-only\"").contains("checked=false"), edited);
+    var saved = stored();
+    assertEquals(3, saved.size());
+    assertFalse(saved.get(0).readOnly(), "existing stayed read-write");
+    assertFalse(saved.get(1).readOnly(), "duplicate kept read-write");
+    assertTrue(saved.get(2).readOnly(), "new connection saved read-only");
+  }
+
+  /**
+   * Pasting a MongoDB connection string into the Host field switches to MongoDB, fills its fields
+   * without leaking the password into the tree, names unused options and further hosts in a note,
+   * and refuses an invalid string without echoing its credentials.
+   */
+  @Test
+  void aMongoDbConnectionStringPastedIntoHostFillsTheDialog() throws IOException {
+    App<State> app = app();
+    run(app, """
+        press role=button label="New connection"
+        frame
+        advance 1
+        frame
+        press role=textbox label="Host"
+        type "localhost"
+        clipboard "mongodb+srv://ann:s%40cret@cluster0.example.net/app?replicaSet=rs0&readPreference=secondary"
+        key V control
+        frame
+        advance 1
+        frame
+        snap srv
+        press role=textbox label="Host"
+        key A control
+        clipboard "mongodb://bob:pw%2F2@a.example.net:27018,b.example.net:27017/shop?tls=true&tlsInsecure=true"
+        key V control
+        frame
+        advance 1
+        frame
+        snap hosts
+        press role=textbox label="Host"
+        key A control
+        type "db.mongo.example.net"
+        key Home
+        key ArrowRight
+        key ArrowRight
+        key ArrowRight
+        clipboard "mongodb+srv://carol:top%40secret@cluster.example.net:27017/app\\na\fpp"
+        key V control
+        frame
+        advance 1
+        frame
+        snap invalid
+        press role=textbox label="Host"
+        key Backspace
+        frame
+        snap edited
+        press role=button label="Save"
+        frame
+        """ + SETTLE + """
+        advance 1
+        frame
+        snap saved
+        """);
+    String srv = tree("srv");
+    assertTrue(srv.contains("text \"MongoDB\""), srv);
+    assertTrue(line(srv, "#host").contains("\"cluster0.example.net\""), srv);
+    assertFalse(srv.contains("#port"), srv);
+    assertFalse(
+        line(srv, "role=checkbox label=\"Servers from DNS\"").contains("checked=false"), srv);
+    assertTrue(line(srv, "#user").contains("\"ann\""), srv);
+    assertTrue(line(srv, "#database").contains("\"app\""), srv);
+    assertTrue(line(srv, "#auth-database").contains("\"app\""), srv);
+    assertTrue(line(srv, "#tls").contains("label=\"Encrypted and verified\""), srv);
+    assertTrue(line(srv, "#password").contains("\"" + "•".repeat(6) + "\""), srv);
+    assertTrue(
+        line(srv, "#host").contains("warning=\"Not used: replicaSet, readPreference\""), srv);
+    assertFalse(srv.contains("s@cret"), srv);
+    assertFalse(srv.contains("s%40cret"), srv);
+
+    String hosts = tree("hosts");
+    assertTrue(line(hosts, "#host").contains("\"a.example.net\""), hosts);
+    assertTrue(line(hosts, "#port").contains("\"27018\""), hosts);
+    assertTrue(
+        line(hosts, "role=checkbox label=\"Servers from DNS\"").contains("checked=false"), hosts);
+    assertTrue(line(hosts, "#database").contains("\"shop\""), hosts);
+    assertTrue(line(hosts, "#password").contains("\"" + "•".repeat(4) + "\""), hosts);
+    assertFalse(hosts.contains("pw/2"), hosts);
+    assertTrue(line(hosts, "#tls").contains("label=\"Encrypted, any certificate\""), hosts);
+    assertTrue(
+        line(hosts, "#host").contains("warning=\"Other hosts not used: b.example.net:27017\""),
+        hosts);
+
+    String invalid = tree("invalid");
+    assertTrue(line(invalid, "#host").contains("\"db.mongo.example.net\""), invalid);
+    assertTrue(line(invalid, "#host").contains("invalid"), invalid);
+    assertTrue(line(invalid, "#host").contains("error="), invalid);
+    assertFalse(invalid.contains("carol"), invalid);
+    assertFalse(invalid.contains("top@secret"), invalid);
+    assertFalse(invalid.contains("top%40secret"), invalid);
+
+    String edited = tree("edited");
+    assertFalse(line(edited, "#host").contains("invalid"), edited);
+    assertFalse(line(edited, "#host").contains("warning="), edited);
+
+    assertFalse(tree("saved").contains("role=dialog"), tree("saved"));
+    var saved = stored().getFirst();
+    assertEquals(Provider.MONGODB, saved.provider());
+    assertEquals("pw/2", secrets.stored.get(saved.id()));
+    String workspace = Files.readString(dir.resolve("config").resolve(WorkspaceStore.FILE));
+    assertFalse(workspace.contains("s@cret"), workspace);
+    assertFalse(workspace.contains("s%40cret"), workspace);
   }
 
   /** The lines of the tree from the first that contains the text to the next row. */

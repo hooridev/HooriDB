@@ -10,6 +10,7 @@ import static dev.hoori.db.app.ConsoleTest.COUNT;
 import static dev.hoori.db.app.ConsoleTest.RUN;
 import static dev.hoori.db.app.ConsoleTest.RUN_ALL;
 import static dev.hoori.db.app.ConsoleTest.type;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -17,15 +18,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.rethinkj.ui.App;
+import com.rethinkj.ui.Cursor;
+import com.rethinkj.ui.El;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.execution.Failure;
+import dev.hoori.db.core.execution.Result;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
@@ -99,7 +105,7 @@ class ConsoleEditorTest {
   /** What the console's editor underlines in the last frame, or null for nothing. */
   Failure.Place underlined(App<State> app) throws Exception {
     console.c.run(app, "snap underlined\n");
-    var underline = Pattern.compile(" underline (\\d+)-(\\d+)")
+    var underline = Pattern.compile(" squiggle (\\d+)-(\\d+)")
         .matcher(line(console.c.tree("underlined"), "#sql"));
     return underline.find()
         ? new Failure.Place(
@@ -122,15 +128,26 @@ class ConsoleEditorTest {
     String failed = console.c.tree("failed");
     assertEquals(new Failure.Place(at, at + 5), underlined(app));
     assertEquals(String.valueOf(at), caret(failed), line(failed, "#sql"));
-    assertTrue(line(failed, "#sql").contains("underline " + at + "-" + (at + 5)), failed);
+    assertTrue(line(failed, "#sql").contains("squiggle " + at + "-" + (at + 5)), failed);
     assertTrue(failed.contains("\"syntax error at or near \\\"WHERE\\\"\""), failed);
-    // Typing drops it, and the message stays.
+    assertTrue(line(failed, "#end-3").contains("syntax error at or near"), failed);
+    // Typing before it moves the underline and keeps its inline message.
     console.c.run(app, "type \" \"\nframe\nsnap typed\n");
+    assertEquals(new Failure.Place(at + 1, at + 6), underlined(app));
+    assertTrue(line(console.c.tree("typed"), "#end-3").contains("syntax error at or near"));
+    // Inserting a line above moves the underline and its inline message down a line.
+    console.c.run(app, "key Home control\nkey Enter\nframe\nsnap shifted\n");
+    assertEquals(new Failure.Place(at + 2, at + 7), underlined(app));
+    assertTrue(line(console.c.tree("shifted"), "#end-4").contains("syntax error at or near"));
+    // Editing the underlined text itself drops the underline and inline message.
+    console.c.run(app, "key Z control\nframe\n");
+    console.tab(app).editor.select(at + 2, at + 2);
+    app.invalidate();
+    console.c.run(app, "frame\ntype \"X\"\nframe\nsnap edited\n");
     assertNull(underlined(app));
-    assertTrue(
-        console.c.tree("typed").contains("syntax error at or near"), console.c.tree("typed"));
-    // Run again, it comes back; while the next run runs, it is gone.
-    console.c.run(app, "key Backspace\n" + RUN_ALL);
+    assertFalse(console.c.tree("edited").contains("#end-"), console.c.tree("edited"));
+    // Undoing back to the sent text restores the underline; while a new run runs, it is gone.
+    console.c.run(app, "key Z control\nframe\nkey Z control\nframe\n");
     assertEquals(new Failure.Place(at, at + 5), underlined(app));
     var held = servers.hold("run " + PG + " " + COUNT);
     console.c.run(app, "key Home control\nkey Enter control\nframe\n");
@@ -537,9 +554,640 @@ class ConsoleEditorTest {
             + type(text).replaceFirst("press #sql\n", "") + RUN_ALL + "snap failed\n");
     assertEquals(List.of("order_totals", "orders"), options(window("there")));
     assertTrue(
-        line(window("failed"), "#sql").contains("underline " + at + "-" + (at + 5)),
+        line(window("failed"), "#sql").contains("squiggle " + at + "-" + (at + 5)),
         window("failed"));
     assertEquals(String.valueOf(at), caret(window("failed")), line(window("failed"), "#sql"));
+  }
+
+  /**
+   * Turning off highlightOccurrences drops the highlight of matching words in open SQL and MongoDB
+   * consoles without losing their text or caret, and turning it back on restores it.
+   */
+  @Test
+  void highlightOccurrencesTogglesOnOpenSqlAndMongodbConsolesWithoutLosingTextOrCaret()
+      throws Exception {
+    var out = dir.resolve("out");
+
+    var sql = console.console(SHOP);
+    var query = "SELECT orders.id FROM orders";
+    console.c.run(
+        sql,
+        type(query) + "key Home\n" + "key ArrowRight\n".repeat(9) + "frame\nsnap occurrences-on\n");
+    var onTree = console.c.tree("occurrences-on");
+    var onPng = Files.readAllBytes(out.resolve("occurrences-on.png"));
+    assertEquals("9", caret(onTree), line(onTree, "#sql"));
+
+    sql.state().choose(sql.state().settings.withHighlightOccurrences(false));
+
+    sql.invalidate(); // as the handler of a choice would
+    console.c.run(sql, "frame\nsnap occurrences-off\n");
+    var offTree = console.c.tree("occurrences-off");
+    var offPng = Files.readAllBytes(out.resolve("occurrences-off.png"));
+    assertEquals(query, console.tab(sql).text);
+    assertEquals(line(onTree, "#sql"), line(offTree, "#sql"));
+    assertFalse(Arrays.equals(onPng, offPng), "highlight disappeared when turned off");
+
+    sql.state().choose(sql.state().settings.withHighlightOccurrences(true));
+
+    sql.invalidate(); // as the handler of a choice would
+    console.c.run(sql, "frame\nsnap occurrences-back\n");
+    var backTree = console.c.tree("occurrences-back");
+    var backPng = Files.readAllBytes(out.resolve("occurrences-back.png"));
+    assertEquals(query, console.tab(sql).text);
+    assertEquals(line(onTree, "#sql"), line(backTree, "#sql"));
+    assertArrayEquals(onPng, backPng);
+
+    servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        hoori
+          orders
+            _id: objectId
+        """);
+    var mongo = console.console(DocumentConsoleTest.DOCS);
+    var shell = "db.orders.find({ orders: 1 })";
+    console.c.run(
+        mongo,
+        type(shell)
+            + "key Home\n"
+            + "key ArrowRight\n".repeat(5)
+            + "frame\nsnap mongo-occurrences-on\n");
+    var mongoOnTree = console.c.tree("mongo-occurrences-on");
+    var mongoOnPng = Files.readAllBytes(out.resolve("mongo-occurrences-on.png"));
+    assertEquals("5", caret(mongoOnTree), line(mongoOnTree, "#sql"));
+
+    mongo.state().choose(mongo.state().settings.withHighlightOccurrences(false));
+
+    mongo.invalidate(); // as the handler of a choice would
+    console.c.run(mongo, "frame\nsnap mongo-occurrences-off\n");
+    var mongoOffTree = console.c.tree("mongo-occurrences-off");
+    var mongoOffPng = Files.readAllBytes(out.resolve("mongo-occurrences-off.png"));
+    assertEquals(shell, console.tab(mongo).text);
+    assertEquals(line(mongoOnTree, "#sql"), line(mongoOffTree, "#sql"));
+    assertFalse(Arrays.equals(mongoOnPng, mongoOffPng), "MongoDB highlight disappeared");
+
+    mongo.state().choose(mongo.state().settings.withHighlightOccurrences(true));
+
+    mongo.invalidate(); // as the handler of a choice would
+    console.c.run(mongo, "frame\nsnap mongo-occurrences-back\n");
+    assertArrayEquals(mongoOnPng, Files.readAllBytes(out.resolve("mongo-occurrences-back.png")));
+  }
+
+  /** SQL keyword completions follow keywordCase: UPPER by default, LOWER when chosen. */
+  @Test
+  void keywordCaseChangesSqlCompletionsBetweenUpperAndLower() throws Exception {
+    var app = console.console(SHOP);
+    console.c.run(
+        app, "press #sql\ntype \"sel\"\nframe\nadvance 1\nframe\nsnap upper\nkey Enter\nframe\n");
+    var upper = options(console.c.tree("upper"));
+    assertEquals("SELECT", upper.getFirst(), upper.toString());
+    assertEquals("SELECT", console.tab(app).text);
+
+    app.state().choose(app.state().settings.withKeywordCase(Settings.KeywordCase.LOWER));
+    console.c.run(app, """
+        key A control
+        key Delete
+        type "sel"
+        frame
+        advance 1
+        frame
+        snap lower
+        key Enter
+        frame
+        """);
+    var lower = options(console.c.tree("lower"));
+    assertEquals("select", lower.getFirst(), lower.toString());
+    assertFalse(lower.contains("SELECT"), lower.toString());
+    assertEquals("select", console.tab(app).text);
+
+    app.state().choose(app.state().settings.withKeywordCase(Settings.KeywordCase.UPPER));
+    console.c.run(
+        app,
+        "key A control\nkey Delete\ntype \"sel\"\nframe\nadvance 1\nframe\nkey Enter\nframe\n");
+    assertEquals("SELECT", console.tab(app).text);
+  }
+
+  /** Finds an element with {@code key} in the tree, storing its window origin in {@code origin}. */
+  static El find(El el, String key, float[] origin) {
+    if (el == null) {
+      return null;
+    }
+    float x = origin[0] + el.x();
+    float y = origin[1] + el.y();
+    if (key.equals(el.key())) {
+      origin[0] = x;
+      origin[1] = y;
+      return el;
+    }
+    for (var child : el.children()) {
+      float[] childOrigin = {x, y};
+      var found = find(child, key, childOrigin);
+      if (found != null) {
+        origin[0] = childOrigin[0];
+        origin[1] = childOrigin[1];
+        return found;
+      }
+    }
+    return null;
+  }
+
+  /** Finds logical window coordinates inside {@code #sql} whose text offset is {@code offset}. */
+  static String pointAt(App<State> app, int offset) {
+    float[] origin = new float[2];
+    var sql = find(app.tree(), "sql", origin);
+    for (int y = 4; y < sql.height() - 4; y += 6) {
+      for (int x = 4; x < sql.width() - 4; x += 2) {
+        if (sql.textPositionAt(x, y) == offset) {
+          return Math.round(origin[0] + x) + "," + Math.round(origin[1] + y);
+        }
+      }
+    }
+    throw new AssertionError("No point for offset " + offset + " in " + sql);
+  }
+
+  /** The portion of the tree dump for the gutter line {@code #line-<index>}. */
+  static String gutterLine(String tree, int index) {
+    var lines = tree.lines().toList();
+    String key = "#line-" + index + " ";
+    for (int i = 0; i < lines.size(); i++) {
+      if (lines.get(i).contains(key)) {
+        int end = i + 1;
+        while (end < lines.size()) {
+          String next = lines.get(end);
+          int nextIndent = next.length() - next.stripLeading().length();
+          if (nextIndent <= lines.get(i).length() - lines.get(i).stripLeading().length()) {
+            break;
+          }
+          end++;
+        }
+        return String.join("\n", lines.subList(i, end));
+      }
+    }
+    throw new AssertionError("No #line-" + index + " in\n" + tree);
+  }
+
+  @Test
+  void quickDocumentationShowsTableAndColumnInfoAndReadsWhatIsMissing() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT o.total, customer_id FROM orders o";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Hover over table name `orders`: shows kind, schema and columns with types.
+    String ordersPt = pointAt(app, sql.indexOf("orders") + 2);
+    console.c.run(
+        app, "move " + ordersPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap table-doc\n");
+    String tableDoc = console.c.tree("table-doc");
+    assertTrue(tableDoc.contains("#documentation"), tableDoc);
+    assertTrue(tableDoc.contains("Table public.orders"), tableDoc);
+    assertTrue(tableDoc.contains("id bigint"), tableDoc);
+    assertTrue(tableDoc.contains("total numeric(12,2)"), tableDoc);
+
+    // Move away and hover over qualified column `o.total`: shows type and table.
+    String totalPt = pointAt(app, sql.indexOf("total") + 2);
+    console.c.run(
+        app,
+        "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\nmove " + totalPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap col-doc\n");
+    String colDoc = console.c.tree("col-doc");
+    assertTrue(colDoc.contains("#documentation"), colDoc);
+    assertTrue(colDoc.contains("Column total numeric(12,2)"), colDoc);
+    assertTrue(colDoc.contains("In table public.orders"), colDoc);
+
+    // Ctrl+Q on unqualified column `customer_id` shows its documentation too.
+    console.tab(app).editor.select(sql.indexOf("customer_id") + 2, sql.indexOf("customer_id") + 2);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\nsnap key-doc\n");
+    String keyDoc = console.c.tree("key-doc");
+    assertTrue(keyDoc.contains("#documentation"), keyDoc);
+    assertTrue(keyDoc.contains("Column customer_id integer"), keyDoc);
+    assertTrue(keyDoc.contains("In table public.orders"), keyDoc);
+
+    // Unread table (`customers` has no columns read yet): first hover shows the table and triggers
+    // reading its columns on the tree's connection; next hover shows the columns.
+    var customersSql = "SELECT * FROM customers";
+    console.c.run(app, "key Escape\nkey A control\nkey Delete\n" + type(customersSql) + "frame\n");
+    String custPt = pointAt(app, customersSql.indexOf("customers") + 2);
+    console.c.run(
+        app, "move " + custPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-first\n");
+    String custFirst = console.c.tree("cust-first");
+    assertTrue(custFirst.contains("Table public.customers"), custFirst);
+    assertFalse(custFirst.contains("email"), custFirst);
+    console.c.run(
+        app,
+        SETTLE + "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\nmove " + custPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-second\n");
+    assertTrue(
+        servers.calls.contains("columns " + PG + "/shop.public.customers"),
+        servers.calls.toString());
+    String custSecond = console.c.tree("cust-second");
+    assertTrue(custSecond.contains("email character varying(255)"), custSecond);
+  }
+
+  @Test
+  void quickDocumentationOfAQualifiedTableReadsTheSchemasFirst() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT * FROM public.orders";
+    // The connection's databases are read, but not the schemas of shop.
+    console.c.run(app, open("shop-prod") + SETTLE + type(sql) + "frame\n");
+    String at = pointAt(app, sql.indexOf("orders") + 2);
+    String hover = "move " + at + "\nframe\nadvance 1\nframe\nadvance 1\nframe\n";
+    String away = "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\n";
+    console.c.run(app, hover + "snap first\n");
+    assertFalse(console.c.tree("first").contains("Table public.orders"), console.c.tree("first"));
+    console.c.run(app, SETTLE + away + hover + SETTLE + away + hover + "snap read\n");
+    assertTrue(console.c.tree("read").contains("Table public.orders"), console.c.tree("read"));
+  }
+
+  @Test
+  void goToTableOpensTheTableOnControlBAndControlClick() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT o.total, c.email FROM orders o JOIN customers c ON c.id = o.customer_id";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Ctrl+B on table name `orders` opens its table tab.
+    int ordersAt = sql.indexOf("orders") + 2;
+    console.tab(app).editor.select(ordersAt, ordersAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap orders-tab\n");
+    String ordersTab = console.c.tree("orders-tab");
+    assertTrue(line(ordersTab, "role=tab label=\"orders\"").contains("selected"), ordersTab);
+
+    // Switch back to the console; Ctrl+B on column `o.total` opens its table (`orders`).
+    console.c.run(
+        app,
+        "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\npress #sql\nframe\n");
+    int totalAt = sql.indexOf("total") + 2;
+    console.tab(app).editor.select(totalAt, totalAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap col-tab\n");
+    assertTrue(
+        line(console.c.tree("col-tab"), "role=tab label=\"orders\"").contains("selected"),
+        console.c.tree("col-tab"));
+
+    // Switch back to the console; Ctrl+hover marks `customers` navigable, Ctrl+click opens it.
+    console.c.run(app, "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\n");
+    String customersPt = pointAt(app, sql.indexOf("customers") + 2);
+    console.c.run(app, "move " + customersPt + " control\nframe\n");
+    assertEquals(Cursor.POINTER, app.cursor());
+    console.c.run(app, "press " + customersPt + " control\nframe\n" + SETTLE + "snap click-tab\n");
+    String clickTab = console.c.tree("click-tab");
+    assertTrue(line(clickTab, "role=tab label=\"customers\"").contains("selected"), clickTab);
+  }
+
+  @Test
+  void controlBOnColumnFollowsSingleOutgoingForeignKeyAndFallsBackForNoneOrSeveral()
+      throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", """
+        shop
+          public
+            customers
+              *id: integer
+              name: text
+            partners
+              *id: integer
+              name: text
+            orders
+              *id: bigint
+              customer_id: integer > customers.id on delete cascade
+              dual_id: integer > fk_cust: customers.id > fk_part: partners.id
+              region_a: integer > region_fk: billing.regions.a
+              region_b: integer > region_fk: billing.regions.b
+              total: numeric(12,2)
+            order_items
+              *order_id: bigint > orders.id
+              *line: integer
+          billing
+            regions
+              *a: integer
+              *b: integer
+        """);
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id, o.customer_id, o.region_a, o.dual_id, o.total FROM orders o";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Single outgoing FK (`o.customer_id` -> `customers`): Ctrl+B opens `customers`.
+    int custAt = sql.indexOf("customer_id") + 2;
+    console.tab(app).editor.select(custAt, custAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap fk-one\n");
+    assertTrue(
+        line(console.c.tree("fk-one"), "role=tab label=\"customers\"").contains("selected"),
+        console.c.tree("fk-one"));
+
+    // Column in a single composite cross-schema FK (`o.region_a` -> `billing.regions`): Ctrl+click
+    // opens `regions`.
+    console.c.run(app, "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\n");
+    String regionPt = pointAt(app, sql.indexOf("region_a") + 2);
+    console.c.run(app, "press " + regionPt + " control\nframe\n" + SETTLE + "snap fk-composite\n");
+    assertTrue(
+        line(console.c.tree("fk-composite"), "role=tab label=\"regions\"").contains("selected"),
+        console.c.tree("fk-composite"));
+
+    // Column in TWO outgoing FKs (`o.dual_id`): Ctrl+B opens its own table (`orders`).
+    console.c.run(
+        app,
+        "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\npress #sql\nframe\n");
+    int dualAt = sql.indexOf("dual_id") + 2;
+    console.tab(app).editor.select(dualAt, dualAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap fk-multi\n");
+    assertTrue(
+        line(console.c.tree("fk-multi"), "role=tab label=\"orders\"").contains("selected"),
+        console.c.tree("fk-multi"));
+
+    // Column with NO outgoing FK (only incoming: `o.id`, and plain: `o.total`): opens `orders`.
+    console.c.run(
+        app,
+        "press role=tab label=\"shop-prod: shop\"\nframe\nadvance 1\nframe\npress #sql\nframe\n");
+    int idAt = sql.indexOf("o.id") + 3;
+    console.tab(app).editor.select(idAt, idAt);
+    app.invalidate();
+    console.c.run(app, "frame\nkey B control\nframe\n" + SETTLE + "snap fk-incoming-only\n");
+    assertTrue(
+        line(console.c.tree("fk-incoming-only"), "role=tab label=\"orders\"").contains("selected"),
+        console.c.tree("fk-incoming-only"));
+  }
+
+  @Test
+  void gutterMarkersRunEachStatementShowLastOutcomeAndMoveWithEdits() throws Exception {
+    servers.statement(ConsoleTest.PAY, List.of(new Result.Count(3)));
+    var app = console.console(SHOP);
+    var text = COUNT + ";\n" + WRONG + ";\n" + ConsoleTest.PAY + ";";
+    console.c.run(app, type(text) + "frame\nsnap before\n");
+    String before = console.c.tree("before");
+    assertTrue(gutterLine(before, 0).contains("role=button label=\"Run statement\""), before);
+    assertTrue(gutterLine(before, 1).contains("role=button label=\"Run statement\""), before);
+    assertTrue(gutterLine(before, 4).contains("role=button label=\"Run statement\""), before);
+
+    // Markers are not rebuilt on frames when text, provider and outcomes are unchanged.
+    int builtBefore = console.tab(app).help.markersBuilt;
+    console.c.run(app, "key ArrowLeft\nframe\nkey ArrowRight\nframe\n");
+    assertEquals(builtBefore, console.tab(app).help.markersBuilt);
+
+    // Run statement 1 and statement 2 with Run all: line 0 succeeds, line 1 fails, line 4 unrun.
+    console.c.run(app, RUN_ALL + "snap ran\n");
+    String ran = console.c.tree("ran");
+    assertTrue(
+        gutterLine(ran, 0).contains("role=button label=\"Ran in 4 ms · 1 row\""),
+        gutterLine(ran, 0));
+    assertTrue(
+        gutterLine(ran, 1).contains("role=button label=\"Failed after 4 ms\""), gutterLine(ran, 1));
+    assertTrue(
+        gutterLine(ran, 4).contains("role=button label=\"Run statement\""), gutterLine(ran, 4));
+
+    // Pressing line 4's unique "Run statement" marker runs the UPDATE statement alone.
+    console.c.run(
+        app, "press role=button label=\"Run statement\"\nframe\n" + SETTLE + "snap pay\n");
+    String pay = console.c.tree("pay");
+    assertTrue(
+        gutterLine(pay, 4).contains("role=button label=\"Ran in 4 ms · 3 rows changed\""),
+        gutterLine(pay, 4));
+
+    // Inserting a line at the top moves every marker down by one line.
+    console.c.run(app, "press #sql\nkey Home control\nkey Enter\nframe\nsnap moved\n");
+    String moved = console.c.tree("moved");
+    assertTrue(
+        gutterLine(moved, 1).contains("role=button label=\"Ran in 4 ms · 1 row\""),
+        gutterLine(moved, 1));
+    assertTrue(
+        gutterLine(moved, 2).contains("role=button label=\"Failed after 4 ms\""),
+        gutterLine(moved, 2));
+    assertTrue(
+        gutterLine(moved, 5).contains("role=button label=\"Ran in 4 ms · 3 rows changed\""),
+        gutterLine(moved, 5));
+
+    // Clicking the moved succeeded marker runs statement 1 again at its current offsets.
+    long runsBefore =
+        servers.calls.stream().filter(("run " + PG + " " + COUNT)::equals).count();
+    console.c.run(app, "press role=button label=\"Ran in 4 ms · 1 row\"\nframe\n" + SETTLE);
+    long runsAfter =
+        servers.calls.stream().filter(("run " + PG + " " + COUNT)::equals).count();
+    assertEquals(runsBefore + 1, runsAfter, servers.calls.toString());
+
+    // Editing inside statement 1 changes its text and resets its gutter marker to Run statement.
+    int countEnd = console.tab(app).text.indexOf(COUNT) + COUNT.length();
+    console.tab(app).editor.select(countEnd, countEnd);
+    app.invalidate();
+    console.c.run(app, "frame\ntype \" o\"\nframe\nsnap edited-stmt\n");
+    String editedStmt = console.c.tree("edited-stmt");
+    assertTrue(
+        gutterLine(editedStmt, 1).contains("role=button label=\"Run statement\""),
+        gutterLine(editedStmt, 1));
+    assertTrue(
+        gutterLine(editedStmt, 2).contains("role=button label=\"Failed after 4 ms\""),
+        gutterLine(editedStmt, 2));
+  }
+
+  @Test
+  void quickDocumentationShowsForeignKeysForTableAndColumnInBothDirections() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.FK_OUTLINE);
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id, o.customer_id FROM orders o JOIN order_items oi ON oi.order_id = o.id";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Hover over table `orders`: lists References (with rules + composite cross-schema) and
+    // Referenced by.
+    String ordersPt = pointAt(app, sql.indexOf("orders") + 2);
+    console.c.run(
+        app,
+        "move " + ordersPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap foreign-keys-doc\n");
+    String tableDoc = console.c.tree("foreign-keys-doc");
+    assertTrue(tableDoc.contains("#documentation"), tableDoc);
+    assertTrue(tableDoc.contains("Table public.orders"), tableDoc);
+    assertTrue(tableDoc.contains("References"), tableDoc);
+    assertTrue(tableDoc.contains("orders_customer_id_fkey"), tableDoc);
+    assertTrue(tableDoc.contains("(customer_id) → customers(id) · ON DELETE CASCADE"), tableDoc);
+    assertTrue(tableDoc.contains("region_fk"), tableDoc);
+    assertTrue(
+        tableDoc.contains("(region_a, region_b) → billing.regions(a, b) · ON DELETE RESTRICT"),
+        tableDoc);
+    assertTrue(tableDoc.contains("Referenced by"), tableDoc);
+    assertTrue(tableDoc.contains("order_items_order_id_fkey"), tableDoc);
+    assertTrue(tableDoc.contains("order_items(order_id) → (id) · ON DELETE CASCADE"), tableDoc);
+
+    // Ctrl+Q on outgoing key column `o.customer_id`: lists its target and non-default rule.
+    console.tab(app).editor.select(sql.indexOf("customer_id") + 2, sql.indexOf("customer_id") + 2);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\nsnap fk-col-out\n");
+    String outColDoc = console.c.tree("fk-col-out");
+    assertTrue(outColDoc.contains("Column customer_id integer"), outColDoc);
+    assertTrue(outColDoc.contains("References"), outColDoc);
+    assertTrue(outColDoc.contains("→ customers.id · ON DELETE CASCADE"), outColDoc);
+
+    // Ctrl+Q on referenced key column `o.id`: lists incoming keys that reference it.
+    console.tab(app).editor.select(sql.indexOf("o.id") + 3, sql.indexOf("o.id") + 3);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\nsnap fk-col-in\n");
+    String inColDoc = console.c.tree("fk-col-in");
+    assertTrue(inColDoc.contains("Column id bigint"), inColDoc);
+    assertTrue(inColDoc.contains("Referenced by"), inColDoc);
+    assertTrue(inColDoc.contains("order_items_order_id_fkey"), inColDoc);
+    assertTrue(inColDoc.contains("order_items(order_id) → (id) · ON DELETE CASCADE"), inColDoc);
+    assertTrue(inColDoc.contains("orders_parent_id_fkey"), inColDoc);
+
+    // Unread table (`customers`): first hover triggers reading columns and foreign keys; next shows
+    // them.
+    var custSql = "SELECT c.id FROM customers c";
+    console.c.run(app, "key Escape\nkey A control\nkey Delete\n" + type(custSql) + "frame\n");
+    String custPt = pointAt(app, custSql.indexOf("customers") + 2);
+    console.c.run(
+        app, "move " + custPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-first\n");
+    assertFalse(
+        console.c.tree("cust-first").contains("Referenced by"), console.c.tree("cust-first"));
+    console.c.run(
+        app,
+        SETTLE
+            + "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\nmove "
+            + custPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-second\n");
+    String custSecond = console.c.tree("cust-second");
+    assertTrue(custSecond.contains("Referenced by"), custSecond);
+    assertTrue(custSecond.contains("orders_customer_id_fkey"), custSecond);
+    assertTrue(custSecond.contains("orders(customer_id) → (id) · ON DELETE CASCADE"), custSecond);
+  }
+
+  @Test
+  void
+      quickDocumentationReadsKeysWhenColumnsWereAlreadyReadWithoutThemAndShowsBothDirectionsOnColumn()
+          throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", """
+        shop
+          public
+            customers
+              *id: integer
+            orders
+              *id: integer > customers.id on delete cascade
+            payments
+              *id: integer
+              order_id: integer > orders.id on delete restrict
+        """);
+    var keysCall = "foreign keys " + PG + "/shop.public.orders";
+    servers.fail(
+        keysCall,
+        FakeServers.notRead(dev.hoori.db.core.catalog.CatalogException.Failure.ACCESS_DENIED));
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id FROM orders o";
+    // Opening orders in the tree reads its columns while its foreign key read fails alone.
+    console.c.run(app, TREE + type(sql) + "frame\n");
+    servers.heal(keysCall);
+
+    // First Ctrl+Q on `o.id` sees columns already Read, but triggers a scan to fetch missing keys.
+    console.tab(app).editor.select(sql.indexOf("o.id") + 3, sql.indexOf("o.id") + 3);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\n" + SETTLE);
+    assertEquals(
+        2, servers.calls.stream().filter(keysCall::equals).count(), servers.calls.toString());
+
+    // Next Ctrl+Q on `o.id` shows both outgoing and incoming keys for the column.
+    console.c.run(
+        app, "key Escape\nframe\nkey Q control\nframe\nadvance 1\nframe\nsnap both-col\n");
+    String both = console.c.tree("both-col");
+    assertTrue(both.contains("Column id integer"), both);
+    assertTrue(both.contains("References"), both);
+    assertTrue(both.contains("→ customers.id · ON DELETE CASCADE"), both);
+    assertTrue(both.contains("Referenced by"), both);
+    assertTrue(both.contains("payments_order_id_fkey"), both);
+    assertTrue(both.contains("payments(order_id) → (id) · ON DELETE RESTRICT"), both);
+  }
+
+  @Test
+  void quickDocumentationShowsIndexesForTableAndReadsWhenMissing() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.INDEX_OUTLINE);
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id FROM orders o";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+
+    // Hover over already-read table `orders`: lists Indexes with columns and unique / primary key.
+    String ordersPt = pointAt(app, sql.indexOf("orders") + 2);
+    console.c.run(
+        app, "move " + ordersPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap orders-idx\n");
+    String ordersTree = console.c.tree("orders-idx");
+    assertTrue(ordersTree.contains("#documentation"), ordersTree);
+    String ordersDoc = ordersTree.substring(ordersTree.indexOf("#documentation"));
+    assertTrue(ordersDoc.contains("References"), ordersDoc);
+    assertTrue(ordersDoc.contains("Indexes"), ordersDoc);
+    assertTrue(ordersDoc.indexOf("References") < ordersDoc.indexOf("Indexes"), ordersDoc);
+    assertTrue(ordersDoc.contains("orders_pkey (id) · primary key"), ordersDoc);
+    assertTrue(ordersDoc.contains("orders_code_expr_idx (lower(code)) · unique"), ordersDoc);
+    assertTrue(
+        ordersDoc.contains("orders_customer_placed_idx (customer_id, placed_at)"), ordersDoc);
+
+    // Unread table (`customers`): first hover triggers reading columns/keys/indexes; next shows
+    // them.
+    var custSql = "SELECT c.id FROM customers c";
+    console.c.run(app, "key Escape\nkey A control\nkey Delete\n" + type(custSql) + "frame\n");
+    String custPt = pointAt(app, custSql.indexOf("customers") + 2);
+    console.c.run(
+        app, "move " + custPt + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-first\n");
+    String custFirstTree = console.c.tree("cust-first");
+    assertTrue(custFirstTree.contains("#documentation"), custFirstTree);
+    String custFirst = custFirstTree.substring(custFirstTree.indexOf("#documentation"));
+    assertFalse(custFirst.contains("Indexes"), custFirst);
+    console.c.run(
+        app,
+        SETTLE
+            + "leave\nframe\nadvance 1\nframe\nframe\nadvance 1\nframe\nmove "
+            + custPt
+            + "\nframe\nadvance 1\nframe\nadvance 1\nframe\nsnap cust-second\n");
+    String custSecondTree = console.c.tree("cust-second");
+    String custSecond = custSecondTree.substring(custSecondTree.indexOf("#documentation"));
+    assertTrue(custSecond.contains("Indexes"), custSecond);
+    assertTrue(custSecond.contains("customers_pkey (id) · primary key"), custSecond);
+    assertTrue(custSecond.contains("customers_email_uidx (email) · unique"), custSecond);
+  }
+
+  @Test
+  void quickDocumentationReadsIndexesWhenColumnsWereAlreadyReadWithoutThem() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.INDEX_OUTLINE);
+    var idxCall = "indexes " + PG + "/shop.public.orders";
+    servers.fail(
+        idxCall,
+        FakeServers.notRead(dev.hoori.db.core.catalog.CatalogException.Failure.ACCESS_DENIED));
+    var app = console.console(SHOP);
+    var sql = "SELECT o.id FROM orders o";
+    // Opening orders in the tree reads columns and foreign keys while indexes fails alone.
+    console.c.run(app, TREE + type(sql) + "frame\n");
+    servers.heal(idxCall);
+
+    // First Ctrl+Q on `orders` triggers a scan for the missing indexes.
+    console.tab(app).editor.select(sql.indexOf("orders") + 2, sql.indexOf("orders") + 2);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\n" + SETTLE);
+    assertEquals(
+        2, servers.calls.stream().filter(idxCall::equals).count(), servers.calls.toString());
+
+    // Next Ctrl+Q on `orders` shows the Indexes section.
+    console.c.run(
+        app, "key Escape\nframe\nkey Q control\nframe\nadvance 1\nframe\nsnap idx-loaded\n");
+    String loadedTree = console.c.tree("idx-loaded");
+    String loaded = loadedTree.substring(loadedTree.indexOf("#documentation"));
+    assertTrue(loaded.contains("Indexes"), loaded);
+    assertTrue(loaded.contains("orders_pkey (id) · primary key"), loaded);
+  }
+
+  @Test
+  void quickDocumentationShowsIndexDetailAfterUniqueOrAlone() throws Exception {
+    servers.serve(PG, Provider.POSTGRESQL, "16.4", """
+        shop
+          public
+            orders
+              *id: bigint
+              email: text
+              expires_at: timestamp
+              #orders_pkey (id) primary
+              #orders_email_uidx (email) unique | sparse
+              #orders_ttl_idx (expires_at) | TTL 3600 s · partial
+        """);
+    var app = console.console(SHOP);
+    var sql = "SELECT id FROM orders";
+    console.c.run(app, TREE + type(sql) + "frame\n");
+    console.tab(app).editor.select(sql.indexOf("orders") + 2, sql.indexOf("orders") + 2);
+    app.invalidate();
+    console.c.run(app, "frame\nkey Q control\nframe\nadvance 1\nframe\nsnap detail-doc\n");
+    String docTree = console.c.tree("detail-doc");
+    String doc = docTree.substring(docTree.indexOf("#documentation"));
+    assertTrue(doc.contains("orders_pkey (id) · primary key"), doc);
+    assertTrue(doc.contains("orders_email_uidx (email) · unique · sparse"), doc);
+    assertTrue(doc.contains("orders_ttl_idx (expires_at) · TTL 3600 s · partial"), doc);
   }
 
   /** The tree of the snap of the window other than the main one. */

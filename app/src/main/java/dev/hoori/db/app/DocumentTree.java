@@ -2,6 +2,7 @@ package dev.hoori.db.app;
 
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.kit.Icon;
+import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.document.Bson;
@@ -14,6 +15,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Documents as a tree: each document a root, whose fields and the items of its arrays open below
@@ -43,29 +45,64 @@ final class DocumentTree {
   private String scope = ""; // the documents shown, such as a page; what is open is theirs
   private List<Document> of = List.of(); // what they are a part of
   private int from;
+  private long offset; // 0-based start of these documents in the whole collection or result
   private List<Document> documents = List.of();
 
   /**
    * Shows the documents from {@code from} to before {@code to} of {@code of}, which only grow, as
-   * the scope: what was open stays open where the scope is the same.
+   * the scope, starting at {@code offset} in the whole collection or result: what was open stays
+   * open where the scope is the same.
    */
-  void show(String scope, List<Document> of, int from, int to) {
+  void show(String scope, List<Document> of, int from, int to, long offset) {
     boolean other = !scope.equals(this.scope);
     if (other) {
       open.clear();
       selected = null;
     }
     if (other || of != this.of || from != this.from || to - from != documents.size()) {
+      var before = documents;
       documents = List.copyOf(of.subList(from, to));
+      // A selection stays only on the same document, not on another read in its place.
+      if (selected != null) {
+        int i = selected.document();
+        if (i >= before.size() || i >= documents.size() || before.get(i) != documents.get(i)) {
+          selected = null;
+        }
+      }
     }
     this.scope = scope;
     this.of = of;
     this.from = from;
+    this.offset = offset;
+  }
+
+  /** The top-level document containing the selected tree node, or null when none is selected. */
+  Document selectedDocument() {
+    if (selected == null || !scope.equals(selected.scope())) {
+      return null;
+    }
+    int index = selected.document();
+    return index >= 0 && index < documents.size() ? documents.get(index) : null;
+  }
+
+  /** Clears the displayed documents when the page is empty or loading. */
+  void clear() {
+    documents = List.of();
+    selected = null;
   }
 
   /** The tree of the documents, with dates in the zone. */
   El view(ZoneId zone, String label) {
-    return tree(zone).key("documents").label(label);
+    return view(zone, label, null, null);
+  }
+
+  /** The tree of the documents, optionally wrapped in a context menu. */
+  El view(ZoneId zone, String label, Menu.State menu, Supplier<List<Menu.Item>> items) {
+    El view = tree(zone).key("documents").label(label);
+    if (menu == null || items == null) {
+      return view;
+    }
+    return Menu.contextMenu(view, menu, menu.isOpen() ? items.get() : List.of());
   }
 
   /** The tree of the documents, with dates in the zone. */
@@ -119,7 +156,7 @@ final class DocumentTree {
         var document = (Document) node.value();
         return document.has("_id")
             ? Shell.scalar(document.get("_id"))
-            : "Document " + (node.document() + 1);
+            : "Document " + (offset + node.document() + 1);
       }
 
       @Override

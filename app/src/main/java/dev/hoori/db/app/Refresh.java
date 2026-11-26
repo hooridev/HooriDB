@@ -24,6 +24,15 @@ final class Refresh {
       this.seconds = seconds;
     }
 
+    static Interval of(int seconds) {
+      for (var each : values()) {
+        if (each.seconds == seconds) {
+          return each;
+        }
+      }
+      return FIVE;
+    }
+
     String title() {
       return seconds + " s";
     }
@@ -31,9 +40,13 @@ final class Refresh {
 
   static final List<Interval> INTERVALS = List.of(Interval.values());
 
-  Interval interval = Interval.FIVE;
+  Interval interval;
   private boolean paused;
   private int schedule; // the one in force; a tick of an earlier one does nothing
+
+  Refresh(Interval interval) {
+    this.interval = interval;
+  }
 
   boolean paused() {
     return paused;

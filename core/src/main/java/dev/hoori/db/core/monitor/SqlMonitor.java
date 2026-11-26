@@ -3,6 +3,9 @@ package dev.hoori.db.core.monitor;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.dialect.ErrorDialect.Condition;
 import dev.hoori.db.core.dialect.MonitorDialect;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
@@ -73,7 +76,7 @@ public record SqlMonitor(Connection connection, Provider provider) implements Mo
   private static boolean fallsBack(QueryException e) {
     return switch (e.failure()) {
       case ACCESS_DENIED, NOT_FOUND, OTHER -> true;
-      case CONNECTION_LOST, CANCELLED, ABORTED, COLUMNS_CHANGED -> false;
+      case CONNECTION_LOST, CANCELLED, ABORTED, COLUMNS_CHANGED, CLAUSE_REFUSED -> false;
     };
   }
 
@@ -105,17 +108,22 @@ public record SqlMonitor(Connection connection, Provider provider) implements Mo
   // gives one, none where it gives none, else by whether it failed as a session that is not there.
   private boolean stop(MonitorDialect.Stop stop) throws QueryException {
     try {
-      return Query.run(connection, provider, stop.sql(), statement -> {
-        for (int i = 0; i < stop.values().size(); i++) {
-          statement.setString(i + 1, stop.values().get(i));
-        }
-        if (!statement.execute()) {
-          return true;
-        }
-        try (var rows = statement.getResultSet()) {
-          return rows.next() && rows.getBoolean(1);
-        }
-      });
+      return Journal.sql(
+          provider,
+          Purpose.MONITOR,
+          stop.sql(),
+          found -> Outcome.DONE,
+          () -> Query.run(connection, provider, stop.sql(), statement -> {
+            for (int i = 0; i < stop.values().size(); i++) {
+              statement.setString(i + 1, stop.values().get(i));
+            }
+            if (!statement.execute()) {
+              return true;
+            }
+            try (var rows = statement.getResultSet()) {
+              return rows.next() && rows.getBoolean(1);
+            }
+          }));
     } catch (QueryException e) {
       if (e.getCause() instanceof SQLException x
           && Condition.NO_SUCH_SESSION.in(

@@ -3,6 +3,7 @@ package dev.hoori.db.core.connection;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -39,6 +40,31 @@ class ConsoleStoreTest {
   }
 
   @Test
+  void queryTabsComeBackWithOrWithoutTargetAndWithoutTextOrDatabase() throws IOException {
+    var queryId = UUID.randomUUID();
+    var untargetedId = UUID.randomUUID();
+    var targetId = UUID.randomUUID();
+    var list = List.of(
+        CONSOLES.getFirst(),
+        StoredConsole.ofQuery(queryId, targetId),
+        StoredConsole.ofQuery(untargetedId, null));
+    var store = new ConsoleStore(folder);
+    store.save(list);
+    assertEquals(list, store.load());
+    var json = Files.readString(folder.resolve(ConsoleStore.FILE));
+    assertTrue(json.contains(queryId.toString()), json);
+    assertTrue(json.contains(untargetedId.toString()), json);
+    var untargetedBlock = json.substring(json.indexOf(untargetedId.toString()));
+    assertFalse(untargetedBlock.contains("\"connection\""), untargetedBlock);
+    assertFalse(untargetedBlock.contains("\"text\""), untargetedBlock);
+    assertFalse(untargetedBlock.contains("\"database\""), untargetedBlock);
+    assertThrows(
+        IllegalArgumentException.class, () -> new StoredConsole(targetId, "", "SELECT 1", queryId));
+    assertThrows(
+        IllegalArgumentException.class, () -> new StoredConsole(targetId, "shop", "", queryId));
+  }
+
+  @Test
   void theFileIsTheOwnersAloneAndSoIsTheCopyOfABrokenOne() throws IOException {
     assumeTrue(folder.getFileSystem().supportedFileAttributeViews().contains("posix"));
     Files.writeString(folder.resolve(ConsoleStore.FILE), "{\"version\": 1}");
@@ -59,6 +85,12 @@ class ConsoleStoreTest {
         "{\"version\": 1, \"consoles\": [{\"connection\": \"x\", \"database\": \"\", \"text\": \"\"}]}",
         "{\"version\": 1, \"consoles\": [{\"connection\": \"0f8fad5b-d9cb-469f-a165-70867728950e\","
             + " \"database\": \"\"}]}",
+        "{\"version\": 1, \"consoles\": [{\"query\": \"x\"}]}",
+        "{\"version\": 1, \"consoles\": [{\"query\": null}]}",
+        "{\"version\": 1, \"consoles\": [{\"query\": \"0f8fad5b-d9cb-469f-a165-70867728950e\","
+            + " \"connection\": \"x\"}]}",
+        "{\"version\": 1, \"consoles\": [{\"query\": \"0f8fad5b-d9cb-469f-a165-70867728950e\","
+            + " \"connection\": null}]}",
         "{\"version\": 1, \"version\": 1, \"consoles\": []}",
         "{\"version\": 2, \"consoles\": []}"
       })

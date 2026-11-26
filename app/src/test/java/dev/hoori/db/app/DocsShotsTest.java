@@ -16,9 +16,6 @@ import static dev.hoori.db.app.FoldersTest.SHOWN;
 import static dev.hoori.db.app.FoldersTest.folder;
 import static dev.hoori.db.app.PaletteTest.GO_TO;
 import static dev.hoori.db.app.PaletteTest.PALETTE;
-import static dev.hoori.db.app.SavedQueriesTest.SAVE;
-import static dev.hoori.db.app.SavedQueriesTest.SAVED;
-import static dev.hoori.db.app.SavedQueriesTest.named;
 import static dev.hoori.db.app.TableTabTest.scroll;
 import static dev.hoori.db.app.TableTabTest.table;
 
@@ -480,16 +477,33 @@ class DocsShotsTest {
   @ParameterizedTest
   @ValueSource(strings = {"dark", "light"})
   void savedQueriesShot(String look) throws Exception {
-    var app = withConsole(look);
-    var script = new StringBuilder();
-    for (var query : List.of(
-        List.of("Orders by status", BY_STATUS),
-        List.of("Revenue by country, 30 days", REVENUE),
-        List.of("Pending orders", PENDING),
-        List.of("Top products", TOP))) {
-      script.append(CLEAR).append(type(query.get(1))).append(SAVE).append(named(query.get(0)));
-    }
-    shot(app, script + SAVED, "saved-queries", look);
+    var reports = folder(
+        "Queries",
+        true,
+        new Workspace.Query(
+            java.util.UUID.randomUUID(), "Orders by status", BY_STATUS, Workspace.Language.SQL),
+        new Workspace.Query(
+            java.util.UUID.randomUUID(),
+            "Revenue by country, 30 days",
+            REVENUE,
+            Workspace.Language.SQL),
+        new Workspace.Query(
+            java.util.UUID.randomUUID(), "Pending orders", PENDING, Workspace.Language.SQL),
+        new Workspace.Query(
+            java.util.UUID.randomUUID(), "Top products", TOP, Workspace.Language.SQL));
+    var app = c.app(new Workspace(List.of(
+        folder("Production", true, SHOP, STATS),
+        folder("Staging", true, SHOP_STAGING, STATS_STAGING),
+        reports)));
+    app.state().theme = look.equals("dark") ? Theme.DARK : Theme.LIGHT;
+    c.ready(app, SHOP, SHOP_STAGING);
+    shot(
+        app,
+        START + open("shop-prod") + SETTLE + open("shop-staging") + SETTLE
+            + "press role=treeitem label=\"Revenue by country, 30 days\"\nkey Enter\nframe\n"
+            + "key Enter control\n" + SHOWN,
+        "saved-queries",
+        look);
   }
 
   @ParameterizedTest

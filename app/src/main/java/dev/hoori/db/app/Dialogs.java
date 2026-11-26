@@ -13,15 +13,19 @@ final class Dialogs {
   DriversDialog driverList; // the Drivers dialog, null while closed
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
   FolderDialog folderDialog; // a folder's name or the question before its delete; null while closed
+  QueryDialog queryDialog; // a query's name, save or delete dialog; null while closed
   UUID placing; // the folder the new connection's dialog puts it in, or null for the top
   boolean about; // whether the About dialog is open
   ExportDialog export; // Export to SQL, null while closed
+  // The modeless settings window, null while closed; not a modal dialog, so anyOpen() skips it.
+  SettingsWindow settings;
 
   /** Whether a dialog is open, which an act that opens one must not replace. */
   boolean anyOpen() {
     return dialog != null
         || deleting != null
         || folderDialog != null
+        || queryDialog != null
         || about
         || driverList != null
         || export != null;

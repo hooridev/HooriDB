@@ -5,6 +5,8 @@ import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.ForeignKey;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -13,11 +15,18 @@ import dev.hoori.db.core.connect.DocumentConnector;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.data.Changes;
+import dev.hoori.db.core.data.Editable;
+import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.document.Document;
+import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.DocumentRun;
 import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.document.Script;
+import dev.hoori.db.core.document.Shell;
+import dev.hoori.db.core.document.SyntaxException;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.dump.Exporter;
 import dev.hoori.db.core.dump.SqlExporter;
@@ -37,7 +46,9 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -54,9 +65,9 @@ interface Servers {
    * Through the driver to the real server: with {@link Connector} and {@link Catalog} to one of
    * SQL, with {@link DocumentConnector} and a {@link DocumentSession} to one of documents.
    */
-  Servers SERVER = (profile, password, driver) -> {
+  Servers SERVER = (profile, password, driver, timeout) -> {
     if (driver.documents()) {
-      var opened = DocumentConnector.open(profile, password, driver, Tester.TIMEOUT);
+      var opened = DocumentConnector.open(profile, password, driver, timeout);
       var session =
           new DocumentSession(opened.client(), profile.provider().documents(), profile.readOnly());
       return Documents.of(
@@ -65,7 +76,7 @@ interface Servers {
           opened.database(),
           profile.provider().documents().defaultDatabase());
     }
-    var opened = Connector.open(profile, password, driver, Tester.TIMEOUT);
+    var opened = Connector.open(profile, password, driver, timeout);
     return Real.of(
         opened.connection(),
         profile.provider(),
@@ -77,7 +88,7 @@ interface Servers {
   String GONE = "The connection was lost or given up: nothing more is sent on it.";
 
   /** Opens a connection to the profile's server and database. */
-  Link open(ConnectionProfile profile, char[] password, LoadedDriver driver)
+  Link open(ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout)
       throws ConnectionException;
 
   /** An open connection. It serves one call at a time. */
@@ -100,11 +111,33 @@ interface Servers {
 
     List<Column> columns(Table table) throws CatalogException;
 
+    /**
+     * Filterable field paths of a collection's documents, including subdocuments, as {@link
+     * DocumentSession#paths(Table)}; empty for SQL servers.
+     */
+    default List<Field> paths(Table table) throws CatalogException {
+      return List.of();
+    }
+
+    List<ForeignKey> foreignKeys(Table table) throws CatalogException;
+
+    List<Index> indexes(Table table) throws CatalogException;
+
     /** The server's estimate of the table's rows, or empty where it has none, as {@link Rows}. */
-    OptionalLong estimate(Table table) throws QueryException;
+    default OptionalLong estimate(Table table) throws QueryException {
+      return estimate(table, Rows.Filter.NONE);
+    }
+
+    /** The server's estimate of the table's rows matching the filter, as {@link Rows#estimate}. */
+    OptionalLong estimate(Table table, Rows.Filter filter) throws QueryException;
 
     /** The exact number of the table's rows. */
-    long count(Table table) throws QueryException;
+    default long count(Table table) throws QueryException {
+      return count(table, Rows.Filter.NONE);
+    }
+
+    /** The exact number of the table's rows matching the filter, as {@link Rows#count}. */
+    long count(Table table, Rows.Filter filter) throws QueryException;
 
     /**
      * The planner's estimate of the rows the statement gives, without running it, its names read on
@@ -113,11 +146,33 @@ interface Servers {
     OptionalLong estimate(String database, String sql) throws QueryException;
 
     /** The rows from {@code from} up to {@code to}, fewer at the end, as {@link Rows#read}. */
-    Page read(Table table, List<Column> columns, long from, long to) throws QueryException;
+    default Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
+      return read(table, columns, from, to, Rows.Filter.NONE);
+    }
+
+    /**
+     * The rows matching the filter, in its order then the table's, from {@code from} up to
+     * {@code to}, as {@link Rows#read}.
+     */
+    Page read(Table table, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException;
 
     /** The whole text of a column of the row its key names, as {@link Rows#whole}. */
     String whole(Table table, List<Column> columns, List<Object> row, int column)
         throws QueryException;
+
+    /**
+     * Whether a console result with these fields can be edited on this connection, as {@link
+     * Editable#of}.
+     */
+    Optional<Editable> editable(String sql, List<Field> fields, boolean createdTemporaryTable)
+        throws QueryException;
+
+    /** Writes pending changes in one transaction on this connection, as {@link Changes#write}. */
+    Changes.Outcome write(Changes changes) throws QueryException;
+
+    /** Runs one single-document edit on this connection, as {@link DocumentSession#write}. */
+    DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException;
 
     /**
      * A statement to run, as {@link Execution} runs it; nothing runs before its first next.
@@ -278,20 +333,70 @@ interface Servers {
     }
 
     @Override
-    public OptionalLong estimate(Table table) throws QueryException {
-      usable();
+    public List<Field> paths(Table table) throws CatalogException {
+      readable();
       try {
-        return session.estimate(table);
+        return session.paths(table);
+      } catch (CatalogException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public List<ForeignKey> foreignKeys(Table table) {
+      return List.of();
+    }
+
+    @Override
+    public List<Index> indexes(Table table) throws CatalogException {
+      readable();
+      try {
+        return session.indexes(table);
+      } catch (CatalogException e) {
+        throw saw(e);
+      }
+    }
+
+    /** Parsed filter and sort documents of a {@link Rows.Filter}. */
+    record Parsed(Document filter, Document sort) {}
+
+    /** Parses the filter and sort documents, refusing invalid syntax before anything is sent. */
+    static Parsed parse(Rows.Filter filter) throws QueryException {
+      if (filter == null || filter.empty()) {
+        return new Parsed(Document.EMPTY, Document.EMPTY);
+      }
+      return new Parsed(document(filter.where(), "Filter"), document(filter.order(), "Sort"));
+    }
+
+    private static Document document(String text, String field) throws QueryException {
+      if (text == null || text.isBlank()) {
+        return Document.EMPTY;
+      }
+      try {
+        return Shell.document(text);
+      } catch (SyntaxException e) {
+        throw QueryException.of(
+            QueryException.Failure.CLAUSE_REFUSED, field + ": " + e.getMessage());
+      }
+    }
+
+    @Override
+    public OptionalLong estimate(Table table, Rows.Filter filter) throws QueryException {
+      usable();
+      var parsed = parse(filter);
+      try {
+        return session.estimate(table, parsed.filter());
       } catch (QueryException e) {
         throw saw(e);
       }
     }
 
     @Override
-    public long count(Table table) throws QueryException {
+    public long count(Table table, Rows.Filter filter) throws QueryException {
       usable();
+      var parsed = parse(filter);
       try {
-        return session.count(table);
+        return session.count(table, parsed.filter());
       } catch (QueryException e) {
         throw saw(e);
       }
@@ -304,10 +409,12 @@ interface Servers {
     }
 
     @Override
-    public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
+    public Page read(Table table, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException {
       usable();
+      var parsed = parse(filter);
       try {
-        return session.read(table, columns, from, to);
+        return session.read(table, columns, from, to, parsed.filter(), parsed.sort());
       } catch (QueryException e) {
         throw saw(e);
       }
@@ -319,6 +426,28 @@ interface Servers {
       usable();
       try {
         return session.whole(table, columns, row, column);
+      } catch (QueryException e) {
+        throw saw(e);
+      }
+    }
+
+    @Override
+    public Optional<Editable> editable(
+        String sql, List<Field> fields, boolean createdTemporaryTable) {
+      return Optional.empty();
+    }
+
+    @Override
+    public Changes.Outcome write(Changes changes) throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of documents does not take SQL row changes");
+    }
+
+    @Override
+    public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+      usable();
+      try {
+        return session.write(edit);
       } catch (QueryException e) {
         throw saw(e);
       }
@@ -504,9 +633,21 @@ interface Servers {
     }
 
     @Override
-    public OptionalLong estimate(Table table) throws QueryException {
+    public List<ForeignKey> foreignKeys(Table table) throws CatalogException {
+      readable();
+      return Catalog.foreignKeys(connection, provider, table);
+    }
+
+    @Override
+    public List<Index> indexes(Table table) throws CatalogException {
+      readable();
+      return Catalog.indexes(connection, provider, table);
+    }
+
+    @Override
+    public OptionalLong estimate(Table table, Rows.Filter filter) throws QueryException {
       usable();
-      return Rows.estimate(connection, provider, table);
+      return Rows.estimate(connection, provider, table, filter, readOnly);
     }
 
     @Override
@@ -516,15 +657,16 @@ interface Servers {
     }
 
     @Override
-    public long count(Table table) throws QueryException {
+    public long count(Table table, Rows.Filter filter) throws QueryException {
       usable();
-      return Rows.count(connection, provider, table);
+      return Rows.count(connection, provider, table, filter, readOnly);
     }
 
     @Override
-    public Page read(Table table, List<Column> columns, long from, long to) throws QueryException {
+    public Page read(Table table, List<Column> columns, long from, long to, Rows.Filter filter)
+        throws QueryException {
       usable();
-      return Rows.read(connection, provider, table, columns, from, to);
+      return Rows.read(connection, provider, table, columns, from, to, filter, readOnly);
     }
 
     @Override
@@ -532,6 +674,25 @@ interface Servers {
         throws QueryException {
       usable();
       return Rows.whole(connection, provider, table, columns, row, column);
+    }
+
+    @Override
+    public Optional<Editable> editable(
+        String sql, List<Field> fields, boolean createdTemporaryTable) throws QueryException {
+      usable();
+      return Editable.of(connection, provider, sql, fields, createdTemporaryTable);
+    }
+
+    @Override
+    public Changes.Outcome write(Changes changes) throws QueryException {
+      usable();
+      return changes.write(connection, provider);
+    }
+
+    @Override
+    public DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of SQL does not take document edits");
     }
 
     @Override

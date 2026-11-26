@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Credentials;
@@ -629,7 +630,7 @@ class MonitorTabTest {
   }
 
   @Test
-  void theVariablesSelectionGoesWhereAnyOfItsRowsHoldsAnotherNow() throws Exception {
+  void theVariablesSelectionFollowsItsItemsWhereAReadMovesOrDropsThem() throws Exception {
     c.servers.variables(
         PG,
         new ServerVariable("a_setting", "1", "default"),
@@ -645,11 +646,14 @@ class MonitorTabTest {
     assertEquals(2, monitor.variableSelection.rowCount());
     c.servers.variables(
         PG,
-        new ServerVariable("a_other", "1", "default"),
+        new ServerVariable("0_new", "0", "default"),
+        new ServerVariable("1_new", "1", "default"),
         new ServerVariable("b_setting", "2", "default"),
         new ServerVariable("c_setting", "3", "default"));
+    // a_setting is gone and b_setting moved down a row: the selection stays on b_setting.
     c.run(app, "press #refresh\nframe\nawait\nframe\n");
-    assertTrue(monitor.variableSelection.isEmpty(), monitor.variableSelection.toString());
+    assertEquals(1, monitor.variableSelection.rowCount(), monitor.variableSelection.toString());
+    assertEquals(2, monitor.variableSelection.row());
   }
 
   @Test
@@ -937,5 +941,21 @@ class MonitorTabTest {
     var tree = c.tree("monitor");
     assertFalse(tree.contains(PASSWORD), tree);
     assertTrue(tree.contains("the key is •••"), tree);
+  }
+
+  /** A new server monitor starts at the interval configured in settings. */
+  @Test
+  void aNewMonitorStartsAtTheConfiguredInterval() throws Exception {
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(app, START + open("shop-prod") + SETTLE);
+    app.post(() -> app.state().choose(Settings.DEFAULT.withMonitorInterval(10)));
+    c.run(app, "await\nframe\n" + menu("shop-prod", "Server monitor") + SETTLE + "snap ten\n");
+    assertTrue(c.tree("ten").contains("\"Every 10 s\""), c.tree("ten"));
+    long first = reads();
+    c.run(app, after(5));
+    assertEquals(first, reads(), "does not read at the 5 s default");
+    c.run(app, after(5));
+    assertEquals(first + 1, reads(), "reads at 10 s");
   }
 }

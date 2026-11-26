@@ -21,8 +21,12 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   static final String PLAN = "EXPLAIN ";
   static final String PLAN_JSON = "EXPLAIN FORMAT=JSON ";
 
-  private final CatalogDialect catalog = new Catalog();
+  private final CatalogDialect catalog;
   private final ErrorDialect errors = new Errors();
+
+  MySqlFamily(boolean flagsHiddenIndexColumns, boolean functionalIndexExpressions) {
+    catalog = new Catalog(flagsHiddenIndexColumns, functionalIndexExpressions);
+  }
 
   @Override
   public int defaultPort() {
@@ -187,6 +191,34 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     private static final Set<String> MYSQL_SYSTEM =
         Set.of("information_schema", "mysql", "performance_schema", "sys");
 
+    // Whether any index of the referencing table that holds this key column also holds a column
+    // the user cannot see (a functional index part has COLUMN_NAME NULL and does not count as
+    // hidden). InnoDB backs every foreign key with an index holding all its columns, so every
+    // visible row of a partial key has this flag set.
+    private static final String HIDDEN_INDEX_COLUMN = "EXISTS ("
+        + "SELECT 1 FROM information_schema.STATISTICS s"
+        + " JOIN information_schema.STATISTICS h"
+        + " ON h.TABLE_SCHEMA = CAST(s.TABLE_SCHEMA AS BINARY)"
+        + " AND h.TABLE_NAME = CAST(s.TABLE_NAME AS BINARY)"
+        + " AND h.INDEX_NAME = CAST(s.INDEX_NAME AS BINARY)"
+        + " WHERE s.TABLE_SCHEMA = CAST(f.TABLE_SCHEMA AS BINARY)"
+        + " AND s.TABLE_NAME = CAST(f.TABLE_NAME AS BINARY)"
+        + " AND s.COLUMN_NAME = CAST(f.COLUMN_NAME AS BINARY)"
+        + " AND h.COLUMN_NAME IS NOT NULL"
+        + " AND NOT EXISTS ("
+        + "SELECT 1 FROM information_schema.COLUMNS c"
+        + " WHERE c.TABLE_SCHEMA = CAST(h.TABLE_SCHEMA AS BINARY)"
+        + " AND c.TABLE_NAME = CAST(h.TABLE_NAME AS BINARY)"
+        + " AND c.COLUMN_NAME = CAST(h.COLUMN_NAME AS BINARY)))";
+
+    private final boolean flagHiddenIndexColumns;
+    private final boolean functionalIndexExpressions;
+
+    Catalog(boolean flagHiddenIndexColumns, boolean functionalIndexExpressions) {
+      this.flagHiddenIndexColumns = flagHiddenIndexColumns;
+      this.functionalIndexExpressions = functionalIndexExpressions;
+    }
+
     @Override
     public String databases() {
       return "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME";
@@ -195,7 +227,12 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     @Override
     public Database database(ResultSet rows) throws SQLException {
       var name = rows.getString(1);
-      return new Database(name, MYSQL_SYSTEM.contains(name));
+      return new Database(name, systemDatabase(name));
+    }
+
+    @Override
+    public boolean systemDatabase(String name) {
+      return MYSQL_SYSTEM.contains(name);
     }
 
     @Override
@@ -234,14 +271,75 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE = 'YES', k.ORDINAL_POSITION"
           + " FROM information_schema.COLUMNS c"
           + " LEFT JOIN information_schema.KEY_COLUMN_USAGE k"
-          + " ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME"
-          + " AND k.CONSTRAINT_NAME = 'PRIMARY' AND k.COLUMN_NAME = c.COLUMN_NAME"
-          + " WHERE c.TABLE_SCHEMA = ? AND c.TABLE_NAME = ? ORDER BY c.ORDINAL_POSITION";
+          // Exact names, as MariaDB's information_schema compares them regardless of case and
+          // accents, where two tables or columns may differ only in them.
+          + " ON k.TABLE_SCHEMA = CAST(c.TABLE_SCHEMA AS BINARY)"
+          + " AND k.TABLE_NAME = CAST(c.TABLE_NAME AS BINARY)"
+          + " AND k.CONSTRAINT_NAME = CAST('PRIMARY' AS BINARY)"
+          + " AND k.REFERENCED_TABLE_NAME IS NULL" // MySQL lets a foreign key take the name
+          + " AND k.COLUMN_NAME = CAST(c.COLUMN_NAME AS BINARY)"
+          + " WHERE c.TABLE_SCHEMA = CAST(? AS BINARY) AND c.TABLE_NAME = CAST(? AS BINARY)"
+          + " ORDER BY c.ORDINAL_POSITION";
     }
 
     @Override
     public String tableExists() {
       return "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
+    }
+
+    // Two branches so the outgoing branch keeps a filter MariaDB can optimize on TABLE_SCHEMA and
+    // TABLE_NAME, while the incoming branch reads across every database and skips self-references
+    // already returned by the first branch. Exact binary comparisons and sort prevent names that
+    // differ only in case or accents from matching or interleaving.
+    @Override
+    public String foreignKeys() {
+      var select = "SELECT k.CONSTRAINT_NAME, k.TABLE_SCHEMA, k.TABLE_NAME,"
+          + " k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME,"
+          + " k.COLUMN_NAME, k.REFERENCED_COLUMN_NAME,"
+          + " r.UPDATE_RULE, r.DELETE_RULE, k.ORDINAL_POSITION"
+          + " FROM information_schema.KEY_COLUMN_USAGE k"
+          // MariaDB shows a key's rules only to a user with more than SELECT on its table.
+          + " LEFT JOIN information_schema.REFERENTIAL_CONSTRAINTS r"
+          + " ON r.CONSTRAINT_SCHEMA = CAST(k.CONSTRAINT_SCHEMA AS BINARY)"
+          + " AND r.CONSTRAINT_NAME = CAST(k.CONSTRAINT_NAME AS BINARY)"
+          + " AND r.TABLE_NAME = CAST(k.TABLE_NAME AS BINARY)";
+      return "SELECT CONSTRAINT_NAME, TABLE_SCHEMA, TABLE_NAME,"
+          + " REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME,"
+          + " COLUMN_NAME, REFERENCED_COLUMN_NAME, UPDATE_RULE, DELETE_RULE, "
+          + (flagHiddenIndexColumns ? HIDDEN_INDEX_COLUMN : "FALSE")
+          + " FROM ("
+          + select
+          + " WHERE k.TABLE_SCHEMA = CAST(? AS BINARY)"
+          + " AND k.TABLE_NAME = CAST(? AS BINARY)"
+          + " AND k.REFERENCED_TABLE_NAME IS NOT NULL"
+          + " UNION ALL "
+          + select
+          + " WHERE k.REFERENCED_TABLE_SCHEMA = CAST(? AS BINARY)"
+          + " AND k.REFERENCED_TABLE_NAME = CAST(? AS BINARY)"
+          + " AND NOT (k.TABLE_SCHEMA = CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY)"
+          + " AND k.TABLE_NAME = CAST(k.REFERENCED_TABLE_NAME AS BINARY))"
+          + ") f"
+          + " ORDER BY CAST(CONSTRAINT_NAME AS BINARY), CAST(TABLE_SCHEMA AS BINARY),"
+          + " CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION";
+    }
+
+    // MySQL 8+ stores functional key parts with COLUMN_NAME NULL and an EXPRESSION column, which
+    // MariaDB lacks. Exact binary comparisons and sort prevent names that differ only in case or
+    // accents from matching or interleaving.
+    @Override
+    public String indexes() {
+      var column = functionalIndexExpressions ? "COALESCE(COLUMN_NAME, EXPRESSION)" : "COLUMN_NAME";
+      return "SELECT INDEX_NAME, " + column + ", NON_UNIQUE = 0,"
+          + " INDEX_NAME = CAST('PRIMARY' AS BINARY)"
+          + " FROM information_schema.STATISTICS"
+          + " WHERE TABLE_SCHEMA = CAST(? AS BINARY) AND TABLE_NAME = CAST(? AS BINARY)"
+          + " ORDER BY INDEX_NAME = CAST('PRIMARY' AS BINARY) DESC,"
+          + " CAST(INDEX_NAME AS BINARY), SEQ_IN_INDEX";
+    }
+
+    @Override
+    public boolean restrictIsNoAction() {
+      return true;
     }
   }
 

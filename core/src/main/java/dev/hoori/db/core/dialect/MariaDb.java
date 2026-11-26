@@ -92,7 +92,9 @@ public final class MariaDb extends MySqlFamily {
           + " LEFT JOIN information_schema.INNODB_LOCKS l ON l.lock_id = w.requested_lock_id"
           + " ORDER BY 1, 2");
 
-  private MariaDb() {}
+  private MariaDb() {
+    super(false, false);
+  }
 
   @Override
   public String displayName() {

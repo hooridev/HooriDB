@@ -4,12 +4,14 @@ import static dev.hoori.db.app.CatalogTreeTest.SHOP;
 import static dev.hoori.db.app.ConnectionsTest.line;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.Script;
 import com.rethinkj.updater.Installation;
 import com.rethinkj.updater.Version;
+import dev.hoori.db.core.connection.SettingsStore;
 import dev.hoori.db.core.connection.StoredUpdates;
 import dev.hoori.db.core.connection.UpdateStore;
 import dev.hoori.db.core.execution.Transaction;
@@ -18,6 +20,9 @@ import dev.hoori.db.core.update.Channel;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.Test;
@@ -80,9 +85,10 @@ class UpdatesTest {
     Script.run(
         "await\nframe\n".repeat(2) + OPENED + "snap ready-dark\n" + HELP + "snap help-dark\n"
             + "key Escape\nframe\n" + OPENED
-            + "press role=menuitem label=\"View\"\nframe\n" + OPENED
-            + "press role=menuitem label=\"Light theme\"\nframe\n" + OPENED + "advance 5\nframe\n"
-            + "snap ready-light\n" + HELP + "snap help-light\n",
+            + "key , control\nframe\nwindow \"Settings\"\nframe\nsnap general\n"
+            + "press role=option label=\"Appearance\"\nframe\n"
+            + "press role=radio label=\"Light\"\nframe\nclose\nframe\n"
+            + "window main\nframe\nsnap ready-light\n" + HELP + "snap help-light\n",
         app,
         dir.resolve("out"));
     assertEquals(List.of("0.3.0"), updater.downloaded);
@@ -92,9 +98,12 @@ class UpdatesTest {
     assertTrue(line(ready, "#update-act").contains("label=\"Restart now\""), ready);
     assertTrue(line(ready, "#update-dismiss").contains("label=\"Later\""), ready);
     assertFalse(ready.contains("#downloading"), ready);
+    var general = tree("settings-general");
+    assertTrue(line(general, "role=radio label=\"Stable\"").endsWith(" checked"), general);
+    assertTrue(line(general, "role=radio label=\"Nightly\"").contains("checked=false"), general);
     var help = tree("help-light");
-    assertTrue(line(help, "label=\"Stable updates\"").contains("checked"), help);
-    assertFalse(line(help, "label=\"Nightly updates\"").contains("checked"), help);
+    assertFalse(help.contains("Stable updates"), help);
+    assertFalse(help.contains("Nightly updates"), help);
     assertFalse(line(help, "label=\"Restart to update\"").contains("disabled"), help);
     assertEquals(Channel.STABLE, stored().channel(), "derived from the version, and saved");
   }
@@ -313,21 +322,27 @@ class UpdatesTest {
     assertEquals(Channel.STABLE, app.state().updates.channel());
   }
 
-  /** A nightly without a stored channel takes Nightly, saves it, and the Help menu checks it. */
+  /** A nightly without a stored channel takes Nightly, saves it, and Settings selects it. */
   @Test
   void aNightlyWithoutAStoredChannelStoresNightly() throws Exception {
     var app = app(updater(), NIGHTLY);
-    run(app, START + HELP + "snap help\n");
+    run(
+        app,
+        START + HELP + "snap help\nkey Escape\nframe\n" + OPENED
+            + "key , control\nframe\nwindow \"Settings\"\nframe\nsnap general\n");
     assertEquals(Channel.NIGHTLY, stored().channel());
+    var general = tree("settings-general");
+    assertTrue(line(general, "role=radio label=\"Nightly\"").endsWith(" checked"), general);
+    assertTrue(line(general, "role=radio label=\"Stable\"").contains("checked=false"), general);
     var help = tree("help");
-    assertTrue(line(help, "label=\"Nightly updates\"").contains("checked"), help);
-    assertFalse(line(help, "label=\"Stable updates\"").contains("checked"), help);
+    assertFalse(help.contains("Stable updates"), help);
+    assertFalse(help.contains("Nightly updates"), help);
     assertTrue(line(help, "label=\"Restart to update\"").contains("disabled"), help);
   }
 
   /**
-   * From Nightly to Stable while a nightly runs, the status line says that HooriDB stays on it;
-   * the offer of a nightly goes, and About shows the channel.
+   * From Nightly to Stable while a nightly runs, the status line says that HooriDB stays on it for
+   * a while; the offer of a nightly goes, and About shows the channel.
    */
   @Test
   void switchingFromNightlyToStableSaysThatHooriDbStaysOnItsVersion() throws Exception {
@@ -337,14 +352,17 @@ class UpdatesTest {
     assertTrue(tree("offered").contains("HooriDB 0.2.0-nightly.202611200300 is ready"));
     run(
         app,
-        HELP + "press role=menuitem label=\"Stable updates\"\nframe\n" + OPENED
-            + "await\nframe\n".repeat(2) + "snap stable\n"
+        "key , control\nframe\nwindow \"Settings\"\nframe\n"
+            + "press role=radio label=\"Stable\"\nframe\nclose\nframe\n"
+            + "window main\n" + "await\nframe\n".repeat(2) + "snap stable\n"
+            + "advance 5\nframe\nsnap later\n"
             + "press role=button label=\"" + NIGHTLY + "\"\nframe\n" + OPENED + "snap about\n");
     var stable = tree("stable");
     assertTrue(
         stable.contains("HooriDB stays on " + NIGHTLY + " until a higher release comes out."),
         stable);
     assertFalse(stable.contains("#update"), "the nightly is no longer offered: " + stable);
+    assertFalse(tree("later").contains("#message"), "the message went after its time");
     assertEquals(Channel.STABLE, stored().channel());
     var about = tree("about");
     assertTrue(about.contains("label=\"Updates\" ") && about.contains("value=\"Stable\""), about);
@@ -367,8 +385,9 @@ class UpdatesTest {
     var app = app(updater, "0.1.0");
     run(
         app,
-        START + HELP + "press role=menuitem label=\"Stable updates\"\nframe\n" + OPENED
-            + "await\nframe\n".repeat(2) + "snap stable\n");
+        START + "key , control\nframe\nwindow \"Settings\"\nframe\n"
+            + "press role=radio label=\"Stable\"\nframe\nclose\nframe\n"
+            + "window main\n" + "await\nframe\n".repeat(2) + "snap stable\n");
     assertFalse(tree("stable").contains("#update"), tree("stable"));
     assertEquals(List.of(), updater.restarts);
   }
@@ -389,9 +408,9 @@ class UpdatesTest {
         Installation.Result.Status.REJECTED, "locked", "A file stayed locked");
     updater.reading = new CountDownLatch(1);
     var app = app(updater, "0.1.0");
-    run(
-        app,
-        "size 1200 760\nframe\n" + HELP + "press role=menuitem label=\"Stable updates\"\nframe\n");
+    run(app, "size 1200 760\nframe\n");
+    app.state().updates.channel(app.state(), Channel.STABLE);
+    run(app, "frame\n");
     updater.reading.countDown();
     run(app, "await\nframe\n".repeat(3) + OPENED + "snap start\n");
     var start = tree("start");
@@ -441,5 +460,264 @@ class UpdatesTest {
     app.state().updates.shown(app.state());
     run(app, "await\nframe\n");
     assertEquals(1, updater.confirms);
+  }
+
+  /**
+   * With checkForUpdates off in settings.json, the start does not look for releases; turning it on
+   * looks once, and toggling while work runs does not double-look.
+   */
+  @Test
+  void checkForUpdatesOffDoesNotLookAtStartAndTurningItOnLooksOnce() throws Exception {
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"checkForUpdates":false}
+        """);
+    var updater = updater().publish("0.3.0");
+    var app = app(updater, "0.2.0");
+    run(app, START);
+    assertEquals(0, updater.looks.get());
+    assertEquals(List.of(), updater.downloaded);
+    assertNull(app.state().updates.notice);
+
+    updater.downloading = new CountDownLatch(1);
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    run(app, "await\nframe\n");
+    assertEquals(1, updater.looks.get());
+    // Turning off and back on while the download is in flight does not look a second time.
+    app.state().choose(app.state().settings.withCheckForUpdates(false));
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    updater.downloading.countDown();
+    run(app, "await\nframe\n".repeat(2) + OPENED);
+    assertEquals(1, updater.looks.get());
+    assertEquals(List.of("0.3.0"), updater.downloaded);
+    // Nor once the update is ready: Restart now keeps the download it offers.
+    app.state().choose(app.state().settings.withCheckForUpdates(false));
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    run(app, "await\nframe\n");
+    assertEquals(1, updater.looks.get());
+    assertEquals(List.of("0.3.0"), updater.downloaded);
+  }
+
+  /** Turning checking on before updates have started looks once they have. */
+  @Test
+  void checkForUpdatesTurnedOnDuringTheStartLooksOnce() throws Exception {
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"checkForUpdates":false}
+        """);
+    var updater = updater().publish("0.3.0");
+    updater.reading = new CountDownLatch(1);
+    var app = app(updater, "0.2.0");
+    run(app, "size 1200 760\nframe\n");
+    app.await("load settings", Duration.ofSeconds(5));
+    run(app, "frame\n");
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    assertEquals(0, updater.looks.get());
+    updater.reading.countDown();
+    run(app, START + "await\n"); // the settings' save, before the folder goes
+    assertEquals(1, updater.looks.get());
+  }
+
+  /** Turning checking on and off again before updates have started looks for nothing. */
+  @Test
+  void checkForUpdatesTurnedOnAndOffDuringTheStartDoesNotLook() throws Exception {
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"checkForUpdates":false}
+        """);
+    var updater = updater().publish("0.3.0");
+    updater.reading = new CountDownLatch(1);
+    var app = app(updater, "0.2.0");
+    run(app, "size 1200 760\nframe\n");
+    app.await("load settings", Duration.ofSeconds(5));
+    run(app, "frame\n");
+    app.state().choose(app.state().settings.withCheckForUpdates(true));
+    app.state().choose(app.state().settings.withCheckForUpdates(false));
+    updater.reading.countDown();
+    run(app, START + "await\n"); // the settings' save, before the folder goes
+    assertEquals(0, updater.looks.get());
+  }
+
+  /**
+   * With checkForUpdates off, the start skips looking even when settings finish loading before
+   * updates' own start.
+   */
+  @Test
+  void checkForUpdatesOffSkipsLookWhenSettingsFinishBeforeUpdates() throws Exception {
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), """
+        {"version":1,"checkForUpdates":false}
+        """);
+    var updater = updater().publish("0.3.0");
+    updater.reading = new CountDownLatch(1);
+    var app = app(updater, "0.2.0");
+    run(app, "size 1200 760\nframe\n");
+    app.await("load settings", Duration.ofSeconds(5));
+    run(app, "frame\n");
+    assertFalse(app.state().keeping.settingsLoading);
+    assertFalse(app.state().settings.checkForUpdates());
+    updater.reading.countDown();
+    run(app, START);
+    assertEquals(0, updater.looks.get());
+    assertEquals(List.of(), updater.downloaded);
+  }
+
+  /** Default settings (and an unreadable settings.json falling back to defaults) look once. */
+  @Test
+  void defaultAndUnreadableSettingsLookOnceAtStart() throws Exception {
+    var defaultUpdater = updater().publish("0.3.0");
+    run(app(defaultUpdater, "0.2.0"), START);
+    assertEquals(1, defaultUpdater.looks.get());
+
+    var config = Files.createDirectories(dir.resolve("config"));
+    Files.writeString(config.resolve(SettingsStore.FILE), "{");
+    var brokenUpdater = updater().publish("0.3.0");
+    run(app(brokenUpdater, "0.2.0"), START);
+    assertEquals(1, brokenUpdater.looks.get());
+  }
+
+  /**
+   * Hovering an offered update's notice (ready or available) shows a tooltip with the notice's
+   * title, version and published date in the state's zone, up to five highlights (features before
+   * fixes), "Plus N more changes.", and the change and contributor counts.
+   */
+  @Test
+  void hoveringAnOfferedUpdateShowsItsHighlightsAndCounts() throws Exception {
+    var notes21 = """
+        ## What's Changed
+        * feat(core): filter rows with `WHERE` by @alice in https://github.com/hooridev/HooriDB/pull/1
+        * fix(app): keep caret on undo by @bob in https://github.com/hooridev/HooriDB/pull/2
+        * docs: describe updates by @bob in https://github.com/hooridev/HooriDB/pull/3
+        """;
+    var notes30 = """
+        ## What's Changed
+        * fix(app): keep dialog off the screen edge by @alice in https://github.com/hooridev/HooriDB/pull/4
+        * feat(app): edit cells in a table tab by @alice in https://github.com/hooridev/HooriDB/pull/5
+        * feat!: drop legacy format by @bob in https://github.com/hooridev/HooriDB/pull/6
+        * feat: group connections in folders by @alice in https://github.com/hooridev/HooriDB/pull/7
+        * refactor(core): tidy dialect helpers by @bob in https://github.com/hooridev/HooriDB/pull/8
+
+        ## New Contributors
+        * @bob made their first contribution in https://github.com/hooridev/HooriDB/pull/2
+
+        **Full Changelog**: https://github.com/hooridev/HooriDB/compare/v0.2.1...v0.3.0
+        """;
+    // 23:30 UTC on Nov 22 is Nov 23 in Europe/Berlin.
+    var published = Instant.parse("2026-11-22T23:30:00Z");
+    var readyUpdater = updater()
+        .publish("0.2.1", Instant.parse("2026-11-20T10:00:00Z"), notes21)
+        .publish("0.3.0", published, notes30);
+    var readyApp = app(readyUpdater, "0.2.0");
+    readyApp.state().zone = ZoneId.of("Europe/Berlin");
+    run(
+        readyApp,
+        START + "move role=note label=\"HooriDB 0.3.0 is ready\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap ready-tip\n");
+    var readyTip = tree("ready-tip");
+    assertTrue(readyTip.contains("role=tooltip"), readyTip);
+    var tooltip = readyTip.substring(readyTip.indexOf("role=tooltip"));
+    assertTrue(tooltip.contains("\"HooriDB 0.3.0 is ready\""), tooltip);
+    assertTrue(tooltip.contains("\"0.3.0 · 2026-11-23\""), tooltip);
+    assertTrue(tooltip.contains("\"Edit cells in a table tab.\""), tooltip);
+    assertTrue(tooltip.contains("\"Drop legacy format.\""), tooltip);
+    assertTrue(tooltip.contains("\"Group connections in folders.\""), tooltip);
+    assertTrue(tooltip.contains("\"Filter rows with WHERE.\""), tooltip);
+    assertTrue(tooltip.contains("\"Keep dialog off the screen edge.\""), tooltip);
+    assertFalse(tooltip.contains("Keep caret on undo"), "capped at five highlights: " + tooltip);
+    assertTrue(
+        tooltip.indexOf("Filter rows with WHERE.") < tooltip.indexOf("Keep dialog off the screen"),
+        "features come before fixes: " + tooltip);
+    assertTrue(tooltip.contains("\"Plus 3 more changes.\""), tooltip);
+    assertTrue(tooltip.contains("\"8 changes from 2 contributors\""), tooltip);
+
+    var availUpdater = updater().publish("0.3.0", published, """
+            ## What's Changed
+            * feat: single highlight by @alice in https://github.com/hooridev/HooriDB/pull/9
+            * chore: tidy build by @alice in https://github.com/hooridev/HooriDB/pull/10
+            """);
+    availUpdater.writable = false;
+    var availApp = app(availUpdater, "0.2.0");
+    availApp.state().zone = ZoneId.of("UTC");
+    run(
+        availApp,
+        START + "move role=note label=\"HooriDB 0.3.0 is available\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap avail-tip\n");
+    var availTip = tree("avail-tip");
+    assertTrue(availTip.contains("role=tooltip"), availTip);
+    var availTooltip = availTip.substring(availTip.indexOf("role=tooltip"));
+    assertTrue(availTooltip.contains("\"HooriDB 0.3.0 is available\""), availTooltip);
+    assertTrue(availTooltip.contains("\"0.3.0 · 2026-11-22\""), availTooltip);
+    assertTrue(availTooltip.contains("\"Single highlight.\""), availTooltip);
+    assertTrue(availTooltip.contains("\"Plus 1 more change.\""), availTooltip);
+    assertTrue(availTooltip.contains("\"2 changes from 1 contributor\""), availTooltip);
+  }
+
+  /** The changes of a version skipped after its rollback count, as the update brings them too. */
+  @Test
+  void theChangesOfASkippedVersionCount() throws Exception {
+    new UpdateStore(dir.resolve("config"))
+        .save(new StoredUpdates(Channel.STABLE, Version.parse("0.3.0"), null));
+    var updater = updater()
+        .publish(
+            "0.3.0",
+            Instant.parse("2026-11-20T12:00:00Z"),
+            "* feat: edit cells by @alice in https://github.com/hooridev/HooriDB/pull/1")
+        .publish(
+            "0.3.1",
+            Instant.parse("2026-11-22T12:00:00Z"),
+            "* fix: keep the caret by @bob in https://github.com/hooridev/HooriDB/pull/2");
+    run(
+        app(updater, "0.2.0"),
+        START + "move role=note label=\"HooriDB 0.3.1 is ready\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap skipped-tip\n");
+    var tip = tree("skipped-tip");
+    var tooltip = tip.substring(tip.indexOf("role=tooltip"));
+    assertTrue(tooltip.contains("\"Edit cells.\""), tooltip);
+    assertTrue(tooltip.contains("\"Keep the caret.\""), tooltip);
+    assertTrue(tooltip.contains("\"2 changes from 2 contributors\""), tooltip);
+  }
+
+  /** An update without changes, and notices that do not offer an update, have no tooltip. */
+  @Test
+  void noticesWithoutChangesAndNonOfferNoticesHaveNoTooltip() throws Exception {
+    var emptyUpdater = updater().publish("0.3.0");
+    var emptyApp = app(emptyUpdater, "0.2.0");
+    run(
+        emptyApp,
+        START + "move role=note label=\"HooriDB 0.3.0 is ready\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap no-changes\n");
+    assertFalse(tree("no-changes").contains("role=tooltip"), tree("no-changes"));
+
+    var file = Files.createDirectories(dir.resolve("updates").resolve("downloads"))
+        .resolve("download-HooriDB-0.3.0-linux-x64.tar.gz");
+    Files.writeString(file, "0.3.0");
+    new UpdateStore(dir.resolve("config"))
+        .save(new StoredUpdates(
+            Channel.STABLE,
+            null,
+            new StoredUpdates.Attempt(Version.parse("0.3.0"), file, "1".repeat(64))));
+    var lockedUpdater = updater()
+        .publish(
+            "0.3.0",
+            Instant.parse("2026-11-22T12:00:00Z"),
+            "* feat: something by @alice in https://github.com/hooridev/HooriDB/pull/1");
+    lockedUpdater.result = new Installation.Result(
+        Installation.Result.Status.REJECTED, "locked", "A file stayed locked");
+    var lockedApp = app(lockedUpdater, "0.2.0");
+    run(
+        lockedApp,
+        START + "move role=note label=\"The update was not applied\"\nframe\nadvance 1\nframe\n"
+            + "frame\nsnap locked-tip\n");
+    assertFalse(tree("locked-tip").contains("role=tooltip"), tree("locked-tip"));
+
+    var rolledUpdater = updater();
+    rolledUpdater.result = new Installation.Result(
+        Installation.Result.Status.ROLLED_BACK, "not-confirmed", "Not confirmed in time");
+    var rolledApp = app(rolledUpdater, "0.2.0");
+    run(
+        rolledApp,
+        START + "move role=note label=\"The update to HooriDB 0.3.0 was undone\"\nframe\n"
+            + "advance 1\nframe\nframe\nsnap rolled-tip\n");
+    assertFalse(tree("rolled-tip").contains("role=tooltip"), tree("rolled-tip"));
   }
 }

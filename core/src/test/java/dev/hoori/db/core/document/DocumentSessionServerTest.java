@@ -11,11 +11,15 @@ import dev.hoori.db.core.TestServer;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Index;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.DocumentConnector;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.log.Sent;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -75,6 +79,50 @@ class DocumentSessionServerTest {
   }
 
   @Test
+  void aCollectionsIndexesIncludeCompoundUniqueTtlAndTextAndViewsHaveNone() throws Exception {
+    try (var session = session(true)) {
+      var logged = new ArrayList<Sent>();
+      var ordersIndexes = Journal.recording(logged::add, () -> session.indexes(ORDERS));
+      assertEquals(
+          List.of(
+              new Index("_id_", ORDERS, List.of("_id: 1"), true, true, ""),
+              new Index("customer_1", ORDERS, List.of("customer: 1"), false, false, ""),
+              new Index(
+                  "customer_1_total_-1",
+                  ORDERS,
+                  List.of("customer: 1", "total: -1"),
+                  false,
+                  false,
+                  "partial"),
+              new Index(
+                  "expiresAt_1", ORDERS, List.of("expiresAt: 1"), false, false, "TTL 3600 s")),
+          ordersIndexes);
+      assertEquals(1, logged.size());
+      assertEquals(Purpose.CATALOG, logged.getFirst().purpose());
+      assertTrue(
+          logged.getFirst().text().contains("listIndexes"), logged.getFirst().text());
+
+      assertEquals(
+          List.of(
+              new Index("_id_", CUSTOMERS, List.of("_id: 1"), true, true, ""),
+              new Index("email_1", CUSTOMERS, List.of("email: 1"), true, false, "sparse"),
+              new Index(
+                  "name_text_tags_text",
+                  CUSTOMERS,
+                  List.of("name: text", "tags: text"),
+                  false,
+                  false,
+                  "")),
+          session.indexes(CUSTOMERS));
+
+      logged.clear();
+      assertEquals(List.of(), Journal.recording(logged::add, () -> session.indexes(PAID)));
+      assertTrue(logged.isEmpty(), logged.toString());
+      assertEquals(List.of(), session.indexes(new Table(HOORI, "missing", Table.Kind.TABLE)));
+    }
+  }
+
+  @Test
   void documentsAreReadInPagesInTheOrderOfTheirIds() throws Exception {
     try (var session = session(false)) {
       var fields = session.fields(ORDERS);
@@ -125,6 +173,63 @@ class DocumentSessionServerTest {
       assertEquals(125, session.count(PAID));
       assertEquals(0, session.count(new Table(HOORI, "empty", Table.Kind.TABLE)));
       assertEquals(0, session.count(new Table(HOORI, "missing", Table.Kind.TABLE)));
+    }
+  }
+
+  @Test
+  void readEstimateAndCountHonorFilterSortAndIdTieBreaker() throws Exception {
+    try (var session = session(false)) {
+      var fields = session.fields(ORDERS);
+      var paid = Document.of("paid", true);
+      // Filtered collection has no estimate; empty filter keeps the metadata estimate.
+      assertTrue(session.estimate(ORDERS, paid).isEmpty());
+      assertEquals(250, session.estimate(ORDERS, Document.EMPTY).getAsLong());
+      assertEquals(125, session.count(ORDERS, paid));
+      assertEquals(0, session.count(ORDERS, Document.of("customer", 99)));
+
+      // Filter and descending sort on total.
+      var topPaid = session.read(ORDERS, fields, 0, 3, paid, Document.of("total", -1));
+      assertEquals(
+          List.of(250, 248, 246),
+          topPaid.documents().stream().map(d -> d.get("_id")).toList());
+
+      // Ties in sort are broken by _id: 1 when _id is not named, keeping paging deterministic.
+      var byCustomerFirst = session.read(ORDERS, fields, 0, 3, paid, Document.of("customer", 1));
+      var byCustomerNext = session.read(ORDERS, fields, 3, 6, paid, Document.of("customer", 1));
+      assertEquals(
+          List.of(6, 12, 18),
+          byCustomerFirst.documents().stream().map(d -> d.get("_id")).toList());
+      assertEquals(
+          List.of(24, 30, 36),
+          byCustomerNext.documents().stream().map(d -> d.get("_id")).toList());
+
+      // Explicit _id in sort is honored without appending _id: 1.
+      var byCustomerDescId =
+          session.read(ORDERS, fields, 0, 3, paid, Document.of("customer", 1, "_id", -1));
+      assertEquals(
+          List.of(246, 240, 234),
+          byCustomerDescId.documents().stream().map(d -> d.get("_id")).toList());
+      var reverseIds = session.read(ORDERS, fields, 0, 3, Document.EMPTY, Document.of("_id", -1));
+      assertEquals(
+          List.of(250, 249, 248),
+          reverseIds.documents().stream().map(d -> d.get("_id")).toList());
+      // A $natural order goes alone, as the server takes it.
+      var natural = session.read(ORDERS, fields, 0, 3, Document.EMPTY, Document.of("$natural", 1));
+      assertEquals(3, natural.documents().size());
+    }
+  }
+
+  @Test
+  void aReadOnlySessionFiltersAndCountsDocuments() throws Exception {
+    try (var session = session(true)) {
+      var fields = session.fields(ORDERS);
+      var filter = Document.of("paid", true, "customer", 2);
+      assertTrue(session.estimate(ORDERS, filter).isEmpty());
+      assertEquals(42, session.count(ORDERS, filter));
+      var page = session.read(ORDERS, fields, 0, 3, filter, Document.of("total", -1));
+      assertEquals(
+          List.of(250, 244, 238),
+          page.documents().stream().map(d -> d.get("_id")).toList());
     }
   }
 

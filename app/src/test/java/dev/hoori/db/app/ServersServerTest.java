@@ -9,8 +9,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.TestServer;
+import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Schema;
+import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Plan;
@@ -44,7 +48,8 @@ class ServersServerTest {
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 500) SELECT i FROM n";
 
   static Servers.Link open(TestServer server) throws Exception {
-    return Servers.SERVER.open(server.profile(), TestServer.password(), server.driver());
+    return Servers.SERVER.open(
+        server.profile(), TestServer.password(), server.driver(), Duration.ofSeconds(10));
   }
 
   /** A lane of a console, open on the server's database or another. */
@@ -54,7 +59,8 @@ class ServersServerTest {
         Servers.SERVER,
         server.profile().withDatabase(database),
         TestServer.password(),
-        server.driver());
+        server.driver(),
+        Duration.ofSeconds(10));
     lane.submit(link -> link).get(30, TimeUnit.SECONDS); // fails as the opening did
     return lane;
   }
@@ -122,7 +128,10 @@ class ServersServerTest {
   void aReadOnlyLinkWritesNothing(Provider provider) throws Exception {
     var server = TestServer.of(provider);
     var link = Servers.SERVER.open(
-        server.profile().withReadOnly(true), TestServer.password(), server.driver());
+        server.profile().withReadOnly(true),
+        TestServer.password(),
+        server.driver(),
+        Duration.ofSeconds(10));
     try {
       var back =
           provider == Provider.POSTGRESQL ? "RESET ALL" : "SET SESSION TRANSACTION READ WRITE";
@@ -132,6 +141,26 @@ class ServersServerTest {
           link.run("CREATE TABLE never_made (id integer)").next(10).results().getLast();
       assertEquals("25006", write.state(), write.toString()); // the server's own refusal
       assertTrue(link.estimate(TestServer.DATABASE, "SELECT * FROM customer").isPresent());
+      var db = new Database(TestServer.DATABASE, false);
+      var container = provider == Provider.POSTGRESQL ? new Schema(db, "public", false) : db;
+      var reading = new Table(container, "reading", Table.Kind.TABLE);
+      var columns = link.columns(reading);
+      var filter = new Rows.Filter("id <= 5", "id DESC");
+      assertEquals(5, link.count(reading, filter));
+      assertEquals(
+          List.of(5L, 4L, 3L),
+          link.read(reading, columns, 0, 3, filter).rows().stream()
+              .map(List::getFirst)
+              .toList());
+      var bypass = provider == Provider.POSTGRESQL
+          ? "set_config('default_transaction_read_only', 'off', false) IS NOT NULL"
+          : "@@transaction_read_only = 0";
+      assertEquals(
+          QueryException.Failure.CLAUSE_REFUSED,
+          assertThrows(
+                  QueryException.class,
+                  () -> link.read(reading, columns, 0, 5, new Rows.Filter(bypass, "")))
+              .failure());
     } finally {
       link.close();
     }
@@ -1126,8 +1155,8 @@ class ServersServerTest {
     var c = new CatalogTreeTest();
     c.dir = dir;
     c.setUp();
-    Servers real = (profile, password, driver) ->
-        Servers.SERVER.open(profile, TestServer.password(), server.driver());
+    Servers real = (profile, password, driver, timeout) ->
+        Servers.SERVER.open(profile, TestServer.password(), server.driver(), timeout);
     var profile = server.profile().withName("real");
     var app = c.app(
         real,
@@ -1249,7 +1278,8 @@ class ServersServerTest {
           Servers.SERVER,
           server.profile().withHost(dev.hoori.db.core.query.Relay.HOST).withPort(relay.port()),
           TestServer.password(),
-          server.driver());
+          server.driver(),
+          Duration.ofSeconds(10));
       lane.submit(link -> link).get(30, TimeUnit.SECONDS);
       var many = provider == Provider.POSTGRESQL
           ? "SELECT n FROM generate_series(1, 100000) n"
@@ -1350,7 +1380,10 @@ class ServersServerTest {
               + ConsoleTest.type("\nROLLBACK")
               + "key Enter control\nframe\nframe\n");
       eventually(tab::outcomeWaiting);
-      c.run(app, "press role=button label=\"Cancel\"\nframe\n" + CatalogTreeTest.SETTLE);
+      c.run(
+          app,
+          "advance 0.5\nframe\nadvance 1\nframe\npress role=button label=\"Cancel\"\nframe\n"
+              + CatalogTreeTest.SETTLE);
       assertTrue(
           ConsoleTransactions.noticed(app).contains(ConsoleTab.PARTLY),
           ConsoleTransactions.noticed(app));

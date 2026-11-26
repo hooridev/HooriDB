@@ -7,10 +7,10 @@ import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.Style;
+import com.rethinkj.ui.editor.CodeEditor;
 import com.rethinkj.ui.json.Json;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Card;
-import com.rethinkj.ui.kit.CodeEditor;
 import com.rethinkj.ui.kit.EmptyState;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Progress;
@@ -23,6 +23,7 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Missing;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * The value of a grid's current cell in a panel beside the grid, which follows the cell as the
@@ -39,14 +40,18 @@ final class ValuePanel {
   record Cell(String column, String type, Kind kind, Object value) {}
 
   private static final Object NOTHING = new Object();
+  /** The value of a new row's cell left without one, which takes the column's default. */
+  static final Object DEFAULT = new Object();
+
   private static final String TITLE = "Value"; // of the panel, and of its button
 
   boolean open;
   private Split.Position split; // as the user moved it; null for the first width
-  private CodeEditor.State editor = new CodeEditor.State().readOnly(true);
+  private CodeEditor.State editor = new CodeEditor.State().readOnly(true).inlineDiagnostics(true);
   // The value the text was made of, compared by identity: a value of a row, or a whole text.
   private Object made = NOTHING;
   private Kind madeKind;
+  private ZoneId madeZone;
   private String text = "";
 
   /** The button in a status line that opens and closes it. */
@@ -69,8 +74,9 @@ final class ValuePanel {
     El shown = grid;
     if (!open && made != NOTHING) { // what it showed, which may be long, goes with it
       made = NOTHING;
+      madeZone = null;
       text = "";
-      editor = new CodeEditor.State().readOnly(true);
+      editor = new CodeEditor.State().readOnly(true).inlineDiagnostics(true);
     }
     if (open) {
       var first = Split.Position.second(WIDTH * unit);
@@ -114,6 +120,8 @@ final class ValuePanel {
           .child(Progress.spinner());
     } else if (cell.value() == null) {
       body = col().grow(1).center().child(Label.label(Label.Variant.MUTED, "NULL"));
+    } else if (cell.value() == DEFAULT) {
+      body = col().grow(1).center().child(Label.label(Label.Variant.MUTED, "DEFAULT"));
     } else if (cell.value() == Missing.FIELD) {
       body = col().grow(1).center().child(Label.label(Label.Variant.MUTED, "No such field"));
     } else {
@@ -144,11 +152,12 @@ final class ValuePanel {
 
   /** The text of the value, made anew only where it changed: JSON formatted where it is valid. */
   private void make(Object value, Kind kind, ZoneId zone) {
-    if (value == made && kind == madeKind) {
+    if (value == made && kind == madeKind && Objects.equals(zone, madeZone)) {
       return;
     }
     made = value;
     madeKind = kind;
+    madeZone = zone;
     editor.noDiagnostics();
     editor.select(0, 0);
     if (kind == Kind.JSON && value instanceof String json) {
