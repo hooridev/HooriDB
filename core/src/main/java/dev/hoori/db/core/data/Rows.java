@@ -32,6 +32,7 @@ import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -707,6 +708,43 @@ public final class Rows {
 
   private static String start(String text) {
     return text.substring(0, text.offsetByCodePoints(0, LIMIT));
+  }
+
+  /**
+   * The value as a page holds it: a text longer than {@link #LIMIT} code points cut to a {@link
+   * Cut} of them, whose length in bytes is not known, and binary data to its first {@link #LIMIT}
+   * bytes, with its whole length; any other value as it is.
+   */
+  public static Object shown(Object value) {
+    return switch (value) {
+      case String text when tooLong(text) -> cut(text);
+      case Binary binary
+      when !binary.cut() && binary.length() > LIMIT ->
+        new Binary(Arrays.copyOf(binary.bytes(), LIMIT), binary.length());
+      case null, default -> value;
+    };
+  }
+
+  /**
+   * About how many characters the value holds in memory: a text's, a cut text's start, as many as
+   * binary data has bytes read, and one for any other value.
+   */
+  public static long characters(Object value) {
+    return switch (value) {
+      case String text -> text.length();
+      case Cut cut -> cut.start().length();
+      case Binary binary -> binary.cut() ? LIMIT : binary.length();
+      case null, default -> 1;
+    };
+  }
+
+  /** About how many characters the values hold in memory, as {@link #characters(Object)}. */
+  public static long characters(Collection<?> values) {
+    long all = 0;
+    for (var value : values) {
+      all += characters(value);
+    }
+    return all;
   }
 
   // A table's column read whole is the column itself.

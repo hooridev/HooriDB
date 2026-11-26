@@ -27,9 +27,17 @@ import java.util.StringJoiner;
  * <p>The values are of the kinds that {@link Rows#read} gives the columns, but read whole: no text
  * or binary data is cut, so that each can be compared and written back as it is. The read is one
  * statement, without parameters, which {@link dev.hoori.db.core.execution.Execution} runs and reads
- * a portion at a time, with this {@link #reader}.
+ * a portion at a time, with this {@link #reader}, each portion of at most {@link #PORTION}
+ * characters.
  */
 public final class KeyedRead {
+
+  /**
+   * About how many characters of values a portion of the read holds at most, as {@link
+   * Rows#characters(java.util.Collection)} counts them, beyond its first row: so that a table of long values is
+   * read in fewer rows a portion than one of short ones.
+   */
+  public static final long PORTION = 8L * 1024 * 1024;
 
   private final String sql;
   private final List<Rows.Read> reads;

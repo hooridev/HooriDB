@@ -3,6 +3,7 @@ package dev.hoori.db.core.execution;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.KeyedRead;
 import dev.hoori.db.core.data.RowReader;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.dialect.SessionDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
@@ -389,14 +390,20 @@ public final class Execution implements AutoCloseable {
     ahead = rows.next();
   }
 
-  // Reads at most the given number of rows of the result it is on, as a result of its own; where
-  // that fails, the rows read before.
+  // Reads at most the given number of rows of the result it is on, as a result of its own, and of
+  // a keyed read, whose values are whole, at most its portion of characters beyond the first row;
+  // where that fails, the rows read before.
   private void readRows(int count, List<Result> results) throws SQLException {
     var from = position;
     var read = new ArrayList<List<Object>>();
+    long characters = 0;
     try {
-      while (ahead && read.size() < count) {
-        read.add(reader.read(rows));
+      while (ahead && read.size() < count && characters < KeyedRead.PORTION) {
+        var row = reader.read(rows);
+        read.add(row);
+        if (keyed != null) {
+          characters += Rows.characters(row);
+        }
         position++;
         ahead = rows.next();
       }
