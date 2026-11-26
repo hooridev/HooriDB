@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import com.rethinkj.ui.Formatted;
 import com.rethinkj.ui.Formatted.Kind;
 import com.rethinkj.ui.Formatted.Problem;
+import com.rethinkj.ui.Highlighter;
 import com.rethinkj.ui.Spans;
 import com.rethinkj.ui.kit.Theme;
 import java.util.ArrayList;
@@ -26,7 +27,11 @@ class ShellSyntaxTest {
 
   /** The colored parts of each line, as kind and text, the state carried from line to line. */
   static List<String> colored(String... lines) {
-    var syntax = new ShellSyntax(CODE);
+    return colored(new ShellSyntax(CODE), lines);
+  }
+
+  /** As {@link #colored(String...)}, by another highlighter. */
+  static List<String> colored(Highlighter syntax, String... lines) {
     var out = new ArrayList<String>();
     Object state = null;
     for (var line : lines) {
@@ -42,6 +47,16 @@ class ShellSyntaxTest {
       }
     }
     return out;
+  }
+
+  @Test
+  void aDocumentIsLaidOutWithoutEvaluatingItsConstructorsOrDroppingComments() {
+    assertEquals(
+        new Formatted("{\n  created: ISODate() /* save time */,\n  n: Long('5')\n}", null),
+        ShellSyntax.formatDocument("{created:ISODate()/* save time */,n:Long('5')}"));
+    assertEquals(
+        new Formatted(null, new Problem(10, 11, Kind.UNEXPECTED)),
+        ShellSyntax.formatDocument("{ a: 1, b }"));
   }
 
   @Test
@@ -190,5 +205,11 @@ class ShellSyntaxTest {
     assertEquals(
         new Formatted(null, new Problem(0, 0, Kind.TOO_LARGE)),
         ShellSyntax.format("db.c.find({ a: " + "[".repeat(deep) + "]".repeat(deep) + " })"));
+    assertEquals(
+        new Formatted(null, new Problem(0, 0, Kind.TOO_LARGE)),
+        ShellSyntax.format("db.c" + ".explain()".repeat(5_000) + ".find()"));
+    assertEquals(
+        new Formatted(null, new Problem(0, 0, Kind.TOO_LARGE)),
+        ShellSyntax.format("db" + ".getSiblingDB('a')".repeat(5_000) + ".c.find()"));
   }
 }

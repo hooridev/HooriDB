@@ -29,6 +29,12 @@ public final class QueryException extends Exception {
      * moved or given another type. Read the columns again, then the rows.
      */
     COLUMNS_CHANGED,
+    /**
+     * A clause of a filter was refused before anything was sent: it held more than one statement,
+     * left a string or comment open, had unbalanced parentheses, or may turn a read-only session
+     * back to read-write.
+     */
+    CLAUSE_REFUSED,
     /** Anything else; the detail says what. */
     OTHER
   }

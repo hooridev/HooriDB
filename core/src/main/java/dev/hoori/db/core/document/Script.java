@@ -193,7 +193,9 @@ public final class Script {
       entry("serverStatus", _ -> Request.of(Document.of("serverStatus", 1), Shape.REPLY)),
       entry("hello", _ -> Request.of(Document.of("hello", 1), Shape.REPLY)),
       entry("getCollection", c -> collection(c.r(), c.on(), c.string(0))),
-      entry("getSiblingDB", c -> database(c.r(), c.string(0))));
+      entry(
+          "getSiblingDB",
+          c -> c.r().nested("A statement", c.at(), () -> database(c.r(), c.string(0)))));
 
   /** The collection methods that only read. */
   public static final Set<String> READING_METHODS = Set.copyOf(READING.keySet());
@@ -506,9 +508,11 @@ public final class Script {
       throw r.error("A method is needed after the dot");
     }
     if (method.equals(EXPLAIN)) {
-      var verbosity = arguments(r);
-      var explained = collection(r, null, collection);
-      return explain(explained, verbosity, r).on(database);
+      return r.nested("A statement", at, () -> {
+        var verbosity = arguments(r);
+        var explained = collection(r, null, collection);
+        return explain(explained, verbosity, r).on(database);
+      });
     }
     r.space();
     if (r.peek() != '(') {

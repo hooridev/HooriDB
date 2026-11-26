@@ -66,7 +66,7 @@ public final class ReadWrite {
     return SPACES.matcher(strings).replaceAll(" ").toLowerCase(Locale.ROOT);
   }
 
-  private static boolean executable(String sql, Statements.Piece piece, Provider provider) {
+  static boolean executable(String sql, Statements.Piece piece, Provider provider) {
     for (var opening : provider.dialect().syntax().executableComments()) {
       if (sql.startsWith(opening, piece.start())) {
         return true;

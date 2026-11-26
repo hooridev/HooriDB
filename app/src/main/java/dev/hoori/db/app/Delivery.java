@@ -169,7 +169,7 @@ final class Delivery {
   }
 
   /** A failure's words; core's own for a lost connection has none. */
-  private static String said(Failure f) {
+  static String said(Failure f) {
     return f.message().isEmpty() && f.kind() == Failure.Kind.CONNECTION_LOST
         ? "The connection was lost."
         : f.message();

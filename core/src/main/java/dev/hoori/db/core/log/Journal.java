@@ -72,7 +72,10 @@ public final class Journal {
         null,
         () -> {
           var masked = Secrets.masked(sql, provider);
-          return new Shown(masked, !masked.equals(sql));
+          if (!masked.equals(sql)) {
+            return new Shown(masked, Outcome.WITHHELD);
+          }
+          return new Shown(masked, purpose == Purpose.CHANGES ? Outcome.ROW_WITHHELD : null);
         },
         outcome,
         call);
@@ -99,10 +102,12 @@ public final class Journal {
         // A secret is there where two masks make two texts.
         () -> new Shown(
             dialect.shown(command),
-            !command
-                .masked(dialect.secretFields(), "a")
-                .toString()
-                .equals(command.masked(dialect.secretFields(), "b").toString())),
+            command
+                    .masked(dialect.secretFields(), "a")
+                    .toString()
+                    .equals(command.masked(dialect.secretFields(), "b").toString())
+                ? null
+                : Outcome.WITHHELD),
         outcome,
         call);
   }
@@ -116,7 +121,20 @@ public final class Journal {
     if (!RECORDER.isBound()) {
       return call.call();
     }
-    return send(purpose, null, () -> new Shown(called, false), value -> Outcome.DONE, call);
+    return send(purpose, null, () -> new Shown(called, null), value -> Outcome.DONE, call);
+  }
+
+  /**
+   * Runs a call of the driver as {@link #call} does, with a failure's message withheld, as a
+   * commit's of {@link Purpose#CHANGES} may quote a row, as a deferred constraint's does.
+   */
+  public static <T, E extends Exception> T callWithheld(
+      Purpose purpose, String called, Call<T, E> call) throws E {
+    if (!RECORDER.isBound()) {
+      return call.call();
+    }
+    return send(
+        purpose, null, () -> new Shown(called, Outcome.ROW_WITHHELD), value -> Outcome.DONE, call);
   }
 
   /** The call that switches auto-commit, by what it is called. */
@@ -160,11 +178,13 @@ public final class Journal {
   private record Entry(
       Instant at, long started, Purpose purpose, String database, Supplier<Shown> text) {}
 
-  // The text as it is recorded, and whether a secret was masked in it.
-  private record Shown(String text, boolean masked) {}
+  // The text as it is recorded, and what a failure's message is recorded as where it may repeat
+  // what the text leaves out, or null.
+  private record Shown(String text, String withheld) {}
 
   // A recorder that fails loses its entry, never the call's result. A failure of what carried a
-  // secret may repeat it, as a syntax error quotes where it is: its message is withheld.
+  // secret may repeat it, as a syntax error quotes where it is, and one of a change may quote the
+  // row, as a failed CHECK does: its message is withheld.
   private static void record(Recorder recorder, Entry entry, Outcome outcome) {
     var took = Duration.ofNanos(System.nanoTime() - entry.started());
     try {
@@ -172,8 +192,8 @@ public final class Journal {
         return;
       }
       var shown = entry.text().get();
-      var ended = shown.masked() && outcome instanceof Outcome.Failed
-          ? new Outcome.Failed(Outcome.WITHHELD)
+      var ended = shown.withheld() != null && outcome instanceof Outcome.Failed
+          ? new Outcome.Failed(shown.withheld())
           : outcome;
       recorder.sent(
           new Sent(entry.at(), entry.purpose(), entry.database(), shown.text(), took, ended));

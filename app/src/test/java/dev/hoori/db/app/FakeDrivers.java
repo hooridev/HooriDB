@@ -22,6 +22,7 @@ import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.HashMap;
@@ -31,6 +32,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -344,6 +346,7 @@ final class FakeDrivers implements Repository {
     volatile CountDownLatch gate; // holds each test until it opens
     final List<String> passwords = new CopyOnWriteArrayList<>();
     final List<LoadedDriver> drivers = new CopyOnWriteArrayList<>();
+    final List<Duration> timeouts = new CopyOnWriteArrayList<>();
     volatile boolean interrupted;
 
     void refuse(ConnectionException.Failure failure, String detail) {
@@ -351,13 +354,19 @@ final class FakeDrivers implements Repository {
     }
 
     @Override
-    public Tester.Result test(ConnectionProfile profile, char[] password, LoadedDriver driver) {
+    public Tester.Result test(
+        ConnectionProfile profile, char[] password, LoadedDriver driver, Duration timeout) {
       passwords.add(new String(password));
       drivers.add(driver);
+      timeouts.add(timeout);
       var g = gate;
       if (g != null) {
         try {
-          g.await();
+          if (!g.await(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
+            return new Tester.Refused(
+                ConnectionException.Failure.TIMED_OUT,
+                "timed out after " + timeout.toSeconds() + " s");
+          }
         } catch (InterruptedException _) {
           interrupted = true;
           Thread.currentThread().interrupt();

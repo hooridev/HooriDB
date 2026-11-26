@@ -33,10 +33,14 @@ final class Versions {
    */
   record Read(Map<String, Long> sizes, DriverStore.Choices choices, DriverException error) {}
 
+  private record Listed(DriverStore.Choices choices, DriverException error) {}
+
   final Provider provider;
-  Read last; // the last that was read, null before the first read
+  Read last; // the last that was read, null before the first folder read
   Exception failed; // the drivers folder could not be read, or null
-  private Work work; // the read under way, or null
+  private Work folderWork; // reading the drivers folder, or null
+  private Work choicesWork; // reading the repository's list, or null
+  private Listed repository; // what the repository's read gave, null before it ended
   private Clock clock = Clock.systemUTC(); // what ages count from: the drivers' clock
   // When versions were published, as looked up one by one; the list has those newer than the
   // recommended one.
@@ -58,45 +62,80 @@ final class Versions {
   }
 
   /**
-   * Reads the versions again; what was read stays until the new read is in. The repository is not
-   * asked where the lookup's choices are there.
+   * Reads the versions again; what was read stays until the new read is in. The drivers folder and
+   * the repository are read separately so that downloaded versions show at once even without a
+   * network. The repository is not asked where the lookup's choices are there.
    */
   void read(State s) {
     stop();
     failed = null;
+    repository = null;
     if (s.drivers == null) {
       return;
     }
     var store = s.drivers.store;
     var driver = Driver.of(provider);
-    var driverClock = this.clock = s.drivers.clock;
+    this.clock = s.drivers.clock;
     var known = lookedUp.get();
-    // shortcut: what is downloaded shows only once the repository answered or failed, which takes
-    // as long as its timeout without a network; read the folder first if that is felt.
-    work = s.app.background(
-        "read the versions of a driver",
+    readFolder(s, store, driver, known);
+    if (known == null) {
+      readRepository(s, store, driver, s.drivers.clock);
+    }
+  }
+
+  // The downloaded versions with their sizes, with what the repository gave where that came first.
+  private void readFolder(State s, DriverStore store, Driver driver, DriverStore.Choices known) {
+    folderWork = s.app.background(
+        "read the downloaded versions of a driver",
         () -> {
           var sizes = new LinkedHashMap<String, Long>();
           for (var version : store.downloaded(driver)) {
             sizes.put(version, store.sizeOnDisk(driver, version));
           }
+          return sizes;
+        },
+        sizes -> {
+          folderWork = null;
+          if (known != null) {
+            last = new Read(sizes, known, null);
+          } else if (repository != null) {
+            last = new Read(sizes, repository.choices(), repository.error());
+          } else {
+            last = new Read(sizes, last == null ? null : last.choices(), null);
+          }
+        },
+        error -> {
+          folderWork = null;
+          failed = error;
+        });
+  }
+
+  // What the repository offers, beside the downloaded versions read before or after it.
+  private void readRepository(State s, DriverStore store, Driver driver, Clock driverClock) {
+    choicesWork = s.app.background(
+        "read the versions of a driver",
+        () -> {
           try {
-            return new Read(
-                sizes, known != null ? known : store.choices(driver, driverClock.instant()), null);
+            return new Listed(store.choices(driver, driverClock.instant()), null);
           } catch (DriverException e) {
             if (e.failure() == DriverException.Failure.CANCELLED) {
               throw e;
             }
-            return new Read(sizes, null, e);
+            return new Listed(null, e);
           }
         },
         done -> {
-          work = null;
-          last = done;
+          choicesWork = null;
+          repository = done;
+          if (last != null) {
+            last = new Read(last.sizes(), done.choices(), done.error());
+          }
         },
         error -> {
-          work = null;
-          failed = error;
+          choicesWork = null;
+          if (failed == null) {
+            failed = error;
+          }
         });
   }
 
@@ -131,14 +170,22 @@ final class Versions {
   }
 
   boolean reading() {
-    return work != null;
+    return folderWork != null || choicesWork != null;
+  }
+
+  boolean readingChoices() {
+    return choicesWork != null;
   }
 
   /** Stops reading the versions; a date being looked up still comes. */
   void stop() {
-    if (work != null) {
-      work.cancel();
-      work = null;
+    if (folderWork != null) {
+      folderWork.cancel();
+      folderWork = null;
+    }
+    if (choicesWork != null) {
+      choicesWork.cancel();
+      choicesWork = null;
     }
   }
 

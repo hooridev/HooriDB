@@ -40,6 +40,9 @@ CREATE TABLE reading (
   amount decimal(10, 3)
 );
 
+CREATE UNIQUE INDEX customer_email_idx ON customer (email);
+CREATE INDEX reading_label_amount_idx ON reading (label, amount);
+
 INSERT INTO customer VALUES
   (1, 'Ada Lovelace', 'ada@example.com', true, DATE '1815-12-10', TIMESTAMP '2024-01-15 09:30:00', 120.50, 'First customer'),
   (2, 'Charles Babbage', NULL, false, DATE '1791-12-26', TIMESTAMP '2024-02-01 14:00:00', 0.00, NULL),

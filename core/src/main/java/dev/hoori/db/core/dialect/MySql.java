@@ -92,7 +92,9 @@ public final class MySql extends MySqlFamily {
           + " ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID"
           + " ORDER BY 1, 2");
 
-  private MySql() {}
+  private MySql() {
+    super(true, true);
+  }
 
   @Override
   public String displayName() {

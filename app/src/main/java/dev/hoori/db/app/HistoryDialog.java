@@ -23,7 +23,6 @@ import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.HistoryEntry;
 import dev.hoori.db.core.connection.HistoryEntry.Outcome;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -113,6 +112,7 @@ final class HistoryDialog {
               : "The statements run in a console of this connection are listed here.",
           null);
     } else {
+      var zone = s.zone;
       var columns = List.of(
           new DataGrid.Column(
                   "Statement", 13 * unit, DataGrid.DataType.TEXT, row -> first(entries.get(row)))
@@ -121,8 +121,7 @@ final class HistoryDialog {
                   "Ran",
                   6 * unit,
                   DataGrid.DataType.DATE_TIME,
-                  row -> WHEN.text(
-                      LocalDateTime.ofInstant(entries.get(row).started(), ZoneId.systemDefault())))
+                  row -> WHEN.text(LocalDateTime.ofInstant(entries.get(row).started(), zone)))
               .sortable(false),
           new DataGrid.Column(
                   "Took",

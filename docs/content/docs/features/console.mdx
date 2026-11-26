@@ -31,6 +31,7 @@ If the console has an open transaction, HooriDB asks what to do with it before s
 
 - Press **Run** or `Ctrl+Enter` to run the selected SQL, or the single statement at the caret if nothing is selected. The editor marks the lines of the statement that `Ctrl+Enter` will run.
 - Press **Run all** or `Ctrl+Shift+Enter` to run every statement in the editor from top to bottom, stopping at the first error.
+- Click the run marker in the gutter on a statement's first line to run that statement on its own. Once a statement has run, its gutter marker shows whether it succeeded or failed, its tooltip gives the time and row or change count, clicking it runs the statement again, and it moves with edits elsewhere in the editor.
 - Press **Cancel** while a statement runs to cancel it on the server. Rows already read stay visible in the result tab. When you cancel or disconnect during a change, it may already have taken effect; if HooriDB says the outcome is not known, check the data before running the statement again.
 
 ## Read results and Messages
@@ -45,6 +46,19 @@ Each statement that returns rows or changes rows creates a result tab (**Result 
 - Select cells and press `Ctrl+C` (or `Ctrl+Insert`) to copy from a result grid.
 - Open the **Messages** tab to see every statement run in the console, how long it took, and its result, warnings, or errors.
 
+## Edit query results
+
+When a PostgreSQL, MySQL, or MariaDB `SELECT` reads directly from a single permanent table and includes all of its primary key columns (on a writable connection), you can edit its cells directly in the result grid:
+
+- Double-click a cell, press `Enter` or `F2`, or start typing to edit it. Press `Ctrl+0` to set `NULL` (on nullable columns), `Delete` to clear, `Ctrl+V` to paste, and `Ctrl+Z` / `Ctrl+Y` to undo or redo.
+- Changed cells and rows are highlighted, and a badge in the result footer shows the number of pending row changes.
+- Press **Revert** to revert only the selected cells, or **Revert all** to discard every pending change in the result.
+- Press **Commit…** to open the **DML Preview** dialog, which always shows the generated `UPDATE` statements in the dialect's syntax colors before any of them is sent. In **Manual** mode (or whenever the console has an open transaction), HooriDB first asks you to commit or roll back the console's transaction, so the write does not wait on it; cancelling the preview afterwards does not undo that commit or rollback.
+- Confirming **Commit** runs all updates together in a single transaction on a dedicated write connection, checking that each row is still there by its primary key and that each cell you changed still holds the value that was read. If another session changed one of those cells, or the row's key, nothing is written, the row is marked, and your pending edits stay in place. A change by another session to a column you did not edit does not stop the write.
+- After a successful commit, the edited values stay visible in the grid with a hint to re-run the query if you want server-generated values (such as triggers or defaults).
+- Before pending edits would be lost — running another statement (for unpinned results), switching databases or commit mode, closing the tab, disconnecting, editing or deleting the connection, or exiting HooriDB — HooriDB asks whether to discard them.
+- Read-only connections, multi-table queries, views, tables without a primary key, sessions that created a temporary table on MySQL or MariaDB (until reconnect), and individual read-only columns or cut-short cells remain read-only, with the reason shown in the result status line; in a narrow tab, the status keeps half the footer, as in a table's tab, so the reason shortens first and shows whole on hover over it or over the status line.
+
 ## Find errors in the editor
 
 <Shot
@@ -52,7 +66,14 @@ Each statement that returns rows or changes rows creates a result tab (**Result 
   alt="A console showing an unknown column error underlined at line 4 with the error message below the editor and logged in Messages"
 />
 
-When a statement fails and the server reports where the error occurred, HooriDB underlines that location in the editor, moves the caret there, and displays the server's message above the results tabs. The underline clears as soon as you edit the text.
+When a statement fails and the server reports where the error occurred, HooriDB underlines that location in the editor, moves the caret there, shows the server's message inline after its line as well as above the results tabs, and marks it in the gutter and along the scrollbar. The error moves with edits elsewhere in the text and clears when its own text is edited or a new run starts. Press `F8` or `Shift+F8` to jump between errors.
+
+## Quick documentation and go to table
+
+In an SQL console, the editor uses what Workspace has read to inspect and navigate to tables, views, and columns:
+
+- **Quick documentation**: rest the pointer over a table, view, or column name — or place the caret on it and press `Ctrl+Q` — to see a table's kind, schema, columns with their types, foreign keys in both directions, and indexes with their columns, or a column's type, table, and foreign key references. If its tables, columns, foreign keys, or indexes have not been loaded yet, HooriDB fetches them in the background and shows them on the next hover.
+- **Go to table**: press `Ctrl+B` or `Ctrl+click` on a table, view, or column name to open a table's rows in a tab (the same as pressing `Enter` in Workspace or choosing it from `Ctrl+P`). On a column that belongs to a single outgoing foreign key, this opens the referenced table; otherwise it opens the column's own table. Holding `Ctrl` while pointing at a navigable name underlines it.
 
 ## Read-only connections
 
@@ -77,7 +98,10 @@ The completion list suggests SQL keywords for your database dialect along with s
 - The list opens automatically from the second letter of a word, or right after typing `.` following a schema, table, or alias name.
 - Press `Ctrl+Space` anywhere in the editor to open the list manually.
 - Press `Enter` or `Tab` to insert the highlighted item, or `Escape` to close the list.
+- After `JOIN` (other than `CROSS JOIN` and `NATURAL JOIN`), tables linked by a foreign key to a table before it in the same `FROM` item appear first in both directions, inserting the table and its full `ON` condition (for example, `customers c ON c.id = o.customer_id`). In `FROM orders o, categories ca JOIN …`, only `categories` counts. Aliases follow the rest of the statement; plain tables stay listed below.
+- After the `ON` of a join, foreign-key conditions between the joined table and the tables before it in the same `FROM` item appear first above the usual completions.
+- A join is not offered where the table after `JOIN` already has its alias, `ON` or `USING`, and a condition is not offered where one already follows `ON`.
 
 Names that require quoting are quoted automatically for PostgreSQL (`"..."`) or MySQL and MariaDB (`` `...` ``).
 
-If a database's tables or a table's columns have not been loaded in Workspace yet, HooriDB reads them automatically when completions ask for them. Keep typing or press `Ctrl+Space` again to see the newly loaded names.
+If a database's tables or a table's columns or foreign keys have not been loaded in Workspace yet, HooriDB reads them automatically when completions ask for them. Keep typing or press `Ctrl+Space` again to see the newly loaded suggestions.

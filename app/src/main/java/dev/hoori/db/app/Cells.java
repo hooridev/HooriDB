@@ -8,6 +8,7 @@ import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
 import dev.hoori.db.core.data.Field;
@@ -22,10 +23,14 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.time.temporal.ChronoField;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.function.IntFunction;
 
 /**
@@ -58,8 +63,32 @@ final class Cells {
       .append(DATE_TIME)
       .appendOffset("+HH:mm:ss", "+00")
       .toFormatter();
+  // A moment as the grid's editor takes it back: the offset with its minutes (rethinkj/ui#510).
+  private static final DateTimeFormatter DATE_TIME_FULL_OFFSET = new DateTimeFormatterBuilder()
+      .append(DATE_TIME)
+      .appendOffset("+HH:MM:ss", "+00:00")
+      .toFormatter();
+  private static final DateTimeFormatter ANY_OFFSET_TIME = new DateTimeFormatterBuilder()
+      .append(DateTimeFormatter.ISO_LOCAL_TIME)
+      .parseLenient()
+      .appendOffset("+HH:MM:ss", "Z")
+      .toFormatter(Locale.ROOT)
+      .withResolverStyle(ResolverStyle.STRICT);
+  private static final Format<OffsetDateTime> OFFSET_DATE_TIME =
+      Format.offsetDateTime(0, Format.Offset.SHORT);
+  private static final BigInteger MIN_LONG = BigInteger.valueOf(Long.MIN_VALUE);
+  private static final BigInteger MAX_LONG = BigInteger.valueOf(Long.MAX_VALUE);
 
   private Cells() {}
+
+  /** What copying a NULL cell puts on the clipboard. */
+  static String nullText(Settings.CopyNull copyNull) {
+    return switch (copyNull) {
+      case EMPTY -> "";
+      case NULL -> "NULL";
+      case BACKSLASH_N -> "\\N";
+    };
+  }
 
   /** The grid's kind of column for core's kind of values. */
   static DataType type(Kind kind) {
@@ -128,7 +157,7 @@ final class Cells {
       widths[index] = width(kind) * t.size().control();
     }
     float w = widths[index] < 0 ? width(Kind.DECIMAL) * t.size().control() : widths[index];
-    var column = new DataGrid.Column(header.name(), w, type, row -> text(valueAt.apply(row), zone))
+    var column = new DataGrid.Column(header.name(), w, type, row -> cell(valueAt.apply(row), zone))
         .typeName(header.type())
         .sortable(false);
     if (header.key()) {
@@ -138,6 +167,151 @@ final class Cells {
       column = column.cellIcon(row -> icon(valueAt.apply(row)));
     }
     return column;
+  }
+
+  /**
+   * The text a grid cell shows: at most {@link Rows#LIMIT} code points of a string, so that
+   * drawing and fitting columns stay fast while {@link #text} keeps the whole value.
+   */
+  static String cell(Object value, ZoneId zone) {
+    return value instanceof String s ? preview(s) : text(value, zone);
+  }
+
+  /** Whether a cell's string value is shortened for display by {@link #cell}. */
+  static boolean shortened(String text) {
+    return text != null
+        && text.length() > Rows.LIMIT
+        && (text.length() > 2 * Rows.LIMIT || text.codePointCount(0, text.length()) > Rows.LIMIT);
+  }
+
+  /** A moment, as an edit of it is staged: in the zone, with an offset the grid's editor takes. */
+  static String moment(OffsetDateTime value, ZoneId zone) {
+    return DATE_TIME_FULL_OFFSET.format(value.atZoneSameInstant(zone));
+  }
+
+  /** Whether a value was read whole (neither {@link Cut} nor a {@link Binary#cut} value). */
+  static boolean whole(Object value) {
+    return !(value instanceof Cut) && !(value instanceof Binary b && b.cut());
+  }
+
+  /** What {@link #parse} made of a cell's edited text: a core value, or an error message. */
+  record Parsed(Object value, String error) {
+    boolean valid() {
+      return error == null;
+    }
+
+    static Parsed of(Object value) {
+      return new Parsed(value, null);
+    }
+
+    static Parsed error(String message) {
+      return new Parsed(null, message);
+    }
+  }
+
+  /**
+   * Parses a cell's edited text back into the Java type core expects for {@code field}'s kind, or
+   * returns a user-facing error message. {@code text == null} stands for SQL NULL.
+   */
+  static Parsed parse(Field field, Column column, String text, Object original, ZoneId zone) {
+    if (text == null) {
+      return column.nullable() ? Parsed.of(null) : Parsed.error(Format.REQUIRED);
+    }
+    return switch (field.kind()) {
+      case TEXT, JSON, OTHER -> Parsed.of(text);
+      case INTEGER -> parseInteger(column, text);
+      case DECIMAL -> parseDecimal(text, original);
+      case BOOLEAN -> {
+        var parsed = Format.BOOLEAN.parse(text);
+        yield parsed.valid() ? Parsed.of(parsed.value()) : Parsed.error(parsed.error());
+      }
+      case DATE -> {
+        var parsed = Format.DATE.parse(text);
+        yield parsed.valid() ? Parsed.of(parsed.value()) : Parsed.error(parsed.error());
+      }
+      case TIME -> parseTime(text);
+      case DATE_TIME -> {
+        var parsed = Format.DATE_TIME.parse(text);
+        yield parsed.valid()
+            ? Parsed.of(parsed.value())
+            : Parsed.error(
+                "Expected a date and time without an offset, such as 2026-11-13 14:30:00");
+      }
+      case DATE_TIME_ZONED -> parseDateTimeZoned(text, zone);
+      case BINARY -> Parsed.error("Binary values cannot be edited inline");
+    };
+  }
+
+  private static Parsed parseInteger(Column column, String text) {
+    var parsed = Format.BIG_INTEGER.parse(text);
+    if (!parsed.valid()) {
+      return Parsed.error(parsed.error());
+    }
+    var n = parsed.value();
+    var type = column.type().toLowerCase(Locale.ROOT);
+    boolean unsignedBigint = type.startsWith("bigint") && type.contains("unsigned");
+    if (!unsignedBigint && n.compareTo(MIN_LONG) >= 0 && n.compareTo(MAX_LONG) <= 0) {
+      return Parsed.of(n.longValueExact());
+    }
+    return Parsed.of(n);
+  }
+
+  private static Parsed parseDecimal(String text, Object original) {
+    var parsed = Format.DECIMAL.parse(text);
+    if (!parsed.valid()) {
+      return Parsed.error(parsed.error());
+    }
+    var decimal = parsed.value();
+    if (original instanceof Float) {
+      float f = decimal.floatValue();
+      if (Float.isFinite(f)) {
+        return Parsed.of(f);
+      }
+    } else if (original instanceof Double) {
+      double d = decimal.doubleValue();
+      if (Double.isFinite(d)) {
+        return Parsed.of(d);
+      }
+    }
+    return Parsed.of(decimal);
+  }
+
+  private static Parsed parseTime(String text) {
+    var local = Format.TIME.parse(text);
+    if (local.valid()) {
+      return Parsed.of(local.value());
+    }
+    try {
+      return Parsed.of(OffsetTime.parse(text.strip(), ANY_OFFSET_TIME));
+    } catch (DateTimeParseException _) {
+      return Parsed.error(local.error());
+    }
+  }
+
+  private static Parsed parseDateTimeZoned(String text, ZoneId zone) {
+    var offset = OFFSET_DATE_TIME.parse(text);
+    if (offset.valid()) {
+      return Parsed.of(offset.value().withOffsetSameInstant(ZoneOffset.UTC));
+    }
+    var local = Format.DATE_TIME.parse(text);
+    if (local.valid()) {
+      // A time the zone skips or repeats names no one moment.
+      if (zone.getRules().getValidOffsets(local.value()).size() != 1) {
+        return Parsed.error("This time is skipped or repeated in " + zone.getId()
+            + "; add an offset such as" + " +01:00");
+      }
+      return Parsed.of(
+          local.value().atZone(zone).toOffsetDateTime().withOffsetSameInstant(ZoneOffset.UTC));
+    }
+    return Parsed.error(offset.error());
+  }
+
+  // shortcut: the grid shapes a cell's whole text (rethinkj/ui#414); drop this once it bounds it.
+  private static String preview(String text) {
+    if (!shortened(text)) {
+      return text;
+    }
+    return text.substring(0, text.offsetByCodePoints(0, Rows.LIMIT));
   }
 
   /**

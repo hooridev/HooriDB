@@ -4,6 +4,7 @@ import dev.hoori.db.core.catalog.CatalogException.Failure;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.dialect.CatalogDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -147,6 +148,136 @@ public final class Catalog {
     return columns;
   }
 
+  /**
+   * The foreign keys whose referencing or referenced table is {@code table}, each once (a
+   * self-reference appears once), ordered by constraint name and then referencing table. Views and
+   * foreign tables have none and return an empty list without querying the server.
+   *
+   * <p>Where column privileges on MySQL hide part of a composite key, that key is left out rather
+   * than returned partial. Because MySQL does not expose a key's hidden columns, a whole key is
+   * also left out under column privileges when every one of its columns shares an index on the
+   * referencing table with a column the user cannot see.
+   */
+  public static List<ForeignKey> foreignKeys(Connection connection, Provider provider, Table table)
+      throws CatalogException {
+    if (table.kind() != Table.Kind.TABLE) {
+      return List.of();
+    }
+    requireConnectedTo(connection, provider, table.container().database());
+    var catalog = provider.dialect().catalog();
+    var schemas = hasSchemas(provider);
+    var database = table.container().database();
+    record ReadKey(ForeignKey key, boolean maybePartial) {}
+    Row<ReadKey> pair = rows -> new ReadKey(
+        new ForeignKey(
+            rows.getString(1),
+            tableOf(schemas, database, catalog, rows.getString(2), rows.getString(3)),
+            List.of(rows.getString(6)),
+            tableOf(schemas, database, catalog, rows.getString(4), rows.getString(5)),
+            List.of(rows.getString(7)),
+            rule(rows.getString(8)),
+            rule(rows.getString(9))),
+        rows.getBoolean(10));
+    var container = table.container().name();
+    var pairs = query(
+        connection,
+        provider,
+        catalog.foreignKeys(),
+        pair,
+        container,
+        table.name(),
+        container,
+        table.name());
+    // A key of several columns comes as consecutive rows, one per pair of columns.
+    var merged = new ArrayList<ReadKey>();
+    for (var next : pairs) {
+      var last = merged.isEmpty() ? null : merged.getLast();
+      if (last != null
+          && last.key().name().equals(next.key().name())
+          && last.key().table().equals(next.key().table())) {
+        merged.set(
+            merged.size() - 1,
+            new ReadKey(
+                new ForeignKey(
+                    last.key().name(),
+                    last.key().table(),
+                    concat(last.key().columns(), next.key().columns()),
+                    last.key().referenced(),
+                    concat(last.key().referencedColumns(), next.key().referencedColumns()),
+                    last.key().onUpdate(),
+                    last.key().onDelete()),
+                last.maybePartial() && next.maybePartial()));
+      } else {
+        merged.add(next);
+      }
+    }
+    return merged.stream()
+        .filter(read -> !read.maybePartial())
+        .map(ReadKey::key)
+        .toList();
+  }
+
+  /**
+   * The indexes of {@code table}, primary key first and then by name, each with its key columns or
+   * expressions in key order. Views and foreign tables have none and return an empty list without
+   * querying the server.
+   */
+  public static List<Index> indexes(Connection connection, Provider provider, Table table)
+      throws CatalogException {
+    if (table.kind() != Table.Kind.TABLE) {
+      return List.of();
+    }
+    requireConnectedTo(connection, provider, table.container().database());
+    var catalog = provider.dialect().catalog();
+    Row<Index> part = rows -> {
+      var column = rows.getString(2);
+      return new Index(
+          rows.getString(1),
+          table,
+          column == null ? List.of() : List.of(column),
+          rows.getBoolean(3),
+          rows.getBoolean(4));
+    };
+    var parts = query(
+        connection, provider, catalog.indexes(), part, table.container().name(), table.name());
+    // An index of several columns comes as consecutive rows, one per key position.
+    var merged = new ArrayList<Index>();
+    for (var next : parts) {
+      var last = merged.isEmpty() ? null : merged.getLast();
+      if (last != null && last.name().equals(next.name())) {
+        merged.set(
+            merged.size() - 1,
+            new Index(
+                last.name(),
+                last.table(),
+                concat(last.columns(), next.columns()),
+                last.unique(),
+                last.primary()));
+      } else {
+        merged.add(next);
+      }
+    }
+    return List.copyOf(merged);
+  }
+
+  private static ForeignKey.Rule rule(String word) {
+    return word == null ? null : ForeignKey.Rule.valueOf(word.replace(' ', '_'));
+  }
+
+  private static List<String> concat(List<String> first, List<String> second) {
+    var both = new ArrayList<>(first);
+    both.addAll(second);
+    return both;
+  }
+
+  private static Table tableOf(
+      boolean schemas, Database database, CatalogDialect catalog, String container, String name) {
+    Container holder = schemas
+        ? new Schema(database, container, catalog.systemSchema(container))
+        : new Database(container, catalog.systemDatabase(container));
+    return new Table(holder, name, Table.Kind.TABLE);
+  }
+
   private static boolean hasSchemas(Provider provider) {
     return provider.supports(Capability.SCHEMAS, ServerVersion.UNKNOWN);
   }
@@ -225,7 +356,7 @@ public final class Catalog {
       case ACCESS_DENIED -> Failure.ACCESS_DENIED;
       case CANCELLED -> Failure.CANCELLED;
       case ABORTED -> Failure.ABORTED;
-      case COLUMNS_CHANGED, OTHER -> Failure.OTHER;
+      case COLUMNS_CHANGED, CLAUSE_REFUSED, OTHER -> Failure.OTHER;
     };
     return new CatalogException(failure, e.detail(), e.getCause());
   }

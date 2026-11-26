@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.Workspace;
 import org.junit.jupiter.api.Test;
 
 class LanguageTest {
@@ -23,5 +24,19 @@ class LanguageTest {
       assertEquals(!provider.keepsDocuments(), language.transactions(), provider.name());
       assertEquals(!provider.keepsDocuments(), language.estimates(), provider.name());
     }
+  }
+
+  @Test
+  void untargetedLanguagesUseDialectNeutralColoringAndSplitting() {
+    var sql = Language.of(Workspace.Language.SQL);
+    assertInstanceOf(StandardSyntax.class, Syntax.of(sql));
+    // Standard SQL does not treat PostgreSQL dollar quotes or MySQL backticks specially.
+    assertEquals(2, sql.statements("SELECT $$a;b$$", null).statements().size());
+    assertEquals(2, sql.statements("SELECT `a;b`", null).statements().size());
+
+    var shell = Language.of(Workspace.Language.SHELL);
+    assertInstanceOf(ShellSyntax.class, Syntax.of(shell));
+    assertEquals(
+        2, shell.statements("db.a.find({});\ndb.b.find({})", null).statements().size());
   }
 }

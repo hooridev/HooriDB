@@ -66,7 +66,9 @@ final class MonitorGrids {
     columns.add(column(w, 5, "Waiting for", 6, LEFT, shown, ServerSession::waiting));
     columns.add(column(w, 6, "Database", 5, LEFT, shown, ServerSession::database));
     columns.add(column(w, 7, "Client", 8, LEFT, shown, ServerSession::client));
-    var options = options(w, selection, app).onSelect(onSelect).contextMenu(menu, items);
+    var options = options(w, selection, app, shown, x -> x.id() + "\n" + x.started())
+        .onSelect(onSelect)
+        .contextMenu(menu, items);
     return DataGrid.dataGrid(columns, shown.size(), options)
         .key("sessions")
         .label("Sessions")
@@ -76,17 +78,14 @@ final class MonitorGrids {
 
   /** The variables, a row each, with where each comes from where the server tells. */
   static El variables(
-      List<ServerVariable> shown,
-      Widths widths,
-      DataGrid.Selection selection,
-      Runnable onSelect,
-      App<State> app) {
+      List<ServerVariable> shown, Widths widths, DataGrid.Selection selection, App<State> app) {
     var w = widths.size(3);
     var columns = new ArrayList<DataGrid.Column>();
     columns.add(column(w, 0, "Name", 12, LEFT, shown, ServerVariable::name));
     columns.add(column(w, 1, "Value", 14, LEFT, shown, ServerVariable::value));
     columns.add(column(w, 2, "Source", 8, LEFT, shown, ServerVariable::source));
-    return DataGrid.dataGrid(columns, shown.size(), options(w, selection, app).onSelect(onSelect))
+    var options = options(w, selection, app, shown, ServerVariable::name);
+    return DataGrid.dataGrid(columns, shown.size(), options)
         .key("variables")
         .label("Variables")
         .grow(1)
@@ -95,16 +94,13 @@ final class MonitorGrids {
 
   /** The status counters, a row each, a whole number grouped by thousands. */
   static El status(
-      List<Counter> shown,
-      Widths widths,
-      DataGrid.Selection selection,
-      Runnable onSelect,
-      App<State> app) {
+      List<Counter> shown, Widths widths, DataGrid.Selection selection, App<State> app) {
     var w = widths.size(2);
     var columns = new ArrayList<DataGrid.Column>();
     columns.add(column(w, 0, "Name", 12, LEFT, shown, Counter::name));
     columns.add(column(w, 1, "Value", 8, RIGHT, shown, c -> grouped(c.value())));
-    return DataGrid.dataGrid(columns, shown.size(), options(w, selection, app).onSelect(onSelect))
+    var options = options(w, selection, app, shown, Counter::name);
+    return DataGrid.dataGrid(columns, shown.size(), options)
         .key("status")
         .label("Status")
         .grow(1)
@@ -119,7 +115,6 @@ final class MonitorGrids {
       List<Block> shown,
       Widths widths,
       DataGrid.Selection selection,
-      Runnable onSelect,
       IntConsumer onActivate,
       Menu.State menu,
       List<Menu.Item> items,
@@ -130,10 +125,10 @@ final class MonitorGrids {
     columns.add(column(w, 1, "Blocked by", 5, RIGHT, shown, Block::blocking));
     columns.add(column(w, 2, "On", 12, LEFT, shown, Block::object));
     columns.add(column(w, 3, "Mode", 8, LEFT, shown, Block::mode));
-    var options = options(w, selection, app)
-        .onSelect(onSelect)
-        .onActivate(onActivate)
-        .contextMenu(menu, items);
+    Function<Block, String> key =
+        b -> b.waiting() + "\n" + b.blocking() + "\n" + b.object() + "\n" + b.mode();
+    var options =
+        options(w, selection, app, shown, key).onActivate(onActivate).contextMenu(menu, items);
     return DataGrid.dataGrid(columns, shown.size(), options)
         .key("locks")
         .label("Locks")
@@ -144,12 +139,29 @@ final class MonitorGrids {
   private static final DataGrid.Align LEFT = DataGrid.Align.LEFT;
   private static final DataGrid.Align RIGHT = DataGrid.Align.RIGHT;
 
-  private static DataGrid.Options options(Widths w, DataGrid.Selection selection, App<State> app) {
+  // The selection follows its items by their keys as reads and searches move them.
+  private static <T> DataGrid.Options options(
+      Widths w,
+      DataGrid.Selection selection,
+      App<State> app,
+      List<T> shown,
+      Function<T, String> key) {
+    long[] keys = shown.stream().mapToLong(x -> hash(key.apply(x))).toArray();
     return DataGrid.options()
         .select(selection)
+        .rowKey(row -> keys[row])
         .copy(app.clipboard())
         .onResize((c, width) -> w.of[c] = width)
         .fitColumns(w.fit);
+  }
+
+  // 64-bit FNV-1a: two items of one read that share it are too unlikely to matter.
+  static long hash(String text) {
+    long h = 0xcbf29ce484222325L;
+    for (int i = 0; i < text.length(); i++) {
+      h = (h ^ text.charAt(i)) * 0x100000001b3L;
+    }
+    return h;
   }
 
   // A column of text without a type, so its header shows no type's icon; it is not sorted.

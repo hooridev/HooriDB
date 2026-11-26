@@ -52,10 +52,10 @@ class ExecutionServerTest {
               .replace('"', provider == Provider.POSTGRESQL ? '"' : '`')));
       var empty = assertInstanceOf(Result.Rows.class, none);
       assertEquals(
-          List.of(
-              new Field("id", empty.fields().get(0).type(), Kind.INTEGER),
-              new Field("the amount", empty.fields().get(1).type(), Kind.DECIMAL)),
-          empty.fields());
+          List.of("id", "the amount"), empty.fields().stream().map(Field::name).toList());
+      assertEquals(
+          List.of(Kind.INTEGER, Kind.DECIMAL),
+          empty.fields().stream().map(Field::kind).toList());
       assertEquals(List.of(), empty.rows());
     }
   }

@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Made-up releases of HooriDB and a helper that does what it is told: its result is given, and
@@ -38,6 +39,7 @@ final class FakeUpdater implements Updater {
   final List<String> downloaded = new CopyOnWriteArrayList<>(); // the versions, in order
   final List<Download> restarts = new CopyOnWriteArrayList<>();
   final List<Path> cleared = new CopyOnWriteArrayList<>(); // what each clear kept, or the folder
+  final AtomicInteger looks = new AtomicInteger(); // the calls of releases()
   volatile int confirms;
 
   FakeUpdater(Path downloads) {
@@ -46,6 +48,11 @@ final class FakeUpdater implements Updater {
 
   /** A release with an archive for each platform. */
   static Release release(String version) {
+    return release(version, Instant.parse("2026-11-01T00:00:00Z"), "");
+  }
+
+  /** A release with an archive for each platform, published date and release notes. */
+  static Release release(String version, Instant published, String notes) {
     var page = URI.create("https://github.com/hooridev/HooriDB/releases/tag/v" + version);
     var base =
         "https://github.com/hooridev/HooriDB/releases/download/v" + version + "/HooriDB-" + version;
@@ -53,8 +60,8 @@ final class FakeUpdater implements Updater {
         Version.parse(version),
         "v" + version,
         "HooriDB " + version,
-        Instant.parse("2026-11-01T00:00:00Z"),
-        "",
+        published,
+        notes,
         false,
         page,
         List.of(
@@ -74,6 +81,11 @@ final class FakeUpdater implements Updater {
     for (var version : versions) {
       releases.add(release(version));
     }
+    return this;
+  }
+
+  FakeUpdater publish(String version, Instant published, String notes) {
+    releases.add(release(version, published, notes));
     return this;
   }
 
@@ -105,6 +117,7 @@ final class FakeUpdater implements Updater {
 
   @Override
   public List<Release> releases() throws IOException {
+    looks.incrementAndGet();
     if (offline) {
       throw new ConnectException("offline");
     }
