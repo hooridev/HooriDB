@@ -113,9 +113,9 @@ public abstract class RowsDialect {
 
   /**
    * The value as a literal of the provider's SQL, which its server reads back as the value: for
-   * people to read, and in an export's {@code INSERT}s. A text is quoted as the server reads it
-   * with its standard settings: on PostgreSQL with {@code standard_conforming_strings} on, on
-   * MariaDB and MySQL with backslashes as escapes.
+   * people to read, and in an export's {@code INSERT}s. A text is quoted as the server reads it:
+   * on PostgreSQL, one with a backslash as {@code E'…'}, whatever {@code
+   * standard_conforming_strings} says; on MariaDB and MySQL with backslashes as escapes.
    *
    * @throws IllegalArgumentException if it is of no kind's type
    */
