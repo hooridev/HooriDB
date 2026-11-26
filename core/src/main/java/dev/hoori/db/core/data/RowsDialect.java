@@ -31,11 +31,12 @@ public abstract class RowsDialect {
   abstract String count();
 
   /**
-   * How the table's columns are read. Where the server is asked for them before the page, a read
-   * fails as {@link QueryException.Failure#COLUMNS_CHANGED} where they are not the given ones.
+   * How the table's columns are read: cut to {@link Rows#LIMIT}, as a page shows them, or whole.
+   * Where the server is asked for them before the page, a read fails as {@link
+   * QueryException.Failure#COLUMNS_CHANGED} where they are not the given ones.
    */
   abstract Rows.Described describe(
-      Connection connection, Provider provider, Table table, List<Column> columns)
+      Connection connection, Provider provider, Table table, List<Column> columns, boolean whole)
       throws QueryException;
 
   /**
@@ -99,6 +100,12 @@ public abstract class RowsDialect {
   boolean compatibleKind(Kind result, Kind table) {
     return result == table;
   }
+
+  /**
+   * The expression that orders the quoted column by the code points of its text, as {@link
+   * KeyedRead#compare} orders texts: by the bytes of its UTF-8, whatever the column's collation.
+   */
+  abstract String textOrder(String column);
 
   /** The operator that compares a column of a key with its value, as the reads name theirs. */
   abstract String keyEquality();

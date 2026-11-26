@@ -54,19 +54,29 @@ public final class RowReader {
     return new RowReader(Rows.reads(provider, metadata), budget);
   }
 
+  /** How a result whose columns are a table's, read as the reads say, is read. */
+  static RowReader of(List<Rows.Read> reads) {
+    return new RowReader(List.copyOf(reads), BUDGET);
+  }
+
   /** The result's columns. */
   public List<Field> fields() {
     return reads.stream().map(Rows.Read::field).toList();
   }
 
-  /** The values of the row the result set is on, which cannot be changed. */
+  /**
+   * The values of the row the result set is on, which cannot be changed. A column of a statement's
+   * result takes one of its columns, a table's as many as its read selects.
+   */
   public List<Object> read(ResultSet rows) throws SQLException {
     var values = new Object[reads.size()];
+    var index = 1;
     for (var i = 0; i < values.length; i++) {
       var read = reads.get(i);
-      var value = read.value().read(rows, i + 1);
+      var value = read.value().read(rows, index);
       values[i] =
           read.value() == Rows.WHOLE_TEXT && value instanceof String text ? keep(text) : value;
+      index += Math.max(1, read.sql().size());
     }
     return Collections.unmodifiableList(Arrays.asList(values));
   }

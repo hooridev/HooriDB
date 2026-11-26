@@ -183,8 +183,14 @@ public final class Rows {
   }
 
   // What a column is read from: the name and type its field shows, and its name through the alias,
-  // or null for a column of a statement's result.
-  record Source(String name, String type, String sql) {}
+  // or null for a column of a statement's result; and whether a table's column is read whole, as
+  // a keyed read compares and writes it, rather than cut to LIMIT as a page shows it.
+  record Source(String name, String type, String sql, boolean whole) {
+
+    Source(String name, String type, String sql) {
+      this(name, type, sql, false);
+    }
+  }
 
   /**
    * The number of rows of the table or view as the server's planner estimates it, without reading
@@ -324,7 +330,7 @@ public final class Rows {
     check(provider, filter, readOnly);
     requireConnectedTo(connection, provider, table);
     var dialect = provider.dialect().rows();
-    var described = dialect.describe(connection, provider, table, columns);
+    var described = dialect.describe(connection, provider, table, columns, false);
     var reads = described.reads();
     var key = columns.stream().anyMatch(column -> column.keyPosition() > 0);
     var places = dialect.places(table);
@@ -594,8 +600,8 @@ public final class Rows {
     return reads;
   }
 
-  static Source source(Provider provider, Column column) {
-    return new Source(column.name(), column.type(), column(provider, column.name()));
+  static Source source(Provider provider, Column column, boolean whole) {
+    return new Source(column.name(), column.type(), column(provider, column.name()), whole);
   }
 
   private static String column(Provider provider, String name) {
@@ -653,10 +659,17 @@ public final class Rows {
   // One character more than the limit tells that there is more; the server counts characters, as
   // code points, where Java counts UTF-16 units. A NULL has no length, also where the start, such
   // as concat()'s, is an empty text. A statement's result reads the whole text, which RowReader
-  // cuts beyond its budget.
+  // cuts beyond its budget; a table's column read whole, all of it from the first character.
   static Read text(Source source, Kind kind, UnaryOperator<String> start, String length) {
     if (source.sql() == null) {
       return whole(source, kind);
+    }
+    if (source.whole()) {
+      return new Read(
+          field(source, kind),
+          source.sql(),
+          List.of(start.apply(source.sql()) + ", 1)", length + source.sql() + ")"),
+          (rows, index) -> rows.getString(index + 1) == null ? null : rows.getString(index));
     }
     return new Read(
         field(source, kind),
@@ -696,7 +709,15 @@ public final class Rows {
     return text.substring(0, text.offsetByCodePoints(0, LIMIT));
   }
 
+  // A table's column read whole is the column itself.
   static Read binary(Source source, UnaryOperator<String> sql, String length) {
+    if (source.whole()) {
+      return new Read(
+          field(source, Kind.BINARY), source.sql(), List.of(source.sql()), (rows, i) -> {
+            var bytes = rows.getBytes(i);
+            return bytes == null ? null : new Binary(bytes, bytes.length);
+          });
+    }
     if (source.sql() == null) {
       return new Read(field(source, Kind.BINARY), null, List.of(), (rows, index) -> {
         var bytes = rows.getBytes(index);

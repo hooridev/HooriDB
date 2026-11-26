@@ -87,7 +87,7 @@ public final class PostgreSqlRows extends RowsDialect {
   // the base type of a domain.
   @Override
   Rows.Described describe(
-      Connection connection, Provider provider, Table table, List<Column> columns)
+      Connection connection, Provider provider, Table table, List<Column> columns, boolean whole)
       throws QueryException {
     // All the table's columns, so that the given ones can be told to be them still.
     var sql = "SELECT " + ALIAS + ".* FROM " + Rows.qualified(provider, table) + " AS " + ALIAS
@@ -112,7 +112,7 @@ public final class PostgreSqlRows extends RowsDialect {
           }
           var reads = new ArrayList<Rows.Read>();
           for (var i = 0; i < columns.size(); i++) {
-            reads.add(read(Rows.source(provider, columns.get(i)), metadata, i + 1));
+            reads.add(read(Rows.source(provider, columns.get(i), whole), metadata, i + 1));
           }
           return new Rows.Described(
               reads, Integer.toUnsignedLong(field(metadata, 1, "getTableOid")));
@@ -304,6 +304,13 @@ public final class PostgreSqlRows extends RowsDialect {
     };
   }
 
+  // The type's output function's text, as anyText() reads it, in the collation of bytes, whose
+  // order is that of the code points in a database of UTF8.
+  @Override
+  String textOrder(String column) {
+    return "pg_catalog.concat(" + column + ") COLLATE pg_catalog.\"C\"";
+  }
+
   @Override
   String keyEquality() {
     return "OPERATOR(pg_catalog.=)";
@@ -437,6 +444,13 @@ public final class PostgreSqlRows extends RowsDialect {
       return Rows.whole(source, kind);
     }
     var text = "pg_catalog.concat(" + source.sql() + ")";
+    if (source.whole()) {
+      return new Rows.Read(
+          Rows.field(source, kind),
+          source.sql(),
+          List.of(text, "pg_catalog.num_nulls(" + source.sql() + ")"),
+          (rows, index) -> rows.getInt(index + 1) == 1 ? null : rows.getString(index));
+    }
     return new Rows.Read(
         Rows.field(source, kind),
         source.sql(),

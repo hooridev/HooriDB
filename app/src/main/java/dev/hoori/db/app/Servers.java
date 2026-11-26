@@ -18,6 +18,7 @@ import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.KeyedRead;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.Document;
@@ -169,6 +170,24 @@ interface Servers {
     /** Writes pending changes in one transaction on this connection, as {@link Changes#write}. */
     Changes.Outcome write(Changes changes) throws QueryException;
 
+    /**
+     * Every row of the table, whole, in the order of the key, the indexes of its columns among the
+     * given ones, as {@link KeyedRead} reads them: a statement that runs as {@link #run} does, its
+     * rows read a portion at a time, and nothing else runs on the connection until it is over.
+     *
+     * @param columns all the table's columns, in their order
+     */
+    Run scan(Table table, List<Column> columns, List<Integer> key) throws QueryException;
+
+    /**
+     * Begins writing changes of the table in one transaction on this connection, a batch at a
+     * time, as {@link Changes#writer}; nothing else runs on it until the writing is over.
+     *
+     * @throws QueryException {@link QueryException.Failure#ACCESS_DENIED} before anything is sent
+     *     on a read-only connection
+     */
+    Writing writer(Table table) throws QueryException;
+
     /** Runs one single-document edit on this connection, as {@link DocumentSession#write}. */
     DocumentEdit.Outcome write(DocumentEdit edit) throws QueryException;
 
@@ -215,6 +234,22 @@ interface Servers {
 
     /** Gives the connection up at once, from any thread, as one whose call never ends is. */
     void abort();
+  }
+
+  /**
+   * Changes of a table written on a link in one transaction, as {@link Changes.Writer}: it has the
+   * link until it is committed or rolled back.
+   */
+  interface Writing {
+
+    /** Writes the batch: empty where it was written, else what rolled all back. */
+    Optional<Changes.Outcome> write(Changes batch) throws QueryException;
+
+    /** Commits what the batches wrote. */
+    void commit() throws QueryException;
+
+    /** Rolls back what the batches wrote, where it is not over. */
+    void rollBack() throws QueryException;
   }
 
   /** A statement run on a link, as {@link Execution}: it has the link until it is over. */
@@ -429,6 +464,18 @@ interface Servers {
 
     @Override
     public Changes.Outcome write(Changes changes) throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of documents does not take SQL row changes");
+    }
+
+    @Override
+    public Run scan(Table table, List<Column> columns, List<Integer> key) throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of documents is not compared row by row yet");
+    }
+
+    @Override
+    public Writing writer(Table table) throws QueryException {
       throw QueryException.of(
           QueryException.Failure.OTHER, "A server of documents does not take SQL row changes");
     }
@@ -680,9 +727,50 @@ interface Servers {
     }
 
     @Override
+    public Run scan(Table table, List<Column> columns, List<Integer> key) throws QueryException {
+      usable();
+      return running(new Execution(
+          connection, provider, KeyedRead.of(connection, provider, table, columns, key)));
+    }
+
+    // A read-only session would refuse the first statement that writes: nothing is sent.
+    @Override
+    public Writing writer(Table table) throws QueryException {
+      usable();
+      if (readOnly) {
+        throw QueryException.of(
+            QueryException.Failure.ACCESS_DENIED,
+            "The connection is read-only, so nothing is written on it");
+      }
+      var writer = Changes.writer(connection, provider, table);
+      return new Writing() {
+        @Override
+        public Optional<Changes.Outcome> write(Changes batch) throws QueryException {
+          usable();
+          return writer.write(batch);
+        }
+
+        @Override
+        public void commit() throws QueryException {
+          usable();
+          writer.commit();
+        }
+
+        @Override
+        public void rollBack() throws QueryException {
+          writer.rollBack();
+        }
+      };
+    }
+
+    @Override
     public Run run(String sql) throws QueryException {
       usable();
-      var execution = new Execution(connection, provider, sql, readOnly);
+      return running(new Execution(connection, provider, sql, readOnly));
+    }
+
+    // The execution as the statement open on the link until it is over.
+    private Run running(Execution execution) {
       open.set(execution);
       return new Run() {
         @Override

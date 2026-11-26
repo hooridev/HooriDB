@@ -1,0 +1,78 @@
+---
+title: Compare data
+description: Compare a table's rows with another table's by their key, look at the differences, and make the target equal to the source.
+---
+
+**Compare data** compares the rows of two tables row by row and can make one equal to the other. The table you start from is the **source**. The table you compare it with is the **target**, and only the target is ever changed. Both must be tables on PostgreSQL, MySQL or MariaDB, and both must be on the same kind of server. They can be on the same connection or on two different ones.
+
+## Open a comparison
+
+Open **Compare data…** in either of these ways:
+
+- Right-click a table in Workspace and choose **Compare data…**.
+- Select a table in Workspace, or open its tab, then choose **File → Compare data…** or run **Compare data…** from the command palette (`Ctrl+Shift+P`).
+
+The comparison opens in a tab of its own. Under **Target**, choose the other table. The list shows the tables that Workspace has read on connected connections of the same kind, with tables of the same name first. To list a table that is not there yet, expand its schema in Workspace.
+
+## How rows are paired
+
+As soon as you choose the target, HooriDB reads the columns and keys of both tables:
+
+- **Columns** are matched by name. The tab lists what is left out:
+  - Columns only in the source are not compared or written.
+  - Columns only in the target keep their values on update and take their defaults on insert.
+  - Matched columns whose values are of different kinds, such as a date and a text, are not compared.
+- **Rows** are paired by a key that both tables have on the same columns: the source's primary key, or else one of its unique keys whose columns are all `NOT NULL`. Without such a key, the tables cannot be compared, and the tab says so.
+
+## Compare
+
+Press **Compare**. HooriDB reads both tables in the order of the key, in portions, on sessions of its own that are read-only at the server. It never uses Workspace's sessions, and it never holds a whole table in memory. The status line shows how many rows have been read.
+
+The result shows four counts: rows only in the source, rows only in the target, rows that differ, and rows that are equal. Below them, the grid lists the differences in key order:
+
+- **Only in source**: a row the target lacks.
+- **Only in target**: a row the source lacks.
+- **Source** and **Target**: a row that differs appears twice, once with each table's values, and the cells that differ are marked.
+
+The grid shows the first 1,000 differences. The counts always cover the whole tables.
+
+### How values compare
+
+- Numbers compare by value: `1.0` equals `1.00`, whatever the column's type or scale.
+- Moments, such as `timestamp with time zone`, compare as instants.
+- Text compares character by character, without the server's collation, so `a` and `A` differ.
+- Binary data compares byte by byte.
+
+Text keys are also sorted by their characters on both servers, not by the collation, so that the rows pair the same way on both sides. If a server returns keys in a different order, the comparison stops with an error instead of pairing the wrong rows.
+
+## Apply the changes
+
+Choose what to apply:
+
+- **Insert rows only in the source**
+- **Update rows that differ**: only the cells that differ are updated.
+- **Delete rows only in the target**
+
+Press **Apply…** to see the generated `INSERT`, `UPDATE` and `DELETE` statements for the differences shown, then press **Apply**:
+
+1. HooriDB reads both tables again, so the changes match the tables as they are when you apply.
+2. It writes all the changes in one transaction, on a session it opens for the target alone.
+3. Before each update or delete, it checks that the target row still holds the values it read. If a row changed meanwhile, nothing is written.
+4. After the commit, it compares the tables again.
+
+Press **Cancel** while the changes are being written to roll back everything written so far.
+
+If the target's connection is read-only, you can still compare the tables, but **Apply…** is disabled.
+
+## Save as a script
+
+Press **Save as script…** and choose a file. HooriDB then writes the statements that **Apply** would run to that file, wrapped in `START TRANSACTION;` and `COMMIT;`, instead of running them. Like **Apply**, it reads both tables again first. Nothing is written to the target. Text in the script is written as MySQL and MariaDB read it without `NO_BACKSLASH_ESCAPES`.
+
+## Limits
+
+- Tables on two different kinds of server cannot be compared yet, nor whole schemas whose tables are paired by name.
+- A `WHERE` filter to compare only some rows is not supported yet.
+- If the target's collation treats two different keys as equal, such as `a` and `A` under a case-insensitive collation, applying fails on the duplicate key and rolls everything back.
+- Generated columns and `GENERATED ALWAYS` identity columns are not recognized yet. An `INSERT` that sets them fails and rolls back.
+
+Every statement a comparison sends is listed in the statement log (**View → Statement log**).
