@@ -702,10 +702,12 @@ public final class PostgreSql implements Dialect {
           + " WHERE table_schema = ? AND table_name = ? AND is_generated = 'ALWAYS'";
     }
 
-    // The moment its server started, which no other shares, and the database.
+    // The moment its server started, which no other shares, as a number that no session's zone
+    // writes otherwise, and the database.
     @Override
     public String identity() {
-      return "SELECT pg_catalog.pg_postmaster_start_time(), pg_catalog.current_database()";
+      return "SELECT pg_catalog.date_part('epoch', pg_catalog.pg_postmaster_start_time()),"
+          + " pg_catalog.current_database()";
     }
 
     @Override

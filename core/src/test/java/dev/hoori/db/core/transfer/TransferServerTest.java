@@ -553,6 +553,45 @@ class TransferServerTest {
 
   @ParameterizedTest
   @MethodSource(TYPES)
+  void aTableIsNotEmptiedWhereAKeyOfATableNotCopiedWouldDeleteRowsWithIt(Provider provider)
+      throws Exception {
+    var parent = unique("transfer_cascaded");
+    var child = unique("transfer_cascading");
+    try (var from = open(provider, TestServer.DATABASE);
+        var into = open(provider, TestServer.SPACED_DATABASE)) {
+      for (var connection : List.of(from, into)) {
+        execute(
+            connection,
+            "CREATE TABLE " + qualified(provider, parent) + " (id integer PRIMARY KEY)");
+      }
+      execute(
+          into,
+          "CREATE TABLE " + qualified(provider, child) + " (id integer PRIMARY KEY, parent integer,"
+              + " FOREIGN KEY (parent) REFERENCES " + qualified(provider, parent)
+              + " (id) ON DELETE CASCADE)");
+      try {
+        execute(from, "INSERT INTO " + qualified(provider, parent) + " VALUES (1)");
+        execute(
+            into,
+            "INSERT INTO " + qualified(provider, parent) + " VALUES (7)",
+            "INSERT INTO " + qualified(provider, child) + " VALUES (1, 7)");
+        var report = run(provider, from, into, Existing.EMPTY, Commit.TABLE, 10, parent);
+        var entry = report.tables().getFirst();
+        assertEquals(State.FAILED, entry.state(), report.toString());
+        assertTrue(entry.problem().contains("delete rows of " + child), entry.problem());
+        assertEquals("7", text(into, provider, target(provider, parent)));
+        assertEquals("1\t7", text(into, provider, target(provider, child)));
+      } finally {
+        execute(into, "DROP TABLE " + qualified(provider, child));
+        for (var connection : List.of(from, into)) {
+          execute(connection, "DROP TABLE " + qualified(provider, parent));
+        }
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource(TYPES)
   void aFailedCopyKeepsTheRowsItWasToDelete(Provider provider) throws Exception {
     var name = unique("transfer_kept_rows");
     try (var from = open(provider, TestServer.DATABASE);
