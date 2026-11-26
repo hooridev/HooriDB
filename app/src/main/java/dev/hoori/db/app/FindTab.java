@@ -170,7 +170,7 @@ final class FindTab implements Tab {
       closeSession(s);
     }
     if (lane == null && !closed) {
-      var session = s.catalog.session(id, scope.database().name());
+      var session = s.catalog.session(s, id, scope.database().name());
       if (session == null) {
         return Optional.empty();
       }

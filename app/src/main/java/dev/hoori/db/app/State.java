@@ -1283,7 +1283,7 @@ final class State {
    * the node selected in the tree, else that of the window's active tab; empty for none.
    */
   Optional<FindScope> findScope(TabGroups.Group<Tab> group) {
-    if (group == tabs.main() && selected != null) {
+    if (group == tabs.main().active() && selected != null) {
       var scope = switch (selected) {
         case Node.OfSchema n -> n.schema();
         case Node.OfDatabase n -> n.database();
@@ -1311,11 +1311,13 @@ final class State {
     if (profile(id) == null) {
       return;
     }
-    var console = new ConsoleTab(id, database);
+    // Nothing of it runs: Auto, whatever mode new consoles start in.
+    var console = new ConsoleTab(id, database, ConsoleTab.Mode.AUTO);
     console.text = text;
     console.definition = true;
     console.editor.readOnly(true).select(start, end);
-    tabs.add(tabs.main(), tabs.main().tabs().size(), console);
+    var main = tabs.main().active();
+    tabs.add(main, main.tabs().size(), console);
   }
 
   /** Opens a console on the database with the statement, and runs it. */
@@ -1323,10 +1325,11 @@ final class State {
     if (profile(id) == null) {
       return;
     }
-    var console = new ConsoleTab(id, database);
+    var console = ConsoleTab.of(this, id, database);
     console.text = sql;
     console.editor.select(sql.length(), sql.length());
-    tabs.add(tabs.main(), tabs.main().tabs().size(), console);
+    var main = tabs.main().active();
+    tabs.add(main, main.tabs().size(), console);
     keeping.persist(keeping.consolesKept);
     console.runAll(this);
   }

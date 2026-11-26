@@ -1620,7 +1620,7 @@ final class CatalogTree {
 
   /** Find…: a search of the schema or database, in the main window. */
   private static Menu.Item find(State s, UUID id, Container scope) {
-    return Menu.item("Find…", () -> s.openFind(id, scope, s.tabs.main()))
+    return Menu.item("Find…", () -> s.openFind(id, scope, s.tabs.main().active()))
         .icon(Symbol.SEARCH);
   }
 
