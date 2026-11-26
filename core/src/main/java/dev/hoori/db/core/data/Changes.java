@@ -222,17 +222,63 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   public List<Statement> statements(Provider provider) {
     var dialect = provider.dialect().rows();
     var statements = new ArrayList<Statement>();
+    for (var change : ordered()) {
+      var values = new ArrayList<Object>();
+      var sql = sql(provider, change, dialect.keyEquality(), parameters(dialect, values));
+      var preview = sql(provider, change, "=", dialect::literal);
+      statements.add(new Statement(change, sql, values, preview));
+    }
+    return statements;
+  }
+
+  /**
+   * The {@link Statement#preview previews} of the {@link #statements}, in their order, but with a
+   * text longer than {@link Rows#LIMIT} code points, or binary data longer than as many bytes, cut
+   * to that and its whole length in a comment after it: for people to read the changes of long
+   * values, which they do not run.
+   *
+   * @throws IllegalArgumentException if a value is of no kind's type
+   */
+  public List<String> previews(Provider provider) {
+    var dialect = provider.dialect().rows();
+    Function<Object, String> literal = value -> switch (value) {
+      case String text
+      when Rows.tooLong(text) ->
+        dialect.literal(Rows.cut(text).start()) + " /* cut, "
+            + text.codePointCount(0, text.length()) + " characters in all */";
+      case Binary binary
+      when binary.length() > Rows.LIMIT ->
+        dialect.literal(Rows.shown(binary)) + " /* cut, " + binary.length() + " bytes in all */";
+      case null, default -> dialect.literal(value);
+    };
+    return ordered().stream().map(change -> sql(provider, change, "=", literal)).toList();
+  }
+
+  /**
+   * The {@link #statements}, in their order, as a script of them runs them: each value a literal
+   * that the server reads back as the value whatever the session's zone, as the parameters of
+   * {@link #write} are; a text in it is written as {@link Statement#preview} writes it.
+   *
+   * @throws IllegalArgumentException if a value is of no kind's type
+   */
+  public List<String> script(Provider provider) {
+    var dialect = provider.dialect().rows();
+    return ordered().stream()
+        .map(change -> sql(provider, change, "=", dialect::scriptLiteral))
+        .toList();
+  }
+
+  // The updates first, then the deletions and then the new rows, each in the order they were made.
+  private List<Change> ordered() {
+    var ordered = new ArrayList<Change>(changes.size());
     for (var kind : List.of(Change.Update.class, Change.Delete.class, Change.Insert.class)) {
       for (var change : changes) {
         if (kind.isInstance(change)) {
-          var values = new ArrayList<Object>();
-          var sql = sql(provider, change, dialect.keyEquality(), parameters(dialect, values));
-          var preview = sql(provider, change, "=", dialect::literal);
-          statements.add(new Statement(change, sql, values, preview));
+          ordered.add(change);
         }
       }
     }
-    return statements;
+    return ordered;
   }
 
   /** What came of writing changes. */

@@ -125,6 +125,14 @@ public abstract class RowsDialect {
    */
   abstract String literal(Object value);
 
+  /**
+   * The value as a literal that a script runs: one that the server reads back as the value in any
+   * session, as a parameter of {@link #parameter} binds it; {@link #literal} where that reads so.
+   */
+  String scriptLiteral(Object value) {
+    return literal(value);
+  }
+
   /** A case-insensitive {@code LIKE} of the quoted column as text, {@code !} escaping. */
   abstract String like(String column, Field field, String pattern);
 

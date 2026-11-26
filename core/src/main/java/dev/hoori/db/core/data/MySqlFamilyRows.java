@@ -347,6 +347,16 @@ abstract class MySqlFamilyRows extends RowsDialect {
     };
   }
 
+  // A moment as parameter() binds it, as the seconds since 1970 that FROM_UNIXTIME() takes in the
+  // session's zone, as MariaDB reads no offset in a literal; in an hour that the zone repeats it
+  // can be the other moment, which a script cannot ask the server first, as changeable() does.
+  @Override
+  String scriptLiteral(Object value) {
+    return value instanceof OffsetDateTime moment
+        ? "FROM_UNIXTIME(" + literal(seconds(moment)) + ")"
+        : literal(value);
+  }
+
   // Text in UTF-8 compared by its bytes, as unchanged() does, so that no collation makes accents
   // or, where it should count, case alike.
   private String bytes(String column, String value, boolean lower) {
