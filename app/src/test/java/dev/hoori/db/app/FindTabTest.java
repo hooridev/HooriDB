@@ -264,6 +264,11 @@ class FindTabTest {
     var tables = c.tree("tables");
     // The tables are chosen, the view not.
     assertTrue(tables.contains("2 of 3 tables chosen, about 6 rows in 16 kB"), tables);
+    // A table's checkbox in the grid chooses it or not.
+    assertTrue(line(tables, "label=\"Search customers\"").matches(".* checked( .*)?$"), tables);
+    c.run(app, "press label=\"Search customers\"\nframe\nsnap one\n");
+    assertTrue(c.tree("one").contains("1 of 3 tables chosen"), c.tree("one"));
+    c.run(app, "press label=\"Search customers\"\nframe\n");
     c.run(app, search("name 2") + "snap hits\n");
     var hits = c.tree("hits");
     assertTrue(hits.contains("\"1 column with hits, 2 of 2 tables searched\""), hits);
@@ -360,10 +365,10 @@ class FindTabTest {
         "press role=treeitem level=2 label=\"legacy\" right\nframe\nadvance 1\nframe\n"
             + "press role=menuitem label=\"Find…\"\nframe\nadvance 1\nframe\n" + SETTLE);
     c.run(app, "snap objects\n");
-    assertFalse(line(c.tree("objects"), "role=checkbox label=\"Match case\"").contains("disabled"));
+    assertFalse(line(c.tree("objects"), "label=\"Match case\"").contains("disabled"));
     c.run(app, "press role=radio label=\"Data\"\nframe\n" + SETTLE + "snap data\n");
     var data = c.tree("data");
-    assertFalse(line(data, "role=checkbox label=\"Match case\"").contains("disabled"), data);
+    assertFalse(line(data, "label=\"Match case\"").contains("disabled"), data);
     assertTrue(
         c.servers.calls.contains("candidates " + MYSQL + "/legacy"), c.servers.calls.toString());
   }

@@ -42,7 +42,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.function.IntFunction;
+import java.util.function.Function;
 
 /**
  * A search of a database or schema of a connection: the names and definitions of its objects, or
@@ -52,6 +52,9 @@ import java.util.function.IntFunction;
  * most {@link Search#LIMIT} rows of it counted; it can be cancelled between and in its queries.
  */
 final class FindTab implements Tab {
+
+  private static final DataGrid.Align LEFT = MonitorGrids.LEFT;
+  private static final DataGrid.Align RIGHT = MonitorGrids.RIGHT;
 
   /** What is searched. */
   enum In {
@@ -486,7 +489,7 @@ final class FindTab implements Tab {
   // The toolbar's controls: what to find and how, where, and Find or Cancel.
   private List<El> actions(State s, Theme t) {
     var actions = new ArrayList<El>();
-    El field = TextField.textField(text, "Find", v -> {
+    El field = TextField.searchField(text, "Find", v -> {
           text = v;
           tried = false;
         })
@@ -496,7 +499,7 @@ final class FindTab implements Tab {
     if (tried && why().isPresent()) {
       field = TextField.invalid(field);
     }
-    actions.add(row().child(TextField.withIcon(field, Symbol.SEARCH)).onKey(k -> {
+    actions.add(row().child(field).onKey(k -> {
       if (k.name().equals("Enter") && k.modifiers() == 0) {
         find(s);
         return true;
@@ -510,7 +513,8 @@ final class FindTab implements Tab {
         .key("match")
         .label("Match")
         .w(4 * t.size().control()));
-    actions.add(Checkbox.checkbox(caseSensitive, "Match case", () -> caseSensitive = !caseSensitive)
+    actions.add(Button.toggleIcon(
+            Symbol.TEXT_CASE_TITLE, "Match case", caseSensitive, on -> caseSensitive = on)
         .key("case"));
     if (in == In.DATA && !documents(s)) {
       actions.add(Checkbox.checkbox(others, "Other types as text", () -> others = !others)
@@ -578,15 +582,22 @@ final class FindTab implements Tab {
               .key("no-objects"));
     }
     var shown = List.copyOf(found);
-    var w = objectWidths;
+    var w = objectWidths.size(4);
     var columns = new ArrayList<DataGrid.Column>();
-    columns.add(column(w, 0, 4, "Name", 10, i -> shown.get(i).name())
+    columns.add(MonitorGrids.column(w, 0, "Name", 10, LEFT, shown, Found::name)
         .cellIcon(i -> DataGrid.CellIcon.before(icon(shown.get(i).kind()), Icon.Variant.MUTED)));
-    columns.add(column(w, 1, 4, "Kind", 5, i -> kind(shown.get(i).kind())));
-    columns.add(column(w, 2, 4, "In", 8, i -> in(shown.get(i))));
-    columns.add(column(w, 3, 4, "Match", 18, i -> matchText(shown.get(i))));
-    return DataGrid.dataGrid(
-            columns, shown.size(), options(w, results, app).onActivate(r -> open(s, r)))
+    columns.add(MonitorGrids.column(w, 1, "Kind", 5, LEFT, shown, f -> kind(f.kind())));
+    columns.add(MonitorGrids.column(w, 2, "In", 8, LEFT, shown, this::in));
+    columns.add(MonitorGrids.column(w, 3, "Match", 18, LEFT, shown, FindTab::matchText));
+    Function<Found, String> key = f -> String.join(
+        "\n",
+        f.kind().name(),
+        f.container().toString(),
+        f.table() == null ? "" : f.table().name(),
+        f.name(),
+        String.valueOf(f.inDefinition()));
+    var options = MonitorGrids.options(w, results, app, shown, key).onActivate(r -> open(s, r));
+    return DataGrid.dataGrid(columns, shown.size(), options)
         .key("results")
         .label("Results")
         .grow(1);
@@ -659,38 +670,36 @@ final class FindTab implements Tab {
   // The tables, each with whether it is searched and its size, and the buttons that choose them.
   private El chooser(State s, App<State> app, Theme t) {
     var shown = List.copyOf(candidates);
-    var w = tableWidths;
+    var w = tableWidths.size(4);
     var columns = new ArrayList<DataGrid.Column>();
-    columns.add(new DataGrid.Column(
-            "Search", width(w, 0, 4, 4), DataGrid.DataType.BOOLEAN, i -> String.valueOf(chosen[i]))
-        .editable());
-    columns.add(column(w, 1, 4, tableTitle(s), 12, i -> name(shown.get(i).table()))
+    columns.add(MonitorGrids.column(w, 0, "Search", 4, LEFT, shown, x -> "")
+        .view(i -> Checkbox.checkbox(
+                i < chosen.length && chosen[i], asked == null ? () -> chosen[i] = !chosen[i] : null)
+            .label("Search " + name(shown.get(i).table()))));
+    columns.add(MonitorGrids.column(w, 1, tableTitle(s), 12, LEFT, shown, x -> name(x.table()))
         .cellIcon(i -> DataGrid.CellIcon.before(
             shown.get(i).table().kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE,
             Icon.Variant.MUTED)));
-    columns.add(new DataGrid.Column(
+    columns.add(MonitorGrids.column(
+        w,
+        2,
         "Rows",
-        width(w, 2, 4, 5),
-        DataGrid.Align.RIGHT,
-        false,
-        false,
-        i -> shown.get(i).rows().stream()
+        5,
+        RIGHT,
+        shown,
+        x -> x.rows().stream()
             .mapToObj(n -> String.format(Locale.ROOT, "%,d", n))
             .findFirst()
             .orElse("")));
-    columns.add(new DataGrid.Column(
+    columns.add(MonitorGrids.column(
+        w,
+        3,
         "Size",
-        width(w, 3, 4, 4),
-        DataGrid.Align.RIGHT,
-        false,
-        false,
-        i -> shown.get(i).bytes().stream().mapToObj(Fetch::size).findFirst().orElse("")));
-    var options = options(w, tables, app).onCommit((row, column, value) -> {
-      if (asked == null && row >= 0 && row < chosen.length) {
-        chosen[row] = Boolean.parseBoolean(value);
-      }
-      return null;
-    });
+        4,
+        RIGHT,
+        shown,
+        x -> x.bytes().stream().mapToObj(Fetch::size).findFirst().orElse("")));
+    var options = MonitorGrids.options(w, tables, app, shown, x -> name(x.table()));
     return col()
         .grow(1)
         .minSize(0, 0)
@@ -737,21 +746,26 @@ final class FindTab implements Tab {
               asked != null ? "Nothing found yet" : "Nothing found in " + tableCount(done)));
     }
     var shown = List.copyOf(hits);
-    var h = hitWidths;
+    var h = hitWidths.size(3);
     var columns = new ArrayList<DataGrid.Column>();
-    columns.add(
-        column(h, 0, 3, tableTitle(s), 12, i -> name(shown.get(i).table().table())));
-    columns.add(column(h, 1, 3, documents(s) ? "Field" : "Column", 10, i -> switch (shown.get(i)) {
-          case Hit hit -> hit.column();
-          case Skipped skipped -> "Not searched: " + skipped.why();
-        })
+    columns.add(MonitorGrids.column(
+        h, 0, tableTitle(s), 12, LEFT, shown, x -> name(x.table().table())));
+    columns.add(MonitorGrids.column(
+            h, 1, documents(s) ? "Field" : "Column", 10, LEFT, shown, x -> switch (x) {
+              case Hit hit -> hit.column();
+              case Skipped skipped -> "Not searched: " + skipped.why();
+            })
         .cellIcon(i -> shown.get(i) instanceof Skipped
             ? DataGrid.CellIcon.before(Symbol.WARNING, Icon.Variant.WARNING)
             : null));
-    columns.add(new DataGrid.Column(
-        "Hits", width(h, 2, 3, 4), DataGrid.Align.RIGHT, false, false, i -> hitText(shown.get(i))));
-    return DataGrid.dataGrid(
-            columns, shown.size(), options(h, results, app).onActivate(r -> open(s, r)))
+    columns.add(MonitorGrids.column(h, 2, "Hits", 4, RIGHT, shown, FindTab::hitText));
+    Function<Result, String> key = x -> name(x.table().table()) + "\n"
+        + switch (x) {
+          case Hit hit -> hit.column();
+          case Skipped _ -> "";
+        };
+    var options = MonitorGrids.options(h, results, app, shown, key).onActivate(r -> open(s, r));
+    return DataGrid.dataGrid(columns, shown.size(), options)
         .key("results")
         .label("Results")
         .grow(1);
@@ -855,32 +869,5 @@ final class FindTab implements Tab {
 
   private static String tableCount(int n) {
     return count(n, "table", "tables");
-  }
-
-  private static DataGrid.Options options(
-      MonitorGrids.Widths w, DataGrid.Selection selection, App<State> app) {
-    return DataGrid.options()
-        .select(selection)
-        .copy(app.clipboard())
-        .onResize((c, width) -> w.of[c] = width);
-  }
-
-  private static float width(MonitorGrids.Widths w, int index, int columns, float controls) {
-    if (w.of == null || w.of.length != columns) {
-      w.of = new float[columns];
-      Arrays.fill(w.of, -1);
-    }
-    return w.of[index] < 0 ? controls * Theme.CURRENT.get().size().control() : w.of[index];
-  }
-
-  private static DataGrid.Column column(
-      MonitorGrids.Widths w,
-      int index,
-      int columns,
-      String title,
-      float controls,
-      IntFunction<String> text) {
-    return new DataGrid.Column(
-        title, width(w, index, columns, controls), DataGrid.Align.LEFT, false, false, text);
   }
 }
