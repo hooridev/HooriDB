@@ -799,6 +799,8 @@ public final class PostgreSqlDump extends DumpDialect {
           JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
           JOIN pg_catalog.pg_namespace n ON n.oid = ic.relnamespace
           WHERE i.indrelid = %s
+          -- A build that failed leaves an invalid index; a partitioned one is valid once attached.
+          AND (i.indisvalid OR ic.relkind = 'I')
           AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint co
             WHERE co.conindid = i.indexrelid AND co.conrelid = i.indrelid
             AND co.contype IN ('p', 'u', 'x'))

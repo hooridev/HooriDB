@@ -855,12 +855,12 @@ public final class Rows {
   }
 
   // shortcut: refuses values whose literal may not equal what is stored (a FLOAT's decimal, a
-  // moment's offset, a backslash under either escape mode); compare them as unchanged() does
-  // where such keys turn up.
+  // moment's offset, a backslash or a NUL under either escape mode); compare them as unchanged()
+  // does where such keys turn up.
   private static boolean exact(Object value) {
     return !(value instanceof Float)
         && !(value instanceof OffsetDateTime)
-        && !(value instanceof String text && text.contains("\\"));
+        && !(value instanceof String text && (text.contains("\\") || text.contains("\0")));
   }
 
   /**

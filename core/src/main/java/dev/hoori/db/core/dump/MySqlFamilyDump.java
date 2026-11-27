@@ -59,7 +59,8 @@ public final class MySqlFamilyDump extends DumpDialect {
   private static final String SESSION_BACK =
       "SET SESSION time_zone = COALESCE(@hooridb_time_zone, @@SESSION.time_zone),"
           + " SESSION sql_mode = COALESCE(@hooridb_sql_mode, @@SESSION.sql_mode),"
-          + " @hooridb_time_zone = NULL, @hooridb_sql_mode = NULL";
+          + " SESSION sql_quote_show_create = COALESCE(@hooridb_quote, @@SESSION.sql_quote_show_create),"
+          + " @hooridb_time_zone = NULL, @hooridb_sql_mode = NULL, @hooridb_quote = NULL";
 
   private final boolean sequences;
 
@@ -86,7 +87,10 @@ public final class MySqlFamilyDump extends DumpDialect {
           connection,
           provider,
           "SET @hooridb_time_zone = @@SESSION.time_zone, @hooridb_sql_mode = @@SESSION.sql_mode,"
-              + " SESSION time_zone = '+00:00', SESSION sql_mode = '" + MODE + "'");
+              + " @hooridb_quote = @@SESSION.sql_quote_show_create,"
+              // SHOW CREATE quotes every name, which the definitions are read by.
+              + " SESSION time_zone = '+00:00', SESSION sql_mode = '" + MODE + "',"
+              + " SESSION sql_quote_show_create = 1");
     } catch (QueryException e) {
       throw Sql.undone(e, () -> Sql.ending(connection, provider, SESSION_BACK));
     }
@@ -742,7 +746,8 @@ public final class MySqlFamilyDump extends DumpDialect {
           "multipolygon",
           "geometrycollection",
           "geomcollection" -> new Selected(quoted, MySqlFamilyDump::binary);
-      default -> new Selected("CAST(" + quoted + " AS CHAR)", ResultSet::getString);
+      default ->
+        new Selected("CAST(" + quoted + " AS CHAR CHARACTER SET utf8mb4)", ResultSet::getString);
     };
   }
 

@@ -983,9 +983,6 @@ final class State {
     if (dialogs.driverList != null) {
       dialogs.driverList.close(this); // a download can be done again
     }
-    if (dialogs.export != null) {
-      dialogs.export.close(this); // an export can be done again, and leaves no file
-    }
     // A keyring that keeps a change waiting is given up, as its Cancel does: the window stays, and
     // says what that left; the next close closes. A slower one is given up once it is slow.
     if (dialogs.dialog != null && dialogs.dialog.slow()) {
@@ -1046,6 +1043,9 @@ final class State {
     exitAt = noticed;
     consoles(null).forEach(ConsoleTab::end);
     monitors(null).forEach(m -> m.end(this));
+    if (dialogs.export != null) {
+      dialogs.export.close(this); // an export can be done again, and leaves no file
+    }
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
       if (exits == at && guard.quitting() && closing > waived) {
