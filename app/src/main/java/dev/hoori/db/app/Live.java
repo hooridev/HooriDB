@@ -42,6 +42,8 @@ final class Live {
   // The connections for resolving editable results and writing changes, by database on PostgreSQL,
   // else one under "".
   final Map<String, Lane> writers = new HashMap<>();
+  // The connections that change views' definitions, by database on PostgreSQL, else one under "".
+  final Map<String, Lane> definitions = new HashMap<>();
   final Map<Node, CatalogTree.Level> levels = new HashMap<>();
   // All foreign keys touching each table (both directions), read lazily with its columns.
   final Map<Table, List<ForeignKey>> keys = new HashMap<>();

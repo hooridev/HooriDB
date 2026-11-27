@@ -23,5 +23,7 @@ public enum Purpose {
   /** The server monitor's cancel of a statement and end of a session. */
   MONITOR,
   /** An export to a file of SQL: the snapshot it reads in, its objects' definitions and rows. */
-  EXPORT
+  EXPORT,
+  /** The definitions of objects: reading, creating, altering and dropping them. */
+  DEFINITION
 }

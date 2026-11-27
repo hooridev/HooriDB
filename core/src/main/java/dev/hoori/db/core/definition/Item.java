@@ -1,4 +1,4 @@
-package dev.hoori.db.core.dump;
+package dev.hoori.db.core.definition;
 
 import dev.hoori.db.core.catalog.Container;
 import java.util.Objects;

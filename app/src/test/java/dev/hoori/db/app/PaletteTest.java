@@ -125,12 +125,13 @@ class PaletteTest {
             "File: New console",
             "File: Server monitor",
             "File: Export to SQL…",
+            "File: New view…",
+            "File: View definition",
             "File: Settings…",
             "File: Close tab",
+            // The rows that fit: Go's and Help's come after.
             "View: Command palette…",
-            "View: Statement log",
-            // The rows that fit: the rest of Go's and Help's come after.
-            "Go: Go to table…")),
+            "View: Statement log")),
         all.toString());
     for (var removed : List.of(
         "View: System theme",
@@ -141,19 +142,23 @@ class PaletteTest {
       assertFalse(all.contains(removed), all.toString());
     }
     assertTrue(option(open, "File: Settings…").contains("\"Ctrl+,\""), open);
-    assertTrue(option(open, "Go: Go to table…").contains("\"Ctrl+P\""), open);
     assertTrue(option(open, "View: Command palette…").contains("\"Ctrl+Shift+P\""), open);
     // Disabled in the menu, disabled here: no tab is open, and nothing is selected for a console.
     assertTrue(line(open, "label=\"File: Close tab\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: New console\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: Server monitor\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: Export to SQL…\"").contains("disabled"), open);
+    assertTrue(line(open, "label=\"File: New view…\"").contains("disabled"), open);
+    assertTrue(line(open, "label=\"File: View definition\"").contains("disabled"), open);
     assertFalse(line(open, "label=\"View: Statement log\"").contains("disabled"), open);
     c.run(
         app,
-        "type \"theme\"\nframe\nsnap no-theme\n"
+        "type \"go to\"\nframe\nsnap go-to\n"
+            + "key A control\ntype \"theme\"\nframe\nsnap no-theme\n"
             + "key A control\ntype \"updates\"\nframe\nsnap no-updates\n"
             + "key A control\ntype \"statement l\"\nframe\nkey Enter\n" + SHOWN + "snap ran\n");
+    var goTo = c.tree("go-to");
+    assertTrue(option(goTo, "Go: Go to table…").contains("\"Ctrl+P\""), goTo);
     assertEquals(List.of(), options(c.tree("no-theme")), c.tree("no-theme"));
     assertEquals(List.of(), options(c.tree("no-updates")), c.tree("no-updates"));
     assertTrue(app.state().logPanel.open);

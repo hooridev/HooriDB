@@ -172,7 +172,7 @@ final class CatalogTree {
     if (profile == null) {
       return;
     }
-    end(lives.remove(id));
+    end(s, lives.remove(id));
     s.ended(id);
     forgetBelow(s, new Node.Connection(id));
     open.add(new Node.Connection(id));
@@ -388,7 +388,7 @@ final class CatalogTree {
               ? e.failure()
               : ConnectionException.Failure.OTHER;
           live.phase = new Live.Failed(failure, detail(checked), live.password.length > 0, timeout);
-          end(live);
+          end(s, live);
           s.unconnected(live.id());
           s.tell(State.name(live.profile) + ": " + Words.title(failure));
         });
@@ -773,6 +773,33 @@ final class CatalogTree {
     return auxiliary(s, id, database, live -> live.writers, false);
   }
 
+  /**
+   * The connection that changes views' definitions on the database, opened the first time it is
+   * asked for, and anew where it could not be or is gone; null while the tree's connection is not
+   * connected. Nothing else runs on it, so that a long refresh of a materialized view holds up
+   * neither the tree nor a table's writes: on PostgreSQL one per database, else one, as {@link
+   * #planner} does. It closes with the tree's connection, and at Exit, which waits for it, as
+   * {@link State#close(Lane, UUID, char[], String)} closes a lane.
+   */
+  Lane definitions(State s, UUID id, String database) {
+    return auxiliary(s, id, database, live -> live.definitions, false);
+  }
+
+  /** The session of {@link #definitions}, as a notice of its closing names it. */
+  static final String DEFINITIONS_SESSION = "the session that changes views";
+
+  /** Exit: the connections that change views close, which it waits for, as a console's. */
+  void endDefinitions(State s) {
+    lives.values().forEach(live -> closeDefinitions(s, live));
+  }
+
+  private static void closeDefinitions(State s, Live live) {
+    for (var lane : live.definitions.values()) {
+      s.close(lane, live.id(), live.password, DEFINITIONS_SESSION);
+    }
+    live.definitions.clear();
+  }
+
   private Lane auxiliary(
       State s, UUID id, String database, Function<Live, Map<String, Lane>> map, boolean readOnly) {
     var live = lives.get(id);
@@ -865,6 +892,19 @@ final class CatalogTree {
     }
     lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
     return new Session(lane, live.driver, live.password.clone());
+  }
+
+  /** The schemas of the connection's database as the tree read them, or none where it has not. */
+  List<Schema> schemas(UUID id, Database database) {
+    var live = id == null ? null : lives.get(id);
+    if (live != null
+        && live.levels.get(new Node.OfDatabase(id, database)) instanceof Read(var children)) {
+      return children.stream()
+          .filter(Node.OfSchema.class::isInstance)
+          .map(n -> ((Node.OfSchema) n).schema())
+          .toList();
+    }
+    return List.of();
   }
 
   /** The names of the connection's databases as the tree read them, or none where it has not. */
@@ -1103,7 +1143,7 @@ final class CatalogTree {
 
   /** The connection broke: it is closed, and its node says so. */
   private void lose(State s, Live live, String detail, boolean discarded) {
-    end(live);
+    end(s, live);
     s.ended(live.id());
     live.phase = new Live.Lost(detail, discarded);
     s.unconnected(live.id()); // a console that waited for the databases, whose read ended too
@@ -1200,7 +1240,7 @@ final class CatalogTree {
    * it. Its consoles' sessions are their own and stay; a console that waited for it says why.
    */
   void drop(State s, UUID id) {
-    end(lives.remove(id));
+    end(s, lives.remove(id));
     s.ended(id);
     s.unconnected(id);
     open.removeIf(n -> n.id().equals(id));
@@ -1229,10 +1269,11 @@ final class CatalogTree {
    * their lanes, and its connections close on threads of their own; nothing here waits for a
    * server.
    */
-  private static void end(Live live) {
+  private static void end(State s, Live live) {
     if (live == null) {
       return;
     }
+    closeDefinitions(s, live); // what a change left running may not end in time, which it says
     if (live.work != null) {
       live.work.cancel();
       live.work = null;
@@ -1285,8 +1326,8 @@ final class CatalogTree {
   }
 
   /** The window closes: everything ends, without waiting for a server. */
-  void closeAll() {
-    lives.values().forEach(CatalogTree::end);
+  void closeAll(State s) {
+    lives.values().forEach(live -> end(s, live));
     lives.clear();
     fetches.values().forEach(Fetch::close);
   }
@@ -1399,6 +1440,7 @@ final class CatalogTree {
       case Node.OfIndex n -> indexDetail(n.index());
       case Node.Connection(var id) -> s.profile(id).provider().displayName();
       case Node.Query(var id) -> QueryDialog.languageLabel(s.query(id).language());
+      case Node.OfTable n when n.table().kind() == Table.Kind.MATERIALIZED -> "materialized";
       default -> null;
     };
   }
@@ -1607,11 +1649,7 @@ final class CatalogTree {
       }
       case Node.Problem n ->
         List.of(Menu.item(TRY_AGAIN, () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));
-      case Node.OfTable n ->
-        List.of(
-            Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
-            refresh,
-            copy);
+      case Node.OfTable n -> tableItems(s, n, connected, refresh, copy);
       case Node.OfDatabase(var id, var database) ->
         exportable(s, id, database, connected, refresh, copy);
       case Node.OfSchema(var id, var schema) -> exportable(s, id, schema, connected, refresh, copy);
@@ -1633,7 +1671,45 @@ final class CatalogTree {
     };
   }
 
-  /** The menu of a database or schema: Export to SQL, where its server speaks SQL, and the rest. */
+  /**
+   * The menu of a table or view: Open its rows, and of a view where its server speaks SQL its
+   * definition, its drop and a materialized view's refresh, which its tab asks about; a read-only
+   * connection's change nothing.
+   */
+  private static List<Menu.Item> tableItems(
+      State s, Node.OfTable n, boolean connected, Menu.Item refresh, Menu.Item copy) {
+    var view = n.table();
+    var open = Menu.item("Open", () -> s.openTable(n.id(), view)).icon(Symbol.TABLE);
+    var profile = s.profile(n.id());
+    if (!view.kind().view() || profile == null || profile.provider().keepsDocuments()) {
+      return List.of(open, refresh, copy);
+    }
+    boolean changes = connected && !profile.readOnly();
+    var main = s.tabs.main().active();
+    var items = new ArrayList<Menu.Item>();
+    items.add(open);
+    items.add(Menu.item("Definition", connected ? () -> s.openView(n.id(), view) : null)
+        .icon(Symbol.CODE));
+    items.add(Menu.separator());
+    if (view.kind() == Table.Kind.MATERIALIZED) {
+      items.add(Menu.item(
+              "Refresh rows…",
+              changes ? () -> s.openView(n.id(), view, main, ViewTab.Then.REFRESH) : null)
+          .icon(Symbol.ARROW_SYNC));
+    }
+    items.add(Menu.item(
+            "Drop view…", changes ? () -> s.openView(n.id(), view, main, ViewTab.Then.DROP) : null)
+        .icon(Symbol.DELETE));
+    items.add(Menu.separator());
+    items.add(refresh);
+    items.add(copy);
+    return items;
+  }
+
+  /**
+   * The menu of a database or schema: Export to SQL and New view, where its server speaks SQL,
+   * and the rest.
+   */
   private static List<Menu.Item> exportable(
       State s, UUID id, Container container, boolean connected, Menu.Item refresh, Menu.Item copy) {
     var profile = s.profile(id);
@@ -1645,6 +1721,10 @@ final class CatalogTree {
                 "Export to SQL…",
                 connected && !s.dialogs.anyOpen() ? () -> s.openExport(id, container) : null)
             .icon(Symbol.ARROW_EXPORT_LTR),
+        Menu.item(
+                "New view…",
+                connected && !profile.readOnly() ? () -> s.newView(id, container) : null)
+            .icon(Symbol.EYE),
         Menu.separator(),
         refresh,
         copy);

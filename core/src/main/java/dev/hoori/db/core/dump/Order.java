@@ -1,5 +1,7 @@
 package dev.hoori.db.core.dump;
 
+import dev.hoori.db.core.definition.Definition;
+import dev.hoori.db.core.definition.Item;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;

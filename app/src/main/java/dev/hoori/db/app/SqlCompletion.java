@@ -414,13 +414,12 @@ record SqlCompletion() implements Suggestions.Strategy {
       if (!(table.container() instanceof Schema x) || path.contains(x.name())) {
         tables(known, List.of(table), into);
       } else {
-        boolean view = table.kind() == Table.Kind.VIEW;
         qualified.add(new Suggestions.Candidate(
             table.name(),
             x.name() + "." + table.name(),
             Names.quoted(x.name(), provider) + "." + Names.quoted(table.name(), provider),
-            view ? Symbol.EYE : Symbol.TABLE,
-            view ? "view" : "table",
+            Glyphs.table(table.kind()),
+            Glyphs.kind(table.kind()),
             false));
       }
     }
@@ -438,9 +437,8 @@ record SqlCompletion() implements Suggestions.Strategy {
   private static void tables(
       Suggestions.Known known, List<Table> tables, List<Suggestions.Candidate> into) {
     for (var table : tables) {
-      boolean view = table.kind() == Table.Kind.VIEW;
-      into.add(candidate(
-          known, table.name(), view ? Symbol.EYE : Symbol.TABLE, view ? "view" : "table"));
+      into.add(
+          candidate(known, table.name(), Glyphs.table(table.kind()), Glyphs.kind(table.kind())));
     }
   }
 

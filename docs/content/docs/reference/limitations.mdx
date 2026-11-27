@@ -20,7 +20,10 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 ## Browsing and schema management
 
 - The Workspace tree shows databases, schemas (on PostgreSQL), tables, views, and columns. It does not list indexes, constraints, sequences, functions, triggers, or other objects.
-- There is no visual editor for creating or altering tables, columns, or schemas.
+- There is no visual editor for creating or altering tables, columns, or schemas. Views are created and changed as SQL in their [own tab](/docs/features/views); MongoDB views cannot be created or changed yet.
+- When PostgreSQL drops a view and creates it again (to change its columns, or to save a materialized view), the privileges granted on it and on its columns are lost and must be granted again.
+- A view's tab does not mark where in its definition the server found an error. It shows the server's message instead.
+- On MySQL and MariaDB, a view's **Used by** list shows only views. Routines and triggers that use the view are not listed.
 
 ## SQL console and history
 

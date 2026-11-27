@@ -20,6 +20,8 @@ import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.definition.SqlViews;
+import dev.hoori.db.core.definition.Views;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.DocumentRun;
@@ -209,6 +211,14 @@ interface Servers {
      * @throws QueryException {@link QueryException.Failure#OTHER} on a server of documents
      */
     Exporter exporter() throws QueryException;
+
+    /**
+     * What reads views' definitions and changes them on this connection, as {@link Views} says;
+     * on a read-only connection it changes nothing.
+     *
+     * @throws QueryException {@link QueryException.Failure#OTHER} on a server of documents
+     */
+    Views views() throws QueryException;
 
     /**
      * Gives up the statement whose rows are not all read, if one is, as {@link Execution#abandon}:
@@ -526,6 +536,12 @@ interface Servers {
     }
 
     @Override
+    public Views views() throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of documents has no views of SQL");
+    }
+
+    @Override
     public Abandoned giveUp() {
       var left = open.getAndSet(null);
       return left == null ? Abandoned.NOTHING : ended(left.close());
@@ -764,6 +780,12 @@ interface Servers {
     public Exporter exporter() throws QueryException {
       usable();
       return new SqlExporter(connection, provider);
+    }
+
+    @Override
+    public Views views() throws QueryException {
+      usable();
+      return new SqlViews(connection, provider, readOnly);
     }
 
     @Override

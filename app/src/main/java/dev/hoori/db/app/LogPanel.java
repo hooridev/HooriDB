@@ -443,6 +443,7 @@ final class LogPanel {
       case SESSION -> "Session";
       case MONITOR -> "Monitor";
       case EXPORT -> "Export";
+      case DEFINITION -> "Definition";
     };
   }
 

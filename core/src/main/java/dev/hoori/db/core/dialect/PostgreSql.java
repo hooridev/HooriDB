@@ -21,6 +21,10 @@ import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.data.PostgreSqlRows;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.data.RowsDialect;
+import dev.hoori.db.core.definition.DefinitionDialect;
+import dev.hoori.db.core.definition.PostgreSqlDefinitions;
+import dev.hoori.db.core.definition.PostgreSqlViews;
+import dev.hoori.db.core.definition.ViewDialect;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.dump.DumpDialect;
 import dev.hoori.db.core.dump.PostgreSqlDump;
@@ -59,6 +63,8 @@ public final class PostgreSql implements Dialect {
   private final SyntaxDialect syntax = new Syntax();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new PostgreSqlRows();
+  private final DefinitionDialect definitions = new PostgreSqlDefinitions();
+  private final ViewDialect views = new PostgreSqlViews();
   private final DumpDialect dump = new PostgreSqlDump();
   private final MonitorDialect monitor = new Monitor();
 
@@ -132,6 +138,16 @@ public final class PostgreSql implements Dialect {
   @Override
   public MonitorDialect monitor() {
     return monitor;
+  }
+
+  @Override
+  public DefinitionDialect definitions() {
+    return definitions;
+  }
+
+  @Override
+  public ViewDialect views() {
+    return views;
   }
 
   @Override

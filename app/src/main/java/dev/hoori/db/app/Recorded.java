@@ -16,12 +16,15 @@ import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.definition.Listed;
+import dev.hoori.db.core.definition.ViewChange;
+import dev.hoori.db.core.definition.ViewDefinition;
+import dev.hoori.db.core.definition.Views;
 import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.dump.Dump;
 import dev.hoori.db.core.dump.Exporter;
-import dev.hoori.db.core.dump.Listed;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
@@ -355,6 +358,23 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
           } catch (UncheckedIOException e) {
             throw e.getCause();
           }
+        }
+      };
+    }
+
+    // What reads and changes a view, logged about the view's database.
+    @Override
+    public Views views() throws QueryException {
+      var views = link.views();
+      return new Views() {
+        @Override
+        public ViewDefinition read(Table view) throws QueryException {
+          return recorded(of(view), () -> views.read(view));
+        }
+
+        @Override
+        public Changed change(ViewChange change) throws QueryException {
+          return recorded(of(change.view()), () -> views.change(change));
         }
       };
     }

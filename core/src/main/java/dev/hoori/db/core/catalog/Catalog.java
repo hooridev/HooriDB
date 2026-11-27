@@ -93,7 +93,8 @@ public final class Catalog {
         container,
         rows.getString(1),
         switch (rows.getString(2)) {
-          case "v", "m" -> Table.Kind.VIEW;
+          case "v" -> Table.Kind.VIEW;
+          case "m" -> Table.Kind.MATERIALIZED;
           case "f" -> Table.Kind.FOREIGN;
           default -> Table.Kind.TABLE;
         });
@@ -126,7 +127,8 @@ public final class Catalog {
             new Schema(database, rows.getString(1), false),
             rows.getString(2),
             switch (rows.getString(3)) {
-              case "v", "m" -> Table.Kind.VIEW;
+              case "v" -> Table.Kind.VIEW;
+              case "m" -> Table.Kind.MATERIALIZED;
               case "f" -> Table.Kind.FOREIGN;
               default -> Table.Kind.TABLE;
             }));

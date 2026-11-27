@@ -3,6 +3,8 @@ package dev.hoori.db.core.dump;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.definition.Definition;
+import dev.hoori.db.core.definition.Item;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
