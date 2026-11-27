@@ -212,7 +212,7 @@ public final class DocumentSession implements AutoCloseable {
    */
   public List<Column> fields(Table collection) throws CatalogException {
     try {
-      return fields(collection, sample(Purpose.CATALOG, collection));
+      return fields(collection, sampleDocuments(Purpose.CATALOG, collection));
     } catch (DocumentException e) {
       throw catalog(e);
     }
@@ -222,7 +222,8 @@ public final class DocumentSession implements AutoCloseable {
    * {@link #SAMPLE} documents of the collection, in the order of their ids, recorded for the
    * purpose given: chosen at random where the server can, else its first ones, as of a view.
    */
-  public List<Document> sample(Purpose purpose, Table collection) throws DocumentException {
+  public List<Document> sampleDocuments(Purpose purpose, Table collection)
+      throws DocumentException {
     // In the order of their ids, so that the fields come in the same order each time.
     var pipeline = Document.array(
         Document.of("$sample", Document.of("size", SAMPLE)),
@@ -299,7 +300,7 @@ public final class DocumentSession implements AutoCloseable {
    */
   public List<Field> paths(Table collection) throws CatalogException {
     try {
-      return paths(sample(Purpose.CATALOG, collection));
+      return paths(sampleDocuments(Purpose.CATALOG, collection));
     } catch (DocumentException e) {
       throw catalog(e);
     }

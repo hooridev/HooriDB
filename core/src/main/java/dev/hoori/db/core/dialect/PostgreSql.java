@@ -1073,7 +1073,7 @@ public final class PostgreSql implements Dialect {
     // by it whatever the case asked, and ILIKE and regular expressions refuse it.
     @Override
     public String asText(String column, Holds holds) {
-      return "CAST(" + column + " AS pg_catalog.text) COLLATE pg_catalog.\"default\"";
+      return cast(column, "pg_catalog.text") + " COLLATE pg_catalog.\"default\"";
     }
 
     // An oid as a bigint, as no operator compares it with a numeric; a real as one, which the
@@ -1081,10 +1081,14 @@ public final class PostgreSql implements Dialect {
     @Override
     public String equalNumber(String column, String type, String number) {
       return switch (base(type)) {
-        case OID -> "CAST(" + column + " AS pg_catalog.int8)" + EQ + number;
-        case REAL -> column + EQ + "CAST(" + number + " AS pg_catalog.float4)";
+        case OID -> cast(column, "pg_catalog.int8") + EQ + number;
+        case REAL -> column + EQ + cast(number, "pg_catalog.float4");
         default -> column + EQ + number;
       };
+    }
+
+    private static String cast(String expression, String type) {
+      return "CAST(" + expression + " AS " + type + ")";
     }
   }
 }

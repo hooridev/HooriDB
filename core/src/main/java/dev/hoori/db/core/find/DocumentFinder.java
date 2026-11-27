@@ -281,7 +281,7 @@ public final class DocumentFinder {
   private static List<Document> sample(DocumentSession session, Table collection)
       throws QueryException {
     try {
-      return session.sample(Purpose.SEARCH, collection);
+      return session.sampleDocuments(Purpose.SEARCH, collection);
     } catch (DocumentException e) {
       throw DocumentSession.query(e);
     }
