@@ -1643,7 +1643,9 @@ final class CatalogTree {
     return List.of(
         Menu.item(
                 "Export to SQL…",
-                connected && !s.dialogs.anyOpen() ? () -> s.openExport(id, container) : null)
+                connected && !s.dialogs.anyOpen()
+                    ? () -> ExportDialog.open(s, id, container)
+                    : null)
             .icon(Symbol.ARROW_EXPORT_LTR),
         Menu.separator(),
         refresh,

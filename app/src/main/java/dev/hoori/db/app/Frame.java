@@ -729,7 +729,8 @@ final class Frame {
                 Menu.item(
                         "Export to SQL…",
                         free && exported != null
-                            ? inMain(s, () -> s.openExport(exported.id(), exported.container()))
+                            ? inMain(
+                                s, () -> ExportDialog.open(s, exported.id(), exported.container()))
                             : null)
                     .icon(Symbol.ARROW_EXPORT_LTR),
                 Menu.item(

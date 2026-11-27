@@ -1252,27 +1252,6 @@ final class State {
   }
 
   /**
-   * Opens Export to SQL of the connection's database or schema, on a session of its own; not
-   * while another dialog is open, nor for a server of documents or one not connected.
-   */
-  void openExport(UUID id, Container container) {
-    var profile = profile(id);
-    if (profile == null || dialogs.anyOpen()) {
-      return;
-    }
-    if (profile.provider().keepsDocuments()) {
-      tell(profile.provider().displayName() + " has no export to SQL");
-      return;
-    }
-    var dialog = ExportDialog.open(this, id, container);
-    if (dialog == null) {
-      tell("Connect " + name(profile) + " first, to export from it");
-      return;
-    }
-    dialogs.export = dialog;
-  }
-
-  /**
    * Opens the server monitor of the connection in the window of these tabs, or goes to the one it
    * has, in whichever window.
    */

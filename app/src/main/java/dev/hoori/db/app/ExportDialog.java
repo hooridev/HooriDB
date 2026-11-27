@@ -129,10 +129,31 @@ final class ExportDialog {
   }
 
   /**
+   * Opens Export to SQL of the connection's database or schema, on a session of its own; not
+   * while another dialog is open, nor for a server of documents or one not connected.
+   */
+  static void open(State s, UUID id, Container container) {
+    var profile = s.profile(id);
+    if (profile == null || s.dialogs.anyOpen()) {
+      return;
+    }
+    if (profile.provider().keepsDocuments()) {
+      s.tell(profile.provider().displayName() + " has no export to SQL");
+      return;
+    }
+    var dialog = create(s, id, container);
+    if (dialog == null) {
+      s.tell("Connect " + State.name(profile) + " first, to export from it");
+      return;
+    }
+    s.dialogs.export = dialog;
+  }
+
+  /**
    * The dialog of the connection's database or schema, with a session of its own on its database,
    * reading its objects; null while the connection is not connected.
    */
-  static ExportDialog open(State s, UUID id, Container on) {
+  private static ExportDialog create(State s, UUID id, Container on) {
     var profile = s.profile(id);
     var session = s.catalog.browsingSession(s, id, on.database().name());
     if (profile == null || session == null) {

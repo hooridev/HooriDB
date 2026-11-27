@@ -211,7 +211,7 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
   @Test
   void closingHooriDbAsksAboveAnOpenExport() throws Exception {
     var app = open(SHOP);
-    app.state().openExport(SHOP.id(), new Database("shop", false));
+    ExportDialog.open(app.state(), SHOP.id(), new Database("shop", false));
     c.run(app, "frame\n" + OPENED + SETTLE + "snap export\n");
     assertTrue(c.tree("export").contains("export-dialog"), c.tree("export"));
     app.state().requestClose(); // the window's close button, under the dialog
