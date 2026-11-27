@@ -172,18 +172,33 @@ final class Session {
   }
 
   /**
-   * A statement to send: as the shell read it on a server of documents, else null; in the mode
+   * A statement to send, with the values bound to its {@code ?}, as a routine's call has them, and
+   * none for any other: as the shell read it on a server of documents, else null; in the mode
    * shown; whether a plain read may stay open as the grid scrolls; how many rows of a result it
    * keeps; and the planner's connection and database for an estimate first, or null for none.
    */
   record Send(
       String sql,
+      List<String> values,
       Script.Parsed parsed,
       ConsoleTab.Mode mode,
       boolean lazy,
       int keep,
       Lane planner,
-      String database) {}
+      String database) {
+
+    /** A statement without values to bind. */
+    Send(
+        String sql,
+        Script.Parsed parsed,
+        ConsoleTab.Mode mode,
+        boolean lazy,
+        int keep,
+        Lane planner,
+        String database) {
+      this(sql, List.of(), parsed, mode, lazy, keep, planner, database);
+    }
+  }
 
   /**
    * A statement on the session, as one lane call. It reads the session's status fresh, by the
@@ -229,7 +244,7 @@ final class Session {
       }
     }
     now = inMode(link, mode, now);
-    var run = parsed != null ? link.run(parsed) : link.run(sql);
+    var run = parsed != null ? link.run(parsed) : link.run(sql, send.values());
     held.set(run); // sent: cut short now, what it did is in doubt; and the rest as the grid scrolls
     var first = run.next(ConsoleTab.PORTION);
     if (lazy && Boolean.TRUE.equals(now.autoCommit()) && now.transaction() == Transaction.NONE) {

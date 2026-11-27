@@ -6,6 +6,7 @@ import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
+import dev.hoori.db.core.catalog.Routine;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -35,6 +36,7 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.routine.Routines;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -212,6 +214,21 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     @Override
+    public List<Routine> routines(Container container) throws CatalogException {
+      return recorded(of(container), () -> link.routines(container));
+    }
+
+    @Override
+    public String source(Routine routine) throws CatalogException {
+      return recorded(of(routine.container()), () -> link.source(routine));
+    }
+
+    @Override
+    public Routines.Outcome define(Routines.Change change) throws QueryException {
+      return recorded(null, () -> link.define(change));
+    }
+
+    @Override
     public List<ForeignKey> foreignKeys(Table table) throws CatalogException {
       return recorded(of(table), () -> link.foreignKeys(table));
     }
@@ -268,6 +285,11 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     @Override
     public Run run(String sql) throws QueryException {
       return recorded(link.run(sql));
+    }
+
+    @Override
+    public Run run(String sql, List<String> values) throws QueryException {
+      return recorded(link.run(sql, values));
     }
 
     @Override

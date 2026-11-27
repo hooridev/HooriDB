@@ -6,6 +6,7 @@ import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
+import dev.hoori.db.core.catalog.Routine;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -47,6 +48,7 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.routine.Routines;
 import dev.hoori.db.core.sql.EditableQuery;
 import java.io.IOException;
 import java.io.StringWriter;
@@ -169,6 +171,49 @@ final class FakeServers implements Servers {
   private final java.util.Set<String> refused = ConcurrentHashMap.newKeySet();
   private final Map<String, DocumentEdit.Outcome> forced = new ConcurrentHashMap<>();
   private final java.util.Set<String> writing = ConcurrentHashMap.newKeySet();
+  // The routines of a schema or database, by host and path, and the source of each.
+  private final Map<String, List<Routine>> routines = new ConcurrentHashMap<>();
+  private final Map<Routine, String> sources = new ConcurrentHashMap<>();
+  // What a statement of DDL does as it runs, or how it fails, by its key.
+  private final Map<String, Runnable> effects = new ConcurrentHashMap<>();
+  private final Map<String, Failure> definitionFailures = new ConcurrentHashMap<>();
+
+  /**
+   * The schema or database of the routine on the host holds it, after the routines it holds
+   * already, with this CREATE statement as its source.
+   */
+  FakeServers routine(String host, Routine routine, String source) {
+    routines
+        .computeIfAbsent(host + "/" + path(routine.container()), k -> new CopyOnWriteArrayList<>())
+        .add(routine);
+    sources.put(routine, source);
+    return this;
+  }
+
+  /** The routine is no longer there, as when it was dropped elsewhere. */
+  void forget(String host, Routine routine) {
+    var list = routines.get(host + "/" + path(routine.container()));
+    if (list != null) {
+      list.remove(routine);
+    }
+    sources.remove(routine);
+  }
+
+  /** The statement of DDL, run on the host, does this once it ran, as a CREATE does. */
+  FakeServers defines(String host, String sql, Runnable effect) {
+    effects.put("define " + host + " " + sql, effect);
+    return this;
+  }
+
+  /** The statement of DDL, run on the host, fails so. */
+  FakeServers definitionFails(String host, String sql, Failure failure) {
+    definitionFailures.put("define " + host + " " + sql, failure);
+    return this;
+  }
+
+  private static String path(Container c) {
+    return c instanceof Schema s ? s.database().name() + "." + s.name() : c.name();
+  }
 
   /**
    * Marks a SQL fragment (such as {@code nextval(}) as writing at the server: a read-only link
@@ -772,6 +817,87 @@ final class FakeServers implements Servers {
         }
         return tableColumns(t, table);
       });
+    }
+
+    @Override
+    public List<Routine> routines(Container c) throws CatalogException {
+      var key = host + "/" + FakeServers.path(c);
+      return read(
+          "routines " + key,
+          c.database(),
+          () -> List.copyOf(routines.getOrDefault(key, List.of())));
+    }
+
+    @Override
+    public String source(Routine r) throws CatalogException {
+      var key = "source " + host + "/" + FakeServers.path(r.container()) + " " + r.label();
+      return read(key, r.container().database(), () -> {
+            var text = sources.get(r);
+            if (text == null) {
+              throw CatalogException.of(CatalogException.Failure.NOT_FOUND, r.label());
+            }
+            return List.of(text);
+          })
+          .getFirst();
+    }
+
+    // Each statement keyed define <host> <sql>, through core's seam as core's are; a DROP of a
+    // routine it holds takes the routine out, and what defines says happens.
+    @Override
+    public Routines.Outcome define(Routines.Change change) throws QueryException {
+      if (readOnly) {
+        return new Routines.Outcome.Refused("The connection is read-only.");
+      }
+      var statements = change.statements();
+      for (int i = 0; i < statements.size(); i++) {
+        var sql = statements.get(i);
+        var key = "define " + host + " " + sql;
+        var failure = Journal.sql(
+            made.provider(),
+            Purpose.DEFINITION,
+            sql,
+            f -> f.isPresent() ? new Outcome.Failed(f.get().message()) : Outcome.DONE,
+            () -> defined(key, sql));
+        if (failure.isPresent()) {
+          Optional<Boolean> restored =
+              i > 0 && change.restore() != null ? Optional.of(true) : Optional.empty();
+          return new Routines.Outcome.Failed(sql, failure.get(), restored);
+        }
+      }
+      return new Routines.Outcome.Done();
+    }
+
+    private Optional<Failure> defined(String key, String sql) throws QueryException {
+      note(key);
+      try {
+        call(key, QueryException.of(QueryException.Failure.CANCELLED, ""));
+      } catch (QueryException e) {
+        if (e.failure() == QueryException.Failure.CANCELLED) {
+          return Optional.of(serverError(Failure.Kind.CANCELLED, ""));
+        }
+        throw e;
+      } catch (Exception e) {
+        throw QueryException.of(QueryException.Failure.OTHER, e.toString());
+      }
+      var failure = definitionFailures.get(key);
+      if (failure != null) {
+        return Optional.of(failure);
+      }
+      var dialect = made.provider().dialect().routines();
+      for (var list : routines.values()) {
+        for (var r : List.copyOf(list)) {
+          if (sql.equals(dialect.drop(r))
+              || !dialect.replaces() && sql.equals(dialect.dropFirst(r))) {
+            list.remove(r);
+            sources.remove(r);
+          }
+        }
+      }
+      var effect = effects.get(key);
+      if (effect != null) {
+        effect.run();
+      }
+      return Optional.empty();
     }
 
     @Override
@@ -1684,6 +1810,16 @@ final class FakeServers implements Servers {
 
     @Override
     public Run run(String sql) {
+      return run(sql, Purpose.STATEMENT);
+    }
+
+    // The values bound note bind <host> <values>, NULL for null, before the statement runs.
+    @Override
+    public Run run(String sql, List<String> values) {
+      if (!values.isEmpty()) {
+        noted("bind " + host + " "
+            + String.join(", ", values.stream().map(v -> v == null ? "NULL" : v).toList()));
+      }
       return run(sql, Purpose.STATEMENT);
     }
 

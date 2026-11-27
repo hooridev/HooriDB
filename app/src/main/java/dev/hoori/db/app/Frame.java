@@ -33,6 +33,7 @@ import com.rethinkj.ui.kit.TitleBar;
 import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
+import dev.hoori.db.core.catalog.Routine;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.update.Channel;
 import java.time.LocalDate;
@@ -209,6 +210,17 @@ final class Frame {
                 .icon(Symbol.SERVER)
                 .hue(ConnectionColors.hue(s.color(x.id)))
                 .busy(x.busy());
+          // What is edited and not saved: the tab's dot.
+          case RoutineTab x ->
+            new Tabs.Tab(
+                s.title(x),
+                true,
+                x.edited(),
+                x.routine != null && x.routine.kind() == Routine.Kind.PROCEDURE
+                    ? Symbol.CODE
+                    : Symbol.MATH_FORMULA,
+                ConnectionColors.hue(s.color(x.id)),
+                x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -223,6 +235,7 @@ final class Frame {
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
           case MonitorTab x -> x.view(s, app);
+          case RoutineTab x -> x.view(s, app);
         });
   }
 
@@ -233,6 +246,7 @@ final class Frame {
       case TableTab x -> s.title(x);
       case ConsoleTab x -> s.title(x);
       case MonitorTab x -> s.title(x);
+      case RoutineTab x -> s.title(x);
     };
   }
 
@@ -299,6 +313,7 @@ final class Frame {
         || group.activeTab() instanceof ConsoleTab console
             && (console.confirming != null || console.preview != null || console.history != null)
         || group.activeTab() instanceof MonitorTab monitor && monitor.asked != null
+        || group.activeTab() instanceof RoutineTab routine && routine.asked != null
         || s.catalog.asks(s, group);
   }
 
@@ -309,6 +324,9 @@ final class Frame {
   private static El confirmation(State s, TabGroups.Group<Tab> group) {
     if (group.activeTab() instanceof MonitorTab monitor) {
       return monitor.question(s);
+    }
+    if (group.activeTab() instanceof RoutineTab routine) {
+      return routine.question(s, app(s, group));
     }
     if (group.activeTab() instanceof TableTab table) {
       El document = table.documentView(s, app(s, group));

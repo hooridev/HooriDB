@@ -7,6 +7,7 @@ import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
+import dev.hoori.db.core.catalog.Routine;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -43,6 +44,7 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.SqlMonitor;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.routine.Routines;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -109,6 +111,29 @@ interface Servers {
     List<Table> allTables(Database database) throws CatalogException;
 
     List<Column> columns(Table table) throws CatalogException;
+
+    /**
+     * The functions and procedures of a schema, or of a database where the server has no schemas,
+     * as {@link Catalog#routines}; none on a server of documents.
+     */
+    default List<Routine> routines(Container container) throws CatalogException {
+      return List.of();
+    }
+
+    /** The routine's CREATE statement, as {@link Catalog#source}. */
+    default String source(Routine routine) throws CatalogException {
+      throw CatalogException.of(
+          CatalogException.Failure.OTHER, "A server of documents has no routines");
+    }
+
+    /**
+     * Creates, replaces or drops a routine on this connection, as {@link Routines#apply}: a link
+     * of a read-only profile refuses it unsent.
+     */
+    default Routines.Outcome define(Routines.Change change) throws QueryException {
+      throw QueryException.of(
+          QueryException.Failure.OTHER, "A server of documents has no routines");
+    }
 
     /**
      * Filterable field paths of a collection's documents, including subdocuments, as {@link
@@ -180,6 +205,20 @@ interface Servers {
      *     reported lost
      */
     Run run(String sql) throws QueryException;
+
+    /**
+     * A statement to run with the values bound to its {@code ?} in order, null for NULL, as {@link
+     * Execution} runs it; with none, as {@link #run(String)}.
+     *
+     * @throws QueryException as {@link #run(String)} does, and where the server takes no values
+     */
+    default Run run(String sql, List<String> values) throws QueryException {
+      if (!values.isEmpty()) {
+        throw QueryException.of(
+            QueryException.Failure.OTHER, "A server of documents takes no values to bind");
+      }
+      return run(sql);
+    }
 
     /** A statement of the MongoDB shell, which runs as it was read: by its text elsewhere. */
     default Run run(Script.Parsed statement) throws QueryException {
@@ -633,6 +672,29 @@ interface Servers {
     }
 
     @Override
+    public List<Routine> routines(Container container) throws CatalogException {
+      readable();
+      return Catalog.routines(connection, provider, container);
+    }
+
+    @Override
+    public String source(Routine routine) throws CatalogException {
+      readable();
+      return Catalog.source(connection, provider, routine);
+    }
+
+    @Override
+    public Routines.Outcome define(Routines.Change change) throws QueryException {
+      usable();
+      var outcome = Routines.apply(connection, provider, change, readOnly);
+      if (outcome instanceof Routines.Outcome.Failed f
+          && f.failure().kind() == Failure.Kind.CONNECTION_LOST) {
+        gone.set(true);
+      }
+      return outcome;
+    }
+
+    @Override
     public List<ForeignKey> foreignKeys(Table table) throws CatalogException {
       readable();
       return Catalog.foreignKeys(connection, provider, table);
@@ -697,8 +759,13 @@ interface Servers {
 
     @Override
     public Run run(String sql) throws QueryException {
+      return run(sql, List.of());
+    }
+
+    @Override
+    public Run run(String sql, List<String> values) throws QueryException {
       usable();
-      var execution = new Execution(connection, provider, sql, readOnly);
+      var execution = new Execution(connection, provider, sql, values, readOnly, Purpose.STATEMENT);
       open.set(execution);
       return new Run() {
         @Override

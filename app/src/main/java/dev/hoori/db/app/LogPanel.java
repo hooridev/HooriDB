@@ -440,6 +440,7 @@ final class LogPanel {
       case ESTIMATE -> "Estimate";
       case STATEMENT -> "Console";
       case FILE -> "File";
+      case DEFINITION -> "Routine";
       case TRANSACTION -> "Transaction";
       case SESSION -> "Session";
       case MONITOR -> "Monitor";

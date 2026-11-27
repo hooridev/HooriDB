@@ -10,6 +10,8 @@ import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.SystemAppearance;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
+import dev.hoori.db.core.catalog.Container;
+import dev.hoori.db.core.catalog.Routine;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -19,6 +21,7 @@ import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.dialect.Dialect;
 import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.routine.Call;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.nio.file.Path;
@@ -1217,6 +1220,7 @@ final class State {
       case TableTab x -> x.id;
       case ConsoleTab x -> x.id;
       case MonitorTab x -> x.id;
+      case RoutineTab x -> x.id;
     };
   }
 
@@ -1266,6 +1270,84 @@ final class State {
         && !profile.provider().keepsDocuments()
         && catalog.connected(id)
         && !dialogs.anyOpen();
+  }
+
+  /**
+   * Opens the routine's source in a tab, or goes to the tab that shows it, in whichever window;
+   * returns the tab.
+   */
+  RoutineTab openRoutine(UUID id, Routine routine) {
+    for (var tab : routines(id)) {
+      if (tab.shows(id, routine)) {
+        var group = tabs.groupOf(tab);
+        tabs.select(group, group.tabs().indexOf(tab));
+        var window = group.window() != null ? group.window() : app.windows().of(app);
+        if (window != null) {
+          window.raise();
+        }
+        return tab;
+      }
+    }
+    var tab = RoutineTab.of(id, routine);
+    var group = tabs.main().active();
+    tabs.add(group, group.tabs().size(), tab);
+    tab.read(this);
+    return tab;
+  }
+
+  /** Opens a tab for a new routine of the kind in the container, from its server's template. */
+  void newRoutine(UUID id, Container container, Routine.Kind kind) {
+    var profile = profile(id);
+    if (profile == null || profile.provider().keepsDocuments()) {
+      return;
+    }
+    var tab = RoutineTab.create(id, container, kind, profile.provider());
+    var group = tabs.main().active();
+    tabs.add(group, group.tabs().size(), tab);
+  }
+
+  /** Run…: the routine's tab, with the form of its values. */
+  void runRoutine(UUID id, Routine routine) {
+    openRoutine(id, routine).askRun(this);
+  }
+
+  /** Drop…: the routine's tab, with the question before its drop. */
+  void dropRoutine(UUID id, Routine routine) {
+    openRoutine(id, routine).askDrop(this);
+  }
+
+  /**
+   * A console of its own for a routine's call, on the connection and database, in the window of
+   * these tabs, which runs the call's statements with their values bound at once.
+   */
+  void openCall(UUID id, TabGroups.Group<Tab> group, String database, List<Call> calls) {
+    var console = ConsoleTab.of(this, id, database);
+    var text = new StringBuilder();
+    for (var call : calls) {
+      text.append(call.sql()).append(";\n");
+      if (!call.values().isEmpty()) {
+        console.bound.put(call.sql(), call.values());
+      }
+    }
+    console.text = text.toString();
+    console.editor.select(console.text.length(), console.text.length());
+    var into = group != null ? group : tabs.main().active();
+    tabs.add(into, into.tabs().size(), console);
+    keeping.persist(keeping.consolesKept);
+    console.runAll(this);
+  }
+
+  /** The routine tabs of every window, of the connection or of all where it is null. */
+  List<RoutineTab> routines(UUID id) {
+    var all = new ArrayList<RoutineTab>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof RoutineTab x && (id == null || x.id.equals(id))) {
+          all.add(x);
+        }
+      }
+    }
+    return all;
   }
 
   /** The server monitors of every window, of the connection or of all where it is null. */
@@ -1385,6 +1467,7 @@ final class State {
       }
     }
     all.addAll(monitors(id));
+    all.addAll(routines(id));
     close(all);
   }
 
@@ -1425,6 +1508,9 @@ final class State {
     for (var monitor : monitors(id)) {
       monitor.connected(this);
     }
+    for (var routine : routines(id)) {
+      routine.connected(this);
+    }
   }
 
   /**
@@ -1443,6 +1529,17 @@ final class State {
     }
     var profile = profile(tab.id);
     return (profile == null ? "" : name(profile) + ": ") + tab.path();
+  }
+
+  /**
+   * A routine tab's title: its routine's name and types, with its schema or database where another
+   * routine tab has the same.
+   */
+  String title(RoutineTab tab) {
+    var same = routines(null).stream()
+        .filter(x -> x != tab && x.name().equals(tab.name()))
+        .toList();
+    return same.isEmpty() ? tab.name() : tab.path() + "." + tab.name();
   }
 
   /** A server monitor's title: its connection's name. */
@@ -1664,6 +1761,7 @@ final class State {
     tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    routines(null).forEach(RoutineTab::close);
     if (dialogs.fileRun != null) {
       dialogs.fileRun.closeAll(this);
     }

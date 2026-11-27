@@ -9,6 +9,10 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.kit.Tree;
+import dev.hoori.db.core.catalog.Container;
+import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Routine;
+import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import java.util.ArrayList;
 import java.util.List;
@@ -77,6 +81,13 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
           : Tree.loading(loading(node));
     }
     var level = live.levels.get(node);
+    if (level instanceof CatalogTree.Read(var children)
+        && CatalogTree.routines(live, node) instanceof Node.OfRoutines routines) {
+      var all = new ArrayList<Node>(children.size() + 1);
+      all.addAll(children);
+      all.add(routines);
+      return Tree.ready(all);
+    }
     if (level instanceof CatalogTree.Read(var children)) {
       if (node instanceof Node.OfTable(var id, var table)) {
         var keys = live.keys.get(table);
@@ -109,6 +120,8 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       case Node.OfDatabase n -> n.database().system();
       case Node.OfSchema n -> n.schema().system();
       case Node.OfTable n -> system(n.table());
+      case Node.OfRoutines n -> system(n.container());
+      case Node.OfRoutine n -> system(n.routine().container());
       default -> false;
     };
   }
@@ -119,6 +132,7 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
         || node instanceof Node.OfColumn
         || node instanceof Node.OfKey
         || node instanceof Node.OfIndex
+        || node instanceof Node.OfRoutine
         || node instanceof Node.Problem;
   }
 
@@ -168,6 +182,11 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
         n.index().primary()
             ? Icon.icon(Symbol.KEY, Icon.Variant.WARNING)
             : icon(Symbol.KEY_MULTIPLE, false);
+      case Node.OfRoutines n -> icon(Symbol.BRACES, system(n.container()));
+      case Node.OfRoutine n ->
+        icon(
+            n.routine().kind() == Routine.Kind.PROCEDURE ? Symbol.CODE : Symbol.MATH_FORMULA,
+            system(n.routine().container()));
       case Node.Problem n -> Icon.icon(Symbol.ERROR_CIRCLE, Icon.Variant.DANGER);
     };
   }
@@ -189,9 +208,13 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
   }
 
   private static boolean system(Table table) {
-    return switch (table.container()) {
-      case dev.hoori.db.core.catalog.Database d -> d.system();
-      case dev.hoori.db.core.catalog.Schema x -> x.system();
+    return system(table.container());
+  }
+
+  private static boolean system(Container container) {
+    return switch (container) {
+      case Database d -> d.system();
+      case Schema x -> x.system();
     };
   }
 

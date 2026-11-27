@@ -1,9 +1,11 @@
 package dev.hoori.db.app;
 
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
+import dev.hoori.db.core.catalog.Routine;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -81,10 +83,7 @@ sealed interface Node {
   record OfTable(UUID id, Table table) implements Node {
     @Override
     public Node parent() {
-      return switch (table.container()) {
-        case Database d -> new OfDatabase(id, d);
-        case Schema s -> new OfSchema(id, s);
-      };
+      return of(id, table.container());
     }
   }
 
@@ -133,6 +132,33 @@ sealed interface Node {
     public Node parent() {
       return new Indexes(id, table);
     }
+  }
+
+  /**
+   * The node holding the functions and procedures of a schema, or of a database where the server
+   * has no schemas, after its tables.
+   */
+  record OfRoutines(UUID id, Container container) implements Node {
+    @Override
+    public Node parent() {
+      return of(id, container);
+    }
+  }
+
+  /** A function or a procedure, under its {@link OfRoutines} row. */
+  record OfRoutine(UUID id, Routine routine) implements Node {
+    @Override
+    public Node parent() {
+      return new OfRoutines(id, routine.container());
+    }
+  }
+
+  /** The row of the schema or database of the connection. */
+  static Node of(UUID id, Container container) {
+    return switch (container) {
+      case Database d -> new OfDatabase(id, d);
+      case Schema s -> new OfSchema(id, s);
+    };
   }
 
   /** The row under a node that says why it could not be opened or read. */
