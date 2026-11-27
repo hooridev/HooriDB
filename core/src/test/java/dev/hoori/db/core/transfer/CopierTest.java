@@ -324,6 +324,25 @@ class CopierTest {
   }
 
   @Test
+  void aRollbackThatFailsStopsTheRunAlsoWhereItGoesOnAtAnError() {
+    rows("x", 25);
+    rows("y", 2);
+    failing.put("write x 2", QueryException.of(QueryException.Failure.OTHER, "check"));
+    failing.put("rollback", QueryException.of(QueryException.Failure.OTHER, "no answer"));
+
+    var report = run(transfer(OnError.SKIP, Commit.TABLE, 10, "x", "y"));
+
+    assertEquals(Stage.STOPPED, report.stage());
+    assertEquals(List.of(State.FAILED, State.FAILED), states(report));
+    assertEquals(
+        "check Rolling it back failed: no answer", report.tables().getFirst().problem());
+    // The rows of x that were not rolled back are not committed with those of another table.
+    assertTrue(!calls.contains("commit") && !calls.contains("write y"), calls.toString());
+    assertTrue(!targetRows.containsKey("x"), targetRows.toString());
+    assertEquals("end", calls.getLast());
+  }
+
+  @Test
   void theRowsKeptOfATableThatFailsMoveItsSequencesOn() {
     rows("x", 25);
     failing.put("write x 2", QueryException.of(QueryException.Failure.OTHER, "check"));
@@ -534,8 +553,9 @@ class CopierTest {
       }
 
       @Override
-      public void rollback() {
+      public void rollback() throws Exception {
         calls.add("rollback");
+        fail("rollback");
         pending.clear();
       }
 

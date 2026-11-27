@@ -43,8 +43,9 @@ import java.util.stream.IntStream;
  * its own, committed as the transfer says. A table to be emptied is emptied first in that
  * transaction, after the tables to be emptied that refer to it, which are emptied with it, so that
  * a table that fails before its first commit keeps its rows. A table that fails is rolled back to
- * its last commit, and the run stops or goes on with the next. What the run is told after each
- * step, and what it ends with, is a {@link Report}.
+ * its last commit, and the run stops or goes on with the next; where that rollback fails, the run
+ * stops, as the session may still hold what it wrote. What the run is told after each step, and
+ * what it ends with, is a {@link Report}.
  *
  * <p>The call blocks. An interrupt of the calling thread cancels the call that runs, rolls back
  * what was not committed, and ends the run as {@link Stage#CANCELLED}, with the thread still
@@ -146,7 +147,8 @@ public final class Copier {
           ? table.with(State.CANCELLED)
           : table);
     } catch (Exception e) {
-      // The session itself failed, as where it cannot be put in the state a copy needs.
+      // The session itself failed, as where it cannot be put in the state a copy needs, or a
+      // table's rollback failed.
       stage = Stage.STOPPED;
       tables.replaceAll(
           table -> table.state() == State.WAITING ? table.with(State.FAILED, why(e)) : table);
@@ -306,8 +308,8 @@ public final class Copier {
   }
 
   // Copies the table's rows, batch by batch, emptying it first where it is to be; whether all
-  // were copied.
-  private boolean copy(int index) throws Cancel {
+  // were copied. Where it fails and its rollback fails too, it throws the rollback's failure.
+  private boolean copy(int index) throws Exception {
     var table = tables.get(index);
     var plan = plans.get(table.copy());
     var into = table.copy().to();
@@ -354,9 +356,9 @@ public final class Copier {
       tell();
       return true;
     } catch (Exception e) {
-      quietly(target::rollback);
+      var unended = attempt(target::rollback);
       deleting.clear();
-      if (kept > 0) {
+      if (unended == null && kept > 0) {
         // The rows kept move its sequences on, as all of them would have.
         quietly(() -> {
           target.written(into, plan.columns());
@@ -372,6 +374,13 @@ public final class Copier {
           table.state() == State.EMPTYING ? "Its rows could not be deleted: " + why(e) : why(e);
       if (writing && refersToItself(into)) {
         problem += " " + SELF;
+      }
+      if (unended != null) {
+        // What it wrote since its last commit may still be in the session, which the next
+        // table's commit would keep: the run stops, as where the session failed.
+        tables.set(
+            index, left.with(State.FAILED, problem + " Rolling it back failed: " + why(unended)));
+        throw unended;
       }
       tables.set(index, left.with(State.FAILED, problem));
       tell();
@@ -467,11 +476,20 @@ public final class Copier {
   }
 
   private static void quietly(Step step) {
+    // The session failed already, or is gone: the server rolls back what it holds.
+    attempt(step);
+  }
+
+  // Runs the step, also where the run was cancelled; its failure, or null. A cancel that comes
+  // as it runs leaves the thread interrupted.
+  private static Exception attempt(Step step) {
     var interrupted = Thread.interrupted();
     try {
       step.run();
-    } catch (Exception _) {
-      // The session failed already, or is gone: the server rolls back what it holds.
+      return null;
+    } catch (Exception e) {
+      interrupted |= e instanceof InterruptedException;
+      return e;
     } finally {
       if (interrupted) {
         Thread.currentThread().interrupt();
