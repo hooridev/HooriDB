@@ -13,21 +13,21 @@ import com.rethinkj.ui.FileDialog;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
+import com.rethinkj.ui.kit.ComboBox;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Label;
-import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Segmented;
-import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.StatusBar;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.execution.FileRun;
 import dev.hoori.db.core.monitor.Credentials;
 import java.nio.file.Path;
@@ -79,12 +79,14 @@ final class FileRunDialog {
   boolean transaction;
   boolean hidden; // while it runs, or once it ended hidden
   String problem; // why the file could not be chosen or the run not begun, or null
-  final Menu.State connectionMenu = new Menu.State();
-  final Menu.State databaseMenu = new Menu.State();
+  final ComboBox.State connectionBox = new ComboBox.State();
+  final ComboBox.State databaseBox = new ComboBox.State();
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.ROWS);
 
   private FileRun run; // while it runs and after
+  private AtomicBoolean began; // whether the run began on its session, once it was asked to run
   private boolean cancelling;
+
   private String endedBy; // what ended the run, where the app did, or null
   private Lane lane; // the run's own session, or null
   private char[] password; // a copy, to mask it in what failed; wiped once that is masked
@@ -123,17 +125,6 @@ final class FileRunDialog {
   }
 
   // Choosing
-
-  /** The connections a file can run on: of SQL, and connected. */
-  private static List<UUID> connections(State s) {
-    var ids = new ArrayList<UUID>();
-    for (var profile : s.profiles) {
-      if (!profile.provider().keepsDocuments() && s.catalog.connected(profile.id())) {
-        ids.add(profile.id());
-      }
-    }
-    return ids;
-  }
 
   /** The databases to choose from: those the tree read, and the one chosen. */
   private List<String> databases(State s) {
@@ -343,9 +334,9 @@ final class FileRunDialog {
   private El choosing(State s) {
     Theme t = Theme.CURRENT.get();
     var profile = s.profile(id);
-    var ids = connections(s);
-    if (profile != null && !ids.contains(id)) {
-      ids.addFirst(id);
+    var ids = new ArrayList<>(TargetChooser.order(s, Workspace.Language.SQL, id));
+    if (!ids.contains(id)) {
+      ids.addFirst(id); // a deleted one, as it was chosen
     }
     boolean connected = s.catalog.connected(id);
     El chosen = row()
@@ -356,17 +347,19 @@ final class FileRunDialog {
             .grow(1)
             .wrapText())
         .child(button(SECONDARY, "Choose…", () -> choose(s)).key("choose"));
-    El connection = Select.select(
-            ids, id, x -> State.name(s.profile(x)), connectionMenu, x -> connection(s, x))
+    El connection = ComboBox.items(
+            ids, id, x -> TargetChooser.item(s, x), connectionBox, x -> connection(s, x))
         .key("connection")
+        .label("Connection")
         .wFull();
-    El databases = Select.select(
+    El databases = ComboBox.comboBox(
             databases(s),
             database,
             x -> x.isEmpty() ? "The connection's own" : x,
-            databaseMenu,
+            databaseBox,
             x -> database = x)
         .key("database")
+        .label("Database")
         .wFull();
     El errors = Segmented.segmented(
             List.of(OnError.values()),
