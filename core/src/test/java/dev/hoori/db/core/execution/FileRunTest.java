@@ -237,7 +237,6 @@ class FileRunTest {
     assertEquals(5, created.committedAt());
 
     // Not without one transaction, and not where the server does not.
-
     var own = run(MARIADB, text, new FileRun.Options(false, false), new Session(Map.of()));
     assertEquals(0, own.committedAt());
     var pg =
@@ -281,7 +280,6 @@ class FileRunTest {
 
   @Test
   void psqlsRestrictIsSkippedAndItsOtherCommandsStopTheRun() {
-
     var text = "\\restrict k\nSELECT 1;\n\\connect other\nSELECT 2;\n\\unrestrict k\n";
     var session = new Session(Map.of());
     var report = run(POSTGRESQL, text, new FileRun.Options(true, false), session);
@@ -321,7 +319,6 @@ class FileRunTest {
 
   @Test
   void aPasswordIsMaskedAndTheMessageWithheld() {
-
     var sql = "CREATE ROLE r PASSWORD 'hunter2' LOGIN";
     var failure = Failure.of(Failure.Kind.INVALID, "near 'hunter2'");
     var report = run(

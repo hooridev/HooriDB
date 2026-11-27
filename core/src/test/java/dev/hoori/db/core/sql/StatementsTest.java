@@ -82,7 +82,6 @@ class StatementsTest {
         "CREATE PROCEDURE p() BEGIN /* a */ ATOMIC SELECT t.end, s . begin FROM t; END",
         "SELECT 4");
     // MariaDB and MySQL split such a body, as their clients do without DELIMITER.
-
     assertSplit(
         MARIADB,
         "CREATE PROCEDURE p() BEGIN SELECT 1; END;",

@@ -91,7 +91,6 @@ final class FileRunDialog implements Guard.Guarded {
   private FileRun run; // while it runs and after
   private AtomicBoolean began; // whether the run began on its session, once it was asked to run
   private boolean cancelling;
-
   private String endedBy; // what ended the run, where the app did, or null
   private Lane lane; // the run's own session, or null
   private char[] password; // a copy, to mask it in what failed; wiped once that is masked
@@ -246,7 +245,6 @@ final class FileRunDialog implements Guard.Guarded {
     closeSession(s);
     wipe();
     cancelling = false;
-
     if (hidden) {
       s.app.notify(
           file.getFileName() + ": " + outcome(),
@@ -267,11 +265,9 @@ final class FileRunDialog implements Guard.Guarded {
    * is given up with the session, as the run never began.
    */
   void cancel(State s) {
-
     if (run != null && busy()) {
       cancelling = true;
       run.cancel();
-
       if (!began.get()) {
         closeSession(s);
       }
@@ -358,7 +354,7 @@ final class FileRunDialog implements Guard.Guarded {
     }
     Runnable keep = () -> s.guard.pending = null;
     El keeping = button(SECONDARY, "Keep running", keep).key("answer-keep");
-    El cancelling = button(
+    El cancelRun = button(
             SECONDARY,
             "Cancel the run",
             () -> {
@@ -376,7 +372,7 @@ final class FileRunDialog implements Guard.Guarded {
                 .child(label(file.getFileName() + " runs in one transaction on " + where(s)
                         + ". Cancel it, which rolls back what it ran, and " + asked.what() + "?")
                     .wrapText()),
-            List.of(keeping, cancelling),
+            List.of(keeping, cancelRun),
             keeping,
             keep)
         .key("file-run-question");

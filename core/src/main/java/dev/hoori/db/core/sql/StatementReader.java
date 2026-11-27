@@ -509,7 +509,6 @@ public final class StatementReader implements Closeable {
   }
 
   private int lines(int from, int to) {
-
     int count = 0;
     for (int k = from; k < to; k++) {
       if (buffer.charAt(k) == '\n') {

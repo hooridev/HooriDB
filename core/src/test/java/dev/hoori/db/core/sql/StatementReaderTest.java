@@ -358,7 +358,6 @@ class StatementReaderTest {
 
   @Test
   void aFileThatIsNotUtf8FailsAtItsLine(@TempDir Path folder) throws IOException {
-
     var file = folder.resolve("latin1.sql");
     Files.write(file, "SELECT 1;\nSELECT 'Gr\u00fc\u00dfe';".getBytes(StandardCharsets.ISO_8859_1));
     try (var reader = StatementReader.open(file, POSTGRESQL)) {
