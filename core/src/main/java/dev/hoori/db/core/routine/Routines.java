@@ -74,7 +74,8 @@ public final class Routines {
    * source as it was read to put it back.
    *
    * @param replaced the routine the text was read from, or null for a new one
-   * @param source the source of the routine replaced as it was read, or null for a new one
+   * @param source the source of the routine replaced as it was read, or null for a new one and
+   *     where it could not be read, which leaves nothing to put back
    */
   public static Change save(Provider provider, Routine replaced, String source, String text) {
     var routines = provider.dialect().routines();
@@ -82,7 +83,9 @@ public final class Routines {
     if (replaced == null || routines.replaces()) {
       return new Change(List.of(created), null);
     }
-    return new Change(List.of(routines.dropFirst(replaced), created), statement(source, provider));
+    return new Change(
+        List.of(routines.dropFirst(replaced), created),
+        source == null ? null : statement(source, provider));
   }
 
   /** What Drop sends. */

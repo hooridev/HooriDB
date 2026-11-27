@@ -625,6 +625,7 @@ class CatalogTreeTest {
             "      warehouse",
             "      quantity",
             "    low_stock",
+            "    Routines",
             "  information_schema",
             "  mysql",
             "  performance_schema"),
@@ -650,6 +651,7 @@ class CatalogTreeTest {
             "  analytics",
             "    tracking",
             "      events",
+            "      Routines",
             "  postgres",
             "  template0",
             "  template1"),
@@ -1195,6 +1197,7 @@ class CatalogTreeTest {
             "            orders_parent_id_fkey",
             "      order_items",
             "      order_totals",
+            "      Routines",
             "    billing"),
         rows(fkTree));
 
@@ -1455,7 +1458,8 @@ class CatalogTreeTest {
             "          orders_code_expr_idx",
             "          orders_customer_placed_idx",
             "      notes",
-            "        body"),
+            "        body",
+            "      Routines"),
         rows(idxTree));
 
     // Icons and muted details for Indexes and its leaf entries.

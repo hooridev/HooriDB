@@ -228,7 +228,7 @@ final class RoutineTab implements Tab {
 
   /** Edit: the source becomes the user's to change. */
   void edit(State s) {
-    if (s.catalog.changesRoutines(s, id) && reading == null) {
+    if (s.catalog.changesRoutines(s, id) && reading == null && source != null) {
       editing = true;
     }
   }
@@ -528,7 +528,7 @@ final class RoutineTab implements Tab {
       actions.add(button(
               SECONDARY,
               "Edit",
-              changes && free && routine != null ? () -> edit(s) : null,
+              changes && free && source != null ? () -> edit(s) : null,
               Button.options().icon(Symbol.EDIT))
           .key("edit"));
     }

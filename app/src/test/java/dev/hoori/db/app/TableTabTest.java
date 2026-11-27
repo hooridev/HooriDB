@@ -221,7 +221,7 @@ class TableTabTest {
     c.run(
         app,
         table("orders") + SETTLE + open("sales") + SETTLE
-            + "press role=treeitem label=\"orders\" pos=1/1\nkey Enter\nframe\n" + SETTLE
+            + "press role=treeitem label=\"orders\" pos=1/2\nkey Enter\nframe\n" + SETTLE
             + "snap both\n");
     assertEquals("shop.public.orders,shop.sales.orders", tabs(c.tree("both")));
     c.run(app, "press #close-1\nframe\n" + SETTLE + "snap one\n");
