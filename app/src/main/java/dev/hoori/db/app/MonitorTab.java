@@ -703,16 +703,13 @@ final class MonitorTab implements Tab {
     answered = null;
     asked = null;
     if (lane != null) {
-      s.closing();
-      var closing = lane.close(ended -> {});
-      s.app.background(
-          "close the monitor's session",
-          () -> {
-            closing.join();
-            return null;
-          },
-          done -> s.closed(),
-          e -> s.closed());
+      var profile = s.profile(id);
+      s.closeSession(
+          lane,
+          profile == null ? "A deleted connection" : State.name(profile),
+          "the monitor's session",
+          "Server monitor",
+          password);
       lane = null;
     }
     if (password != null) {

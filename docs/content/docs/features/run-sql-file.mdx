@@ -16,16 +16,16 @@ The connection must be connected. Open the dialog in any of these ways:
 ## Run a file
 
 1. Press **Choose…** and pick the file.
-2. Check the **Connection** and the **Database** the file runs on.
+2. Check the **Connection** and the **Database** the file runs on. The connections are listed as when a query asks where it runs: the one chosen first, then the connected ones, each with its color, folder and whether it is read-only or not connected.
 3. Under **On an error**, choose **Stop** to end the run at the first error, or **Go on** to run the rest of the file.
 4. Check **In one transaction** to run the whole file in a single transaction: HooriDB commits it at the end of the file, and rolls it back on an error or when you cancel. In one transaction an error always stops the run.
 5. Press **Run**.
 
-The dialog shows how much of the file has run, in bytes and statements. Press **Cancel run** to stop it at any point, also in the middle of a statement, or **Hide** to keep working while it runs; the status line then shows its progress, and pressing it shows the dialog again.
+The dialog shows how much of the file has run, in bytes and statements. Press **Cancel run** to stop it at any point, also in the middle of a statement or while its session still connects, or **Hide** to keep working while it runs; the status line then shows its progress, and pressing it shows the dialog again. When a hidden run ends, a desktop notification says how it went, and clicking it shows the dialog.
 
 When the run ends, the dialog says how it went and lists the statements that failed, each with its line in the file and the server's error. Passwords in the listed statements are masked.
 
-The file runs on a session of its own, so it does not hold up the Workspace tree, tables, or consoles. Its statements appear in the statement log, each with its first 4,096 characters and its length, as a dump's may run to megabytes, but not in a console's [history](/docs/features/history). Disconnecting, editing, or deleting the connection, or closing HooriDB, cancels the run.
+The file runs on a session of its own, so it does not hold up the Workspace tree, tables, or consoles. Its statements appear in the statement log, each with its first 4,096 characters and its length, as a dump's may run to megabytes, but not in a console's [history](/docs/features/history). Disconnecting, editing, or deleting the connection, or closing HooriDB, cancels the run. Where it runs in one transaction, HooriDB asks first, as cancelling it rolls back what it ran, and the status line counts it among the work that may be uncommitted. When the end of its transaction fails, or its session does not close cleanly, the notices in Workspace say so, and closing HooriDB then stays open, as for a console.
 
 ## Transactions and DDL
 

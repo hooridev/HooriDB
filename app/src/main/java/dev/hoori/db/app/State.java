@@ -19,6 +19,7 @@ import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.dialect.Dialect;
 import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.nio.file.Path;
@@ -33,6 +34,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 
 /** The app's state, which only the handlers change, on the app's thread. */
 final class State {
@@ -699,6 +701,39 @@ final class State {
     closing++;
   }
 
+  /**
+   * Closes the lane of a session that is no console's, as a server monitor's or a file run's,
+   * which Exit waits for as for a console's: what its closing reports, as a failure to give up what
+   * was open or a connection given up, goes to the notices on the connection, of the part named,
+   * the password, whose copy is taken here and wiped after, masked in it.
+   */
+  void closeSession(Lane lane, String connection, String what, String part, char[] password) {
+    closing();
+    var copy = password == null ? new char[0] : password.clone();
+    var reported = new CompletableFuture<Void>();
+    var closes = app;
+    lane.close(ended -> {
+      try {
+        ended
+            .failure()
+            .ifPresent(f -> closes.post(() -> notice(
+                connection,
+                part,
+                Credentials.without("Closing " + what + " failed: " + Delivery.said(f), copy),
+                true,
+                null)));
+        for (var m : ended.messages()) {
+          var said = Credentials.without(Delivery.warned(m), copy);
+          closes.post(() -> notice(connection, part, said, false, null));
+        }
+      } finally {
+        Arrays.fill(copy, '\0');
+        reported.complete(null);
+      }
+    });
+    app.background("close " + what, reported::get, done -> closed(), e -> closed());
+  }
+
   /** A console's session has closed, after what its closing had to say. */
   void closed() {
     closing--;
@@ -1337,7 +1372,10 @@ final class State {
     }
   }
 
-  /** The tabs that may hold uncommitted work (consoles and tables), of the connection or all. */
+  /**
+   * What may hold uncommitted work, of the connection or all: consoles, tables, and a file that runs
+   * in one transaction.
+   */
   List<Guard.Guarded> guarded(UUID id) {
     var all = new ArrayList<Guard.Guarded>();
     for (var group : tabs.groups()) {
@@ -1346,6 +1384,10 @@ final class State {
           all.add(g);
         }
       }
+    }
+    var run = dialogs.fileRun;
+    if (run != null && (id == null || id.equals(run.connectionId()))) {
+      all.add(run);
     }
     return all;
   }
