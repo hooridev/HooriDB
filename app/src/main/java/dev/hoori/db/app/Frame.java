@@ -33,6 +33,7 @@ import com.rethinkj.ui.kit.TitleBar;
 import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
+import dev.hoori.db.core.catalog.Routine;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.update.Channel;
 import java.time.LocalDate;
@@ -209,6 +210,17 @@ final class Frame {
                 .icon(Symbol.SERVER)
                 .hue(ConnectionColors.hue(s.color(x.id)))
                 .busy(x.busy());
+          // What is edited and not saved: the tab's dot.
+          case RoutineTab x ->
+            new Tabs.Tab(
+                s.title(x),
+                true,
+                x.atStake(Guard.Scope.BOTH),
+                x.routine != null && x.routine.kind() == Routine.Kind.PROCEDURE
+                    ? Symbol.CODE
+                    : Symbol.MATH_FORMULA,
+                ConnectionColors.hue(s.color(x.id)),
+                x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -223,6 +235,7 @@ final class Frame {
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
           case MonitorTab x -> x.view(s, app);
+          case RoutineTab x -> x.view(s, app);
         });
   }
 
@@ -233,6 +246,7 @@ final class Frame {
       case TableTab x -> s.title(x);
       case ConsoleTab x -> s.title(x);
       case MonitorTab x -> s.title(x);
+      case RoutineTab x -> s.title(x);
     };
   }
 
@@ -307,6 +321,7 @@ final class Frame {
         || group.activeTab() instanceof ConsoleTab console
             && (console.confirming != null || console.preview != null || console.history != null)
         || group.activeTab() instanceof MonitorTab monitor && monitor.asked != null
+        || group.activeTab() instanceof RoutineTab routine && routine.asked != null
         || s.catalog.asks(s, group);
   }
 
@@ -317,6 +332,9 @@ final class Frame {
   private static El confirmation(State s, TabGroups.Group<Tab> group) {
     if (group.activeTab() instanceof MonitorTab monitor) {
       return monitor.question(s);
+    }
+    if (group.activeTab() instanceof RoutineTab routine) {
+      return routine.dialog(s, app(s, group));
     }
     if (group.activeTab() instanceof TableTab table) {
       El document = table.documentView(s, app(s, group));
@@ -640,11 +658,13 @@ final class Frame {
     }
     int consoles = 0;
     int tables = 0;
+    int routines = 0;
     boolean run = false;
     for (var tab : tabs) {
       switch (tab) {
         case ConsoleTab _ -> consoles++;
         case TableTab _ -> tables++;
+        case RoutineTab _ -> routines++;
         case FileRunDialog _ -> run = true;
       }
     }
@@ -653,24 +673,27 @@ final class Frame {
     return StatusBar.item(
             Badge.Kind.WARNING,
             Symbol.LOCK_OPEN,
-            uncommitted(consoles, tables, run),
+            uncommitted(consoles, tables, routines, run),
             asking ? null : () -> first.show(s))
         .key("uncommitted");
   }
 
-  /** What the consoles, tables and a file's run that may hold uncommitted work say. */
-  private static String uncommitted(int consoles, int tables, boolean run) {
-    if (consoles + tables == 0) {
+  /** What the consoles, tables, routines and a file's run that may hold uncommitted work say. */
+  private static String uncommitted(int consoles, int tables, int routines, boolean run) {
+    if (consoles + tables + routines == 0) {
       return "A file that runs in one transaction holds uncommitted work";
     }
-    if (tables == 0 && !run) {
+    if (tables + routines == 0 && !run) {
       return consoles + (consoles == 1 ? " console may" : " consoles may")
           + " hold uncommitted work";
     }
-    if (consoles == 0 && !run) {
+    if (consoles + routines == 0 && !run) {
       return tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
     }
-    int n = consoles + tables;
+    if (consoles + tables == 0 && !run) {
+      return routines + (routines == 1 ? " routine has" : " routines have") + " unsaved edits";
+    }
+    int n = consoles + tables + routines;
     return n + (n == 1 ? " tab" : " tabs") + (run ? " and a file's run" : "")
         + " may hold uncommitted work";
   }

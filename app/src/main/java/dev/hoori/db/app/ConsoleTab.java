@@ -48,6 +48,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -425,6 +426,10 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   private Sent recording;
   private HistoryEntry recorded; // the last statement that went into the history, or null
   HistoryDialog history; // the History dialog, null while closed
+  // The values bound to the statements of a routine's call, by their text, as Run put them there:
+  // a statement of that text sends them, so that the call runs again as it was while its text is
+  // unchanged. Not kept until the next start.
+  final Map<String, List<String>> bound = new HashMap<>();
   // Whether this console session has sent a statement that may create a temporary table.
   boolean createdTemporaryTable;
   // The tree's connection the session was opened from: a result edits only through it.
@@ -938,8 +943,11 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         plain && mode == Mode.AUTO && transaction == Transaction.NONE && unavailable == null;
     var whole = new AtomicBoolean(!lazy);
     writes = whole;
-    var planner =
-        estimate && plain && language.estimates() ? s.catalog.planner(s, id, database) : null;
+    var values = bound.getOrDefault(sql, List.of());
+    // A plan of a statement with values to bind is not to be had without them.
+    var planner = estimate && plain && language.estimates() && values.isEmpty()
+        ? s.catalog.planner(s, id, database)
+        : null;
     var on = database;
     // Whatever it is, what it leaves open is at stake: a read may write through a function or a
     // trigger, or hold locks on purpose, which no first word tells.
@@ -963,7 +971,10 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
         link -> {
           label.set(new Left(sql, isPlain));
           return Session.start(
-              link, new Session.Send(sql, statement, asked, lazy, kept, planner, on), held, whole);
+              link,
+              new Session.Send(sql, values, statement, asked, lazy, kept, planner, on),
+              held,
+              whole);
         },
         ran -> {
           activity = new Idle();

@@ -12,9 +12,11 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
+import dev.hoori.db.core.catalog.Routine;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
@@ -151,6 +153,7 @@ final class CatalogTree {
       }
       case Node.Query(var id) -> s.openQuery(id);
       case Node.OfTable(var id, var table) -> s.openTable(id, table);
+      case Node.OfRoutine(var id, var routine) -> s.openRoutine(id, routine);
       case Node.OfKey(var id, var _, var key, var incoming) ->
         s.openTable(id, incoming ? key.table() : key.referenced());
       default -> {
@@ -502,7 +505,12 @@ final class CatalogTree {
             .toList();
       case Node.OfDatabase n -> tables(id, n.database());
       case Node.OfSchema n -> tables(id, n.schema());
-      case Node.OfTable _,
+      case Node.OfRoutines n ->
+        link -> link.routines(n.container()).stream()
+            .map(r -> (Node) new Node.OfRoutine(id, r))
+            .toList();
+      case Node.OfRoutine _,
+          Node.OfTable _,
           Node.OfColumn _,
           Node.ForeignKeys _,
           Node.KeyGroup _,
@@ -720,6 +728,17 @@ final class CatalogTree {
     return c.database() == null || database.equals(c.database())
         ? live.lane
         : further(s, live, database);
+  }
+
+  /**
+   * The lane that reads the content of the schema or database, as the tree reads it, or null while
+   * its connection is not connected.
+   */
+  Lane lane(State s, UUID id, Container container) {
+    var live = lives.get(id);
+    return live != null && live.phase instanceof Live.Connected
+        ? lane(s, live, container.database().name())
+        : null;
   }
 
   /** The lane that reads the table's rows, or null while its connection is not connected. */
@@ -1060,8 +1079,7 @@ final class CatalogTree {
     };
   }
 
-  private static Lane.Call<List<Node>> tables(
-      UUID id, dev.hoori.db.core.catalog.Container container) {
+  private static Lane.Call<List<Node>> tables(UUID id, Container container) {
     return link ->
         link.tables(container).stream().map(x -> (Node) new Node.OfTable(id, x)).toList();
   }
@@ -1081,6 +1099,8 @@ final class CatalogTree {
       case Node.OfKey n -> n.table().container().database().name();
       case Node.Indexes n -> n.table().container().database().name();
       case Node.OfIndex n -> n.table().container().database().name();
+      case Node.OfRoutines n -> n.container().database().name();
+      case Node.OfRoutine n -> n.routine().container().database().name();
       case Node.Problem(var of) -> database(of);
     };
   }
@@ -1166,7 +1186,7 @@ final class CatalogTree {
     var profile = s.profile(id);
     var name = profile == null ? "the connection" : State.name(profile);
     if (s.guard.asks(
-        s, act, name + " disconnects", s.guarded(id), () -> disconnect(s, act, id, then))) {
+        s, act, name + " disconnects", s.sessions(id), () -> disconnect(s, act, id, then))) {
       return;
     }
     var live = lives.get(id);
@@ -1356,6 +1376,8 @@ final class CatalogTree {
       case Node.OfKey n -> n.key().name();
       case Node.Indexes _ -> "Indexes";
       case Node.OfIndex n -> n.index().name();
+      case Node.OfRoutines _ -> "Routines";
+      case Node.OfRoutine n -> n.routine().name();
       case Node.Problem(var of) -> name(s, of);
     };
   }
@@ -1366,6 +1388,8 @@ final class CatalogTree {
   String label(State s, Node node) {
     return switch (node) {
       case Node.Problem(var of) -> problem(s, of).title();
+      // Overloads of one name apart.
+      case Node.OfRoutine n -> n.routine().label();
       default -> name(s, node);
     };
   }
@@ -1381,9 +1405,20 @@ final class CatalogTree {
             n.table(), n.key(), n.incoming(), profile == null ? null : profile.provider());
       }
       case Node.OfIndex n -> indexDetail(n.index());
+      case Node.OfRoutine n -> routineDetail(n.routine());
       case Node.Connection(var id) -> s.profile(id).provider().displayName();
       case Node.Query(var id) -> QueryDialog.languageLabel(s.query(id).language());
       default -> null;
+    };
+  }
+
+  // What a function returns, or what the routine is where it returns nothing.
+  private static String routineDetail(Routine routine) {
+    return switch (routine.kind()) {
+      case FUNCTION -> routine.returns();
+      case PROCEDURE -> "procedure";
+      case AGGREGATE -> routine.returns() + " · aggregate";
+      case WINDOW -> routine.returns() + " · window";
     };
   }
 
@@ -1627,7 +1662,81 @@ final class CatalogTree {
                 "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
             .icon(Symbol.ARROW_CLOCKWISE));
       case Node.OfIndex _ -> List.of(copy);
+      case Node.OfRoutines n -> {
+        var changes = changesRoutines(s, n.id());
+        yield List.of(
+            Menu.item(
+                    "New function…",
+                    changes
+                        ? () -> s.newRoutine(n.id(), n.container(), Routine.Kind.FUNCTION)
+                        : null)
+                .icon(Symbol.MATH_FORMULA),
+            Menu.item(
+                    "New procedure…",
+                    changes
+                        ? () -> s.newRoutine(n.id(), n.container(), Routine.Kind.PROCEDURE)
+                        : null)
+                .icon(Symbol.CODE),
+            Menu.separator(),
+            refresh);
+      }
+      case Node.OfRoutine(var id, var routine) -> {
+        var profile = s.profile(id);
+        boolean called = profile != null
+            && profile.provider().dialect().routines().uncalled(routine).isEmpty();
+        Menu.Item again = Menu.item(
+                "Refresh",
+                connected ? () -> refresh(s, new Node.OfRoutines(id, routine.container())) : null)
+            .icon(Symbol.ARROW_CLOCKWISE);
+        yield List.of(
+            Menu.item("Open", () -> s.openRoutine(id, routine)).icon(Symbol.CODE),
+            Menu.item("Run…", called && connected ? () -> s.runRoutine(id, routine) : null)
+                .icon(Symbol.PLAY),
+            Menu.separator(),
+            Menu.item("Drop…", changesRoutines(s, id) ? () -> s.dropRoutine(id, routine) : null)
+                .icon(Symbol.DELETE),
+            Menu.separator(),
+            again,
+            copy);
+      }
       default -> List.of(refresh, copy);
+    };
+  }
+
+  /** Whether routines can be created, changed and dropped on the connection now. */
+  boolean changesRoutines(State s, UUID id) {
+    var profile = s.profile(id);
+    return profile != null && !profile.readOnly() && connected(id);
+  }
+
+  /**
+   * A routine of the container was created, changed or dropped: the tree reads its routines again
+   * where it read them, leaving what is open and selected as it is.
+   */
+  void routinesChanged(State s, UUID id, Container container) {
+    var live = lives.get(id);
+    var node = new Node.OfRoutines(id, container);
+    if (live == null || !(live.phase instanceof Live.Connected) || unread(live.levels.get(node))) {
+      return;
+    }
+    if (live.levels.get(node) instanceof Reading r && r.asked != null) {
+      r.asked.cancel();
+    }
+    read(s, live, node);
+  }
+
+  /**
+   * The row of the routines of a schema, or of a database where the server has no schemas, after
+   * the node's tables; null where the node holds none, as on a server of documents.
+   */
+  static Node.OfRoutines routines(Live live, Node node) {
+    if (live.profile.provider().keepsDocuments() || !(live.phase instanceof Live.Connected c)) {
+      return null;
+    }
+    return switch (node) {
+      case Node.OfSchema n -> new Node.OfRoutines(n.id(), n.schema());
+      case Node.OfDatabase n when !c.schemas() -> new Node.OfRoutines(n.id(), n.database());
+      default -> null;
     };
   }
 

@@ -58,6 +58,7 @@ public final class PostgreSql implements Dialect {
   private final CatalogDialect catalog = new Catalog();
   private final ErrorDialect errors = new Errors();
   private final PlanDialect plan = new Plan();
+  private final RoutineDialect routines = new PostgreSqlRoutines();
   private final SyntaxDialect syntax = new Syntax();
   private final ClientDialect client = new Client();
   private final SessionDialect session = new Session();
@@ -114,6 +115,11 @@ public final class PostgreSql implements Dialect {
   @Override
   public PlanDialect plan() {
     return plan;
+  }
+
+  @Override
+  public RoutineDialect routines() {
+    return routines;
   }
 
   @Override

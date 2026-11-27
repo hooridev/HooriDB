@@ -5,6 +5,7 @@ import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.dialect.CatalogDialect;
+import dev.hoori.db.core.dialect.RoutineDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -17,12 +18,15 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Predicate;
 
 /**
  * Reads what a server holds, one level at a time: its databases, the schemas of a database where
  * the provider has {@link Capability#SCHEMAS}, the tables and views of a schema or, without
- * schemas, of a database, and the columns of a table or view. Names come in the order the server
+ * schemas, of a database, and the columns of a table or view; beside the tables, the functions and
+ * procedures, and the source of one. Names come in the order the server
  * compares them, user objects before system ones.
  *
  * <p>Each call blocks, without a time limit, and runs a query of the server's own catalog on the
@@ -260,6 +264,97 @@ public final class Catalog {
     return List.copyOf(merged);
   }
 
+  /**
+   * The functions and procedures of the schema, or of the database where the provider has no
+   * schemas, by name and then by signature, each with its parameters in their order.
+   *
+   * @throws IllegalArgumentException as {@link #tables} does
+   */
+  public static List<Routine> routines(
+      Connection connection, Provider provider, Container container) throws CatalogException {
+    if (hasSchemas(provider) != container instanceof Schema) {
+      throw new IllegalArgumentException(provider.displayName() + " holds no routines in a "
+          + container.getClass().getSimpleName());
+    }
+    requireConnectedTo(connection, provider, container.database());
+    record Part(String key, Routine routine, Routine.Parameter parameter) {}
+    Row<Part> part = rows -> {
+      var mode = rows.getString(8);
+      var parameter = mode == null
+          ? null
+          : new Routine.Parameter(
+              Objects.requireNonNullElse(rows.getString(6), ""),
+              rows.getString(7),
+              Routine.Mode.valueOf(mode));
+      var routine = new Routine(
+          container,
+          rows.getString(1),
+          Objects.requireNonNullElse(rows.getString(2), ""),
+          switch (rows.getString(3)) {
+            case "p" -> Routine.Kind.PROCEDURE;
+            case "a" -> Routine.Kind.AGGREGATE;
+            case "w" -> Routine.Kind.WINDOW;
+            default -> Routine.Kind.FUNCTION;
+          },
+          Objects.requireNonNullElse(rows.getString(4), ""),
+          List.of());
+      return new Part(rows.getString(5), routine, parameter);
+    };
+    var parts = query(
+        connection, provider, provider.dialect().routines().routines(), part, container.name());
+    if (parts.isEmpty()) {
+      requireExists(
+          connection, provider, provider.dialect().catalog().containerExists(), container.name());
+    }
+    // A routine comes as consecutive rows, one per parameter.
+    var routines = new ArrayList<Routine>();
+    var parameters = new ArrayList<Routine.Parameter>();
+    for (int i = 0; i < parts.size(); i++) {
+      var next = parts.get(i);
+      if (next.parameter() != null) {
+        parameters.add(next.parameter());
+      }
+      if (i + 1 == parts.size() || !parts.get(i + 1).key().equals(next.key())) {
+        var r = next.routine();
+        routines.add(
+            new Routine(r.container(), r.name(), r.signature(), r.kind(), r.returns(), parameters));
+        parameters.clear();
+      }
+    }
+    return List.copyOf(routines);
+  }
+
+  /**
+   * The routine's source, its CREATE statement and the settings it was created under, as {@link
+   * RoutineDialect#created} gives it, read as {@link Purpose#DEFINITION}.
+   *
+   * @throws CatalogException {@link Failure#NOT_FOUND} where the routine is no longer there, and
+   *     {@link Failure#ACCESS_DENIED} where the server does not show its source to the user
+   */
+  public static Routine.Source source(Connection connection, Provider provider, Routine routine)
+      throws CatalogException {
+    requireConnectedTo(connection, provider, routine.container().database());
+    var routines = provider.dialect().routines();
+    var lookup = routines.source(routine);
+    // A source withheld is a row whose statement is null; Optional keeps it apart from no row.
+    var found = query(
+        connection,
+        provider,
+        Purpose.DEFINITION,
+        lookup.sql(),
+        rows -> Optional.ofNullable(routines.created(rows)),
+        lookup.parameters().toArray(String[]::new));
+    if (found.isEmpty()) {
+      throw new CatalogException(Failure.NOT_FOUND, routine.label(), null);
+    }
+    return found
+        .getFirst()
+        .orElseThrow(() -> new CatalogException(
+            Failure.ACCESS_DENIED,
+            "The server does not show the source of " + routine.label() + " to this user",
+            null));
+  }
+
   private static ForeignKey.Rule rule(String word) {
     return word == null ? null : ForeignKey.Rule.valueOf(word.replace(' ', '_'));
   }
@@ -321,10 +416,22 @@ public final class Catalog {
   static <T> List<T> query(
       Connection connection, Provider provider, String sql, Row<T> row, String... parameters)
       throws CatalogException {
+    return query(connection, provider, Purpose.CATALOG, sql, row, parameters);
+  }
+
+  // As the query above, recorded for the purpose given.
+  private static <T> List<T> query(
+      Connection connection,
+      Provider provider,
+      Purpose purpose,
+      String sql,
+      Row<T> row,
+      String... parameters)
+      throws CatalogException {
     try {
       return Journal.sql(
           provider,
-          Purpose.CATALOG,
+          purpose,
           sql,
           read -> Outcome.rows(read.size()),
           () -> Query.run(connection, provider, sql, statement -> {

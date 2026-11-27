@@ -16,10 +16,10 @@ final class Guard {
   Pending pending; // the one act that waits, or null
 
   /**
-   * A tab that may hold uncommitted work and asks before an act discards or ends it, or the run of
-   * a file in one transaction, which asks in the main window.
+   * A tab that may hold uncommitted work and asks before an act discards or ends it, as a routine's
+   * edits not saved, or the run of a file in one transaction, which asks in the main window.
    */
-  sealed interface Guarded permits ConsoleTab, TableTab, FileRunDialog {
+  sealed interface Guarded permits ConsoleTab, TableTab, RoutineTab, FileRunDialog {
 
     /** The connection this tab belongs to, for {@link Pending.Locked}. */
     UUID connectionId();
@@ -152,6 +152,7 @@ final class Guard {
             switch (question.tab()) {
               case ConsoleTab _ -> "A question about a console's transaction waits for its answer.";
               case TableTab _ -> "A question about uncommitted changes waits for its answer.";
+              case RoutineTab _ -> "A question about a routine's edits waits for its answer.";
               case FileRunDialog _ -> "A question about a file's run waits for its answer.";
             });
         question.tab().show(s);

@@ -74,6 +74,7 @@ public final class MySql extends MySqlFamily {
   private final SyntaxDialect syntax = new MySqlFamily.Syntax(
       RESERVED, Words.union(RESERVED, Words.TYPED, Syntax.TYPED), List.of("/*!"));
   private final PlanDialect planning = new Plan();
+  private final RoutineDialect routines = new MySqlFamilyRoutines(() -> Provider.MYSQL, false);
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MySqlRows();
   private final MonitorDialect monitor = new MySqlFamily.Monitor(
@@ -124,6 +125,11 @@ public final class MySql extends MySqlFamily {
   @Override
   public ConnectDialect connecting() {
     return connecting;
+  }
+
+  @Override
+  public RoutineDialect routines() {
+    return routines;
   }
 
   @Override

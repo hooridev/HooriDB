@@ -23,5 +23,7 @@ public enum Purpose {
   /** The database the session is on. */
   SESSION,
   /** The server monitor's cancel of a statement and end of a session. */
-  MONITOR
+  MONITOR,
+  /** The definitions of objects: reading, creating, altering and dropping them. */
+  DEFINITION
 }

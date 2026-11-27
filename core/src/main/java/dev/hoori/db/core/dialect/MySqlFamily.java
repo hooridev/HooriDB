@@ -238,8 +238,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
         case ACCESS_DENIED -> Set.of(1044, 1142, 1143, 1227);
         // MySQL's no right to run a routine, beyond what Query knows.
         case ROUTINE_DENIED -> Set.of(1370);
-        // MariaDB's and MySQL's unknown database, whose state is the general 42000.
-        case NOT_FOUND -> Set.of(1049);
+        // MariaDB's and MySQL's unknown database and routine, whose state is the general 42000.
+        case NOT_FOUND -> Set.of(1049, 1305);
         // MariaDB's max_statement_time, which shares the state of a cancelled statement.
         case TIME_LIMIT -> Set.of(1969);
         // MariaDB's max_statement_time, MySQL's max_execution_time and their lock wait timeout.
