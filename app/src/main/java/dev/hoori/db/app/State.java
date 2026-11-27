@@ -1308,10 +1308,11 @@ final class State {
 
   /**
    * Opens a console on the database with a definition to read, the part from {@code start} up to
-   * {@code end} selected and the caret there; its text cannot be edited or run, and it is not
-   * kept.
+   * {@code end} selected and the caret there, in a new tab of the window of these tabs; its text
+   * cannot be edited or run, and it is not kept.
    */
-  void openDefinition(UUID id, String database, String text, int start, int end) {
+  void openDefinition(
+      UUID id, String database, String text, int start, int end, TabGroups.Group<Tab> into) {
     if (profile(id) == null) {
       return;
     }
@@ -1320,8 +1321,7 @@ final class State {
     console.text = text;
     console.definition = true;
     console.editor.readOnly(true).select(start, end);
-    var main = tabs.main().active();
-    tabs.add(main, main.tabs().size(), console);
+    tabs.add(into, into.tabs().size(), console);
   }
 
   /**

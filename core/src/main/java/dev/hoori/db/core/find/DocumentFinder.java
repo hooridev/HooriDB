@@ -131,7 +131,7 @@ public final class DocumentFinder {
   }
 
   /** What the values at a path held in the sample that a text or a number is found in. */
-  private enum Held {
+  enum Held {
     TEXT,
     NUMBER
   }
@@ -141,7 +141,8 @@ public final class DocumentFinder {
    * text, or numbers where the text is one; then one aggregation, of the documents where any of
    * them matches, at most one more than {@link Search#LIMIT}, counts on the server how many did,
    * and in each field, by its own patterns, so that only the counts come back. A field is searched
-   * by what its values are, never as text.
+   * by what its values are, never as text, and each hit carries that condition as the filter that
+   * finds what it counted.
    */
   public static Hits search(DocumentSession session, Candidate candidate, Search search)
       throws QueryException {
@@ -150,9 +151,11 @@ public final class DocumentFinder {
     var number = search.number();
     var searched = new ArrayList<String>();
     var conditions = new ArrayList<Document>();
+    var filters = new ArrayList<String>();
     fields.forEach((path, held) -> condition(path, held, search, number).ifPresent(condition -> {
       searched.add(path);
       conditions.add(condition);
+      filters.add(Shell.compact(condition));
     }));
     if (searched.isEmpty()) {
       return Hits.none(collection);
@@ -179,7 +182,7 @@ public final class DocumentFinder {
         counts[i] = count(reply.get("f" + i));
       }
     }
-    return Hits.of(collection, searched, counts, matched);
+    return Hits.of(collection, searched, filters, counts, matched);
   }
 
   private static Document count() {
@@ -220,21 +223,12 @@ public final class DocumentFinder {
   }
 
   /**
-   * The Filter of the collection's tab that finds its documents whose value in the field matches,
-   * as a document of the shell: as text, and as a number where the text is one that a number of
-   * the server's can be.
+   * The filter that finds the documents whose value in the field matches as the field's values
+   * held it, as a document of the shell: as text, and as a number where the text is one that a
+   * number of the server's can be; empty where it holds neither that can match.
    */
-  public static String filter(String path, Search search) {
-    var conditions = new ArrayList<Object>();
-    conditions.add(text(path, search));
-    search
-        .number()
-        .flatMap(DocumentFinder::value)
-        .ifPresent(v -> conditions.add(Document.of(path, v)));
-    var filter = conditions.size() == 1
-        ? (Document) conditions.getFirst()
-        : Document.of("$or", Document.array(conditions));
-    return Shell.compact(filter);
+  static Optional<String> filter(String path, Set<Held> held, Search search) {
+    return condition(path, held, search, search.number()).map(Shell::compact);
   }
 
   // The search as a pattern of the server's: a text as itself.

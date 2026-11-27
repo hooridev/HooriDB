@@ -16,10 +16,15 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /** What a search in data reads and how, without a server. */
 class FinderTest {
+
+  // A field whose sample held both text and numbers.
+  private static final Set<DocumentFinder.Held> BOTH =
+      Set.of(DocumentFinder.Held.TEXT, DocumentFinder.Held.NUMBER);
 
   private static Candidate candidate(Table table, String... columns) {
     var list = new java.util.ArrayList<Column>();
@@ -208,15 +213,18 @@ class FinderTest {
     assertEquals(
         "{ $or: [ { 'address.city': { $regex: '\\\\A42\\\\z', $options: 'i' } },"
             + " { 'address.city': Long('42') } ] }",
-        DocumentFinder.filter("address.city", new Search("42", Match.EQUALS, false)));
+        DocumentFinder.filter("address.city", BOTH, new Search("42", Match.EQUALS, false))
+            .orElseThrow());
     // A decimal as a double and as a Decimal128, which is equal to no double that is not it.
     assertEquals(
         "{ $or: [ { total: { $regex: '0\\\\.1' } }, { total: { $in: [ 0.1, Decimal128('0.1') ]"
             + " } } ] }",
-        DocumentFinder.filter("total", new Search("0.1", Match.CONTAINS, true)));
+        DocumentFinder.filter("total", BOTH, new Search("0.1", Match.CONTAINS, true))
+            .orElseThrow());
     assertEquals(
         "{ name: { $regex: 'a\\\\.b' } }",
-        DocumentFinder.filter("name", new Search("a.b", Match.CONTAINS, true)));
+        DocumentFinder.filter("name", BOTH, new Search("a.b", Match.CONTAINS, true))
+            .orElseThrow());
   }
 
   @Test
@@ -225,21 +233,25 @@ class FinderTest {
     var digits = "0.12345678901234567890123456789012345";
     assertEquals(
         "{ total: { $regex: '" + digits.replace(".", "\\\\.") + "' } }",
-        DocumentFinder.filter("total", new Search(digits, Match.CONTAINS, true)));
+        DocumentFinder.filter("total", BOTH, new Search(digits, Match.CONTAINS, true))
+            .orElseThrow());
     // Below a double's range, where it would be 0.0, and beyond a Decimal128's: as text alone.
     assertEquals(
         "{ total: { $regex: '1E-6177' } }",
-        DocumentFinder.filter("total", new Search("1E-6177", Match.CONTAINS, true)));
+        DocumentFinder.filter("total", BOTH, new Search("1E-6177", Match.CONTAINS, true))
+            .orElseThrow());
     // Below a double's range but within a Decimal128's: as a Decimal128 alone.
     assertEquals(
         "{ $or: [ { total: { $regex: '1E-400' } }, { total: { $in: [ Decimal128('1E-400') ] } }"
             + " ] }",
-        DocumentFinder.filter("total", new Search("1E-400", Match.CONTAINS, true)));
+        DocumentFinder.filter("total", BOTH, new Search("1E-400", Match.CONTAINS, true))
+            .orElseThrow());
     // Beyond a double's range: as a Decimal128 alone.
     assertEquals(
         "{ $or: [ { total: { $regex: '1\\\\.5E400' } }, { total: { $in: [ Decimal128('1.5E+400')"
             + " ] } } ] }",
-        DocumentFinder.filter("total", new Search("1.5E400", Match.CONTAINS, true)));
+        DocumentFinder.filter("total", BOTH, new Search("1.5E400", Match.CONTAINS, true))
+            .orElseThrow());
     assertTrue(DocumentFinder.decimal128(new BigDecimal("1234567890123456789012345678901234")));
     assertFalse(DocumentFinder.decimal128(new BigDecimal("12345678901234567890123456789012345")));
     assertTrue(DocumentFinder.decimal128(new BigDecimal("1.20000000000000000000000000000000000")));

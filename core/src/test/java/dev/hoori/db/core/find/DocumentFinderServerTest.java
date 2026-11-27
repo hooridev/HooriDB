@@ -13,6 +13,7 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.DocumentSession;
+import dev.hoori.db.core.document.Shell;
 import dev.hoori.db.core.find.Search.Match;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Purpose;
@@ -21,6 +22,7 @@ import dev.hoori.db.core.query.QueryException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -66,6 +68,37 @@ class DocumentFinderServerTest {
     }
   }
 
+  // The columns' hits without the filters that counted them.
+  private static List<Hits.Hit> counted(Hits hits) {
+    return hits.columns().stream().map(h -> new Hits.Hit(h.column(), h.rows())).toList();
+  }
+
+  @Test
+  void aHitsFilterFindsWhatItCountedAsTheSampleHeldItNotNumbersThatCameLater() throws Exception {
+    var documents = List.of(Document.of("_id", 1, "x", "42"), Document.of("_id", 2, "x", "other"));
+    with(documents, (session, candidate) -> {
+      var name = candidate.table().name();
+      var hits = DocumentFinder.search(session, candidate, new Search("42", Match.CONTAINS, false));
+      var x = hits.columns().stream()
+          .filter(h -> h.column().equals("x"))
+          .findFirst()
+          .orElseThrow();
+      // The sample held text alone at x: the number 42 is not sought there.
+      assertEquals(Optional.of("{ x: { $regex: '42', $options: 'i' } }"), x.filter());
+      try (var writer = session(false)) {
+        writer.command(
+            HOORI.name(),
+            Document.of(
+                "insert", name, "documents", Document.array(Document.of("_id", 3, "x", 42))));
+      }
+      // Opened, the hit finds the documents it counted, not the number that came after.
+      var count = session.command(
+          HOORI.name(),
+          Document.of("count", name, "query", Shell.document(x.filter().orElseThrow())));
+      assertEquals(x.rows(), ((Number) count.get("n")).intValue());
+    });
+  }
+
   @Test
   void collectionsAndTheirFieldsAreFoundByName() throws Exception {
     try (var session = session(true)) {
@@ -101,13 +134,13 @@ class DocumentFinderServerTest {
           sent::add,
           () ->
               DocumentFinder.search(session, customers, new Search("LONDON", Match.EQUALS, false)));
-      assertEquals(List.of(new Hits.Hit("address.city", 1)), london.columns(), "" + london);
+      assertEquals(List.of(new Hits.Hit("address.city", 1)), counted(london), "" + london);
       var tags = DocumentFinder.search(session, customers, new Search("av", Match.CONTAINS, true));
-      assertEquals(List.of(new Hits.Hit("tags", 1)), tags.columns());
+      assertEquals(List.of(new Hits.Hit("tags", 1)), counted(tags));
       var a = DocumentFinder.search(session, customers, new Search("^a", Match.PATTERN, false));
-      assertEquals(List.of(new Hits.Hit("name", 1), new Hits.Hit("email", 1)), a.columns());
+      assertEquals(List.of(new Hits.Hit("name", 1), new Hits.Hit("email", 1)), counted(a));
       var number = DocumentFinder.search(session, customers, new Search("42", Match.EQUALS, false));
-      assertEquals(List.of(new Hits.Hit("score", 1)), number.columns());
+      assertEquals(List.of(new Hits.Hit("score", 1)), counted(number));
       assertFalse(number.more());
       assertTrue(number.searched().contains("_id"));
       // The collections, their counts, samples and searches go to the log as a search's.
@@ -126,7 +159,7 @@ class DocumentFinderServerTest {
     with(List.of(Document.of("_id", 1, "note", "a\rb")), (session, candidate) -> {
       var hits =
           DocumentFinder.search(session, candidate, new Search("^a.b$", Match.PATTERN, true));
-      assertEquals(List.of(new Hits.Hit("note", 1)), hits.columns(), "" + hits);
+      assertEquals(List.of(new Hits.Hit("note", 1)), counted(hits), "" + hits);
     });
   }
 
@@ -136,7 +169,7 @@ class DocumentFinderServerTest {
     with(List.of(Document.of("_id", 1, "note", "7")), (session, candidate) -> {
       var hits = DocumentFinder.search(
           session, candidate, new Search("^[[:digit:]]$", Match.PATTERN, true));
-      assertEquals(List.of(new Hits.Hit("note", 1)), hits.columns(), "" + hits);
+      assertEquals(List.of(new Hits.Hit("note", 1)), counted(hits), "" + hits);
     });
   }
 
@@ -157,7 +190,7 @@ class DocumentFinderServerTest {
       var hits =
           DocumentFinder.search(session, candidate, new Search("needle", Match.CONTAINS, true));
       assertEquals(List.of("w"), hits.searched(), "" + hits);
-      assertEquals(List.of(new Hits.Hit("w", 1)), hits.columns());
+      assertEquals(List.of(new Hits.Hit("w", 1)), counted(hits));
       var found = DocumentFinder.objects(session, HOORI, new Search("y", Match.EQUALS, false));
       assertTrue(found.isEmpty(), found.toString());
     });
@@ -173,7 +206,7 @@ class DocumentFinderServerTest {
       var hits =
           DocumentFinder.search(session, candidate, new Search("apple", Match.CONTAINS, false));
       assertTrue(hits.more());
-      assertEquals(List.of(new Hits.Hit("word", Search.LIMIT)), hits.columns());
+      assertEquals(List.of(new Hits.Hit("word", Search.LIMIT)), counted(hits));
     });
   }
 

@@ -23,6 +23,7 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
+import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.Container;
@@ -31,7 +32,6 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.find.Candidate;
-import dev.hoori.db.core.find.DocumentFinder;
 import dev.hoori.db.core.find.Finder;
 import dev.hoori.db.core.find.Found;
 import dev.hoori.db.core.find.Search;
@@ -82,8 +82,12 @@ final class FindTab implements Tab {
     Candidate table();
   }
 
-  /** A column's hits: the rows counted, and whether the table had more. */
-  record Hit(Candidate table, String column, int rows, boolean more) implements Result {}
+  /**
+   * A column's hits: the rows counted, and whether the table had more; of a collection's field,
+   * the filter that counted them, which opening it applies.
+   */
+  record Hit(Candidate table, String column, int rows, boolean more, Optional<String> filter)
+      implements Result {}
 
   /** A table that was not searched, and why, as the server said. */
   record Skipped(Candidate table, String why) implements Result {}
@@ -315,7 +319,7 @@ final class FindTab implements Tab {
         link -> link.search(table, search, as),
         got -> {
           for (var hit : got.columns()) {
-            hits.add(new Hit(table, hit.column(), hit.rows(), got.more()));
+            hits.add(new Hit(table, hit.column(), hit.rows(), got.more(), hit.filter()));
           }
           done++;
           next(s, session);
@@ -387,12 +391,14 @@ final class FindTab implements Tab {
 
   private void open(State s, Found f) {
     if (f.showsDefinition()) {
+      // Beside the search, in whichever window it is.
       s.openDefinition(
           id,
           scope.database().name(),
           f.definition(),
           f.inDefinition() ? f.start() : 0,
-          f.inDefinition() ? f.end() : 0);
+          f.inDefinition() ? f.end() : 0,
+          beside(s));
       return;
     }
     if (f.table() == null) {
@@ -414,12 +420,17 @@ final class FindTab implements Tab {
       return;
     }
     var provider = profile.provider();
+    // A collection's documents as the search counted them, by the types its sample held.
     var where = provider.keepsDocuments()
-        ? Optional.of(DocumentFinder.filter(hit.column(), searched))
+        ? hit.filter()
         : Finder.where(provider, hit.table(), hit.column(), searched, searchedOthers);
+    where.ifPresent(w -> s.openWhere(id, hit.table().table(), w, beside(s)));
+  }
+
+  // The tabs this search is among, or the main window's where it is in none.
+  private TabGroups.Group<Tab> beside(State s) {
     var group = s.tabs.groupOf(this);
-    where.ifPresent(w ->
-        s.openWhere(id, hit.table().table(), w, group == null ? s.tabs.main().active() : group));
+    return group == null ? s.tabs.main().active() : group;
   }
 
   /** Says something in the tab's status line for a while. */

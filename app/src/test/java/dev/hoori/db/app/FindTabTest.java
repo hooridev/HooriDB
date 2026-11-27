@@ -13,6 +13,8 @@ import static dev.hoori.db.app.MonitorTabTest.line;
 import static dev.hoori.db.app.MonitorTabTest.row;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
@@ -255,6 +257,49 @@ class FindTabTest {
     var view = results(c.tree("view"));
     assertTrue(row(view, 0).contains("\"order_totals\""), view);
     assertTrue(row(view, 0).contains("\"View\""), view);
+  }
+
+  @Test
+  void aCollectionsHitOpensWithTheFilterThatCountedIt() throws Exception {
+    c.servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        hoori
+          customers
+            _id: objectId
+            name: text
+        """);
+    var docs = DocumentConsoleTest.DOCS;
+    var app = c.app(docs);
+    c.ready(app, docs);
+    c.run(app, START + open(docs.name()) + SETTLE + menu("hoori", "Find…") + SETTLE);
+    c.run(app, "press role=radio label=\"Data\"\nframe\n" + SETTLE + search("2") + "snap hits\n");
+    var hits = results(c.tree("hits"));
+    assertTrue(row(hits, 0).contains("\"name\""), hits);
+    // Opened, the hit applies the filter that counted it, as text where the sample held text,
+    // not one made anew that would find a number 2 too.
+    c.run(app, "press text=\"name\" clicks 2\nframe\n" + SETTLE + "frame\n" + SETTLE);
+    c.run(app, "snap rows\n");
+    var rows = c.tree("rows");
+    var filter = line(rows, "role=textbox label=\"Filter\"");
+    assertTrue(filter.contains("{ name: { $regex: '2' } }"), rows);
+    assertFalse(filter.contains("Long("), filter);
+  }
+
+  @Test
+  void aDefinitionFoundInAWindowOfItsOwnOpensBesideTheSearch() throws Exception {
+    var app = find();
+    c.run(
+        app,
+        "press #tab-0 right\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Move to new window\"\nframe\nadvance 1\nframe\n"
+            + "window \"" + TAB + "\"\n" + search("needle") + "press #cell-0-0 clicks 2\nframe\n"
+            + SETTLE);
+    var s = app.state();
+    var group = s.tabs.groupOf(s.finds(null).getFirst());
+    assertNotNull(group.window(), "The search is in a window of its own");
+    var consoles = s.consoles(null);
+    assertEquals(1, consoles.size(), consoles.toString());
+    assertSame(group, s.tabs.groupOf(consoles.getFirst()));
+    assertTrue(group.activeTab() instanceof ConsoleTab, String.valueOf(group.activeTab()));
   }
 
   @Test

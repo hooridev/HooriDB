@@ -2208,7 +2208,13 @@ final class FakeServers implements Servers {
         var list = new ArrayList<Hits.Hit>();
         for (int c : searched) {
           if (hits[c] > 0) {
-            list.add(new Hits.Hit(columns.get(c).name(), hits[c]));
+            var name = columns.get(c).name();
+            // A field's hits come with the filter that counted them, as text alone here, as
+            // where the sample held text alone, whatever the text is.
+            var filter = made.provider().keepsDocuments()
+                ? Optional.of("{ " + name + ": { $regex: '" + search.text() + "' } }")
+                : Optional.<String>empty();
+            list.add(new Hits.Hit(name, hits[c], filter));
           }
         }
         return new Hits(
