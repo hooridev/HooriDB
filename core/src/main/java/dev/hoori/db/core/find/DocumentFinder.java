@@ -6,6 +6,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.document.Bson;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.DocumentException;
+import dev.hoori.db.core.document.DocumentFilters;
 import dev.hoori.db.core.document.DocumentSession;
 import dev.hoori.db.core.document.Shell;
 import dev.hoori.db.core.log.Purpose;
@@ -20,14 +21,16 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 /**
  * Searches a server of documents, through {@link DocumentSession#command}, so that a read-only
  * session sends only what reads: the names of the collections of a database and of the fields that
  * a sample of their documents has, and the values of those fields, a collection at a time, with
- * {@code $regex} for a text and equality for a number. The fields are those of {@link
- * DocumentSession#SAMPLE} documents, nested ones and those in arrays included, by their paths.
+ * {@code $regex} for a text and equality for a number, which the server matches and counts itself.
+ * The fields are those of {@link DocumentSession#SAMPLE} documents, nested ones and those in arrays
+ * included, by their paths; a name that a path cannot name, one with a dot or starting with
+ * {@code $}, is left out with what it holds. Every command goes through {@link
+ * dev.hoori.db.core.log.Journal} as a {@link Purpose#SEARCH}.
  */
 public final class DocumentFinder {
 
@@ -35,11 +38,15 @@ public final class DocumentFinder {
   private static final int DECIMAL128_MIN_EXPONENT = -6176;
   private static final int DECIMAL128_MAX_ADJUSTED = 6144;
 
+  // The facet that counts the documents matched, beside those of the fields, f0, f1 and on.
+  private static final String MATCHED = "matched";
+
   private DocumentFinder() {}
 
   /**
    * The collections and views of the database whose names match, and the fields of their sampled
-   * documents whose paths do, as columns of the collection.
+   * documents whose paths do, as columns of the collection; a collection the user may not read,
+   * or that is gone meanwhile, is found by its name alone.
    */
   public static List<Found> objects(DocumentSession session, Database database, Search search)
       throws QueryException {
@@ -60,7 +67,8 @@ public final class DocumentFinder {
               at.end())));
     }
     for (var collection : collections) {
-      for (var path : fields(sample(session, collection)).keySet()) {
+      var documents = readable(() -> sample(session, collection));
+      for (var path : fields(documents.orElse(List.of())).keySet()) {
         matching
             .in(path)
             .ifPresent(at -> found.add(new Found(
@@ -70,21 +78,42 @@ public final class DocumentFinder {
     return List.copyOf(found);
   }
 
-  /** The collections and views of the database, with the server's estimate of their documents. */
+  /**
+   * The collections and views of the database, with the server's estimate of their documents;
+   * none for one the user may not count, or that is gone meanwhile, whose search then says why.
+   */
   public static List<Candidate> candidates(DocumentSession session, Database database)
       throws QueryException {
     var candidates = new ArrayList<Candidate>();
     for (var collection : collections(session, database)) {
-      candidates.add(
-          new Candidate(collection, session.estimate(collection), OptionalLong.empty(), List.of()));
+      var rows = readable(() -> session.estimate(Purpose.SEARCH, collection));
+      candidates.add(new Candidate(
+          collection, rows.orElse(OptionalLong.empty()), OptionalLong.empty(), List.of()));
     }
     return List.copyOf(candidates);
+  }
+
+  private interface Read<T> {
+    T read() throws QueryException;
+  }
+
+  // What the read gives, or empty where the user may not read the collection or it is gone.
+  private static <T> Optional<T> readable(Read<T> read) throws QueryException {
+    try {
+      return Optional.of(read.read());
+    } catch (QueryException e) {
+      if (e.failure() == QueryException.Failure.ACCESS_DENIED
+          || e.failure() == QueryException.Failure.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
   }
 
   private static List<Table> collections(DocumentSession session, Database database)
       throws QueryException {
     try {
-      return session.collections(database);
+      return session.collections(Purpose.SEARCH, database);
     } catch (CatalogException e) {
       throw QueryException.of(query(e.failure()), e.detail());
     }
@@ -109,9 +138,10 @@ public final class DocumentFinder {
 
   /**
    * Searches the collection: a sample of its documents names the fields, by their paths, that hold
-   * text, or numbers where the text is one; then one find of the documents where any of them
-   * matches, at most one more than {@link Search#LIMIT}, says how many did, and in which fields,
-   * by the values it gave. A field is searched by what its values are, never as text.
+   * text, or numbers where the text is one; then one aggregation, of the documents where any of
+   * them matches, at most one more than {@link Search#LIMIT}, counts on the server how many did,
+   * and in each field, by its own patterns, so that only the counts come back. A field is searched
+   * by what its values are, never as text.
    */
   public static Hits search(DocumentSession session, Candidate candidate, Search search)
       throws QueryException {
@@ -119,66 +149,51 @@ public final class DocumentFinder {
     var fields = fields(sample(session, collection));
     var number = search.number();
     var searched = new ArrayList<String>();
-    var any = new ArrayList<Object>();
+    var conditions = new ArrayList<Document>();
     fields.forEach((path, held) -> condition(path, held, search, number).ifPresent(condition -> {
       searched.add(path);
-      any.add(condition);
+      conditions.add(condition);
     }));
     if (searched.isEmpty()) {
       return Hits.none(collection);
     }
-    int limit = Search.LIMIT + 1;
-    var command = Document.of(
-        "find",
-        collection.name(),
-        "filter",
-        Document.of("$or", Document.array(any)),
-        "projection",
-        projection(searched),
-        "limit",
-        limit,
-        "batchSize",
-        limit);
-    var documents = all(session, collection, command);
-    // As the server's PCRE2 reads it, where only \n ends a line: . matches \r there too.
-    var java = search.pattern();
-    var pattern = Pattern.compile(java.pattern(), java.flags() | Pattern.UNIX_LINES);
+    var facets = new ArrayList<Object>(List.of(MATCHED, Document.array(count())));
+    for (int i = 0; i < conditions.size(); i++) {
+      facets.add("f" + i);
+      facets.add(Document.array(
+          Document.of("$limit", Search.LIMIT), Document.of("$match", conditions.get(i)), count()));
+    }
+    var pipeline = Document.array(
+        Document.of("$match", Document.of("$or", Document.array(conditions))),
+        Document.of("$limit", Search.LIMIT + 1),
+        Document.of("$facet", Document.of(facets.toArray())));
+    var command =
+        Document.of("aggregate", collection.name(), "pipeline", pipeline, "cursor", Document.EMPTY);
+    var counted = all(session, collection, command);
     var counts = new int[searched.size()];
-    for (var document : documents.subList(0, Math.min(documents.size(), Search.LIMIT))) {
+    int matched = 0;
+    if (!counted.isEmpty()) {
+      var reply = counted.getFirst();
+      matched = count(reply.get(MATCHED));
       for (int i = 0; i < counts.length; i++) {
-        var path = searched.get(i);
-        var held = fields.get(path);
-        if (values(document, path).stream().anyMatch(v -> hit(v, held, pattern, number))) {
-          counts[i]++;
-        }
+        counts[i] = count(reply.get("f" + i));
       }
     }
-    return Hits.of(collection, searched, counts, documents.size());
+    return Hits.of(collection, searched, counts, matched);
   }
 
-  // Only the first part of each path, as two paths of one field would collide.
-  private static Document projection(List<String> paths) {
-    var projection = new LinkedHashMap<String, Object>();
-    for (var path : paths) {
-      projection.put(path.split("\\.", 2)[0], 1);
-    }
-    var shown = new ArrayList<Object>();
-    projection.forEach((name, one) -> {
-      shown.add(name);
-      shown.add(one);
-    });
-    return Document.of(shown.toArray());
+  private static Document count() {
+    return Document.of("$count", "n");
   }
 
-  // Whether the value matches as the condition on its field asks.
-  private static boolean hit(
-      Object value, Set<Held> held, Pattern pattern, Optional<BigDecimal> number) {
-    if (value instanceof String text) {
-      return held.contains(Held.TEXT) && pattern.matcher(text).find();
-    }
-    return held.contains(Held.NUMBER)
-        && number.isPresent()
-        && number(value).map(n -> n.compareTo(number.get()) == 0).orElse(false);
+  // What a facet of $count gave: one document with the number, or none for no document.
+  private static int count(Object facet) {
+    return facet instanceof List<?> list
+            && !list.isEmpty()
+            && list.getFirst() instanceof Document d
+            && d.get("n") instanceof Number n
+        ? n.intValue()
+        : 0;
   }
 
   // The condition on the field: $regex for text, equality for a number; empty where it holds
@@ -205,11 +220,11 @@ public final class DocumentFinder {
   }
 
   /**
-   * The statement of the shell that finds the collection's documents whose value in the field
-   * matches, for a console: as text, and as a number where the text is one that a number of the
-   * server's can be.
+   * The Filter of the collection's tab that finds its documents whose value in the field matches,
+   * as a document of the shell: as text, and as a number where the text is one that a number of
+   * the server's can be.
    */
-  public static String rows(Table collection, String path, Search search) {
+  public static String filter(String path, Search search) {
     var conditions = new ArrayList<Object>();
     conditions.add(text(path, search));
     search
@@ -219,30 +234,16 @@ public final class DocumentFinder {
     var filter = conditions.size() == 1
         ? (Document) conditions.getFirst()
         : Document.of("$or", Document.array(conditions));
-    return "db.getCollection(" + Shell.quote(collection.name()) + ").find(" + Shell.compact(filter)
-        + ")";
+    return Shell.compact(filter);
   }
 
-  // The search as a pattern of the server's: a text as itself, each sign that means something
-  // there escaped.
+  // The search as a pattern of the server's: a text as itself.
   private static String regex(Search search) {
     return switch (search.match()) {
-      case CONTAINS -> literal(search.text());
-      case EQUALS -> "\\A" + literal(search.text()) + "\\z";
+      case CONTAINS -> DocumentFilters.escapeRegex(search.text());
+      case EQUALS -> "\\A" + DocumentFilters.escapeRegex(search.text()) + "\\z";
       case PATTERN -> search.text();
     };
-  }
-
-  private static String literal(String text) {
-    var out = new StringBuilder(text.length() * 2);
-    for (int i = 0; i < text.length(); i++) {
-      char c = text.charAt(i);
-      if ("\\^$.|?*+()[]{}/-".indexOf(c) >= 0) {
-        out.append('\\');
-      }
-      out.append(c);
-    }
-    return out.toString();
   }
 
   // A number as the server compares it: a whole one as a long, which every type of number is
@@ -277,40 +278,12 @@ public final class DocumentFinder {
         && exponent + stripped.precision() - 1 <= DECIMAL128_MAX_ADJUSTED;
   }
 
-  private static Optional<BigDecimal> number(Object value) {
-    return switch (value) {
-      case Integer i -> Optional.of(BigDecimal.valueOf(i));
-      case Long l -> Optional.of(BigDecimal.valueOf(l));
-      case Double d when Double.isFinite(d) -> Optional.of(BigDecimal.valueOf(d));
-      case Bson.Decimal128 d -> Optional.ofNullable(d.value());
-      default -> Optional.empty();
-    };
-  }
-
-  // The documents of a sample of the collection, in the order of their ids.
   private static List<Document> sample(DocumentSession session, Table collection)
       throws QueryException {
-    var pipeline = Document.array(
-        Document.of("$sample", Document.of("size", DocumentSession.SAMPLE)),
-        Document.of("$sort", Document.of("_id", 1)));
-    var command = Document.of(
-        "aggregate",
-        collection.name(),
-        "pipeline",
-        pipeline,
-        "cursor",
-        Document.of("batchSize", DocumentSession.SAMPLE));
     try {
-      return all(session, collection, command);
-    } catch (QueryException e) {
-      // A view that cannot sample: its first documents then.
-      if (e.failure() != QueryException.Failure.OTHER) {
-        throw e;
-      }
-      return all(
-          session,
-          collection,
-          command.with("pipeline", Document.array(Document.of("$limit", DocumentSession.SAMPLE))));
+      return session.sample(Purpose.SEARCH, collection);
+    } catch (DocumentException e) {
+      throw DocumentSession.query(e);
     }
   }
 
@@ -324,9 +297,14 @@ public final class DocumentFinder {
     return fields;
   }
 
+  // A name that a path cannot name is none of a field's: a dot parts a path, and a $ starts an
+  // operator in a filter.
   private static void fields(Document document, String above, Map<String, Set<Held>> fields) {
     for (var entry : document.entries()) {
-      held(above + entry.name(), entry.value(), fields);
+      var name = entry.name();
+      if (!name.isEmpty() && name.indexOf('.') < 0 && !name.startsWith("$")) {
+        held(above + name, entry.value(), fields);
+      }
     }
   }
 
@@ -344,29 +322,6 @@ public final class DocumentFinder {
       case null, default -> {
         // Nothing a text or a number is found in.
       }
-    }
-  }
-
-  // The values at the path, through arrays, as the server reads a path.
-  private static List<Object> values(Object value, String path) {
-    var values = new ArrayList<Object>();
-    values(value, path.split("\\."), 0, values);
-    return values;
-  }
-
-  private static void values(Object value, String[] parts, int at, List<Object> values) {
-    if (value instanceof List<?> items) {
-      for (var item : items) {
-        values(item, parts, at, values);
-      }
-      return;
-    }
-    if (at == parts.length) {
-      values.add(value);
-      return;
-    }
-    if (value instanceof Document d && d.has(parts[at])) {
-      values(d.get(parts[at]), parts, at + 1, values);
     }
   }
 

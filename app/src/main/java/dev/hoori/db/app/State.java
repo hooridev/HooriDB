@@ -1320,18 +1320,33 @@ final class State {
     tabs.add(main, main.tabs().size(), console);
   }
 
-  /** Opens a console on the database with the statement, and runs it. */
-  void openRows(UUID id, String database, String sql) {
-    if (profile(id) == null) {
-      return;
+  /**
+   * Opens the table's rows filtered by the WHERE, or of a collection the Filter, in a new tab of
+   * the window of these tabs, or in its tab where one is open, in whichever window; the clause goes
+   * through the tab's own filter, which asks about pending edits first and keeps its ORDER BY or
+   * Sort.
+   */
+  void openWhere(UUID id, Table table, String where, TabGroups.Group<Tab> into) {
+    var open = tables(id).stream()
+        .filter(x ->
+            x.table.container().equals(table.container()) && x.table.name().equals(table.name()))
+        .findFirst();
+    var group = into;
+    TableTab tab;
+    if (open.isEmpty()) { // opened here filtered, never read without the filter first
+      tab = TableTab.of(this, id, table);
+      tabs.add(group, group.tabs().size(), tab);
+    } else {
+      tab = open.get();
+      group = tabs.groupOf(tab);
+      tabs.select(group, group.tabs().indexOf(tab));
+      var window = group.window() != null ? group.window() : app.windows().of(app);
+      if (window != null) {
+        window.raise();
+      }
     }
-    var console = ConsoleTab.of(this, id, database);
-    console.text = sql;
-    console.editor.select(sql.length(), sql.length());
-    var main = tabs.main().active();
-    tabs.add(main, main.tabs().size(), console);
-    keeping.persist(keeping.consolesKept);
-    console.runAll(this);
+    Frame.focusContentSoon(this, group);
+    tab.applyWhere(this, where);
   }
 
   /** The server monitors of every window, of the connection or of all where it is null. */

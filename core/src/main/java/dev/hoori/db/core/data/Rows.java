@@ -848,6 +848,63 @@ public final class Rows {
     return condition.toString();
   }
 
+  /**
+   * The condition that the expression, text of the field's type, holds the text anywhere, as a
+   * header filter's Contains writes it: whatever the case, or case and all.
+   *
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String contains(
+      Provider provider, String expression, Field field, String text, boolean caseSensitive) {
+    var dialect = provider.dialect().rows();
+    var pattern = "%" + escapeLike(text) + "%";
+    return caseSensitive
+        ? dialect.likeExactly(expression, field, pattern)
+        : dialect.like(expression, field, pattern);
+  }
+
+  /**
+   * The condition that the expression, text of the field's type, is the text whole, as a header
+   * filter's Equals and Equals exactly write it.
+   *
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String equalsText(
+      Provider provider, String expression, Field field, String text, boolean caseSensitive) {
+    var dialect = provider.dialect().rows();
+    return caseSensitive
+        ? dialect.equalsExactly(expression, field, text)
+        : dialect.equalsIgnoringCase(expression, field, text);
+  }
+
+  /**
+   * The condition that the server's regular expression matches in the expression, text of the
+   * field's type, as a header filter's writes it.
+   *
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String matches(
+      Provider provider,
+      String expression,
+      Field field,
+      String regularExpression,
+      boolean caseSensitive) {
+    var dialect = provider.dialect().rows();
+    return caseSensitive
+        ? dialect.matchesExactly(expression, field, regularExpression)
+        : dialect.matches(expression, field, regularExpression);
+  }
+
+  /**
+   * The value as a literal of the provider's SQL, as the filters write theirs.
+   *
+   * @throws IllegalArgumentException if it is of no kind's type
+   * @throws IllegalStateException for a provider whose servers do not speak SQL
+   */
+  public static String literal(Provider provider, Object value) {
+    return provider.dialect().rows().literal(value);
+  }
+
   // shortcut: refuses values whose literal may not equal what is stored (a FLOAT's decimal, a
   // moment's offset, a backslash under either escape mode); compare them as unchanged() does
   // where such keys turn up.

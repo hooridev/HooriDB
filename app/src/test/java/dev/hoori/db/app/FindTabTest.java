@@ -209,21 +209,22 @@ class FindTabTest {
         "press role=radio label=\"Objects\"\nframe\nadvance 1\nframe\n"
             + "press #find-text\nkey A control\ntype \"orders\"\nkey Enter\nframe\n" + SETTLE
             + "press role=radio label=\"Data\"\nframe\nadvance 1\nframe\n");
-    // Opening a hit, the first row of the results below the tables, opens a console with the
-    // query of its rows, which runs.
-    c.servers.statement(
-        "SELECT * FROM \"public\".\"customers\" WHERE CAST(\"name\" AS pg_catalog.text)"
-            + " COLLATE pg_catalog.\"default\""
-            + " OPERATOR(pg_catalog.~~*) '%name 2%'",
-        List.of(FakeServers.made(1, "id: integer", "name: text")));
-    c.run(app, "press text=\"name\" clicks 2\nframe\n" + SETTLE + "snap rows\n");
-    var console = c.tree("rows");
+    // Opening a hit, the first row of the results below the tables, opens its table filtered
+    // by the condition that counted it, in the tab's own filter.
+    var where = "CAST(\"name\" AS pg_catalog.text) COLLATE pg_catalog.\"default\" ILIKE"
+        + " '%name 2%' ESCAPE '!'";
+    var customers = PG + "/shop.public.customers";
+    c.servers.values(customers + " WHERE " + where, List.of(List.of(2L, "name 2", "e")));
+    c.run(app, "press text=\"name\" clicks 2\nframe\n" + SETTLE + "frame\n" + SETTLE);
+    c.run(app, "snap rows\n");
+    var rows = c.tree("rows");
+    assertTrue(rows.contains("role=tab label=\"customers\""), rows);
     assertTrue(
-        console.contains("SELECT * FROM \\\"public\\\".\\\"customers\\\" WHERE CAST(\\\"name\\\" AS"
-            + " pg_catalog.text) COLLATE pg_catalog.\\\"default\\\" OPERATOR(pg_catalog.~~*)"
-            + " '%name 2%'"),
-        console);
-    assertTrue(console.contains("\"Ran in 4 ms · 1 row\""), console);
+        c.servers.calls.contains("read " + customers + " 0-200 WHERE " + where),
+        c.servers.calls.toString());
+    assertTrue(line(rows, "role=textbox label=\"WHERE\"").contains("name 2"), rows);
+    assertFalse(
+        c.servers.calls.stream().anyMatch(x -> x.startsWith("run ")), c.servers.calls.toString());
   }
 
   @Test
@@ -279,7 +280,7 @@ class FindTabTest {
   }
 
   @Test
-  void onMySqlTheCaseOfDataFollowsTheCollation() throws Exception {
+  void onMySqlCaseCountsInDataToo() throws Exception {
     var app = c.app(LEGACY);
     c.ready(app, LEGACY);
     c.run(app, START + open("legacy") + SETTLE);
@@ -291,7 +292,7 @@ class FindTabTest {
     assertFalse(line(c.tree("objects"), "role=checkbox label=\"Match case\"").contains("disabled"));
     c.run(app, "press role=radio label=\"Data\"\nframe\n" + SETTLE + "snap data\n");
     var data = c.tree("data");
-    assertTrue(line(data, "role=checkbox label=\"Match case\"").contains("disabled"), data);
+    assertFalse(line(data, "role=checkbox label=\"Match case\"").contains("disabled"), data);
     assertTrue(
         c.servers.calls.contains("candidates " + MYSQL + "/legacy"), c.servers.calls.toString());
   }

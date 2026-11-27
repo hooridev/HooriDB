@@ -8,8 +8,8 @@ package dev.hoori.db.core.dialect;
  * <p>Each query of objects takes the container's name as its one parameter where it is {@link
  * Scope#CONTAINER}, the schema or the database that holds tables, and none where it is {@link
  * Scope#USER_SCHEMAS}, every schema of the connection's database that is not the server's own; its
- * rows come by schema, then by name. A condition is written with a {@code ?} for each value it is
- * given, which {@link dev.hoori.db.core.find.Finder} binds.
+ * rows come by schema, then by name. The conditions on text are those of the filters of a table,
+ * {@link dev.hoori.db.core.data.Rows}'s.
  */
 public interface FindDialect {
 
@@ -43,12 +43,6 @@ public interface FindDialect {
   }
 
   /**
-   * Whether the case of a text search follows each column's collation, so that the search cannot
-   * ask for it to be told apart or not, as with MariaDB's and MySQL's {@code LIKE}.
-   */
-  boolean caseByCollation();
-
-  /**
    * The tables and views: the schema, the name, the kind as {@link CatalogDialect} gives it, the
    * server's estimate of the rows and the bytes of the data, each NULL where it has none, and
    * whether its rows are read with those of another the query lists, as a partition's are with its
@@ -79,27 +73,17 @@ public interface FindDialect {
   /** What the column of this type, as {@link CatalogDialect#columns} names it, holds. */
   Holds holds(String type);
 
-  /** The column's value as text, for a search of a column that does not hold text. */
-  String asText(String column);
-
   /**
-   * The condition that the column's text holds the value that {@link #contained} makes, case
-   * sensitive or not, where {@link #caseByCollation} lets it say.
+   * The column's value as text, for the conditions of {@link dev.hoori.db.core.data.Rows} that find
+   * a text in it, which take it as of type {@code text}: in a collation they can compare with,
+   * whatever the column holds.
    */
-  String contains(String column, boolean caseSensitive);
-
-  /** The value that {@link #contains} looks for, with the text taken as it is. */
-  String contained(String text);
-
-  /** The condition that the column's text equals the value. */
-  String equalText(String column, boolean caseSensitive);
-
-  /** The condition that the server's regular expression, the value, matches in the column's text. */
-  String matches(String column, boolean caseSensitive);
+  String asText(String column, Holds holds);
 
   /**
    * The condition that the number in the column, of the type that {@link #holds} reads, equals the
-   * value, a number: in the column's own type where it holds {@link Holds#FLOAT}.
+   * number, a literal of the server's: in the column's own type where it holds {@link
+   * Holds#FLOAT}.
    */
-  String equalNumber(String column, String type);
+  String equalNumber(String column, String type, String number);
 }

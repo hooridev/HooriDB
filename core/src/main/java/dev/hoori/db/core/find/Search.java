@@ -10,8 +10,8 @@ import java.util.regex.PatternSyntaxException;
 /**
  * What is searched for: a text, how it matches, and whether case counts. In names and definitions
  * HooriDB matches it itself, with a pattern as Java's regular expressions read it; in data the
- * server does, with a pattern as its own read it, and where the dialect says that the case
- * follows each column's collation, {@code caseSensitive} says nothing there.
+ * server does, with a pattern as its own read it, and with case or without whatever the
+ * collations of the columns say.
  */
 public record Search(String text, Match match, boolean caseSensitive) {
 
@@ -30,9 +30,9 @@ public record Search(String text, Match match, boolean caseSensitive) {
 
   /** Who matches a pattern: HooriDB, as Java's regular expressions read it, or the server. */
   public enum Reader {
-    /** HooriDB, in names and definitions, and in the values a server of documents gave. */
+    /** HooriDB, in names and definitions. */
     HOORIDB,
-    /** The server, in the data of a server of SQL, which reports a pattern it cannot read. */
+    /** The server, in data, which reports a pattern it cannot read. */
     SERVER
   }
 

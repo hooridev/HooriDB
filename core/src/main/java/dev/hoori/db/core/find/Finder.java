@@ -8,7 +8,9 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
-import dev.hoori.db.core.dialect.FindDialect;
+import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.Kind;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.dialect.FindDialect.Holds;
 import dev.hoori.db.core.dialect.FindDialect.Scope;
 import dev.hoori.db.core.log.Journal;
@@ -18,7 +20,6 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -32,8 +33,10 @@ import java.util.OptionalLong;
 /**
  * Searches a server of SQL, on a connection the caller does not use for anything else meanwhile:
  * the names and definitions of the objects of a database or schema, and the values of its tables'
- * columns, a table at a time, by the queries of the dialect's {@link FindDialect}. Every query goes
- * through {@link Journal} as a {@link Purpose#SEARCH}.
+ * columns, a table at a time, by the queries of the dialect's {@link
+ * dev.hoori.db.core.dialect.FindDialect} and the conditions of a table's filters, {@link Rows}'s,
+ * so that a column's hits open as its table filtered alike. Every query goes through {@link
+ * Journal} as a {@link Purpose#SEARCH}.
  *
  * <p>A database, where the provider has schemas, stands for every schema of it that is not the
  * server's own, and is read on a connection to it, as the catalog's queries are. Each call blocks,
@@ -221,8 +224,8 @@ public final class Finder {
     return columns;
   }
 
-  // A condition on a column, with the value it binds.
-  private record Condition(Column column, String sql, Object value) {}
+  // A condition on a column, with its values written in as the server reads them.
+  private record Condition(Column column, String sql) {}
 
   /**
    * The columns of the table that a search for the value reads, as {@link #search} does: those of
@@ -246,9 +249,10 @@ public final class Finder {
       var holds = find.holds(column.type());
       boolean numbers = holds == Holds.NUMBER || holds == Holds.DOUBLE || holds == Holds.FLOAT;
       if (numbers && number.isPresent()) {
-        number(find, column, name, holds, number.get()).ifPresent(conditions::add);
+        number(provider, column, name, holds, number.get()).ifPresent(conditions::add);
       } else if (holds == Holds.TEXT || others) {
-        conditions.add(text(find, column, holds == Holds.TEXT ? name : find.asText(name), search));
+        conditions.add(
+            new Condition(column, text(provider, column, find.asText(name, holds), search)));
       }
     }
     return conditions;
@@ -257,21 +261,24 @@ public final class Finder {
   // A double as one, as a server may read a long decimal as none, as MySQL does 1E300's; none
   // where no value of the column can be the number.
   private static Optional<Condition> number(
-      FindDialect find, Column column, String name, Holds holds, BigDecimal number) {
+      Provider provider, Column column, String name, Holds holds, BigDecimal number) {
     if (!canHold(holds, number)) {
       return Optional.empty();
     }
     Object value = holds == Holds.DOUBLE ? number.doubleValue() : number;
-    return Optional.of(new Condition(column, find.equalNumber(name, column.type()), value));
+    var literal = Rows.literal(provider, value);
+    return Optional.of(
+        new Condition(column, provider.dialect().find().equalNumber(name, column.type(), literal)));
   }
 
-  private static Condition text(FindDialect find, Column column, String text, Search search) {
+  // The conditions of a table's filters, on the column's text as the dialect gives it.
+  private static String text(Provider provider, Column column, String text, Search search) {
+    var field = new Field(column.name(), "text", Kind.TEXT);
     boolean sensitive = search.caseSensitive();
     return switch (search.match()) {
-      case CONTAINS ->
-        new Condition(column, find.contains(text, sensitive), find.contained(search.text()));
-      case EQUALS -> new Condition(column, find.equalText(text, sensitive), search.text());
-      case PATTERN -> new Condition(column, find.matches(text, sensitive), search.text());
+      case CONTAINS -> Rows.contains(provider, text, field, search.text(), sensitive);
+      case EQUALS -> Rows.equalsText(provider, text, field, search.text(), sensitive);
+      case PATTERN -> Rows.matches(provider, text, field, search.text(), sensitive);
     };
   }
 
@@ -302,7 +309,7 @@ public final class Finder {
     }
     requireConnectedTo(connection, provider, table.container().database());
     var each = conditions.stream().map(Condition::sql).toList();
-    var sql = "SELECT " + String.join(", ", each) + " FROM " + qualified(provider, table)
+    var sql = "SELECT " + String.join(", ", each) + " FROM " + Rows.qualified(provider, table)
         + " WHERE " + String.join(" OR ", each) + " LIMIT " + (Search.LIMIT + 1);
     var counts = new int[conditions.size()];
     var read = Journal.sql(
@@ -311,13 +318,6 @@ public final class Finder {
         sql,
         rows -> Outcome.rows(rows),
         () -> Query.run(connection, provider, sql, statement -> {
-          // Each value twice: in the list of what is read, then in the condition.
-          int at = 1;
-          for (int round = 0; round < 2; round++) {
-            for (var condition : conditions) {
-              bind(statement, at++, condition.value());
-            }
-          }
           try (var rows = statement.executeQuery()) {
             return count(rows, counts);
           }
@@ -344,52 +344,16 @@ public final class Finder {
   }
 
   /**
-   * The query of the table's rows whose value in the column matches, as a statement to run, its
-   * value written into it as the server reads it; empty where the search would not read the
-   * column, as one whose values cannot be the number searched for.
+   * The condition that a table's WHERE takes for its rows whose value in the column matches, as
+   * {@link #search} counts them, with the value written in as the server reads it whatever its
+   * escapes; empty where the search would not read the column, as one whose values cannot be the
+   * number searched for.
    */
-  public static Optional<String> rows(
+  public static Optional<String> where(
       Provider provider, Candidate candidate, String column, Search search, boolean others) {
     var columns =
         candidate.columns().stream().filter(c -> c.name().equals(column)).toList();
-    var conditions = conditions(provider, columns, search, others);
-    if (conditions.isEmpty()) {
-      return Optional.empty();
-    }
-    var condition = conditions.getFirst();
-    var at = condition.sql().lastIndexOf('?');
-    var where = condition.sql().substring(0, at)
-        + literal(provider, condition.value())
-        + condition.sql().substring(at + 1);
-    return Optional.of(
-        "SELECT * FROM " + qualified(provider, candidate.table()) + " WHERE " + where);
-  }
-
-  // The value as a literal of the server's SQL.
-  private static String literal(Provider provider, Object value) {
-    if (value instanceof BigDecimal number) {
-      return number.toPlainString();
-    }
-    if (value instanceof Double number) {
-      return number.toString();
-    }
-    var text = value.toString().replace("'", "''");
-    if (provider.dialect().syntax().backslashEscapes()) {
-      text = text.replace("\\", "\\\\");
-    }
-    return "'" + text + "'";
-  }
-
-  private static void bind(PreparedStatement statement, int at, Object value) throws SQLException {
-    switch (value) {
-      case BigDecimal number -> statement.setBigDecimal(at, number);
-      case Double number -> statement.setDouble(at, number);
-      default -> statement.setString(at, (String) value);
-    }
-  }
-
-  private static String qualified(Provider provider, Table table) {
-    return provider.quote(table.container().name()) + "." + provider.quote(table.name());
+    return conditions(provider, columns, search, others).stream().findFirst().map(Condition::sql);
   }
 
   private static Table.Kind kind(String kind) {

@@ -476,7 +476,8 @@ public final class DocumentFilters {
     throw refused(name, "expects an ObjectId (24 hexadecimal digits): " + raw);
   }
 
-  private static String escapeRegex(String value) {
+  /** The text as a pattern of the server's that matches it as it is, each sign of patterns escaped. */
+  public static String escapeRegex(String value) {
     var out = new StringBuilder(value.length());
     for (int i = 0; i < value.length(); i++) {
       char c = value.charAt(i);

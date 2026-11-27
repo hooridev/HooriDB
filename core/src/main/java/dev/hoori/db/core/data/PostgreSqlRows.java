@@ -357,6 +357,13 @@ public final class PostgreSqlRows extends RowsDialect {
     return asText(column, field) + " ILIKE " + literal(pattern) + " ESCAPE '!'";
   }
 
+  // By bytes, as equalsExactly compares, which in LIKE match characters alike.
+  @Override
+  String likeExactly(String column, Field field, String pattern) {
+    return asText(column, field) + " COLLATE pg_catalog.\"C\" LIKE " + literal(pattern)
+        + " ESCAPE '!'";
+  }
+
   @Override
   String equalsIgnoringCase(String column, Field field, String value) {
     return "LOWER(" + asText(column, field) + ") = LOWER(" + literal(value) + ")";
@@ -371,6 +378,12 @@ public final class PostgreSqlRows extends RowsDialect {
   @Override
   String matches(String column, Field field, String expression) {
     return asText(column, field) + " ~* " + literal(expression);
+  }
+
+  // In the column's collation, whose classes of characters a pattern's [[:alpha:]] and \w are.
+  @Override
+  String matchesExactly(String column, Field field, String expression) {
+    return asText(column, field) + " ~ " + literal(expression);
   }
 
   // A number as an untyped literal, which the server reads as the column's type: a real, also

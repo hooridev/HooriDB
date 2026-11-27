@@ -25,14 +25,11 @@ import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
-import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
-import dev.hoori.db.core.dialect.Dialect;
-import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.find.Candidate;
 import dev.hoori.db.core.find.DocumentFinder;
 import dev.hoori.db.core.find.Finder;
@@ -136,17 +133,6 @@ final class FindTab implements Tab {
     return profile != null && profile.provider().keepsDocuments();
   }
 
-  /** Whether the case of a text in data follows each column's collation, so it cannot be asked. */
-  boolean caseByCollation(State s) {
-    var profile = s.profile(id);
-    return in == In.DATA
-        && profile != null
-        && switch (profile.provider().traits()) {
-          case Dialect d -> d.find().caseByCollation();
-          case DocumentDialect _ -> false;
-        };
-  }
-
   /** The schema or database as its name tells it, with the database before a schema. */
   String place() {
     return switch (scope) {
@@ -234,11 +220,11 @@ final class FindTab implements Tab {
   }
 
   /**
-   * Why the search cannot start, as a sentence; empty where it can. A pattern in the data of a
-   * server of SQL is the server's to read.
+   * Why the search cannot start, as a sentence; empty where it can. A pattern in data is the
+   * server's to read.
    */
-  Optional<String> why(State s) {
-    var reader = in == In.DATA && !documents(s) ? Search.Reader.SERVER : Search.Reader.HOORIDB;
+  Optional<String> why() {
+    var reader = in == In.DATA ? Search.Reader.SERVER : Search.Reader.HOORIDB;
     var invalid = Search.problem(text, match, reader);
     if (invalid.isEmpty() && in == In.DATA && candidates != null && chosen().isEmpty()) {
       return Optional.of("Choose a table to search.");
@@ -261,7 +247,7 @@ final class FindTab implements Tab {
     if (asked != null) {
       return;
     }
-    if (why(s).isPresent()) {
+    if (why().isPresent()) {
       tried = true;
       return;
     }
@@ -275,7 +261,7 @@ final class FindTab implements Tab {
 
   private void find(State s, Lane session) {
     problem = null;
-    var search = new Search(text, match, caseSensitive && !caseByCollation(s));
+    var search = new Search(text, match, caseSensitive);
     results.reset();
     if (in == In.OBJECTS) {
       asking = "Searching the objects of " + place() + "…";
@@ -417,16 +403,19 @@ final class FindTab implements Tab {
     }
   }
 
+  // Its table's tab, filtered to the rows the search counted, beside the search.
   private void open(State s, Hit hit) {
     var profile = s.profile(id);
     if (searched == null || profile == null) {
       return;
     }
     var provider = profile.provider();
-    var statement = provider.keepsDocuments()
-        ? Optional.of(DocumentFinder.rows(hit.table().table(), hit.column(), searched))
-        : Finder.rows(provider, hit.table(), hit.column(), searched, searchedOthers);
-    statement.ifPresent(sql -> s.openRows(id, scope.database().name(), sql));
+    var where = provider.keepsDocuments()
+        ? Optional.of(DocumentFinder.filter(hit.column(), searched))
+        : Finder.where(provider, hit.table(), hit.column(), searched, searchedOthers);
+    var group = s.tabs.groupOf(this);
+    where.ifPresent(w ->
+        s.openWhere(id, hit.table().table(), w, group == null ? s.tabs.main().active() : group));
   }
 
   /** Says something in the tab's status line for a while. */
@@ -511,7 +500,7 @@ final class FindTab implements Tab {
         .key("find-text")
         .label("Find")
         .w(8 * t.size().control());
-    if (tried && why(s).isPresent()) {
+    if (tried && why().isPresent()) {
       field = TextField.invalid(field);
     }
     actions.add(row().child(TextField.withIcon(field, Symbol.SEARCH)).onKey(k -> {
@@ -528,16 +517,8 @@ final class FindTab implements Tab {
         .key("match")
         .label("Match")
         .w(4 * t.size().control()));
-    boolean collation = caseByCollation(s);
-    El sensitive = Checkbox.checkbox(
-            caseSensitive && !collation,
-            "Match case",
-            collation ? null : () -> caseSensitive = !caseSensitive)
-        .key("case");
-    actions.add(
-        collation
-            ? Tooltip.tooltip(sensitive, "Case follows each column's collation on this server")
-            : sensitive);
+    actions.add(Checkbox.checkbox(caseSensitive, "Match case", () -> caseSensitive = !caseSensitive)
+        .key("case"));
     if (in == In.DATA && !documents(s)) {
       actions.add(Checkbox.checkbox(others, "Other types as text", () -> others = !others)
           .key("others"));
@@ -574,7 +555,7 @@ final class FindTab implements Tab {
               ? new El[0]
               : new El[] {button(SECONDARY, "Connect", () -> s.catalog.connect(s, id))});
     }
-    var invalid = why(s);
+    var invalid = why();
     if (tried && invalid.isPresent()) {
       return Callout.callout(Callout.Kind.WARNING, invalid.get(), "").key("invalid");
     }

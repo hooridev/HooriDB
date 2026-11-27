@@ -611,6 +611,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     }
 
     // MariaDB's sequences are tables to the server, as the catalog leaves them out.
+    // shortcut: TABLE_ROWS is InnoDB's sampled estimate, which may be stale or far off and which
+    // the rows of a table never show for that reason; it only guides the choice of tables here.
     @Override
     public String tables(Scope scope) {
       return of(scope, """
@@ -659,12 +661,6 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME""");
     }
 
-    // LIKE and = compare by the column's collation, which says whether case counts.
-    @Override
-    public boolean caseByCollation() {
-      return true;
-    }
-
     private static final Set<String> TEXTS =
         Set.of("char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set");
     private static final Set<String> NUMBERS = Set.of(
@@ -692,37 +688,20 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       };
     }
 
+    // A text column as it is, which the conditions convert to UTF-8 and compare by its bytes or
+    // its letters' lower case, not by its collation.
     @Override
-    public String asText(String column) {
-      return "CAST(" + column + " AS CHAR)";
-    }
-
-    // With an escape of its own, as a backslash is none where NO_BACKSLASH_ESCAPES is set.
-    @Override
-    public String contains(String column, boolean caseSensitive) {
-      return column + " LIKE ? ESCAPE '!'";
-    }
-
-    @Override
-    public String contained(String text) {
-      return "%" + text.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
-    }
-
-    @Override
-    public String equalText(String column, boolean caseSensitive) {
-      return column + " = ?";
-    }
-
-    @Override
-    public String matches(String column, boolean caseSensitive) {
-      return column + " REGEXP ?";
+    public String asText(String column, Holds holds) {
+      return holds == Holds.TEXT ? column : "CAST(" + column + " AS CHAR)";
     }
 
     // A float as one, which the number would be compared as a double with: MariaDB 10.4.5 and
     // MySQL 8.0.17 cast to it.
     @Override
-    public String equalNumber(String column, String type) {
-      return holds(type) == Holds.FLOAT ? column + " = CAST(? AS FLOAT)" : column + " = ?";
+    public String equalNumber(String column, String type, String number) {
+      return holds(type) == Holds.FLOAT
+          ? column + " = CAST(" + number + " AS FLOAT)"
+          : column + " = " + number;
     }
   }
 }

@@ -924,12 +924,6 @@ public final class PostgreSql implements Dialect {
     private static final String EQ = Catalog.EQ;
     private static final String NE = " OPERATOR(pg_catalog.<>) ";
 
-    // Every text operator says whether case counts.
-    @Override
-    public boolean caseByCollation() {
-      return false;
-    }
-
     // The schema n, by the parameter or as one that is not the system's, as schemas() tells them.
     private static String in(Scope scope) {
       return switch (scope) {
@@ -1078,44 +1072,18 @@ public final class PostgreSql implements Dialect {
     // In the database's collation, which is deterministic: a column's may not be, and then = goes
     // by it whatever the case asked, and ILIKE and regular expressions refuse it.
     @Override
-    public String asText(String column) {
+    public String asText(String column, Holds holds) {
       return "CAST(" + column + " AS pg_catalog.text) COLLATE pg_catalog.\"default\"";
-    }
-
-    // LIKE and ILIKE as their operators, which take a backslash before a character that is meant
-    // as itself.
-    @Override
-    public String contains(String column, boolean caseSensitive) {
-      return asText(column)
-          + (caseSensitive ? " OPERATOR(pg_catalog.~~) ?" : " OPERATOR(pg_catalog.~~*) ?");
-    }
-
-    @Override
-    public String contained(String text) {
-      return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
-    }
-
-    @Override
-    public String equalText(String column, boolean caseSensitive) {
-      return caseSensitive
-          ? asText(column) + EQ + "?"
-          : "pg_catalog.lower(" + asText(column) + ")" + EQ + "pg_catalog.lower(?)";
-    }
-
-    @Override
-    public String matches(String column, boolean caseSensitive) {
-      return asText(column)
-          + (caseSensitive ? " OPERATOR(pg_catalog.~) ?" : " OPERATOR(pg_catalog.~*) ?");
     }
 
     // An oid as a bigint, as no operator compares it with a numeric; a real as one, which the
     // numeric would be compared as a double with.
     @Override
-    public String equalNumber(String column, String type) {
+    public String equalNumber(String column, String type, String number) {
       return switch (base(type)) {
-        case OID -> "CAST(" + column + " AS pg_catalog.int8)" + EQ + "?";
-        case REAL -> column + EQ + "CAST(? AS pg_catalog.float4)";
-        default -> column + EQ + "?";
+        case OID -> "CAST(" + column + " AS pg_catalog.int8)" + EQ + number;
+        case REAL -> column + EQ + "CAST(" + number + " AS pg_catalog.float4)";
+        default -> column + EQ + number;
       };
     }
   }

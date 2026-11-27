@@ -11,10 +11,12 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.Connector;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.find.Search.Match;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -223,14 +225,15 @@ class FinderServerTest {
       assertEquals(
           List.of(new Hits.Hit("label", 2), new Hits.Hit("note", 1)), apple.columns(), "" + apple);
       assertFalse(apple.more());
-      // Case counts on PostgreSQL where asked; MariaDB and MySQL go by the column's collation.
-      var sensitive = Finder.search(
-          connection, provider, item, new Search("Apple", Match.CONTAINS, true), false);
-      assertEquals(
-          provider == Provider.POSTGRESQL
-              ? List.of(new Hits.Hit("label", 1))
-              : List.of(new Hits.Hit("label", 2), new Hits.Hit("note", 1)),
-          sensitive.columns());
+      // Case counts where asked, whatever the column's collation says.
+      for (var match : List.of(Match.CONTAINS, Match.PATTERN)) {
+        var sensitive =
+            Finder.search(connection, provider, item, new Search("Apple", match, true), false);
+        assertEquals(List.of(new Hits.Hit("label", 1)), sensitive.columns(), match.toString());
+      }
+      var exactly = Finder.search(
+          connection, provider, item, new Search("green apple", Match.EQUALS, true), false);
+      assertTrue(exactly.columns().isEmpty(), exactly.toString());
       var number =
           Finder.search(connection, provider, item, new Search("42", Match.EQUALS, false), false);
       assertEquals(List.of(new Hits.Hit("price", 2)), number.columns());
@@ -251,17 +254,28 @@ class FinderServerTest {
       assertTrue(bulk.more());
       assertEquals(List.of(new Hits.Hit("word", Search.LIMIT)), bulk.columns());
 
-      // The query of a hit's rows gives them.
-      var sql = Finder.rows(
-              provider, item, "note", new Search("apple", Match.CONTAINS, false), false)
-          .orElseThrow();
-      try (var statement = connection.createStatement();
-          var rows = statement.executeQuery(sql)) {
-        assertTrue(rows.next());
-        assertEquals(2, rows.getInt(1));
-        assertFalse(rows.next());
+      // The condition of a hit's rows gives them.
+      assertEquals(
+          List.of(2), ids(scratch, item, "note", new Search("apple", Match.CONTAINS, false)));
+    }
+  }
+
+  // The ids of the table's rows that the condition of a hit's rows gives, as its tab reads them.
+  private static List<Integer> ids(Scratch scratch, Candidate table, String column, Search search)
+      throws Exception {
+    var provider = scratch.provider();
+    var where = Finder.where(provider, table, column, search, false).orElseThrow();
+    Rows.check(provider, new Rows.Filter(where, ""), true);
+    var sql = "SELECT * FROM " + Rows.qualified(provider, table.table()) + " AS r WHERE (" + where
+        + ") ORDER BY 1";
+    var ids = new ArrayList<Integer>();
+    try (var statement = scratch.connection().createStatement();
+        var rows = statement.executeQuery(sql)) {
+      while (rows.next()) {
+        ids.add(rows.getInt(1));
       }
     }
+    return ids;
   }
 
   // A table with a number of each kind, texts with LIKE's wildcards and a backslash, and on
@@ -339,17 +353,24 @@ class FinderServerTest {
       assertTrue(search(scratch, measure, "100%").columns().isEmpty());
       assertEquals(
           List.of(new Hits.Hit("note", 1)), search(scratch, measure, "1_").columns());
-      assertEquals(
-          List.of(new Hits.Hit("note", 1)), search(scratch, measure, "a\\b").columns());
-      // The query of a float's hit gives its row.
-      var sql = Finder.rows(provider, measure, "r", new Search("0.1", Match.EQUALS, true), false)
-          .orElseThrow();
-      try (var statement = scratch.connection().createStatement();
-          var rows = statement.executeQuery(sql)) {
-        assertTrue(rows.next());
-        assertEquals(1, rows.getInt(1));
-        assertFalse(rows.next());
+      // A backslash as itself, whatever the session's escapes say, in the search and in the
+      // condition of its rows, which a table's tab reads on a session of its own.
+      var backslash = new Search("a\\b", Match.CONTAINS, true);
+      var escapes = pg
+          ? List.of("SET standard_conforming_strings = on", "SET standard_conforming_strings = off")
+          : List.of(
+              "SET SESSION sql_mode = REPLACE(@@sql_mode, 'NO_BACKSLASH_ESCAPES', '')",
+              "SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')");
+      for (var mode : escapes) {
+        try (var statement = scratch.connection().createStatement()) {
+          statement.execute(mode);
+        }
+        assertEquals(
+            List.of(new Hits.Hit("note", 1)), search(scratch, measure, "a\\b").columns(), mode);
+        assertEquals(List.of(3), ids(scratch, measure, "note", backslash), mode);
       }
+      // The condition of a float's hit gives its row.
+      assertEquals(List.of(1), ids(scratch, measure, "r", new Search("0.1", Match.EQUALS, true)));
     }
   }
 
