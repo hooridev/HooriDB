@@ -592,8 +592,34 @@ final class FakeServers implements Servers {
     call(key, cancelled, null);
   }
 
+  // A call began: noted, and told to a test that waits for it.
+  private void began(String key) {
+    synchronized (calls) {
+      calls.add(key);
+      calls.notifyAll();
+    }
+  }
+
+  /**
+   * Waits until a call of the key began, as a held one that then waits at its gate; whether one
+   * did within the time given.
+   */
+  boolean awaitCall(String key, Duration within) throws InterruptedException {
+    var deadline = System.nanoTime() + within.toNanos();
+    synchronized (calls) {
+      while (!calls.contains(key)) {
+        var left = deadline - System.nanoTime();
+        if (left <= 0) {
+          return false;
+        }
+        TimeUnit.NANOSECONDS.timedWait(calls, left);
+      }
+      return true;
+    }
+  }
+
   private void call(String key, Exception cancelled, Duration timeout) throws Exception {
-    calls.add(key);
+    began(key);
     var gate = gates.get(key);
     var passing = passes.get(key);
     if (gate != null && passing != null && passing.getAndDecrement() > 0) {
@@ -683,7 +709,7 @@ final class FakeServers implements Servers {
     }
 
     private void noted(String key) {
-      calls.add(key);
+      began(key);
       note(key);
     }
 

@@ -299,9 +299,9 @@ class RoutinesTest {
             Call.of("SELECT @seen AS seen, @total AS total")),
         calls);
     assertNull(calls.getFirst().values().getFirst());
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> Provider.MYSQL.dialect().routines().call(mysql, List.of("4")));
+    var routines = Provider.MYSQL.dialect().routines();
+    var tooFew = List.of("4");
+    assertThrows(IllegalArgumentException.class, () -> routines.call(mysql, tooFew));
   }
 
   @Test

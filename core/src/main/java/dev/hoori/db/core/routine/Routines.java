@@ -368,13 +368,9 @@ public final class Routines {
     Outcome.Failed trial = null; // the trial's failure, once it was sent
     for (var step : change.steps()) {
       if (step.role() == Role.TRIAL_DROP) {
-        // Whatever became of the trial, its routine may be there; it failed where the trial did.
-        var dropped = aside(() -> sender.send(step.sql()));
-        if (trial != null) {
-          return trial;
-        }
-        if (dropped.isPresent()) {
-          return failed(step, dropped.get());
+        var failed = dropTrial(sender, step, trial);
+        if (failed != null) {
+          return failed;
         }
         continue;
       }
@@ -394,13 +390,27 @@ public final class Routines {
         trial = failed(step, failure.get()); // after the drop of what it may have created
         continue;
       }
-      Optional<PutBack> put =
-          step.role() == Role.CREATE && change.dropsFirst() && change.restore().isPresent()
-              ? Optional.of(aside(() -> restore(sender, change.restore().get())))
-              : Optional.empty();
-      return new Outcome.Failed(step, failure.get(), put);
+      return new Outcome.Failed(step, failure.get(), putBack(sender, change, step));
     }
     return new Outcome.Done();
+  }
+
+  // Whatever became of the trial, its routine may be there: drops it. The trial's failure where
+  // it failed, else the drop's, or null where both went through.
+  private static Outcome.Failed dropTrial(Sender sender, Step step, Outcome.Failed trial) {
+    var dropped = aside(() -> sender.send(step.sql()));
+    if (trial != null) {
+      return trial;
+    }
+    return dropped.map(failure -> failed(step, failure)).orElse(null);
+  }
+
+  // How the routine was put back where the step that failed is a CREATE after the drop it needs.
+  private static Optional<PutBack> putBack(Sender sender, Change change, Step step) {
+    if (step.role() != Role.CREATE || !change.dropsFirst() || change.restore().isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(aside(() -> restore(sender, change.restore().get())));
   }
 
   private static Outcome.Failed failed(Step step, Failure failure) {

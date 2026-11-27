@@ -58,6 +58,9 @@ final class RoutineTab implements Tab, Guard.Guarded {
 
   private static final String ERROR_LAYER = "error";
   private static final String CANCEL = ConsoleTab.CANCEL_BUTTON;
+  private static final String NOT_SAVED = "Not saved";
+  private static final String NOT_DROPPED = "Not dropped";
+  private static final String NOT_CONNECTED = "Not connected";
 
   /** Why something failed, in words for the user. */
   record Problem(String title, String text) {}
@@ -70,20 +73,20 @@ final class RoutineTab implements Tab, Guard.Guarded {
 
   /** The form of a Run: a value for each argument, or NULL. */
   static final class Arguments implements Asked {
-    final List<Routine.Parameter> arguments;
+    final List<Routine.Parameter> parameters;
     final String[] values;
     final boolean[] nulls;
     boolean tried; // Run was pressed, so that a field without a value says so
 
     Arguments(Routine routine) {
-      arguments = routine.arguments();
-      values = new String[arguments.size()];
+      parameters = routine.arguments();
+      values = new String[parameters.size()];
       Arrays.fill(values, "");
-      nulls = new boolean[arguments.size()];
+      nulls = new boolean[parameters.size()];
     }
 
     /** The values as the call binds them, null for NULL. */
-    List<String> values() {
+    List<String> given() {
       var given = new ArrayList<String>(values.length);
       for (int i = 0; i < values.length; i++) {
         given.add(nulls[i] ? null : values[i]);
@@ -98,8 +101,8 @@ final class RoutineTab implements Tab, Guard.Guarded {
     String missing(int i, Provider provider) {
       return !nulls[i]
               && values[i].isEmpty()
-              && !provider.dialect().routines().takesEmpty(arguments.get(i).type())
-          ? "Enter a value of " + arguments.get(i).type() + ", or check NULL."
+              && !provider.dialect().routines().takesEmpty(parameters.get(i).type())
+          ? "Enter a value of " + parameters.get(i).type() + ", or check NULL."
           : null;
     }
   }
@@ -212,7 +215,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
   /** What an act that would lose the edits asks first: discard them, and go on, or keep them. */
   @Override
   public El question(State s) {
-    if (!(s.guard.pending instanceof Guard.Pending.Question asked) || asked.tab() != this) {
+    if (!(s.guard.pending instanceof Guard.Pending.Question pending) || pending.tab() != this) {
       return null;
     }
     Runnable keep = () -> s.guard.pending = null;
@@ -223,7 +226,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
             () -> {
               s.guard.pending = null;
               discard();
-              asked.then().run();
+              pending.then().run();
             },
             Button.options().tone(Button.Tone.DANGER))
         .key("answer-discard");
@@ -234,7 +237,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
             "Discard the edits?",
             col()
                 .w(ConnectionDialog.width())
-                .child(Label.label(what + " Discard them, and " + asked.what() + "?")
+                .child(Label.label(what + " Discard them, and " + pending.what() + "?")
                     .wrapText()),
             List.of(keeping, discard),
             keeping,
@@ -339,7 +342,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
     }
     var refused = Routines.refused(provider, routine, text);
     if (refused.isPresent()) {
-      problem = new Problem("Not saved", refused.get());
+      problem = new Problem(NOT_SAVED, refused.get());
       return;
     }
     asked = new Preview(false, Routines.save(provider, routine, source, text));
@@ -402,13 +405,13 @@ final class RoutineTab implements Tab, Guard.Guarded {
       return;
     }
     form.tried = true;
-    for (int i = 0; i < form.arguments.size(); i++) {
+    for (int i = 0; i < form.parameters.size(); i++) {
       if (form.missing(i, provider) != null) {
         return; // the field says why
       }
     }
     asked = null;
-    var calls = provider.dialect().routines().call(routine, form.values());
+    var calls = provider.dialect().routines().call(routine, form.given());
     s.openCall(id, s.tabs.groupOf(this), container.database().name(), calls);
   }
 
@@ -462,22 +465,32 @@ final class RoutineTab implements Tab, Guard.Guarded {
         },
         error -> {
           ended(s, lane);
-          var failed = switch (error) {
-            case ConnectionException e ->
-              new Problem(
-                  "Not connected", "The session for the change could not be opened: " + e.detail());
-            case QueryException e -> new Problem(drop ? "Not dropped" : "Not saved", e.detail());
-            default ->
-              new Problem(drop ? "Not dropped" : "Not saved", String.valueOf(error.getMessage()));
-          };
-          if (closed || s.guard.quitting()) {
-            s.notice(
-                connection(s), part(replaced), failed.title() + ": " + failed.text(), true, null);
-          }
-          if (!closed) {
-            problem = failed;
-          }
+          failed(s, replaced, whyNot(drop, error));
         });
+  }
+
+  // Why the change could not run.
+  private static Problem whyNot(boolean drop, Exception error) {
+    return switch (error) {
+      case ConnectionException e ->
+        new Problem(NOT_CONNECTED, "The session for the change could not be opened: " + e.detail());
+      case QueryException e -> new Problem(notDone(drop), e.detail());
+      default -> new Problem(notDone(drop), String.valueOf(error.getMessage()));
+    };
+  }
+
+  private static String notDone(boolean drop) {
+    return drop ? NOT_DROPPED : NOT_SAVED;
+  }
+
+  // The change could not run: the tab says why, or the notices where it is no longer shown.
+  private void failed(State s, Routine replaced, Problem failed) {
+    if (closed || s.guard.quitting()) {
+      s.notice(connection(s), part(replaced), failed.title() + ": " + failed.text(), true, null);
+    }
+    if (!closed) {
+      problem = failed;
+    }
   }
 
   // The change ended: its session closes, which Exit waits for in its place.
@@ -508,7 +521,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
   // that is new, as one whose name or arguments the text changed; else the one replaced.
   private static Changed saved(
       Servers.Link link, Routines.Change change, Container container, Routines.Applying applying)
-      throws Exception {
+      throws QueryException, CatalogException {
     var before = link.routines(container);
     var outcome = link.define(container, change, applying);
     if (!(outcome instanceof Routines.Outcome.Done)) {
@@ -531,8 +544,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
     switch (outcome) {
       case Routines.Outcome.Done _ -> s.tell(part + (drop ? ": dropped" : ": saved"));
       case Routines.Outcome.Refused(var why) -> s.notice(connection(s), part, why, true, null);
-      case Routines.Outcome.Failed f ->
-        s.notice(connection(s), part, failedText(drop, f), true, null);
+      case Routines.Outcome.Failed f -> s.notice(connection(s), part, failedText(f), true, null);
     }
   }
 
@@ -555,28 +567,12 @@ final class RoutineTab implements Tab, Guard.Guarded {
         source = null;
         say(s, "Dropped " + replaced.label());
       }
-      case Routines.Outcome.Done _ -> {
-        lost = false;
-        if (changed.routine() != null) {
-          routine = changed.routine();
-          source = changed.source();
-          editing = false;
-          show(source.statement());
-        } else if (replaced != null) {
-          // The same routine, replaced: read what the server keeps of it.
-          editing = false;
-          source = new Routine.Source(sent, source == null ? List.of() : source.session());
-          read(s);
-        }
-        say(s, "Saved");
-      }
+      case Routines.Outcome.Done _ -> showSaved(s, replaced, sent, changed);
       case Routines.Outcome.Refused(var why) -> problem = new Problem("Read-only", why);
       case Routines.Outcome.Failed f -> {
-        problem = new Problem(
-            f.failure().kind() == Failure.Kind.CANCELLED
-                ? cancelledTitle(f)
-                : drop ? "Not dropped" : "Not saved",
-            failedText(drop, f));
+        var title =
+            f.failure().kind() == Failure.Kind.CANCELLED ? cancelledTitle(f) : notDone(drop);
+        problem = new Problem(title, failedText(f));
         if (!drop && provider != null) {
           markError(provider, sent, change, f);
         }
@@ -591,6 +587,23 @@ final class RoutineTab implements Tab, Guard.Guarded {
     s.catalog.routinesChanged(s, id, container);
   }
 
+  // A Save was done: the tab shows the routine saved.
+  private void showSaved(State s, Routine replaced, String sent, Changed changed) {
+    lost = false;
+    if (changed.routine() != null) {
+      routine = changed.routine();
+      source = changed.source();
+      editing = false;
+      show(source.statement());
+    } else if (replaced != null) {
+      // The same routine, replaced: read what the server keeps of it.
+      editing = false;
+      source = new Routine.Source(sent, source == null ? List.of() : source.session());
+      read(s);
+    }
+    say(s, "Saved");
+  }
+
   // A cancel before the routine was dropped left it as it was, as did one of the trial; of a
   // statement that ran, the server alone knows whether it took effect.
   private static String cancelledTitle(Routines.Outcome.Failed failed) {
@@ -601,7 +614,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
   }
 
   /** What the failure of a change says, with how the routine was put back where it was dropped. */
-  static String failedText(boolean drop, Routines.Outcome.Failed failed) {
+  static String failedText(Routines.Outcome.Failed failed) {
     var failure = failed.failure();
     var words = failure.message().isEmpty() ? said(failure.kind()) : failure.message();
     var role = failed.step().role();
@@ -730,7 +743,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
   private Problem notConnected(State s) {
     var profile = s.profile(id);
     var name = profile == null ? "the connection" : State.name(profile);
-    return new Problem("Not connected", "Connect " + name + " in Workspace first.");
+    return new Problem(NOT_CONNECTED, "Connect " + name + " in Workspace first.");
   }
 
   // The view
@@ -738,40 +751,28 @@ final class RoutineTab implements Tab, Guard.Guarded {
   El view(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     var provider = provider(s);
+    var profile = s.profile(id);
+    var where = (profile == null ? "" : State.name(profile) + " · ") + path();
+    El top = Card.toolbar(where, null, actions(s, provider).toArray(El[]::new));
+    El line = ConnectionColors.line(s.color(id));
+    El content =
+        col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
+    var note = note(s);
+    if (note != null) {
+      content.child(col().padding(t.space().m()).shrink(0).key("note").child(note));
+    }
+    content.child(body(s, app, provider));
+    El status = Label.label(Label.Variant.MUTED, status(s)).key("state").ellipsis();
+    return content.child(Card.footer(status, footerEnd(s).toArray(El[]::new)).key("footer"));
+  }
+
+  // The toolbar's buttons: Save… and Revert while editing, else Edit, then Run…, Drop… and Refresh.
+  private List<El> actions(State s, Provider provider) {
     boolean changes = s.catalog.changesRoutines(s, id);
     boolean free = changing == null && reading == null;
-    var actions = new ArrayList<El>();
-    if (editing) {
-      actions.add(button(
-              PRIMARY,
-              "Save…",
-              saves(s) ? () -> askSave(s) : null,
-              Button.options()
-                  .icon(Symbol.SAVE)
-                  .state(changing != null ? Button.State.BUSY : Button.State.READY))
-          .key("save"));
-      if (source != null) {
-        actions.add(button(SECONDARY, "Revert", free ? this::revert : null).key("revert"));
-      }
-    } else {
-      actions.add(button(
-              SECONDARY,
-              "Edit",
-              changes && free && source != null ? () -> edit(s) : null,
-              Button.options().icon(Symbol.EDIT))
-          .key("edit"));
-    }
-    var uncalled = routine == null || provider == null
-        ? null
-        : provider.dialect().routines().uncalled(routine).orElse(null);
-    boolean runs = routine != null && uncalled == null;
-    El run = button(
-            SECONDARY,
-            "Run…",
-            runs && s.catalog.connected(id) && changing == null ? () -> askRun(s) : null,
-            Button.options().icon(Symbol.PLAY))
-        .key("run");
-    actions.add(uncalled == null ? run : Tooltip.tooltip(run, uncalled));
+    var actions =
+        new ArrayList<El>(editing ? saving(s, free) : List.of(editButton(s, changes, free)));
+    actions.add(runButton(s, provider));
     actions.add(button(
             SECONDARY,
             "Drop…",
@@ -786,18 +787,55 @@ final class RoutineTab implements Tab, Guard.Guarded {
                 .icon(Symbol.ARROW_CLOCKWISE)
                 .state(reading != null ? Button.State.BUSY : Button.State.READY))
         .key("refresh"));
-    var profile = s.profile(id);
-    var where = (profile == null ? "" : State.name(profile) + " · ") + path();
-    El top = Card.toolbar(where, null, actions.toArray(El[]::new));
-    El line = ConnectionColors.line(s.color(id));
-    El content =
-        col().grow(1).minSize(0, 0).child(top).child(line == null ? Divider.divider() : line);
-    var note = note(s);
-    if (note != null) {
-      content.child(col().padding(t.space().m()).shrink(0).key("note").child(note));
+    return actions;
+  }
+
+  // Save… while editing, and Revert where there is a source to go back to.
+  private List<El> saving(State s, boolean free) {
+    var actions = new ArrayList<El>();
+    actions.add(button(
+            PRIMARY,
+            "Save…",
+            saves(s) ? () -> askSave(s) : null,
+            Button.options()
+                .icon(Symbol.SAVE)
+                .state(changing != null ? Button.State.BUSY : Button.State.READY))
+        .key("save"));
+    if (source != null) {
+      actions.add(button(SECONDARY, "Revert", free ? this::revert : null).key("revert"));
     }
+    return actions;
+  }
+
+  private El editButton(State s, boolean changes, boolean free) {
+    return button(
+            SECONDARY,
+            "Edit",
+            changes && free && source != null ? () -> edit(s) : null,
+            Button.options().icon(Symbol.EDIT))
+        .key("edit");
+  }
+
+  // Run…, with why it cannot call the routine where it cannot.
+  private El runButton(State s, Provider provider) {
+    var uncalled = routine == null || provider == null
+        ? null
+        : provider.dialect().routines().uncalled(routine).orElse(null);
+    boolean runs = routine != null && uncalled == null;
+    El run = button(
+            SECONDARY,
+            "Run…",
+            runs && s.catalog.connected(id) && changing == null ? () -> askRun(s) : null,
+            Button.options().icon(Symbol.PLAY))
+        .key("run");
+    return uncalled == null ? run : Tooltip.tooltip(run, uncalled);
+  }
+
+  // The source in its editor, or that it is being read.
+  private El body(State s, App<State> app, Provider provider) {
+    Theme t = Theme.CURRENT.get();
     if (reading != null && text.isEmpty()) {
-      content.child(col()
+      return col()
           .grow(1)
           .center()
           .gap(t.space().m())
@@ -805,23 +843,26 @@ final class RoutineTab implements Tab, Guard.Guarded {
           .label("Reading the source")
           .key("reading")
           .child(Progress.spinner())
-          .child(Label.label(Label.Variant.MUTED, "Reading the source…")));
-    } else {
-      editor.readOnly(!editing || changing != null);
-      editor.occurrences(s.settings.highlightOccurrences());
-      var syntax = provider != null ? Syntax.of(provider) : Syntax.of(new Language.Sql());
-      content.child(CodeEditor.codeEditor(app, text, editor, syntax, v -> {
-            text = v;
-            clearError();
-          })
-          .key("source")
-          .label("Source")
-          // Before the editor's own keys, as Control+S saves.
-          .onKeyFirst(key -> key(s, key))
-          .wFull()
-          .grow(1));
+          .child(Label.label(Label.Variant.MUTED, "Reading the source…"));
     }
-    El status = Label.label(Label.Variant.MUTED, status(s)).key("state").ellipsis();
+    editor.readOnly(!editing || changing != null);
+    editor.occurrences(s.settings.highlightOccurrences());
+    var syntax = provider != null ? Syntax.of(provider) : Syntax.of(new Language.Sql());
+    return CodeEditor.codeEditor(app, text, editor, syntax, v -> {
+          text = v;
+          clearError();
+        })
+        .key("source")
+        .label("Source")
+        // Before the editor's own keys, as Control+S saves.
+        .onKeyFirst(key -> key(s, key))
+        .wFull()
+        .grow(1);
+  }
+
+  // The end of the footer: what the tab says for a while, and the change under way with Cancel.
+  private List<El> footerEnd(State s) {
+    Theme t = Theme.CURRENT.get();
     var end = new ArrayList<El>();
     if (said != null) {
       end.add(Label.label(Label.Variant.MUTED, said).key("said"));
@@ -841,7 +882,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
                   Button.options().state(cancelling ? Button.State.BUSY : Button.State.READY))
               .key("cancel-change")));
     }
-    return content.child(Card.footer(status, end.toArray(El[]::new)).key("footer"));
+    return end;
   }
 
   /** Where the routine is: its schema or database. */
@@ -879,7 +920,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
       var name = profile == null ? "the connection" : State.name(profile);
       return Callout.callout(
               Callout.Kind.INFO,
-              "Not connected",
+              NOT_CONNECTED,
               "Connect " + name + " in Workspace to read, save or run the routine.")
           .key("unconnected");
     }
@@ -968,15 +1009,15 @@ final class RoutineTab implements Tab, Guard.Guarded {
     Theme t = Theme.CURRENT.get();
     var provider = provider(s);
     var content = col().w(ConnectionDialog.width()).gap(t.space().m());
-    if (f.arguments.isEmpty()) {
+    if (f.parameters.isEmpty()) {
       content.child(Label.label(routine.label() + " takes no arguments.").wrapText());
     } else {
       content.child(Label.label("A value for each argument, which the server reads as its type:")
           .wrapText());
     }
     var rows = new ArrayList<Form.Entry>();
-    for (int i = 0; i < f.arguments.size(); i++) {
-      var parameter = f.arguments.get(i);
+    for (int i = 0; i < f.parameters.size(); i++) {
+      var parameter = f.parameters.get(i);
       int at = i;
       var name = parameter.name().isEmpty() ? "$" + (i + 1) : parameter.name();
       var mode = parameter.mode() == Routine.Mode.IN ? "" : parameter.mode().name() + " ";

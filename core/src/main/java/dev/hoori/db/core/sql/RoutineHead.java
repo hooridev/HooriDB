@@ -37,9 +37,7 @@ public record RoutineHead(
     Range definer = null;
     if (is(tokens, k, "DEFINER")) {
       int start = tokens.get(k).start();
-      while (k < tokens.size() && !kind(tokens.get(k)) && !is(tokens, k, "AGGREGATE")) {
-        k++;
-      }
+      k = pastDefiner(tokens, k);
       if (k == tokens.size()) {
         return Optional.empty();
       }
@@ -81,6 +79,16 @@ public record RoutineHead(
   /** The statement without its definer clause, which makes the user who runs it the definer. */
   public Optional<String> withoutDefiner(String sql) {
     return definer.map(d -> sql.substring(0, d.start()) + sql.substring(d.end()));
+  }
+
+  // Where the DEFINER clause that begins at the token ends: at the routine's kind or AGGREGATE,
+  // else at the end.
+  private static int pastDefiner(java.util.List<Tokens.Token> tokens, int from) {
+    int k = from;
+    while (k < tokens.size() && !kind(tokens.get(k)) && !is(tokens, k, "AGGREGATE")) {
+      k++;
+    }
+    return k;
   }
 
   private static boolean is(java.util.List<Tokens.Token> tokens, int k, String word) {

@@ -259,8 +259,7 @@ class RoutinesServerTest {
   // routine of another definer anyway.
   @Test
   void aDefinerTheUserMayNotNameLeavesTheRoutineAsItWas() throws Exception {
-    var provider = Provider.MYSQL;
-    this.provider = provider;
+    provider = Provider.MYSQL;
     try (var admin = admin(provider)) {
       execute(
           admin,
@@ -289,8 +288,7 @@ class RoutinesServerTest {
   // name the definer it had, it is put back with the user as its definer.
   @Test
   void aRoutinePutBackWithoutItsDefinerWhereTheUserMayNotNameIt() throws Exception {
-    var provider = Provider.MYSQL;
-    this.provider = provider;
+    provider = Provider.MYSQL;
     try (var admin = admin(provider)) {
       execute(
           admin,
@@ -357,7 +355,7 @@ class RoutinesServerTest {
   // MySQL's DROP takes the privileges granted on the routine alone with it, as the preview says.
   @Test
   void theDropOfASaveTakesThePrivilegesOnTheRoutineWithIt() throws Exception {
-    var provider = Provider.MYSQL;
+    provider = Provider.MYSQL;
     try (var connection = prepared(provider);
         var admin = admin(provider)) {
       execute(
@@ -378,7 +376,7 @@ class RoutinesServerTest {
   // logs binary: the trial fails, and the function stays.
   @Test
   void aFunctionThatBinaryLoggingRefusesStaysAsItWas() throws Exception {
-    var provider = Provider.MYSQL;
+    provider = Provider.MYSQL;
     try (var connection = prepared(provider);
         var admin = admin(provider)) {
       execute(admin, "SET GLOBAL log_bin_trust_function_creators = 0");
@@ -401,7 +399,7 @@ class RoutinesServerTest {
   // polymorphic argument and one of rows of record are not called with values of a form.
   @Test
   void postgreSqlLeavesOutExtensionsAndSaysWhatItDoesNotCall() throws Exception {
-    var provider = Provider.POSTGRESQL;
+    provider = Provider.POSTGRESQL;
     try (var connection = prepared(provider)) {
       execute(
           connection,

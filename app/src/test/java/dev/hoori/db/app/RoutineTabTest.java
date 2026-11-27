@@ -25,6 +25,7 @@ import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.log.Purpose;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -185,9 +186,10 @@ class RoutineTabTest {
       Kind.FUNCTION,
       "int",
       List.of(new Parameter("a", "int", Mode.IN), new Parameter("b", "int", Mode.IN)));
-  private static final String MY_SOURCE =
-      "CREATE DEFINER=`app`@`%` FUNCTION `add`(a INT, b INT) RETURNS int\n"
-          + "    DETERMINISTIC\nRETURN a + b";
+  private static final String MY_SOURCE = """
+      CREATE DEFINER=`app`@`%` FUNCTION `add`(a INT, b INT) RETURNS int
+          DETERMINISTIC
+      RETURN a + b""";
   private static final String MY_MODE = "SET SESSION sql_mode = 'ANSI_QUOTES'";
   private static final String MY_CHANGED = MY_SOURCE.replace("a + b", "a + b + 1");
 
@@ -442,10 +444,7 @@ class RoutineTabTest {
 
   // Waits until the fake took the call of the key, which then waits at its gate.
   private void held(String key) throws InterruptedException {
-    for (int i = 0; i < 500 && !c.servers.calls.contains(key); i++) {
-      Thread.sleep(10);
-    }
-    assertTrue(c.servers.calls.contains(key), c.servers.calls.toString());
+    assertTrue(c.servers.awaitCall(key, Duration.ofSeconds(5)), c.servers.calls.toString());
   }
 
   @Test
