@@ -91,8 +91,10 @@ class ExportDialogTest {
     assertTrue(line(tree, "#export-summary").contains("5 of 5 objects checked, 2 tables"), tree);
     // No file chosen yet: Export waits for one.
     assertTrue(line(tree, "role=button label=\"Export\"").contains("disabled"), tree);
-    // Read on a connection of its own, behind the tree's.
+    // Read on a connection of its own, behind the tree's, read-only at the server, so that what
+    // the export reads, as a view or function that writes, cannot change it.
     assertTrue(c.servers.linked.contains("2 " + LIST), c.servers.linked.toString());
+    assertTrue(c.servers.readOnly(2));
   }
 
   @Test

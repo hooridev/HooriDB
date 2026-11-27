@@ -134,7 +134,7 @@ final class ExportDialog {
    */
   static ExportDialog open(State s, UUID id, Container on) {
     var profile = s.profile(id);
-    var session = s.catalog.session(s, id, on.database().name());
+    var session = s.catalog.browsingSession(s, id, on.database().name());
     if (profile == null || session == null) {
       return null;
     }
@@ -179,7 +179,7 @@ final class ExportDialog {
     if (!stale && !lane.broken()) {
       return true;
     }
-    var session = s.catalog.session(s, id, on.database().name());
+    var session = s.catalog.browsingSession(s, id, on.database().name());
     if (session == null) {
       return false;
     }
