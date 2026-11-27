@@ -154,7 +154,19 @@ which the dialog says does not cover DDL where the server commits it by itself; 
 and statements run, cancels at any point, can be hidden behind the status line, and ends with the
 failed statements and their lines, passwords masked. Its statements
 go into the statement log, not the history; disconnecting, changing or deleting its connection and
-Exit cancel it. Run from its app image,
+Exit cancel it. A schema, or a database on MySQL and MariaDB, has a Routines node after its tables,
+read when opened, with its functions and procedures, their argument types and what they return,
+overloads apart by their arguments; a routine opens in a tab of its own with its source, the
+server's CREATE statement (`pg_get_functiondef`, `SHOW CREATE`, with `OR REPLACE` on MariaDB), in
+the console's colors and read-only until Edit. Save, New function or procedure (from the dialect's
+template) and Drop show their statements first and run on a session opened for the change alone,
+never the tree's, sending the editor's text as one statement whatever its body holds; MySQL, which
+cannot replace a routine in one step, drops it first and creates it again from its source where the
+new one fails; the tree reads the routines again after a change, and a read-only connection offers
+none of them and sends none. Run asks a value or NULL for each argument and opens a console on the
+routine's database that runs the call (`SELECT * FROM f(…)`, `SELECT f(…)`, `CALL p(…)`, OUT
+values through session variables on MySQL and MariaDB) with the values bound, which the console
+keeps for those statements while their text is unchanged. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
 Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
 tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
@@ -300,6 +312,13 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   SQL, psql's backslash commands and the rows of a `COPY … FROM STDIN`, the dialect's `client()`
   says, whose `copyIn` reaches pgjdbc's copy API by reflection. `execution.FileRun` runs it on a
   `FileRun.Target`, over JDBC in core and through `Link.runFile` in the app.
+- A routine's own SQL is its dialect's `routines()`: the catalog query of its functions and
+  procedures with their parameters, the read of its source, its drop, its call with values to bind
+  (`routine.Call`) and the template of a new one. `catalog.Catalog` reads routines and a source as
+  it reads tables; `routine.Routines` says what Save and Drop send and sends it with `Execution`,
+  under `Purpose.DEFINITION`, refusing it unsent on a read-only connection; `Execution` binds a
+  call's values to its `?` as text, which the server reads as each parameter's type, and records the
+  text alone.
 - No MongoDB driver is on the class path. Core compiles its bridge,
   `dev.hoori.db.core.document.mongo`, against the driver as a provided dependency, and `DriverStore`
   defines that package's classes from core's file in the downloaded driver's class loader, where
@@ -409,6 +428,15 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `FileRunTest` runs them on a made-up session, and `FileRunServerTest` runs hand-written dumps of
   `pg_dump`'s and `mysqldump`'s forms (`core/src/test/resources/sql-files`) on the `TestServer`s,
   whose MySQL lets its user create triggers and routines (`log_bin_trust_function_creators`).
+- Routines run against `FakeServers` too: `routine(host, routine, source)` puts a routine and its
+  source in its schema or database, read keyed `routines <host>/<path>` and `source <host>/<path>
+  <label>`, with the path as of `tables` and the label as `Routine.label` writes it, and `forget`
+  takes one out. Each statement of a change is keyed `define <host> <sql>`: a drop that the
+  dialect writes takes its routine out, `defines` gives what another does, as a CREATE that puts a
+  routine in, and `definitionFails` how it fails; a read-only link refuses the change unsent. A
+  statement run with values notes `bind <host> <values>`, NULL for a null, before its `run` key.
+  Core's `RoutinesTest` checks what Save, Drop and a call send, and `RoutinesServerTest` lists,
+  reads, saves, drops and calls routines on each `TestServer` of SQL.
 - Updates run against `FakeUpdater`: releases published by version, the helper's result given,
   downloads and restarts recorded, each failable and the download held at its gate `downloading`.
   `State.shown()`, which `main` hands the window's `onShown`, stands for the first frame shown,

@@ -1,0 +1,64 @@
+---
+title: Functions and procedures
+description: Browse, read, change, create, drop, and run the functions and procedures of a PostgreSQL, MySQL, or MariaDB database.
+---
+
+The functions and procedures of a database, its **routines**, are in Workspace under a **Routines** node. On PostgreSQL that node is in each schema; on MySQL and MariaDB it is in each database. It comes after the schema's tables and views, and HooriDB reads it when you open it. MongoDB connections have no routines in HooriDB.
+
+## Browse routines
+
+Each row shows a routine's name with the types of its arguments, such as `add(integer, integer)`, and what it returns. A procedure shows `procedure` instead, and its OUT arguments show as `OUT integer`. Routines with the same name and different arguments (overloads, on PostgreSQL) each get a row of their own, and every action below applies to the one you chose. On PostgreSQL, aggregate functions are listed too, marked `aggregate`.
+
+Right-click **Routines** to create a function or a procedure. Right-click a routine for **Open**, **Run…**, **Drop…**, **Refresh**, and **Copy name**.
+
+## Read the source
+
+Press Enter or double-click a routine to open its source in a tab. The source is the `CREATE` statement the server writes for the routine:
+
+- **PostgreSQL**: `pg_get_functiondef`, which writes `CREATE OR REPLACE`.
+- **MariaDB**: `SHOW CREATE FUNCTION` or `SHOW CREATE PROCEDURE`, with `OR REPLACE` added after `CREATE`.
+- **MySQL**: `SHOW CREATE FUNCTION` or `SHOW CREATE PROCEDURE`, as the server writes it.
+
+The tab uses the console's SQL colors and is read-only until you press **Edit**. **Refresh** reads the source again. On MySQL and MariaDB, the server shows the body only to a user who may see it; for anyone else the tab says the source is not shown.
+
+PostgreSQL does not write a source for an aggregate function, so the tab of an aggregate stays empty.
+
+## Change a routine
+
+1. Press **Edit** and change the source.
+2. Press **Save…**. A preview shows the statements that will run.
+3. Press **Save**.
+
+What Save runs depends on the server:
+
+- **PostgreSQL and MariaDB** replace the routine in one step with `CREATE OR REPLACE`. On PostgreSQL, a `CREATE OR REPLACE` with other argument types creates another overload and keeps the old routine. Changing the return type or the OUT arguments of an existing PostgreSQL function needs a **Drop…** first.
+- **MySQL** has no `CREATE OR REPLACE` for routines, so Save runs `DROP … IF EXISTS` and then the `CREATE`. MySQL commits each of these statements on its own, so they cannot run as one step. If the `CREATE` fails, HooriDB creates the routine again from the source it read and says whether that worked.
+
+A body with `BEGIN … END` and semicolons inside it is sent as one statement, so the editor needs no `DELIMITER`. A `;` after the body and `DELIMITER` lines around it are left out. When the server rejects the statement, its error shows above the editor, and on PostgreSQL the place it names is marked in the source. **Revert** goes back to the source as it was read.
+
+Save runs on a session of its own, opened for the change and closed after it, never on the session the Workspace tree uses. Workspace then reads the routines again. The statements appear in the statement log under the part **Routine**.
+
+## Create a routine
+
+Right-click **Routines** and choose **New function…** or **New procedure…**. A tab opens with a template written for that server. Change it and press **Save…**. Once it is saved, the tab shows the new routine.
+
+## Drop a routine
+
+Choose **Drop…** in a routine's menu or tab. A dialog shows the `DROP` statement. On PostgreSQL that statement names the argument types, so it drops only the routine you chose. After the drop, the source stays in the tab, and **Save…** creates the routine again.
+
+## Run a routine
+
+Choose **Run…** in a routine's menu or tab. The form has a field for each argument, with its type, and a **NULL** box. Type the values as text; the server converts each one to its argument's type. An argument with a default value still needs a value.
+
+**Run** opens a [console](/docs/features/console) on the routine's connection and database and runs the call there. The values are sent as bound parameters, never written into the statement:
+
+- **PostgreSQL**: a function runs as `SELECT * FROM f(CAST(? AS type), …)`, so OUT arguments, `SETOF`, and `TABLE` results show as columns. A procedure runs as `CALL p(…)`, which gives its INOUT and OUT values as a row.
+- **MySQL and MariaDB**: a function runs as `SELECT f(?, …)`. A procedure runs as `CALL p(…)`, and every result set it gives shows. Its INOUT and OUT arguments go through session variables, as in the `mysql` client: `SET @x = ?`, `CALL p(?, @x)`, and then `SELECT @x`.
+
+The console keeps the values with the call's statements while their text is unchanged, so you can run the call again from the console. If you edit a statement, or open the console again after HooriDB restarts, the values are gone, and the `?` in the statement fails.
+
+Because the call runs in a console, the console's **Auto** and **Manual** modes, **Commit**, **Rollback**, cancel, and History all work as they do for any statement. In **Manual**, what a function or procedure changes stays uncommitted until you commit it.
+
+## Read-only connections
+
+On a [read-only connection](/docs/features/console#read-only-connections), HooriDB creates, changes, and drops no routines: **Edit**, **New function…**, **New procedure…**, and **Drop…** are not offered, and nothing is sent. **Run…** works, and the call runs in a read-only session, so the server refuses what the routine writes as far as its read-only transactions cover it.
