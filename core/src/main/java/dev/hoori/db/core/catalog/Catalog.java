@@ -293,6 +293,7 @@ public final class Catalog {
           switch (rows.getString(3)) {
             case "p" -> Routine.Kind.PROCEDURE;
             case "a" -> Routine.Kind.AGGREGATE;
+            case "w" -> Routine.Kind.WINDOW;
             default -> Routine.Kind.FUNCTION;
           },
           Objects.requireNonNullElse(rows.getString(4), ""),
@@ -324,12 +325,13 @@ public final class Catalog {
   }
 
   /**
-   * The routine's CREATE statement, as {@link RoutineDialect#created} gives it.
+   * The routine's source, its CREATE statement and the settings it was created under, as {@link
+   * RoutineDialect#created} gives it, read as {@link Purpose#DEFINITION}.
    *
    * @throws CatalogException {@link Failure#NOT_FOUND} where the routine is no longer there, and
    *     {@link Failure#ACCESS_DENIED} where the server does not show its source to the user
    */
-  public static String source(Connection connection, Provider provider, Routine routine)
+  public static Routine.Source source(Connection connection, Provider provider, Routine routine)
       throws CatalogException {
     requireConnectedTo(connection, provider, routine.container().database());
     var routines = provider.dialect().routines();
@@ -338,6 +340,7 @@ public final class Catalog {
     var found = query(
         connection,
         provider,
+        Purpose.DEFINITION,
         lookup.sql(),
         rows -> Optional.ofNullable(routines.created(rows)),
         lookup.parameters().toArray(String[]::new));
@@ -413,10 +416,22 @@ public final class Catalog {
   static <T> List<T> query(
       Connection connection, Provider provider, String sql, Row<T> row, String... parameters)
       throws CatalogException {
+    return query(connection, provider, Purpose.CATALOG, sql, row, parameters);
+  }
+
+  // As the query above, recorded for the purpose given.
+  private static <T> List<T> query(
+      Connection connection,
+      Provider provider,
+      Purpose purpose,
+      String sql,
+      Row<T> row,
+      String... parameters)
+      throws CatalogException {
     try {
       return Journal.sql(
           provider,
-          Purpose.CATALOG,
+          purpose,
           sql,
           read -> Outcome.rows(read.size()),
           () -> Query.run(connection, provider, sql, statement -> {

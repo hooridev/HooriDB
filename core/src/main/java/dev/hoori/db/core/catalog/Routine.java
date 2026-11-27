@@ -27,12 +27,34 @@ public record Routine(
 
   /** What a routine is. */
   public enum Kind {
-    /** A function, called in a query; on PostgreSQL also a window function. */
+    /** A function, called in a query. */
     FUNCTION,
     /** A procedure, run with {@code CALL}. */
     PROCEDURE,
     /** An aggregate function of PostgreSQL, whose source the server does not write. */
-    AGGREGATE
+    AGGREGATE,
+    /**
+     * A window function of PostgreSQL, which runs over the rows of a query's window, as {@code
+     * OVER} gives it, and not by a call of its own.
+     */
+    WINDOW
+  }
+
+  /**
+   * The source of a routine: its CREATE statement, and the statements that set a session as the
+   * routine was created, such as MySQL's {@code sql_mode}, which a CREATE of it again runs after,
+   * so that its body is read as it was.
+   */
+  public record Source(String statement, List<String> session) {
+
+    public Source {
+      session = List.copyOf(session);
+    }
+
+    /** A source that needs no setting of the session. */
+    public static Source of(String statement) {
+      return new Source(statement, List.of());
+    }
   }
 
   /** How a parameter passes its value. */

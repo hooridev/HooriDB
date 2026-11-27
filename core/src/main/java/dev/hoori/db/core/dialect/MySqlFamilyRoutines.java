@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -57,28 +58,37 @@ final class MySqlFamilyRoutines implements RoutineDialect {
   }
 
   // Its third column, Create Function or Create Procedure, is NULL where the user has no right to
-  // see the routine's body.
+  // see the routine's body. Its second is the sql_mode the routine was created under, which the
+  // server reads its body by, and keeps with it: a CREATE of it again sets it first. Its
+  // character_set_client is not set so, as the driver talks to the server in utf8mb4 alone, which
+  // holds any text of the editor.
   @Override
-  public String created(ResultSet rows) throws SQLException {
+  public Routine.Source created(ResultSet rows) throws SQLException {
     var text = rows.getString(3);
     if (text == null) {
       return null;
     }
     text = text.strip();
     if (orReplace && text.regionMatches(true, 0, "CREATE ", 0, 7)) {
-      return text.substring(0, 7) + "OR REPLACE " + text.substring(7);
+      text = text.substring(0, 7) + "OR REPLACE " + text.substring(7);
     }
-    return text;
+    var mode = rows.getString(2);
+    return mode == null
+        ? Routine.Source.of(text)
+        : new Routine.Source(text, List.of("SET SESSION sql_mode = " + literal(mode)));
   }
 
   @Override
-  public boolean replaces() {
-    return orReplace;
+  public Optional<String> dropFirst(Routine routine) {
+    return orReplace
+        ? Optional.empty()
+        : Optional.of("DROP " + word(routine.kind()) + " IF EXISTS " + name(routine));
   }
 
+  // Names of routines are not case-sensitive, as the manual says.
   @Override
-  public String dropFirst(Routine routine) {
-    return "DROP " + word(routine.kind()) + " IF EXISTS " + name(routine);
+  public boolean sameName(String name, String other) {
+    return name.equalsIgnoreCase(other);
   }
 
   @Override
@@ -131,11 +141,49 @@ final class MySqlFamilyRoutines implements RoutineDialect {
     return List.copyOf(calls);
   }
 
+  // An aggregate of MariaDB's runs over the rows of a query, as PostgreSQL's does.
+  @Override
+  public Optional<String> uncalled(Routine routine) {
+    return Optional.empty();
+  }
+
+  // The types of text, whose empty value is one; and of bytes, which take an empty text as none.
+  @Override
+  public boolean takesEmpty(String type) {
+    var word = type.strip().toLowerCase(Locale.ROOT);
+    int end = 0;
+    while (end < word.length() && Character.isLetter(word.charAt(end))) {
+      end++;
+    }
+    return switch (word.substring(0, end)) {
+      case "char",
+          "varchar",
+          "tinytext",
+          "text",
+          "mediumtext",
+          "longtext",
+          "binary",
+          "varbinary",
+          "tinyblob",
+          "blob",
+          "mediumblob",
+          "longblob",
+          "enum",
+          "set" -> true;
+      default -> false;
+    };
+  }
+
+  // A string of the sql_mode's words, which hold no quote or backslash, escaped all the same.
+  private static String literal(String text) {
+    return "'" + text.replace("\\", "\\\\").replace("'", "''") + "'";
+  }
+
   @Override
   public String template(Routine.Kind kind, Container container) {
     var database = quoted(container.name()) + ".";
     return switch (kind) {
-      case FUNCTION, AGGREGATE -> """
+      case FUNCTION, AGGREGATE, WINDOW -> """
         CREATE FUNCTION %snew_function(a INT, b INT)
         RETURNS INT
         DETERMINISTIC

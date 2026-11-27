@@ -29,8 +29,8 @@ import java.util.function.Supplier;
  * One statement, given as text, run on an open connection: its results, in the order the server
  * gives them, each rows or a count of changed rows, with the server's messages, read a portion at
  * a time. The text goes to the server as it is, without a driver's escapes, and without parameters
- * unless values are given for them; it is one statement, which this does not split. The connection's transaction is left to the caller to
- * commit or roll back.
+ * unless values are given for them; it is one statement, which this does not split. The
+ * connection's transaction is left to the caller to commit or roll back.
  *
  * <p>The first {@link #next} runs the statement and reads at most the given number of rows of its
  * first result of rows, with the results before it; each further call reads as many more and goes
@@ -485,8 +485,11 @@ public final class Execution implements AutoCloseable {
       statement.setFetchSize(session.fetchSize(count));
       return statement.execute(sql);
     }
+    // A driver that reads escapes as it prepares, as PgJDBC does, finds none in a call's text,
+    // whose names are quoted and whose values are bound.
     var prepared = connection.prepareStatement(sql);
     statement = prepared;
+    prepared.setEscapeProcessing(false);
     prepared.setFetchSize(session.fetchSize(count));
     for (int i = 0; i < values.size(); i++) {
       var value = values.get(i);

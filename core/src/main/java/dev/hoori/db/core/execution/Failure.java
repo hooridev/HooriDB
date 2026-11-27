@@ -70,7 +70,8 @@ public record Failure(
     OTHER
   }
 
-  static Failure cancelled() {
+  /** A cancel of HooriDB's, as of a statement that the caller cancelled before it was sent. */
+  public static Failure cancelled() {
     return of(Kind.CANCELLED, "");
   }
 
