@@ -524,7 +524,8 @@ final class FileRunDialog {
     var p = report.progress();
     var text = new StringBuilder(
         switch (report.ending()) {
-          case RAN -> statements(p.statements()) + " ran in " + took(report.took()) + ".";
+          case RAN ->
+            statements(p.statements()) + " ran in " + Format.DURATION.text(report.took()) + ".";
           case STOPPED -> {
             // The failure it stopped at is the last listed, where none was left out.
             var line = failed.isEmpty() || failed.size() < p.failed()
@@ -589,12 +590,6 @@ final class FileRunDialog {
 
   static String statements(long n) {
     return Format.LONG.text(n) + (n == 1 ? " statement" : " statements");
-  }
-
-  private static String took(Duration took) {
-    return took.toMillis() < 1_000
-        ? took.toMillis() + " ms"
-        : Format.DURATION.text(took.withNanos(0));
   }
 
   // The first line of a failed statement, as the grid shows it.
