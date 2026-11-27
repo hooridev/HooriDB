@@ -35,12 +35,12 @@ A table to be emptied is not copied, and fails before anything is written, where
 
 ## Columns
 
-Columns are matched by name (if no name matches exactly, a name that differs only in case is used). A column of the source that the target's table lacks fails that table. A column the target generates itself (such as a generated column) is left out, and a column of the target that the source lacks gets its default. Values are copied as the server writes them, so numbers, dates, times with zones, JSON, arrays and binary data arrive unchanged. Floating-point values keep every bit. On PostgreSQL, identity and serial columns take the copied values, and their sequences are moved to the highest value the table holds where they are behind it, never back, also where the table failed after batches were committed.
+Columns are matched by name (if no name matches exactly, a name that differs only in case is used). A column of the source that the target's table lacks fails that table, and so do two columns of the source that would go into the same column of the target (such as `v` and `V` where the target has only `v`). A column the target generates itself (such as a generated column) is left out, and a column of the target that the source lacks gets its default. Values are copied as the server writes them, so numbers, dates, times with zones, JSON, arrays and binary data arrive unchanged. Floating-point values keep every bit, and PostgreSQL's `money` is written and read in the C locale on both sides, whatever `lc_monetary` each server has. On MySQL and MariaDB a zero copied into an `AUTO_INCREMENT` column stays zero. On PostgreSQL, identity and serial columns take the copied values, and their sequences are moved to the highest value the table holds (the lowest, for a sequence that counts down) where they are behind it, never back, also where the table failed after batches were committed.
 
 ## Options
 
 - **Commit**: **Per table** commits a table once all its rows are written, so a table that fails keeps none of its new rows. **Per batch** commits after each batch, so a table that fails keeps the batches written before the failure.
-- **At an error**: **Stop** ends the run at the first table that fails; **Skip the table** goes on with the next.
+- **At an error**: **Stop** ends the run at the first table that fails; **Skip the table** goes on with the next, unless rolling back the table that failed failed too: then the run stops, as the session may still hold what that table wrote.
 - **Rows per batch**: how many rows are read and written at a time (1,000 by default). A batch also ends once its values pass about 8 MB, from the first batch on, or half of what one statement may carry on MySQL and MariaDB (`max_allowed_packet`) where that is less; a single larger row goes in a batch of its own.
 
 ## Run a copy
