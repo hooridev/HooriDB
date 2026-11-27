@@ -78,4 +78,31 @@ class JsonWriterTest {
             + "\"f\":12345678901234567890123},\"at\":null,\"name\":null}\n",
         written(Format.Json.LINES, rows));
   }
+
+  @Test
+  void writesADecimalOfAnyScaleInFull() throws IOException {
+    var small = new BigDecimal("1E-10000");
+    var large = new BigDecimal("-12E+10000");
+    var rows = List.of(
+        Arrays.<Object>asList(1L, small, null, null, null, null),
+        Arrays.<Object>asList(2L, large, null, null, null, null));
+    var rest = ",\"ok\":null,\"doc\":null,\"at\":null,\"name\":null}\n";
+    assertEquals(
+        "{\"id\":1,\"price\":0." + "0".repeat(9999) + "1" + rest + "{\"id\":2,\"price\":-12"
+            + "0".repeat(10000) + rest,
+        written(Format.Json.LINES, rows));
+  }
+
+  @Test
+  void keepsAJsonValueJsonBeyondTheLimitsOfJacksonsOwn() throws IOException {
+    var digits = "9".repeat(1001);
+    var name = "k".repeat(60_000);
+    var deep = "[".repeat(1500) + "]".repeat(1500);
+    var doc = "{\"n\": " + digits + ", \"" + name + "\": " + deep + "}";
+    var rows = List.of(Arrays.<Object>asList(1L, null, null, doc, null, null));
+    assertEquals(
+        "{\"id\":1,\"price\":null,\"ok\":null,\"doc\":{\"n\":" + digits + ",\"" + name + "\":"
+            + deep + "},\"at\":null,\"name\":null}\n",
+        written(Format.Json.LINES, rows));
+  }
 }

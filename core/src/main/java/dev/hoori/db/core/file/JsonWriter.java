@@ -13,21 +13,33 @@ import tools.jackson.core.JsonGenerator;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.ObjectReadContext;
 import tools.jackson.core.ObjectWriteContext;
+import tools.jackson.core.StreamReadConstraints;
+import tools.jackson.core.StreamWriteConstraints;
 import tools.jackson.core.StreamWriteFeature;
 import tools.jackson.core.json.JsonFactory;
 
 /**
  * JSON, as {@link Format.Json} says: an object per row, its members in the fields' order. Numbers
  * and truths are JSON's own but a floating point number that is not finite, which is its text; a
- * JSON column's value goes in as the JSON it is, where it is one value of valid JSON, and as its
- * text otherwise, its numbers as they are written there; every other value is its text, as {@link
+ * decimal is written in full, whatever its scale. A JSON column's value goes in as the JSON it is,
+ * where it is one value of valid JSON, however long, deep or many-digited, and as its text
+ * otherwise, its numbers as they are written there; every other value is its text, as {@link
  * Texts} writes it.
  */
 final class JsonWriter implements RowWriter {
 
+  // No limit of Jackson's own on what a JSON column holds, which the server took as valid: a
+  // value that passes one is no less valid, and is no text.
   private static final JsonFactory FACTORY = JsonFactory.builder()
       .rootValueSeparator("")
-      .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+      .streamReadConstraints(StreamReadConstraints.builder()
+          .maxNestingDepth(Integer.MAX_VALUE)
+          .maxNumberLength(Integer.MAX_VALUE)
+          .maxStringLength(Integer.MAX_VALUE)
+          .maxNameLength(Integer.MAX_VALUE)
+          .build())
+      .streamWriteConstraints(
+          StreamWriteConstraints.builder().maxNestingDepth(Integer.MAX_VALUE).build())
       .disable(StreamWriteFeature.AUTO_CLOSE_TARGET)
       .build();
 
@@ -76,7 +88,8 @@ final class JsonWriter implements RowWriter {
       case null -> json.writeNull();
       case Long number -> json.writeNumber(number);
       case BigInteger number -> json.writeNumber(number);
-      case BigDecimal number -> json.writeNumber(number);
+      // As its plain text, which has no bound on the scale, unlike Jackson's plain BigDecimal.
+      case BigDecimal number -> json.writeNumber(number.toPlainString());
       case Float number when Float.isFinite(number) -> json.writeNumber(number);
       case Double number when Double.isFinite(number) -> json.writeNumber(number);
       case Boolean truth -> json.writeBoolean(truth);
@@ -102,7 +115,8 @@ final class JsonWriter implements RowWriter {
     }
   }
 
-  // Whether the text is one value of JSON, and nothing after it.
+  // Whether the text is one value of JSON, and nothing after it: what fails is no JSON, as the
+  // parser has no limits.
   private static boolean valid(String text) {
     try (var parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
       if (parser.nextToken() == null) {
