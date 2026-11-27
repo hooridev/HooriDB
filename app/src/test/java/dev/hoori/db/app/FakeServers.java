@@ -1633,6 +1633,7 @@ final class FakeServers implements Servers {
 
         @Override
         public Optional<Changes.Outcome> write(Changes batch) throws QueryException {
+          requireOpen();
           var key = "batch " + path;
           try {
             note(key);
@@ -1673,6 +1674,7 @@ final class FakeServers implements Servers {
         // As core's, within its bound: an interrupt does not stop it, held or not.
         @Override
         public void commit() throws QueryException {
+          requireOpen();
           var key = "commit " + path;
           note(key);
           open = false;
@@ -1693,6 +1695,13 @@ final class FakeServers implements Servers {
           if (open) {
             open = false;
             noted("rollback " + path);
+          }
+        }
+
+        // As core's: nothing is written or committed once the writing is over.
+        private void requireOpen() {
+          if (!open) {
+            throw new IllegalStateException("The writer is over");
           }
         }
       };
