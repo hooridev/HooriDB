@@ -477,7 +477,7 @@ final class CatalogTree {
         result -> {
           if (live.levels.get(node) == reading) {
             onRead.accept(result);
-            revealed(s, node);
+            revealed(s);
           }
         },
         error -> {
@@ -1641,8 +1641,9 @@ final class CatalogTree {
 
   /**
    * Selects the table or view in the tree, opening the folders and nodes above it and reading what
-   * they hold where it is not read yet; with a column, the column once the table's columns are
-   * read.
+   * they hold where it is not read yet, or anew where what was read lacks it, as a table made
+   * since; with a column, the column once the table's columns are read, and with the path of a
+   * document's field the field it is in that the tree shows.
    */
   void reveal(State s, Node.OfTable node, String column) {
     var live = lives.get(node.id());
@@ -1661,39 +1662,82 @@ final class CatalogTree {
         toggle(s, n, true);
       }
     }
-    s.selected = node;
-    revealing = column == null ? null : new Revealing(node, column);
-    if (column != null) {
-      if (!open.contains(node)) {
-        toggle(s, node, true);
-      }
-      revealed(s, node);
+    var parent = node.parent();
+    if (live.levels.get(parent) instanceof Read(var siblings) && shown(siblings, node) == null) {
+      refresh(s, parent);
     }
+    s.selected = node;
+    revealing = new Revealing(node, column);
+    revealed(s);
   }
 
-  // The column to select once its table's columns are read, or null.
+  // The table or view to select, and the column in it or null, once what holds them is read.
   private Revealing revealing;
 
   private record Revealing(Node.OfTable table, String column) {}
 
-  // The columns of the table were read: the column waited for is selected, if the table still is.
-  private void revealed(State s, Node node) {
-    if (revealing == null || !revealing.table().equals(node)) {
-      return;
+  // The tree's node of the table among the nodes, by its container and name; null where none is.
+  private static Node.OfTable shown(List<Node> nodes, Node.OfTable table) {
+    for (var n : nodes) {
+      if (n instanceof Node.OfTable t
+          && t.table().container().equals(table.table().container())
+          && t.table().name().equals(table.table().name())) {
+        return t;
+      }
     }
-    var live = lives.get(node.id());
-    if (live == null || !(live.levels.get(node) instanceof Read(var children))) {
-      return;
-    }
+    return null;
+  }
+
+  // A level was read: the table waited for is selected once its own level is, and then its
+  // column once its columns are, if the user did not go elsewhere meanwhile.
+  private void revealed(State s) {
     var wanted = revealing;
-    revealing = null;
-    if (!node.equals(s.selected)) {
-      return; // the user went elsewhere meanwhile
+    if (wanted == null) {
+      return;
     }
-    for (var child : children) {
-      if (child instanceof Node.OfColumn c && c.column().name().equals(wanted.column())) {
-        s.selected = c;
-        return;
+    var live = lives.get(wanted.table().id());
+    if (live == null || !wanted.table().equals(s.selected)) {
+      revealing = null;
+      return;
+    }
+    if (!(live.levels.get(wanted.table().parent()) instanceof Read(var siblings))) {
+      return; // still read
+    }
+    var table = shown(siblings, wanted.table());
+    if (table == null) {
+      revealing = null; // gone
+      return;
+    }
+    s.selected = table;
+    if (wanted.column() == null) {
+      revealing = null;
+      return;
+    }
+    revealing = new Revealing(table, wanted.column());
+    if (!open.contains(table)) {
+      toggle(s, table, true);
+    }
+    if (!(live.levels.get(table) instanceof Read(var children))) {
+      return; // its columns still read
+    }
+    revealing = null;
+    var column = column(children, wanted.column());
+    if (column != null) {
+      s.selected = column;
+    }
+  }
+
+  // The column of the name, or for the path of a document's field, as address.city, the deepest
+  // field of it that the tree shows; null where none is.
+  private static Node column(List<Node> children, String name) {
+    for (var path = name; ; path = path.substring(0, path.lastIndexOf('.'))) {
+      for (var child : children) {
+        if (child instanceof Node.OfColumn c && c.column().name().equals(path)) {
+          return c;
+        }
+      }
+      if (path.lastIndexOf('.') < 0) {
+        return null;
       }
     }
   }

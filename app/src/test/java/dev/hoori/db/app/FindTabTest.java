@@ -21,6 +21,7 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConsoleStore;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.find.Found;
@@ -130,6 +131,49 @@ class FindTabTest {
     var tree = c.tree("column");
     assertTrue(line(tree, "role=treeitem label=\"orders\"").contains("expanded"), tree);
     assertTrue(line(tree, "role=treeitem label=\"customer_id\"").contains("selected"), tree);
+  }
+
+  @Test
+  void aTableMadeSinceItsSchemaWasReadIsReadAnewAndSelected() throws Exception {
+    var app = find();
+    c.run(app, open("public") + SETTLE);
+    c.servers.serve(
+        PG,
+        Provider.POSTGRESQL,
+        "16.4",
+        CatalogTreeTest.PG_OUTLINE.replace(
+            "\n    orders\n", "\n    archive\n      *id: integer\n    orders\n"));
+    c.run(app, search("archive") + "press #cell-0-0 clicks 2\nframe\n" + SETTLE + "snap made\n");
+    var tree = c.tree("made");
+    assertTrue(line(tree, "role=treeitem label=\"archive\"").contains("selected"), tree);
+  }
+
+  @Test
+  void aFieldOfADocumentSelectsTheFieldOfTheCollectionItIsIn() throws Exception {
+    c.servers.serve(DocumentConsoleTest.MONGO, Provider.MONGODB, "8.0.4", """
+        hoori
+          customers
+            _id: objectId
+            name: string
+            address: object
+        """);
+    var hoori = new Database("hoori", false);
+    c.servers.defined(
+        DocumentConsoleTest.MONGO,
+        new FakeServers.Defined(
+            Found.Kind.COLUMN,
+            hoori,
+            new Table(hoori, "customers", Table.Kind.TABLE),
+            "address.city",
+            null));
+    var docs = DocumentConsoleTest.DOCS;
+    var app = c.app(docs);
+    c.ready(app, docs);
+    c.run(app, START + open(docs.name()) + SETTLE + menu("hoori", "Find…") + SETTLE);
+    c.run(app, search("city") + "press #cell-0-0 clicks 2\nframe\n" + SETTLE + "snap field\n");
+    var tree = c.tree("field");
+    assertTrue(line(tree, "role=treeitem label=\"customers\"").contains("expanded"), tree);
+    assertTrue(line(tree, "role=treeitem label=\"address\"").contains("selected"), tree);
   }
 
   @Test
