@@ -726,6 +726,17 @@ class DumpServerTest {
         "CREATE INDEX measure_id ON measure (id)",
         "ALTER TABLE measure_2024 ALTER COLUMN id SET DEFAULT 7",
         "ALTER TABLE measure_2024 ALTER COLUMN id SET NOT NULL",
+        // A partition and a child with an expression of their own for the generated column they
+        // inherit, which gives the rows other values than their table's would.
+        "CREATE TABLE gauge (x integer, at date NOT NULL,"
+            + " g integer GENERATED ALWAYS AS (x + 1) STORED) PARTITION BY RANGE (at)",
+        "CREATE TABLE gauge_2024 PARTITION OF gauge (g GENERATED ALWAYS AS (x + 2) STORED)"
+            + " FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')",
+        "INSERT INTO gauge (x, at) VALUES (3, '2024-05-01')",
+        "CREATE TABLE gauge_base (x integer, g integer GENERATED ALWAYS AS (x * 2) STORED)",
+        "CREATE TABLE gauge_child () INHERITS (gauge_base)",
+        "ALTER TABLE ONLY gauge_child ALTER COLUMN g SET EXPRESSION AS (x * 3)",
+        "INSERT INTO gauge_child (x) VALUES (3)",
         // A child with defaults and NOT NULL of its own on the columns it inherits.
         "CREATE TABLE base (id integer DEFAULT 0, note text DEFAULT 'b')",
         "CREATE TABLE derived (extra integer) INHERITS (base)",
