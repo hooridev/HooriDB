@@ -6,6 +6,7 @@ import dev.hoori.db.core.query.QueryException;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -14,7 +15,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -28,9 +28,8 @@ public final class Export {
 
   // What file systems refuse in a name, Windows' among them, and the names of its devices.
   private static final Pattern REFUSED = Pattern.compile("[\\x00-\\x1F<>:\"/\\\\|?*]");
-  private static final Set<String> DEVICES = Set.of(
-      "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-      "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9");
+  private static final Pattern DEVICE =
+      Pattern.compile("(?i)con|prn|aux|nul|(?:com|lpt)[0-9\u00b9\u00b2\u00b3]");
 
   private Export() {}
 
@@ -64,10 +63,17 @@ public final class Export {
         rows = reading.read(writer);
         writer.finish();
       }
+      // In one step, so that the file is the old one or the new one, never a part of either; a
+      // file system that cannot do that fails the export, which leaves the folder as it was.
       try {
         Files.move(part, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-      } catch (AtomicMoveNotSupportedException _) {
-        Files.move(part, file, StandardCopyOption.REPLACE_EXISTING);
+      } catch (AtomicMoveNotSupportedException e) {
+        var refused = new FileSystemException(
+            file.toString(),
+            null,
+            "its file system cannot put a file in the place of another in one step");
+        refused.initCause(e);
+        throw refused;
       }
       return rows;
     } catch (IOException | QueryException | RuntimeException e) {
@@ -100,7 +106,8 @@ public final class Export {
     return names;
   }
 
-  // Windows drops the dots and spaces a name ends with, and refuses some names that it ends with.
+  // Windows drops the dots and spaces a name ends with, and takes a name whose part before its
+  // first dot is a device's for the device, as NUL.backup.csv for NUL.
   private static String base(String name) {
     var base = REFUSED.matcher(name).replaceAll("_");
     var end = base.length();
@@ -112,6 +119,8 @@ public final class Export {
     if (base.isEmpty()) {
       return "_";
     }
-    return DEVICES.contains(base.toLowerCase(Locale.ROOT)) ? base + "_" : base;
+    var dot = base.indexOf('.');
+    var stem = (dot < 0 ? base : base.substring(0, dot)).stripTrailing();
+    return DEVICE.matcher(stem).matches() ? stem + "_" + base.substring(stem.length()) : base;
   }
 }

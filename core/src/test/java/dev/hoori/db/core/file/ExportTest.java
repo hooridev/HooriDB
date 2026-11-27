@@ -83,7 +83,19 @@ class ExportTest {
   @Test
   void namesFilesAsFileSystemsTakeThemOncePerFolder() {
     var db = new Database("db", false);
-    var tables = Stream.of("orders", "Orders", "a/b:c?", "con", "dots...", "orders", "a .", " . ")
+    var tables = Stream.of(
+            "orders",
+            "Orders",
+            "a/b:c?",
+            "con",
+            "dots...",
+            "orders",
+            "a .",
+            " . ",
+            "NUL.backup",
+            "lpt1 .old",
+            "COM0.log",
+            "console")
         .map(name -> new Table(db, name, Table.Kind.TABLE))
         .toList();
     assertEquals(
@@ -95,7 +107,11 @@ class ExportTest {
             "dots.csv",
             "orders-3.csv",
             "a.csv",
-            "_.csv"),
+            "_.csv",
+            "NUL_.backup.csv",
+            "lpt1_ .old.csv",
+            "COM0_.log.csv",
+            "console.csv"),
         Export.fileNames(tables, Format.Delimited.CSV));
   }
 }
