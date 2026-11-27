@@ -38,6 +38,7 @@ import java.util.Optional;
 public final class MySqlFamilyDump extends DumpDialect {
 
   private static final String MODE = MySqlFamilyDefinitions.MODE;
+  private static final String NO_KEY_CHECKS = "SET SESSION foreign_key_checks = 0";
 
   public MySqlFamilyDump() {
     // Nothing to set up.
@@ -152,9 +153,7 @@ public final class MySqlFamilyDump extends DumpDialect {
     return tables.isEmpty()
         ? Around.NOTHING
         : new Around(
-            List.of(
-                "SET @HOORIDB_CIRCLE_CHECKS = @@SESSION.foreign_key_checks",
-                "SET SESSION foreign_key_checks = 0"),
+            List.of("SET @HOORIDB_CIRCLE_CHECKS = @@SESSION.foreign_key_checks", NO_KEY_CHECKS),
             List.of("SET SESSION foreign_key_checks = @HOORIDB_CIRCLE_CHECKS"));
   }
 
@@ -226,7 +225,7 @@ public final class MySqlFamilyDump extends DumpDialect {
         "SET SESSION sql_mode = '" + MODE + "'"));
     if (options.noForeignKeyChecks()) {
       header.add("SET @HOORIDB_FOREIGN_KEY_CHECKS = @@SESSION.foreign_key_checks");
-      header.add("SET SESSION foreign_key_checks = 0");
+      header.add(NO_KEY_CHECKS);
     }
     return header;
   }
@@ -249,9 +248,7 @@ public final class MySqlFamilyDump extends DumpDialect {
   // way around but turning them off.
   @Override
   List<String> beforeDrops() {
-    return List.of(
-        "SET @HOORIDB_DROP_CHECKS = @@SESSION.foreign_key_checks",
-        "SET SESSION foreign_key_checks = 0");
+    return List.of("SET @HOORIDB_DROP_CHECKS = @@SESSION.foreign_key_checks", NO_KEY_CHECKS);
   }
 
   @Override

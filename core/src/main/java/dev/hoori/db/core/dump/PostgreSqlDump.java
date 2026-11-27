@@ -31,6 +31,8 @@ import java.util.stream.Collectors;
  */
 public final class PostgreSqlDump extends DumpDialect {
 
+  private static final String ALTER = "ALTER TABLE ";
+  private static final String ALTER_ONLY = "ALTER TABLE ONLY ";
   private static final String LOCK_TIMEOUT = "lock_timeout";
 
   // What the file's header sets, and its footer puts back from where the header kept it.
@@ -188,7 +190,7 @@ public final class PostgreSqlDump extends DumpDialect {
         WHERE t.tgrelid = pg_catalog.to_regclass(?) AND NOT t.tgisinternal
         ORDER BY t.tgname""", rows -> new Enabled(rows.getString(1), rows.getString(2)), name);
     if (!triggers.isEmpty()) {
-      before.add("ALTER TABLE ONLY " + name + " DISABLE TRIGGER USER");
+      before.add(ALTER_ONLY + name + " DISABLE TRIGGER USER");
       for (var trigger : triggers) {
         var mode = switch (trigger.mode()) {
           case "D" -> "";
@@ -197,13 +199,13 @@ public final class PostgreSqlDump extends DumpDialect {
           default -> " ENABLE TRIGGER ";
         };
         if (!mode.isEmpty()) {
-          after.add("ALTER TABLE ONLY " + name + mode + provider.quote(trigger.trigger()));
+          after.add(ALTER_ONLY + name + mode + provider.quote(trigger.trigger()));
         }
       }
     }
     if (read.forceRowSecurity()) {
-      before.add("ALTER TABLE ONLY " + name + " NO FORCE ROW LEVEL SECURITY");
-      after.add("ALTER TABLE ONLY " + name + " FORCE ROW LEVEL SECURITY");
+      before.add(ALTER_ONLY + name + " NO FORCE ROW LEVEL SECURITY");
+      after.add(ALTER_ONLY + name + " FORCE ROW LEVEL SECURITY");
     }
     var checks = Sql.rows(
         connection,
@@ -218,8 +220,8 @@ public final class PostgreSqlDump extends DumpDialect {
         name);
     for (var check : checks) {
       var constraint = provider.quote(check.name());
-      before.add("ALTER TABLE " + name + " DROP CONSTRAINT IF EXISTS " + constraint);
-      after.add("ALTER TABLE " + name + " ADD CONSTRAINT " + constraint + " " + check.definition());
+      before.add(ALTER + name + " DROP CONSTRAINT IF EXISTS " + constraint);
+      after.add(ALTER + name + " ADD CONSTRAINT " + constraint + " " + check.definition());
     }
     return new Around(before, after);
   }

@@ -47,6 +47,8 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
   private static final String CLASS = "'pg_catalog.pg_class'::pg_catalog.regclass";
   private static final String PROC = "'pg_catalog.pg_proc'::pg_catalog.regclass";
   private static final String TYPE = "'pg_catalog.pg_type'::pg_catalog.regclass";
+  private static final String ALTER = "ALTER TABLE ";
+  private static final String ALTER_ONLY = "ALTER TABLE ONLY ";
 
   public PostgreSqlDefinitions() {
     // Nothing to set up.
@@ -418,10 +420,10 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
     private List<String> security(Relation relation) throws QueryException {
       var statements = new ArrayList<String>();
       if (relation.rowSecurity()) {
-        statements.add("ALTER TABLE ONLY " + name + " ENABLE ROW LEVEL SECURITY");
+        statements.add(ALTER_ONLY + name + " ENABLE ROW LEVEL SECURITY");
       }
       if (relation.forceRowSecurity()) {
-        statements.add("ALTER TABLE ONLY " + name + " FORCE ROW LEVEL SECURITY");
+        statements.add(ALTER_ONLY + name + " FORCE ROW LEVEL SECURITY");
       }
       var policies = rows(
           """
@@ -492,11 +494,11 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
         var named = "CONSTRAINT " + quote(constraint.name()) + " " + constraint.definition();
         // Added NOT VALID, as its definition says, to the table and what inherits it.
         if (!constraint.valid()) {
-          notValid.add("ALTER TABLE " + name + " ADD " + named);
+          notValid.add(ALTER + name + " ADD " + named);
         } else if (!constraint.type().equals("f")) {
           inline.add(named);
         } else {
-          keys.add("ALTER TABLE " + only + name + " ADD " + named);
+          keys.add(ALTER + only + name + " ADD " + named);
         }
         if (!constraint.type().equals("f")) {
           continue;
@@ -585,7 +587,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       if (!column.identity().isEmpty() || !column.generated().isEmpty()) {
         return List.of();
       }
-      var alter = "ALTER TABLE ONLY " + name + " ALTER COLUMN " + quote(column.name());
+      var alter = ALTER_ONLY + name + " ALTER COLUMN " + quote(column.name());
       var statements = new ArrayList<String>();
       if (!Objects.equals(column.expression(), column.inheritedDefault())) {
         statements.add(
@@ -862,7 +864,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
         default -> "";
       };
       if (!mode.isEmpty()) {
-        statements.add("ALTER TABLE " + table + mode + quote(item.name()));
+        statements.add(ALTER + table + mode + quote(item.name()));
       }
       var needs = new HashSet<Item>();
       var function = known.routines.get(trigger.function());
