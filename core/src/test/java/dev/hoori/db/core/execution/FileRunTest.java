@@ -236,7 +236,20 @@ class FileRunTest {
   }
 
   @Test
+  void onlyRestrictByItsOwnNameIsSkipped() {
+    for (var command : List.of("\\restrict_extra k", "\\RESTRICT k", "\\Unrestrict k")) {
+      var session = new Session(Map.of());
+      var report =
+          run(POSTGRESQL, command + "\nSELECT 1;\n", new FileRun.Options(true, false), session);
+      assertEquals(FileRun.Ending.STOPPED, report.ending(), command);
+      assertEquals(List.of(), session.sent, command);
+      assertEquals(command.split(" ")[0], report.failures().getFirst().statement());
+    }
+  }
+
+  @Test
   void psqlsRestrictIsSkippedAndItsOtherCommandsStopTheRun() {
+
     var text = "\\restrict k\nSELECT 1;\n\\connect other\nSELECT 2;\n\\unrestrict k\n";
     var session = new Session(Map.of());
     var report = run(POSTGRESQL, text, new FileRun.Options(true, false), session);

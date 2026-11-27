@@ -67,7 +67,8 @@ public final class StatementReader implements Closeable {
 
   /**
    * A command of the provider's client, as psql's {@code \connect db}: its line without the line's
-   * end, and its name without the backslash, in lower case.
+   * end, and its name without the backslash, as written, since psql's commands are told apart by
+   * case, as {@code \d} and {@code \D}.
    */
   public record Command(String text, String name, long line, long offset) implements Step {}
 
@@ -384,16 +385,18 @@ public final class StatementReader implements Closeable {
     });
   }
 
-  // A command's name: its word after the backslash, or the one character there.
+  // A command's name: its word after the backslash, of letters, digits and _ as psql reads it, or
+  // the one character there.
   private static String name(String command) {
     int end = 1;
-    while (end < command.length() && Character.isLetterOrDigit(command.charAt(end))) {
+    while (end < command.length()
+        && (Character.isLetterOrDigit(command.charAt(end)) || command.charAt(end) == '_')) {
       end++;
     }
     if (end == 1 && command.length() > 1) {
       end = 2;
     }
-    return command.substring(1, end).toLowerCase(Locale.ROOT);
+    return command.substring(1, end);
   }
 
   // Reads until the buffer holds at least the given chars past the reader, or the file ends;
