@@ -20,9 +20,10 @@ import java.util.OptionalLong;
  * changes the terminator, as their command-line clients do: a line where a statement would begin
  * and whose first word is {@code DELIMITER}, in any case, is no statement, and its argument is the
  * terminator from then on. Where the syntax has {@linkplain SyntaxDialect#atomicBodies bodies of
- * BEGIN ATOMIC … END}, a terminator does not count inside one, as psql tracks it: in a statement
- * that begins {@code CREATE [OR REPLACE] FUNCTION} or {@code PROCEDURE}, each {@code BEGIN} outside
- * parentheses opens a block, and so does a {@code CASE} within one, which an {@code END} closes.
+ * BEGIN ATOMIC … END}, a terminator does not count inside one: in a statement that begins {@code
+ * CREATE [OR REPLACE] FUNCTION} or {@code PROCEDURE}, each {@code BEGIN ATOMIC} outside parentheses
+ * opens a block, and so does a {@code CASE} within one, which an {@code END} closes; a word after a
+ * period is a name, as {@code public.begin}, and opens or closes nothing.
  *
  * <p>The scan is linear in the length of the text and never throws.
  */
@@ -479,12 +480,51 @@ public final class Statements {
     var word = Tokens.keyword(text.substring(from, i));
     if (head != Head.ROUTINE) {
       head = head.next(word);
-    } else if (word.equals("BEGIN") || word.equals("CASE") && blocks > 0) {
+    } else if (afterPeriod(from)) {
+      // A name qualified by another, as public.begin, opens and closes nothing.
+    } else if (word.equals("BEGIN") && nextWordIs("ATOMIC") || word.equals("CASE") && blocks > 0) {
       blocks++;
     } else if (word.equals("END") && blocks > 0) {
       blocks--;
     }
     return true;
+  }
+
+  // Whether the word that begins at the offset follows a period, white space between them.
+  private boolean afterPeriod(int from) {
+    int k = from - 1;
+    while (k >= 0 && whitespace(text.charAt(k))) {
+      k--;
+    }
+    return k >= 0 && text.charAt(k) == '.';
+  }
+
+  // Whether the next word after i, past white space and comments, is the keyword given; i stays.
+  private boolean nextWordIs(String keyword) {
+    int at = i;
+    var skipped = kind;
+    boolean wasOpen = open;
+    int n = text.length();
+    while (i < n) {
+      if (whitespace(text.charAt(i))) {
+        i++;
+        continue;
+      }
+      int start = i;
+      if (token()) {
+        i = start;
+        break;
+      }
+    }
+    int end = i;
+    while (end < n && (tagStart(text.charAt(end)) || digit(text.charAt(end)))) {
+      end++;
+    }
+    boolean is = Tokens.keyword(text.substring(i, end)).equals(keyword);
+    i = at;
+    kind = skipped;
+    open = wasOpen;
+    return is;
   }
 
   // Takes a line that the client reads as its own at i, where a statement could begin: a
