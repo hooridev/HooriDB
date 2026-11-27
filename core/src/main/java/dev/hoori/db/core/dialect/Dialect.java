@@ -23,6 +23,9 @@ public non-sealed interface Dialect extends Traits {
   /** The lexical rules of its SQL. */
   SyntaxDialect syntax();
 
+  /** What its command-line client does with a file of statements beyond the server's SQL. */
+  ClientDialect client();
+
   /** What its driver does on an open connection beyond JDBC. */
   SessionDialect session();
 

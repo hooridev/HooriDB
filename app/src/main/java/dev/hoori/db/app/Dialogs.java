@@ -16,6 +16,7 @@ final class Dialogs {
   QueryDialog queryDialog; // a query's name, save or delete dialog; null while closed
   UUID placing; // the folder the new connection's dialog puts it in, or null for the top
   boolean about; // whether the About dialog is open
+  FileRunDialog fileRun; // Run SQL file, shown or hidden while its file runs; null while closed
   // The modeless settings window, null while closed; not a modal dialog, so anyOpen() skips it.
   SettingsWindow settings;
 
@@ -26,6 +27,7 @@ final class Dialogs {
         || folderDialog != null
         || queryDialog != null
         || about
-        || driverList != null;
+        || driverList != null
+        || fileRun != null && fileRun.shown();
   }
 }

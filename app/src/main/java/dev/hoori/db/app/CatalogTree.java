@@ -1529,6 +1529,9 @@ final class CatalogTree {
         Callout.Kind.DANGER, trouble.title(), trouble.text(), actions.toArray(El[]::new));
   }
 
+  /** The item of a connection's and a database's menu that opens Run SQL file. */
+  static final String FILE_RUN = "Run SQL file…";
+
   /** The context menu of the selected node. */
   List<Menu.Item> items(State s, Node node) {
     if (node == null) {
@@ -1576,6 +1579,8 @@ final class CatalogTree {
             Menu.item(
                     "Server monitor", () -> s.openMonitor(n.id(), s.tabs.main().active()))
                 .icon(Symbol.SERVER),
+            Menu.item(FILE_RUN, s.canRunFile(n.id()) ? () -> s.openFileRun(n.id(), "") : null)
+                .icon(Symbol.DOCUMENT),
             Menu.separator(),
             Menu.item("Disconnect", active(n.id()) ? () -> disconnect(s, n.id()) : null)
                 .icon(Symbol.PLUG_DISCONNECTED),
@@ -1591,6 +1596,18 @@ final class CatalogTree {
       }
       case Node.Problem n ->
         List.of(Menu.item(TRY_AGAIN, () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));
+      case Node.OfDatabase n
+      when !s.profile(n.id()).provider().keepsDocuments() ->
+        List.of(
+            Menu.item(
+                    FILE_RUN,
+                    s.canRunFile(n.id())
+                        ? () -> s.openFileRun(n.id(), n.database().name())
+                        : null)
+                .icon(Symbol.DOCUMENT),
+            Menu.separator(),
+            refresh,
+            copy);
       case Node.OfTable n ->
         List.of(
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),

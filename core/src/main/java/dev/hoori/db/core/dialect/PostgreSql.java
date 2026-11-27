@@ -25,6 +25,9 @@ import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.monitor.ServerSession;
+import java.io.IOException;
+import java.io.Reader;
+import java.lang.reflect.InvocationTargetException;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -35,6 +38,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /** PostgreSQL, with pgjdbc. */
 public final class PostgreSql implements Dialect {
@@ -55,6 +59,7 @@ public final class PostgreSql implements Dialect {
   private final ErrorDialect errors = new Errors();
   private final PlanDialect plan = new Plan();
   private final SyntaxDialect syntax = new Syntax();
+  private final ClientDialect client = new Client();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new PostgreSqlRows();
   private final MonitorDialect monitor = new Monitor();
@@ -117,6 +122,11 @@ public final class PostgreSql implements Dialect {
   }
 
   @Override
+  public ClientDialect client() {
+    return client;
+  }
+
+  @Override
   public SessionDialect session() {
     return session;
   }
@@ -129,6 +139,96 @@ public final class PostgreSql implements Dialect {
   @Override
   public MonitorDialect monitor() {
     return monitor;
+  }
+
+  // psql, and pgjdbc's copy API.
+  static final class Client implements ClientDialect {
+
+    // pg_dump since 17.6 writes these around a dump: they have psql refuse the meta-commands
+    // between them, which a run of a file never runs anyway.
+    private static final Set<String> SKIPPED = Set.of("restrict", "unrestrict");
+
+    @Override
+    public boolean backslashCommands() {
+      return true;
+    }
+
+    @Override
+    public Set<String> skippedCommands() {
+      return SKIPPED;
+    }
+
+    // BEGIN, START TRANSACTION, COMMIT and END, ABORT and ROLLBACK, but to a savepoint, and
+    // PREPARE TRANSACTION, which ends it as well.
+    @Override
+    public boolean controlsTransaction(List<String> words) {
+      if (words.isEmpty()) {
+        return false;
+      }
+      return switch (words.getFirst()) {
+        case "begin", "start", "commit", "end", "abort" -> true;
+        case "rollback" -> !words.contains("to");
+        case "prepare" -> words.size() > 1 && words.get(1).equals("transaction");
+        default -> false;
+      };
+    }
+
+    // Only a statement that ends the transaction commits it.
+    @Override
+    public boolean commitsImplicitly(List<String> words) {
+      return false;
+    }
+
+    // A procedure that a CALL runs in a transaction block cannot commit, nor can a DO block.
+    @Override
+    public boolean mayEndUnseen(List<String> words) {
+      return false;
+    }
+
+    // Its LOCK TABLE holds until the transaction ends, which commits nothing by itself.
+    @Override
+    public TableLocks tableLocks(List<String> words) {
+      return TableLocks.KEEPS;
+    }
+
+    // COPY … FROM STDIN, as psql reads it: the first FROM names the source, and a later one is
+    // of its WHERE.
+    @Override
+    public boolean copiesFromClient(String first, Supplier<List<String>> words) {
+      if (!first.equals("copy")) {
+        return false;
+      }
+      var all = words.get();
+      int from = all.indexOf("from");
+      return from >= 0 && from + 1 < all.size() && all.get(from + 1).equals("stdin");
+    }
+
+    @Override
+    public String endOfRows() {
+      return "\\.";
+    }
+
+    @Override
+    public long copyIn(Connection connection, String sql, Reader rows)
+        throws SQLException, IOException {
+      try {
+        var manager = call(connection, "getCopyAPI");
+        return (Long) manager
+            .getClass()
+            .getMethod("copyIn", String.class, Reader.class)
+            .invoke(manager, sql, rows);
+      } catch (InvocationTargetException e) {
+        switch (e.getCause()) {
+          case SQLException failure -> throw failure;
+          case IOException failure -> throw failure;
+          case RuntimeException failure -> throw failure;
+          case Error failure -> throw failure;
+          default -> throw new SQLException(e.getCause());
+        }
+      } catch (ReflectiveOperationException e) {
+        throw new SQLException("This version of pgjdbc has no copy API: " + e.getMessage(), e);
+      }
+    }
   }
 
   // pgjdbc.
@@ -606,6 +706,12 @@ public final class PostgreSql implements Dialect {
     @Override
     public boolean clientDelimiter() {
       return false;
+    }
+
+    // As psql reads them since PostgreSQL 14, which has them.
+    @Override
+    public boolean atomicBodies() {
+      return true;
     }
 
     @Override

@@ -85,6 +85,7 @@ public final class Execution implements AutoCloseable {
   private final SessionDialect session;
   private final String sql;
   private final boolean readOnly;
+  private final Purpose purpose;
   private Statement statement;
   // Whether auto-commit was turned off for this statement, to be turned on again when it is over.
   private boolean ownTransaction;
@@ -112,11 +113,21 @@ public final class Execution implements AutoCloseable {
    * not sent, and its first portion is a failure that says so.
    */
   public Execution(Connection connection, Provider provider, String sql, boolean readOnly) {
+    this(connection, provider, sql, readOnly, Purpose.STATEMENT);
+  }
+
+  /**
+   * As {@link #Execution(Connection, Provider, String, boolean)}, sent and cancelled for the
+   * purpose given, rather than as a statement the user ran.
+   */
+  public Execution(
+      Connection connection, Provider provider, String sql, boolean readOnly, Purpose purpose) {
     this.connection = connection;
     this.provider = provider;
     this.session = provider.dialect().session();
     this.sql = sql;
     this.readOnly = readOnly;
+    this.purpose = purpose;
   }
 
   /**
@@ -141,7 +152,7 @@ public final class Execution implements AutoCloseable {
     // Sent with its first portion, which is what the server was asked for.
     return statement != null
         ? portion(count)
-        : Journal.sql(provider, Purpose.STATEMENT, sql, Execution::outcome, () -> portion(count));
+        : Journal.sql(provider, purpose, sql, Execution::outcome, () -> portion(count));
   }
 
   /**
@@ -181,7 +192,7 @@ public final class Execution implements AutoCloseable {
       return Query.run(
           connection,
           provider,
-          () -> Journal.call(Purpose.STATEMENT, Journal.CANCEL, () -> {
+          () -> Journal.call(purpose, Journal.CANCEL, () -> {
             session.cancel(connection, statement);
             return null;
           }),
@@ -637,7 +648,7 @@ public final class Execution implements AutoCloseable {
   private boolean drain() {
     if (rows != null && ahead) {
       try {
-        Journal.call(Purpose.STATEMENT, Journal.CANCEL, () -> {
+        Journal.call(purpose, Journal.CANCEL, () -> {
           session.cancel(connection, statement);
           return null;
         });

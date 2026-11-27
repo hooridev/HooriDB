@@ -42,6 +42,12 @@ public interface SyntaxDialect {
   /** Whether its clients take a line {@code DELIMITER x} as the terminator from then on. */
   boolean clientDelimiter();
 
+  /**
+   * Whether the body of a {@code CREATE FUNCTION} or {@code PROCEDURE} may be {@code BEGIN ATOMIC
+   * … END}, whose semicolons do not end the statement, as its client reads them.
+   */
+  boolean atomicBodies();
+
   /** Whether {@code @name} is one word, a variable of the session. */
   boolean userVariables();
 

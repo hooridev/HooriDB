@@ -19,6 +19,7 @@ import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.dialect.Dialect;
 import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
 import java.nio.file.Path;
@@ -33,6 +34,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 
 /** The app's state, which only the handlers change, on the app's thread. */
 final class State {
@@ -699,6 +701,39 @@ final class State {
     closing++;
   }
 
+  /**
+   * Closes the lane of a session that is no console's, as a server monitor's or a file run's,
+   * which Exit waits for as for a console's: what its closing reports, as a failure to give up what
+   * was open or a connection given up, goes to the notices on the connection, of the part named,
+   * the password, whose copy is taken here and wiped after, masked in it.
+   */
+  void closeSession(Lane lane, String connection, String what, String part, char[] password) {
+    closing();
+    var copy = password == null ? new char[0] : password.clone();
+    var reported = new CompletableFuture<Void>();
+    var closes = app;
+    lane.close(ended -> {
+      try {
+        ended
+            .failure()
+            .ifPresent(f -> closes.post(() -> notice(
+                connection,
+                part,
+                Credentials.without("Closing " + what + " failed: " + Delivery.said(f), copy),
+                true,
+                null)));
+        for (var m : ended.messages()) {
+          var said = Credentials.without(Delivery.warned(m), copy);
+          closes.post(() -> notice(connection, part, said, false, null));
+        }
+      } finally {
+        Arrays.fill(copy, '\0');
+        reported.complete(null);
+      }
+    });
+    app.background("close " + what, reported::get, done -> closed(), e -> closed());
+  }
+
   /** A console's session has closed, after what its closing had to say. */
   void closed() {
     closing--;
@@ -1043,6 +1078,9 @@ final class State {
     exitAt = noticed;
     consoles(null).forEach(ConsoleTab::end);
     monitors(null).forEach(m -> m.end(this));
+    if (dialogs.fileRun != null) {
+      dialogs.fileRun.end(this, "HooriDB closed");
+    }
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
       if (exits == at && guard.quitting() && closing > waived) {
@@ -1238,6 +1276,33 @@ final class State {
     monitor.open(this);
   }
 
+  /**
+   * Run SQL file for the connection, on the database or, where it is empty, on the one it connects
+   * to; a run under way shows instead. Not while another dialog is open.
+   */
+  void openFileRun(UUID id, String database) {
+    if (dialogs.fileRun != null) {
+      dialogs.fileRun.hidden = false;
+      return;
+    }
+    if (!canRunFile(id)) {
+      return;
+    }
+    dialogs.fileRun = FileRunDialog.open(this, id, database);
+  }
+
+  /** Whether Run SQL file can open for the connection: one of SQL that is connected. */
+  boolean canRunFile(UUID id) {
+    var profile = id == null ? null : profile(id);
+    if (dialogs.fileRun != null) {
+      return !dialogs.anyOpen() || dialogs.fileRun.shown();
+    }
+    return profile != null
+        && !profile.provider().keepsDocuments()
+        && catalog.connected(id)
+        && !dialogs.anyOpen();
+  }
+
   /** The server monitors of every window, of the connection or of all where it is null. */
   List<MonitorTab> monitors(UUID id) {
     var all = new ArrayList<MonitorTab>();
@@ -1307,7 +1372,10 @@ final class State {
     }
   }
 
-  /** The tabs that may hold uncommitted work (consoles and tables), of the connection or all. */
+  /**
+   * What may hold uncommitted work, of the connection or all: consoles, tables, and a file that runs
+   * in one transaction.
+   */
   List<Guard.Guarded> guarded(UUID id) {
     var all = new ArrayList<Guard.Guarded>();
     for (var group : tabs.groups()) {
@@ -1316,6 +1384,10 @@ final class State {
           all.add(g);
         }
       }
+    }
+    var run = dialogs.fileRun;
+    if (run != null && (id == null || id.equals(run.connectionId()))) {
+      all.add(run);
     }
     return all;
   }
@@ -1370,6 +1442,9 @@ final class State {
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
+    if (dialogs.fileRun != null && dialogs.fileRun.id.equals(id)) {
+      dialogs.fileRun.end(this, "its connection ended");
+    }
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -1635,6 +1710,9 @@ final class State {
     tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    if (dialogs.fileRun != null) {
+      dialogs.fileRun.closeAll(this);
+    }
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();

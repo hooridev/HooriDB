@@ -439,6 +439,7 @@ final class LogPanel {
       case CHANGES -> "Changes";
       case ESTIMATE -> "Estimate";
       case STATEMENT -> "Console";
+      case FILE -> "File";
       case TRANSACTION -> "Transaction";
       case SESSION -> "Session";
       case MONITOR -> "Monitor";

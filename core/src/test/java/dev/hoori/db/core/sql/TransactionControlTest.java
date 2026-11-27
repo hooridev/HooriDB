@@ -1,0 +1,186 @@
+package dev.hoori.db.core.sql;
+
+import static dev.hoori.db.core.connection.Provider.MARIADB;
+import static dev.hoori.db.core.connection.Provider.MYSQL;
+import static dev.hoori.db.core.connection.Provider.POSTGRESQL;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import dev.hoori.db.core.dialect.ClientDialect.TableLocks;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+
+class TransactionControlTest {
+
+  @Test
+  void postgreSqlsStatementsThatBeginOrEndATransaction() {
+    for (var sql : List.of(
+        "BEGIN",
+        "begin work",
+        "START TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+        "COMMIT",
+        "END",
+        "ABORT",
+        "ROLLBACK",
+        "ROLLBACK AND CHAIN",
+        "PREPARE TRANSACTION 'x'")) {
+      assertTrue(TransactionControl.in(sql, POSTGRESQL), sql);
+    }
+    for (var sql : List.of(
+        "ROLLBACK TO SAVEPOINT s",
+        "SAVEPOINT s",
+        "PREPARE q AS SELECT 1",
+        "SELECT 'COMMIT'",
+        "-- COMMIT\nSELECT 1",
+        "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1; END")) {
+      assertFalse(TransactionControl.in(sql, POSTGRESQL), sql);
+    }
+  }
+
+  @Test
+  void mySqlsStatementsThatRunWhatMayCommitUnseen() {
+    for (var sql : List.of(
+        "CALL p()",
+        "call db.p(1)",
+        "EXECUTE s",
+        "EXECUTE IMMEDIATE 'COMMIT'",
+        "/*!50003 CALL p() */",
+        "BEGIN NOT ATOMIC CALL p(); END",
+        "IF TRUE THEN CALL p(); END IF",
+        "l: LOOP EXECUTE s; LEAVE l; END LOOP l")) {
+      assertTrue(TransactionControl.mayEndUnseen(sql, MARIADB), sql);
+    }
+    for (var sql : List.of(
+        "SELECT 'CALL p()'",
+        "PREPARE s FROM 'COMMIT'",
+        "CREATE PROCEDURE p() BEGIN CALL q(); END",
+        "BEGIN NOT ATOMIC SELECT 1; END",
+        "INSERT INTO calls VALUES (1)")) {
+      assertFalse(TransactionControl.mayEndUnseen(sql, MYSQL), sql);
+    }
+    // A procedure that PostgreSQL calls in a transaction block cannot commit.
+    assertFalse(TransactionControl.mayEndUnseen("CALL p()", POSTGRESQL));
+  }
+
+  @Test
+  void mySqlsStatementsThatBeginOrEndATransaction() {
+    for (var sql : List.of(
+        "START TRANSACTION",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK WORK",
+        "XA START 'x'",
+        "SET autocommit=0",
+        "SET @@session.autocommit = 1",
+        "SET @saved = @@autocommit, autocommit := 0",
+        "SET SESSION `autocommit`=1",
+        "/*!40101 SET AUTOCOMMIT=1 */")) {
+      assertTrue(TransactionControl.in(sql, MYSQL), sql);
+    }
+    for (var sql : List.of(
+        "ROLLBACK TO SAVEPOINT s",
+        "START REPLICA",
+        "SET NAMES utf8mb4",
+        // Only reads it, to set it back later.
+        "SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT",
+        "SET autocommit_x = @@autocommit",
+        // A user variable of that name.
+        "SET @autocommit = 0",
+        "SET @autocommit := 1, @x = @@autocommit",
+        "LOCK TABLES t WRITE",
+        "CREATE PROCEDURE p() BEGIN COMMIT; END")) {
+      assertFalse(TransactionControl.in(sql, MYSQL), sql);
+    }
+    // MariaDB's compound statement runs its body at once: one only where the body holds one.
+    assertFalse(TransactionControl.in("BEGIN NOT ATOMIC SELECT 1; END", MARIADB));
+    assertFalse(TransactionControl.in(
+        "BEGIN NOT ATOMIC SAVEPOINT s; ROLLBACK TO SAVEPOINT s; END", MARIADB));
+    assertFalse(TransactionControl.in(
+        "BEGIN NOT ATOMIC SAVEPOINT s; ROLLBACK WORK TO s; SET @a = @@autocommit; END", MARIADB));
+    // As are its other compound statements, a label's too.
+    assertFalse(TransactionControl.in("IF TRUE THEN SELECT 1; END IF", MARIADB));
+    assertFalse(TransactionControl.in("l: LOOP LEAVE l; END LOOP l", MARIADB));
+    for (var sql : List.of(
+        "IF TRUE THEN COMMIT; END IF",
+        "IF FALSE THEN SELECT 1; ELSE ROLLBACK; END IF",
+        "CASE WHEN 1 THEN SET autocommit = 1; END CASE",
+        "l: LOOP COMMIT; LEAVE l; END LOOP l",
+        "REPEAT START TRANSACTION; UNTIL TRUE END REPEAT",
+        "WHILE FALSE DO XA END 'x'; END WHILE",
+        "FOR i IN 1..2 DO COMMIT; END FOR",
+        "outer: BEGIN NOT ATOMIC COMMIT; END outer",
+        "BEGIN NOT ATOMIC COMMIT; END",
+        "BEGIN NOT ATOMIC INSERT INTO t VALUES (1); ROLLBACK; END",
+        "BEGIN NOT ATOMIC START TRANSACTION; END",
+        "BEGIN NOT ATOMIC SET autocommit = 1; END",
+        "BEGIN NOT ATOMIC ROLLBACK WORK; END",
+        "BEGIN NOT ATOMIC DECLARE EXIT HANDLER FOR SQLEXCEPTION ROLLBACK; SELECT 1; END")) {
+      assertTrue(TransactionControl.in(sql, MARIADB), sql);
+    }
+  }
+
+  @Test
+  void mySqlsStatementsThatCommitByThemselves() {
+    for (var provider : List.of(MYSQL, MARIADB)) {
+      for (var sql : List.of(
+          "LOCK TABLES `t` WRITE",
+          "lock table t read, u write",
+          "CREATE TABLE user (id int)",
+          "/*!50001 CREATE ALGORITHM=UNDEFINED VIEW v AS SELECT 1 */",
+          "CREATE OR REPLACE TABLE t (id int)",
+          "ALTER TABLE t ADD c int",
+          "DROP TABLE IF EXISTS t",
+          "RENAME TABLE a TO b",
+          "TRUNCATE t",
+          "CREATE INDEX i ON t (c)",
+          "GRANT SELECT ON db.* TO 'u'@'%'",
+          "REVOKE ALL ON db.* FROM u",
+          "CREATE USER u IDENTIFIED BY 'x'",
+          "CREATE OR REPLACE USER u",
+          "DROP USER IF EXISTS u",
+          "ALTER USER u ACCOUNT LOCK",
+          "RENAME USER a TO b",
+          "CREATE ROLE r",
+          "SET PASSWORD FOR u = 'x'",
+          "SET DEFAULT ROLE ALL TO u",
+          "ANALYZE TABLE t",
+          "ANALYZE NO_WRITE_TO_BINLOG TABLE t",
+          "OPTIMIZE LOCAL TABLE t",
+          "REPAIR TABLE t",
+          "CHECK TABLE t",
+          "FLUSH PRIVILEGES",
+          "CACHE INDEX t IN c",
+          "LOAD INDEX INTO CACHE t")) {
+        assertTrue(TransactionControl.commits(sql, provider), provider + ": " + sql);
+      }
+      for (var sql : List.of(
+          "INSERT INTO t VALUES (1)",
+          "SELECT 'LOCK TABLES'",
+          "ANALYZE SELECT * FROM t",
+          // Only where tables were locked, which the run keeps track of.
+          "UNLOCK TABLES",
+          "CREATE TEMPORARY TABLE t (id int)",
+          "CREATE OR REPLACE TEMPORARY TABLE t (id int)",
+          "DROP TEMPORARY TABLE IF EXISTS t",
+          "SET ROLE r",
+          "LOAD DATA INFILE 'x' INTO TABLE t")) {
+        assertFalse(TransactionControl.commits(sql, provider), provider + ": " + sql);
+      }
+    }
+    // PostgreSQL commits only where the transaction ends.
+    assertFalse(TransactionControl.commits("LOCK TABLE t", POSTGRESQL));
+    assertFalse(TransactionControl.commits("GRANT SELECT ON t TO u", POSTGRESQL));
+    assertFalse(TransactionControl.commits("CREATE TABLE t (id int)", POSTGRESQL));
+  }
+
+  @Test
+  void whatAStatementDoesToTheTablesLocked() {
+    assertEquals(TableLocks.LOCKS, TransactionControl.tableLocks("LOCK TABLES t WRITE", MYSQL));
+    assertEquals(TableLocks.UNLOCKS, TransactionControl.tableLocks("unlock table", MARIADB));
+    assertEquals(
+        TableLocks.UNLOCKS, TransactionControl.tableLocks("/*!40000 UNLOCK TABLES */", MYSQL));
+    assertEquals(TableLocks.KEEPS, TransactionControl.tableLocks("SELECT 'UNLOCK TABLES'", MYSQL));
+    assertEquals(TableLocks.KEEPS, TransactionControl.tableLocks("LOCK TABLE t", POSTGRESQL));
+  }
+}

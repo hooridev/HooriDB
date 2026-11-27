@@ -49,6 +49,33 @@ class JournalTest {
   }
 
   @Test
+  void aRecorderThatTakesNothingNowGetsNoEntry() throws Exception {
+    var taking = new boolean[1];
+    var choosing = new Recorder() {
+      @Override
+      public void sent(Sent entry) {
+        sent.add(entry);
+      }
+
+      @Override
+      public boolean taking() {
+        return taking[0];
+      }
+    };
+    Journal.recording(
+        choosing,
+        () ->
+            Journal.sql(Provider.POSTGRESQL, Purpose.FILE, "SELECT 1", v -> Outcome.DONE, () -> 7));
+    assertTrue(sent.isEmpty(), sent.toString());
+    taking[0] = true;
+    Journal.recording(
+        choosing,
+        () ->
+            Journal.sql(Provider.POSTGRESQL, Purpose.FILE, "SELECT 2", v -> Outcome.DONE, () -> 7));
+    assertEquals("SELECT 2", sent.getFirst().text());
+  }
+
+  @Test
   void aSendIsRecordedWithItsPurposeTextDurationAndOutcome() throws Exception {
     var value = Journal.recording(
         recorder,
@@ -179,6 +206,17 @@ class JournalTest {
               throw new SQLException("Key (id)=(1) already exists.", "23505");
             })));
     assertEquals(new Outcome.Failed(Outcome.ROW_WITHHELD), sent.getLast().outcome());
+    // And a copy's, whose rows the server may quote.
+    assertThrows(
+        SQLException.class,
+        () -> Journal.recording(
+            recorder,
+            () -> Journal.rows(
+                Provider.POSTGRESQL, Purpose.FILE, "COPY t FROM stdin", v -> Outcome.DONE, () -> {
+                  throw new SQLException("invalid input syntax: \"token\"", "22P02");
+                })));
+    assertEquals(new Outcome.Failed(Outcome.ROW_WITHHELD), sent.getLast().outcome());
+    assertEquals("COPY t FROM stdin", sent.getLast().text());
   }
 
   @Test

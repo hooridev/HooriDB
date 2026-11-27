@@ -64,6 +64,31 @@ public final class Journal {
       Function<? super T, Outcome> outcome,
       Call<T, E> call)
       throws E {
+    return sql(provider, purpose, sql, purpose == Purpose.CHANGES, outcome, call);
+  }
+
+  /**
+   * Runs the call that sends the SQL with rows of the client, as a {@code COPY … FROM STDIN} does,
+   * recorded as {@link #sql} records it, with a failure's message withheld, as it may quote a row.
+   */
+  public static <T, E extends Exception> T rows(
+      Provider provider,
+      Purpose purpose,
+      String sql,
+      Function<? super T, Outcome> outcome,
+      Call<T, E> call)
+      throws E {
+    return sql(provider, purpose, sql, true, outcome, call);
+  }
+
+  private static <T, E extends Exception> T sql(
+      Provider provider,
+      Purpose purpose,
+      String sql,
+      boolean quotesRows,
+      Function<? super T, Outcome> outcome,
+      Call<T, E> call)
+      throws E {
     if (!RECORDER.isBound()) {
       return call.call();
     }
@@ -75,7 +100,7 @@ public final class Journal {
           if (!masked.equals(sql)) {
             return new Shown(masked, Outcome.WITHHELD);
           }
-          return new Shown(masked, purpose == Purpose.CHANGES ? Outcome.ROW_WITHHELD : null);
+          return new Shown(masked, quotesRows ? Outcome.ROW_WITHHELD : null);
         },
         outcome,
         call);
@@ -188,6 +213,9 @@ public final class Journal {
   private static void record(Recorder recorder, Entry entry, Outcome outcome) {
     var took = Duration.ofNanos(System.nanoTime() - entry.started());
     try {
+      if (!recorder.taking()) {
+        return;
+      }
       var shown = entry.text().get();
       var ended = shown.withheld() != null && outcome instanceof Outcome.Failed
           ? new Outcome.Failed(shown.withheld())

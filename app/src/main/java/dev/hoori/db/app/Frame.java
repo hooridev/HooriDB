@@ -86,7 +86,11 @@ final class Frame {
             .grow(1)
             .padding(0, t.space().m(), t.space().m(), t.space().m()))
         .child(StatusBar.statusBar(
-            Arrays.asList(connections(s), uncommitted(s, modal), downloading(s)),
+            Arrays.asList(
+                connections(s),
+                uncommitted(s, modal),
+                downloading(s),
+                FileRunDialog.statusItem(s, modal)),
             s.message == null ? null : StatusBar.text(s.message).key("message"),
             List.of(
                 s.logPanel.toggle(s, modal),
@@ -102,6 +106,7 @@ final class Frame {
     root.overlay(s.dialogs.folderDialog == null ? null : s.dialogs.folderDialog.view(s));
     root.overlay(s.dialogs.queryDialog == null ? null : s.dialogs.queryDialog.view(s));
     root.overlay(s.dialogs.about ? aboutDialog(s) : null);
+    root.overlay(FileRunDialog.overlay(s));
     root.overlay(asked);
     root.overlay(question);
     root.overlay(confirmation);
@@ -129,7 +134,8 @@ final class Frame {
         || s.dialogs.deleting != null
         || s.dialogs.folderDialog != null
         || s.dialogs.queryDialog != null
-        || s.dialogs.about;
+        || s.dialogs.about
+        || s.dialogs.fileRun != null && s.dialogs.fileRun.shown();
   }
 
   /**
@@ -273,12 +279,20 @@ final class Frame {
     return questioned != null ? questioned.tab().question(s) : null;
   }
 
-  /** The question a tab of the window asks about what may be open in it, or null. */
+  /**
+   * The question a tab of the window asks about what may be open in it, or null; a file's run
+   * asks in the main window.
+   */
   private static Guard.Pending.Question questioned(State s, TabGroups.Group<Tab> group) {
     return s.guard.pending instanceof Guard.Pending.Question question
-            && s.tabs.groupOf((Tab) question.tab()) == group
+            && group(s, question.tab()) == group
         ? question
         : null;
+  }
+
+  // The tabs of the window where what is guarded asks.
+  private static TabGroups.Group<Tab> group(State s, Guard.Guarded guarded) {
+    return guarded instanceof Tab tab ? s.tabs.groupOf(tab) : s.tabs.main().active();
   }
 
   /**
@@ -626,28 +640,39 @@ final class Frame {
     }
     int consoles = 0;
     int tables = 0;
+    boolean run = false;
     for (var tab : tabs) {
-      if (tab instanceof ConsoleTab) {
-        consoles++;
-      } else {
-        tables++;
+      switch (tab) {
+        case ConsoleTab _ -> consoles++;
+        case TableTab _ -> tables++;
+        case FileRunDialog _ -> run = true;
       }
     }
-    String text;
-    if (tables == 0) {
-      text =
-          consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
-    } else if (consoles == 0) {
-      text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
-    } else {
-      int n = consoles + tables;
-      text = n + " tabs may hold uncommitted work";
-    }
     var first = tabs.getFirst();
-    boolean asking = modal || asks(s, s.tabs.groupOf((Tab) first));
+    boolean asking = modal || asks(s, group(s, first));
     return StatusBar.item(
-            Badge.Kind.WARNING, Symbol.LOCK_OPEN, text, asking ? null : () -> first.show(s))
+            Badge.Kind.WARNING,
+            Symbol.LOCK_OPEN,
+            uncommitted(consoles, tables, run),
+            asking ? null : () -> first.show(s))
         .key("uncommitted");
+  }
+
+  /** What the consoles, tables and a file's run that may hold uncommitted work say. */
+  private static String uncommitted(int consoles, int tables, boolean run) {
+    if (consoles + tables == 0) {
+      return "A file that runs in one transaction holds uncommitted work";
+    }
+    if (tables == 0 && !run) {
+      return consoles + (consoles == 1 ? " console may" : " consoles may")
+          + " hold uncommitted work";
+    }
+    if (consoles == 0 && !run) {
+      return tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    }
+    int n = consoles + tables;
+    return n + (n == 1 ? " tab" : " tabs") + (run ? " and a file's run" : "")
+        + " may hold uncommitted work";
   }
 
   /** The version that runs, its authors, license and website. */
@@ -713,6 +738,12 @@ final class Frame {
                         "Server monitor",
                         console == null ? null : () -> s.openMonitor(console, group))
                     .icon(Symbol.SERVER),
+                Menu.item(
+                        "Run SQL file…",
+                        free && console != null && s.canRunFile(console)
+                            ? inMain(s, () -> s.openFileRun(console, ""))
+                            : null)
+                    .icon(Symbol.DOCUMENT),
                 Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c && c.id != null
@@ -793,6 +824,7 @@ final class Frame {
         || s.dialogs.queryDialog != null
         || s.dialogs.about
         || s.dialogs.driverList != null
+        || s.dialogs.fileRun != null && s.dialogs.fileRun.shown()
         || asks(s, s.tabs.main().active());
   }
 

@@ -8,15 +8,18 @@ import java.util.UUID;
 
 /**
  * The one act in the app that may wait, a part of the state: while a tab asks what becomes of
- * what is at stake in it, or once the act is armed and locks tabs of its connections. Only the
- * app's thread uses it.
+ * what is at stake in it, or a file that runs in one transaction asks before it is cancelled, or
+ * once the act is armed and locks tabs of its connections. Only the app's thread uses it.
  */
 final class Guard {
 
   Pending pending; // the one act that waits, or null
 
-  /** A tab that may hold uncommitted work and asks before an act discards or ends it. */
-  sealed interface Guarded permits ConsoleTab, TableTab {
+  /**
+   * A tab that may hold uncommitted work and asks before an act discards or ends it, or the run of
+   * a file in one transaction, which asks in the main window.
+   */
+  sealed interface Guarded permits ConsoleTab, TableTab, FileRunDialog {
 
     /** The connection this tab belongs to, for {@link Pending.Locked}. */
     UUID connectionId();
@@ -146,9 +149,11 @@ final class Guard {
       case Pending.Locked locked -> s.tell(locked.what() + ": that comes first.");
       case Pending.Question question -> {
         s.tell(
-            question.tab() instanceof ConsoleTab
-                ? "A question about a console's transaction waits for its answer."
-                : "A question about uncommitted changes waits for its answer.");
+            switch (question.tab()) {
+              case ConsoleTab _ -> "A question about a console's transaction waits for its answer.";
+              case TableTab _ -> "A question about uncommitted changes waits for its answer.";
+              case FileRunDialog _ -> "A question about a file's run waits for its answer.";
+            });
         question.tab().show(s);
       }
     }

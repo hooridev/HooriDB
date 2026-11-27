@@ -1,5 +1,6 @@
 package dev.hoori.db.core.document;
 
+import dev.hoori.db.core.Texts;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Cut;
@@ -156,9 +157,8 @@ public final class Values {
 
   // Not between the two halves of a character beyond the 16 bits of one char.
   private static Cut cut(String text) {
-    int end = Character.isHighSurrogate(text.charAt(Rows.LIMIT - 1)) ? Rows.LIMIT - 1 : Rows.LIMIT;
     return new Cut(
-        text.substring(0, end),
+        Texts.start(text, Rows.LIMIT),
         OptionalLong.of(text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length));
   }
 }

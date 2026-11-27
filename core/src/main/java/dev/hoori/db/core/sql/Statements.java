@@ -19,13 +19,16 @@ import java.util.OptionalLong;
  * closed runs to the end of the text. For MariaDB and MySQL the client command {@code DELIMITER}
  * changes the terminator, as their command-line clients do: a line where a statement would begin
  * and whose first word is {@code DELIMITER}, in any case, is no statement, and its argument is the
- * terminator from then on.
+ * terminator from then on. Where the syntax has {@linkplain SyntaxDialect#atomicBodies bodies of
+ * BEGIN ATOMIC … END}, a terminator does not count inside one: in a statement that begins {@code
+ * CREATE [OR REPLACE] FUNCTION} or {@code PROCEDURE}, each {@code BEGIN ATOMIC} outside parentheses
+ * opens a block, and so does a {@code CASE} within one, which an {@code END} closes; a word after a
+ * period is a name, as {@code public.begin}, and opens or closes nothing.
  *
  * <p>The scan is linear in the length of the text and never throws.
  */
-// shortcut: this scans characters and is no SQL parser, so a body that holds semicolons without
-// being quoted, such as PostgreSQL's BEGIN ATOMIC ... END or a MariaDB/MySQL routine written
-// without DELIMITER, is split at its inner semicolons; parse such bodies if users trip over it.
+// shortcut: this scans characters and is no SQL parser, so a MariaDB or MySQL routine written
+// without DELIMITER, whose body holds semicolons, is split at them, as their clients split it.
 public final class Statements {
 
   // What the clients of MariaDB and MySQL keep of a delimiter; they cut a longer one off.
@@ -38,9 +41,18 @@ public final class Statements {
   private final List<Integer> afters = new ArrayList<>();
   private String delimiter = ";";
   private int i;
+  // A file's scan: what it finds, its client's commands among them; null for a text of the editor.
+  private List<Part> parts;
+  // Whether a backslash where a statement could begin is a command of the client, to its line end.
+  private boolean backslashCommands;
   // What the last token() skipped, and whether a caret right after it is still inside it.
   private Piece.Kind kind;
   private boolean open;
+  // For bodies of BEGIN ATOMIC … END: how far the pending statement's first words are those of
+  // CREATE [OR REPLACE] FUNCTION or PROCEDURE, and how deep it is in parentheses and in blocks.
+  private Head head = Head.START;
+  private int parens;
+  private int blocks;
 
   /**
    * A piece of a text of SQL as the server reads it: a comment, a string, a quoted name, or one
@@ -65,9 +77,55 @@ public final class Statements {
     }
   }
 
+  // How far a statement's first words are those of CREATE [OR REPLACE] FUNCTION or PROCEDURE:
+  // before any, after CREATE, after OR, after REPLACE, ROUTINE once they are, OTHER once they are
+  // not.
+  private enum Head {
+    START,
+    CREATE,
+    OR,
+    REPLACE,
+    ROUTINE,
+    OTHER;
+
+    // Where the next word of the statement leads.
+    Head next(String word) {
+      return switch (this) {
+        case START -> word.equals("CREATE") ? CREATE : OTHER;
+        case CREATE -> word.equals("OR") ? OR : routine(word);
+        case OR -> word.equals("REPLACE") ? REPLACE : OTHER;
+        case REPLACE -> routine(word);
+        case ROUTINE, OTHER -> this;
+      };
+    }
+
+    private static Head routine(String word) {
+      return word.equals("FUNCTION") || word.equals("PROCEDURE") ? ROUTINE : OTHER;
+    }
+  }
+
   // Whether a backslash escapes in a plain string: as MariaDB and MySQL read one by default, and
   // PostgreSQL only with standard_conforming_strings off.
   private boolean escapes;
+
+  /**
+   * What the scan of part of a file found, in order, as offsets in its text: a statement, which ends
+   * where {@link Statement} does; a line with a command of the provider's client, from its
+   * backslash to the end of the line; or a line {@code DELIMITER}, which the scan took.
+   *
+   * @param after the offset after its terminator, or after its line for a command, or its end
+   *     where the text ends first
+   * @param delimiter the terminator from after it on
+   */
+  record Part(Kind kind, int start, int end, int after, String delimiter) {
+
+    /** What a part is. */
+    enum Kind {
+      STATEMENT,
+      COMMAND,
+      DELIMITER
+    }
+  }
 
   private Statements(String text, SyntaxDialect syntax) {
     this.text = text;
@@ -306,6 +364,22 @@ public final class Statements {
     return size > 0 && afters.get(size - 1) == found.get(size - 1).end();
   }
 
+  /**
+   * The parts of the text from the offset on, as a file is read: the statements by the same rules
+   * as {@link #split}, from the delimiter given on, and the lines of client commands, where the
+   * provider's client has commands that begin with a backslash. The text before the offset is only
+   * looked at as what a token there follows.
+   */
+  static List<Part> parts(String text, int from, Provider provider, String delimiter) {
+    var scan = new Statements(text, provider.dialect().syntax());
+    scan.parts = new ArrayList<>();
+    scan.delimiter = delimiter;
+    scan.backslashCommands = provider.dialect().client().backslashCommands();
+    scan.i = from;
+    scan.run();
+    return scan.parts;
+  }
+
   private static Statements scan(String text, Provider provider) {
     return provider.keepsDocuments()
         ? ofShell(text)
@@ -346,34 +420,161 @@ public final class Statements {
     // and comments; -1 while it holds nothing.
     int start = -1;
     int end = -1;
+    boolean bodies = syntax.atomicBodies();
     while (i < n) {
-      if (start < 0 && syntax.clientDelimiter() && delimiterCommand()) {
-        continue;
-      }
-      if (text.startsWith(delimiter, i)) {
+      int from = i;
+      if (start < 0 && clientLine()) {
+        // A line of the client's own, where a statement could begin, is none.
+      } else if (blocks == 0 && text.startsWith(delimiter, i)) {
         i += delimiter.length();
         finish(start, end, i);
         start = -1;
+        head = Head.START;
+        parens = 0;
       } else if (whitespace(text.charAt(i))) {
         i++;
-      } else {
-        int from = i;
-        if (token()) {
-          if (start < 0) {
-            start = from;
-          }
-          end = i;
+      } else if (code(bodies)) {
+        if (start < 0) {
+          start = from;
         }
+        end = i;
       }
     }
     finish(start, end, end);
+  }
+
+  // Takes a word or another token at i, and follows the parentheses where the syntax has bodies of
+  // BEGIN ATOMIC … END; whether it was more than a comment.
+  private boolean code(boolean bodies) {
+    if (bodies && word()) {
+      return true;
+    }
+    char c = text.charAt(i);
+    if (!token()) {
+      return false;
+    }
+    if (bodies && c == '(') {
+      parens++;
+    } else if (bodies && c == ')' && parens > 0) {
+      parens--;
+    }
+    return true;
+  }
+
+  // At a word that begins at i, as a token of code and no string such as E'…': takes it, and
+  // follows the blocks of a routine's body that it opens or closes; whether there was one.
+  private boolean word() {
+    int n = text.length();
+    if (!tagStart(text.charAt(i))
+        || identifierBefore()
+        || syntax.escapeStrings() && charAt(i + 1) == '\'') {
+      return false;
+    }
+    int from = i;
+    while (i < n && (tagStart(text.charAt(i)) || digit(text.charAt(i)) || text.charAt(i) == '$')) {
+      i++;
+    }
+    if (head == Head.OTHER || head == Head.ROUTINE && parens > 0) {
+      return true; // nothing to follow, nor a word to make
+    }
+    follow(from, Tokens.keyword(text.substring(from, i)));
+    return true;
+  }
+
+  // Follows the head of the statement with the word that begins at the offset, or in a routine's
+  // body the blocks that it opens or closes.
+  private void follow(int from, String word) {
+    if (head != Head.ROUTINE) {
+      head = head.next(word);
+    } else if (afterPeriod(from)) {
+      // A name qualified by another, as public.begin, opens and closes nothing.
+    } else if (word.equals("BEGIN") && nextWordIs("ATOMIC") || word.equals("CASE") && blocks > 0) {
+      blocks++;
+    } else if (word.equals("END") && blocks > 0) {
+      blocks--;
+    }
+  }
+
+  // Whether the word that begins at the offset follows a period, white space between them.
+  private boolean afterPeriod(int from) {
+    int k = from - 1;
+    while (k >= 0 && whitespace(text.charAt(k))) {
+      k--;
+    }
+    return k >= 0 && text.charAt(k) == '.';
+  }
+
+  // Whether the next word after i, past white space and comments, is the keyword given; i stays.
+  private boolean nextWordIs(String keyword) {
+    int at = i;
+    var skipped = kind;
+    boolean wasOpen = open;
+    int n = text.length();
+    while (i < n) {
+      if (whitespace(text.charAt(i))) {
+        i++;
+        continue;
+      }
+      int start = i;
+      if (token()) {
+        i = start;
+        break;
+      }
+    }
+    int end = i;
+    while (end < n && (tagStart(text.charAt(end)) || digit(text.charAt(end)))) {
+      end++;
+    }
+    boolean is = Tokens.keyword(text.substring(i, end)).equals(keyword);
+    i = at;
+    kind = skipped;
+    open = wasOpen;
+    return is;
+  }
+
+  // Takes a line that the client reads as its own at i, where a statement could begin: a
+  // DELIMITER, or a command that begins with a backslash; whether there was one.
+  private boolean clientLine() {
+    int from = i;
+    if (syntax.clientDelimiter() && delimiterCommand()) {
+      if (parts != null) {
+        parts.add(new Part(Part.Kind.DELIMITER, from, i, i, delimiter));
+      }
+      return true;
+    }
+    if (backslashCommands && text.charAt(i) == '\\') {
+      command();
+      return true;
+    }
+    return false;
   }
 
   private void finish(int start, int end, int after) {
     if (start >= 0) {
       found.add(new Statement(start, end));
       afters.add(after);
+      if (parts != null) {
+        parts.add(new Part(Part.Kind.STATEMENT, start, end, after, delimiter));
+      }
     }
+  }
+
+  // At a backslash where a statement could begin: takes its line as a command of the client, as
+  // psql does with its meta-commands, without the line's end.
+  private void command() {
+    int n = text.length();
+    int from = i;
+    while (i < n && !lineEnd(text.charAt(i))) {
+      i++;
+    }
+    int end = i;
+    if (i < n && text.charAt(i) == '\r') {
+      i++;
+    }
+    if (i < n && text.charAt(i) == '\n') {
+      i++;
+    }
+    parts.add(new Part(Part.Kind.COMMAND, from, end, i, delimiter));
   }
 
   // Skips what begins at i: a comment, a quoted string or identifier, or one character. Whether

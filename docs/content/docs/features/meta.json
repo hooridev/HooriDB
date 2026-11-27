@@ -8,6 +8,7 @@
     "transactions",
     "history",
     "saved-queries",
+    "run-sql-file",
     "command-palette",
     "tabs-and-windows",
     "drivers",

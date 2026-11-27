@@ -5,6 +5,7 @@ import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.monitor.ServerSession;
+import java.io.Reader;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -12,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /** What MariaDB and MySQL do alike; their drivers differ. */
@@ -23,6 +25,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
 
   private final CatalogDialect catalog;
   private final ErrorDialect errors = new Errors();
+  private final ClientDialect client = new Client();
 
   MySqlFamily(boolean flagsHiddenIndexColumns, boolean functionalIndexExpressions) {
     catalog = new Catalog(flagsHiddenIndexColumns, functionalIndexExpressions);
@@ -31,6 +34,168 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   @Override
   public int defaultPort() {
     return 3306;
+  }
+
+  @Override
+  public ClientDialect client() {
+    return client;
+  }
+
+  // Of the commands of their clients, only DELIMITER, which SyntaxDialect has, is in their dumps.
+  static final class Client implements ClientDialect {
+
+    // A word of the statements that commit implicitly, in lower case as they come.
+    private static final String TABLE = "table";
+
+    @Override
+    public boolean backslashCommands() {
+      return false;
+    }
+
+    @Override
+    public Set<String> skippedCommands() {
+      return Set.of();
+    }
+
+    // BEGIN, START TRANSACTION, COMMIT, ROLLBACK, but to a savepoint, XA, and a SET that assigns
+    // autocommit, which commits as it turns it on, not one that only reads it, as SET @saved =
+    // @@autocommit does; and MariaDB's compound statements, BEGIN NOT ATOMIC, IF, CASE, the loops
+    // and a labeled one, where their body holds one of them, as it runs them at once, unlike a
+    // routine's body.
+    @Override
+    public boolean controlsTransaction(List<String> words) {
+      if (words.isEmpty()) {
+        return false;
+      }
+      var second = words.size() > 1 ? words.get(1) : "";
+      return switch (words.getFirst()) {
+        case "begin" -> !second.equals("not") || controlsWithin(words);
+        case "if", "case", "loop", "repeat", "while", "for" -> controlsWithin(words);
+        case "start" -> second.equals("transaction");
+        case "commit", "xa" -> true;
+        case "rollback" -> !words.contains("to");
+        case "set" -> assignsAutocommit(words);
+        // A label, as of label: BEGIN NOT ATOMIC … END label or of a loop.
+        default -> second.equals(":") && controlsWithin(words);
+      };
+    }
+
+    private static boolean controlsWithin(List<String> words) {
+      for (int i = 0; i < words.size(); i++) {
+        var next = i + 1 < words.size() ? words.get(i + 1) : "";
+        var after = i + 2 < words.size() ? words.get(i + 2) : "";
+        boolean controls = switch (words.get(i)) {
+          case "commit", "xa" -> true;
+          // ROLLBACK [WORK] TO a savepoint leaves the transaction open.
+          case "rollback" -> !next.equals("to") && !(next.equals("work") && after.equals("to"));
+          case "start" -> next.equals("transaction");
+          default -> assigns(words, i);
+        };
+        if (controls) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    private static boolean assignsAutocommit(List<String> words) {
+      for (int i = 0; i < words.size(); i++) {
+        if (assigns(words, i)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Whether the word at i is autocommit, quoted or not, as the target of = or :=.
+    private static boolean assigns(List<String> words, int i) {
+      var word = words.get(i);
+      var next = i + 1 < words.size() ? words.get(i + 1) : "";
+      return (word.equals("autocommit") || word.equals("`autocommit`"))
+          && (next.equals("=") || next.equals(":"));
+    }
+
+    // Of the statements that MySQL's manual lists as causing an implicit commit, those that a file
+    // may well hold: DDL but for a temporary table's, locking tables, granting, users and roles,
+    // and the maintenance of tables and caches. UNLOCK TABLES commits only where LOCK TABLES
+    // locked any, as tableLocks tells.
+    @Override
+    public boolean commitsImplicitly(List<String> words) {
+      if (words.isEmpty()) {
+        return false;
+      }
+      var second = words.size() > 1 ? words.get(1) : "";
+      return switch (words.getFirst()) {
+        case "lock" -> locksTables(second);
+        case "grant", "revoke", "flush" -> true;
+        // Not MariaDB's ANALYZE SELECT, which runs and explains a query.
+        case "analyze", "optimize", "repair" ->
+          second.equals(TABLE)
+              || (second.equals("local") || second.equals("no_write_to_binlog"))
+                  && words.size() > 2
+                  && words.get(2).equals(TABLE);
+        case "check" -> second.equals(TABLE);
+        case "cache", "load" -> second.equals("index");
+        // CREATE OR REPLACE TEMPORARY TABLE, as MariaDB has it, commits nothing either.
+        case "create", "drop" ->
+          !(second.equals("temporary")
+              || second.equals("or") && words.size() > 3 && words.get(3).equals("temporary"));
+        case "alter", "rename", "truncate" -> true;
+        case "set" ->
+          second.equals("password") || words.contains("default") && words.contains("role");
+        default -> false;
+      };
+    }
+
+    // CALL of a procedure, whose body may commit, and EXECUTE of a prepared statement, also
+    // MariaDB's EXECUTE IMMEDIATE, which may be a COMMIT; and a compound statement, as for
+    // controlsTransaction, whose body holds one of them.
+    @Override
+    public boolean mayEndUnseen(List<String> words) {
+      if (words.isEmpty()) {
+        return false;
+      }
+      var second = words.size() > 1 ? words.get(1) : "";
+      return switch (words.getFirst()) {
+        case "call", "execute" -> true;
+        case "begin" -> second.equals("not") && runsWithin(words);
+        case "if", "case", "loop", "repeat", "while", "for" -> runsWithin(words);
+        default -> second.equals(":") && runsWithin(words);
+      };
+    }
+
+    private static boolean runsWithin(List<String> words) {
+      return words.contains("call") || words.contains("execute");
+    }
+
+    @Override
+    public TableLocks tableLocks(List<String> words) {
+      var second = words.size() > 1 ? words.get(1) : "";
+      return switch (words.isEmpty() ? "" : words.getFirst()) {
+        case "lock" -> locksTables(second) ? TableLocks.LOCKS : TableLocks.KEEPS;
+        case "unlock" -> locksTables(second) ? TableLocks.UNLOCKS : TableLocks.KEEPS;
+        default -> TableLocks.KEEPS;
+      };
+    }
+
+    private static boolean locksTables(String second) {
+      return second.equals(TABLE) || second.equals("tables");
+    }
+
+    @Override
+    public boolean copiesFromClient(String first, Supplier<List<String>> words) {
+      return false;
+    }
+
+    @Override
+    public String endOfRows() {
+      throw new UnsupportedOperationException("The server copies nothing from the client");
+    }
+
+    @Override
+    public long copyIn(Connection connection, String sql, Reader rows) {
+      throw new UnsupportedOperationException("The server copies nothing from the client");
+    }
   }
 
   @Override
@@ -412,6 +577,12 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     @Override
     public boolean clientDelimiter() {
       return true;
+    }
+
+    // A routine's body with semicolons needs DELIMITER, as their clients split at each.
+    @Override
+    public boolean atomicBodies() {
+      return false;
     }
 
     @Override
