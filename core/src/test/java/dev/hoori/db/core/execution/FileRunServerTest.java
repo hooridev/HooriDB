@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Files run on real servers: the dumps of their own tools, failures, transactions, a cancel. */
 class FileRunServerTest {
@@ -220,14 +221,21 @@ class FileRunServerTest {
     }
   }
 
-  @Test
-  void oneTransactionRollsBackWhatRanBeforeACompoundStatementThatCommits() throws Exception {
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "BEGIN NOT ATOMIC COMMIT; END",
+        "IF TRUE THEN COMMIT; END IF",
+        "l: LOOP COMMIT; LEAVE l; END LOOP l"
+      })
+  void oneTransactionRollsBackWhatRanBeforeACompoundStatementThatCommits(String compound)
+      throws Exception {
     var table = "file_run_compound";
     try (var writer = open(MARIADB)) {
       execute(writer, "DROP TABLE IF EXISTS " + table, "CREATE TABLE " + table + " (id integer)");
     }
     var text = "INSERT INTO " + table + " VALUES (1);\n"
-        + "DELIMITER //\nBEGIN NOT ATOMIC COMMIT; END//\nDELIMITER ;\n"
+        + "DELIMITER //\n" + compound + "//\nDELIMITER ;\n"
         + "INSERT INTO " + table + " VALUES (2);\n";
     try (var connection = open(MARIADB)) {
       var report =
@@ -236,6 +244,7 @@ class FileRunServerTest {
       assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
       assertEquals(3, report.failures().getFirst().line());
     }
+    // Another session finds nothing of the file: the compound statement did not commit the first.
     try (var check = open(MARIADB)) {
       assertEquals(0, selectLong(check, "SELECT count(*) FROM " + table));
     }

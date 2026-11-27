@@ -59,8 +59,9 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
 
     // BEGIN, START TRANSACTION, COMMIT, ROLLBACK, but to a savepoint, XA, and a SET that assigns
     // autocommit, which commits as it turns it on, not one that only reads it, as SET @saved =
-    // @@autocommit does; and MariaDB's compound statement BEGIN NOT ATOMIC where its body holds
-    // one of them, which it runs at once, unlike a routine's body.
+    // @@autocommit does; and MariaDB's compound statements, BEGIN NOT ATOMIC, IF, CASE, the loops
+    // and a labeled one, where their body holds one of them, as it runs them at once, unlike a
+    // routine's body.
     @Override
     public boolean controlsTransaction(List<String> words) {
       if (words.isEmpty()) {
@@ -69,11 +70,13 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       var second = words.size() > 1 ? words.get(1) : "";
       return switch (words.getFirst()) {
         case "begin" -> !second.equals("not") || controlsWithin(words);
+        case "if", "case", "loop", "repeat", "while", "for" -> controlsWithin(words);
         case "start" -> second.equals("transaction");
         case "commit", "xa" -> true;
         case "rollback" -> !words.contains("to");
         case "set" -> assignsAutocommit(words);
-        default -> false;
+        // A label, as of label: BEGIN NOT ATOMIC … END label or of a loop.
+        default -> second.equals(":") && controlsWithin(words);
       };
     }
 

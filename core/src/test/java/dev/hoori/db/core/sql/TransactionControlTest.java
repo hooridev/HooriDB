@@ -58,6 +58,7 @@ class TransactionControlTest {
         // Only reads it, to set it back later.
         "SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT",
         "SET autocommit_x = @@autocommit",
+
         "LOCK TABLES t WRITE",
         "CREATE PROCEDURE p() BEGIN COMMIT; END")) {
       assertFalse(TransactionControl.in(sql, MYSQL), sql);
@@ -68,7 +69,18 @@ class TransactionControlTest {
         "BEGIN NOT ATOMIC SAVEPOINT s; ROLLBACK TO SAVEPOINT s; END", MARIADB));
     assertFalse(TransactionControl.in(
         "BEGIN NOT ATOMIC SAVEPOINT s; ROLLBACK WORK TO s; SET @a = @@autocommit; END", MARIADB));
+    // As are its other compound statements, a label's too.
+    assertFalse(TransactionControl.in("IF TRUE THEN SELECT 1; END IF", MARIADB));
+    assertFalse(TransactionControl.in("l: LOOP LEAVE l; END LOOP l", MARIADB));
     for (var sql : List.of(
+        "IF TRUE THEN COMMIT; END IF",
+        "IF FALSE THEN SELECT 1; ELSE ROLLBACK; END IF",
+        "CASE WHEN 1 THEN SET autocommit = 1; END CASE",
+        "l: LOOP COMMIT; LEAVE l; END LOOP l",
+        "REPEAT START TRANSACTION; UNTIL TRUE END REPEAT",
+        "WHILE FALSE DO XA END 'x'; END WHILE",
+        "FOR i IN 1..2 DO COMMIT; END FOR",
+        "outer: BEGIN NOT ATOMIC COMMIT; END outer",
         "BEGIN NOT ATOMIC COMMIT; END",
         "BEGIN NOT ATOMIC INSERT INTO t VALUES (1); ROLLBACK; END",
         "BEGIN NOT ATOMIC START TRANSACTION; END",
