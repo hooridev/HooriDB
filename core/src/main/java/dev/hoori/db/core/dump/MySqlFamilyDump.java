@@ -50,6 +50,7 @@ import java.util.Set;
 public final class MySqlFamilyDump extends DumpDialect {
 
   private static final String MODE = "NO_AUTO_VALUE_ON_ZERO";
+  private static final String NO_KEY_CHECKS = "SET SESSION foreign_key_checks = 0";
   private static final String NO_DEFINITION =
       "The server does not show this user the definition of ";
 
@@ -435,30 +436,11 @@ public final class MySqlFamilyDump extends DumpDialect {
     var tables = new HashSet<String>();
     var functions = new HashSet<String>();
     for (var k = 0; k < pieces.size(); k++) {
-      var piece = pieces.get(k);
-      if (piece.kind() != Statements.Piece.Kind.QUOTED) {
-        continue;
+      if (readFrom(created, pieces, k, database)) {
+        var piece = pieces.get(k);
+        var name = unquoted(created.substring(piece.start(), piece.end()));
+        (followedBy(created, pieces, k, '(') ? functions : tables).add(name);
       }
-      var next = k + 1 < pieces.size() ? pieces.get(k + 1) : null;
-      if (next != null && code(created, next, '.')) {
-        continue;
-      }
-      var before = k > 0 ? pieces.get(k - 1) : null;
-      if (before != null && code(created, before, '.')) {
-        var qualifier = k > 1 ? pieces.get(k - 2) : null;
-        if (qualifier == null
-            || qualifier.kind() != Statements.Piece.Kind.QUOTED
-            || !created.substring(qualifier.start(), qualifier.end()).equals(database)) {
-          continue;
-        }
-      } else if (before != null
-          && (before.kind() == Statements.Piece.Kind.QUOTED
-              || code(created, before, ')')
-              || afterAs(created, piece.start()))) {
-        continue;
-      }
-      var name = unquoted(created.substring(piece.start(), piece.end()));
-      (next != null && code(created, next, '(') ? functions : tables).add(name);
     }
     var needs = new HashSet<Item>();
     for (var other : known) {
@@ -472,6 +454,34 @@ public final class MySqlFamilyDump extends DumpDialect {
       }
     }
     return needs;
+  }
+
+  // Whether the piece at the index is a quoted name the view reads from: alone, or after the
+  // database's quoted name and a period.
+  private static boolean readFrom(
+      String created, List<Statements.Piece> pieces, int k, String database) {
+    var piece = pieces.get(k);
+    if (piece.kind() != Statements.Piece.Kind.QUOTED || followedBy(created, pieces, k, '.')) {
+      return false;
+    }
+    if (k == 0) {
+      return true;
+    }
+    var before = pieces.get(k - 1);
+    if (code(created, before, '.')) {
+      var qualifier = k > 1 ? pieces.get(k - 2) : null;
+      return qualifier != null
+          && qualifier.kind() == Statements.Piece.Kind.QUOTED
+          && created.substring(qualifier.start(), qualifier.end()).equals(database);
+    }
+    return before.kind() != Statements.Piece.Kind.QUOTED
+        && !code(created, before, ')')
+        && !afterAs(created, piece.start());
+  }
+
+  // Whether the piece after the index is the code character.
+  private static boolean followedBy(String created, List<Statements.Piece> pieces, int k, char c) {
+    return k + 1 < pieces.size() && code(created, pieces.get(k + 1), c);
   }
 
   // Whether the code right before the offset ends in the word AS.
@@ -498,44 +508,15 @@ public final class MySqlFamilyDump extends DumpDialect {
   record Created(String create, List<String> indexes, List<String> keys) {
 
     static Created of(Provider provider, String created, String name) {
-      // The parenthesis that holds the columns, keys and constraints, and the commas between them,
-      // outside names and texts.
-      var pieces = Statements.pieces(created, provider);
-      var open = -1;
-      var close = -1;
-      var commas = new ArrayList<Integer>();
-      var depth = 0;
-      for (var piece : pieces) {
-        if (piece.kind() != Statements.Piece.Kind.CODE) {
-          continue;
-        }
-        switch (created.charAt(piece.start())) {
-          case '(' -> {
-            if (depth++ == 0 && open < 0) {
-              open = piece.start();
-            }
-          }
-          case ')' -> {
-            if (--depth == 0 && close < 0 && open >= 0) {
-              close = piece.start();
-            }
-          }
-          case ',' -> {
-            if (depth == 1 && open >= 0 && close < 0) {
-              commas.add(piece.start());
-            }
-          }
-          default -> {
-            // Nothing that parts.
-          }
-        }
-      }
-      if (open < 0 || close < 0) {
+      var outline = Outline.of(created, Statements.pieces(created, provider));
+      if (outline.isEmpty()) {
         return new Created(created, List.of(), List.of());
       }
+      var open = outline.get().open();
+      var close = outline.get().close();
       var parts = new ArrayList<String>();
       var from = open + 1;
-      for (var comma : commas) {
+      for (var comma : outline.get().commas()) {
         parts.add(created.substring(from, comma).strip());
         from = comma + 1;
       }
@@ -560,6 +541,38 @@ public final class MySqlFamilyDump extends DumpDialect {
               + created.substring(close),
           List.copyOf(indexes),
           List.copyOf(keys));
+    }
+
+    /**
+     * The parenthesis that holds the columns, keys and constraints, and the commas between them,
+     * outside names and texts.
+     */
+    private record Outline(int open, int close, List<Integer> commas) {
+
+      static Optional<Outline> of(String created, List<Statements.Piece> pieces) {
+        var open = -1;
+        var depth = 0;
+        var commas = new ArrayList<Integer>();
+        for (var piece : pieces) {
+          var at = piece.start();
+          var c = piece.kind() == Statements.Piece.Kind.CODE ? created.charAt(at) : ' ';
+          if (c == '(' && depth == 0 && open < 0) {
+            open = at;
+          }
+          if (c == ',' && depth == 1 && open >= 0) {
+            commas.add(at);
+          }
+          depth += switch (c) {
+            case '(' -> 1;
+            case ')' -> -1;
+            default -> 0;
+          };
+          if (c == ')' && depth == 0 && open >= 0) {
+            return Optional.of(new Outline(open, at, List.copyOf(commas)));
+          }
+        }
+        return Optional.empty();
+      }
     }
 
     // The AUTO_INCREMENT column's quoted name, or empty: a column's part, which begins with its
@@ -695,9 +708,7 @@ public final class MySqlFamilyDump extends DumpDialect {
     return tables.isEmpty()
         ? Around.NOTHING
         : new Around(
-            List.of(
-                "SET @HOORIDB_CIRCLE_CHECKS = @@SESSION.foreign_key_checks",
-                "SET SESSION foreign_key_checks = 0"),
+            List.of("SET @HOORIDB_CIRCLE_CHECKS = @@SESSION.foreign_key_checks", NO_KEY_CHECKS),
             List.of("SET SESSION foreign_key_checks = @HOORIDB_CIRCLE_CHECKS"));
   }
 
@@ -769,7 +780,7 @@ public final class MySqlFamilyDump extends DumpDialect {
         "SET SESSION sql_mode = '" + MODE + "'"));
     if (options.noForeignKeyChecks()) {
       header.add("SET @HOORIDB_FOREIGN_KEY_CHECKS = @@SESSION.foreign_key_checks");
-      header.add("SET SESSION foreign_key_checks = 0");
+      header.add(NO_KEY_CHECKS);
     }
     return header;
   }
@@ -792,9 +803,7 @@ public final class MySqlFamilyDump extends DumpDialect {
   // way around but turning them off.
   @Override
   List<String> beforeDrops() {
-    return List.of(
-        "SET @HOORIDB_DROP_CHECKS = @@SESSION.foreign_key_checks",
-        "SET SESSION foreign_key_checks = 0");
+    return List.of("SET @HOORIDB_DROP_CHECKS = @@SESSION.foreign_key_checks", NO_KEY_CHECKS);
   }
 
   @Override

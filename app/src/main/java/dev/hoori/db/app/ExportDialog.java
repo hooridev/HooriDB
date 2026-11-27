@@ -322,12 +322,16 @@ final class ExportDialog {
     if (content.structure() || provider.dialect().dump().quietsTriggers()) {
       return List.of();
     }
-    var on = objects.stream()
+    var withTriggers = objects.stream()
         .map(Listed::item)
         .filter(i -> i.kind() == Item.Kind.TRIGGER)
         .map(i -> Item.of(i.container(), Item.Kind.TABLE, i.table()))
         .collect(Collectors.toSet());
-    return checked().stream().filter(on::contains).map(Item::name).distinct().toList();
+    return checked().stream()
+        .filter(withTriggers::contains)
+        .map(Item::name)
+        .distinct()
+        .toList();
   }
 
   // Of data alone, only tables and sequences have any, and none is checked.
