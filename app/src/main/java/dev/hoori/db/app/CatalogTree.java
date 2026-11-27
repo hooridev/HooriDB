@@ -12,6 +12,7 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
@@ -1576,6 +1577,7 @@ final class CatalogTree {
             Menu.item(
                     "Server monitor", () -> s.openMonitor(n.id(), s.tabs.main().active()))
                 .icon(Symbol.SERVER),
+            copyTables(s, n.id(), null),
             Menu.separator(),
             Menu.item("Disconnect", active(n.id()) ? () -> disconnect(s, n.id()) : null)
                 .icon(Symbol.PLUG_DISCONNECTED),
@@ -1610,8 +1612,26 @@ final class CatalogTree {
                 "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
             .icon(Symbol.ARROW_CLOCKWISE));
       case Node.OfIndex _ -> List.of(copy);
+      case Node.OfDatabase(var id, var database) ->
+        List.of(copyTables(s, id, database), Menu.separator(), refresh, copy);
+      case Node.OfSchema(var id, var schema) ->
+        List.of(copyTables(s, id, schema), Menu.separator(), refresh, copy);
       default -> List.of(refresh, copy);
     };
+  }
+
+  /**
+   * Copy tables of the connection's database or schema, or of the connection where null: not of a
+   * server of documents, whose collections are not copied yet.
+   */
+  private static Menu.Item copyTables(State s, UUID id, Container container) {
+    var profile = s.profile(id);
+    return Menu.item(
+            "Copy tables…",
+            profile == null || profile.provider().keepsDocuments()
+                ? null
+                : () -> s.openTransfer(id, container, s.tabs.main().active()))
+        .icon(Symbol.COPY);
   }
 
   /**

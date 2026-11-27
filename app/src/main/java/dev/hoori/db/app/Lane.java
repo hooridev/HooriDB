@@ -131,6 +131,15 @@ final class Lane {
     });
   }
 
+  /**
+   * Runs the call for what the user looks at, and waits for its answer, off the app's thread: an
+   * interrupt of the waiting thread interrupts the call, which core turns into a cancel on the
+   * server.
+   */
+  <T> T call(Call<T> call) throws Exception {
+    return await(submit(call));
+  }
+
   /** Whether the failure says that the connection is gone: lost, or given up by core. */
   private static boolean gone(Exception e) {
     return switch (e) {

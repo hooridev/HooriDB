@@ -6,6 +6,7 @@
     "table-data",
     "console",
     "transactions",
+    "copy-tables",
     "history",
     "saved-queries",
     "command-palette",

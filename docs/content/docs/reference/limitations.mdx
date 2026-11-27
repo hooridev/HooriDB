@@ -43,6 +43,16 @@ Some of these limits are tracked in [issue #57](https://github.com/hooridev/Hoor
 - There are no transactions in a MongoDB console.
 - A collection's tab edits, inserts, copies, and deletes [one document at a time](/docs/features/mongodb#edit-insert-copy-and-delete-documents) in a dialog: not cells in the grid, not several documents at once, and not a console's result; an `_id` cannot be changed. The check for a document changed meanwhile does not see a value whose type alone changed while it compares equal: a number of another type at the same value, such as `1` to `Long('1')`, or a string turned into a symbol of the same text.
 
+## Copy tables
+
+- [Copy tables](/docs/features/copy-tables) copies rows only into tables that already exist in the target, between connections of the same server type (PostgreSQL, MySQL or MariaDB). It does not create or drop tables, copy indexes, foreign keys, views or routines, rename a table in the target, copy MongoDB collections, or copy between server types.
+- A row that fails fails its whole table; a run cannot skip a single row.
+- The settings of a run cannot be saved to run it again.
+- Tables that refer to each other in a circle are copied in the order listed, which the target's foreign keys may refuse.
+- A table whose rows refer to rows of the same table is written in the order of its primary key: a row that refers to a row later in that order fails the table, unless both are in one batch and the server checks the key once a statement's rows are in, as PostgreSQL does.
+- A table to be emptied is not copied where another table's foreign key, of a table not emptied in the same copy, would delete or change its rows with it. A table emptied with a table it refers to stays empty where its own copy fails later.
+- On MySQL and MariaDB the source server gives up the rows of a table it sends where writing one batch into the target takes more than 10 minutes. A row larger than the target's `max_allowed_packet` cannot be written.
+
 ## Connections and appearance
 
 - **Read-only** on PostgreSQL, MySQL, and MariaDB uses the server's read-only transactions, which do not cover everything a statement can do (see [SQL console](/docs/features/console#read-only-connections)):

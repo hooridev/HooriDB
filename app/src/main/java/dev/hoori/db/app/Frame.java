@@ -203,6 +203,11 @@ final class Frame {
                 .icon(Symbol.SERVER)
                 .hue(ConnectionColors.hue(s.color(x.id)))
                 .busy(x.busy());
+          case TransferTab x ->
+            new Tabs.Tab(s.title(x))
+                .icon(Symbol.COPY)
+                .hue(ConnectionColors.hue(s.color(x.id())))
+                .busy(x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -217,6 +222,7 @@ final class Frame {
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
           case MonitorTab x -> x.view(s, app);
+          case TransferTab x -> x.view(s);
         });
   }
 
@@ -227,6 +233,7 @@ final class Frame {
       case TableTab x -> s.title(x);
       case ConsoleTab x -> s.title(x);
       case MonitorTab x -> s.title(x);
+      case TransferTab x -> s.title(x);
     };
   }
 
@@ -626,28 +633,36 @@ final class Frame {
     }
     int consoles = 0;
     int tables = 0;
+    int copies = 0;
     for (var tab : tabs) {
-      if (tab instanceof ConsoleTab) {
-        consoles++;
-      } else {
-        tables++;
+      switch (tab) {
+        case ConsoleTab _ -> consoles++;
+        case TableTab _ -> tables++;
+        case TransferTab _ -> copies++;
       }
     }
-    String text;
-    if (tables == 0) {
-      text =
-          consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
-    } else if (consoles == 0) {
-      text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
-    } else {
-      int n = consoles + tables;
-      text = n + " tabs may hold uncommitted work";
-    }
+    var text = uncommitted(consoles, tables, copies);
     var first = tabs.getFirst();
     boolean asking = modal || asks(s, s.tabs.groupOf((Tab) first));
     return StatusBar.item(
             Badge.Kind.WARNING, Symbol.LOCK_OPEN, text, asking ? null : () -> first.show(s))
         .key("uncommitted");
+  }
+
+  // What the tabs at stake hold, by their kinds.
+  private static String uncommitted(int consoles, int tables, int copies) {
+    int n = consoles + tables + copies;
+    if (n == consoles) {
+      return consoles + (consoles == 1 ? " console may" : " consoles may")
+          + " hold uncommitted work";
+    }
+    if (n == tables) {
+      return tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    }
+    if (n == copies) {
+      return copies == 1 ? "A copy of tables runs" : copies + " copies of tables run";
+    }
+    return n + " tabs may hold uncommitted work";
   }
 
   /** The version that runs, its authors, license and website. */
@@ -687,6 +702,7 @@ final class Frame {
   static List<Menu.Item> menus(State s, TabGroups.Group<Tab> group, boolean modal) {
     var palette = s.palette(group);
     var console = s.consoleFor(group);
+    var copied = s.transferFor(group);
     // What opens a dialog of the main window waits for the one open there, from every window.
     boolean free = !mainDialog(s);
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
@@ -713,6 +729,12 @@ final class Frame {
                         "Server monitor",
                         console == null ? null : () -> s.openMonitor(console, group))
                     .icon(Symbol.SERVER),
+                Menu.item(
+                        "Copy tables…",
+                        copied == null
+                            ? null
+                            : () -> s.openTransfer(copied.id(), copied.container(), group))
+                    .icon(Symbol.COPY),
                 Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c && c.id != null

@@ -1,14 +1,21 @@
 package dev.hoori.db.core.dialect;
 
+import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.monitor.ServerSession;
+import java.math.BigDecimal;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -23,6 +30,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
 
   private final CatalogDialect catalog;
   private final ErrorDialect errors = new Errors();
+  private final TransferDialect transfer = new Transfer();
 
   MySqlFamily(boolean flagsHiddenIndexColumns, boolean functionalIndexExpressions) {
     catalog = new Catalog(flagsHiddenIndexColumns, functionalIndexExpressions);
@@ -41,6 +49,11 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   @Override
   public ErrorDialect errors() {
     return errors;
+  }
+
+  @Override
+  public TransferDialect transfer() {
+    return transfer;
   }
 
   static final class Errors implements ErrorDialect {
@@ -451,6 +464,120 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     @Override
     public Set<String> passwordWords() {
       return Set.of("PASSWORD", "IDENTIFIED", "SOURCE_PASSWORD", "MASTER_PASSWORD");
+    }
+  }
+
+  // Numbers travel as numbers, as a value written into a column of a number goes through floating
+  // point where it comes as a text; binary data, bit values and geometries, which the servers send
+  // as they store them, as their bytes; anything else as the server's text, which it reads as the
+  // column's type. Both sessions write and read moments in UTC, which repeats no hour, and take a
+  // zero written into an auto-increment as the zero it is, not as the next value.
+  static final class Transfer implements TransferDialect {
+
+    private static final Set<String> NUMBERS = Set.of(
+        "tinyint",
+        "smallint",
+        "mediumint",
+        "int",
+        "integer",
+        "bigint",
+        "decimal",
+        "numeric",
+        "year");
+    private static final Set<String> BYTES = Set.of(
+        "bit",
+        "binary",
+        "varbinary",
+        "tinyblob",
+        "blob",
+        "mediumblob",
+        "longblob",
+        "geometry",
+        "point",
+        "linestring",
+        "polygon",
+        "multipoint",
+        "multilinestring",
+        "multipolygon",
+        "geometrycollection",
+        "geomcollection");
+    private static final Set<String> TIMES = Set.of("date", "time", "datetime", "timestamp");
+
+    private static String base(Column column) {
+      return column.type().toLowerCase(Locale.ROOT).split("[( ]", 2)[0];
+    }
+
+    @Override
+    public Carry carry(Column column) {
+      var base = base(column);
+      if (NUMBERS.contains(base)) {
+        return Carry.NUMBER;
+      }
+      return BYTES.contains(base) ? Carry.BYTES : Carry.TEXT;
+    }
+
+    // As the server writes them: the drivers' conversions of a date or a number, a tinyint(1)
+    // among them, are not the server's text. A float the servers write with six digits, which
+    // need not name it; as a double, which holds it exactly, they write as many as name it.
+    @Override
+    public String read(Column column, String name) {
+      var base = base(column);
+      if (base.equals("float")) {
+        return "(" + name + " + 0e0)";
+      }
+      return NUMBERS.contains(base) || TIMES.contains(base) ? "CAST(" + name + " AS CHAR)" : name;
+    }
+
+    @Override
+    public void bind(PreparedStatement statement, int index, Object value) throws SQLException {
+      switch (value) {
+        case null -> statement.setNull(index, Types.NULL);
+        case String text -> statement.setString(index, text);
+        case BigDecimal number -> statement.setBigDecimal(index, number);
+        case byte[] bytes -> statement.setBytes(index, bytes);
+        default -> throw new IllegalArgumentException("No value to copy: " + value.getClass());
+      }
+    }
+
+    // The source's server waits this long for a batch to be written before it gives up the rows
+    // it sends. The session's other modes stay.
+    @Override
+    public List<String> prepare() {
+      return List.of(
+          "SET time_zone = '+00:00'",
+          "SET SESSION net_write_timeout = 600",
+          "SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''),"
+              + " 'NO_AUTO_VALUE_ON_ZERO')");
+    }
+
+    // By what the column's EXTRA says, which every version has.
+    @Override
+    public String generated() {
+      return "SELECT column_name FROM information_schema.columns"
+          + " WHERE table_schema = ? AND table_name = ?"
+          + " AND (extra LIKE '%VIRTUAL%' OR extra LIKE '%STORED%' OR extra LIKE '%PERSISTENT%')";
+    }
+
+    // The database is the table's own.
+    @Override
+    public String identity() {
+      return "SELECT @@hostname, @@port, @@datadir";
+    }
+
+    @Override
+    public Optional<String> statementLimit() {
+      return Optional.of("SELECT @@max_allowed_packet");
+    }
+
+    @Override
+    public String insertInto(String table, List<String> columns, boolean overriding) {
+      return "INSERT INTO " + table + " (" + String.join(", ", columns) + ") VALUES";
+    }
+
+    @Override
+    public void written(
+        Connection connection, Provider provider, Table table, List<String> columns) {
+      // Nothing to do: their auto-increments move past the values written by themselves.
     }
   }
 

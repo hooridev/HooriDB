@@ -24,5 +24,10 @@ public enum Capability {
   /** The plan of a statement as JSON, without running it. */
   EXPLAIN_JSON,
   /** The plan of a statement with the times measured while it runs. */
-  EXPLAIN_ANALYZE
+  EXPLAIN_ANALYZE,
+  /**
+   * An {@code INSERT} gives a column that the server always generates itself, an identity, a value
+   * of its own, which {@code OVERRIDING SYSTEM VALUE} lets it.
+   */
+  IDENTITY_OVERRIDE
 }

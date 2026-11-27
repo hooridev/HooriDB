@@ -10,6 +10,7 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Editable;
@@ -32,6 +33,10 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.transfer.Batch;
+import dev.hoori.db.core.transfer.Selection;
+import dev.hoori.db.core.transfer.Source;
+import dev.hoori.db.core.transfer.Target;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -321,6 +326,184 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
         @Override
         public Optional<List<Block>> locks() throws QueryException {
           return monitor.locks();
+        }
+      };
+    }
+
+    // A call of a copy's session, recorded, failing as the session's calls fail.
+    private <T> T copying(String database, Journal.Call<T, Exception> call)
+        throws QueryException, CatalogException, InterruptedException {
+      try {
+        return recorded(database, call);
+      } catch (QueryException | CatalogException | InterruptedException | RuntimeException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalStateException("A copy's session failed as none of its calls fail", e);
+      }
+    }
+
+    // What a copy reads, logged about the database of the table it reads.
+    @Override
+    public Source source() throws QueryException {
+      var source = link.source();
+      return new Source() {
+        @Override
+        public Provider provider() {
+          return source.provider();
+        }
+
+        @Override
+        public void prepare() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
+            source.prepare();
+            return null;
+          });
+        }
+
+        @Override
+        public List<Column> columns(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> source.columns(table));
+        }
+
+        @Override
+        public long count(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> source.count(table));
+        }
+
+        @Override
+        public String identity() throws QueryException, CatalogException, InterruptedException {
+          return copying(null, source::identity);
+        }
+
+        @Override
+        public Reading read(Selection selection)
+            throws QueryException, CatalogException, InterruptedException {
+          var database = of(selection.table());
+          var reading = copying(database, () -> source.read(selection));
+          return new Reading() {
+            @Override
+            public Batch next(int count, long budget)
+                throws QueryException, CatalogException, InterruptedException {
+              return copying(database, () -> reading.next(count, budget));
+            }
+
+            @Override
+            public void close() throws QueryException, CatalogException, InterruptedException {
+              copying(database, () -> {
+                reading.close();
+                return null;
+              });
+            }
+          };
+        }
+      };
+    }
+
+    // What a copy writes, logged about the database of the table it writes.
+    @Override
+    public Target target() throws QueryException {
+      var target = link.target();
+      return new Target() {
+        @Override
+        public Provider provider() {
+          return target.provider();
+        }
+
+        @Override
+        public boolean readOnly() {
+          return target.readOnly();
+        }
+
+        @Override
+        public void prepare() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
+            target.prepare();
+            return null;
+          });
+        }
+
+        @Override
+        public String identity() throws QueryException, CatalogException, InterruptedException {
+          return copying(null, target::identity);
+        }
+
+        @Override
+        public OptionalLong statementLimit()
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(null, target::statementLimit);
+        }
+
+        @Override
+        public Shape shape(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.shape(table));
+        }
+
+        @Override
+        public List<ForeignKey> foreignKeys(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.foreignKeys(table));
+        }
+
+        @Override
+        public boolean hasRows(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.hasRows(table));
+        }
+
+        @Override
+        public void begin() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
+            target.begin();
+            return null;
+          });
+        }
+
+        @Override
+        public long empty(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.empty(table));
+        }
+
+        @Override
+        public long write(Table table, List<String> columns, List<List<Object>> rows)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.write(table, columns, rows));
+        }
+
+        @Override
+        public void written(Table table, List<String> columns)
+            throws QueryException, CatalogException, InterruptedException {
+          copying(of(table), () -> {
+            target.written(table, columns);
+            return null;
+          });
+        }
+
+        @Override
+        public void commit() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
+            target.commit();
+            return null;
+          });
+        }
+
+        @Override
+        public void rollback() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
+            target.rollback();
+            return null;
+          });
+        }
+
+        @Override
+        public void end() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
+            target.end();
+            return null;
+          });
         }
       };
     }

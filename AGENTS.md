@@ -142,7 +142,20 @@ connection's menu, the File menu or the palette, opens a tab with the server's s
 status counters and who blocks whom, read on a session of its own at an interval that can be
 changed and paused, and not while the tab is hidden; a session's statement is cancelled and a
 session ended after a question, never the monitor's own, and credentials in other sessions'
-statements are masked. Run from its app image,
+statements are masked. "Copy tables…", in a connection's, a database's or a schema's menu, the
+File menu or the palette, opens a tab that copies the rows of the tables checked of a database or
+schema of a server of SQL into the tables of the same names that another connection, database or
+schema of the same provider has, on a session of its own for each end: columns by name (one the
+target lacks fails the table, as do two that would go into one, one it generates gets no value,
+PostgreSQL's sequences are set past what was copied in their direction, never back), per table stop
+where the target has rows, empty it first (in its copy's transaction, refused where another table's
+key would cascade) or append, each table read in one statement in its key's order and written in
+multi-row `INSERT`s of a batch of at most 8 MB (or half of `max_allowed_packet`), never a table
+whole, committed per table or per batch, ordered by the target's foreign keys, with what every table
+needs read before anything is written; it shows each table's rows and those of all, cancels at any
+point, asks before Close, Exit, Disconnect and a change of a connection end a copy that runs, stops
+at an error or skips the table unless its rollback failed, lists what failed, refuses a read-only
+target and a table copied into itself, and creates no table yet. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
 Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
 tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
@@ -384,6 +397,13 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `locks` give what a host's server has, besides the monitor's own session, numbered as its link;
   the reads are keyed `sessions <host>`, `variables <host>`, `status <host>` and `locks <host>`,
   a cancel `cancel <host> <operation>` and an end `end <host> <id>`.
+- A copy of tables runs against `FakeServers` too, on the links' `source()` and `target()`: a
+  table's rows are those `rows` or `values` give, read whole as one statement and keyed
+  `copy read <host>/<path>`, counted `copy count <host>/<path>`, asked whether it has rows
+  `copy has rows <host>/<path>`, emptied `empty <host>/<path>` and written
+  `copy write <host>/<path>`; what was emptied and written stays in the transaction until
+  `copy commit <host>`, which `rowsOf` then shows, and a rollback, noted `copy rollback <host>`,
+  drops it. The target's columns are the outline's, of which none is generated.
 - Updates run against `FakeUpdater`: releases published by version, the helper's result given,
   downloads and restarts recorded, each failable and the download held at its gate `downloading`.
   `State.shown()`, which `main` hands the window's `onShown`, stands for the first frame shown,

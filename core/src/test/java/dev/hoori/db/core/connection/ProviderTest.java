@@ -5,6 +5,7 @@ import static dev.hoori.db.core.connection.Capability.ERROR_POSITION;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN_ANALYZE;
 import static dev.hoori.db.core.connection.Capability.EXPLAIN_JSON;
+import static dev.hoori.db.core.connection.Capability.IDENTITY_OVERRIDE;
 import static dev.hoori.db.core.connection.Capability.SCHEMAS;
 import static dev.hoori.db.core.connection.Capability.TRANSACTIONAL_DDL;
 import static dev.hoori.db.core.connection.Provider.MARIADB;
@@ -291,6 +292,7 @@ class ProviderTest {
       new Cell(POSTGRESQL, EXPLAIN, null, ALWAYS),
       new Cell(POSTGRESQL, EXPLAIN_JSON, "8.4.22", "9.0"),
       new Cell(POSTGRESQL, EXPLAIN_ANALYZE, "7.1.3", "7.2"),
+      new Cell(POSTGRESQL, IDENTITY_OVERRIDE, "9.6.24", "10.0"),
       new Cell(MARIADB, SCHEMAS, NEVER, null),
       new Cell(MARIADB, CONNECTION_PER_DATABASE, NEVER, null),
       new Cell(MARIADB, TRANSACTIONAL_DDL, NEVER, null),
@@ -298,13 +300,15 @@ class ProviderTest {
       new Cell(MARIADB, EXPLAIN, null, ALWAYS),
       new Cell(MARIADB, EXPLAIN_JSON, "10.1.1", "10.1.2"),
       new Cell(MARIADB, EXPLAIN_ANALYZE, "10.0.38", "10.1.0"),
+      new Cell(MARIADB, IDENTITY_OVERRIDE, NEVER, null),
       new Cell(MYSQL, SCHEMAS, NEVER, null),
       new Cell(MYSQL, CONNECTION_PER_DATABASE, NEVER, null),
       new Cell(MYSQL, TRANSACTIONAL_DDL, NEVER, null),
       new Cell(MYSQL, ERROR_POSITION, NEVER, null),
       new Cell(MYSQL, EXPLAIN, null, ALWAYS),
       new Cell(MYSQL, EXPLAIN_JSON, "5.6.4", "5.6.5"),
-      new Cell(MYSQL, EXPLAIN_ANALYZE, "8.0.17", "8.0.18"));
+      new Cell(MYSQL, EXPLAIN_ANALYZE, "8.0.17", "8.0.18"),
+      new Cell(MYSQL, IDENTITY_OVERRIDE, NEVER, null));
 
   @Test
   void tableCoversEveryProviderAndCapability() {
