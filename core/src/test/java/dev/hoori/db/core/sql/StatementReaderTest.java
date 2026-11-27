@@ -325,9 +325,41 @@ class StatementReaderTest {
     var file = folder.resolve("latin1.sql");
     Files.write(file, "SELECT 1;\nSELECT 'Gr\u00fc\u00dfe';".getBytes(StandardCharsets.ISO_8859_1));
     try (var reader = StatementReader.open(file, POSTGRESQL)) {
+      // The statement before it, which the rest cannot change, comes first.
+      assertEquals(new StatementReader.Sql("SELECT 1", 1, 0), reader.next().orElseThrow());
       var failure = assertThrows(IOException.class, reader::next);
       assertEquals("The file is not UTF-8 on line 2", failure.getMessage());
     }
+    // Right after its terminator too, but not a statement or a command that it cuts short.
+    for (int chunk : CHUNKS) {
+      for (var text : List.of("SELECT 1;\nÿ", "SELECT 1;ÿ", "SELECT 1;\n\\set x\nÿ")) {
+        var reader = new StatementReader(
+            new StatementReader.Utf8(
+                new ByteArrayInputStream(text.getBytes(StandardCharsets.ISO_8859_1))),
+            POSTGRESQL,
+            -1,
+            chunk);
+        assertEquals(
+            new StatementReader.Sql("SELECT 1", 1, 0), reader.next().orElseThrow(), text + chunk);
+        if (text.contains("set")) {
+          assertInstanceOf(StatementReader.Command.class, reader.next().orElseThrow());
+        }
+        assertThrows(IOException.class, reader::next, text + ", chunk " + chunk);
+      }
+      for (var text : List.of("SELECT 1ÿ;", "\\set xÿ\n", "SELECT 1; SELECT 2ÿ")) {
+        var reader = new StatementReader(
+            new StatementReader.Utf8(
+                new ByteArrayInputStream(text.getBytes(StandardCharsets.ISO_8859_1))),
+            POSTGRESQL,
+            -1,
+            chunk);
+        if (text.contains("2")) {
+          reader.next().orElseThrow();
+        }
+        assertThrows(IOException.class, reader::next, text + ", chunk " + chunk);
+      }
+    }
+
     // In windows of its own, the statements before it come first.
     var in = new StatementReader.Utf8(
         new ByteArrayInputStream("SELECT 1;\n-- a comment, of some length\nSELECT '\u00fc';"

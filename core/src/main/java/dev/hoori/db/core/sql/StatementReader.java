@@ -333,13 +333,25 @@ public final class StatementReader implements Closeable {
   }
 
   // Whether what follows the part in the file cannot change it: the file ended, or the scan
-  // looked far enough beyond it, past the terminator of a statement.
+  // looked far enough beyond it, past the terminator of a statement. Where the file stops being
+  // UTF-8, a statement whose terminator came before that is whole, and so is a line that ended:
+  // the next read fails anyway.
   private boolean whole(Statements.Part part, int after) {
-    if (ended && broken == null) {
+    if (ended && broken != null) {
+      return part.kind() == Statements.Part.Kind.STATEMENT
+          ? part.after() > part.end()
+          : after > 0 && buffer.charAt(after - 1) == '\n';
+    }
+    if (ended) {
       return true;
     }
-    return after + MARGIN <= buffer.length()
-        && (part.kind() != Statements.Part.Kind.STATEMENT || part.after() > part.end());
+
+    return after + MARGIN <= buffer.length() && terminated(part);
+  }
+
+  // Whether the part is no statement, or one that its terminator ended.
+  private static boolean terminated(Statements.Part part) {
+    return part.kind() != Statements.Part.Kind.STATEMENT || part.after() > part.end();
   }
 
   // The step of the part that begins at the line and offset; none for a DELIMITER line.
