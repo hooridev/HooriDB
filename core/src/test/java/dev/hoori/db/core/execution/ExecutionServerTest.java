@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.StringJoiner;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -162,10 +163,10 @@ class ExecutionServerTest {
 
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
-  void theFirstPortionOfAMillionRowsComesAtOnceAndClosingEarlyEndsTheQuery(Provider provider)
+  void theFirstPortionOfTenMillionRowsComesAtOnceAndClosingEarlyEndsTheQuery(Provider provider)
       throws Exception {
     try (var connection = open(provider)) {
-      var execution = new Execution(connection, provider, million(provider));
+      var execution = new Execution(connection, provider, tenMillion(provider));
       var started = System.nanoTime();
       var first = execution.next(100);
       var took = Duration.ofNanos(System.nanoTime() - started);
@@ -183,8 +184,9 @@ class ExecutionServerTest {
       started = System.nanoTime();
       execution.close();
       took = Duration.ofNanos(System.nanoTime() - started);
-      // Reading the rest would take about a second.
-      assertTrue(took.toMillis() < 300, provider + " took " + took + " to close");
+      // Reading the rest would take about five seconds; a cancel, which on MariaDB and MySQL opens
+      // a connection of its own, takes a fraction of one.
+      assertTrue(took.toMillis() < 2000, provider + " took " + took + " to close");
       assertTrue(connection.getAutoCommit());
       if (provider == Provider.POSTGRESQL) {
         assertEquals(0, selectLong(connection, "SELECT count(*) FROM pg_cursors WHERE name <> ''"));
@@ -556,11 +558,32 @@ class ExecutionServerTest {
     if (provider == Provider.POSTGRESQL) {
       return "SELECT n, repeat('x', 100) AS t FROM generate_series(1, 1000000) n";
     }
+    return numbers(6);
+  }
+
+  // The numbers from 1 to ten million, with a text of 100 characters each. On PostgreSQL from two
+  // small series, as one series is made whole before its first row comes.
+  private static String tenMillion(Provider provider) {
+    if (provider == Provider.POSTGRESQL) {
+      return "SELECT a * 10000 + b AS n, repeat('x', 100) AS t"
+          + " FROM generate_series(0, 999) a, generate_series(1, 10000) b";
+    }
+    return numbers(7);
+  }
+
+  // The numbers from 1 to 10 to the power of the digits on MariaDB and MySQL, which have no series.
+  private static String numbers(int digits) {
+    var sum = new StringJoiner(" + ", "SELECT ", " + 1 AS n, REPEAT('x', 100) AS t FROM ");
+    var from = new StringJoiner(", ");
+    for (var place = 0; place < digits; place++) {
+      sum.add(place == 0 ? "d0.d" : "1" + "0".repeat(place) + " * d" + place + ".d");
+      from.add("digit d" + (digits - 1 - place));
+    }
     return "WITH digit (d) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3"
         + " UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7"
-        + " UNION ALL SELECT 8 UNION ALL SELECT 9)"
-        + " SELECT a.d + 10 * b.d + 100 * c.d + 1000 * e.d + 10000 * f.d + 100000 * g.d + 1 AS n,"
-        + " REPEAT('x', 100) AS t FROM digit g, digit f, digit e, digit c, digit b, digit a";
+        + " UNION ALL SELECT 8 UNION ALL SELECT 9) "
+        + sum
+        + from;
   }
 
   // Rows whose statement awaitRunning finds by "lagging" while they are read. PostgreSQL makes the
