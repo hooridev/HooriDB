@@ -668,26 +668,34 @@ final class Frame {
         case FileRunDialog _ -> run = true;
       }
     }
-    String text;
-    if (consoles + tables + routines == 0) {
-      text = "A file that runs in one transaction holds uncommitted work";
-    } else if (tables + routines == 0 && !run) {
-      text =
-          consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
-    } else if (consoles + routines == 0 && !run) {
-      text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
-    } else if (consoles + tables == 0 && !run) {
-      text = routines + (routines == 1 ? " routine has" : " routines have") + " unsaved edits";
-    } else {
-      int n = consoles + tables + routines;
-      text = n + (n == 1 ? " tab" : " tabs") + (run ? " and a file's run" : "")
-          + " may hold uncommitted work";
-    }
     var first = tabs.getFirst();
     boolean asking = modal || asks(s, group(s, first));
     return StatusBar.item(
-            Badge.Kind.WARNING, Symbol.LOCK_OPEN, text, asking ? null : () -> first.show(s))
+            Badge.Kind.WARNING,
+            Symbol.LOCK_OPEN,
+            uncommitted(consoles, tables, routines, run),
+            asking ? null : () -> first.show(s))
         .key("uncommitted");
+  }
+
+  /** What the consoles, tables, routines and a file's run that may hold uncommitted work say. */
+  private static String uncommitted(int consoles, int tables, int routines, boolean run) {
+    if (consoles + tables + routines == 0) {
+      return "A file that runs in one transaction holds uncommitted work";
+    }
+    if (tables + routines == 0 && !run) {
+      return consoles + (consoles == 1 ? " console may" : " consoles may")
+          + " hold uncommitted work";
+    }
+    if (consoles + routines == 0 && !run) {
+      return tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    }
+    if (consoles + tables == 0 && !run) {
+      return routines + (routines == 1 ? " routine has" : " routines have") + " unsaved edits";
+    }
+    int n = consoles + tables + routines;
+    return n + (n == 1 ? " tab" : " tabs") + (run ? " and a file's run" : "")
+        + " may hold uncommitted work";
   }
 
   /** The version that runs, its authors, license and website. */

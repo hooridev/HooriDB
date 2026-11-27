@@ -477,7 +477,13 @@ public final class Statements {
     if (head == Head.OTHER || head == Head.ROUTINE && parens > 0) {
       return true; // nothing to follow, nor a word to make
     }
-    var word = Tokens.keyword(text.substring(from, i));
+    follow(from, Tokens.keyword(text.substring(from, i)));
+    return true;
+  }
+
+  // Follows the head of the statement with the word that begins at the offset, or in a routine's
+  // body the blocks that it opens or closes.
+  private void follow(int from, String word) {
     if (head != Head.ROUTINE) {
       head = head.next(word);
     } else if (afterPeriod(from)) {
@@ -487,7 +493,6 @@ public final class Statements {
     } else if (word.equals("END") && blocks > 0) {
       blocks--;
     }
-    return true;
   }
 
   // Whether the word that begins at the offset follows a period, white space between them.
