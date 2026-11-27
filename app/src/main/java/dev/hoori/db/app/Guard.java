@@ -16,7 +16,7 @@ final class Guard {
   Pending pending; // the one act that waits, or null
 
   /** A tab that may hold uncommitted work and asks before an act discards or ends it. */
-  sealed interface Guarded permits ConsoleTab, TableTab {
+  sealed interface Guarded permits ConsoleTab, TableTab, ViewTab {
 
     /** The connection this tab belongs to, for {@link Pending.Locked}. */
     UUID connectionId();

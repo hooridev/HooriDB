@@ -1075,13 +1075,15 @@ final class State {
   }
 
   /**
-   * The first step of an Exit past the save: every console's and monitor's session ends, and Exit
-   * stays where they do not all say in time how they closed.
+   * The first step of an Exit past the save: every console's, monitor's and view change's session
+   * ends, and Exit stays where they do not all say in time how they closed.
    */
   private void endSessions() {
     exitAt = noticed;
     consoles(null).forEach(ConsoleTab::end);
     monitors(null).forEach(m -> m.end(this));
+    views(null).forEach(ViewTab::end); // a change that runs, as a refresh, is cancelled
+    catalog.endDefinitions(this);
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
       if (exits == at && guard.quitting() && closing > waived) {
@@ -1384,7 +1386,7 @@ final class State {
         }
       }
     }
-    var tab = ViewTab.of(this, id, view);
+    var tab = ViewTab.of(id, view);
     tabs.add(into, into.tabs().size(), tab);
     tab.then(this, then);
     tab.open(this);
@@ -1417,7 +1419,7 @@ final class State {
           .orElse(new Schema(database, "public", false));
     }
     var group = tabs.main().active();
-    tabs.add(group, group.tabs().size(), ViewTab.creating(this, id, into));
+    tabs.add(group, group.tabs().size(), ViewTab.creating(id, into));
   }
 
   /** Closes the view's tab, as after its drop. */
@@ -1521,7 +1523,10 @@ final class State {
     }
   }
 
-  /** The tabs that may hold uncommitted work (consoles and tables), of the connection or all. */
+  /**
+   * The tabs that may hold uncommitted work (consoles, tables and edited views), of the connection
+   * or all.
+   */
   List<Guard.Guarded> guarded(UUID id) {
     var all = new ArrayList<Guard.Guarded>();
     for (var group : tabs.groups()) {
@@ -1569,6 +1574,7 @@ final class State {
       }
     }
     all.addAll(monitors(id));
+    all.addAll(views(id));
     close(all);
   }
 
@@ -1587,7 +1593,7 @@ final class State {
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
-    views(id).forEach(v -> v.end(this));
+    views(id).forEach(ViewTab::end);
     if (dialogs.export != null && dialogs.export.id.equals(id)) {
       dialogs.export.close(this);
     }
@@ -1863,7 +1869,7 @@ final class State {
     if (dialogs.export != null) {
       dialogs.export.close(this);
     }
-    catalog.closeAll(); // nothing waits for a server
+    catalog.closeAll(this); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();
     }

@@ -18,6 +18,7 @@ import com.rethinkj.ui.kit.Checkbox;
 import com.rethinkj.ui.kit.Completion;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Divider;
+import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.NavList;
@@ -43,7 +44,6 @@ import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Layout;
 import dev.hoori.db.core.sql.Statements;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -52,15 +52,18 @@ import java.util.stream.Collectors;
  * A view's definition, in a tab of its connection: the statements that create it, as its dialect
  * writes them ({@link ViewDefinition#text}) and laid out, in an editor with the console's colors
  * and completions, read-only until Edit, beside what it uses and what uses it. Save, Drop and a
- * materialized view's Refresh show their statements before they run. All of it runs on a session
- * of the tab's own on the view's database, never the tree's, which it opens once the tree's
- * connection is connected; once a change is made, the tree reads the schema or database again.
+ * materialized view's Refresh show their statements before they run, and a change that runs can be
+ * cancelled. The definition is read on the tree's connection to the view's database, which only
+ * reads; a change runs on the connection's own for changes of views ({@link
+ * CatalogTree#definitions}), which the view tabs of that database share and which closes with the
+ * tree's connection; once a change is made, the tree reads the schema or database again.
  *
  * <p>A new view's tab holds its schema, its name and its {@code SELECT} until Save creates it, and
- * then the view's definition. A read-only connection changes nothing here: its buttons are off,
- * and core would send nothing. Only the app's thread uses it.
+ * then the view's definition. Edits not saved are at stake ({@link Guard.Guarded}): closing the
+ * tab, its window, its connection's deletion and Exit ask first. A read-only connection changes
+ * nothing here: its buttons are off, and core would send nothing. Only the app's thread uses it.
  */
-final class ViewTab implements Tab {
+final class ViewTab implements Tab, Guard.Guarded {
 
   static final String READ_ONLY = "The connection is read-only, which changes no view";
   static final String NOT_CONNECTED = "The connection is not connected.";
@@ -71,8 +74,9 @@ final class ViewTab implements Tab {
   /**
    * The statements of a change, shown before they run.
    *
-   * @param refused what the server said where it refused to replace the view in place, which this
-   *     drops and creates anew instead; null otherwise
+   * @param refused what the server said where it refused the change asked before: to replace the
+   *     view in place, which this drops and creates anew instead, or to drop it alone, which this
+   *     drops with what depends on it; null otherwise
    */
   record Preview(ViewChange change, String refused) {}
 
@@ -101,21 +105,17 @@ final class ViewTab implements Tab {
   Split.Position split = SPLIT;
   Lane.Asked reading; // the definition being read, or null
   Lane.Asked changing; // the change under way, or null
+  private ViewChange running; // what changing runs, or null
   Problem problem; // why the last read or change failed, until the next or a dismiss
   Preview asked; // the statements shown before they run, or null
   Then then = Then.NOTHING;
   String said; // what the status line says for a while, or null
   private int says;
-  private Lane lane; // the tab's own session, or null while it has none
-  private char[] password; // a copy, for keeping it out of what is shown; wiped with its lane
   private boolean closed;
-
-  private final State state; // for close, which is called without one
 
   static final Split.Position SPLIT = Split.Position.second(260);
 
-  private ViewTab(State state, UUID id, Table view, Container container, boolean creating) {
-    this.state = state;
+  private ViewTab(UUID id, Table view, Container container, boolean creating) {
     this.id = id;
     this.view = view;
     this.container = container;
@@ -128,16 +128,16 @@ final class ViewTab implements Tab {
   }
 
   /** The tab of the view's definition, which {@link #open} reads. */
-  static ViewTab of(State s, UUID id, Table view) {
-    return new ViewTab(s, id, view, view.container(), false);
+  static ViewTab of(UUID id, Table view) {
+    return new ViewTab(id, view, view.container(), false);
   }
 
   /** The tab of a new view in the schema or database, which Save creates. */
-  static ViewTab creating(State s, UUID id, Container container) {
-    return new ViewTab(s, id, null, container, true);
+  static ViewTab creating(UUID id, Container container) {
+    return new ViewTab(id, null, container, true);
   }
 
-  /** Opens the tab's session where it has none, and reads the definition where it has none. */
+  /** Reads the definition, but of a new view's tab. */
   void open(State s) {
     if (closed || creating) {
       return;
@@ -152,7 +152,7 @@ final class ViewTab implements Tab {
     }
   }
 
-  /** The database its session is on: the view's. */
+  /** The database it reads and changes: the view's. */
   String database() {
     return container.database().name();
   }
@@ -174,57 +174,11 @@ final class ViewTab implements Tab {
         && view.name().equals(table.name());
   }
 
-  // The session
-
   /**
-   * Whether the lane can take a call: where it is gone, a new session takes its place; false where
-   * the tree's connection is not connected, and none can be opened.
+   * Its connection ended, or HooriDB exits: what it reads or changes is given up; the text stays,
+   * and the next read or change goes to the connection anew.
    */
-  private boolean renewed(State s) {
-    if (lane != null && !lane.broken()) {
-      return true;
-    }
-    var session = s.catalog.session(s, id, database());
-    if (session == null) {
-      return false;
-    }
-    closeLane(s);
-    lane = session.lane();
-    password = session.password();
-    return true;
-  }
-
-  // Closes the lane without waiting for it, which Exit waits for, and wipes its password.
-  private void closeLane(State s) {
-    if (lane != null) {
-      s.closing();
-      var closing = lane.close(ended -> {});
-      s.app.background(
-          "close the view's session",
-          () -> {
-            closing.join();
-            return null;
-          },
-          done -> s.closed(),
-          e -> s.closed());
-      lane = null;
-    }
-    if (password != null) {
-      Arrays.fill(password, '\0');
-      password = null;
-    }
-  }
-
-  /**
-   * Its session ends, as its connection was disconnected or changed: what runs is given up. The
-   * text stays, and the next read or change opens a session anew.
-   */
-  void end(State s) {
-    stop();
-    closeLane(s);
-  }
-
-  private void stop() {
+  void end() {
     if (reading != null) {
       reading.cancel();
       reading = null;
@@ -232,6 +186,7 @@ final class ViewTab implements Tab {
     if (changing != null) {
       changing.cancel();
       changing = null;
+      running = null;
     }
   }
 
@@ -239,8 +194,7 @@ final class ViewTab implements Tab {
   public void close() {
     closed = true;
     asked = null;
-    stop();
-    closeLane(state);
+    end();
     completion.close();
     suggestions.close();
   }
@@ -252,11 +206,12 @@ final class ViewTab implements Tab {
     if (closed || creating || busy()) {
       return;
     }
-    problem = null;
-    if (!renewed(s)) {
+    var lane = s.catalog.lane(s, id, view);
+    if (lane == null) {
       problem = new Problem("Not connected", NOT_CONNECTED);
       return;
     }
+    problem = null;
     var of = view;
     reading = lane.ask(
         s.app,
@@ -270,7 +225,7 @@ final class ViewTab implements Tab {
         e -> {
           reading = null;
           then = Then.NOTHING;
-          problem = new Problem("The definition could not be read", words(e));
+          problem = new Problem("The definition could not be read", words(s, e));
         });
   }
 
@@ -332,6 +287,10 @@ final class ViewTab implements Tab {
     if (profile.readOnly()) {
       return READ_ONLY;
     }
+    var locked = s.guard.locked(this);
+    if (locked != null) {
+      return locked;
+    }
     if (busy()) {
       return "Wait for what runs";
     }
@@ -354,10 +313,21 @@ final class ViewTab implements Tab {
     problem = null;
   }
 
+  /**
+   * Whether Save can be asked for: the text edited, a new view's with a name and a query, and
+   * nothing keeping a change off; as its button and Control+S both ask.
+   */
+  boolean saves(State s) {
+    return changeOff(s) == null
+        && editing
+        && edited()
+        && (!creating || !name.isBlank() && !text.isBlank());
+  }
+
   /** Save: the statements that create or replace the view, shown before they run. */
   void save(State s) {
     var provider = provider(s);
-    if (provider == null || changeOff(s) != null) {
+    if (provider == null || !saves(s)) {
       return;
     }
     try {
@@ -366,6 +336,13 @@ final class ViewTab implements Tab {
           : ViewChange.replace(provider, read, text);
       problem = null;
       asked = new Preview(change, null);
+    } catch (ViewChange.OtherView other) {
+      // Saved, it would create a second view and leave this one as it was.
+      problem = new Problem(
+          "The definition names another view",
+          "It creates " + other.named() + ", where Save replaces " + view.name()
+              + " alone: name " + view.name() + " in it again, or create the other view with New"
+              + " view… of its schema.");
     } catch (IllegalArgumentException e) {
       problem = new Problem(
           "Nothing to save",
@@ -375,14 +352,17 @@ final class ViewTab implements Tab {
     }
   }
 
-  /** Drop: the statement, with what depends on it where the server drops that with it. */
+  /**
+   * Drop: the statement that drops the view alone, which a server that can refuses while something
+   * depends on it, naming what as it is then; a drop with that is asked for after ({@link
+   * #dependedOn}), never from what was read before.
+   */
   void askDrop(State s) {
     var provider = provider(s);
     if (provider == null || creating || changeOff(s) != null) {
       return;
     }
-    var dependents = !read.references().usedBy().isEmpty();
-    asked = new Preview(ViewChange.drop(provider, view, dependents), null);
+    asked = new Preview(ViewChange.drop(provider, view, false), null);
   }
 
   /** Refresh of a materialized view's rows, concurrently where it can and that is chosen. */
@@ -414,31 +394,78 @@ final class ViewTab implements Tab {
     if (preview == null || changeOff(s) != null) {
       return;
     }
-    problem = null;
-    if (!renewed(s)) {
+    var lane = s.catalog.definitions(s, id, database());
+    if (lane == null) {
       problem = new Problem("Not connected", NOT_CONNECTED);
       return;
     }
+    s.acted();
+    problem = null;
     var change = preview.change();
+    running = change;
     changing = lane.ask(
         s.app,
         "change the view " + change.view().name(),
         Lane.Priority.VIEW,
         link -> link.views().change(change),
         outcome -> {
+          if (running != change) {
+            return; // cancelled
+          }
           changing = null;
+          running = null;
           switch (outcome) {
             case Views.Done _ -> done(s, change);
             case Views.KeepsColumns kept -> kept(s, kept.words());
+            case Views.DependedOn depended -> dependedOn(s, depended.words());
           }
         },
         e -> {
+          if (running != change) {
+            return;
+          }
           changing = null;
-          problem = new Problem(failed(change.kind()), words(e));
+          running = null;
+          problem = new Problem(failed(change.kind()), words(s, e));
           if (change.kind() != ViewChange.Kind.REFRESH) {
             s.catalog.refresh(s, node(change.view().container())); // as it may have changed
           }
         });
+  }
+
+  /**
+   * Cancel while a change runs: the server is asked to stop it. What it had done by then stays
+   * where its statements commit one by one; in one transaction it took effect only where the
+   * server had committed it. The edited text stays, and the tree reads the view's place again.
+   */
+  void cancel(State s) {
+    var change = running;
+    if (changing == null || change == null) {
+      return;
+    }
+    changing.cancel();
+    changing = null;
+    running = null;
+    problem = new Problem(
+        ConsoleTab.UNSURE,
+        change.transaction()
+            ? "The change was cancelled: it took effect only if the server had already committed"
+                + " it. Reload shows the view as it is, once the edits are reverted."
+            : "The change was cancelled: what the server had already run of it took effect."
+                + " Reload shows the view as it is, once the edits are reverted.");
+    if (change.kind() != ViewChange.Kind.REFRESH) {
+      s.catalog.refresh(s, node(change.view().container()));
+    }
+  }
+
+  // The server refused to drop the view alone and named what depends on it, now: the drop with
+  // it is asked for, with the server's words.
+  private void dependedOn(State s, String words) {
+    var provider = provider(s);
+    if (provider == null) {
+      return;
+    }
+    asked = new Preview(ViewChange.drop(provider, view, true), words(s, words));
   }
 
   // The server keeps the view's columns: drop and create it anew, where nothing depends on it and
@@ -446,14 +473,13 @@ final class ViewTab implements Tab {
   private void kept(State s, String words) {
     var provider = provider(s);
     var usedBy = read.references().usedBy();
-    var dialect = provider == null ? null : provider.dialect().definitions();
-    if (dialect != null && dialect.changesInTransaction() && usedBy.isEmpty()) {
-      asked = new Preview(ViewChange.recreate(provider, read, text), words(words));
+    if (provider != null && provider.dialect().views().changesInTransaction() && usedBy.isEmpty()) {
+      asked = new Preview(ViewChange.recreate(provider, read, text), words(s, words));
       return;
     }
     problem = new Problem(
         "The view's columns cannot change in place",
-        words(words)
+        words(s, words)
             + (usedBy.isEmpty()
                 ? ""
                 : "\n\n" + names(usedBy) + (usedBy.size() == 1 ? " uses" : " use")
@@ -526,17 +552,18 @@ final class ViewTab implements Tab {
   }
 
   // What failed, without the connection's password.
-  private String words(Exception e) {
+  private String words(State s, Exception e) {
     var detail = switch (e) {
       case QueryException q -> q.detail().isEmpty() ? q.failure().toString() : q.detail();
       case ConnectionException c -> c.detail();
       default -> State.messageOf(e);
     };
-    return words(detail);
+    return words(s, detail);
   }
 
-  private String words(String words) {
-    return ConsoleTab.words(password, words);
+  // The tree's connections sign in with the password it keeps, which the words are checked against.
+  private String words(State s, String words) {
+    return CatalogTree.words(s.catalog.live(id), words);
   }
 
   private Provider provider(State s) {
@@ -645,12 +672,11 @@ final class ViewTab implements Tab {
               Button.options().icon(Symbol.ARROW_UNDO))
           .key("revert"));
     }
-    boolean saves = editing && edited() && (!creating || !name.isBlank() && !text.isBlank());
     actions.add(gated(
         button(
                 PRIMARY,
                 "Save…",
-                off == null && saves ? () -> save(s) : null,
+                saves(s) ? () -> save(s) : null,
                 Button.options()
                     .icon(Symbol.SAVE)
                     .state(changing != null ? Button.State.BUSY : Button.State.READY))
@@ -718,13 +744,13 @@ final class ViewTab implements Tab {
         .label(creating ? "Query" : "Definition")
         .wFull()
         .grow(1);
-    var keys = code.onKey();
-    code.onKey(k -> {
+    // Before the editor's own keys: Control+S is Save, as its button, and asks what it asks.
+    code.onKeyFirst(k -> {
       if (k.name().equals("S") && k.modifiers() == Key.CONTROL) {
         save(s);
         return true;
       }
-      return keys != null && keys.test(k);
+      return false;
     });
     if (editing && provider != null && s.catalog.connected(id)) {
       code = completing(s, app, provider, code);
@@ -802,7 +828,7 @@ final class ViewTab implements Tab {
     return col().grow(1).minSize(0, 0).padding(t.space().s()).child(list);
   }
 
-  private static com.rethinkj.ui.kit.Icon symbol(Reference reference) {
+  private static Icon symbol(Reference reference) {
     return reference.table().map(table -> Glyphs.table(table.kind())).orElse(Symbol.MATH_FORMULA);
   }
 
@@ -828,9 +854,19 @@ final class ViewTab implements Tab {
   }
 
   private El[] footer(State s) {
+    Theme t = Theme.CURRENT.get();
     var end = new ArrayList<El>();
     if (said != null) {
       end.add(Label.label(Label.Variant.MUTED, said).key("said"));
+    }
+    if (changing != null) {
+      end.add(row()
+          .gap(t.space().s())
+          .align(Style.Align.CENTER)
+          .key("changing")
+          .child(Progress.spinner().label("Changing"))
+          .child(
+              button(SECONDARY, ConsoleTab.CANCEL_BUTTON, () -> cancel(s)).key("cancel-change")));
     }
     if (read != null && read.materialized() && !read.concurrently()) {
       end.add(Label.label(Label.Variant.MUTED, "Refreshes only as a whole").key("refreshes"));
@@ -839,7 +875,7 @@ final class ViewTab implements Tab {
   }
 
   /** The statements shown before they run, while they are; in the tab's window. */
-  El question(State s, App<State> app) {
+  El preview(State s, App<State> app) {
     var preview = asked;
     if (preview == null) {
       return null;
@@ -875,19 +911,22 @@ final class ViewTab implements Tab {
     content.child(code);
     boolean danger =
         change.kind() == ViewChange.Kind.DROP || change.kind() == ViewChange.Kind.RECREATE;
+    boolean refused = preview.refused() != null;
     El go = button(
             PRIMARY,
-            go(change.kind()),
+            go(change.kind(), refused),
             () -> proceed(s),
             danger ? Button.options().tone(Button.Tone.DANGER) : Button.options())
         .key("view-go");
     El cancel = button(
             SECONDARY,
-            preview.refused() != null ? "Keep editing" : ConsoleTab.CANCEL_BUTTON,
+            refused && change.kind() == ViewChange.Kind.RECREATE
+                ? "Keep editing"
+                : ConsoleTab.CANCEL_BUTTON,
             this::decline)
         .key("view-cancel");
     return Dialog.dialog(
-            title(change.kind(), preview.refused() != null),
+            title(change.kind(), refused),
             content,
             List.of(cancel, go),
             this::decline,
@@ -913,21 +952,31 @@ final class ViewTab implements Tab {
                     + "\n\n")
             + "Drops " + named + " and creates it anew" + all
             + (change.view().kind() == Table.Kind.MATERIALIZED ? ", with its rows read anew" : "")
-            + ": privileges granted on it are lost, and must be granted again.";
-      case DROP -> "Drops " + named + "." + dependents(provider);
+            + (read == null || read.restore().isEmpty()
+                ? ""
+                : ", and gives it back its owner, triggers and rules")
+            + ": privileges granted on it and on its columns are lost, and must be granted again.";
+      case DROP ->
+        preview.refused() == null
+            ? "Drops " + named + "." + dependents(provider)
+            : "Something depends on " + named + ", so the server did not drop it: "
+                + preview.refused() + "\n\nDrops " + named + " with all of that, as the server"
+                + " names it now.";
       case REFRESH -> "Reads the rows of " + named + " anew from what it uses.";
     };
   }
 
-  // What uses the view, which its drop takes with it or leaves without it.
+  // What uses the view as read, which a server that can refuses its drop for, naming what then
+  // depends on it, and another leaves without it.
   private String dependents(Provider provider) {
     var usedBy = read == null ? List.<Reference>of() : read.references().usedBy();
     if (usedBy.isEmpty()) {
       return "";
     }
-    var cascades = provider != null && provider.dialect().definitions().dropsDependents();
+    var cascades = provider != null && provider.dialect().views().dropsDependents();
     return cascades
-        ? " What depends on it is dropped with it: " + names(usedBy) + "."
+        ? " The server refuses while something depends on it, as " + names(usedBy)
+            + " did when it was read, and then says what a drop with it would take."
         : " What uses it stays, and fails without it: " + names(usedBy) + ".";
   }
 
@@ -936,18 +985,88 @@ final class ViewTab implements Tab {
       case CREATE -> "Create view";
       case REPLACE -> "Save view";
       case RECREATE -> refused ? "Drop and create the view?" : "Save view";
-      case DROP -> "Drop view";
+      case DROP -> refused ? "Drop with what depends on it?" : "Drop view";
       case REFRESH -> "Refresh materialized view";
     };
   }
 
-  private static String go(ViewChange.Kind kind) {
+  private static String go(ViewChange.Kind kind, boolean refused) {
     return switch (kind) {
       case CREATE -> "Create";
       case REPLACE -> "Save";
       case RECREATE -> "Drop and create";
-      case DROP -> "Drop";
+      case DROP -> refused ? "Drop all" : "Drop";
       case REFRESH -> "Refresh";
     };
+  }
+
+  // Edits at stake
+
+  @Override
+  public UUID connectionId() {
+    return id;
+  }
+
+  // Only edits not saved: a change that runs is cancelled with the tab, as the server decides.
+  @Override
+  public boolean atStake(Guard.Scope scope) {
+    return switch (scope) {
+      case BOTH, CHANGES -> edited();
+      case TRANSACTION -> false;
+    };
+  }
+
+  private Guard.Pending.Question asked(State s) {
+    return s.guard.pending instanceof Guard.Pending.Question question && question.tab() == this
+        ? question
+        : null;
+  }
+
+  /** What becomes of the edits, while the guard asks this tab before what it asks for. */
+  @Override
+  public El question(State s) {
+    var question = asked(s);
+    if (question == null) {
+      return null;
+    }
+    Theme t = Theme.CURRENT.get();
+    El content = col()
+        .w(ConnectionDialog.width())
+        .gap(t.space().m())
+        .child(Label.label(s.title(this) + " has edits of its definition that are not saved."
+                + " Discard them before " + question.what() + "?")
+            .wrapText());
+    Runnable cancel = () -> s.guard.pending = null;
+    return Dialog.dialog(
+            "Discard the edits?",
+            content,
+            List.of(
+                button(SECONDARY, ConsoleTab.CANCEL_BUTTON, cancel).key("answer-cancel"),
+                button(
+                        PRIMARY,
+                        "Discard",
+                        () -> discard(s),
+                        Button.options().tone(Button.Tone.DANGER))
+                    .key("answer-discard")),
+            cancel)
+        .key("edits-question");
+  }
+
+  // The edits go, and what waited on them goes on.
+  private void discard(State s) {
+    var question = asked(s);
+    if (question == null) {
+      return;
+    }
+    if (creating) {
+      name = "";
+      text = "";
+    } else {
+      revert();
+    }
+    if (!atStake(question.scope())) {
+      s.guard.pending = null;
+      question.then().run();
+    }
   }
 }

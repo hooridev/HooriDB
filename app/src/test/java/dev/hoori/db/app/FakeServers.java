@@ -149,8 +149,10 @@ import java.util.stream.IntStream;
  * its outline that uses nothing and that nothing uses, keyed {@code view <host>/<path>} with the
  * path as of {@code columns}. A change of a view runs each of its statements, keyed {@code ddl
  * <host> <sql>}, and changes the outline as it says: a created view comes in, a dropped one goes;
- * a read-only link refuses it unsent, and one {@link #keepsColumns} names comes to {@link
- * Views.KeepsColumns}. {@link #viewChanges} lists the changes made.
+ * a read-only link refuses it unsent, one {@link #keepsColumns} names comes to {@link
+ * Views.KeepsColumns}, and on a server that drops what depends on a view a drop without it of a
+ * view that {@link #view} says something uses comes to {@link Views.DependedOn}, which names that.
+ * {@link #viewChanges} lists the changes made.
  */
 final class FakeServers implements Servers {
 
@@ -2198,6 +2200,22 @@ final class FakeServers implements Servers {
                   return null;
                 });
             return new KeepsColumns("cannot drop columns from view");
+          }
+          var given = views.get(path(change.view()));
+          if (change.kind() == ViewChange.Kind.DROP
+              && provider.dialect().views().dropsDependents()
+              && !change.statements().getFirst().endsWith(" CASCADE")
+              && given != null
+              && !given.references().usedBy().isEmpty()) {
+            var sql = change.statements().getFirst();
+            Journal.sql(provider, Purpose.DEFINITION, sql, d -> Outcome.DONE, () -> {
+              step("ddl " + host + " " + sql);
+              return null;
+            });
+            return new DependedOn(given.references().usedBy().stream()
+                .map(r -> "view " + r.container().name() + "." + r.name() + " depends on view "
+                    + change.view().container().name() + "." + change.view().name())
+                .collect(java.util.stream.Collectors.joining("; ")));
           }
           for (var sql : change.statements()) {
             var key = "ddl " + host + " " + sql;

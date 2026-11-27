@@ -19,6 +19,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.definition.Reference;
 import dev.hoori.db.core.definition.References;
 import dev.hoori.db.core.definition.ViewChange;
+import dev.hoori.db.core.execution.Failure;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
@@ -27,8 +28,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * A view's definition in a tab of its own: read on a session of its own, edited and saved, dropped
- * and refreshed after the statements are shown, and a new view created.
+ * A view's definition in a tab of its own: read on the tree's connection, edited and saved, dropped
+ * and refreshed after the statements are shown on the connection that changes views, cancelled,
+ * asked about before its edits go, and a new view created.
  */
 class ViewTabTest {
 
@@ -97,7 +99,7 @@ class ViewTabTest {
   }
 
   @Test
-  void aViewsDefinitionOpensReadOnlyOnASessionOfItsOwnWithWhatItUses() throws Exception {
+  void aViewsDefinitionOpensReadOnlyOnTheTreesConnectionWithWhatItUses() throws Exception {
     var app = opened(SHOP);
     c.run(app, menu("order_totals", "Definition") + SETTLE + "snap opened\n");
     var tree = c.tree("opened");
@@ -110,8 +112,9 @@ class ViewTabTest {
     assertTrue(line(tree, "role=button label=\"Save…\"").contains("disabled"), tree);
     assertTrue(tree.contains("orders"), tree);
     assertTrue(tree.contains("big_spenders"), tree);
-    // Read on a connection of its own, behind the tree's.
-    assertTrue(c.servers.linked.contains("2 view " + TOTALS), c.servers.linked.toString());
+    // Read on the tree's connection, which only reads: no connection of its own.
+    assertTrue(c.servers.linked.contains("1 view " + TOTALS), c.servers.linked.toString());
+    assertTrue(c.servers.readOnly(1));
   }
 
   @Test
@@ -199,15 +202,26 @@ class ViewTabTest {
   }
 
   @Test
-  void aDropNamesWhatDependsOnItAndTheViewLeavesTheTree() throws Exception {
+  void aDropGoesAloneFirstAndWithWhatDependsOnItAsTheServerNamesIt() throws Exception {
     var app = opened(SHOP);
     c.run(app, menu("order_totals", "Drop view…") + SETTLE + "snap asked\n");
     var asked = c.tree("asked");
     assertTrue(line(asked, "#view-summary").contains("public.big_spenders"), asked);
+    // Never a CASCADE from what was read before: the server says what it would take, now.
+    assertEquals(
+        List.of("DROP VIEW \"public\".\"order_totals\""),
+        tab(app).asked.change().statements());
+    c.run(app, "press role=button label=\"Drop\"\nframe\n" + SETTLE + "snap refused\n");
+    var refused = c.tree("refused");
+    assertTrue(line(refused, "role=dialog").contains("Drop with what depends on it?"), refused);
+    assertTrue(line(refused, "#view-summary").contains("Something depends on"), refused);
+    assertEquals(
+        "view public.big_spenders depends on view public.order_totals",
+        tab(app).asked.refused());
     assertEquals(
         List.of("DROP VIEW \"public\".\"order_totals\" CASCADE"),
         tab(app).asked.change().statements());
-    c.run(app, "press role=button label=\"Drop\"\nframe\n" + SETTLE + "snap dropped\n");
+    c.run(app, "press role=button label=\"Drop all\"\nframe\n" + SETTLE + "snap dropped\n");
     var dropped = c.tree("dropped");
     assertEquals(List.of(), app.state().views(null), "Its tab closes");
     assertFalse(dropped.contains("label=\"order_totals\""), dropped);
@@ -264,5 +278,143 @@ class ViewTabTest {
     assertTrue(line(tab, "role=button label=\"Edit\"").contains("disabled"), tab);
     assertTrue(line(tab, "role=button label=\"Drop…\"").contains("disabled"), tab);
     assertEquals(List.of(), c.servers.viewChanges);
+  }
+
+  @Test
+  void controlSSavesOnlyWhatTheSaveButtonWould() throws Exception {
+    var app = opened(SHOP);
+    // A materialized view not edited: Save would drop and create it anew.
+    c.run(
+        app,
+        menu("recent", "Definition") + SETTLE + "press #definition\nkey S control\nframe\n"
+            + "press role=button label=\"Edit\"\nframe\nkey S control\nframe\nadvance 1\nframe\n"
+            + "snap unchanged\n");
+    assertEquals(null, tab(app).asked, "Nothing to save");
+    var unchanged = c.tree("unchanged");
+    assertFalse(unchanged.contains("role=dialog"), unchanged);
+    var edited = tab(app).text.replace("SELECT id", "SELECT id + 0 AS id");
+    c.run(app, replace(edited) + "key S control\nframe\nadvance 1\nframe\n");
+    assertEquals(ViewChange.Kind.RECREATE, tab(app).asked.change().kind(), "Edited, it saves");
+  }
+
+  @Test
+  void aDefinitionThatNamesAnotherViewIsNotSaved() throws Exception {
+    var app = opened(SHOP);
+    var other = CREATE.replace("public.order_totals", "public.customer_totals") + ";\n";
+    c.run(
+        app,
+        menu("order_totals", "Definition") + SETTLE + "press role=button label=\"Edit\"\nframe\n"
+            + replace(other) + SAVE + "snap named\n");
+    assertEquals(null, tab(app).asked, "No second view while the tab would say Saved");
+    var problem = tab(app).problem;
+    assertEquals("The definition names another view", problem.title());
+    assertTrue(problem.text().contains("public.customer_totals"), problem.text());
+    assertEquals(List.of(), c.servers.viewChanges);
+  }
+
+  @Test
+  void anEditedViewAsksBeforeItsTabClosesAndKeepsItsEditsOnCancel() throws Exception {
+    var app = opened(SHOP);
+    var edited = CREATE.replace("GROUP BY", "WHERE total > 0\nGROUP BY") + ";\n";
+    c.run(
+        app,
+        menu("order_totals", "Definition") + SETTLE
+            + "press role=button label=\"Edit\"\nframe\n" + replace(edited)
+            + "key W control\nframe\nadvance 1\nframe\nsnap asked\n");
+    var asked = c.tree("asked");
+    assertTrue(line(asked, "role=dialog").contains("Discard the edits?"), asked);
+    c.run(app, "press role=button label=\"Cancel\"\nframe\nadvance 1\nframe\n");
+    assertEquals(1, app.state().views(null).size(), "Cancel keeps the tab");
+    assertTrue(tab(app).edited());
+    c.run(
+        app,
+        "key W control\nframe\nadvance 1\nframe\npress role=button label=\"Discard\"\nframe\n"
+            + "advance 1\nframe\n");
+    assertEquals(List.of(), app.state().views(null), "Discarded, it closes");
+  }
+
+  @Test
+  void exitAsksAboutAnEditedViewFirst() throws Exception {
+    var app = opened(SHOP);
+    c.run(
+        app,
+        menu("public", "New view…") + "press #name\ntype \"recent_orders\"\nframe\n"
+            + replace("SELECT id FROM public.orders") + "snap edited\n" + ConsoleTransactions.EXIT
+            + "snap asked\n");
+    var edited = c.tree("edited");
+    assertTrue(line(edited, "#uncommitted").contains("1 view has edits not saved"), edited);
+    var asked = c.tree("asked");
+    assertTrue(line(asked, "role=dialog").contains("Discard the edits?"), asked);
+    assertTrue(asked.contains("before HooriDB closes?"), asked);
+    assertFalse(app.windows().all().isEmpty(), "It waits for the answer");
+    c.run(app, "press role=button label=\"Discard\"\nframe\n" + SETTLE);
+    assertTrue(app.windows().all().isEmpty(), "Discarded, HooriDB closes");
+  }
+
+  @Test
+  void deletingTheConnectionClosesItsViewTabs() throws Exception {
+    var app = opened(SHOP);
+    c.run(
+        app,
+        menu("order_totals", "Definition") + SETTLE + menu("shop-prod", "Delete…")
+            + "press role=button label=\"Disconnect\"\nframe\nadvance 1\nframe\nawait\nframe\n"
+            + "press role=button label=\"Delete\"\nframe\n" + SETTLE);
+    assertTrue(app.state().profiles.isEmpty());
+    assertEquals(List.of(), app.state().views(null), "No tab of a connection that is gone");
+  }
+
+  @Test
+  void aChangeRunsOnTheConnectionForChangesAndCanBeCancelled() throws Exception {
+    var app = opened(SHOP);
+    var refresh = "ddl " + PG + " REFRESH MATERIALIZED VIEW CONCURRENTLY \"public\".\"recent\"";
+    var gate = c.servers.hold(refresh);
+    try {
+      c.run(
+          app,
+          menu("recent", "Refresh rows…") + SETTLE
+              + "press role=button label=\"Refresh\"\nframe\nadvance 1\nframe\nsnap running\n");
+      var running = c.tree("running");
+      assertTrue(running.contains("#cancel-change"), running);
+      var link = c.servers.linked.stream()
+          .filter(l -> l.endsWith(refresh))
+          .map(l -> Integer.parseInt(l.substring(0, l.indexOf(' '))))
+          .findFirst()
+          .orElseThrow();
+      assertTrue(link > 1, "Not the tree's connection: " + c.servers.linked);
+      assertFalse(c.servers.readOnly(link), "One that writes");
+      c.run(app, "press #cancel-change\nframe\n" + SETTLE + "snap cancelled\n");
+      assertEquals(ConsoleTab.UNSURE, tab(app).problem.title());
+      assertEquals(null, tab(app).changing);
+      assertTrue(c.servers.interrupted.contains(refresh), c.servers.interrupted.toString());
+      assertTrue(c.tree("cancelled").contains("#problem"), c.tree("cancelled"));
+    } finally {
+      gate.countDown();
+    }
+  }
+
+  @Test
+  void exitCancelsARunningChangeAndHearsHowItsConnectionClosed() throws Exception {
+    var app = opened(SHOP);
+    var refresh = "ddl " + PG + " REFRESH MATERIALIZED VIEW CONCURRENTLY \"public\".\"recent\"";
+    var gate = c.servers.hold(refresh);
+    try {
+      c.run(
+          app,
+          menu("recent", "Refresh rows…") + SETTLE
+              + "press role=button label=\"Refresh\"\nframe\nadvance 1\nframe\n");
+      c.servers.failsAtClose(
+          PG, FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "it did not end"));
+      c.run(app, ConsoleTransactions.EXIT + SETTLE);
+      assertTrue(c.servers.interrupted.contains(refresh), c.servers.interrupted.toString());
+      CatalogTreeTest.eventually(() -> !app.state().notices.isEmpty());
+      var notice = app.state().notices.getFirst();
+      assertTrue(
+          notice.what().contains("Closing the session that changes views failed: it did not end"),
+          notice.what());
+      c.run(app, SETTLE);
+      assertFalse(app.windows().all().isEmpty(), "Exit waited for it, and stayed to say so");
+    } finally {
+      gate.countDown();
+    }
   }
 }

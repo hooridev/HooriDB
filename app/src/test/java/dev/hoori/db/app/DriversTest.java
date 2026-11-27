@@ -90,7 +90,7 @@ class DriversTest {
     servers.openAll();
     for (var app : apps) {
       app.await(Duration.ofSeconds(10));
-      app.state().catalog.closeAll();
+      app.state().catalog.closeAll(app.state());
       app.state().drivers.close();
     }
   }

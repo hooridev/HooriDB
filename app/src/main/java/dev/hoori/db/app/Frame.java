@@ -328,7 +328,7 @@ final class Frame {
       return monitor.question(s);
     }
     if (group.activeTab() instanceof ViewTab view) {
-      return view.question(s, app(s, group));
+      return view.preview(s, app(s, group));
     }
     if (group.activeTab() instanceof TableTab table) {
       El document = table.documentView(s, app(s, group));
@@ -664,21 +664,24 @@ final class Frame {
     }
     int consoles = 0;
     int tables = 0;
+    int views = 0;
     for (var tab : tabs) {
-      if (tab instanceof ConsoleTab) {
-        consoles++;
-      } else {
-        tables++;
+      switch (tab) {
+        case ConsoleTab _ -> consoles++;
+        case TableTab _ -> tables++;
+        case ViewTab _ -> views++;
       }
     }
+    int n = consoles + tables + views;
     String text;
-    if (tables == 0) {
+    if (consoles == n) {
       text =
           consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
-    } else if (consoles == 0) {
+    } else if (tables == n) {
       text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    } else if (views == n) {
+      text = views + (views == 1 ? " view has" : " views have") + " edits not saved";
     } else {
-      int n = consoles + tables;
       text = n + " tabs may hold uncommitted work";
     }
     var first = tabs.getFirst();

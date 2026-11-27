@@ -172,7 +172,7 @@ final class CatalogTree {
     if (profile == null) {
       return;
     }
-    end(lives.remove(id));
+    end(s, lives.remove(id));
     s.ended(id);
     forgetBelow(s, new Node.Connection(id));
     open.add(new Node.Connection(id));
@@ -388,7 +388,7 @@ final class CatalogTree {
               ? e.failure()
               : ConnectionException.Failure.OTHER;
           live.phase = new Live.Failed(failure, detail(checked), live.password.length > 0, timeout);
-          end(live);
+          end(s, live);
           s.unconnected(live.id());
           s.tell(State.name(live.profile) + ": " + Words.title(failure));
         });
@@ -773,6 +773,33 @@ final class CatalogTree {
     return auxiliary(s, id, database, live -> live.writers, false);
   }
 
+  /**
+   * The connection that changes views' definitions on the database, opened the first time it is
+   * asked for, and anew where it could not be or is gone; null while the tree's connection is not
+   * connected. Nothing else runs on it, so that a long refresh of a materialized view holds up
+   * neither the tree nor a table's writes: on PostgreSQL one per database, else one, as {@link
+   * #planner} does. It closes with the tree's connection, and at Exit, which waits for it, as
+   * {@link State#close(Lane, UUID, char[], String)} closes a lane.
+   */
+  Lane definitions(State s, UUID id, String database) {
+    return auxiliary(s, id, database, live -> live.definitions, false);
+  }
+
+  /** The session of {@link #definitions}, as a notice of its closing names it. */
+  static final String DEFINITIONS_SESSION = "the session that changes views";
+
+  /** Exit: the connections that change views close, which it waits for, as a console's. */
+  void endDefinitions(State s) {
+    lives.values().forEach(live -> closeDefinitions(s, live));
+  }
+
+  private static void closeDefinitions(State s, Live live) {
+    for (var lane : live.definitions.values()) {
+      s.close(lane, live.id(), live.password, DEFINITIONS_SESSION);
+    }
+    live.definitions.clear();
+  }
+
   private Lane auxiliary(
       State s, UUID id, String database, Function<Live, Map<String, Lane>> map, boolean readOnly) {
     var live = lives.get(id);
@@ -1116,7 +1143,7 @@ final class CatalogTree {
 
   /** The connection broke: it is closed, and its node says so. */
   private void lose(State s, Live live, String detail, boolean discarded) {
-    end(live);
+    end(s, live);
     s.ended(live.id());
     live.phase = new Live.Lost(detail, discarded);
     s.unconnected(live.id()); // a console that waited for the databases, whose read ended too
@@ -1213,7 +1240,7 @@ final class CatalogTree {
    * it. Its consoles' sessions are their own and stay; a console that waited for it says why.
    */
   void drop(State s, UUID id) {
-    end(lives.remove(id));
+    end(s, lives.remove(id));
     s.ended(id);
     s.unconnected(id);
     open.removeIf(n -> n.id().equals(id));
@@ -1242,10 +1269,11 @@ final class CatalogTree {
    * their lanes, and its connections close on threads of their own; nothing here waits for a
    * server.
    */
-  private static void end(Live live) {
+  private static void end(State s, Live live) {
     if (live == null) {
       return;
     }
+    closeDefinitions(s, live); // what a change left running may not end in time, which it says
     if (live.work != null) {
       live.work.cancel();
       live.work = null;
@@ -1298,8 +1326,8 @@ final class CatalogTree {
   }
 
   /** The window closes: everything ends, without waiting for a server. */
-  void closeAll() {
-    lives.values().forEach(CatalogTree::end);
+  void closeAll(State s) {
+    lives.values().forEach(live -> end(s, live));
     lives.clear();
     fetches.values().forEach(Fetch::close);
   }
