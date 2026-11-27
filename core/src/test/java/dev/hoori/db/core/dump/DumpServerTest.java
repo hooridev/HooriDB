@@ -13,6 +13,8 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connect.Connector;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.definition.Item;
+import dev.hoori.db.core.definition.Listed;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Statements;
 import java.nio.file.Files;

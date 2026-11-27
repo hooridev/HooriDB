@@ -1,6 +1,7 @@
 package dev.hoori.db.core.dialect;
 
 import dev.hoori.db.core.data.RowsDialect;
+import dev.hoori.db.core.definition.DefinitionDialect;
 import dev.hoori.db.core.dump.DumpDialect;
 
 /**
@@ -32,6 +33,9 @@ public non-sealed interface Dialect extends Traits {
 
   /** How its servers tell what their sessions do. */
   MonitorDialect monitor();
+
+  /** How its objects' definitions, and what its views use, are read. */
+  DefinitionDialect definitions();
 
   /** How its objects and their rows are exported to a file of SQL. */
   DumpDialect dump();

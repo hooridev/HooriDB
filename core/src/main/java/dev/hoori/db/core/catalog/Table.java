@@ -8,7 +8,14 @@ public record Table(Container container, String name, Kind kind) {
     TABLE,
     /** A foreign table of PostgreSQL, whose rows are elsewhere. */
     FOREIGN,
-    /** A view, also a materialized one. */
-    VIEW
+    /** A view, whose rows its query gives as they are read. */
+    VIEW,
+    /** A materialized view of PostgreSQL, which keeps the rows of its query until refreshed. */
+    MATERIALIZED;
+
+    /** Whether it is a view, materialized or not. */
+    public boolean view() {
+      return this == VIEW || this == MATERIALIZED;
+    }
   }
 }

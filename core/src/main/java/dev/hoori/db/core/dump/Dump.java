@@ -6,6 +6,10 @@ import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.RowsDialect;
+import dev.hoori.db.core.definition.Definition;
+import dev.hoori.db.core.definition.Item;
+import dev.hoori.db.core.definition.Listed;
+import dev.hoori.db.core.definition.Sql;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -33,7 +37,8 @@ import java.util.Set;
  * without, on an empty database: the provider's own generator, not its server's dump tool.
  *
  * <p>Everything is read in one transaction, read only and in one snapshot, as {@link
- * DumpDialect#begin} says, so that the rows of all tables are those of one moment, where the
+ * dev.hoori.db.core.definition.DefinitionDialect#begin} says, and the objects and their
+ * definitions as that dialect reads them, so that the rows of all tables are those of one moment, where the
  * server keeps transactions for them; where the server lets it, the tables are kept from being
  * changed by others until it ends ({@link DumpDialect#lock}). The objects go in the order {@link
  * Order} gives; the rows of each table are read in portions and written as they come, so that a
@@ -183,13 +188,15 @@ public final class Dump {
   public static List<Listed> list(Connection connection, Provider provider, Container container)
       throws QueryException {
     requireConnectedTo(connection, provider, container.database());
-    var dialect = provider.dialect().dump();
-    Dump.begin(connection, provider);
-    try {
-      return dialect.list(connection, provider, container);
-    } finally {
-      endQuietly(connection, provider);
-    }
+    var dialect = provider.dialect().definitions();
+    return Sql.as(Purpose.EXPORT, () -> {
+      Dump.begin(connection, provider);
+      try {
+        return dialect.list(connection, provider, container);
+      } finally {
+        endQuietly(connection, provider);
+      }
+    });
   }
 
   /**
@@ -198,16 +205,18 @@ public final class Dump {
    */
   public static List<Definition> definitions(
       Connection connection, Provider provider, List<Item> items) throws QueryException {
-    var dialect = provider.dialect().dump();
+    var dialect = provider.dialect().definitions();
     for (var item : items) {
       requireConnectedTo(connection, provider, item.container().database());
     }
-    Dump.begin(connection, provider);
-    try {
-      return Order.sorted(dialect.define(connection, provider, items));
-    } finally {
-      endQuietly(connection, provider);
-    }
+    return Sql.as(Purpose.EXPORT, () -> {
+      Dump.begin(connection, provider);
+      try {
+        return Order.sorted(dialect.define(connection, provider, items));
+      } finally {
+        endQuietly(connection, provider);
+      }
+    });
   }
 
   /**
@@ -230,7 +239,16 @@ public final class Dump {
     try {
       Writing.Counts written;
       try (var out = Files.newBufferedWriter(part, StandardCharsets.UTF_8)) {
-        written = new Writing(connection, provider, choice, out, progress).write();
+        var writing = new Writing(connection, provider, choice, out, progress);
+        written = Sql.as(Purpose.EXPORT, () -> {
+          try {
+            return writing.write();
+          } catch (IOException e) {
+            throw new UncheckedIOException(e); // one kind of failure through the binding
+          }
+        });
+      } catch (UncheckedIOException e) {
+        throw e.getCause();
       }
       var bytes = Files.size(part);
       // The snapshot's end goes on after a cancel, which must not then find the file replaced.
@@ -252,7 +270,7 @@ public final class Dump {
   // connection it broke is found by its next call.
   private static void endQuietly(Connection connection, Provider provider) {
     try {
-      provider.dialect().dump().end(connection, provider);
+      provider.dialect().definitions().end(connection, provider);
     } catch (QueryException _) {
       // As said.
     }
@@ -271,7 +289,7 @@ public final class Dump {
     if (!autoCommits) {
       throw new IllegalArgumentException("An export on a connection with a transaction open");
     }
-    provider.dialect().dump().begin(connection, provider);
+    provider.dialect().definitions().begin(connection, provider);
   }
 
   static void requireConnectedTo(Connection connection, Provider provider, Database database)
@@ -350,7 +368,8 @@ public final class Dump {
           connection,
           provider,
           defined.stream().filter(i -> i.kind() == Item.Kind.TABLE).toList());
-      var sorted = Order.sorted(dialect.define(connection, provider, defined));
+      var sorted =
+          Order.sorted(provider.dialect().definitions().define(connection, provider, defined));
       heading();
       statements(dialect.header(options));
       if (options.create()) {

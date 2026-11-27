@@ -1,15 +1,15 @@
-package dev.hoori.db.core.dump;
+package dev.hoori.db.core.definition;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
-class MySqlFamilyDumpTest {
+class MySqlFamilyDefinitionsTest {
 
   @Test
   void aCreateTableLeavesItsForeignKeysAndIndexesThatAreNoKeysForLater() {
-    var created = MySqlFamilyDump.Created.of("""
+    var created = MySqlFamilyDefinitions.Created.of("""
         CREATE TABLE `it``em` (
           `id` int NOT NULL AUTO_INCREMENT,
           `name` varchar(50) NOT NULL COMMENT 'KEY (x),',
@@ -45,7 +45,7 @@ class MySqlFamilyDumpTest {
 
   @Test
   void anIndexOnTheAutoIncrementColumnStaysInItsCreateTable() {
-    var created = MySqlFamilyDump.Created.of("""
+    var created = MySqlFamilyDefinitions.Created.of("""
         CREATE TABLE `t` (
           `id` int NOT NULL AUTO_INCREMENT COMMENT 'counted',
           `k` int DEFAULT NULL,
@@ -70,15 +70,15 @@ class MySqlFamilyDumpTest {
   void aDefinitionGoesWithoutItsDefiner() {
     assertEquals(
         "CREATE ALGORITHM=UNDEFINED SQL SECURITY DEFINER VIEW `v` AS select 1",
-        MySqlFamilyDump.withoutDefiner(
+        MySqlFamilyDefinitions.withoutDefiner(
             "CREATE ALGORITHM=UNDEFINED DEFINER=`ro``ot`@`%` SQL SECURITY DEFINER VIEW `v` AS"
                 + " select 1"));
     assertEquals(
         "CREATE TRIGGER `t` BEFORE INSERT ON `x` FOR EACH ROW SET @a = 1",
-        MySqlFamilyDump.withoutDefiner(
+        MySqlFamilyDefinitions.withoutDefiner(
             "CREATE DEFINER=`admin` TRIGGER `t` BEFORE INSERT ON `x` FOR EACH ROW SET @a = 1"));
     assertEquals(
         "CREATE VIEW `v` AS select 1",
-        MySqlFamilyDump.withoutDefiner("CREATE VIEW `v` AS select 1"));
+        MySqlFamilyDefinitions.withoutDefiner("CREATE VIEW `v` AS select 1"));
   }
 }

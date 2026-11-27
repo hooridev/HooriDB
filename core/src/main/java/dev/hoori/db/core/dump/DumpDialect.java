@@ -2,6 +2,9 @@ package dev.hoori.db.core.dump;
 
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.definition.Definition;
+import dev.hoori.db.core.definition.DefinitionDialect;
+import dev.hoori.db.core.definition.Item;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -11,9 +14,9 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * How {@link Dump} reads a provider's objects, their definitions and rows, and what its file says
- * to the server that reads it back. A provider's dialect hands one out; what it does is this
- * package's own.
+ * How {@link Dump} reads a provider's rows, and what its file says to the server that reads it
+ * back; the objects and their definitions it reads as the provider's {@link DefinitionDialect}
+ * does, in its snapshot. A provider's dialect hands one out; what it does is this package's own.
  */
 public abstract class DumpDialect {
 
@@ -23,39 +26,14 @@ public abstract class DumpDialect {
   public abstract boolean foreignKeyChecks();
 
   /**
-   * Begins the one transaction, read only and in one snapshot, that everything is read in, with
-   * the settings in which the definitions and values are written as the file's {@link #header}
-   * reads them back. Where it fails, also as it is interrupted, it has put back what it changed.
-   */
-  abstract void begin(Connection connection, Provider provider) throws QueryException;
-
-  /**
    * Keeps other sessions, until the snapshot ends, from changing the definitions of the tables or
-   * emptying them, where the server lets a snapshot do so; right after {@link #begin}, before
-   * anything of them is read.
+   * emptying them, where the server lets a snapshot do so; right after {@link
+   * DefinitionDialect#begin}, before anything of them is read.
    *
    * @throws QueryException {@link QueryException.Failure#NOT_FOUND} where a table no longer exists;
    *     another failure where another session holds one so that it cannot be kept
    */
   abstract void lock(Connection connection, Provider provider, List<Item> tables)
-      throws QueryException;
-
-  /** Ends what {@link #begin} began, and puts back what it changed of the session. */
-  abstract void end(Connection connection, Provider provider) throws QueryException;
-
-  /**
-   * The objects of the schema or database, those of the database's own schemas where it has
-   * schemas, by schema and then as {@link Item.Kind} orders them; read in a snapshot.
-   */
-  abstract List<Listed> list(Connection connection, Provider provider, Container container)
-      throws QueryException;
-
-  /**
-   * The definitions of the objects, in their order, as they are now.
-   *
-   * @throws QueryException {@link QueryException.Failure#NOT_FOUND} where one no longer exists
-   */
-  abstract List<Definition> define(Connection connection, Provider provider, List<Item> items)
       throws QueryException;
 
   /** How the table's rows are read and written; empty where it keeps none of its own. */

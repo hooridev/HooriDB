@@ -1,4 +1,4 @@
-package dev.hoori.db.core.dump;
+package dev.hoori.db.core.definition;
 
 import java.util.OptionalLong;
 

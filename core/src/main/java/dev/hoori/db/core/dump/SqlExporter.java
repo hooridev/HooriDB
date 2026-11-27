@@ -2,6 +2,7 @@ package dev.hoori.db.core.dump;
 
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.definition.Listed;
 import dev.hoori.db.core.query.QueryException;
 import java.io.IOException;
 import java.nio.file.Path;

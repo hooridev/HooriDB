@@ -1,4 +1,4 @@
-package dev.hoori.db.core.dump;
+package dev.hoori.db.core.definition;
 
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Execution;
@@ -14,20 +14,42 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
-/** What an export sends, each through {@link Journal} as {@link Purpose#EXPORT}. */
-final class Sql {
+/**
+ * What reading definitions sends, and what changes them or exports them: each statement through
+ * {@link Journal}, as the purpose that the caller bound with {@link #as}. Only core's code that
+ * builds on definitions uses it, as the export does.
+ */
+public final class Sql {
+
+  private static final ScopedValue<Purpose> PURPOSE = ScopedValue.newInstance();
 
   private Sql() {}
 
-  interface Row<T> {
+  /** How a row of a query becomes a value. */
+  public interface Row<T> {
     T read(ResultSet rows) throws SQLException;
   }
 
+  /** The call, with what it sends here recorded as sent for the purpose. */
+  public static <T, E extends Exception> T as(Purpose purpose, Journal.Call<T, E> call) throws E {
+    return ScopedValue.where(PURPOSE, purpose).call(call::call);
+  }
+
+  /**
+   * What is sent now is sent for.
+   *
+   * @throws java.util.NoSuchElementException where no caller bound one with {@link #as}
+   */
+  public static Purpose purpose() {
+    return PURPOSE.get();
+  }
+
   /** Runs the statement, which gives no rows that count. */
-  static void execute(Connection connection, Provider provider, String sql) throws QueryException {
+  public static void execute(Connection connection, Provider provider, String sql)
+      throws QueryException {
     Journal.sql(
         provider,
-        Purpose.EXPORT,
+        purpose(),
         sql,
         done -> Outcome.DONE,
         () -> Query.run(connection, provider, sql, statement -> statement.execute()));
@@ -38,17 +60,19 @@ final class Sql {
    * an interrupt, as what cancelled the export leaves the snapshot open, and never longer, as a
    * server that no longer answers does not keep it.
    */
-  static void ending(Connection connection, Provider provider, String called, Query.Step<?> step)
+  public static void ending(
+      Connection connection, Provider provider, String called, Query.Step<?> step)
       throws QueryException {
     Journal.call(
-        Purpose.EXPORT, called, () -> Query.within(connection, provider, Execution.ENDING, step));
+        purpose(), called, () -> Query.within(connection, provider, Execution.ENDING, step));
   }
 
   /** Runs the statement as {@link #ending} runs a step. */
-  static void ending(Connection connection, Provider provider, String sql) throws QueryException {
+  public static void ending(Connection connection, Provider provider, String sql)
+      throws QueryException {
     Journal.sql(
         provider,
-        Purpose.EXPORT,
+        purpose(),
         sql,
         done -> Outcome.DONE,
         () -> Query.within(connection, provider, Execution.ENDING, () -> {
@@ -60,12 +84,12 @@ final class Sql {
   }
 
   /** What puts back what a step changed, where the step failed. */
-  interface Undo {
+  public interface Undo {
     void run() throws QueryException;
   }
 
   /** The failure, after the undo, whose own failure goes with it. */
-  static QueryException undone(QueryException failure, Undo undo) {
+  public static QueryException undone(QueryException failure, Undo undo) {
     try {
       undo.run();
     } catch (QueryException e) {
@@ -75,12 +99,12 @@ final class Sql {
   }
 
   /** The rows of the query, each as the row makes it, with the texts as its parameters. */
-  static <T> List<T> rows(
+  public static <T> List<T> rows(
       Connection connection, Provider provider, String sql, Row<T> row, String... parameters)
       throws QueryException {
     return Journal.sql(
         provider,
-        Purpose.EXPORT,
+        purpose(),
         sql,
         read -> Outcome.rows(read.size()),
         () -> Query.run(connection, provider, sql, statement -> {
@@ -98,7 +122,7 @@ final class Sql {
   }
 
   /** The rows of the query that the row makes something of, as {@link #rows} reads them. */
-  static <T> List<T> some(
+  public static <T> List<T> some(
       Connection connection,
       Provider provider,
       String sql,
@@ -111,7 +135,7 @@ final class Sql {
   }
 
   /** The one row of the query, as the row makes it; not found where it gives none. */
-  static <T> T one(
+  public static <T> T one(
       Connection connection,
       Provider provider,
       String what,
