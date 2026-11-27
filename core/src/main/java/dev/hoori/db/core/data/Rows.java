@@ -1,6 +1,7 @@
 package dev.hoori.db.core.data;
 
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
@@ -813,7 +814,12 @@ public final class Rows {
 
   /** The table's qualified SQL name: its container and name, each quoted for the provider. */
   public static String qualified(Provider provider, Table table) {
-    return provider.quote(table.container().name()) + "." + provider.quote(table.name());
+    return qualified(provider, table.container(), table.name());
+  }
+
+  /** The qualified SQL name of an object of the schema, or database, as of a table. */
+  public static String qualified(Provider provider, Container container, String name) {
+    return provider.quote(container.name()) + "." + provider.quote(name);
   }
 
   /**

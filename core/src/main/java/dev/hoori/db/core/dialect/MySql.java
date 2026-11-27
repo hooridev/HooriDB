@@ -14,6 +14,8 @@ import dev.hoori.db.core.data.MySqlRows;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.dump.DumpDialect;
+import dev.hoori.db.core.dump.MySqlFamilyDump;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Purpose;
 import java.sql.Connection;
@@ -76,6 +78,7 @@ public final class MySql extends MySqlFamily {
   private final PlanDialect planning = new Plan();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MySqlRows();
+  private final DumpDialect dump = new MySqlFamilyDump(false);
   private final MonitorDialect monitor = new MySqlFamily.Monitor(
       "TIME",
       "SELECT g.VARIABLE_NAME, g.VARIABLE_VALUE, i.VARIABLE_SOURCE"
@@ -149,6 +152,11 @@ public final class MySql extends MySqlFamily {
   @Override
   public MonitorDialect monitor() {
     return monitor;
+  }
+
+  @Override
+  public DumpDialect dump() {
+    return dump;
   }
 
   static final class Plan extends MySqlFamily.Plan {

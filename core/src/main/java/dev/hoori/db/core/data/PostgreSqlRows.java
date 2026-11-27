@@ -321,7 +321,7 @@ public final class PostgreSqlRows extends RowsDialect {
   }
 
   @Override
-  String literal(Object value) {
+  public String literal(Object value) {
     return switch (value) {
       case null -> "NULL";
       case Boolean truth -> truth.booleanValue() ? "TRUE" : "FALSE";

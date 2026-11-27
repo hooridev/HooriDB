@@ -21,5 +21,7 @@ public enum Purpose {
   /** The database the session is on. */
   SESSION,
   /** The server monitor's cancel of a statement and end of a session. */
-  MONITOR
+  MONITOR,
+  /** An export to a file of SQL: the snapshot it reads in, its objects' definitions and rows. */
+  EXPORT
 }

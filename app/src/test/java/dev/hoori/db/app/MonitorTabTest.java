@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Settings;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.monitor.Block;
 import dev.hoori.db.core.monitor.Counter;
 import dev.hoori.db.core.monitor.Credentials;
@@ -103,6 +104,18 @@ class MonitorTabTest {
     // Its own connection, behind the tree's: the second link that was opened.
     assertTrue(c.servers.linked.contains("2 " + READ), c.servers.linked.toString());
     assertFalse(c.servers.linked.contains("1 " + READ), c.servers.linked.toString());
+  }
+
+  @Test
+  void aSessionWhoseClosingFailsSaysSoInTheNotices() throws Exception {
+    var app = monitor();
+    c.servers.failsAtClose(
+        PG, FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "it did not end"));
+    c.run(app, "key W control\nframe\nadvance 1\nframe\n" + SETTLE);
+    CatalogTreeTest.eventually(() -> !app.state().notices.isEmpty());
+    var notice = app.state().notices.getFirst();
+    assertTrue(notice.what().contains("Closing the monitor's session failed: it did not end"));
+    assertTrue(notice.failure());
   }
 
   @Test

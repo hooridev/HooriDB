@@ -112,11 +112,14 @@ public abstract class RowsDialect {
   abstract void bind(PreparedStatement statement, int index, Object value) throws SQLException;
 
   /**
-   * The value as a literal of the provider's SQL, for people to read.
+   * The value as a literal of the provider's SQL, which its server reads back as the value: for
+   * people to read, and in an export's {@code INSERT}s. A text is quoted as the server reads it:
+   * on PostgreSQL, one with a backslash as {@code E'…'}, whatever {@code
+   * standard_conforming_strings} says; on MariaDB and MySQL with backslashes as escapes.
    *
    * @throws IllegalArgumentException if it is of no kind's type
    */
-  abstract String literal(Object value);
+  public abstract String literal(Object value);
 
   /** A case-insensitive {@code LIKE} of the quoted column as text, {@code !} escaping. */
   abstract String like(String column, Field field, String pattern);
