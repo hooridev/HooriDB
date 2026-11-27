@@ -37,7 +37,9 @@ import java.util.function.Consumer;
  * commit what ran before, which the run's rollback could then not undo. A statement at which the
  * server commits by itself, as {@link TransactionControl#commits} finds one, as MySQL's {@code LOCK
  * TABLES}, which its dumps write around each table's rows, runs, and the report says where the
- * last one was.
+ * last one was. One that runs SQL it does not show, which may end the transaction, as {@link
+ * TransactionControl#mayEndUnseen} finds one, as a {@code CALL} of a MySQL procedure that commits,
+ * fails unsent too, as the report could not say what the rollback undid.
  *
  * <p>On a failure the run stops, or goes on where {@link Options#goOn} says so; in {@link
  * Options#transaction one transaction} it always stops, and what ran is rolled back, also on a
@@ -344,6 +346,14 @@ public final class FileRun {
           "The file begins or ends a transaction here, while it runs in one of its own, which this"
               + " would end: the run stops, and what ran is rolled back. Run the file without one"
               + " transaction to have it keep its own."));
+    }
+    if (options.transaction() && TransactionControl.mayEndUnseen(sql.sql(), provider)) {
+      return Optional.of(Failure.of(
+          Failure.Kind.INVALID,
+          "This runs a procedure or a prepared statement, which may commit what ran before it"
+              + " while the file runs in one transaction, which could then not roll it back: the"
+              + " run stops, and what ran is rolled back. Run the file without one transaction to"
+              + " run it."));
     }
     var locks = TransactionControl.tableLocks(sql.sql(), provider);
     boolean commits = TransactionControl.commits(sql.sql(), provider)

@@ -147,6 +147,27 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       };
     }
 
+    // CALL of a procedure, whose body may commit, and EXECUTE of a prepared statement, also
+    // MariaDB's EXECUTE IMMEDIATE, which may be a COMMIT; and a compound statement, as for
+    // controlsTransaction, whose body holds one of them.
+    @Override
+    public boolean mayEndUnseen(List<String> words) {
+      if (words.isEmpty()) {
+        return false;
+      }
+      var second = words.size() > 1 ? words.get(1) : "";
+      return switch (words.getFirst()) {
+        case "call", "execute" -> true;
+        case "begin" -> second.equals("not") && runsWithin(words);
+        case "if", "case", "loop", "repeat", "while", "for" -> runsWithin(words);
+        default -> second.equals(":") && runsWithin(words);
+      };
+    }
+
+    private static boolean runsWithin(List<String> words) {
+      return words.contains("call") || words.contains("execute");
+    }
+
     @Override
     public TableLocks tableLocks(List<String> words) {
       var second = words.size() > 1 ? words.get(1) : "";

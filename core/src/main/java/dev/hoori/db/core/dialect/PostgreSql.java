@@ -179,6 +179,12 @@ public final class PostgreSql implements Dialect {
       return false;
     }
 
+    // A procedure that a CALL runs in a transaction block cannot commit, nor can a DO block.
+    @Override
+    public boolean mayEndUnseen(List<String> words) {
+      return false;
+    }
+
     // Its LOCK TABLE holds until the transaction ends, which commits nothing by itself.
     @Override
     public TableLocks tableLocks(List<String> words) {

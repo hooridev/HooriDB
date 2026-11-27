@@ -12,8 +12,6 @@ import java.util.function.Predicate;
  * dialect's {@link dev.hoori.db.core.dialect.ClientDialect#controlsTransaction} tells by its words,
  * by every way the server may read its text: a file that runs in one transaction does not send it.
  */
-// shortcut: a procedure that commits by itself, as a CALL on MariaDB and MySQL may, is not seen,
-// as DDL is not, which those servers commit by themselves too.
 public final class TransactionControl {
 
   private TransactionControl() {}
@@ -30,6 +28,15 @@ public final class TransactionControl {
    */
   public static boolean commits(String sql, Provider provider) {
     return any(sql, provider, provider.dialect().client()::commitsImplicitly);
+  }
+
+  /**
+   * Whether the statement runs SQL that it does not show and that may end the open transaction, as
+   * a procedure that commits, as the dialect's {@link
+   * dev.hoori.db.core.dialect.ClientDialect#mayEndUnseen} tells, by any way the server may read it.
+   */
+  public static boolean mayEndUnseen(String sql, Provider provider) {
+    return any(sql, provider, provider.dialect().client()::mayEndUnseen);
   }
 
   /**
