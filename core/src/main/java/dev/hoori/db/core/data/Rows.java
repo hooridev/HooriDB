@@ -436,38 +436,40 @@ public final class Rows {
     }
     requireConnectedTo(connection, provider, table);
     var dialect = provider.dialect().rows();
-    var reads = dialect.describe(connection, provider, table, columns, true).reads();
-    var picked = chosen.stream().map(reads::get).toList();
-    var selected = picked.stream().flatMap(r -> r.sql().stream()).toList();
-    // Where the columns as they are now come with the rows, from a join to none of them, they
-    // tell the fields' kinds, as a page's do.
-    var witness = dialect.witness();
-    var expressions = new ArrayList<>(selected);
-    if (witness) {
-      expressions.add(WITNESS + ".*");
-    }
-    var from = qualified(provider, table);
-    var sql = "SELECT " + String.join(", ", expressions) + " FROM " + from + " AS " + ALIAS
-        + (witness
-            ? " LEFT JOIN (SELECT * FROM " + from + " LIMIT 0) AS " + WITNESS + " ON FALSE"
-            : "");
     var session = provider.dialect().session();
+    // The columns are described in the read's transaction, where it has one of its own, so that
+    // they stay as described until its last row.
     var own = !session.queriesInOwnTransaction().isEmpty();
     if (own) {
       Transactions.begin(connection, provider);
     }
     long read;
     try {
+      var reads = dialect.describe(connection, provider, table, columns, true).reads();
+      var picked = chosen.stream().map(reads::get).toList();
+      var selected = picked.stream().flatMap(r -> r.sql().stream()).toList();
+      // Where the columns as they are now come with the rows, from a join to none of them, they
+      // tell the fields' kinds, as a page's do.
+      var witness = dialect.witness();
+      var expressions = new ArrayList<>(selected);
+      if (witness) {
+        expressions.add(WITNESS + ".*");
+      }
+      var from = qualified(provider, table);
+      var sql = "SELECT " + String.join(", ", expressions) + " FROM " + from + " AS " + ALIAS
+          + (witness
+              ? " LEFT JOIN (SELECT * FROM " + from + " LIMIT 0) AS " + WITNESS + " ON FALSE"
+              : "");
       read = Journal.sql(
           provider,
           Purpose.EXPORT,
           sql,
           Outcome::rows,
           () -> Query.stream(connection, provider, sql, session.fetchSize(PORTION), result -> {
-            var shown = witness
-                ? dialect.witnessed(columns, reads, result.getMetaData(), selected.size())
-                : reads.stream().map(Read::field).toList();
             try {
+              var shown = witness
+                  ? dialect.witnessed(columns, reads, result.getMetaData(), selected.size())
+                  : reads.stream().map(Read::field).toList();
               if (shown == null) {
                 throw changed(table);
               }

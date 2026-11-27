@@ -23,6 +23,8 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Sent;
 import dev.hoori.db.core.query.QueryException;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -38,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -283,6 +286,40 @@ class TableFilesServerTest {
         assertLeftAsItWas(connection, provider);
       } finally {
         Thread.interrupted();
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
+      }
+    }
+  }
+
+  // Where the rows come in a transaction of the export's own, the columns are described in it, so
+  // that no change of theirs comes between.
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void describesTheColumnsInTheExportsOwnTransaction(Provider provider) throws Exception {
+    assumeTrue(
+        !provider.dialect().session().queriesInOwnTransaction().isEmpty(),
+        "The rows come without a transaction of the export's own");
+    var name = unique("files_described");
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name) + " (id integer PRIMARY KEY, b boolean)",
+          "INSERT INTO " + qualified(provider, name) + " VALUES (1, true)");
+      try {
+        var table = table(provider, name);
+        var columns = Catalog.columns(connection, provider, table);
+        var sent = new CopyOnWriteArrayList<Sent>();
+        var rows = Journal.recording(sent::add, () -> read(connection, provider, table, columns));
+        assertEquals(List.of(List.<Object>of(1L, true)), rows);
+        var calls = sent.stream().map(Sent::text).toList();
+        var begun = calls.indexOf(Journal.autoCommit(false));
+        var described = IntStream.range(0, calls.size())
+            .filter(i -> calls.get(i).endsWith(" WHERE false"))
+            .findFirst()
+            .orElseThrow();
+        assertTrue(begun >= 0 && begun < described, calls.toString());
+        assertLeftAsItWas(connection, provider);
+      } finally {
         dropAfter(provider, "DROP TABLE " + qualified(provider, name));
       }
     }
