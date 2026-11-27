@@ -40,6 +40,9 @@ class CopierTest {
   private final List<Pending> pending = new ArrayList<>();
   private final Map<String, Exception> failing = new HashMap<>();
   private final List<ForeignKey> keys = new ArrayList<>();
+  // The names of a table's columns on each end, by its name, where they are not just v.
+  private final Map<String, List<String>> sourceColumns = new HashMap<>();
+  private final Map<String, List<String>> targetColumns = new HashMap<>();
   private CountDownLatch holding; // a read of the second batch waits for it, where set
   private CountDownLatch held = new CountDownLatch(1);
   private boolean readOnly;
@@ -303,6 +306,24 @@ class CopierTest {
   }
 
   @Test
+  void twoColumnsThatWouldGoIntoOneFailTheTableBeforeAnythingIsWritten() {
+    rows("x", 1);
+    rows("y", 1);
+    sourceColumns.put("x", List.of("v", "V"));
+    // The one column whose name differs only in case takes the column's values.
+    sourceColumns.put("y", List.of("V"));
+
+    var report = run(transfer(OnError.SKIP, Commit.TABLE, 10, "x", "y"));
+
+    assertEquals(List.of(State.FAILED, State.COPIED), states(report));
+    assertEquals(
+        "The target's x has one column v for the source's columns v, V.",
+        report.tables().getFirst().problem());
+    assertTrue(!calls.contains("write x"), calls.toString());
+    assertEquals(1, targetRows.get("y").size());
+  }
+
+  @Test
   void theRowsKeptOfATableThatFailsMoveItsSequencesOn() {
     rows("x", 25);
     failing.put("write x 2", QueryException.of(QueryException.Failure.OTHER, "check"));
@@ -347,8 +368,10 @@ class CopierTest {
     return new Table(INTO, name, Table.Kind.TABLE);
   }
 
-  private static List<Column> columns(Table table) {
-    return List.of(new Column(table, "v", "text", true, 0));
+  private static List<Column> columns(Map<String, List<String>> named, Table table) {
+    return named.getOrDefault(table.name(), List.of("v")).stream()
+        .map(name -> new Column(table, name, "text", true, 0))
+        .toList();
   }
 
   private void fail(String call) throws Exception {
@@ -377,7 +400,7 @@ class CopierTest {
 
       @Override
       public List<Column> columns(Table table) {
-        return CopierTest.columns(table);
+        return CopierTest.columns(sourceColumns, table);
       }
 
       @Override
@@ -454,7 +477,7 @@ class CopierTest {
 
       @Override
       public Shape shape(Table table) {
-        return new Shape(CopierTest.columns(table), Set.of());
+        return new Shape(CopierTest.columns(targetColumns, table), Set.of());
       }
 
       @Override

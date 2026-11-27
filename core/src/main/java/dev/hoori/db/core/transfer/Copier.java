@@ -20,6 +20,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 
 /**
  * Runs a {@link Transfer}: reads the rows of each table on the source, in one statement whose rows
@@ -31,11 +32,12 @@ import java.util.function.Consumer;
  * <p>First it reads what it needs of every table, before it writes anything: the source's columns
  * and how many rows it has, and the target's table, its columns, whether it has rows where it must
  * not, and its foreign keys, by which the tables are ordered, those referred to first. A column of
- * the source that the target's table lacks fails the table, a column that the target generates
- * gets no value, and one of the target that the source lacks gets its default. A table that would
- * be read as it is written, the same table of the same server, fails, and so does one to be emptied
- * whose rows another table's foreign key would delete or change with it, where that table is not
- * emptied too. Where tables fail at this and the run stops at an error, it writes nothing at all.
+ * the source that the target's table lacks fails the table, and so do two that would go into the
+ * same of its columns; a column that the target generates gets no value, and one of the target
+ * that the source lacks gets its default. A table that would be read as it is written, the same
+ * table of the same server, fails, and so does one to be emptied whose rows another table's
+ * foreign key would delete or change with it, where that table is not emptied too. Where tables
+ * fail at this and the run stops at an error, it writes nothing at all.
  *
  * <p>Then the tables are copied, a table after the tables it refers to, each in a transaction of
  * its own, committed as the transfer says. A table to be emptied is emptied first in that
@@ -213,6 +215,16 @@ public final class Copier {
     if (!lacking.isEmpty()) {
       return "The target's " + copy.to().name() + " has no column " + String.join(", ", lacking)
           + ".";
+    }
+    for (var name : names) {
+      var shared = IntStream.range(0, names.size())
+          .filter(i -> names.get(i).equals(name))
+          .mapToObj(i -> chosen.get(i).name())
+          .toList();
+      if (shared.size() > 1) {
+        return "The target's " + copy.to().name() + " has one column " + name
+            + " for the source's columns " + String.join(", ", shared) + ".";
+      }
     }
     if (chosen.isEmpty()) {
       return "The target's " + copy.to().name() + " has no column that takes a value.";
