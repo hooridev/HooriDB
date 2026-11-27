@@ -419,7 +419,8 @@ class ConsoleNoticeTest extends ConsoleTransactions {
             await "save consoles"
             frame
             """);
-    c.run(app, EXIT);
+    // The second Exit writes what the sessions' ends logged, then goes.
+    c.run(app, EXIT + "await \"write the statement log\"\nframe\n");
     assertTrue(app.windows().all().isEmpty(), "the second Exit goes");
     gate.countDown();
   }
