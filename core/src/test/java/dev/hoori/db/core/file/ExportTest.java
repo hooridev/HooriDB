@@ -12,7 +12,11 @@ import dev.hoori.db.core.query.QueryException;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -55,6 +59,38 @@ class ExportTest {
       return 0;
     });
     assertEquals(Files.getPosixFilePermissions(made), Files.getPosixFilePermissions(file));
+  }
+
+  @Test
+  void aPrivateFileReplacedStaysPrivateAndTheRowsAreNeverReadableByOthers() throws Exception {
+    assumeTrue(dir.getFileSystem().supportedFileAttributeViews().contains("posix"));
+    var file = dir.resolve("t.csv");
+    Files.writeString(file, "old");
+    var owner = PosixFilePermissions.fromString("rw-------");
+    Files.setPosixFilePermissions(file, owner);
+    var staged = new ArrayList<Set<PosixFilePermission>>();
+    Export.write(file, Format.Delimited.CSV, each -> {
+      each.fields(FIELDS);
+      each.row(List.of(1L));
+      // The file of its own, which holds the rows while they are written.
+      for (var other : files()) {
+        if (!other.equals(file)) {
+          staged.add(Files.getPosixFilePermissions(other));
+        }
+      }
+      return 1;
+    });
+    assertEquals(List.of(owner), staged);
+    assertEquals(owner, Files.getPosixFilePermissions(file));
+    assertEquals("id\r\n1\r\n", Files.readString(file));
+    // One that others may read stays so too.
+    var shared = PosixFilePermissions.fromString("rw-r--r--");
+    Files.setPosixFilePermissions(file, shared);
+    Export.write(file, Format.Delimited.CSV, each -> {
+      each.fields(FIELDS);
+      return 0;
+    });
+    assertEquals(shared, Files.getPosixFilePermissions(file));
   }
 
   @Test

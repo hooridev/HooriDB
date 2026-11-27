@@ -8,21 +8,27 @@ import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
  * Rows written to a file in a format, as they are read: into a file of its own beside the one
  * asked for, which takes the place of that one only once it is whole, so that a failure or a cancel
- * leaves the folder as it was. The file is made as any the user makes there, with the permissions
- * the system gives a new file, not those of a temporary one.
+ * leaves the folder as it was. A new file gets the permissions the system gives a new file there,
+ * not those of a temporary one, and one that replaces a file gets that file's, so that a private
+ * file stays private; where the file system has POSIX permissions, the file of its own is
+ * readable by its owner alone while the rows go into it.
  */
 public final class Export {
 
@@ -54,14 +60,19 @@ public final class Export {
       throws IOException, QueryException {
     var folder = file.toAbsolutePath().getParent();
     var part = folder.resolve("." + file.getFileName() + "." + UUID.randomUUID() + ".part");
-    // Made new, without the owner-only permissions of Files.createTempFile.
+    // Made new, as any file the user makes there, which tells the permissions a new file gets.
     var opened = Files.newOutputStream(part, StandardOpenOption.CREATE_NEW);
     try {
       long rows;
+      Set<PosixFilePermission> made;
       try (var out = new BufferedOutputStream(opened, 64 * 1024)) {
+        made = ownerOnly(part);
         var writer = RowWriter.of(format, out);
         rows = reading.read(writer);
         writer.finish();
+      }
+      if (made != null) {
+        Files.setPosixFilePermissions(part, given(file, made));
       }
       replace(part, file);
       return rows;
@@ -72,6 +83,29 @@ public final class Export {
         e.addSuppressed(left);
       }
       throw e;
+    }
+  }
+
+  // Where the file system has POSIX permissions, the part is made readable and writable by its
+  // owner alone before a row goes into it: the permissions it was made with, which are those a
+  // new file gets there; null elsewhere.
+  private static Set<PosixFilePermission> ownerOnly(Path part) throws IOException {
+    if (!part.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+      return null;
+    }
+    var made = Files.getPosixFilePermissions(part);
+    Files.setPosixFilePermissions(part, PosixFilePermissions.fromString("rw-------"));
+    return made;
+  }
+
+  // The permissions the whole file goes into place with: those of the file it replaces, so that a
+  // private file stays private, else those a new file gets.
+  private static Set<PosixFilePermission> given(Path file, Set<PosixFilePermission> made)
+      throws IOException {
+    try {
+      return Files.getPosixFilePermissions(file);
+    } catch (NoSuchFileException _) {
+      return made;
     }
   }
 
