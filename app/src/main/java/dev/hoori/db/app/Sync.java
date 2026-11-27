@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -260,6 +261,7 @@ final class Sync {
             + Rows.qualified(provider, sides.target().table()) + " equal to those of "
             + Rows.qualified(provider, sides.source().table()) + "."));
         out.write("START TRANSACTION;\n");
+        var wrote = new AtomicBoolean();
         tally = Batches.make(
                 () -> Reading.open(sides, pairing),
                 choice,
@@ -268,11 +270,19 @@ final class Sync {
                   for (var statement : batch.script(provider)) {
                     out.write(statement);
                     out.write(";\n");
+                    wrote.set(true);
                   }
                   return Optional.empty();
                 },
                 new Reporter(progress, Stage.READING))
             .tally();
+        // As applying does before its commit: the table's sequences past the rows written.
+        if (wrote.get()) {
+          for (var statement : Changes.afterWrites(provider, sides.target().table())) {
+            out.write(statement);
+            out.write(";\n");
+          }
+        }
         out.write("COMMIT;\n");
       }
       if (!commit.begin()) {

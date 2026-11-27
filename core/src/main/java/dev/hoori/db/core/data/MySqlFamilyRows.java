@@ -330,6 +330,13 @@ abstract class MySqlFamilyRows extends RowsDialect {
     }
   }
 
+  // An AUTO_INCREMENT moves past a value written into it by itself. MariaDB's sequences, which a
+  // default may take a value of, are left as they are, as a copy of rows leaves them.
+  @Override
+  List<String> afterWrites(Provider provider, Table table) {
+    return List.of();
+  }
+
   // A text as the servers read it unless their SQL mode says NO_BACKSLASH_ESCAPES, and a moment
   // with its offset, as MySQL reads it, which tells that it is in UTC.
   @Override

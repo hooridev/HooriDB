@@ -23,6 +23,14 @@ public abstract class RowsDialect {
 
   RowsDialect() {}
 
+  /**
+   * What follows writes into the table in their transaction, before it commits, as a script of
+   * them runs it too: on PostgreSQL its sequences, of its identity and serial columns, moved to the
+   * values the table holds where they are behind, never back, so that a new row's value is not one
+   * a written row has; none where the server moves them itself, as MySQL's {@code AUTO_INCREMENT}.
+   */
+  abstract List<String> afterWrites(Provider provider, Table table);
+
   /** The planner's estimate of the rows that {@code select}, all rows of the table, gives. */
   abstract OptionalLong estimate(
       Connection connection, Provider provider, Table table, String select) throws QueryException;

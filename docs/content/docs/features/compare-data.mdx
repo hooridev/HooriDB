@@ -58,7 +58,8 @@ Press **Apply…** to see the generated `DELETE`, `UPDATE` and `INSERT` statemen
 1. HooriDB reads both tables again, so the changes match the tables as they are when you apply.
 2. It writes all the changes in one transaction, on a session it opens for the target alone: the deletions first, then the updates, then the new rows, so that a unique value, such as an email address, can move from one row to another. Where there are more changes than fit in one batch, it reads the tables again for each kind of change.
 3. Before each update or delete, it checks that the target row still holds the values it read. If a row changed meanwhile, nothing is written.
-4. After the commit, it compares the tables again.
+4. On PostgreSQL, before the commit, it moves the sequences of the target's identity and `serial` columns past the values now in the table, so that the next row the target numbers itself does not collide with a copied one. A sequence that is already ahead stays where it is.
+5. After the commit, it compares the tables again.
 
 Press **Cancel** while the changes are being written to roll back everything written so far. Once the commit has begun, it can no longer be cancelled: the tab shows what came of it, also when the connection is disconnected meanwhile. If you close the tab during the commit, what came of it appears in the main window's notices.
 
@@ -66,7 +67,7 @@ If the target's connection is read-only, you can still compare the tables, but *
 
 ## Save as a script
 
-Press **Save as script…** and choose a file. HooriDB then writes the statements that **Apply** would run to that file, in the same order, wrapped in `START TRANSACTION;` and `COMMIT;`, instead of running them. Like **Apply**, it reads both tables again first. Nothing is written to the target. The file is written beside the one you chose and replaces it only once it is complete, so **Cancel** before then leaves an existing file as it was. Text in the script is written as MySQL and MariaDB read it without `NO_BACKSLASH_ESCAPES`. On MySQL and MariaDB, a `timestamp` is written as `FROM_UNIXTIME(…)` of its seconds, which the session reads in its time zone; in an hour that the zone repeats, it can be the other moment, which **Apply** refuses instead.
+Press **Save as script…** and choose a file. HooriDB then writes the statements that **Apply** would run to that file, in the same order, wrapped in `START TRANSACTION;` and `COMMIT;`, instead of running them; on PostgreSQL the script moves the sequences before its `COMMIT`, as **Apply** does. Like **Apply**, it reads both tables again first. Nothing is written to the target. The file is written beside the one you chose and replaces it only once it is complete, so **Cancel** before then leaves an existing file as it was. Text in the script is written as MySQL and MariaDB read it without `NO_BACKSLASH_ESCAPES`. On MySQL and MariaDB, a `timestamp` is written as `FROM_UNIXTIME(…)` of its seconds, which the session reads in its time zone; in an hour that the zone repeats, it can be the other moment, which **Apply** refuses instead.
 
 ## Limits
 

@@ -281,6 +281,16 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     return ordered;
   }
 
+  /**
+   * What follows writes into the table in their transaction, before it commits, as {@link
+   * Writer#commit} runs it and a script of the changes ends with it, before its commit: on
+   * PostgreSQL the table's sequences moved past the values it holds, never back; none where the
+   * server needs nothing.
+   */
+  public static List<String> afterWrites(Provider provider, Table table) {
+    return provider.dialect().rows().afterWrites(provider, table);
+  }
+
   /** What came of writing changes. */
   public sealed interface Outcome {
 
@@ -393,6 +403,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     private final Provider provider;
     private final Table table;
     private boolean open = true;
+    private boolean wrote; // whether a batch wrote, after which the dialect's afterWrites run
 
     private Writer(Connection connection, Provider provider, Table table) {
       this.connection = connection;
@@ -435,6 +446,7 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
         throw e;
       }
       if (outcome instanceof Outcome.Committed) {
+        wrote = true;
         return Optional.empty();
       }
       rollBack();
@@ -442,7 +454,8 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     }
 
     /**
-     * Commits what the batches wrote, and turns auto-commit on again; the writer is over.
+     * Commits what the batches wrote, after what {@link #afterWrites} says follows them where any
+     * wrote, and turns auto-commit on again; the writer is over.
      *
      * @throws QueryException as {@link #write} does where the commit failed, once all was rolled
      *     back; where the connection is given up as the commit runs, whether it took effect is not
@@ -451,6 +464,22 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
      */
     public void commit() throws QueryException {
       requireOpen();
+      if (wrote) {
+        try {
+          for (var sql : afterWrites(provider, table)) {
+            Journal.sql(
+                provider,
+                Purpose.CHANGES,
+                sql,
+                _ -> new dev.hoori.db.core.log.Outcome.Done(),
+                () -> Query.run(connection, provider, sql, PreparedStatement::execute));
+          }
+        } catch (QueryException | RuntimeException e) {
+          open = false;
+          rollBackAfter(connection, provider, e);
+          throw e;
+        }
+      }
       open = false;
       end(connection, provider, true);
     }
