@@ -703,7 +703,7 @@ final class MonitorTab implements Tab {
     answered = null;
     asked = null;
     if (lane != null) {
-      s.close(lane, id, password, "the monitor's session");
+      Teller.close(s, lane, id, password, "the monitor's session");
       lane = null;
     }
     if (password != null) {

@@ -3,6 +3,7 @@ package dev.hoori.db.app;
 import com.rethinkj.ui.App;
 import java.util.Arrays;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * The session's {@link Delivery.Tell}: the server's words checked against its own copy of the
@@ -58,6 +59,36 @@ final class Teller implements Delivery.Tell {
     if (password != null) {
       Arrays.fill(password, '\0');
     }
+  }
+
+  /**
+   * Closes the lane of a session of the connection's, as an export's or a monitor's, without
+   * waiting for it, which Exit waits for as it waits for a console's: what its closing says, as a
+   * call that did not end in time and was given up with its connection, goes to the notices,
+   * checked against a copy of the password, which goes once it has.
+   *
+   * @param session the session, as the notice names it, such as "the export's session"
+   */
+  static void close(State s, Lane lane, UUID id, char[] password, String session) {
+    var profile = s.profile(id);
+    var tell = new Teller(
+        s.app,
+        s,
+        id,
+        profile == null ? "" : State.name(profile),
+        password == null ? null : password.clone(),
+        null);
+    var reported = new CompletableFuture<Void>();
+    s.closing();
+    lane.close(ended -> {
+      try {
+        Session.told(ended, null, true, "Closing " + session + " failed: ", tell);
+      } finally {
+        tell.wipe();
+        reported.complete(null);
+      }
+    });
+    s.app.background("close " + session, reported::get, _ -> s.closed(), _ -> s.closed());
   }
 
   static final String TOO_LATE =

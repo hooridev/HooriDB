@@ -192,7 +192,7 @@ final class ExportDialog {
 
   // Closes the lane without waiting for it, which Exit waits for, and wipes its password.
   private void closeLane(State s) {
-    s.close(lane, id, password, "the export's session");
+    Teller.close(s, lane, id, password, "the export's session");
     Arrays.fill(password, '\0');
   }
 

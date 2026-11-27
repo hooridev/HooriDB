@@ -34,7 +34,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
-import java.util.concurrent.CompletableFuture;
 
 /** The app's state, which only the handlers change, on the app's thread. */
 final class State {
@@ -694,36 +693,6 @@ final class State {
   /** Dismiss all: those up to the newest the user was shown, by their numbers. */
   void dismissUpTo(int shown) {
     notices.removeIf(n -> n.number() <= shown);
-  }
-
-  /**
-   * Closes the lane of a session of the connection's, as an export's or a monitor's, without
-   * waiting for it, which Exit waits for as it waits for a console's: what its closing says, as a
-   * call that did not end in time and was given up with its connection, goes to the notices,
-   * checked against a copy of the password, which goes once it has.
-   *
-   * @param session the session, as the notice names it, such as "the export's session"
-   */
-  void close(Lane lane, UUID id, char[] password, String session) {
-    var profile = profile(id);
-    var tell = new Teller(
-        app,
-        this,
-        id,
-        profile == null ? "" : name(profile),
-        password == null ? null : password.clone(),
-        null);
-    var reported = new CompletableFuture<Void>();
-    closing();
-    lane.close(ended -> {
-      try {
-        Session.told(ended, null, true, "Closing " + session + " failed: ", tell);
-      } finally {
-        tell.wipe();
-        reported.complete(null);
-      }
-    });
-    app.background("close " + session, reported::get, _ -> closed(), _ -> closed());
   }
 
   /** A console's session begins to close, off the app's thread; {@link #closed} when it has. */
