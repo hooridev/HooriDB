@@ -19,6 +19,7 @@ import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.dump.Dump;
 import dev.hoori.db.core.dump.Item;
 import dev.hoori.db.core.dump.Listed;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -231,6 +232,19 @@ class ExportDialogTest {
     assertFalse(structure.contains("none of them is checked"), structure);
     // The export that ran wrote rows, whatever is chosen since.
     assertTrue(structure.contains(" rows to "), structure);
+  }
+
+  @Test
+  void aSessionWhoseClosingFailsSaysSoInTheNotices() throws Exception {
+    var app = opened();
+    c.servers.failsAtClose(
+        PG + "/shop", FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "it did not end"));
+    c.run(app, "press role=button label=\"Close\"\nframe\n" + SETTLE + "snap closed\n");
+    CatalogTreeTest.eventually(() -> !app.state().notices.isEmpty());
+    var notice = app.state().notices.getFirst();
+    assertEquals("shop-prod", notice.connection());
+    assertTrue(notice.what().contains("Closing the export's session failed: it did not end"));
+    assertTrue(notice.failure());
   }
 
   @Test

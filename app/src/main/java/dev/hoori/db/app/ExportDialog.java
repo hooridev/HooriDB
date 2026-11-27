@@ -192,16 +192,7 @@ final class ExportDialog {
 
   // Closes the lane without waiting for it, which Exit waits for, and wipes its password.
   private void closeLane(State s) {
-    s.closing();
-    var closing = lane.close(ended -> {});
-    s.app.background(
-        "close the export's session",
-        () -> {
-          closing.join();
-          return null;
-        },
-        done -> s.closed(),
-        e -> s.closed());
+    s.close(lane, id, password, "the export's session");
     Arrays.fill(password, '\0');
   }
 

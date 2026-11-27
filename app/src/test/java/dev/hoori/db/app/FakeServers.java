@@ -157,6 +157,7 @@ final class FakeServers implements Servers {
   private final AtomicInteger opened = new AtomicInteger(); // links numbered, also at once
   final List<String> done = new CopyOnWriteArrayList<>(); // the reads that returned
   final List<String> passwords = new CopyOnWriteArrayList<>();
+  private final Map<String, Failure> closing = new ConcurrentHashMap<>();
   final List<String> closed = new CopyOnWriteArrayList<>(); // the links closed, by database
   final List<String> interrupted = new CopyOnWriteArrayList<>();
   final List<String> failed = new CopyOnWriteArrayList<>(); // the calls that failed as set
@@ -305,6 +306,15 @@ final class FakeServers implements Servers {
   /** Giving up the rest of the statement's rows fails so, as a commit of what it changed may. */
   FakeServers failsAtGiveUp(String sql, Failure failure) {
     givingUp.put(sql, failure);
+    return this;
+  }
+
+  /**
+   * Closing a link to the host, or to {@code host/database}, says that it failed so, as one whose
+   * last call did not end in time and whose connection was given up.
+   */
+  FakeServers failsAtClose(String at, Failure failure) {
+    closing.put(at, failure);
     return this;
   }
 
@@ -2232,8 +2242,11 @@ final class FakeServers implements Servers {
 
     @Override
     public Abandoned close() {
-      closed.add(host + (database == null ? "" : "/" + database));
-      return giveUp();
+      var at = host + (database == null ? "" : "/" + database);
+      closed.add(at);
+      var left = giveUp();
+      var failure = closing.getOrDefault(at, closing.get(host));
+      return failure == null ? left : new Abandoned(Optional.of(failure), left.messages());
     }
 
     @Override
