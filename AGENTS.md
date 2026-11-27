@@ -172,8 +172,21 @@ time, from any of its three views, in a dialog of the shell's notation with the 
 completion and error marks; it opens only a document whose text reads back as the same document,
 shows the command before it is sent on the writer's connection, writes nothing over a document that
 changed since it was read (`$expr` equal to the document read, which a type alone changed at an
-equal value still matches) and says so, and reads the collection anew. Nothing else can be edited
-yet.
+equal value still matches) and says so, and reads the collection anew. Compare data, in a SQL
+table's menu, the File menu or the palette, opens a tab that compares its rows with those of a table
+the tree read of a connected connection of the same provider, the target: columns matched by name,
+rows paired by the primary key or a unique key of `NOT NULL` columns, not partial, both have, a
+column left out where the target cannot hold the source's values, and both read whole
+in that key's order, a portion at a time, on read-only sessions of the tab's own, text keys by their
+code points rather than the server's collation, so that a key out of that order stops it rather
+than pairing the wrong rows; it counts rows only in the source, only in the target, different and
+equal, shows the first 1,000 differences row by row with the cells that differ marked and long
+values cut, and, after a preview of the statements, makes the target equal as far as chosen
+(insert, update, delete), read anew and written in batches of one kind in one transaction on a
+session that opens for it, deletions, then updates, then new rows, with progress and cancel, which
+a commit that has begun no longer takes: what came of it shows, or goes to the notices where the
+tab closed; or it writes those statements in that order to a file as a script, which runs on each
+server; a read-only target is compared, not changed. Nothing else can be edited yet.
 
 - Later home: https://db.hoori.dev
 - License: MIT, as rethinkj UI's and rethinkj Updater's ([LICENSE](LICENSE)). The bundle carries it
@@ -343,6 +356,17 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   console's statement by its text, so that the statement log shows them. A
   test that closes a tab or ends a connection does it before the grid's next frame and the reads in
   flight have settled, as a user can.
+- Compare data reads each table whole in its key's order on a read-only link, keyed
+  `scan <host>/<path>`, sorted as core orders keys, and each portion `scan <host>/<path> <from>`;
+  its writing of the target is keyed `writer <host>/<path>` as it begins, `batch <host>/<path>` for
+  each batch and `commit <host>/<path>`, which alone stores what the batches wrote and, as core's
+  commit within its bound, ends whatever interrupts it, held or not; a rollback notes
+  `rollback <host>/<path>`; a read-only link refuses the writer before anything is sent, `refuses`
+  makes a table's batches come back refused, as MyISAM's, and `failsAtGiveUp` with the key of a
+  scan fails giving up its rows unread. `SyncTabTest` drives the tab, core's `SyncServerTest` and
+  the app's `SyncLanesServerTest` run the comparison, the writing and a saved script against
+  `TestServer`, and `MergeTest`, `PairingTest`, `BatchesTest` and `KeyedReadTest` the merge, the
+  pairing, the order of the batches and the order of keys without a server.
 - A console's statements run against `FakeServers.statement(sql, results, messages…)`, rows made
   with `FakeServers.made` and failures with `serverError`; a statement it does not know fails as
   invalid. Their calls are keyed `run <host> <sql>` for the first portion and

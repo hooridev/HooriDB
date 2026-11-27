@@ -18,6 +18,7 @@ import dev.hoori.db.core.data.Change;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Editable;
 import dev.hoori.db.core.data.Field;
+import dev.hoori.db.core.data.KeyedRead;
 import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Origin;
 import dev.hoori.db.core.data.Page;
@@ -65,6 +66,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -95,7 +97,13 @@ import java.util.stream.IntStream;
  * estimate <host>/<path>}, {@code count <host>/<path>} and {@code read <host>/<path> <from>-<to>},
  * the path as of {@code columns}, such as {@code pg.example.com/shop.public.orders}, and a whole
  * value's, which {@link #whole} gives, {@code whole <host>/<path> <column> <key>}, the key's values
- * joined by commas.
+ * joined by commas. A keyed read of all its rows, as a comparison of two tables reads them, is
+ * keyed {@code scan <host>/<path>}, gives them sorted by the key as core orders keys, and each of
+ * its portions {@code scan <host>/<path> <from>}; a scan closed with rows unread notes {@code close
+ * scan <host>/<path>}. Writing a table's changes a batch at a time in one transaction is keyed
+ * {@code writer <host>/<path>} as it begins, {@code batch <host>/<path>} for each batch and {@code
+ * commit <host>/<path>}, which alone stores what the batches wrote; a rollback notes {@code
+ * rollback <host>/<path>}, and a read-only link refuses the writer before anything is sent.
  *
  * <p>A statement gives what {@link #statement} says, on any server, and one it does not know fails
  * as invalid. Its calls are keyed {@code run <host> <sql>} for the first portion, {@code next
@@ -295,9 +303,23 @@ final class FakeServers implements Servers {
     return this;
   }
 
-  /** Giving up the rest of the statement's rows fails so, as a commit of what it changed may. */
+  /**
+   * Giving up the rest of the statement's rows fails so, as a commit of what it changed may; a
+   * keyed read of a table's rows by {@code scan <host>/<path>}.
+   */
   FakeServers failsAtGiveUp(String sql, Failure failure) {
     givingUp.put(sql, failure);
+    return this;
+  }
+
+  private final Set<String> refusing = ConcurrentHashMap.newKeySet();
+
+  /**
+   * The table at the path takes no changes all or nothing, as one of MyISAM: a batch of its
+   * writing comes back refused, and rolls all back.
+   */
+  FakeServers refuses(String path) {
+    refusing.add(path);
     return this;
   }
 
@@ -575,6 +597,29 @@ final class FakeServers implements Servers {
     if (failure != null) {
       failed.add(key);
       throw failure;
+    }
+  }
+
+  // A call that ends whatever interrupts it, as a commit within its bound: held at its gate until
+  // it opens, and the interrupt kept for what follows.
+  private void ending(String key) {
+    calls.add(key);
+    var gate = gates.get(key);
+    if (gate == null) {
+      return;
+    }
+    boolean interrupt = false;
+    while (true) {
+      try {
+        gate.await();
+        break;
+      } catch (InterruptedException _) {
+        interrupted.add(key);
+        interrupt = true;
+      }
+    }
+    if (interrupt) {
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -1463,102 +1508,292 @@ final class FakeServers implements Servers {
         if (tableOutline == null) {
           throw queryFailure(QueryException.Failure.NOT_FOUND);
         }
-        var stored = materializeRows(path, changes.columns());
-        var keyCols = IntStream.range(0, changes.columns().size())
-            .filter(i -> changes.columns().get(i).keyPosition() > 0)
-            .boxed()
-            .sorted(Comparator.comparingInt(i -> changes.columns().get(i).keyPosition()))
-            .toList();
-        var ordered = new ArrayList<Change>();
-        for (var kind : List.of(Change.Update.class, Change.Delete.class, Change.Insert.class)) {
-          for (var change : changes.changes()) {
-            if (kind.isInstance(change)) {
-              ordered.add(change);
-            }
-          }
+        var next = new ArrayList<>(materializeRows(path, changes.columns()));
+        var outcome = applied(next, changes);
+        if (outcome instanceof Changes.Outcome.Committed) {
+          store(path, next);
         }
-        // Check every update and delete against the rows as read before applying, as core does.
-        for (var change : ordered) {
-          switch (change) {
-            case Change.Update(var origRow, var newVals) -> {
-              long count = stored.stream()
-                  .filter(row ->
-                      keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))
-                          && newVals.keySet().stream()
-                              .allMatch(c -> Objects.equals(row.get(c), origRow.get(c))))
-                  .count();
-              if (count != 1) {
-                done.add(key);
-                return new Changes.Outcome.Missed(change, count);
-              }
-            }
-            case Change.Delete(var origRow) -> {
-              long count = stored.stream()
-                  .filter(row ->
-                      keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k))))
-                  .count();
-              if (count != 1) {
-                done.add(key);
-                return new Changes.Outcome.Missed(change, count);
-              }
-            }
-            case Change.Insert _ -> {
-              // A new row has no row to check.
-            }
-          }
-        }
-        var next = new ArrayList<>(stored);
-        for (var change : ordered) {
-          switch (change) {
-            case Change.Update(var origRow, var newVals) -> {
-              int matched = -1;
-              long count = 0;
-              for (int r = 0; r < next.size(); r++) {
-                var row = next.get(r);
-                if (keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))) {
-                  matched = r;
-                  count++;
-                }
-              }
-              if (count != 1) {
-                done.add(key);
-                return new Changes.Outcome.Missed(change, count);
-              }
-              var updated = new ArrayList<>(next.get(matched));
-              newVals.forEach(updated::set);
-              next.set(matched, Collections.unmodifiableList(updated));
-            }
-            case Change.Delete(var origRow) -> {
-              int matched = -1;
-              long count = 0;
-              for (int r = 0; r < next.size(); r++) {
-                var row = next.get(r);
-                if (keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))) {
-                  matched = r;
-                  count++;
-                }
-              }
-              if (count != 1) {
-                done.add(key);
-                return new Changes.Outcome.Missed(change, count);
-              }
-              next.remove(matched);
-            }
-            case Change.Insert(var newVals) -> {
-              var inserted = new Object[changes.columns().size()];
-              newVals.forEach((c, v) -> inserted[c] = v);
-              next.add(Collections.unmodifiableList(Arrays.asList(inserted)));
-            }
-          }
-        }
-        values.put(path, List.copyOf(next));
-        counts.put(path, (long) next.size());
-        estimates.put(path, OptionalLong.of(next.size()));
         done.add(key);
-        return new Changes.Outcome.Committed();
+        return outcome;
       } finally {
         busy.decrementAndGet();
       }
+    }
+
+    @Override
+    public Run scan(Table t, List<Column> columns, List<Integer> key) throws QueryException {
+      var path = path(t);
+      var rows = rows("scan " + path, t, table -> {
+        // As core reads: the columns given must be the table's now, by name, order and type.
+        var now = tableColumns(t, table).stream()
+            .map(c -> List.of(c.name(), c.type()))
+            .toList();
+        if (!now.equals(columns.stream().map(c -> List.of(c.name(), c.type())).toList())) {
+          return null;
+        }
+        var sorted = new ArrayList<>(materializeRows(path, columns));
+        sorted.sort((a, b) -> {
+          for (var i : key) {
+            int by = KeyedRead.compare(a.get(i), b.get(i));
+            if (by != 0) {
+              return by;
+            }
+          }
+          return 0;
+        });
+        return List.copyOf(sorted);
+      });
+      var fields = columns.stream()
+          .map(c -> new Field(c.name(), c.type(), kind(c.type())))
+          .toList();
+      var scanned = new Run() {
+        private int at;
+        private boolean over;
+
+        @Override
+        public Portion next(int count) {
+          var portion = "scan " + path + " " + at;
+          try {
+            note(portion);
+            call(portion, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (Exception e) {
+            over = true;
+            giving = null;
+            var kind =
+                e instanceof QueryException q && q.failure() == QueryException.Failure.CANCELLED
+                    ? Failure.Kind.CANCELLED
+                    : Failure.Kind.OTHER;
+            return new Portion(
+                List.of(serverError(kind, e.getMessage())),
+                List.of(),
+                false,
+                TOOK,
+                Transaction.NONE,
+                true);
+          }
+          var next = rows.subList(at, Math.min(rows.size(), at + count));
+          var from = at;
+          at += next.size();
+          over = at >= rows.size();
+          if (over) {
+            giving = null;
+          }
+          return new Portion(
+              List.of(new Result.Rows(fields, from, List.copyOf(next))),
+              List.of(),
+              !over,
+              TOOK,
+              Transaction.NONE,
+              true);
+        }
+
+        @Override
+        public Abandoned close() {
+          var unread = !over;
+          if (unread) {
+            noted("close scan " + path);
+            over = true;
+          }
+          giving = null;
+          var failure = unread ? givingUp.get("scan " + path) : null;
+          return failure == null
+              ? Abandoned.NOTHING
+              : new Abandoned(Optional.of(failure), List.of());
+        }
+      };
+      giving = scanned;
+      return scanned;
+    }
+
+    @Override
+    public Writing writer(Table t) throws QueryException {
+      var path = path(t);
+      var begin = "writer " + path;
+      try {
+        note(begin);
+        call(begin, queryFailure(QueryException.Failure.CANCELLED));
+      } catch (QueryException e) {
+        throw e;
+      } catch (Exception _) {
+        throw queryFailure(QueryException.Failure.OTHER);
+      }
+      if (readOnly) {
+        throw QueryException.of(
+            QueryException.Failure.ACCESS_DENIED,
+            "The connection is read-only, so nothing is written on it");
+      }
+      var outline =
+          container(t.container()) == null ? null : find(container(t.container()), t.name());
+      if (outline == null) {
+        throw queryFailure(QueryException.Failure.NOT_FOUND);
+      }
+      var working = new ArrayList<>(materializeRows(path, tableColumns(t, outline)));
+      return new Writing() {
+        private boolean open = true;
+
+        @Override
+        public Optional<Changes.Outcome> write(Changes batch) throws QueryException {
+          requireOpen();
+          var key = "batch " + path;
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            open = false;
+            throw e;
+          } catch (Exception _) {
+            open = false;
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          for (var st : batch.statements(made.provider())) {
+            Journal.sql(
+                made.provider(),
+                Purpose.CHANGES,
+                st.sql(),
+                _ -> new Outcome.Changed(1),
+                () -> null);
+          }
+          if (refusing.contains(path)) {
+            open = false;
+            noted("rollback " + path);
+            return Optional.of(new Changes.Outcome.Refused());
+          }
+          var trial = new ArrayList<>(working);
+          var outcome = applied(trial, batch);
+          if (!(outcome instanceof Changes.Outcome.Committed)) {
+            open = false;
+            noted("rollback " + path);
+            return Optional.of(outcome);
+          }
+          working.clear();
+          working.addAll(trial);
+          done.add(key);
+          return Optional.empty();
+        }
+
+        // As core's, within its bound: an interrupt does not stop it, held or not.
+        @Override
+        public void commit() throws QueryException {
+          requireOpen();
+          var key = "commit " + path;
+          note(key);
+          open = false;
+          ending(key);
+          var failure = failures.get(key);
+          if (failure != null) {
+            failed.add(key);
+            throw failure instanceof QueryException q
+                ? q
+                : queryFailure(QueryException.Failure.OTHER);
+          }
+          store(path, working);
+          done.add(key);
+        }
+
+        @Override
+        public void rollBack() {
+          if (open) {
+            open = false;
+            noted("rollback " + path);
+          }
+        }
+
+        // As core's: nothing is written or committed once the writing is over.
+        private void requireOpen() {
+          if (!open) {
+            throw new IllegalStateException("The writer is over");
+          }
+        }
+      };
+    }
+
+    // The changes made in the rows, as core checks and writes them: where a row an update or a
+    // deletion names is not there once, Missed, and the rows as they were.
+    // Where it is missed, the rows may be changed in part.
+    private static Changes.Outcome applied(List<List<Object>> next, Changes changes) {
+      var keyCols = IntStream.range(0, changes.columns().size())
+          .filter(i -> changes.columns().get(i).keyPosition() > 0)
+          .boxed()
+          .sorted(Comparator.comparingInt(i -> changes.columns().get(i).keyPosition()))
+          .toList();
+      var ordered = new ArrayList<Change>();
+      for (var kind : List.of(Change.Update.class, Change.Delete.class, Change.Insert.class)) {
+        for (var change : changes.changes()) {
+          if (kind.isInstance(change)) {
+            ordered.add(change);
+          }
+        }
+      }
+      // Check every update and delete against the rows as read before applying, as core does.
+      for (var change : ordered) {
+        switch (change) {
+          case Change.Update(var origRow, var newVals) -> {
+            long count = next.stream()
+                .filter(row ->
+                    keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))
+                        && newVals.keySet().stream()
+                            .allMatch(c -> Objects.equals(row.get(c), origRow.get(c))))
+                .count();
+            if (count != 1) {
+              return new Changes.Outcome.Missed(change, count);
+            }
+          }
+          case Change.Delete(var origRow) -> {
+            long count = next.stream()
+                .filter(row ->
+                    keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k))))
+                .count();
+            if (count != 1) {
+              return new Changes.Outcome.Missed(change, count);
+            }
+          }
+          case Change.Insert _ -> {
+            // A new row has no row to check.
+          }
+        }
+      }
+      for (var change : ordered) {
+        switch (change) {
+          case Change.Update(var origRow, var newVals) -> {
+            int matched = -1;
+            long count = 0;
+            for (int r = 0; r < next.size(); r++) {
+              var row = next.get(r);
+              if (keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))) {
+                matched = r;
+                count++;
+              }
+            }
+            if (count != 1) {
+              return new Changes.Outcome.Missed(change, count);
+            }
+            var updated = new ArrayList<>(next.get(matched));
+            newVals.forEach(updated::set);
+            next.set(matched, Collections.unmodifiableList(updated));
+          }
+          case Change.Delete(var origRow) -> {
+            int matched = -1;
+            long count = 0;
+            for (int r = 0; r < next.size(); r++) {
+              var row = next.get(r);
+              if (keyCols.stream().allMatch(k -> Objects.equals(row.get(k), origRow.get(k)))) {
+                matched = r;
+                count++;
+              }
+            }
+            if (count != 1) {
+              return new Changes.Outcome.Missed(change, count);
+            }
+            next.remove(matched);
+          }
+          case Change.Insert(var newVals) -> {
+            var inserted = new Object[changes.columns().size()];
+            newVals.forEach((c, v) -> inserted[c] = v);
+            next.add(Collections.unmodifiableList(Arrays.asList(inserted)));
+          }
+        }
+      }
+      return new Changes.Outcome.Committed();
     }
 
     @Override
@@ -1650,6 +1885,13 @@ final class FakeServers implements Servers {
       entries.add(new Document.Entry("_id", source.get("_id")));
       entries.addAll(target.entries());
       return new Document(entries);
+    }
+
+    // The table's rows from now on, as a commit leaves them.
+    private void store(String path, List<List<Object>> rows) {
+      values.put(path, List.copyOf(rows));
+      counts.put(path, (long) rows.size());
+      estimates.put(path, OptionalLong.of(rows.size()));
     }
 
     private List<List<Object>> materializeRows(String path, List<Column> columns) {

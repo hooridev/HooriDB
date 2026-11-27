@@ -379,13 +379,14 @@ public final class PostgreSql implements Dialect {
 
     // Key columns only (up to indnkeyatts, omitting INCLUDE columns); ordinary columns use their
     // unquoted attname while expression key parts (attnum = 0) come from pg_get_indexdef, as text,
-    // which a name would cut at 63 bytes. Not yet valid indexes count, as psql's \d shows them.
+    // which a name would cut at 63 bytes. Not yet valid indexes count, as psql's \d shows them,
+    // but as partial ones do, a unique one of them names not every row once.
     @Override
     public String indexes() {
       return "SELECT ic.relname,"
           + " COALESCE(a.attname::pg_catalog.text,"
           + " pg_catalog.pg_get_indexdef(i.indexrelid, k.pos::pg_catalog.int4, true)),"
-          + " i.indisunique, i.indisprimary"
+          + " i.indisunique, i.indisprimary, i.indpred IS NOT NULL OR NOT i.indisvalid"
           + " FROM pg_catalog.pg_index i"
           + " JOIN pg_catalog.pg_class c ON c.oid" + EQ + "i.indrelid"
           + JOIN_SCHEMA

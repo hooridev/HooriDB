@@ -840,6 +840,14 @@ final class CatalogTree {
    * runs on it never holds up the tree or a table tab.
    */
   Session session(State s, UUID id, String database) {
+    return session(s, id, database, false);
+  }
+
+  /**
+   * As {@link #session(State, UUID, String)}, read-only at the server where {@code readOnly}, as
+   * the tree's own are on a server of SQL, for a session that only reads.
+   */
+  Session session(State s, UUID id, String database, boolean readOnly) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected)) {
       return null;
@@ -847,6 +855,9 @@ final class CatalogTree {
     // A console finds a lost connection in what its statements give, not through the tree.
     var lane = new Lane(e -> {});
     var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
+    if (readOnly) {
+      profile = browsing(profile);
+    }
     lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
     return new Session(lane, live.driver, live.password.clone());
   }
@@ -894,6 +905,24 @@ final class CatalogTree {
   ServerVersion version(UUID id) {
     var live = lives.get(id);
     return live != null && live.phase instanceof Live.Connected c ? c.version() : null;
+  }
+
+  /** The tables, not views, that the tree has read of the connection, in no order. */
+  List<Table> tablesRead(UUID id) {
+    var live = lives.get(id);
+    var tables = new ArrayList<Table>();
+    if (live != null) {
+      for (var level : live.levels.values()) {
+        if (level instanceof Read(var children)) {
+          for (var child : children) {
+            if (child instanceof Node.OfTable t && t.table().kind() == Table.Kind.TABLE) {
+              tables.add(t.table());
+            }
+          }
+        }
+      }
+    }
+    return tables;
   }
 
   /** The table's columns as the tree read them, or null where it has not. */
@@ -1594,6 +1623,12 @@ final class CatalogTree {
       case Node.OfTable n ->
         List.of(
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
+            Menu.item(
+                    SyncTab.COMPARE_DATA,
+                    SyncTab.comparable(s, n.id(), n.table())
+                        ? () -> s.openSync(n.id(), n.table(), s.tabs.main().active())
+                        : null)
+                .icon(Symbol.ARROW_SYNC),
             refresh,
             copy);
       case Node.ForeignKeys(var id, var table) ->

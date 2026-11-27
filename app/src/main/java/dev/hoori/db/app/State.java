@@ -622,8 +622,9 @@ final class State {
   /**
    * Puts the profile in place of the one with its id, and selects it; a new one goes last into the
    * folder its dialog was opened for, which opens, else at the top. Where it reaches another
-   * server or database now, the tabs of its tables close: their records name tables of the old
-   * one. Its consoles stay, with their texts and databases.
+   * server or database now, the tabs of its tables close, and the comparisons of them, and those
+   * that compare a table with one of them forget it: their records name tables of the old one. Its
+   * consoles stay, with their texts and databases.
    */
   void put(ConnectionProfile profile) {
     var old = profile(profile.id());
@@ -633,7 +634,9 @@ final class State {
             || old.port() != profile.port()
             || old.srv() != profile.srv()
             || !database(old).equals(database(profile)))) {
-      close(tables(profile.id()));
+      var gone = new ArrayList<Tab>(tables(profile.id()));
+      gone.addAll(comparisons(profile.id()));
+      close(gone);
     }
     if (old == null
         && workspace.fits(dialogs.placing, profile)) { // a folder gone meanwhile: the top
@@ -1043,6 +1046,7 @@ final class State {
     exitAt = noticed;
     consoles(null).forEach(ConsoleTab::end);
     monitors(null).forEach(m -> m.end(this));
+    syncs(null).forEach(x -> x.end(this));
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
       if (exits == at && guard.quitting() && closing > waived) {
@@ -1214,6 +1218,7 @@ final class State {
       case TableTab x -> x.id;
       case ConsoleTab x -> x.id;
       case MonitorTab x -> x.id;
+      case SyncTab x -> x.id;
     };
   }
 
@@ -1236,6 +1241,43 @@ final class State {
     var monitor = new MonitorTab(this, id);
     tabs.add(group, group.tabs().size(), monitor);
     monitor.open(this);
+  }
+
+  /**
+   * The table of SQL that Compare data compares in the window of these tabs: in the main window the
+   * table selected in the tree, else that of the window's active tab; null for none.
+   */
+  Node.OfTable compareFor(TabGroups.Group<Tab> group) {
+    Node.OfTable found = null;
+    if (group == tabs.main().active() && selected instanceof Node.OfTable t) {
+      found = t;
+    } else if (group.activeTab() instanceof TableTab x) {
+      found = new Node.OfTable(x.id, x.table);
+    }
+    return found != null && SyncTab.comparable(this, found.id(), found.table()) ? found : null;
+  }
+
+  /** Opens Compare data for the table of the connection, as the source, in a new tab there. */
+  void openSync(UUID id, Table table, TabGroups.Group<Tab> group) {
+    if (!SyncTab.comparable(this, id, table)) {
+      return;
+    }
+    var sync = new SyncTab(this, id, table);
+    tabs.add(group, group.tabs().size(), sync);
+    tabs.select(group, group.tabs().indexOf(sync));
+  }
+
+  /** The comparisons of every window that use the connection, or all where it is null. */
+  List<SyncTab> syncs(UUID id) {
+    var all = new ArrayList<SyncTab>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof SyncTab x && (id == null || x.uses(id))) {
+          all.add(x);
+        }
+      }
+    }
+    return all;
   }
 
   /** The server monitors of every window, of the connection or of all where it is null. */
@@ -1355,7 +1397,24 @@ final class State {
       }
     }
     all.addAll(monitors(id));
+    all.addAll(comparisons(id));
     close(all);
+  }
+
+  /**
+   * The comparisons of the connection's tables, to close; those that compare a table with one of
+   * them forget it now.
+   */
+  private List<SyncTab> comparisons(UUID id) {
+    var sources = new ArrayList<SyncTab>();
+    for (var sync : syncs(id)) {
+      if (sync.id.equals(id)) {
+        sources.add(sync);
+      } else {
+        sync.forget(this, id);
+      }
+    }
+    return sources;
   }
 
   /** Closes these tabs, in whichever window each is. */
@@ -1370,6 +1429,7 @@ final class State {
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
+    syncs(id).forEach(x -> x.end(this));
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -1410,6 +1470,11 @@ final class State {
     }
     var profile = profile(tab.id);
     return (profile == null ? "" : name(profile) + ": ") + tab.path();
+  }
+
+  /** A comparison's title: its source table's name. */
+  String title(SyncTab tab) {
+    return "Compare " + tab.table.name();
   }
 
   /** A server monitor's title: its connection's name. */
@@ -1635,6 +1700,7 @@ final class State {
     tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    syncs(null).forEach(SyncTab::close);
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();

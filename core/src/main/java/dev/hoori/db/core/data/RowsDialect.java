@@ -23,6 +23,14 @@ public abstract class RowsDialect {
 
   RowsDialect() {}
 
+  /**
+   * What follows writes into the table in their transaction, before it commits, as a script of
+   * them runs it too: on PostgreSQL its sequences, of its identity and serial columns, moved to the
+   * values the table holds where they are behind, never back, so that a new row's value is not one
+   * a written row has; none where the server moves them itself, as MySQL's {@code AUTO_INCREMENT}.
+   */
+  abstract List<String> afterWrites(Provider provider, Table table);
+
   /** The planner's estimate of the rows that {@code select}, all rows of the table, gives. */
   abstract OptionalLong estimate(
       Connection connection, Provider provider, Table table, String select) throws QueryException;
@@ -31,11 +39,12 @@ public abstract class RowsDialect {
   abstract String count();
 
   /**
-   * How the table's columns are read. Where the server is asked for them before the page, a read
-   * fails as {@link QueryException.Failure#COLUMNS_CHANGED} where they are not the given ones.
+   * How the table's columns are read: cut to {@link Rows#LIMIT}, as a page shows them, or whole.
+   * Where the server is asked for them before the page, a read fails as {@link
+   * QueryException.Failure#COLUMNS_CHANGED} where they are not the given ones.
    */
   abstract Rows.Described describe(
-      Connection connection, Provider provider, Table table, List<Column> columns)
+      Connection connection, Provider provider, Table table, List<Column> columns, boolean whole)
       throws QueryException;
 
   /**
@@ -100,6 +109,12 @@ public abstract class RowsDialect {
     return result == table;
   }
 
+  /**
+   * The expression that orders the quoted column by the code points of its text, as {@link
+   * KeyedRead#compare} orders texts: by the bytes of its UTF-8, whatever the column's collation.
+   */
+  abstract String textOrder(String column);
+
   /** The operator that compares a column of a key with its value, as the reads name theirs. */
   abstract String keyEquality();
 
@@ -117,6 +132,14 @@ public abstract class RowsDialect {
    * @throws IllegalArgumentException if it is of no kind's type
    */
   abstract String literal(Object value);
+
+  /**
+   * The value as a literal that a script runs: one that the server reads back as the value in any
+   * session, as a parameter of {@link #parameter} binds it; {@link #literal} where that reads so.
+   */
+  String scriptLiteral(Object value) {
+    return literal(value);
+  }
 
   /** A case-insensitive {@code LIKE} of the quoted column as text, {@code !} escaping. */
   abstract String like(String column, Field field, String pattern);

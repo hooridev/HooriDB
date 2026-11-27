@@ -94,10 +94,10 @@ abstract class MySqlFamilyRows extends RowsDialect {
   // bit(1) and bit(8) alike as BIT.
   @Override
   Rows.Described describe(
-      Connection connection, Provider provider, Table table, List<Column> columns) {
+      Connection connection, Provider provider, Table table, List<Column> columns, boolean whole) {
     return new Rows.Described(
         columns.stream()
-            .map(column -> read(Rows.source(provider, column), column.type()))
+            .map(column -> read(Rows.source(provider, column, whole), column.type()))
             .toList(),
         0);
   }
@@ -301,6 +301,12 @@ abstract class MySqlFamilyRows extends RowsDialect {
     };
   }
 
+  // The text in utf8mb4, whose bytes go as its code points do, of whatever type and character set.
+  @Override
+  String textOrder(String column) {
+    return bytes(utf8("CAST(" + column + " AS CHAR)"));
+  }
+
   @Override
   String keyEquality() {
     return "=";
@@ -324,6 +330,13 @@ abstract class MySqlFamilyRows extends RowsDialect {
     }
   }
 
+  // An AUTO_INCREMENT moves past a value written into it by itself. MariaDB's sequences, which a
+  // default may take a value of, are left as they are, as a copy of rows leaves them.
+  @Override
+  List<String> afterWrites(Provider provider, Table table) {
+    return List.of();
+  }
+
   // A text as the servers read it unless their SQL mode says NO_BACKSLASH_ESCAPES, and a moment
   // with its offset, as MySQL reads it, which tells that it is in UTC.
   @Override
@@ -339,6 +352,16 @@ abstract class MySqlFamilyRows extends RowsDialect {
       case Binary binary -> "X'" + HexFormat.of().formatHex(binary.bytes()) + "'";
       default -> "'" + Rows.text(value, false).replace("\\", "\\\\").replace("'", "''") + "'";
     };
+  }
+
+  // A moment as parameter() binds it, as the seconds since 1970 that FROM_UNIXTIME() takes in the
+  // session's zone, as MariaDB reads no offset in a literal; in an hour that the zone repeats it
+  // can be the other moment, which a script cannot ask the server first, as changeable() does.
+  @Override
+  String scriptLiteral(Object value) {
+    return value instanceof OffsetDateTime moment
+        ? "FROM_UNIXTIME(" + literal(seconds(moment)) + ")"
+        : literal(value);
   }
 
   // Text in UTF-8 compared by its bytes, as unchanged() does, so that no collation makes accents

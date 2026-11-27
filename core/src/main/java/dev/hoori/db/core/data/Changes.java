@@ -222,17 +222,73 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
   public List<Statement> statements(Provider provider) {
     var dialect = provider.dialect().rows();
     var statements = new ArrayList<Statement>();
+    for (var change : ordered()) {
+      var values = new ArrayList<Object>();
+      var sql = sql(provider, change, dialect.keyEquality(), parameters(dialect, values));
+      var preview = sql(provider, change, "=", dialect::literal);
+      statements.add(new Statement(change, sql, values, preview));
+    }
+    return statements;
+  }
+
+  /**
+   * The {@link Statement#preview previews} of the {@link #statements}, in their order, but with a
+   * text longer than {@link Rows#LIMIT} code points, or binary data longer than as many bytes, cut
+   * to that and its whole length in a comment after it: for people to read the changes of long
+   * values, which they do not run.
+   *
+   * @throws IllegalArgumentException if a value is of no kind's type
+   */
+  public List<String> previews(Provider provider) {
+    var dialect = provider.dialect().rows();
+    Function<Object, String> literal = value -> switch (value) {
+      case String text
+      when Rows.tooLong(text) ->
+        dialect.literal(Rows.cut(text).start()) + " /* cut, "
+            + text.codePointCount(0, text.length()) + " characters in all */";
+      case Binary binary
+      when binary.length() > Rows.LIMIT ->
+        dialect.literal(Rows.shown(binary)) + " /* cut, " + binary.length() + " bytes in all */";
+      case null, default -> dialect.literal(value);
+    };
+    return ordered().stream().map(change -> sql(provider, change, "=", literal)).toList();
+  }
+
+  /**
+   * The {@link #statements}, in their order, as a script of them runs them: each value a literal
+   * that the server reads back as the value whatever the session's zone, as the parameters of
+   * {@link #write} are; a text in it is written as {@link Statement#preview} writes it.
+   *
+   * @throws IllegalArgumentException if a value is of no kind's type
+   */
+  public List<String> script(Provider provider) {
+    var dialect = provider.dialect().rows();
+    return ordered().stream()
+        .map(change -> sql(provider, change, "=", dialect::scriptLiteral))
+        .toList();
+  }
+
+  // The updates first, then the deletions and then the new rows, each in the order they were made.
+  private List<Change> ordered() {
+    var ordered = new ArrayList<Change>(changes.size());
     for (var kind : List.of(Change.Update.class, Change.Delete.class, Change.Insert.class)) {
       for (var change : changes) {
         if (kind.isInstance(change)) {
-          var values = new ArrayList<Object>();
-          var sql = sql(provider, change, dialect.keyEquality(), parameters(dialect, values));
-          var preview = sql(provider, change, "=", dialect::literal);
-          statements.add(new Statement(change, sql, values, preview));
+          ordered.add(change);
         }
       }
     }
-    return statements;
+    return ordered;
+  }
+
+  /**
+   * What follows writes into the table in their transaction, before it commits, as {@link
+   * Writer#commit} runs it and a script of the changes ends with it, before its commit: on
+   * PostgreSQL the table's sequences moved past the values it holds, never back; none where the
+   * server needs nothing.
+   */
+  public static List<String> afterWrites(Provider provider, Table table) {
+    return provider.dialect().rows().afterWrites(provider, table);
   }
 
   /** What came of writing changes. */
@@ -299,25 +355,179 @@ public record Changes(Table table, List<Column> columns, List<Change> changes) {
     }
     Outcome outcome;
     try {
-      Query.within(
-          connection,
-          provider,
-          Execution.ENDING,
-          () -> Journal.call(Purpose.TRANSACTION, Journal.autoCommit(false), () -> {
-            connection.setAutoCommit(false);
-            return null;
-          }));
+      begin(connection, provider);
       outcome = run(connection, provider, all, checks.size());
     } catch (QueryException | RuntimeException e) {
-      try {
-        end(connection, provider, false);
-      } catch (QueryException ended) {
-        e.addSuppressed(ended);
-      }
+      rollBackAfter(connection, provider, e);
       throw e;
     }
     end(connection, provider, outcome instanceof Outcome.Committed);
     return outcome;
+  }
+
+  /**
+   * Begins writing changes of the table in one transaction, all or nothing, as {@link #write}
+   * does, but a batch of changes at a time: so that they need not all be held at once, as when
+   * they come from comparing two tables row by row. Each batch's rows are checked and its
+   * statements run as {@link #write} runs them, and nothing is committed before {@link
+   * Writer#commit}. The connection must have auto-commit on and no transaction open, and nothing
+   * else may run on it until the writer is over.
+   *
+   * @throws QueryException as {@link #write} does, where auto-commit could not be turned off
+   * @throws IllegalStateException if the connection has a transaction open, or auto-commit off
+   * @throws IllegalArgumentException if a PostgreSQL connection is to another database than the
+   *     table's
+   */
+  public static Writer writer(Connection connection, Provider provider, Table table)
+      throws QueryException {
+    Rows.requireConnectedTo(connection, provider, table);
+    requireNoTransaction(connection, provider);
+    try {
+      begin(connection, provider);
+    } catch (QueryException | RuntimeException e) {
+      rollBackAfter(connection, provider, e);
+      throw e;
+    }
+    return new Writer(connection, provider, table);
+  }
+
+  /**
+   * Changes of a table written in one transaction, a batch at a time, from {@link #writer} until
+   * it is committed or rolled back; where a batch misses a row or is refused, or a statement fails,
+   * all is rolled back and the writer is over. Its calls block as {@link #write} does, and an
+   * interrupt cancels them alike; one thread uses it.
+   */
+  public static final class Writer implements AutoCloseable {
+
+    private final Connection connection;
+    private final Provider provider;
+    private final Table table;
+    private boolean open = true;
+    private boolean wrote; // whether a batch wrote, after which the dialect's afterWrites run
+
+    private Writer(Connection connection, Provider provider, Table table) {
+      this.connection = connection;
+      this.provider = provider;
+      this.table = table;
+    }
+
+    /**
+     * Writes the batch in the transaction: empty where it was written, else what ended the
+     * transaction, a {@link Outcome.Missed} or {@link Outcome.Refused}, as {@link #write} says
+     * them, once all was rolled back.
+     *
+     * @throws QueryException as {@link #write} does, once all was rolled back
+     * @throws IllegalStateException if the writer is over
+     * @throws IllegalArgumentException if the batch is of another table, or a value is of no kind's
+     *     type
+     */
+    public Optional<Outcome> write(Changes batch) throws QueryException {
+      requireOpen();
+      if (!batch.table().equals(table)) {
+        throw new IllegalArgumentException(
+            "Changes of " + batch.table().name() + ", not of " + table.name());
+      }
+      var statements = batch.statements(provider);
+      if (statements.isEmpty()) {
+        return Optional.empty();
+      }
+      var checks = batch.checks(provider, statements);
+      var all = new ArrayList<>(checks);
+      all.addAll(statements);
+      var values = all.stream().flatMap(s -> s.values().stream()).toList();
+      Outcome outcome;
+      try {
+        outcome = provider.dialect().rows().changeable(connection, provider, table, values)
+            ? run(connection, provider, all, checks.size())
+            : new Outcome.Refused();
+      } catch (QueryException | RuntimeException e) {
+        open = false;
+        rollBackAfter(connection, provider, e);
+        throw e;
+      }
+      if (outcome instanceof Outcome.Committed) {
+        wrote = true;
+        return Optional.empty();
+      }
+      rollBack();
+      return Optional.of(outcome);
+    }
+
+    /**
+     * Commits what the batches wrote, after what {@link #afterWrites} says follows them where any
+     * wrote, and turns auto-commit on again; the writer is over.
+     *
+     * @throws QueryException as {@link #write} does where the commit failed, once all was rolled
+     *     back; where the connection is given up as the commit runs, whether it took effect is not
+     *     known
+     * @throws IllegalStateException if the writer is over
+     */
+    public void commit() throws QueryException {
+      requireOpen();
+      if (wrote) {
+        try {
+          for (var sql : afterWrites(provider, table)) {
+            Journal.sql(
+                provider,
+                Purpose.CHANGES,
+                sql,
+                _ -> new dev.hoori.db.core.log.Outcome.Done(),
+                () -> Query.run(connection, provider, sql, PreparedStatement::execute));
+          }
+        } catch (QueryException | RuntimeException e) {
+          open = false;
+          rollBackAfter(connection, provider, e);
+          throw e;
+        }
+      }
+      open = false;
+      end(connection, provider, true);
+    }
+
+    /** Rolls back what the batches wrote, where the writer is not over, and ends it. */
+    public void rollBack() throws QueryException {
+      if (open) {
+        open = false;
+        end(connection, provider, false);
+      }
+    }
+
+    /** As {@link #rollBack}, where a failure to end is the connection's, given up then. */
+    @Override
+    public void close() {
+      try {
+        rollBack();
+      } catch (QueryException _) {
+        // The transaction ended with the connection, which the server rolls back as it closes.
+      }
+    }
+
+    private void requireOpen() {
+      if (!open) {
+        throw new IllegalStateException("The writer is over");
+      }
+    }
+  }
+
+  // Turns auto-commit off, within the bound of an ending, for a transaction of the changes' own.
+  private static void begin(Connection connection, Provider provider) throws QueryException {
+    Query.within(
+        connection,
+        provider,
+        Execution.ENDING,
+        () -> Journal.call(Purpose.TRANSACTION, Journal.autoCommit(false), () -> {
+          connection.setAutoCommit(false);
+          return null;
+        }));
+  }
+
+  // Rolls back what the failure left of the transaction, adding a failure to do so to it.
+  private static void rollBackAfter(Connection connection, Provider provider, Exception failure) {
+    try {
+      end(connection, provider, false);
+    } catch (QueryException ended) {
+      failure.addSuppressed(ended);
+    }
   }
 
   private static void requireNoTransaction(Connection connection, Provider provider)

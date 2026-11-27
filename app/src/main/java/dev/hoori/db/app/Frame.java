@@ -203,6 +203,11 @@ final class Frame {
                 .icon(Symbol.SERVER)
                 .hue(ConnectionColors.hue(s.color(x.id)))
                 .busy(x.busy());
+          case SyncTab x ->
+            new Tabs.Tab(s.title(x))
+                .icon(Symbol.ARROW_SYNC)
+                .hue(ConnectionColors.hue(s.color(x.id)))
+                .busy(x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -217,6 +222,7 @@ final class Frame {
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
           case MonitorTab x -> x.view(s, app);
+          case SyncTab x -> x.view(s, app);
         });
   }
 
@@ -227,6 +233,7 @@ final class Frame {
       case TableTab x -> s.title(x);
       case ConsoleTab x -> s.title(x);
       case MonitorTab x -> s.title(x);
+      case SyncTab x -> s.title(x);
     };
   }
 
@@ -293,6 +300,7 @@ final class Frame {
         || group.activeTab() instanceof ConsoleTab console
             && (console.confirming != null || console.preview != null || console.history != null)
         || group.activeTab() instanceof MonitorTab monitor && monitor.asked != null
+        || group.activeTab() instanceof SyncTab sync && sync.preview != null
         || s.catalog.asks(s, group);
   }
 
@@ -303,6 +311,9 @@ final class Frame {
   private static El confirmation(State s, TabGroups.Group<Tab> group) {
     if (group.activeTab() instanceof MonitorTab monitor) {
       return monitor.question(s);
+    }
+    if (group.activeTab() instanceof SyncTab sync) {
+      return sync.previewDialog(s, app(s, group));
     }
     if (group.activeTab() instanceof TableTab table) {
       El document = table.documentView(s, app(s, group));
@@ -687,6 +698,7 @@ final class Frame {
   static List<Menu.Item> menus(State s, TabGroups.Group<Tab> group, boolean modal) {
     var palette = s.palette(group);
     var console = s.consoleFor(group);
+    var compare = modal ? null : s.compareFor(group);
     // What opens a dialog of the main window waits for the one open there, from every window.
     boolean free = !mainDialog(s);
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
@@ -713,6 +725,12 @@ final class Frame {
                         "Server monitor",
                         console == null ? null : () -> s.openMonitor(console, group))
                     .icon(Symbol.SERVER),
+                Menu.item(
+                        SyncTab.COMPARE_DATA,
+                        compare == null
+                            ? null
+                            : () -> s.openSync(compare.id(), compare.table(), group))
+                    .icon(Symbol.ARROW_SYNC),
                 Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c && c.id != null

@@ -254,7 +254,7 @@ final class Lane {
    * cancelled, interrupts the lane's thread in the call, which core turns into a cancel on the
    * server.
    */
-  private static <T> T await(Future<T> call) throws Exception {
+  static <T> T await(Future<T> call) throws Exception {
     try {
       return call.get();
     } catch (InterruptedException e) {

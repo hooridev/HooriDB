@@ -1,7 +1,9 @@
 package dev.hoori.db.core.execution;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.KeyedRead;
 import dev.hoori.db.core.data.RowReader;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.dialect.SessionDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
@@ -85,6 +87,8 @@ public final class Execution implements AutoCloseable {
   private final SessionDialect session;
   private final String sql;
   private final boolean readOnly;
+  // The read of a table's rows that it runs, whose reader reads them, or null for a statement's.
+  private final KeyedRead keyed;
   private Statement statement;
   // Whether auto-commit was turned off for this statement, to be turned on again when it is over.
   private boolean ownTransaction;
@@ -112,11 +116,26 @@ public final class Execution implements AutoCloseable {
    * not sent, and its first portion is a failure that says so.
    */
   public Execution(Connection connection, Provider provider, String sql, boolean readOnly) {
+    this(connection, provider, sql, readOnly, null);
+  }
+
+  /**
+   * The keyed read of a table, run as a statement is: one result of the table's rows, whole, in
+   * its key's order, read a portion at a time with the read's own {@link KeyedRead#reader}, and
+   * logged as a read of rows.
+   */
+  public Execution(Connection connection, Provider provider, KeyedRead read) {
+    this(connection, provider, read.sql(), false, read);
+  }
+
+  private Execution(
+      Connection connection, Provider provider, String sql, boolean readOnly, KeyedRead keyed) {
     this.connection = connection;
     this.provider = provider;
     this.session = provider.dialect().session();
     this.sql = sql;
     this.readOnly = readOnly;
+    this.keyed = keyed;
   }
 
   /**
@@ -139,9 +158,11 @@ public final class Execution implements AutoCloseable {
       return refused;
     }
     // Sent with its first portion, which is what the server was asked for.
-    return statement != null
-        ? portion(count)
-        : Journal.sql(provider, Purpose.STATEMENT, sql, Execution::outcome, () -> portion(count));
+    if (statement != null) {
+      return portion(count);
+    }
+    var purpose = keyed == null ? Purpose.STATEMENT : Purpose.ROWS;
+    return Journal.sql(provider, purpose, sql, Execution::outcome, () -> portion(count));
   }
 
   /**
@@ -361,19 +382,25 @@ public final class Execution implements AutoCloseable {
   // Goes on to the statement's current result, of rows, before its first row.
   private void open() throws SQLException {
     rows = statement.getResultSet();
-    reader = RowReader.of(provider, rows.getMetaData());
+    reader = keyed == null ? RowReader.of(provider, rows.getMetaData()) : keyed.reader();
     position = 0;
     ahead = rows.next();
   }
 
-  // Reads at most the given number of rows of the result it is on, as a result of its own; where
-  // that fails, the rows read before.
+  // Reads at most the given number of rows of the result it is on, as a result of its own, and of
+  // a keyed read, whose values are whole, at most its portion of characters beyond the first row;
+  // where that fails, the rows read before.
   private void readRows(int count, List<Result> results) throws SQLException {
     var from = position;
     var read = new ArrayList<List<Object>>();
+    long characters = 0;
     try {
-      while (ahead && read.size() < count) {
-        read.add(reader.read(rows));
+      while (ahead && read.size() < count && characters < KeyedRead.PORTION) {
+        var row = reader.read(rows);
+        read.add(row);
+        if (keyed != null) {
+          characters += Rows.characters(row);
+        }
         position++;
         ahead = rows.next();
       }

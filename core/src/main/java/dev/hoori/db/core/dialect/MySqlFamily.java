@@ -330,7 +330,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     public String indexes() {
       var column = functionalIndexExpressions ? "COALESCE(COLUMN_NAME, EXPRESSION)" : "COLUMN_NAME";
       return "SELECT INDEX_NAME, " + column + ", NON_UNIQUE = 0,"
-          + " INDEX_NAME = CAST('PRIMARY' AS BINARY)"
+          + " INDEX_NAME = CAST('PRIMARY' AS BINARY), FALSE"
           + " FROM information_schema.STATISTICS"
           + " WHERE TABLE_SCHEMA = CAST(? AS BINARY) AND TABLE_NAME = CAST(? AS BINARY)"
           + " ORDER BY INDEX_NAME = CAST('PRIMARY' AS BINARY) DESC,"

@@ -37,6 +37,8 @@ import java.util.function.Function;
 /** How PostgreSQL's tables and results are read, with pgjdbc. */
 public final class PostgreSqlRows extends RowsDialect {
 
+  private static final String NUM_NULLS = "pg_catalog.num_nulls(";
+
   // PostgreSQL's built-in types, by the OIDs it gives them for good; a user's type may have any of
   // their names.
   private static final int BOOL = 16;
@@ -87,7 +89,7 @@ public final class PostgreSqlRows extends RowsDialect {
   // the base type of a domain.
   @Override
   Rows.Described describe(
-      Connection connection, Provider provider, Table table, List<Column> columns)
+      Connection connection, Provider provider, Table table, List<Column> columns, boolean whole)
       throws QueryException {
     // All the table's columns, so that the given ones can be told to be them still.
     var sql = "SELECT " + ALIAS + ".* FROM " + Rows.qualified(provider, table) + " AS " + ALIAS
@@ -112,7 +114,7 @@ public final class PostgreSqlRows extends RowsDialect {
           }
           var reads = new ArrayList<Rows.Read>();
           for (var i = 0; i < columns.size(); i++) {
-            reads.add(read(Rows.source(provider, columns.get(i)), metadata, i + 1));
+            reads.add(read(Rows.source(provider, columns.get(i), whole), metadata, i + 1));
           }
           return new Rows.Described(
               reads, Integer.toUnsignedLong(field(metadata, 1, "getTableOid")));
@@ -304,6 +306,13 @@ public final class PostgreSqlRows extends RowsDialect {
     };
   }
 
+  // The type's output function's text, as anyText() reads it, in the collation of bytes, whose
+  // order is that of the code points in a database of UTF8.
+  @Override
+  String textOrder(String column) {
+    return "pg_catalog.concat(" + column + ") COLLATE pg_catalog.\"C\"";
+  }
+
   @Override
   String keyEquality() {
     return "OPERATOR(pg_catalog.=)";
@@ -318,6 +327,49 @@ public final class PostgreSqlRows extends RowsDialect {
     } else {
       statement.setObject(index, text(value), Types.OTHER);
     }
+  }
+
+  // One block, so that it runs alike from a script, for each sequence of an identity or serial
+  // column: moved to the column's highest value, or its lowest where the sequence counts down,
+  // where that is within its bounds and its next value is not past it already, so that its next
+  // value is the one after, as a copy of rows moves them.
+  @Override
+  List<String> afterWrites(Provider provider, Table table) {
+    var named = literal(Rows.qualified(provider, table));
+    var body = """
+        DECLARE
+          c record;
+          m bigint;
+        BEGIN
+          FOR c IN
+            SELECT a.attname, s.id, p.seqincrement OPERATOR(pg_catalog.>) 0 AS up, p.seqmin,
+              p.seqmax, p.seqstart, pg_catalog.pg_sequence_last_value(s.id) AS v
+            FROM pg_catalog.pg_attribute a
+            CROSS JOIN LATERAL (SELECT CAST(pg_catalog.pg_get_serial_sequence(%1$s, a.attname)
+              AS pg_catalog.regclass) AS id) s
+            JOIN pg_catalog.pg_sequence p ON p.seqrelid OPERATOR(pg_catalog.=) s.id
+            WHERE a.attrelid OPERATOR(pg_catalog.=) CAST(%1$s AS pg_catalog.regclass)
+            AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped
+          LOOP
+            EXECUTE pg_catalog.format('SELECT pg_catalog.%%s(%%I) FROM %%s',
+              CASE WHEN c.up THEN 'max' ELSE 'min' END, c.attname, %1$s) INTO m;
+            IF m OPERATOR(pg_catalog.>=) c.seqmin AND m OPERATOR(pg_catalog.<=) c.seqmax
+              AND (CASE WHEN c.up
+                THEN m OPERATOR(pg_catalog.>) c.v
+                  OR c.v IS NULL AND m OPERATOR(pg_catalog.>=) c.seqstart
+                ELSE m OPERATOR(pg_catalog.<) c.v
+                  OR c.v IS NULL AND m OPERATOR(pg_catalog.<=) c.seqstart END) THEN
+              PERFORM pg_catalog.setval(c.id, m);
+            END IF;
+          END LOOP;
+        END
+        """.formatted(named);
+    // A tag of the dollar quote that the table's name does not hold.
+    var tag = "$sequences$";
+    for (int n = 1; body.contains(tag); n++) {
+      tag = "$sequences" + n + "$";
+    }
+    return List.of("DO " + tag + "\n" + body + tag);
   }
 
   @Override
@@ -398,7 +450,7 @@ public final class PostgreSqlRows extends RowsDialect {
   // num_nulls(), as IS NULL holds for a composite whose fields are all NULL and concat() gives ''.
   @Override
   String unchanged(String column, Object value, Function<Object, String> parameter) {
-    var nulls = "pg_catalog.num_nulls(" + column + ") " + keyEquality();
+    var nulls = NUM_NULLS + column + ") " + keyEquality();
     if (value == null) {
       return nulls + " 1";
     }
@@ -437,13 +489,20 @@ public final class PostgreSqlRows extends RowsDialect {
       return Rows.whole(source, kind);
     }
     var text = "pg_catalog.concat(" + source.sql() + ")";
+    if (source.whole()) {
+      return new Rows.Read(
+          Rows.field(source, kind),
+          source.sql(),
+          List.of(text, NUM_NULLS + source.sql() + ")"),
+          (rows, index) -> rows.getInt(index + 1) == 1 ? null : rows.getString(index));
+    }
     return new Rows.Read(
         Rows.field(source, kind),
         source.sql(),
         List.of(
             "pg_catalog.substr(" + text + ", 1, " + (LIMIT + 1) + ")",
             "pg_catalog.octet_length(" + text + ")",
-            "pg_catalog.num_nulls(" + source.sql() + ")"),
+            NUM_NULLS + source.sql() + ")"),
         (rows, index) ->
             rows.getInt(index + 2) == 1 ? null : Rows.cut(rows.getString(index), rows, index + 1));
   }

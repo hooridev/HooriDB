@@ -246,6 +246,39 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     @Override
+    public Run scan(Table table, List<Column> columns, List<Integer> key) throws QueryException {
+      return recorded(of(table), recorded(of(table), () -> link.scan(table, columns, key)));
+    }
+
+    @Override
+    public Writing writer(Table table) throws QueryException {
+      var on = of(table);
+      var writing = recorded(on, () -> link.writer(table));
+      return new Writing() {
+        @Override
+        public Optional<Changes.Outcome> write(Changes batch) throws QueryException {
+          return recorded(on, () -> writing.write(batch));
+        }
+
+        @Override
+        public void commit() throws QueryException {
+          recorded(on, () -> {
+            writing.commit();
+            return null;
+          });
+        }
+
+        @Override
+        public void rollBack() throws QueryException {
+          recorded(on, () -> {
+            writing.rollBack();
+            return null;
+          });
+        }
+      };
+    }
+
+    @Override
     public Run run(String sql) throws QueryException {
       return recorded(link.run(sql));
     }
@@ -257,15 +290,20 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
 
     // A run whose portions and end are logged as the link's calls are.
     private Run recorded(Run run) {
+      return recorded(null, run);
+    }
+
+    // As recorded(Run), about the database; the session's where null.
+    private Run recorded(String database, Run run) {
       return new Run() {
         @Override
         public Portion next(int count) {
-          return recorded(null, () -> run.next(count));
+          return recorded(database, () -> run.next(count));
         }
 
         @Override
         public Abandoned close() {
-          return recorded(null, run::close);
+          return recorded(database, run::close);
         }
       };
     }
