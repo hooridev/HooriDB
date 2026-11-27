@@ -159,30 +159,38 @@ triggers, which the dialog says before; it shows how far it is and can be cancel
 the file until whole, so that a cancelled or failed export leaves it as it was, and closes its
 session as the monitor does, with what a failed closing says among the notices. A view of a server
 of SQL opens its definition in a tab of its own ("Definition" in its menu, Shift+Enter, the File
-menu or the palette): the statements that create it as the export writes them, laid out, read-only
-until Edit, in an editor with the console's colors and completions, beside what it uses and what
-uses it (from `pg_depend` on PostgreSQL, from the qualified names of `information_schema.VIEWS` on
-MariaDB and MySQL), each table or view of them opened by a press. Save shows its `CREATE OR REPLACE
-VIEW` before it runs, in one transaction on PostgreSQL where it is several statements; where
-PostgreSQL keeps the view's columns, it asks to drop and create it in one transaction, saying that
-privileges are lost, unless something uses it, which it names. "New view…", in a database's or
-schema's menu or the File menu, takes a schema, a name and a `SELECT`, shown as its `CREATE VIEW`;
-"Drop view…" names what uses the view and drops that with it (`CASCADE`) where the server does.
-PostgreSQL's materialized views stand apart in the tree, with their own icon and kind, are dropped,
-created and, where they held rows, refreshed when saved, and refresh their rows after a question,
-`CONCURRENTLY` where they hold rows and a unique index of columns allows it. The tab reads and changes on a session of its
-own, the tree reads the schema or database again after a change, and a read-only connection changes
-no view: its items are off and core sends nothing. Run from its app image,
-HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
-Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
-tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
-version confirms once its window has shown its first frame, and the updater's helper puts the old
-version back where it does not, and a version put back is not offered again until a higher one comes
-out. Help, About HooriDB shows the version that runs, its channel of
-updates, its authors, license and website. Started from the unpacked Linux bundle, it puts itself
-into the application menu, which gives its windows their icon in the dock. The main window's
-placement, the sidebar's width and the statement log's open state, height and detail split are kept
-(`ui-state.json`). The theme, System, Light or Dark, where System follows the
+menu or the palette): the statements that create it as the server has them, with MariaDB's and
+MySQL's definer, which the export leaves out, laid out, read-only until Edit, in an editor with the
+console's colors and completions, beside what it uses and what uses it (from `pg_depend` on
+PostgreSQL, from the qualified names of `information_schema.VIEWS` on MariaDB and MySQL), each table
+or view of them opened by a press. Save, its button or Control+S, shows its `CREATE OR REPLACE VIEW`
+before it runs, in one transaction on PostgreSQL where it is several statements, with what takes
+from the view a comment or a column's default that the text no longer sets, and refuses a text that
+creates a view of another name; where PostgreSQL keeps the view's columns, it asks to drop and
+create it in one transaction, which gives it back its owner, triggers, rules, comments and columns'
+defaults and says that privileges are lost, unless something uses it, which it names. "New view…",
+in a database's or schema's menu or the File menu, takes a schema, a name and a `SELECT`, shown as
+its `CREATE VIEW`; "Drop view…" drops the view alone, and where the server refuses as something
+depends on it, shows what the server names and asks to drop that with it (`CASCADE`); MariaDB and
+MySQL leave what used it without it, which it names. PostgreSQL's materialized views stand apart in
+the tree, with their own icon and kind, are dropped, created and, where they held rows, refreshed
+when saved, with their owner, comments, tablespace and access method, and refresh their rows after a
+question, `CONCURRENTLY` where they hold rows and a unique index of columns allows it. The tab reads
+on the tree's connection, which only reads, and changes on the connection's own for changes of
+views, one per database on PostgreSQL, which closes with the tree's connection; a change that runs
+can be cancelled, and Exit cancels it and waits for that connection to close, as for a console's.
+Edits not saved ask before the tab, its window, its connection or HooriDB closes. The tree reads the
+schema or database again after a change, and a read-only connection changes no view: its items are
+off and core sends nothing. Run from its app image, HooriDB looks for a newer GitHub release at each
+start, in the channel Settings chooses, Stable or Nightly (at first that of its own version),
+downloads it, shows its highlights and change count in a tooltip while its notice is hovered, and
+restarts into it through its own Exit when asked; the new version confirms once its window has shown
+its first frame, and the updater's helper puts the old version back where it does not, and a version
+put back is not offered again until a higher one comes out. Help, About HooriDB shows the version
+that runs, its channel of updates, its authors, license and website. Started from the unpacked Linux
+bundle, it puts itself into the application menu, which gives its windows their icon in the dock.
+The main window's placement, the sidebar's width and the statement log's open state, height and
+detail split are kept (`ui-state.json`). The theme, System, Light or Dark, where System follows the
 computer's scheme, is kept in `settings.json`, read before the first frame, with the accent, the
 rows' density, whether a console marks the word at the caret, the case of SQL keywords it completes,
 whether Open in console reuses an open console
@@ -295,9 +303,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   record.
 - What a provider does its own way (SQL, driver behavior, error codes, lexical rules) lives in its
   dialect, `provider.dialect()`: `dev.hoori.db.core.dialect`, and beside a package that the code
-  needs private members of, as `data/*Rows`, `definition/*Definitions` and `dump/*Dump`. Logic code
-  does not name providers; it asks the dialect
-  for a trait named for the behavior. What every provider has is `provider.traits()`; a server of
+  needs private members of, as `data/*Rows`, `definition/*Definitions` and `*Views`, and
+  `dump/*Dump`. Logic code does not name providers; it asks the dialect for a trait named for the
+  behavior. What every provider has is `provider.traits()`; a server of
   documents has a `DocumentDialect`, `provider.documents()`, in place of a `Dialect`, and code of core
   that serves both asks `provider.keepsDocuments()` or switches over the two. The app chooses once,
   with `Language.of(provider)`, a sealed `Language`, `Sql` or `Shell`, which the console, its
@@ -417,16 +425,20 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   a cancel `cancel <host> <operation>` and an end `end <host> <id>`.
 - The definitions of objects come from one place, the dialect's `DefinitionDialect`
   (`provider.dialect().definitions()`, in core's `definition` package), which lists a schema's or
-  database's objects and builds their `Definition`s in one read-only snapshot; the export, a view's
-  tab and what copies an object's structure build on it, and what it sends goes through `Sql` as
-  the purpose its caller bound (`Sql.as`). A view's change is a `ViewChange`, whose statements are
-  shown before they run.
+  database's objects and builds their `Definition`s in one read-only snapshot, for an export
+  (`Mode.EXPORT`: without what binds them to the server, each with what it needs) or for a change
+  on the server (`Mode.EDIT`: as the server has them, only the objects asked for); the export, a
+  view's tab and what copies an object's structure build on it, and what it sends goes through the
+  `Sql` its caller makes with the purpose (`Purpose.DEFINITION`, `Purpose.EXPORT`). A view's
+  change is a `ViewChange`, whose statements the dialect's `ViewDialect`
+  (`provider.dialect().views()`) writes and which are shown before they run.
 - A view's tab runs against `FakeServers` too: `%` marks a materialized view in the outline; a
   view's definition reads as `view` gives it, else as a made-up `CREATE VIEW … AS SELECT 1` that
   uses nothing and that nothing uses, keyed `view <host>/<path>` with the path as of `columns`; a
   change runs each statement keyed `ddl <host> <sql>`, adds a created view to the outline and takes
-  a dropped one out, is refused unsent on a read-only link, and comes to `KeepsColumns` where its
-  first statement is one `keepsColumns` names; `viewChanges` keeps the changes made. Core's
+  a dropped one out, is refused unsent on a read-only link, comes to `KeepsColumns` where its first
+  statement is one `keepsColumns` names, and a drop without `CASCADE` of a view that `view` says
+  something uses comes to `DependedOn` on PostgreSQL; `viewChanges` keeps the changes made. Core's
   `ViewsServerTest` reads, creates, replaces, drops and refreshes views on each `TestServer`.
 - An export runs against `FakeServers` too: it lists the tables and views of the outline, with the
   rows and estimates `rows` gives, and what `objects` adds, as routines and triggers; its calls are

@@ -13,10 +13,10 @@ Open the definition in any of these ways:
 - Select a view in Workspace and press `Shift+Enter`. `Enter` still opens the view's rows.
 - Select a view (or have a view's rows tab in front) and choose **File > View definition**, or run **View definition** from the [command palette](/docs/features/command-palette).
 
-The tab opens read-only. It reads the definition on a server connection of its own, so a slow read does not block browsing the tree or other tabs. The editor uses the console's SQL colors, and `Ctrl+Alt+L` lays the SQL out.
+The tab opens read-only. It reads the definition on Workspace's connection to the view's database, which only reads. Changes run on a connection of their own, which the view tabs of a database share and which closes when you disconnect, so a long refresh does not block browsing the tree or saving a table's edits. The editor uses the console's SQL colors, and `Ctrl+Alt+L` lays the SQL out.
 
-- PostgreSQL: the `CREATE VIEW` statement, with the view's comment and options. A materialized view's statement also includes its indexes.
-- MySQL and MariaDB: the statement that `SHOW CREATE VIEW` gives, with `ALGORITHM`, `SQL SECURITY` and `WITH CHECK OPTION`, but without the `DEFINER`.
+- PostgreSQL: the `CREATE VIEW` statement, with the view's comment and options, and its columns' comments and defaults. A materialized view's statement also includes its indexes, its tablespace and its access method.
+- MySQL and MariaDB: the statement that `SHOW CREATE VIEW` gives, with `ALGORITHM`, `DEFINER`, `SQL SECURITY` and `WITH CHECK OPTION`. Saving keeps the `DEFINER` as it is, so the view still runs as the same user. An export to SQL leaves the `DEFINER` out.
 
 The panel beside the editor lists what the view **Uses** (tables, views and functions) and what it is **Used by**. Click a table to open its rows, or a view to open its definition. PostgreSQL records these dependencies itself. On MySQL and MariaDB, HooriDB finds them from the qualified names in each view's definition, so routines that use a view are not listed there.
 
@@ -24,20 +24,26 @@ The panel beside the editor lists what the view **Uses** (tables, views and func
 
 1. Press **Edit**.
 2. Change the definition. Completions work as they do in the console.
-3. Press **Save…** or `Ctrl+S`. HooriDB shows the statements it will run.
+3. Press **Save…** or `Ctrl+S`. HooriDB shows the statements it will run. `Ctrl+S` does nothing until you have edited the text.
 4. Press **Save** to run them.
 
-HooriDB turns each `CREATE VIEW` statement into `CREATE OR REPLACE VIEW`, which keeps the privileges granted on the view. On PostgreSQL, several statements (such as the view and its comment) run in one transaction. After the change, Workspace reads the schema again and the tab reads the new definition.
+HooriDB turns each `CREATE VIEW` statement into `CREATE OR REPLACE VIEW`, which keeps the privileges granted on the view. On PostgreSQL, several statements (such as the view and its comment) run in one transaction. If you delete the `COMMENT ON` line or a column's `SET DEFAULT`, saving removes that comment or default too. After the change, Workspace reads the schema again and the tab reads the new definition.
+
+The definition can only change this view. If you rename the view in the text, HooriDB does not save it, because that would create a second view and leave this one as it was. To create a view of another name, use **New view…**.
+
+While a change runs, the tab's status line has **Cancel**. HooriDB then asks the server to stop. On PostgreSQL the change runs in one transaction, so it takes effect only if the server had already committed it. On MySQL and MariaDB each statement commits by itself, so the statements that had already run stay. Press **Reload** to see the view as it is, after **Revert** if you edited it.
 
 **Revert** takes back your edits. **Reload** reads the definition again; it is available when the text has no edits.
 
+If the text has edits that are not saved, HooriDB asks before it closes the tab, its window or HooriDB itself, and before it deletes the connection. You can then discard the edits or cancel.
+
 ### When PostgreSQL keeps the columns
 
-PostgreSQL's `CREATE OR REPLACE VIEW` cannot drop, rename or reorder a view's columns, or change their types. If your change does that, HooriDB asks whether to drop the view and create it again in one transaction. Dropping the view loses the privileges granted on it, so you need to grant them again afterwards.
+PostgreSQL's `CREATE OR REPLACE VIEW` cannot drop, rename or reorder a view's columns, or change their types. If your change does that, HooriDB asks whether to drop the view and create it again in one transaction. HooriDB gives the new view back its owner, its `INSTEAD OF` triggers and its rules, and the comments and column defaults in your text. Dropping the view loses the privileges granted on it and on its columns, so you need to grant them again afterwards.
 
 If other views or functions use the view, HooriDB does not offer this, because the drop would take them with it. It names them instead.
 
-A materialized view has no `CREATE OR REPLACE`. Saving one drops it and creates it again in one transaction, with its indexes, and then refreshes its rows where it had any; one never refreshed stays so.
+A materialized view has no `CREATE OR REPLACE`. Saving one drops it and creates it again in one transaction, with its indexes, comments, owner, tablespace and access method, and then refreshes its rows where it had any; one never refreshed stays so. Its privileges are lost as a view's are.
 
 ## Create a view
 
@@ -51,10 +57,10 @@ The new view appears in Workspace, and the tab shows its definition.
 ## Drop a view
 
 1. Right-click a view and choose **Drop view…**, or press **Drop…** in its tab.
-2. HooriDB shows the `DROP VIEW` statement and names what uses the view:
-   - On PostgreSQL, what depends on the view is dropped with it (`CASCADE`).
-   - On MySQL and MariaDB, views that use it stay, and fail until it exists again.
+2. HooriDB shows the `DROP VIEW` statement, which drops the view alone, and names what used the view when it was read.
 3. Press **Drop**.
+   - On PostgreSQL, if anything depends on the view, the server refuses and lists everything a drop would take with it, including what depends on those in turn. HooriDB shows that list and asks again. Press **Drop all** to drop the view with all of it (`CASCADE`).
+   - On MySQL and MariaDB, views that use it stay, and fail until it exists again.
 
 The view's tab closes, and Workspace reads the schema or database again.
 
