@@ -287,6 +287,37 @@ class FileRunServerTest {
   }
 
   @ParameterizedTest
+  @MethodSource("mysqlFamily")
+  void oneTransactionRefusesACallOfAProcedureThatMayCommit(Provider provider) throws Exception {
+    var table = "file_run_called";
+    try (var writer = open(provider)) {
+      execute(
+          writer,
+          "DROP TABLE IF EXISTS " + table,
+          "DROP PROCEDURE IF EXISTS file_run_commit",
+          "CREATE TABLE " + table + " (id integer)",
+          "CREATE PROCEDURE file_run_commit() COMMIT");
+    }
+    var text = "INSERT INTO " + table + " VALUES (1);\n"
+        + "CALL file_run_commit();\n"
+        + "SELECT * FROM file_run_no_such_table;\n";
+    try (var connection = open(provider)) {
+      var report =
+          run(connection, provider, file("called.sql", text), new FileRun.Options(false, true));
+      assertEquals(FileRun.Ending.STOPPED, report.ending());
+      assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
+      assertEquals(0, report.committedAt());
+      var failed = report.failures().getFirst();
+      assertEquals(2, failed.line());
+      assertTrue(failed.message().contains("procedure"), failed.message());
+    }
+    // Another session finds nothing of the file: the CALL was not sent, so the rollback undid all.
+    try (var check = open(provider)) {
+      assertEquals(0, selectLong(check, "SELECT count(*) FROM " + table));
+    }
+  }
+
+  @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aReadOnlyConnectionRefusesTheWrites(Provider provider) throws Exception {
     var server = TestServer.of(provider);

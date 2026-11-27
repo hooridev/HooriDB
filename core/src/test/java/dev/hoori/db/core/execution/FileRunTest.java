@@ -191,6 +191,18 @@ class FileRunTest {
     assertEquals(FileRun.Kept.ROLLED_BACK, block.transaction());
     assertEquals(List.of("begin", "INSERT 1", "rollback", "end"), compound.sent);
     assertEquals(3, block.failures().getFirst().line());
+
+    // And a CALL on MySQL, whose procedure may commit unseen; without one transaction it runs.
+    var called = new Session(Map.of());
+    var call =
+        run(MYSQL, "INSERT 1;\nCALL p();\nINSERT 2;", new FileRun.Options(false, true), called);
+    assertEquals(FileRun.Kept.ROLLED_BACK, call.transaction());
+    assertEquals(0, call.committedAt());
+    assertEquals(List.of("begin", "INSERT 1", "rollback", "end"), called.sent);
+    assertEquals(2, call.failures().getFirst().line());
+    var plain = new Session(Map.of());
+    run(MYSQL, "CALL p();", new FileRun.Options(false, false), plain);
+    assertEquals(List.of("CALL p()"), plain.sent);
   }
 
   @Test

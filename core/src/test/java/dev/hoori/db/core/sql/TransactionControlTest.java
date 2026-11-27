@@ -39,6 +39,31 @@ class TransactionControlTest {
   }
 
   @Test
+  void mySqlsStatementsThatRunWhatMayCommitUnseen() {
+    for (var sql : List.of(
+        "CALL p()",
+        "call db.p(1)",
+        "EXECUTE s",
+        "EXECUTE IMMEDIATE 'COMMIT'",
+        "/*!50003 CALL p() */",
+        "BEGIN NOT ATOMIC CALL p(); END",
+        "IF TRUE THEN CALL p(); END IF",
+        "l: LOOP EXECUTE s; LEAVE l; END LOOP l")) {
+      assertTrue(TransactionControl.mayEndUnseen(sql, MARIADB), sql);
+    }
+    for (var sql : List.of(
+        "SELECT 'CALL p()'",
+        "PREPARE s FROM 'COMMIT'",
+        "CREATE PROCEDURE p() BEGIN CALL q(); END",
+        "BEGIN NOT ATOMIC SELECT 1; END",
+        "INSERT INTO calls VALUES (1)")) {
+      assertFalse(TransactionControl.mayEndUnseen(sql, MYSQL), sql);
+    }
+    // A procedure that PostgreSQL calls in a transaction block cannot commit.
+    assertFalse(TransactionControl.mayEndUnseen("CALL p()", POSTGRESQL));
+  }
+
+  @Test
   void mySqlsStatementsThatBeginOrEndATransaction() {
     for (var sql : List.of(
         "START TRANSACTION",

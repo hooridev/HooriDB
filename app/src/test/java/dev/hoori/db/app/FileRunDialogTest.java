@@ -214,6 +214,25 @@ class FileRunDialogTest {
   }
 
   @Test
+  void aCallInOneTransactionStopsTheRunUnsentAndNothingIsKept() throws Exception {
+    var app = chosen(
+        INVENTORY.withName("stock"),
+        file("called.sql", "INSERT INTO t VALUES (1);\nCALL commits();\nSELEC 1;\n"));
+    c.run(app, "press label=\"In one transaction\"\n" + OPENS + "snap transaction\n");
+    c.run(app, "press role=button label=\"Run\"\n" + SETTLE + "snap rolled\n");
+    var rolled = c.tree("rolled");
+    // The procedure, which could have committed the insert, was never called, so the rollback
+    // undid all that ran.
+    assertTrue(
+        rolled.contains("The transaction was rolled back: nothing of the file was kept."), rolled);
+    assertTrue(rolled.contains("This runs a procedure or a prepared statement"), rolled);
+    assertTrue(rolled.contains("\"2\""), rolled); // the line of the CALL
+    assertFalse(
+        c.servers.calls.stream().anyMatch(call -> call.endsWith("CALL commits()")),
+        c.servers.calls.toString());
+  }
+
+  @Test
   void aRunCanBeHiddenAndCancelled() throws Exception {
     var held = c.servers.hold("run " + PG + " SELECT pg_sleep(60)");
     var app = chosen(file("sleep.sql", "SELECT pg_sleep(60);\nINSERT INTO t VALUES (1);\n"));

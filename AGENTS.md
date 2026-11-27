@@ -151,6 +151,7 @@ the rows after PostgreSQL's `COPY … FROM stdin` go through the driver's copy A
 psql's `\restrict` and `\unrestrict` are skipped and its other backslash commands refused, which
 stops the run. On an error it stops or goes on, optionally in one transaction, which an error or a
 cancel rolls back, which refuses a statement of the file that begins or ends a transaction, and
+on MySQL and MariaDB a `CALL` or `EXECUTE`, whose SQL may commit unseen, and
 which the dialog says does not cover DDL where the server commits it by itself; it shows the bytes
 and statements run, cancels at any point, also while its session connects, can be hidden behind the
 status line, which counts a run in one transaction as uncommitted work, says in a desktop

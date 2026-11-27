@@ -44,6 +44,14 @@ public interface ClientDialect {
    */
   boolean commitsImplicitly(List<String> words);
 
+  /**
+   * Whether a statement runs SQL that its words do not show and that may end the open
+   * transaction, by its words as for {@link #controlsTransaction}: as a {@code CALL} of a MySQL
+   * procedure whose body commits, or an {@code EXECUTE} of a prepared {@code COMMIT}. A run of a
+   * file in one transaction refuses it, as it could not tell what the rollback still undoes.
+   */
+  boolean mayEndUnseen(List<String> words);
+
   /** What a statement does to the tables that the session locked, as MySQL's LOCK TABLES. */
   enum TableLocks {
     /** It leaves them as they are. */
