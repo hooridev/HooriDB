@@ -2378,7 +2378,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
       edits.readOnlyReason = ResultEdits.READ_ONLY_CONNECTION;
       return;
     }
-    if (table.kind() == Table.Kind.VIEW) {
+    if (table.kind().view()) {
       edits.readOnlyReason = ResultEdits.VIEW_READ_ONLY;
       return;
     }
@@ -2436,7 +2436,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (profile.readOnly()) {
       return ResultEdits.READ_ONLY_CONNECTION;
     }
-    if (table.kind() == Table.Kind.VIEW) {
+    if (table.kind().view()) {
       return ResultEdits.VIEW_READ_ONLY;
     }
     return null;

@@ -852,6 +852,19 @@ final class CatalogTree {
     return new Session(lane, live.driver, live.password.clone());
   }
 
+  /** The schemas of the connection's database as the tree read them, or none where it has not. */
+  List<Schema> schemas(UUID id, Database database) {
+    var live = id == null ? null : lives.get(id);
+    if (live != null
+        && live.levels.get(new Node.OfDatabase(id, database)) instanceof Read(var children)) {
+      return children.stream()
+          .filter(Node.OfSchema.class::isInstance)
+          .map(n -> ((Node.OfSchema) n).schema())
+          .toList();
+    }
+    return List.of();
+  }
+
   /** The names of the connection's databases as the tree read them, or none where it has not. */
   List<String> databases(UUID id) {
     var live = id == null ? null : lives.get(id);
@@ -1384,6 +1397,7 @@ final class CatalogTree {
       case Node.OfIndex n -> indexDetail(n.index());
       case Node.Connection(var id) -> s.profile(id).provider().displayName();
       case Node.Query(var id) -> QueryDialog.languageLabel(s.query(id).language());
+      case Node.OfTable n when n.table().kind() == Table.Kind.MATERIALIZED -> "materialized";
       default -> null;
     };
   }
@@ -1592,11 +1606,7 @@ final class CatalogTree {
       }
       case Node.Problem n ->
         List.of(Menu.item(TRY_AGAIN, () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));
-      case Node.OfTable n ->
-        List.of(
-            Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
-            refresh,
-            copy);
+      case Node.OfTable n -> tableItems(s, n, connected, refresh, copy);
       case Node.OfDatabase(var id, var database) ->
         exportable(s, id, database, connected, refresh, copy);
       case Node.OfSchema(var id, var schema) -> exportable(s, id, schema, connected, refresh, copy);
@@ -1618,7 +1628,45 @@ final class CatalogTree {
     };
   }
 
-  /** The menu of a database or schema: Export to SQL, where its server speaks SQL, and the rest. */
+  /**
+   * The menu of a table or view: Open its rows, and of a view where its server speaks SQL its
+   * definition, its drop and a materialized view's refresh, which its tab asks about; a read-only
+   * connection's change nothing.
+   */
+  private static List<Menu.Item> tableItems(
+      State s, Node.OfTable n, boolean connected, Menu.Item refresh, Menu.Item copy) {
+    var view = n.table();
+    var open = Menu.item("Open", () -> s.openTable(n.id(), view)).icon(Symbol.TABLE);
+    var profile = s.profile(n.id());
+    if (!view.kind().view() || profile == null || profile.provider().keepsDocuments()) {
+      return List.of(open, refresh, copy);
+    }
+    boolean changes = connected && !profile.readOnly();
+    var main = s.tabs.main().active();
+    var items = new ArrayList<Menu.Item>();
+    items.add(open);
+    items.add(Menu.item("Definition", connected ? () -> s.openView(n.id(), view) : null)
+        .icon(Symbol.CODE));
+    items.add(Menu.separator());
+    if (view.kind() == Table.Kind.MATERIALIZED) {
+      items.add(Menu.item(
+              "Refresh rows…",
+              changes ? () -> s.openView(n.id(), view, main, ViewTab.Then.REFRESH) : null)
+          .icon(Symbol.ARROW_SYNC));
+    }
+    items.add(Menu.item(
+            "Drop view…", changes ? () -> s.openView(n.id(), view, main, ViewTab.Then.DROP) : null)
+        .icon(Symbol.DELETE));
+    items.add(Menu.separator());
+    items.add(refresh);
+    items.add(copy);
+    return items;
+  }
+
+  /**
+   * The menu of a database or schema: Export to SQL and New view, where its server speaks SQL,
+   * and the rest.
+   */
   private static List<Menu.Item> exportable(
       State s, UUID id, Container container, boolean connected, Menu.Item refresh, Menu.Item copy) {
     var profile = s.profile(id);
@@ -1630,6 +1678,10 @@ final class CatalogTree {
                 "Export to SQL…",
                 connected && !s.dialogs.anyOpen() ? () -> s.openExport(id, container) : null)
             .icon(Symbol.ARROW_EXPORT_LTR),
+        Menu.item(
+                "New view…",
+                connected && !profile.readOnly() ? () -> s.newView(id, container) : null)
+            .icon(Symbol.EYE),
         Menu.separator(),
         refresh,
         copy);

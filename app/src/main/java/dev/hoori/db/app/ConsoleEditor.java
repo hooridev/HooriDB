@@ -523,6 +523,7 @@ final class ConsoleEditor {
       case TABLE -> "Table";
       case FOREIGN -> "Foreign table";
       case VIEW -> "View";
+      case MATERIALIZED -> "Materialized view";
     };
   }
 

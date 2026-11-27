@@ -157,8 +157,7 @@ record CatalogModel(Theme t, State s) implements Tree.Model<Node> {
       case Node.Query(var id) -> icon(Glyphs.query(s.query(id).language()), false);
       case Node.OfDatabase n -> icon(Symbol.DATABASE, n.database().system());
       case Node.OfSchema n -> icon(Glyphs.SCHEMA, n.schema().system());
-      case Node.OfTable n ->
-        icon(n.table().kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE, system(n.table()));
+      case Node.OfTable n -> icon(Glyphs.table(n.table().kind()), system(n.table()));
       case Node.OfColumn n -> columnIcon(n);
       case Node.ForeignKeys _ -> icon(Symbol.LINK, false);
       case Node.KeyGroup n -> icon(n.incoming() ? Symbol.ARROW_LEFT : Symbol.ARROW_RIGHT, false);

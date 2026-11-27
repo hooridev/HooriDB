@@ -22,6 +22,13 @@ import dev.hoori.db.core.data.Kind;
 import dev.hoori.db.core.data.Origin;
 import dev.hoori.db.core.data.Page;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.definition.Definition;
+import dev.hoori.db.core.definition.Item;
+import dev.hoori.db.core.definition.Listed;
+import dev.hoori.db.core.definition.References;
+import dev.hoori.db.core.definition.ViewChange;
+import dev.hoori.db.core.definition.ViewDefinition;
+import dev.hoori.db.core.definition.Views;
 import dev.hoori.db.core.document.Bson;
 import dev.hoori.db.core.document.Document;
 import dev.hoori.db.core.document.DocumentEdit;
@@ -30,8 +37,6 @@ import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.driver.LoadedDriver;
 import dev.hoori.db.core.dump.Dump;
 import dev.hoori.db.core.dump.Exporter;
-import dev.hoori.db.core.dump.Item;
-import dev.hoori.db.core.dump.Listed;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Execution;
 import dev.hoori.db.core.execution.Failure;
@@ -87,7 +92,8 @@ import java.util.stream.IntStream;
  *
  * <p>An outline has a database per line, its schemas indented under it where the provider has
  * schemas, then the tables, then the columns as {@code name: type}. A {@code ~} before a name marks
- * a system database or schema, {@code @} a view and {@code *} a column of the primary key. A
+ * a system database or schema, {@code @} a view, {@code %} a materialized view and {@code *} a
+ * column of the primary key. A
  * column line may end with {@code > [<name>:] [<container>.]<table>.<column> [on delete|update
  * <rule>]...} to declare a foreign key ({@code <container>} defaults to the column's own, {@code
  * <name>} to {@code <table>_<column>_fkey}; columns on one table sharing a name form a composite
@@ -138,6 +144,13 @@ import java.util.stream.IntStream;
  * variables, status counters and locks are those {@link #variables}, {@link #counters} and {@link
  * #locks} give, read keyed {@code variables <host>}, {@code status <host>} and {@code locks
  * <host>}; a server whose locks are {@code null} does not tell them.
+ *
+ * <p>A view's definition reads as {@link #view} gives it, else as a made-up {@code CREATE VIEW} of
+ * its outline that uses nothing and that nothing uses, keyed {@code view <host>/<path>} with the
+ * path as of {@code columns}. A change of a view runs each of its statements, keyed {@code ddl
+ * <host> <sql>}, and changes the outline as it says: a created view comes in, a dropped one goes;
+ * a read-only link refuses it unsent, and one {@link #keepsColumns} names comes to {@link
+ * Views.KeepsColumns}. {@link #viewChanges} lists the changes made.
  */
 final class FakeServers implements Servers {
 
@@ -173,6 +186,49 @@ final class FakeServers implements Servers {
   private final java.util.Set<String> refused = ConcurrentHashMap.newKeySet();
   private final Map<String, DocumentEdit.Outcome> forced = new ConcurrentHashMap<>();
   private final java.util.Set<String> writing = ConcurrentHashMap.newKeySet();
+  private final Map<String, ViewDefinition> views = new ConcurrentHashMap<>();
+  private final java.util.Set<String> keepingColumns = ConcurrentHashMap.newKeySet();
+  /** The changes of views made, in order. */
+  final List<ViewChange> viewChanges = new CopyOnWriteArrayList<>();
+
+  /**
+   * The view at the path, as of {@code columns}, reads as these statements, with what it uses and
+   * what uses it, and whether it refreshes concurrently.
+   */
+  FakeServers view(String path, List<String> statements, References references, boolean at) {
+    var dot = path.lastIndexOf('.');
+    var slash = path.indexOf('/');
+    var parts = path.substring(slash + 1, dot).split("\\.");
+    var database = new Database(parts[0], false);
+    Container container = parts.length > 1 ? new Schema(database, parts[1], false) : database;
+    var name = path.substring(dot + 1);
+    var materialized = statements.getFirst().contains("MATERIALIZED");
+    var view = new Table(container, name, materialized ? Table.Kind.MATERIALIZED : Table.Kind.VIEW);
+    views.put(path, new ViewDefinition(view, defined(view, statements), references, at));
+    return this;
+  }
+
+  private static Definition defined(Table view, List<String> statements) {
+    return new Definition(
+        Item.of(view.container(), Item.Kind.VIEW, view.name()),
+        statements,
+        false,
+        List.of(),
+        List.of(),
+        List.of(),
+        "",
+        view.kind() == Table.Kind.MATERIALIZED
+            ? List.of("REFRESH MATERIALIZED VIEW " + view.name())
+            : List.of(),
+        java.util.Set.of(),
+        java.util.Set.of());
+  }
+
+  /** Replacing a view in place by a change whose first statement is this keeps its columns. */
+  FakeServers keepsColumns(String sql) {
+    keepingColumns.add(sql);
+    return this;
+  }
 
   /**
    * Marks a SQL fragment (such as {@code nextval(}) as writing at the server: a read-only link
@@ -753,8 +809,7 @@ final class FakeServers implements Servers {
       return read("tables " + host + "/" + path, c.database(), () -> {
         var list = new ArrayList<Table>();
         for (var line : container(c).children()) {
-          var kind = line.text().startsWith("@") ? Table.Kind.VIEW : Table.Kind.TABLE;
-          list.add(new Table(c, name(line), kind));
+          list.add(new Table(c, name(line), kindOf(line)));
         }
         return list;
       });
@@ -768,13 +823,11 @@ final class FakeServers implements Servers {
         boolean schemas = made.provider() == Provider.POSTGRESQL;
         for (var line : db.children()) {
           if (!schemas) {
-            var kind = line.text().startsWith("@") ? Table.Kind.VIEW : Table.Kind.TABLE;
-            list.add(new Table(d, name(line), kind));
+            list.add(new Table(d, name(line), kindOf(line)));
           } else if (!line.text().startsWith("~")) {
             var schema = new Schema(d, name(line), false);
             for (var table : line.children()) {
-              var kind = table.text().startsWith("@") ? Table.Kind.VIEW : Table.Kind.TABLE;
-              list.add(new Table(schema, name(table), kind));
+              list.add(new Table(schema, name(table), kindOf(table)));
             }
           }
         }
@@ -1211,7 +1264,7 @@ final class FakeServers implements Servers {
           return null;
         }
         var tableOutline = find(schemaOutline, tableName);
-        if (tableOutline == null || tableOutline.text().startsWith("@")) {
+        if (tableOutline == null || view(tableOutline)) {
           return null;
         }
         var db = new Database(dbName, dbOutline.text().startsWith("~"));
@@ -1223,7 +1276,7 @@ final class FakeServers implements Servers {
         return null;
       }
       var tableOutline = find(dbOutline, tableName);
-      if (tableOutline == null || tableOutline.text().startsWith("@")) {
+      if (tableOutline == null || view(tableOutline)) {
         return null;
       }
       var db = new Database(catalog, dbOutline.text().startsWith("~"));
@@ -1385,7 +1438,7 @@ final class FakeServers implements Servers {
         boolean schemas,
         List<ForeignKey> found) {
       for (var tableOutline : containerOutline.children()) {
-        if (tableOutline.text().startsWith("@")) {
+        if (view(tableOutline)) {
           continue;
         }
         var table = new Table(container, name(tableOutline), Table.Kind.TABLE);
@@ -1613,7 +1666,7 @@ final class FakeServers implements Servers {
         if (tableOutline == null) {
           throw queryFailure(QueryException.Failure.NOT_FOUND);
         }
-        if (tableOutline.text().startsWith("@") || collection.kind() != Table.Kind.TABLE) {
+        if (view(tableOutline) || collection.kind() != Table.Kind.TABLE) {
           throw QueryException.of(QueryException.Failure.OTHER, "Views cannot be edited");
         }
         var forcedOutcome = forced.remove(key);
@@ -2014,7 +2067,7 @@ final class FakeServers implements Servers {
                 var listed = new ArrayList<Listed>();
                 for (var container : containers) {
                   for (var line : container(container).children()) {
-                    var view = line.text().startsWith("@");
+                    var view = view(line);
                     var item =
                         Item.of(container, view ? Item.Kind.VIEW : Item.Kind.TABLE, name(line));
                     var at = path(new Table(container, name(line), Table.Kind.TABLE));
@@ -2069,6 +2122,90 @@ final class FakeServers implements Servers {
           Files.writeString(file, text);
           exported.add(choice);
           return new Dump.Written(file, Files.size(file), choice.items().size(), rows);
+        }
+
+        private void step(String key) throws QueryException {
+          try {
+            note(key);
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception _) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
+          done.add(key);
+        }
+      };
+    }
+
+    // A view's definition as the test gave it or made up of its outline; a change runs its
+    // statements, one key each, and changes the outline as it says.
+    @Override
+    public Views views() {
+      var provider = made.provider();
+      return new Views() {
+        @Override
+        public ViewDefinition read(Table view) throws QueryException {
+          var key = "view " + path(view);
+          return Journal.sql(provider, Purpose.DEFINITION, key, v -> Outcome.rows(1), () -> {
+            step(key);
+            var line = find(container(view.container()), view.name());
+            if (line == null || !view(line)) {
+              throw queryFailure(QueryException.Failure.NOT_FOUND);
+            }
+            var given = views.get(path(view));
+            if (given != null) {
+              return given;
+            }
+            var kind = kindOf(line);
+            var shown = new Table(view.container(), view.name(), kind);
+            var create =
+                (kind == Table.Kind.MATERIALIZED ? "CREATE MATERIALIZED VIEW " : "CREATE VIEW ")
+                    + Rows.qualified(provider, shown) + " AS\nSELECT 1";
+            return new ViewDefinition(
+                shown, defined(shown, List.of(create)), References.NONE, false);
+          });
+        }
+
+        @Override
+        public Changed change(ViewChange change) throws QueryException {
+          if (readOnly) {
+            throw QueryException.of(
+                QueryException.Failure.OTHER,
+                "The connection is read-only, which changes no view: nothing was sent.");
+          }
+          if (change.kind() == ViewChange.Kind.REPLACE
+              && keepingColumns.contains(change.statements().getFirst())) {
+            var key = "ddl " + host + " " + change.statements().getFirst();
+            Journal.sql(
+                provider,
+                Purpose.DEFINITION,
+                change.statements().getFirst(),
+                d -> Outcome.DONE,
+                () -> {
+                  step(key);
+                  return null;
+                });
+            return new KeepsColumns("cannot drop columns from view");
+          }
+          for (var sql : change.statements()) {
+            var key = "ddl " + host + " " + sql;
+            Journal.sql(provider, Purpose.DEFINITION, sql, d -> Outcome.DONE, () -> {
+              step(key);
+              return null;
+            });
+          }
+          var view = change.view();
+          var children = container(view.container()).children();
+          switch (change.kind()) {
+            case CREATE -> children.add(new Outline("@" + view.name(), new ArrayList<>()));
+            case DROP -> children.removeIf(line -> name(line).equals(view.name()));
+            case REPLACE, RECREATE, REFRESH -> {
+              // Its line stays.
+            }
+          }
+          viewChanges.add(change);
+          return new Done();
         }
 
         private void step(String key) throws QueryException {
@@ -2309,7 +2446,21 @@ final class FakeServers implements Servers {
 
   private static String name(Outline node) {
     var line = node.text();
-    return line.startsWith("~") || line.startsWith("@") ? line.substring(1) : line;
+    return line.startsWith("~") || line.startsWith("@") || line.startsWith("%")
+        ? line.substring(1)
+        : line;
+  }
+
+  /** What a line of a table is: a view after {@code @}, a materialized one after {@code %}. */
+  private static Table.Kind kindOf(Outline node) {
+    var line = node.text();
+    return line.startsWith("@")
+        ? Table.Kind.VIEW
+        : line.startsWith("%") ? Table.Kind.MATERIALIZED : Table.Kind.TABLE;
+  }
+
+  private static boolean view(Outline node) {
+    return kindOf(node).view();
   }
 
   private static Outline find(Outline parent, String name) {

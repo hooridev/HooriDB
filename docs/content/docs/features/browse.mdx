@@ -24,14 +24,14 @@ In the tree:
 
 - A connected server has a green icon; a connection that failed or dropped has a red icon.
 - System databases and system schemas (such as `pg_catalog`, `information_schema`, `mysql`, `performance_schema`, and `sys`, or `admin`, `config`, and `local` on MongoDB) are shown in muted text.
-- Tables show a table icon, and views show an eye icon.
+- Tables show a table icon, views an eye icon, and PostgreSQL's materialized views a cube icon and the word `materialized`.
 - Each column shows its server data type. Primary key columns are marked with a key icon, and columns in outgoing foreign keys show a link icon and their referenced column (such as `bigint → customers.id`).
 - Tables with foreign keys show a **Foreign keys** node after their columns with **References** and **Referenced by** groups listing each constraint's mapping and non-default rules. Double-click an entry or press `Enter` on it to open the related table.
 - Tables with indexes show an **Indexes** node beside **Foreign keys** listing each index with its key columns or expressions (primary key first, marked `primary key` or `unique` where applicable).
 
 ## Open a table or view
 
-To open a table or view in a tab, double-click it in the tree, select it and press `Enter`, or right-click it and choose **Open**. See [Table data](/docs/features/table-data).
+To open a table or view in a tab, double-click it in the tree, select it and press `Enter`, or right-click it and choose **Open**. See [Table data](/docs/features/table-data). To see a view's definition instead, press `Shift+Enter` or choose **Definition**; see [Views](/docs/features/views).
 
 ## Refresh, copy names, and disconnect
 

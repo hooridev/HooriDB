@@ -51,6 +51,7 @@ final class Suggestions {
 
   private final ConsoleTab tab; // the console it suggests in, or null
   private final TableTab grid; // or the table tab whose clauses it suggests in, or null
+  private final UUID own; // or the connection of the editor it suggests in, or null
   private final Map<Node, CatalogTree.Scan> asked = new HashMap<>(); // the reads it started
   private CatalogTree catalog; // where they were asked, once they are
   // The last entries, and what they were made for: the list keeps them while only its highlight
@@ -65,12 +66,21 @@ final class Suggestions {
   Suggestions(ConsoleTab tab) {
     this.tab = tab;
     this.grid = null;
+    this.own = null;
   }
 
   /** For the clauses of a table tab, one statement at a time, with the columns the tab read. */
   Suggestions(TableTab grid) {
     this.tab = null;
     this.grid = grid;
+    this.own = null;
+  }
+
+  /** For an editor of the connection's statements of its own, one statement at a time. */
+  Suggestions(UUID connection) {
+    this.tab = null;
+    this.grid = null;
+    this.own = connection;
   }
 
   /**
@@ -185,7 +195,7 @@ final class Suggestions {
       this.provider = provider;
       this.keywordCase = s.settings.keywordCase();
       this.exact = exact;
-      connection = tab != null ? tab.id : grid.id;
+      connection = tab != null ? tab.id : grid != null ? grid.id : own;
       var opened = connection == null ? null : s.catalog.live(connection);
       var connected = opened != null && opened.phase instanceof Live.Connected c ? c : null;
       this.live = connected == null ? null : opened;

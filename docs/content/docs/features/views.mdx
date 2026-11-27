@@ -1,0 +1,73 @@
+---
+title: Views
+description: Read a view's definition, change it, create and drop views, and refresh materialized views.
+---
+
+A view's tab shows the statements that create it, as its server writes them, beside what the view uses and what uses it. You can edit and save the definition, create a new view, drop a view, and refresh the rows of a PostgreSQL materialized view. Every change shows its statements before they run. This works on PostgreSQL, MySQL and MariaDB; MongoDB views are not supported yet.
+
+## Open a view's definition
+
+Open the definition in any of these ways:
+
+- Right-click a view in Workspace and choose **Definition**.
+- Select a view in Workspace and press `Shift+Enter`. `Enter` still opens the view's rows.
+- Select a view (or have a view's rows tab in front) and choose **File > View definition**, or run **View definition** from the [command palette](/docs/features/command-palette).
+
+The tab opens read-only. It reads the definition on a server connection of its own, so a slow read does not block browsing the tree or other tabs. The editor uses the console's SQL colors, and `Ctrl+Alt+L` lays the SQL out.
+
+- PostgreSQL: the `CREATE VIEW` statement, with the view's comment and options. A materialized view's statement also includes its indexes.
+- MySQL and MariaDB: the statement that `SHOW CREATE VIEW` gives, with `ALGORITHM`, `SQL SECURITY` and `WITH CHECK OPTION`, but without the `DEFINER`.
+
+The panel beside the editor lists what the view **Uses** (tables, views and functions) and what it is **Used by**. Click a table to open its rows, or a view to open its definition. PostgreSQL records these dependencies itself. On MySQL and MariaDB, HooriDB finds them from the qualified names in each view's definition, so routines that use a view are not listed there.
+
+## Change a view
+
+1. Press **Edit**.
+2. Change the definition. Completions work as they do in the console.
+3. Press **Save…** or `Ctrl+S`. HooriDB shows the statements it will run.
+4. Press **Save** to run them.
+
+HooriDB turns each `CREATE VIEW` statement into `CREATE OR REPLACE VIEW`, which keeps the privileges granted on the view. On PostgreSQL, several statements (such as the view and its comment) run in one transaction. After the change, Workspace reads the schema again and the tab reads the new definition.
+
+**Revert** takes back your edits. **Reload** reads the definition again; it is available when the text has no edits.
+
+### When PostgreSQL keeps the columns
+
+PostgreSQL's `CREATE OR REPLACE VIEW` cannot drop, rename or reorder a view's columns, or change their types. If your change does that, HooriDB asks whether to drop the view and create it again in one transaction. Dropping the view loses the privileges granted on it, so you need to grant them again afterwards.
+
+If other views or functions use the view, HooriDB does not offer this, because the drop would take them with it. It names them instead.
+
+A materialized view has no `CREATE OR REPLACE`. Saving one drops it and creates it again in one transaction, with its indexes, and then refreshes its rows.
+
+## Create a view
+
+1. Right-click a schema (PostgreSQL) or a database (MySQL, MariaDB) and choose **New view…**, or choose **File > New view…** with one of them selected.
+2. Choose the schema, if there is more than one, and type the view's name.
+3. Type the view's `SELECT` in the editor. Completions work as they do in the console.
+4. Press **Save…**, check the `CREATE VIEW` statement, and press **Create**.
+
+The new view appears in Workspace, and the tab shows its definition.
+
+## Drop a view
+
+1. Right-click a view and choose **Drop view…**, or press **Drop…** in its tab.
+2. HooriDB shows the `DROP VIEW` statement and names what uses the view:
+   - On PostgreSQL, what depends on the view is dropped with it (`CASCADE`).
+   - On MySQL and MariaDB, views that use it stay, and fail until it exists again.
+3. Press **Drop**.
+
+The view's tab closes, and Workspace reads the schema or database again.
+
+## Materialized views
+
+On PostgreSQL, materialized views appear in Workspace with their own icon and the word `materialized`, apart from ordinary views. Their rows open like a view's.
+
+To read a materialized view's rows anew, right-click it and choose **Refresh rows…**, or press **Refresh rows…** in its tab. Select **Concurrently** to refresh without keeping others from reading it while it runs. This is available when the view has rows and a unique index on columns alone (no expressions or `WHERE`) over all of them.
+
+## Read-only connections
+
+On a [read-only connection](/docs/features/console#read-only-connections), HooriDB does not create, change, drop or refresh views. Their menu items and buttons are turned off, and HooriDB sends none of these statements.
+
+## Statement log
+
+The statement log (**View > Statement log**) lists what a view's tab sends under the part **Definition**: the reads of the definition and its dependencies, and each statement that changes a view.

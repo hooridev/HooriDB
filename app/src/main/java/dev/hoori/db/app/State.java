@@ -11,9 +11,13 @@ import com.rethinkj.ui.window.SystemAppearance;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
 import dev.hoori.db.core.catalog.Container;
+import dev.hoori.db.core.catalog.Database;
+import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.connection.Settings;
 import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.connection.WorkspaceStore;
@@ -1218,6 +1222,7 @@ final class State {
       case TableTab x -> x.id;
       case ConsoleTab x -> x.id;
       case MonitorTab x -> x.id;
+      case ViewTab x -> x.id;
     };
   }
 
@@ -1289,6 +1294,129 @@ final class State {
     var monitor = new MonitorTab(this, id);
     tabs.add(group, group.tabs().size(), monitor);
     monitor.open(this);
+  }
+
+  /** What a view's definition is opened on: a connection's view. */
+  record Viewed(UUID id, Table view) {}
+
+  /**
+   * The view whose definition the File menu opens: in the main window the view selected in the
+   * tree, else that of the window's table tab; null for none, as for a table, a server of
+   * documents, or one not connected.
+   */
+  Viewed viewFor(TabGroups.Group<Tab> group) {
+    var node = group == tabs.main().active() ? selected : null;
+    Viewed found = switch (node) {
+      case Node.OfTable(var id, var table) -> new Viewed(id, table);
+      case null, default ->
+        group.activeTab() instanceof TableTab x ? new Viewed(x.id, x.table) : null;
+    };
+    if (found == null || !found.view().kind().view() || !catalog.connected(found.id())) {
+      return null;
+    }
+    var profile = profile(found.id());
+    return profile == null || profile.provider().keepsDocuments() ? null : found;
+  }
+
+  /** Whether the connection is read-only, which changes no view nor rows. */
+  boolean readOnly(UUID id) {
+    var profile = profile(id);
+    return profile != null && profile.readOnly();
+  }
+
+  /** Opens the tab of the view's definition in the main window, or goes to the one it has. */
+  void openView(UUID id, Table view) {
+    openView(id, view, tabs.main().active(), ViewTab.Then.NOTHING);
+  }
+
+  /**
+   * As {@link #openView(UUID, Table)}, a new tab in the window of these tabs, which then asks
+   * what the tree's menu asked for: a drop or a refresh, once the definition is read.
+   */
+  void openView(UUID id, Table view, TabGroups.Group<Tab> into, ViewTab.Then then) {
+    var profile = profile(id);
+    if (profile == null || profile.provider().keepsDocuments()) {
+      return;
+    }
+    for (var each : tabs.groups()) {
+      for (int i = 0; i < each.tabs().size(); i++) {
+        if (each.tabs().get(i) instanceof ViewTab x && x.id.equals(id) && x.of(view)) {
+          tabs.select(each, i);
+          var window = each.window() != null ? each.window() : app.windows().of(app);
+          if (window != null) {
+            window.raise();
+          }
+          x.then(this, then);
+          return;
+        }
+      }
+    }
+    var tab = ViewTab.of(this, id, view);
+    tabs.add(into, into.tabs().size(), tab);
+    tab.then(this, then);
+    tab.open(this);
+  }
+
+  /**
+   * Opens the tab of a new view in the connection's schema or database, in the main window; where
+   * the provider has schemas and a database is given, in its schema {@code public} or else the
+   * first of its own that the tree read.
+   */
+  void newView(UUID id, Container container) {
+    var profile = profile(id);
+    if (profile == null || profile.provider().keepsDocuments()) {
+      return;
+    }
+    if (profile.readOnly()) {
+      tell(name(profile) + " is read-only, and creates no view");
+      return;
+    }
+    Container into = container;
+    if (container instanceof Database database
+        && profile.provider().supports(Capability.SCHEMAS, ServerVersion.UNKNOWN)) {
+      var schemas =
+          catalog.schemas(id, database).stream().filter(x -> !x.system()).toList();
+      into = schemas.stream()
+          .filter(x -> x.name().equals("public"))
+          .findFirst()
+          .or(() -> schemas.stream().findFirst())
+          .map(Container.class::cast)
+          .orElse(new Schema(database, "public", false));
+    }
+    var group = tabs.main().active();
+    tabs.add(group, group.tabs().size(), ViewTab.creating(this, id, into));
+  }
+
+  /** Closes the view's tab, as after its drop. */
+  void closeView(ViewTab tab) {
+    var group = tabs.groupOf(tab);
+    if (group != null) {
+      tabs.close(group, group.tabs().indexOf(tab));
+    }
+  }
+
+  /** The tabs of views of every window, of the connection or of all where it is null. */
+  List<ViewTab> views(UUID id) {
+    var all = new ArrayList<ViewTab>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof ViewTab x && (id == null || x.id.equals(id))) {
+          all.add(x);
+        }
+      }
+    }
+    return all;
+  }
+
+  /** A view tab's title: the view's name, with its schema or database where another has it. */
+  String title(ViewTab tab) {
+    var title = tab.title();
+    var same =
+        views(null).stream().filter(x -> x != tab && x.title().equals(title)).toList();
+    if (same.isEmpty() || tab.creating) {
+      return title;
+    }
+    return tab.container.name() + "." + title;
   }
 
   /** The server monitors of every window, of the connection or of all where it is null. */
@@ -1426,6 +1554,7 @@ final class State {
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
+    views(id).forEach(v -> v.end(this));
     if (dialogs.export != null && dialogs.export.id.equals(id)) {
       dialogs.export.close(this);
     }
@@ -1450,6 +1579,9 @@ final class State {
     }
     for (var monitor : monitors(id)) {
       monitor.connected(this);
+    }
+    for (var view : views(id)) {
+      view.connected(this);
     }
   }
 
@@ -1690,6 +1822,7 @@ final class State {
     tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    views(null).forEach(ViewTab::close);
     if (dialogs.export != null) {
       dialogs.export.close(this);
     }

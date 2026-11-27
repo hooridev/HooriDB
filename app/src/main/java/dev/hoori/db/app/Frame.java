@@ -33,7 +33,6 @@ import com.rethinkj.ui.kit.TitleBar;
 import com.rethinkj.ui.kit.Tooltip;
 import com.rethinkj.ui.kit.Tree;
 import com.rethinkj.ui.window.Windows;
-import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.update.Channel;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -198,7 +197,7 @@ final class Frame {
                 s.title(x),
                 true,
                 x.atStake(),
-                x.table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE,
+                Glyphs.table(x.table.kind()),
                 ConnectionColors.hue(s.color(x.id)),
                 x.opening != null || x.counting != null || x.writingChanges());
           // What may be open is changes not yet committed: the tab's dot.
@@ -215,6 +214,15 @@ final class Frame {
                 .icon(Symbol.SERVER)
                 .hue(ConnectionColors.hue(s.color(x.id)))
                 .busy(x.busy());
+          // What is at stake is the edited definition: the tab's dot.
+          case ViewTab x ->
+            new Tabs.Tab(
+                s.title(x),
+                true,
+                x.edited(),
+                x.view == null ? Symbol.EYE : Glyphs.table(x.view.kind()),
+                ConnectionColors.hue(s.color(x.id)),
+                x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -229,6 +237,7 @@ final class Frame {
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
           case MonitorTab x -> x.view(s, app);
+          case ViewTab x -> x.view(s, app);
         });
   }
 
@@ -239,6 +248,7 @@ final class Frame {
       case TableTab x -> s.title(x);
       case ConsoleTab x -> s.title(x);
       case MonitorTab x -> s.title(x);
+      case ViewTab x -> s.title(x);
     };
   }
 
@@ -305,6 +315,7 @@ final class Frame {
         || group.activeTab() instanceof ConsoleTab console
             && (console.confirming != null || console.preview != null || console.history != null)
         || group.activeTab() instanceof MonitorTab monitor && monitor.asked != null
+        || group.activeTab() instanceof ViewTab view && view.asked != null
         || s.catalog.asks(s, group);
   }
 
@@ -315,6 +326,9 @@ final class Frame {
   private static El confirmation(State s, TabGroups.Group<Tab> group) {
     if (group.activeTab() instanceof MonitorTab monitor) {
       return monitor.question(s);
+    }
+    if (group.activeTab() instanceof ViewTab view) {
+      return view.question(s, app(s, group));
     }
     if (group.activeTab() instanceof TableTab table) {
       El document = table.documentView(s, app(s, group));
@@ -440,6 +454,18 @@ final class Frame {
                     move -> CatalogTree.dropped(s, move)))
         .key("connections")
         .label(WORKSPACE);
+    // Shift+Enter on a view opens its definition, as Enter opens its rows.
+    var keys = tree.onKey();
+    tree.onKey(k -> {
+      if (k.name().equals("Enter")
+          && k.modifiers() == Key.SHIFT
+          && s.selected instanceof Node.OfTable(var id, var table)
+          && table.kind().view()) {
+        s.openView(id, table);
+        return true;
+      }
+      return keys != null && keys.test(k);
+    });
     // Its items only while it is open: Move to walks the workspace for each folder.
     var items = c.menu.isOpen() ? c.items(s, s.selected) : List.<Menu.Item>of();
     El body = Card.inset(Menu.contextMenu(tree, c.menu, items));
@@ -700,6 +726,7 @@ final class Frame {
     var palette = s.palette(group);
     var console = s.consoleFor(group);
     var exported = s.exportFor(group);
+    var viewed = s.viewFor(group);
     // What opens a dialog of the main window waits for the one open there, from every window.
     boolean free = !mainDialog(s);
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
@@ -732,6 +759,19 @@ final class Frame {
                             ? inMain(s, () -> s.openExport(exported.id(), exported.container()))
                             : null)
                     .icon(Symbol.ARROW_EXPORT_LTR),
+                Menu.item(
+                        "New view…",
+                        exported != null && !s.readOnly(exported.id())
+                            ? inMain(s, () -> s.newView(exported.id(), exported.container()))
+                            : null)
+                    .icon(Symbol.EYE),
+                Menu.item(
+                        "View definition",
+                        viewed == null
+                            ? null
+                            : () ->
+                                s.openView(viewed.id(), viewed.view(), group, ViewTab.Then.NOTHING))
+                    .icon(Symbol.CODE),
                 Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c && c.id != null

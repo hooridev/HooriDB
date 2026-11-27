@@ -96,7 +96,7 @@ final class GoTo {
       switch (f) {
         case Found.OfTable t -> {
           var table = t.table();
-          var symbol = table.kind() == Table.Kind.VIEW ? Symbol.EYE : Symbol.TABLE;
+          var symbol = Glyphs.table(table.kind());
           var color = s.color(t.id());
           entries.add(FilterList.entry(
                   table.name(), () -> Frame.focusContentSoon(s, s.openTable(t.id(), table, group)))
