@@ -88,7 +88,6 @@ final class FileRunDialog {
   private String endedBy; // what ended the run, where the app did, or null
   private Lane lane; // the run's own session, or null
   private char[] password; // a copy, to mask it in what failed; wiped once that is masked
-
   FileRun.Progress progress; // the last told, or null before the first
   FileRun.Report report; // once it ended
   String failure; // once it ended without a report, why

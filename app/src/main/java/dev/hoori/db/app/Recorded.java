@@ -1,5 +1,6 @@
 package dev.hoori.db.app;
 
+import dev.hoori.db.core.Texts;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
@@ -128,13 +129,12 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     return new Sent(sent.at(), sent.purpose(), on, text, sent.took(), outcome);
   }
 
-  // The first SHOWN chars of the text, not the first of a surrogate pair alone, and its length.
+  // The first SHOWN chars of the text, as Texts.start cuts it, and its length.
   static String shortened(String text) {
     if (text.length() <= SHOWN) {
       return text;
     }
-    int end = Character.isHighSurrogate(text.charAt(SHOWN - 1)) ? SHOWN - 1 : SHOWN;
-    return text.substring(0, end) + "\n/* … " + text.length() + " characters in all. */";
+    return Texts.start(text, SHOWN) + "\n/* … " + text.length() + " characters in all. */";
   }
 
   /** A link that logs each of its calls; its copy of the password goes when it closes or aborts. */

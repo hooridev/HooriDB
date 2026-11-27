@@ -1,5 +1,6 @@
 package dev.hoori.db.core.execution;
 
+import dev.hoori.db.core.Texts;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.dialect.ClientDialect;
 import dev.hoori.db.core.log.Journal;
@@ -472,8 +473,7 @@ public final class FileRun {
     } else {
       message = message(failure);
     }
-
-    list(at, start(masked), message);
+    list(at, Texts.start(masked, SHOWN), message);
   }
 
   // Lists a failure, where the report has room for it.
@@ -481,14 +481,6 @@ public final class FileRun {
     if (failures.size() < LISTED) {
       failures.add(new Failed(line, statement, message));
     }
-  }
-
-  // The first SHOWN chars of the text, without the first of a surrogate pair alone.
-  private static String start(String text) {
-    if (text.length() <= SHOWN) {
-      return text;
-    }
-    return text.substring(0, Character.isHighSurrogate(text.charAt(SHOWN - 1)) ? SHOWN - 1 : SHOWN);
   }
 
   // The server's words, with its detail where it gives one; what HooriDB says where it gives none.
