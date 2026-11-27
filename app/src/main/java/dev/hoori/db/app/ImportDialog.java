@@ -221,8 +221,9 @@ final class ImportDialog {
     return previewed != previews;
   }
 
-  // Each column of the table takes the file's column of its name, in any case, where the file
-  // names them, else the one at its position.
+  // Each column of the table takes the file's column of its name where the file names them, else
+  // the one at its position: of its very name first, and of its name in another case only where
+  // that is the one such column of the file, and the one column of the table it names.
   private void map() {
     if (columns == null) {
       return;
@@ -231,20 +232,41 @@ final class ImportDialog {
     if (preview == null) {
       return;
     }
-    var names = preview.names();
-    for (int i = 0; i < columns.size(); i++) {
-      var name = columns.get(i).name();
-      if (options.header) {
-        for (int f = 0; f < names.size(); f++) {
-          if (names.get(f).strip().equalsIgnoreCase(name)) {
-            mapping[i] = f;
-            break;
-          }
-        }
-      } else if (i < names.size()) {
+    var names = preview.names().stream().map(String::strip).toList();
+    if (!options.header) {
+      for (int i = 0; i < Math.min(columns.size(), names.size()); i++) {
         mapping[i] = i;
       }
+      return;
     }
+    var taken = new boolean[names.size()];
+    for (int i = 0; i < columns.size(); i++) {
+      var f = names.indexOf(columns.get(i).name());
+      if (f >= 0) {
+        mapping[i] = f;
+        taken[f] = true;
+      }
+    }
+    for (int i = 0; i < columns.size(); i++) {
+      if (mapping[i] != NONE) {
+        continue;
+      }
+      var name = columns.get(i).name();
+      var alike = IntStream.range(0, names.size())
+          .filter(f -> !taken[f] && names.get(f).equalsIgnoreCase(name))
+          .toArray();
+      if (alike.length == 1 && alikeColumns(names.get(alike[0])) == 1) {
+        mapping[i] = alike[0];
+        taken[alike[0]] = true;
+      }
+    }
+  }
+
+  // How many columns of the table not yet given one have the name, in any case.
+  private long alikeColumns(String name) {
+    return IntStream.range(0, columns.size())
+        .filter(i -> mapping[i] == NONE && columns.get(i).name().equalsIgnoreCase(name))
+        .count();
   }
 
   boolean running() {

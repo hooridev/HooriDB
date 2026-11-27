@@ -239,6 +239,23 @@ class TableFilesTest {
   }
 
   @Test
+  void mapsAColumnToTheHeaderOfItsVeryNameBeforeOneInAnotherCase() throws Exception {
+    var file = Files.writeString(out.resolve("people.csv"), "ID,id,NAME,Name\n9,3,X,Carol\n");
+    var app = importing(file, "");
+    var ready = c.tree("ready");
+    assertTrue(shown(ready, "map-0").contains("\"id\""), ready);
+    // Two headers name it in other cases, so neither is taken for it.
+    assertTrue(shown(ready, "map-1").contains("Not imported"), ready);
+
+    c.run(
+        app,
+        choose("map-1", "Name") + "press role=radio label=\"Empty the table first\"\nframe\n"
+            + press("import") + SETTLE + "snap done\n");
+    assertTrue(line(c.tree("done"), "#import-outcome").contains("Imported"), c.tree("done"));
+    assertEquals(List.of(List.of(3L, "Carol")), servers.rowsOf(CUSTOMERS));
+  }
+
+  @Test
   void skipsTheRowsThatFailAndListsThem() throws Exception {
     servers.refusesImported(CUSTOMERS, "Bob");
     var file = Files.writeString(out.resolve("people.csv"), "id,name\n3,Carol\n4,Bob\nx,Eve\n5\n");
