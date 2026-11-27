@@ -908,7 +908,7 @@ final class ViewTab implements Tab, Guard.Guarded {
                 app, sql, previewEditor, provider == null ? null : Syntax.of(provider), null)
             .key("view-sql")
             .label("SQL preview"))
-        .h(Math.clamp(lines + 1, 3, 12) * t.size().control())
+        .h(Math.clamp(lines + 1L, 3, 12) * t.size().control())
         .wFull();
     El content = col()
         .w(2 * ConnectionDialog.width())

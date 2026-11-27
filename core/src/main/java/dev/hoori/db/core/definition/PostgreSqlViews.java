@@ -28,9 +28,9 @@ public final class PostgreSqlViews extends ViewDialect {
 
   // A statement that creates a view: CREATE and the options before the word VIEW, then that word.
   private static final Pattern CREATE = Pattern.compile(
-      "(?is)CREATE(?<replace>\\s+OR\\s+REPLACE)?(?:\\s+TEMP(?:ORARY)?)?(?:\\s+RECURSIVE)?\\s+");
-  private static final Pattern VIEW_WORD = Pattern.compile(
-      "(?is)(?<materialized>MATERIALIZED\\s+)?VIEW\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?");
+      "(?is)CREATE(\\s+OR\\s+REPLACE)?(?:\\s+TEMP(?:ORARY)?)?(?:\\s+RECURSIVE)?\\s+");
+  private static final Pattern VIEW_WORD =
+      Pattern.compile("(?is)(MATERIALIZED\\s+)?VIEW\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?");
 
   public PostgreSqlViews() {
     // Nothing to set up.
@@ -237,8 +237,7 @@ public final class PostgreSqlViews extends ViewDialect {
     if (!view.lookingAt()) {
       return Optional.empty();
     }
-    return Optional.of(
-        new Head(view.end(), create.group("replace") != null, view.group("materialized") != null));
+    return Optional.of(new Head(view.end(), create.group(1) != null, view.group(1) != null));
   }
 
   @Override

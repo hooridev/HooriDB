@@ -41,9 +41,9 @@ public final class MySqlFamilyViews extends ViewDialect {
       Pattern.compile("(?i)CURRENT_USER(?:\\s*\\(\\s*\\))?(?!\\s*@)(?=\\s)");
   private static final Pattern AT = Pattern.compile("\\s*@\\s*");
   private static final List<Pattern> NAMES = List.of(
-      Pattern.compile("(?s)`(?:[^`]|``)*`"),
-      Pattern.compile("(?s)'(?:[^'\\\\]|\\\\.|'')*'"),
-      Pattern.compile("(?s)\"(?:[^\"\\\\]|\\\\.|\"\")*\""),
+      Pattern.compile("(?s)`[^`]*+(?:``[^`]*+)*+`"),
+      Pattern.compile("(?s)'[^'\\\\]*+(?:(?:\\\\.|'')[^'\\\\]*+)*+'"),
+      Pattern.compile("(?s)\"[^\"\\\\]*+(?:(?:\\\\.|\"\")[^\"\\\\]*+)*+\""),
       Pattern.compile("[^\\s@`'\"=]+"));
 
   // The databases that are the server's own, whose objects no view of the user's is about.
