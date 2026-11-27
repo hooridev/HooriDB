@@ -4,6 +4,7 @@ import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
@@ -110,7 +111,7 @@ public final class PostgreSqlDump extends DumpDialect {
       return;
     }
     var names = tables.stream()
-        .map(t -> "ONLY " + qualified(provider, t.container().name(), t.name()))
+        .map(t -> "ONLY " + Rows.qualified(provider, t.container(), t.name()))
         .collect(Collectors.joining(", "));
     var was = Sql.one(
         connection, provider, LOCK_TIMEOUT, "SHOW " + LOCK_TIMEOUT, rows -> rows.getString(1));
@@ -362,7 +363,7 @@ public final class PostgreSqlDump extends DumpDialect {
       this.chosen = chosen;
       this.item = found.listed().item();
       this.oid = "'" + found.oid() + "'::pg_catalog.oid";
-      this.name = qualified(provider, item.container().name(), item.name());
+      this.name = Rows.qualified(provider, item.container(), item.name());
     }
 
     private String literal(String text) {
@@ -600,7 +601,7 @@ public final class PostgreSqlDump extends DumpDialect {
         return Optional.ofNullable(known.relations.get(rows.getLong(1)))
             .filter(chosen::contains)
             .map(sequence -> "ALTER SEQUENCE "
-                + qualified(provider, sequence.container().name(), sequence.name())
+                + Rows.qualified(provider, sequence.container(), sequence.name())
                 + " OWNED BY " + name + "." + column);
       });
     }
@@ -821,7 +822,7 @@ public final class PostgreSqlDump extends DumpDialect {
           FROM pg_catalog.pg_trigger t WHERE t.oid = %s""".formatted(oid),
           rows ->
               new Trigger(rows.getString(1), rows.getString(2), rows.getLong(3), rows.getLong(4)));
-      var table = qualified(provider, item.container().name(), item.table());
+      var table = Rows.qualified(provider, item.container(), item.table());
       var statements = new ArrayList<String>();
       statements.add(trigger.definition());
       // Created enabled in origin mode, as the catalog's O.
