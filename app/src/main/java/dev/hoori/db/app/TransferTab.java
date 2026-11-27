@@ -721,7 +721,10 @@ final class TransferTab implements Tab, Guard.Guarded {
         if (readOnly == null) {
           try {
             readOnly = on(lane, link -> link.target().readOnly());
-          } catch (Exception e) {
+          } catch (InterruptedException _) {
+            Thread.currentThread().interrupt(); // the run's cancel, which its next call finds
+            return false;
+          } catch (QueryException | CatalogException | RuntimeException _) {
             return false; // the next call says why the session cannot be used
           }
         }

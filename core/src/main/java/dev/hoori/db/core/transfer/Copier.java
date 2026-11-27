@@ -122,7 +122,7 @@ public final class Copier {
         return stop();
       }
       stage = Stage.DONE;
-    } catch (Cancel _) {
+    } catch (Cancel | InterruptedException _) {
       // Where the cancel came as an InterruptedException, which cleared it, the thread stays
       // interrupted all the same.
       Thread.currentThread().interrupt();
@@ -146,7 +146,7 @@ public final class Copier {
 
   // Puts both sessions in the state a copy needs, and learns whether they are on the same server
   // and database, and how much a statement may carry to the target.
-  private void ready() throws Exception {
+  private void ready() throws Cancel, QueryException, CatalogException, InterruptedException {
     try {
       source.prepare();
       target.prepare();
@@ -156,13 +156,19 @@ public final class Copier {
         // Half, as a text and bytes may take twice what they are counted as on their way.
         batchBytes = Math.clamp(limit.getAsLong() / 2, 1, BUDGET);
       }
-    } catch (Exception e) {
-      throw cancelled(e) ? new Cancel() : e;
+    } catch (InterruptedException _) {
+      Thread.currentThread().interrupt();
+      throw new Cancel();
+    } catch (QueryException | CatalogException | RuntimeException e) {
+      if (cancelled(e)) {
+        throw new Cancel();
+      }
+      throw e;
     }
   }
 
   // Copies the tables that wait, in their order; false where one failed and the run stops at it.
-  private boolean copyAll() throws Exception {
+  private boolean copyAll() throws Cancel, QueryException, CatalogException, InterruptedException {
     for (var i = 0; i < tables.size(); i++) {
       if (tables.get(i).state() == State.WAITING
           && !copy(i)
@@ -185,7 +191,10 @@ public final class Copier {
           keys.addAll(target.foreignKeys(copy.to()));
           tables.set(i, tables.get(i).total(source.count(copy.from())));
         }
-      } catch (Exception e) {
+      } catch (InterruptedException _) {
+        Thread.currentThread().interrupt();
+        throw new Cancel();
+      } catch (QueryException | CatalogException | RuntimeException e) {
         if (cancelled(e)) {
           throw new Cancel();
         }
@@ -202,7 +211,8 @@ public final class Copier {
   }
 
   // The plan of the copy, or why it cannot be copied.
-  private String plan(Transfer.Copy copy) throws Exception {
+  private String plan(Transfer.Copy copy)
+      throws QueryException, CatalogException, InterruptedException {
     if (same && path(copy.from()).equals(path(copy.to()))) {
       return "The source and the target are the same table, which would be read as it is written.";
     }
@@ -236,7 +246,8 @@ public final class Copier {
   }
 
   // The target's table, or null where it has none.
-  private Target.Shape shape(Table table) throws Exception {
+  private Target.Shape shape(Table table)
+      throws QueryException, CatalogException, InterruptedException {
     try {
       return target.shape(table);
     } catch (CatalogException e) {
@@ -367,7 +378,8 @@ public final class Copier {
 
   // Copies the table's rows, batch by batch, emptying it first where it is to be; whether all
   // were copied. Where it fails and its rollback fails too, it throws the rollback's failure.
-  private boolean copy(int index) throws Exception {
+  private boolean copy(int index)
+      throws Cancel, QueryException, CatalogException, InterruptedException {
     var copying = new Copying(tables.get(index));
     var plan = plans.get(copying.table.copy());
     Source.Reading reading = null;
@@ -383,7 +395,11 @@ public final class Copier {
       tables.set(index, copying.table.rows(copying.written, copying.written).with(State.COPIED));
       tell();
       return true;
-    } catch (Exception e) {
+    } catch (InterruptedException e) {
+      // The run's cancel, which its rollback runs past.
+      Thread.currentThread().interrupt();
+      return failed(index, plan, copying, e);
+    } catch (QueryException | CatalogException | RuntimeException e) {
       return failed(index, plan, copying, e);
     } finally {
       if (reading != null) {
@@ -400,7 +416,8 @@ public final class Copier {
   }
 
   // Empties the tables that go before the table's copy, in its transaction.
-  private void emptyFirst(int index, Copying copying) throws Exception {
+  private void emptyFirst(int index, Copying copying)
+      throws QueryException, CatalogException, InterruptedException {
     var emptying = emptying(index);
     if (emptying.isEmpty()) {
       return;
@@ -414,7 +431,7 @@ public final class Copier {
 
   // Writes the rows as they are read, a batch at a time, committing as the transfer says.
   private void copyRows(int index, Plan plan, Source.Reading reading, Copying copying)
-      throws Exception {
+      throws QueryException, CatalogException, InterruptedException {
     var into = copying.table.copy().to();
     Batch batch;
     do {
@@ -435,7 +452,8 @@ public final class Copier {
 
   // Rolls back the table's copy that failed and tells why; false, or it throws where the run was
   // cancelled or the rollback failed.
-  private boolean failed(int index, Plan plan, Copying copying, Exception e) throws Exception {
+  private boolean failed(int index, Plan plan, Copying copying, Exception e)
+      throws Cancel, QueryException, CatalogException, InterruptedException {
     var into = copying.table.copy().to();
     var unended = attempt(target::rollback);
     deleting.clear();
@@ -462,7 +480,7 @@ public final class Copier {
       // commit would keep: the run stops, as where the session failed.
       tables.set(
           index, left.with(State.FAILED, problem + " Rolling it back failed: " + why(unended)));
-      throw unended;
+      rethrow(unended);
     }
     tables.set(index, left.with(State.FAILED, problem));
     tell();
@@ -470,7 +488,7 @@ public final class Copier {
   }
 
   // What its transaction commits: what was written, and the tables emptied in it.
-  private void commit() throws Exception {
+  private void commit() throws QueryException, CatalogException, InterruptedException {
     target.commit();
     emptied.addAll(deleting);
     deleting.clear();
@@ -576,6 +594,18 @@ public final class Copier {
       if (interrupted) {
         Thread.currentThread().interrupt();
       }
+    }
+  }
+
+  // Throws the failure that attempt gave, which is a step's.
+  private static void rethrow(Exception e)
+      throws QueryException, CatalogException, InterruptedException {
+    switch (e) {
+      case QueryException q -> throw q;
+      case CatalogException c -> throw c;
+      case InterruptedException i -> throw i;
+      case RuntimeException r -> throw r;
+      default -> throw new IllegalStateException(e);
     }
   }
 
