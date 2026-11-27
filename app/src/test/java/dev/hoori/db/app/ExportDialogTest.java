@@ -278,6 +278,9 @@ class ExportDialogTest {
 
   @Test
   void theFileMenuExportsTheDatabaseOfWhatIsSelected() throws Exception {
+    var legacy = new Database("legacy", false);
+    c.servers.objects(
+        MYSQL, Listed.of(new Item(legacy, Item.Kind.TRIGGER, "audited", "", "accounts")));
     var app = c.app(LEGACY);
     c.ready(app, LEGACY);
     // The connection's row, then its database's of the same name below it.
@@ -292,6 +295,22 @@ class ExportDialogTest {
     assertTrue(tree.contains("role=checkbox label=\"Create the database\""), tree);
     // MariaDB and MySQL can check no foreign keys while the rows go.
     assertTrue(tree.contains("FOREIGN_KEY_CHECKS = 0"), tree);
+    // Nor can they keep a table's triggers from firing for the data alone, which wait for it to
+    // go with its structure, or not at all.
+    c.run(
+        app,
+        choose(dir.resolve("legacy.sql"))
+            + "press role=radio label=\"Data only, of the tables\"\nframe\nadvance 1\nframe\n"
+            + "snap triggered\n");
+    var triggered = c.tree("triggered");
+    assertTrue(triggered.contains("#export-triggered"), triggered);
+    assertTrue(triggered.contains("cannot keep the triggers of accounts from firing"), triggered);
+    assertTrue(line(triggered, "role=button label=\"Export\"").contains("disabled"), triggered);
+    c.run(app, "press role=checkbox label=\"accounts\"\nframe\nadvance 1\nframe\nsnap unchecked\n");
+    var unchecked = c.tree("unchecked");
+    assertFalse(unchecked.contains("export-triggered"), unchecked);
+    // It was the only table, so that only the trigger is checked now, which has no rows.
+    assertTrue(unchecked.contains("#export-no-data"), unchecked);
     assertTrue(
         c.servers.calls.contains("export list " + MYSQL + "/legacy"), c.servers.calls.toString());
   }

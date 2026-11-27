@@ -47,6 +47,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /**
  * Export to SQL: the objects of a database or schema, as a list to check, with what of them goes
@@ -309,9 +310,24 @@ final class ExportDialog {
     return objects != null
         && !checked().isEmpty()
         && !noData()
+        && triggered().isEmpty()
         && file != null
         && replacing == null
         && exporting == null;
+  }
+
+  // Of data alone, the tables checked that have triggers, which the server cannot keep from firing
+  // for their rows, and the export refuses: none where it can.
+  private List<String> triggered() {
+    if (content.structure() || provider.dialect().dump().quietsTriggers()) {
+      return List.of();
+    }
+    var on = objects.stream()
+        .map(Listed::item)
+        .filter(i -> i.kind() == Item.Kind.TRIGGER)
+        .map(i -> Item.of(i.container(), Item.Kind.TABLE, i.table()))
+        .collect(Collectors.toSet());
+    return checked().stream().filter(on::contains).map(Item::name).distinct().toList();
   }
 
   // Of data alone, only tables and sequences have any, and none is checked.
@@ -780,6 +796,19 @@ final class ExportDialog {
                   + " is checked.")
           .wrapText()
           .key("export-no-data"));
+    }
+    var triggered = objects == null ? List.<String>of() : triggered();
+    if (!triggered.isEmpty()) {
+      status.child(Callout.callout(
+              Callout.Kind.WARNING,
+              triggered.size() == 1
+                  ? "A table has triggers"
+                  : triggered.size() + " tables have triggers",
+              provider.displayName() + " cannot keep the triggers of "
+                  + String.join(", ", triggered)
+                  + " from firing for the rows read back, which would change them. Export them"
+                  + " with their structure, or uncheck them.")
+          .key("export-triggered"));
     }
     if (replacing != null && replacing.found()) {
       status.child(replacingView(s));
