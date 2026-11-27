@@ -18,6 +18,8 @@ public enum Purpose {
   STATEMENT,
   /** A statement of an SQL file that runs, its rows copied in, and its cancel. */
   FILE,
+  /** Creating, replacing and dropping a function or a procedure, and its cancel. */
+  DEFINITION,
   /** A transaction's end, auto-commit, and asking for their status. */
   TRANSACTION,
   /** The database the session is on. */

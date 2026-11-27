@@ -15,8 +15,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
+import java.sql.Types;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -26,8 +28,8 @@ import java.util.function.Supplier;
 /**
  * One statement, given as text, run on an open connection: its results, in the order the server
  * gives them, each rows or a count of changed rows, with the server's messages, read a portion at
- * a time. The text goes to the server as it is, without a driver's escapes or parameters; it is
- * one statement, which this does not split. The connection's transaction is left to the caller to
+ * a time. The text goes to the server as it is, without a driver's escapes, and without parameters
+ * unless values are given for them; it is one statement, which this does not split. The connection's transaction is left to the caller to
  * commit or roll back.
  *
  * <p>The first {@link #next} runs the statement and reads at most the given number of rows of its
@@ -86,6 +88,8 @@ public final class Execution implements AutoCloseable {
   private final String sql;
   private final boolean readOnly;
   private final Purpose purpose;
+  // The values bound to the statement's ? in order, null for NULL; with none, it goes as text.
+  private final List<String> values;
   private Statement statement;
   // Whether auto-commit was turned off for this statement, to be turned on again when it is over.
   private boolean ownTransaction;
@@ -122,10 +126,27 @@ public final class Execution implements AutoCloseable {
    */
   public Execution(
       Connection connection, Provider provider, String sql, boolean readOnly, Purpose purpose) {
+    this(connection, provider, sql, List.of(), readOnly, purpose);
+  }
+
+  /**
+   * As {@link #Execution(Connection, Provider, String, boolean, Purpose)}, with the values bound
+   * to the statement's {@code ?} in order, each as text that the server reads as the parameter's
+   * type, or null for NULL; with none, the text goes as it is. Only the text is recorded, never
+   * the values.
+   */
+  public Execution(
+      Connection connection,
+      Provider provider,
+      String sql,
+      List<String> values,
+      boolean readOnly,
+      Purpose purpose) {
     this.connection = connection;
     this.provider = provider;
     this.session = provider.dialect().session();
     this.sql = sql;
+    this.values = Collections.unmodifiableList(new ArrayList<>(values));
     this.readOnly = readOnly;
     this.purpose = purpose;
   }
@@ -458,10 +479,24 @@ public final class Execution implements AutoCloseable {
       ownTransaction = true;
     }
     session.keepWriteTimeout(connection);
-    statement = connection.createStatement();
-    statement.setEscapeProcessing(false);
-    statement.setFetchSize(session.fetchSize(count));
-    return statement.execute(sql);
+    if (values.isEmpty()) {
+      statement = connection.createStatement();
+      statement.setEscapeProcessing(false);
+      statement.setFetchSize(session.fetchSize(count));
+      return statement.execute(sql);
+    }
+    var prepared = connection.prepareStatement(sql);
+    statement = prepared;
+    prepared.setFetchSize(session.fetchSize(count));
+    for (int i = 0; i < values.size(); i++) {
+      var value = values.get(i);
+      if (value == null) {
+        prepared.setNull(i + 1, Types.VARCHAR);
+      } else {
+        prepared.setString(i + 1, value);
+      }
+    }
+    return prepared.execute();
   }
 
   // Goes on to the next result, keeping streamed rows open until the last where the driver would

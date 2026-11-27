@@ -20,6 +20,9 @@ public non-sealed interface Dialect extends Traits {
   /** How its planner estimates a statement's rows. */
   PlanDialect plan();
 
+  /** How its functions and procedures are listed, read, changed and called. */
+  RoutineDialect routines();
+
   /** The lexical rules of its SQL. */
   SyntaxDialect syntax();
 

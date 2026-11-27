@@ -75,6 +75,7 @@ public final class MariaDb extends MySqlFamily {
       Words.union(RESERVED, Words.TYPED, Syntax.TYPED, Set.of("SEQUENCE")),
       List.of("/*!", "/*M!"));
   private final PlanDialect planning = new Plan();
+  private final RoutineDialect routines = new MySqlFamilyRoutines(() -> Provider.MARIADB, true);
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MariaDbRows();
   private final MonitorDialect monitor = new MySqlFamily.Monitor(
@@ -121,6 +122,11 @@ public final class MariaDb extends MySqlFamily {
   @Override
   public ConnectDialect connecting() {
     return connecting;
+  }
+
+  @Override
+  public RoutineDialect routines() {
+    return routines;
   }
 
   @Override
