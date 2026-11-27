@@ -23,10 +23,14 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Exports objects of a database to a file of SQL that creates them anew, with their rows or
@@ -129,8 +133,8 @@ public final class Dump {
    * What an export writes: objects of one database, what of them, and how.
    *
    * @param items the objects, at least one, each once; a routine or trigger whose objects are not
-   *     among them needs them where the file is read. Of an export of data alone only the tables
-   *     and sequences count.
+   *     among them needs them where the file is read. Of an export of data alone only the tables,
+   *     the sequences and the materialized views, which it refreshes, count.
    */
   public record Choice(Database database, List<Item> items, Content content, Options options) {
 
@@ -149,12 +153,15 @@ public final class Dump {
       }
     }
 
-    // What is defined: of data alone, what has rows or a value.
+    // What is defined: of data alone, what has rows, a value or a refresh.
     List<Item> defined() {
       return content.structure()
           ? items
           : items.stream()
-              .filter(i -> i.kind() == Item.Kind.TABLE || i.kind() == Item.Kind.SEQUENCE)
+              .filter(i -> switch (i.kind()) {
+                case TABLE, SEQUENCE, VIEW -> true;
+                case FUNCTION, PROCEDURE, TRIGGER -> false;
+              })
               .toList();
     }
   }
@@ -414,8 +421,8 @@ public final class Dump {
       }
     }
 
-    // What waits for the rows: the indexes and keys, a materialized view's refresh, and the
-    // triggers, which would otherwise fire for each row.
+    // What waits for the rows: the indexes and keys, a materialized view's refresh, what would
+    // refuse or hide rows, and the triggers, which would otherwise fire for each row.
     private void afterData(List<Definition> sorted, List<Definition> created, Set<Item> late)
         throws IOException {
       if (choice.options().keysAfterData()) {
@@ -425,12 +432,12 @@ public final class Dump {
         foreignKeys(created.stream().filter(d -> late.contains(d.item())).toList());
       }
       if (choice.content().data()) {
-        for (var definition : created) {
-          if (definition.item().kind() == Item.Kind.VIEW
-              && !definition.restore().isEmpty()) {
-            section("Refresh of " + title(definition.item()) + ", from its tables as they are");
-            statements(definition.restore());
-          }
+        refreshes(created);
+      }
+      for (var definition : created) {
+        if (!definition.afterRows().isEmpty()) {
+          section("What follows the rows of " + title(definition.item()));
+          statements(definition.afterRows());
         }
       }
       for (var definition : sorted) {
@@ -474,34 +481,79 @@ public final class Dump {
       }
     }
 
+    // A table's rows as they are read and written.
+    private record TableData(Item table, Optional<DumpDialect.Data> data) {}
+
     // The tables' rows in the order their keys refer to each other, then the values of what
-    // counts with them: sequences and identity columns.
+    // counts with them: sequences and identity columns. Of the data alone, what goes around them
+    // so that the tables take them as they are, and the refresh of materialized views.
     private void data(List<Definition> sorted) throws QueryException, IOException {
+      var alone = !choice.content().structure();
+      // How each table's rows go, which may refuse the data alone, before a row is read; those
+      // of engines without transactions first, which refer to no other.
+      var tables = new ArrayList<TableData>();
+      for (var definition : sorted) {
+        var item = definition.item();
+        if (item.kind() == Item.Kind.TABLE) {
+          tables.add(new TableData(item, dialect.data(connection, provider, item, alone)));
+        }
+      }
+      tables.sort(Comparator.comparing(
+          t -> t.data().map(DumpDialect.Data::transactional).orElse(true)));
+      var around = new ArrayList<DumpDialect.Around>();
+      if (alone) {
+        var circular = Order.circular(sorted);
+        around.add(dialect.circle(
+            sorted.stream().filter(d -> circular.contains(d.item())).toList()));
+        tables.forEach(t -> t.data().ifPresent(d -> around.add(d.around())));
+      }
       var transaction = choice.options().transaction();
       if (transaction) {
         out.write('\n');
         statement(dialect.beginTransaction());
       }
-      tables(sorted);
+      around(around, DumpDialect.Around::before, "Before the rows, so that the tables take them");
+      for (var table : tables) {
+        if (alone) {
+          objects++;
+        }
+        progress.at(table.table(), 0);
+        if (table.data().isPresent()) {
+          rows(table.table(), table.data().get());
+        }
+      }
       values(sorted);
+      if (alone) {
+        refreshes(sorted);
+      }
+      around(around, DumpDialect.Around::after, "After the rows, what was there before them");
       if (transaction) {
         out.write('\n');
         statement("COMMIT");
       }
     }
 
-    private void tables(List<Definition> sorted) throws QueryException {
-      for (var definition : sorted) {
-        var item = definition.item();
-        if (item.kind() == Item.Kind.TABLE) {
+    private void around(
+        List<DumpDialect.Around> around,
+        Function<DumpDialect.Around, List<String>> part,
+        String title)
+        throws IOException {
+      var statements = around.stream().flatMap(a -> part.apply(a).stream()).toList();
+      if (!statements.isEmpty()) {
+        section(title);
+        statements(statements);
+      }
+    }
+
+    // The refresh of each materialized view that had rows, from its tables' rows as they are.
+    private void refreshes(List<Definition> definitions) throws IOException {
+      for (var definition : definitions) {
+        if (definition.item().kind() == Item.Kind.VIEW && !definition.restore().isEmpty()) {
           if (!choice.content().structure()) {
             objects++;
           }
-          progress.at(item, 0);
-          var data = dialect.data(connection, provider, item);
-          if (data.isPresent()) {
-            rows(item, data.get());
-          }
+          section("Refresh of " + title(definition.item()) + ", from its tables as they are");
+          statements(definition.restore());
         }
       }
     }
@@ -551,6 +603,12 @@ public final class Dump {
         if (n == 0) {
           line.append('\n').append(commented("Rows of " + title(item)));
         }
+        if (data.defaults()) {
+          write(line.append(data.insert()).append(";\n"));
+          n++;
+          told(item, n, perInsert);
+          continue;
+        }
         if (inInsert > 0 && (inInsert >= perInsert || size >= INSERT_SIZE)) {
           line.append(";\n");
           inInsert = 0;
@@ -562,15 +620,19 @@ public final class Dump {
         size += line.length();
         inInsert++;
         n++;
-        if (n % perInsert == 0) {
-          progress.at(item, n);
-        }
+        told(item, n, perInsert);
       }
-      if (n > 0) {
+      if (n > 0 && !data.defaults()) {
         write(";\n");
       }
       progress.at(item, n);
       return n;
+    }
+
+    private void told(Item item, long n, int every) {
+      if (n % every == 0) {
+        progress.at(item, n);
+      }
     }
 
     private static void literals(

@@ -4,6 +4,7 @@ import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Binary;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Statements;
 import java.math.BigDecimal;
@@ -41,6 +42,10 @@ import java.util.Set;
  * session waits for the export to end only on a table that it has read already; on one it has not
  * read yet it goes through, and the export then fails as the table's definition changed, or writes
  * the definition it read before, as {@code mysqldump --single-transaction} does.
+ *
+ * <p>These servers cannot keep a table's triggers from firing for the rows read into it: an export
+ * of the data alone, which reads them into tables that have their triggers, refuses a table that
+ * has any.
  */
 public final class MySqlFamilyDump extends DumpDialect {
 
@@ -65,6 +70,11 @@ public final class MySqlFamilyDump extends DumpDialect {
   @Override
   public boolean foreignKeyChecks() {
     return true;
+  }
+
+  @Override
+  public boolean quietsTriggers() {
+    return false;
   }
 
   // Only REPEATABLE READ reads in one snapshot; SET TRANSACTION sets it for this transaction alone.
@@ -251,6 +261,7 @@ public final class MySqlFamilyDump extends DumpDialect {
             List.of(),
             "DROP TABLE IF EXISTS " + name,
             List.of(),
+            List.of(),
             Set.of(),
             refers);
       }
@@ -265,6 +276,7 @@ public final class MySqlFamilyDump extends DumpDialect {
             List.of(),
             List.of(),
             "DROP VIEW IF EXISTS " + name,
+            List.of(),
             List.of(),
             viewNeeds(provider, created, item, known),
             Set.of());
@@ -286,6 +298,7 @@ public final class MySqlFamilyDump extends DumpDialect {
             List.of(),
             "DROP SEQUENCE IF EXISTS " + name,
             List.of("DO SETVAL(" + name + ", " + next + ", 0)"),
+            List.of(),
             Set.of(),
             Set.of());
       }
@@ -330,6 +343,7 @@ public final class MySqlFamilyDump extends DumpDialect {
         List.of(),
         List.of(),
         "DROP " + what + "IF EXISTS " + name,
+        List.of(),
         List.of(),
         needs,
         Set.of());
@@ -595,9 +609,14 @@ public final class MySqlFamilyDump extends DumpDialect {
   // Of each column that is not generated, a value of a kind the literal writes as such: whole
   // numbers, decimals, floating point and binary data; dates and times as the server writes them
   // in the snapshot's zone, anything else as its text. A float is read as a double, which these
-  // servers write with all its digits, where they write a float rounded to six.
+  // servers write with all its digits, where they write a float rounded to six. A table without
+  // such a column has its rows as INSERTs of empty rows, which take its defaults.
   @Override
-  Optional<Data> data(Connection connection, Provider provider, Item table) throws QueryException {
+  Optional<Data> data(Connection connection, Provider provider, Item table, boolean alone)
+      throws QueryException {
+    if (alone) {
+      refuseTriggers(connection, provider, table);
+    }
     var columns = Sql.some(
         connection,
         provider,
@@ -610,9 +629,6 @@ public final class MySqlFamilyDump extends DumpDialect {
                 new Column(rows.getString(1), rows.getString(2).toLowerCase(Locale.ROOT))),
         table.container().name(),
         table.name());
-    if (columns.isEmpty()) {
-      return Optional.empty();
-    }
     var selected = new ArrayList<String>();
     var names = new ArrayList<String>();
     var values = new ArrayList<Value>();
@@ -625,10 +641,64 @@ public final class MySqlFamilyDump extends DumpDialect {
     }
     var name = provider.quote(table.name());
     return Optional.of(new Data(
-        "SELECT " + String.join(", ", selected) + " FROM "
-            + provider.quote(table.container().name()) + "." + name,
+        "SELECT " + (selected.isEmpty() ? "1" : String.join(", ", selected)) + " FROM "
+            + Rows.qualified(provider, table.container(), table.name()),
         "INSERT INTO " + name + " (" + String.join(", ", names) + ") VALUES",
-        metadata -> values));
+        false,
+        transactional(connection, provider, table),
+        metadata -> values,
+        Around.NOTHING));
+  }
+
+  // Whether the table's engine keeps transactions; one that the server does not tell of is taken
+  // to.
+  private static boolean transactional(Connection connection, Provider provider, Item table)
+      throws QueryException {
+    var keeps = Sql.rows(
+        connection,
+        provider,
+        """
+        SELECT e.TRANSACTIONS FROM information_schema.TABLES t
+        JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE
+        WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?""",
+        rows -> rows.getString(1),
+        table.container().name(),
+        table.name());
+    return keeps.isEmpty() || !"NO".equalsIgnoreCase(keeps.getFirst());
+  }
+
+  // The rows of an export of the data alone go into a table that has the triggers it has here,
+  // which these servers cannot keep from firing for them.
+  private static void refuseTriggers(Connection connection, Provider provider, Item table)
+      throws QueryException {
+    var triggers = Sql.rows(
+        connection,
+        provider,
+        """
+        SELECT TRIGGER_NAME FROM information_schema.TRIGGERS
+        WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ? ORDER BY TRIGGER_NAME""",
+        rows -> rows.getString(1),
+        table.container().name(),
+        table.name());
+    if (!triggers.isEmpty()) {
+      throw QueryException.of(
+          QueryException.Failure.OTHER,
+          provider.displayName() + " cannot keep the triggers of " + table.name() + " ("
+              + String.join(", ", triggers) + ") from firing for the rows read into it, which"
+              + " would change them: export its data with its structure, or leave it out.");
+    }
+  }
+
+  // Their keys are not checked while the rows go in, which come from one snapshot.
+  @Override
+  Around circle(List<Definition> tables) {
+    return tables.isEmpty()
+        ? Around.NOTHING
+        : new Around(
+            List.of(
+                "SET @HOORIDB_CIRCLE_CHECKS = @@SESSION.foreign_key_checks",
+                "SET SESSION foreign_key_checks = 0"),
+            List.of("SET SESSION foreign_key_checks = @HOORIDB_CIRCLE_CHECKS"));
   }
 
   private static boolean generated(String extra) {

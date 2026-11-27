@@ -34,8 +34,13 @@ import java.util.stream.Collectors;
  * from {@code pg_depend}. Objects of extensions are left to their extension, an identity column's
  * sequence to its column, a partition's inherited constraints and triggers to its table, whose
  * indexes its own are attached to. A child's columns that it inherits keep the defaults and NOT
- * NULL of their own. A materialized view is refreshed from its tables once their rows are in, as
- * {@code pg_dump} does.
+ * NULL of their own. A materialized view that has rows is refreshed from its tables once their rows
+ * are in, as {@code pg_dump} does. What would refuse or hide rows read back follows them: a
+ * constraint that is not valid, which rows already there need not pass, and row security with its
+ * policies. The file reads its rows without row security, so that a table whose policies would hide
+ * them from the user fails rather than leaving them out; an export of the data alone turns off the
+ * tables' triggers for the rows, and what would refuse them, as {@code pg_dump --disable-triggers}
+ * does, and puts them back as they were.
  *
  * <p>The snapshot's search path is empty, so that the server names every object with its schema,
  * and nothing a user created under the name of a function or operator of {@code pg_catalog} runs.
@@ -60,6 +65,7 @@ public final class PostgreSqlDump extends DumpDialect {
       "search_path",
       "check_function_bodies",
       "client_min_messages",
+      "row_security",
       "IntervalStyle",
       "DateStyle");
 
@@ -76,6 +82,11 @@ public final class PostgreSqlDump extends DumpDialect {
   @Override
   public boolean foreignKeyChecks() {
     return false;
+  }
+
+  @Override
+  public boolean quietsTriggers() {
+    return true;
   }
 
   @Override
@@ -388,15 +399,23 @@ public final class PostgreSqlDump extends DumpDialect {
         String options,
         String partitionKey,
         String bound,
-        String comment) {}
+        String comment,
+        boolean rowSecurity,
+        boolean forceRowSecurity) {}
 
     private record Parent(long oid, String name) {}
 
-    private record Constraint(String name, String type, String definition, long refers) {}
+    private record Constraint(
+        String name, String type, String definition, long refers, boolean valid) {}
 
-    // A table's constraints: those that go into its CREATE TABLE, and its foreign keys apart.
+    // A table's constraints: those that go into its CREATE TABLE, its foreign keys apart, and
+    // those that are not valid, which follow its rows.
     private record Constraints(
-        List<String> inline, List<String> keys, List<String> dropKeys, Set<Item> refers) {}
+        List<String> inline,
+        List<String> keys,
+        List<String> dropKeys,
+        List<String> notValid,
+        Set<Item> refers) {}
 
     // A table as CREATE TABLE writes it: its own columns and its constraints but foreign keys; a
     // partition as one of its table, whose columns it has; a child with the tables it inherits.
@@ -406,7 +425,7 @@ public final class PostgreSqlDump extends DumpDialect {
           SELECT c.relpersistence, c.relkind, pg_catalog.array_to_string(c.reloptions, ', '),
             CASE WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) END,
             CASE WHEN c.relispartition THEN pg_catalog.pg_get_expr(c.relpartbound, c.oid) END,
-            pg_catalog.obj_description(c.oid, 'pg_class')
+            pg_catalog.obj_description(c.oid, 'pg_class'), c.relrowsecurity, c.relforcerowsecurity
           FROM pg_catalog.pg_class c WHERE c.oid = %s""".formatted(oid),
           rows -> new Relation(
               rows.getString(1),
@@ -414,7 +433,9 @@ public final class PostgreSqlDump extends DumpDialect {
               rows.getString(3),
               rows.getString(4),
               rows.getString(5),
-              rows.getString(6)));
+              rows.getString(6),
+              rows.getBoolean(7),
+              rows.getBoolean(8)));
       var parents =
           rows("""
           SELECT i.inhparent, i.inhparent::pg_catalog.regclass::pg_catalog.text
@@ -450,6 +471,8 @@ public final class PostgreSqlDump extends DumpDialect {
       }
       statements.addAll(comments);
       statements.addAll(owned());
+      var afterRows = new ArrayList<>(constraints.notValid());
+      afterRows.addAll(security(relation));
       return new Definition(
           item,
           statements,
@@ -459,31 +482,106 @@ public final class PostgreSqlDump extends DumpDialect {
           constraints.dropKeys(),
           "DROP TABLE IF EXISTS " + name,
           restore,
+          afterRows,
           needs,
           constraints.refers());
+    }
+
+    private record Policy(
+        String name,
+        boolean permissive,
+        String command,
+        String roles,
+        String using,
+        String check) {}
+
+    // Row security as the table has it, and its policies.
+    private List<String> security(Relation relation) throws QueryException {
+      var statements = new ArrayList<String>();
+      if (relation.rowSecurity()) {
+        statements.add("ALTER TABLE ONLY " + name + " ENABLE ROW LEVEL SECURITY");
+      }
+      if (relation.forceRowSecurity()) {
+        statements.add("ALTER TABLE ONLY " + name + " FORCE ROW LEVEL SECURITY");
+      }
+      var policies = rows(
+          """
+          SELECT p.polname, p.polpermissive, p.polcmd,
+            (SELECT pg_catalog.string_agg(CASE WHEN u.role = 0 THEN 'PUBLIC'
+                ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(u.role)) END, ', '
+                ORDER BY u.n)
+              FROM pg_catalog.unnest(p.polroles) WITH ORDINALITY u(role, n)),
+            pg_catalog.pg_get_expr(p.polqual, p.polrelid),
+            pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid)
+          FROM pg_catalog.pg_policy p WHERE p.polrelid = %s ORDER BY p.polname""".formatted(oid),
+          rows -> new Policy(
+              rows.getString(1),
+              rows.getBoolean(2),
+              rows.getString(3),
+              rows.getString(4),
+              rows.getString(5),
+              rows.getString(6)));
+      for (var policy : policies) {
+        var create = new StringBuilder("CREATE POLICY ")
+            .append(quote(policy.name()))
+            .append(" ON ")
+            .append(name)
+            .append(policy.permissive() ? " AS PERMISSIVE" : " AS RESTRICTIVE")
+            .append(" FOR ")
+            .append(
+                switch (policy.command()) {
+                  case "r" -> "SELECT";
+                  case "a" -> "INSERT";
+                  case "w" -> "UPDATE";
+                  case "d" -> "DELETE";
+                  default -> "ALL";
+                })
+            .append(" TO ")
+            .append(policy.roles());
+        if (policy.using() != null) {
+          create.append(" USING (").append(policy.using()).append(')');
+        }
+        if (policy.check() != null) {
+          create.append(" WITH CHECK (").append(policy.check()).append(')');
+        }
+        statements.add(create.toString());
+      }
+      return statements;
     }
 
     // Those that a partition or a child has from its table come with it.
     private Constraints constraints(String only) throws QueryException {
       var constraints = rows(
           """
-          SELECT co.conname, co.contype, pg_catalog.pg_get_constraintdef(co.oid), co.confrelid
+          SELECT co.conname, co.contype, pg_catalog.pg_get_constraintdef(co.oid), co.confrelid,
+            co.convalidated
           FROM pg_catalog.pg_constraint co WHERE co.conrelid = %s
           AND co.contype IN ('p', 'u', 'c', 'x', 'f') AND co.conislocal
           ORDER BY co.contype = 'f', co.contype = 'c', co.conname""".formatted(oid),
           rows -> new Constraint(
-              rows.getString(1), rows.getString(2), rows.getString(3), rows.getLong(4)));
+              rows.getString(1),
+              rows.getString(2),
+              rows.getString(3),
+              rows.getLong(4),
+              rows.getBoolean(5)));
       var inline = new ArrayList<String>();
       var keys = new ArrayList<String>();
       var dropKeys = new ArrayList<String>();
+      var notValid = new ArrayList<String>();
       var refers = new HashSet<Item>();
       for (var constraint : constraints) {
         var named = "CONSTRAINT " + quote(constraint.name()) + " " + constraint.definition();
-        if (!constraint.type().equals("f")) {
+        // Added NOT VALID, as its definition says, to the table and what inherits it.
+        if (!constraint.valid()) {
+          notValid.add("ALTER TABLE " + name + " ADD " + named);
+        } else if (!constraint.type().equals("f")) {
           inline.add(named);
+        } else {
+          keys.add("ALTER TABLE " + only + name + " ADD " + named);
+        }
+        if (!constraint.type().equals("f")) {
           continue;
         }
-        keys.add("ALTER TABLE " + only + name + " ADD " + named);
         dropKeys.add("ALTER TABLE IF EXISTS " + only + name + " DROP CONSTRAINT IF EXISTS "
             + quote(constraint.name()));
         var to = known.relations.get(constraint.refers());
@@ -491,7 +589,7 @@ public final class PostgreSqlDump extends DumpDialect {
           refers.add(to);
         }
       }
-      return new Constraints(inline, keys, dropKeys, refers);
+      return new Constraints(inline, keys, dropKeys, notValid, refers);
     }
 
     // The CREATE TABLE itself.
@@ -712,17 +810,24 @@ public final class PostgreSqlDump extends DumpDialect {
       return statements;
     }
 
-    private record View(String kind, String options, String definition, String comment) {}
+    private record View(
+        String kind, String options, String definition, String comment, boolean populated) {}
 
-    // A materialized view without its rows, which its refresh gives after the tables' rows.
+    // A materialized view without its rows, which its refresh gives after the tables' rows where
+    // it has any; one never refreshed stays so.
     Definition view() throws QueryException {
       var view = one(
           """
           SELECT c.relkind, pg_catalog.array_to_string(c.reloptions, ', '),
-            pg_catalog.pg_get_viewdef(c.oid), pg_catalog.obj_description(c.oid, 'pg_class')
+            pg_catalog.pg_get_viewdef(c.oid), pg_catalog.obj_description(c.oid, 'pg_class'),
+            c.relispopulated
           FROM pg_catalog.pg_class c WHERE c.oid = %s""".formatted(oid),
-          rows ->
-              new View(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4)));
+          rows -> new View(
+              rows.getString(1),
+              rows.getString(2),
+              rows.getString(3),
+              rows.getString(4),
+              rows.getBoolean(5)));
       var materialized = view.kind().equals("m");
       var create = new StringBuilder(materialized ? "CREATE MATERIALIZED VIEW " : "CREATE VIEW ")
           .append(name);
@@ -747,7 +852,10 @@ public final class PostgreSqlDump extends DumpDialect {
           List.of(),
           List.of(),
           "DROP " + kind + "IF EXISTS " + name,
-          materialized ? List.of("REFRESH MATERIALIZED VIEW " + name) : List.of(),
+          materialized && view.populated()
+              ? List.of("REFRESH MATERIALIZED VIEW " + name)
+              : List.of(),
+          List.of(),
           needs(CLASS),
           Set.of());
     }
@@ -774,6 +882,7 @@ public final class PostgreSqlDump extends DumpDialect {
           List.of(),
           "DROP SEQUENCE IF EXISTS " + name,
           List.of(value(name)),
+          List.of(),
           Set.of(),
           Set.of());
     }
@@ -808,6 +917,7 @@ public final class PostgreSqlDump extends DumpDialect {
           List.of(),
           List.of(),
           "DROP " + kind + "IF EXISTS " + signature,
+          List.of(),
           List.of(),
           needs(PROC),
           Set.of());
@@ -852,6 +962,7 @@ public final class PostgreSqlDump extends DumpDialect {
           List.of(),
           List.of(),
           "DROP TRIGGER IF EXISTS " + quote(item.name()) + " ON " + table,
+          List.of(),
           List.of(),
           needs,
           Set.of());
@@ -902,17 +1013,16 @@ public final class PostgreSqlDump extends DumpDialect {
     }
   }
 
-  private static String qualified(Provider provider, String schema, String name) {
-    return provider.quote(schema) + "." + provider.quote(name);
-  }
-
-  private record Insertable(String kind, List<String> columns, boolean always) {}
+  private record Insertable(
+      String kind, List<String> columns, boolean always, boolean forceRowSecurity) {}
 
   // The rows of the table itself, not those of its children; of each column that is not
-  // generated, a value of a kind the literal writes as such, otherwise the server's text.
+  // generated, a value of a kind the literal writes as such, otherwise the server's text. A table
+  // without such a column has its rows as many INSERTs of its defaults.
   @Override
-  Optional<Data> data(Connection connection, Provider provider, Item table) throws QueryException {
-    var name = qualified(provider, table.container().name(), table.name());
+  Optional<Data> data(Connection connection, Provider provider, Item table, boolean alone)
+      throws QueryException {
+    var name = Rows.qualified(provider, table.container(), table.name());
     var read = Sql.one(
         connection,
         provider,
@@ -921,32 +1031,112 @@ public final class PostgreSqlDump extends DumpDialect {
         SELECT c.relkind,
           pg_catalog.array_agg(pg_catalog.quote_ident(a.attname) ORDER BY a.attnum)
             FILTER (WHERE a.attgenerated = ''),
-          pg_catalog.bool_or(a.attidentity = 'a')
+          pg_catalog.bool_or(a.attidentity = 'a'), c.relforcerowsecurity
         FROM pg_catalog.pg_class c
         LEFT JOIN pg_catalog.pg_attribute a
           ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-        WHERE c.oid = pg_catalog.to_regclass(?) GROUP BY c.relkind""",
+        WHERE c.oid = pg_catalog.to_regclass(?) GROUP BY c.relkind, c.relforcerowsecurity""",
         rows -> {
           var array = rows.getArray(2);
           var columns = array == null ? List.<String>of() : List.of((String[]) array.getArray());
-          return new Insertable(rows.getString(1), columns, rows.getBoolean(3));
+          return new Insertable(rows.getString(1), columns, rows.getBoolean(3), rows.getBoolean(4));
         },
         name);
-    if (read.kind().equals("p") || read.columns().isEmpty()) {
+    if (read.kind().equals("p")) {
       return Optional.empty();
+    }
+    var around = alone ? around(connection, provider, name, read) : Around.NOTHING;
+    if (read.columns().isEmpty()) {
+      return Optional.of(new Data(
+          "SELECT FROM ONLY " + name,
+          "INSERT INTO " + name + " DEFAULT VALUES",
+          true,
+          true,
+          metadata -> List.of(),
+          around));
     }
     var columns = String.join(", ", read.columns());
     return Optional.of(new Data(
         "SELECT " + columns + " FROM ONLY " + name,
         "INSERT INTO " + name + " (" + columns + ")"
             + (read.always() ? " OVERRIDING SYSTEM VALUE" : "") + " VALUES",
+        false,
+        true,
         metadata -> {
           var values = new ArrayList<Value>();
           for (var i = 1; i <= metadata.getColumnCount(); i++) {
             values.add(value(metadata.getColumnTypeName(i)));
           }
           return values;
-        }));
+        },
+        around));
+  }
+
+  private record Enabled(String trigger, String mode) {}
+
+  private record NotValid(String name, String definition) {}
+
+  // What keeps a table that exists from refusing or changing the rows read into it, and puts it
+  // back after them: its triggers, which go back to the mode each had; forced row security, which
+  // would hold its owner to the policies; constraints that are not valid, which old rows need not
+  // pass, dropped and added again as they were.
+  private static Around around(
+      Connection connection, Provider provider, String name, Insertable read)
+      throws QueryException {
+    var before = new ArrayList<String>();
+    var after = new ArrayList<String>();
+    var triggers = Sql.rows(
+        connection, provider, """
+        SELECT t.tgname, t.tgenabled FROM pg_catalog.pg_trigger t
+        WHERE t.tgrelid = pg_catalog.to_regclass(?) AND NOT t.tgisinternal
+        ORDER BY t.tgname""", rows -> new Enabled(rows.getString(1), rows.getString(2)), name);
+    if (!triggers.isEmpty()) {
+      before.add("ALTER TABLE ONLY " + name + " DISABLE TRIGGER USER");
+      for (var trigger : triggers) {
+        var mode = switch (trigger.mode()) {
+          case "D" -> "";
+          case "R" -> " ENABLE REPLICA TRIGGER ";
+          case "A" -> " ENABLE ALWAYS TRIGGER ";
+          default -> " ENABLE TRIGGER ";
+        };
+        if (!mode.isEmpty()) {
+          after.add("ALTER TABLE ONLY " + name + mode + provider.quote(trigger.trigger()));
+        }
+      }
+    }
+    if (read.forceRowSecurity()) {
+      before.add("ALTER TABLE ONLY " + name + " NO FORCE ROW LEVEL SECURITY");
+      after.add("ALTER TABLE ONLY " + name + " FORCE ROW LEVEL SECURITY");
+    }
+    var checks = Sql.rows(
+        connection,
+        provider,
+        """
+        SELECT co.conname, pg_catalog.pg_get_constraintdef(co.oid)
+        FROM pg_catalog.pg_constraint co
+        WHERE co.conrelid = pg_catalog.to_regclass(?) AND NOT co.convalidated
+        AND co.contype IN ('c', 'f') AND co.conislocal
+        ORDER BY co.conname""",
+        rows -> new NotValid(rows.getString(1), rows.getString(2)),
+        name);
+    for (var check : checks) {
+      var constraint = provider.quote(check.name());
+      before.add("ALTER TABLE " + name + " DROP CONSTRAINT IF EXISTS " + constraint);
+      after.add("ALTER TABLE " + name + " ADD CONSTRAINT " + constraint + " " + check.definition());
+    }
+    return new Around(before, after);
+  }
+
+  // Their keys go while the rows go in, and come back after them, checking them all.
+  @Override
+  Around circle(List<Definition> tables) {
+    var before = new ArrayList<String>();
+    var after = new ArrayList<String>();
+    for (var table : tables) {
+      before.addAll(table.dropKeys());
+      after.addAll(table.keys());
+    }
+    return new Around(before, after);
   }
 
   // NaN and the infinities of numeric and floating point types stay text, as the literal quotes.
@@ -994,6 +1184,7 @@ public final class PostgreSqlDump extends DumpDialect {
         "SELECT pg_catalog.set_config('search_path', '', false)",
         "SET check_function_bodies = false",
         "SET client_min_messages = warning",
+        "SET row_security = off",
         "SET IntervalStyle = 'postgres'",
         "SET DateStyle = 'ISO, YMD'");
   }

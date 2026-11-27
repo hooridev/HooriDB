@@ -20,8 +20,11 @@ import java.util.Set;
  *     in any order
  * @param drop what drops it where it exists
  * @param restore what gives it, after the rows, the state it has besides them: a sequence's value,
- *     that of a table's identity column; a materialized view's refresh, from its tables' rows as
- *     they are then
+ *     that of a table's identity column; a populated materialized view's refresh, from its tables'
+ *     rows as they are then
+ * @param afterRows what follows its rows wherever they go, as it would refuse or hide them: a
+ *     table's constraints that are not valid, which rows already there need not pass, and its row
+ *     security with its policies
  * @param needs the objects that must be there before it, as a view's tables; a table's foreign keys
  *     are not among them
  * @param refers the tables its foreign keys refer to, itself too where one does, whose rows go
@@ -36,6 +39,7 @@ public record Definition(
     List<String> dropKeys,
     String drop,
     List<String> restore,
+    List<String> afterRows,
     Set<Item> needs,
     Set<Item> refers) {
 
@@ -45,15 +49,20 @@ public record Definition(
     keys = List.copyOf(keys);
     dropKeys = List.copyOf(dropKeys);
     restore = List.copyOf(restore);
+    afterRows = List.copyOf(afterRows);
     needs = Set.copyOf(needs);
     refers = Set.copyOf(refers);
   }
 
-  /** Its statements in the order that creates it on its own: itself, its indexes, its keys. */
+  /**
+   * Its statements in the order that creates it on its own: itself, its indexes, its keys, and
+   * what follows its rows.
+   */
   public List<String> statements() {
     var all = new ArrayList<String>(create);
     all.addAll(indexes);
     all.addAll(keys);
+    all.addAll(afterRows);
     return List.copyOf(all);
   }
 }
