@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -24,6 +25,7 @@ import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.execution.Status;
 import dev.hoori.db.core.execution.Transaction;
 import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.log.Sent;
 import dev.hoori.db.core.query.QueryException;
 import java.io.IOException;
@@ -440,6 +442,57 @@ class TableFilesServerTest {
         try (Stream<Path> left = Files.list(dir)) {
           assertEquals(List.of(file), left.toList());
         }
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
+      }
+    }
+  }
+
+  // A failure of what takes the rows is what the read ends with, once the rows not read yet are
+  // cancelled where they would hold the connection.
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aFailureOfWhatTakesTheRowsCancelsThoseNotReadYet(Provider provider) throws Exception {
+    var name = unique("files_taken");
+    try (var connection = open(provider)) {
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name) + " (id integer PRIMARY KEY, t text)",
+          provider == Provider.POSTGRESQL
+              ? "INSERT INTO " + qualified(provider, name)
+                  + " SELECT n, repeat('x', 100) FROM generate_series(1, 1000) n"
+              : "INSERT INTO " + qualified(provider, name)
+                  + " SELECT a.d + 10 * b.d + 100 * c.d + 1, REPEAT('x', 100) FROM " + DIGITS
+                  + " a, " + DIGITS + " b, " + DIGITS + " c");
+      try {
+        var table = table(provider, name);
+        var columns = Catalog.columns(connection, provider, table);
+        var failure = new IllegalStateException("taken badly");
+        var sent = new CopyOnWriteArrayList<Sent>();
+        var thrown = assertThrows(
+            QueryException.class,
+            () -> Journal.recording(
+                sent::add,
+                () ->
+                    Rows.each(connection, provider, table, columns, List.of(0, 1), new Rows.Each() {
+                      @Override
+                      public void fields(List<Field> fields) {}
+
+                      @Override
+                      public void row(List<Object> values) {
+                        throw failure;
+                      }
+                    })));
+        assertSame(failure, thrown.getCause());
+        var cancels = sent.stream()
+            .filter(s -> s.purpose() == Purpose.EXPORT && s.text().equals(Journal.CANCEL))
+            .count();
+        assertEquals(
+            provider.dialect().session().pendingRowsHoldConnection() ? 1 : 0,
+            cancels,
+            sent.toString());
+        assertEquals(1000, read(connection, provider, table, columns).size());
+        assertLeftAsItWas(connection, provider);
       } finally {
         dropAfter(provider, "DROP TABLE " + qualified(provider, name));
       }

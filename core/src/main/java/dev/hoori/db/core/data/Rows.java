@@ -481,34 +481,57 @@ public final class Rows {
               }
               return n;
             } catch (IOException | QueryException e) {
-              // Rows left unread would come to their end as the result closes.
-              if (session.pendingRowsHoldConnection()) {
-                session.cancel(connection, result.getStatement());
-              }
-              throw new Unread(e);
+              throw new Unread(unread(connection, provider, result, e));
+            } catch (SQLException e) {
+              throw unread(connection, provider, result, e);
+            } catch (RuntimeException e) {
+              throw unread(connection, provider, result, e);
             }
           }));
     } catch (QueryException | RuntimeException e) {
+      // The failure of each's or of the statement's, with what ending the transaction met.
+      var failure = e.getCause() instanceof Unread unread ? unread.getCause() : e;
       if (own) {
         try {
           Transactions.end(connection, provider, false);
         } catch (QueryException ended) {
-          e.addSuppressed(ended);
+          failure.addSuppressed(ended);
         }
       }
-      if (e.getCause() instanceof Unread unread) {
-        switch (unread.getCause()) {
-          case IOException failed -> throw failed;
-          case QueryException failed -> throw failed;
-          default -> throw e;
-        }
+      switch (failure) {
+        case IOException f -> throw f;
+        case QueryException f -> throw f;
+        default -> throw e;
       }
-      throw e;
     }
     if (own) {
       Transactions.end(connection, provider, false);
     }
     return read;
+  }
+
+  // The failure, once the rows the result has not given yet are cancelled where they would come
+  // to their end as it closes, which reads them all first; a cancel's failure goes with it. Not
+  // where the statement was cancelled already, or the connection is lost, which ends them.
+  private static <E extends Exception> E unread(
+      Connection connection, Provider provider, ResultSet result, E failure) {
+    var session = provider.dialect().session();
+    var ended = failure instanceof SQLException e
+        && switch (Query.failure(connection, provider, e).failure()) {
+          case CANCELLED, CONNECTION_LOST -> true;
+          default -> false;
+        };
+    if (session.pendingRowsHoldConnection() && !ended) {
+      try {
+        Journal.call(Purpose.EXPORT, Journal.CANCEL, () -> {
+          session.cancel(connection, result.getStatement());
+          return null;
+        });
+      } catch (SQLException | RuntimeException cancel) {
+        failure.addSuppressed(cancel);
+      }
+    }
+    return failure;
   }
 
   // What ended a read of each's before its last row, through the worker of Query.
